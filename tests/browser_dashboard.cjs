@@ -216,6 +216,10 @@ const fs = require("fs"),
     slots:[{session:"academy-build",repo:repo.repo,role:"build",state:"working",assignment_id:"build-assignment",generation:"$1|100|%1|1001",reason:"execution_running"},
            {session:"academy-review",repo:repo.repo,role:"review",state:"reserved",assignment_id:"review-assignment",generation:"$2|100|%2|1002",reason:"waiting_for_provider"},
            {session:"stale-build",repo:"example/stale",role:"build",state:"working",assignment_id:null,generation:"$1|100|%1|1001",reason:"started_before_assignment_tracking"}]};
+  fleet.controls_token = 'synthetic-control-token';
+  fleet.slot_actions = [];
+  const slotRequests = [];
+  let slotReply = {status:200, body:{ok:true,reason:'queued',id:'slot-request-1'}};
   let workflowPages = [];
   await page.route("http://forge.test/**", async (route) => {
     const url = new URL(route.request().url());
@@ -227,6 +231,10 @@ const fs = require("fs"),
           "utf8",
         ),
       });
+    if (url.pathname === "/api/slots/action") {
+      slotRequests.push({method:route.request().method(),body:route.request().postDataJSON(),token:route.request().headers()['x-forge-action']});
+      return route.fulfill({status:slotReply.status,contentType:'application/json',body:JSON.stringify(slotReply.body)});
+    }
     if (url.pathname === "/api/status" && fail)
       return route.fulfill({ status: 503, body: "offline" });
     const data =
@@ -250,6 +258,70 @@ const fs = require("fs"),
   assert.equal(await page.locator(".stage").count(), 0);
   assert.equal(await page.locator("#pipeline").count(), 0);
   assert.equal(await page.locator(".issue-card").count(), 4);
+  assert.equal(await page.locator('.occupied-slot').count(),4);
+  assert(await page.locator('[data-slot-session="academy-review"]').isVisible());
+  assert.match(await page.locator('[data-slot-session="academy-review"]').innerText(), /#5/);
+  assert.equal(await page.locator('[data-slot-session="academy-review"] .moving').count(),0);
+  assert.match(await page.locator('[data-slot-session="stale-build"]').innerText(), /issue unassigned/);
+  await page.evaluate(()=>{
+    window.slotFixture=JSON.parse(JSON.stringify(fleet));
+    fleet.repos[0].review={up:true,busy:false,state:'blocked',generation_id:'$2|100|%2|1002'};
+    fleet.workflow.slots.find(s=>s.session==='academy-review').state='blocked';
+    fleet.workflow.issues.find(i=>i.number===5).disposition='stalled';
+    fleet.issue_flow.issues.find(i=>i.number===5).attention_state='STALLED';
+    fleet.slots.sessions=[{session:'disabled-audit',repo:'example/disabled',role:'audit',generation:'$7|100|%7|1007'}];
+    fleet.workflow.slots.push({session:'quiet-audit',repo:'example/quiet',role:'audit',state:'reserved',generation:null,assignment_id:null});
+    renderNow();
+  });
+  assert(await page.locator('[data-slot-session="academy-review"]').isVisible());
+  assert.match(await page.locator('[data-slot-session="academy-review"]').innerText(), /Stalled/);
+  assert.match(await page.locator('[data-slot-session="academy-review"]').innerText(), /#5/);
+  assert.equal(await page.locator('[data-slot-session="academy-review"] .moving').count(),0);
+  assert(await page.locator('[data-slot-session="disabled-audit"]').isVisible());
+  assert.equal(await page.locator('[data-slot-session="disabled-audit"] [data-slot-action="stop"]').isEnabled(),true);
+  assert.equal(await page.locator('[data-slot-session="quiet-audit"] [data-slot-action="release"]').isDisabled(),true);
+  await page.evaluate(()=>{fleet=window.slotFixture;delete window.slotFixture;renderNow();});
+  await page.locator('[data-slot-session="academy-build"] [data-slot-action="stop"]').click();
+  await page.waitForFunction(()=>pendingSlotActions.get('academy-build')?.id==='slot-request-1');
+  assert.deepEqual(slotRequests[0],{method:'POST',body:{action:'stop',session:'academy-build',generation:'$1|100|%1|1001'},token:'synthetic-control-token'});
+  assert(await page.locator('[data-slot-session="academy-build"] [data-slot-action="stop"]').isDisabled());
+  assert(await page.locator('[data-slot-session="academy-build"]').isVisible()); // Queueing never pretends release succeeded.
+  fleet.slot_actions=[{id:'slot-request-1',session:'academy-build',generation:'$1|100|%1|1001',status:'queued',reason:'queued'}];
+  await page.evaluate(()=>{pendingSlotActions.clear();seenSlotActions.clear();return load();});
+  assert(await page.locator('[data-slot-session="academy-build"] [data-slot-action="stop"]').isDisabled());
+  fleet.slot_actions=[{id:'slot-request-1',session:'academy-build',generation:'$1|100|%1|1001',status:'succeeded',action:'stop',paused:true,updated_at:100,reason:'operator_stopped',message:'Worker stopped; edits preserved.'}];
+  await page.evaluate(()=>load());
+  assert.match(await page.locator('#slot-action-status').innerText(),/edits preserved/);
+  assert(await page.locator('[data-slot-session="academy-build"] [data-slot-action="resume"]').isVisible());
+  await page.evaluate(()=>{fleet.repos[0].build.generation_id='$9|200|%9|1009';renderNow();});
+  assert.equal(await page.locator('[data-slot-session="academy-build"] [data-slot-action="resume"]').count(),0);
+  await page.evaluate(()=>{fleet.repos[0].build.generation_id='$1|100|%1|1001';renderNow();});
+  slotReply={status:200,body:{ok:true,reason:'queued',id:'resume-request-1'}};
+  await page.locator('[data-slot-session="academy-build"] [data-slot-action="resume"]').click();
+  await page.waitForFunction(()=>pendingSlotActions.get('academy-build')?.id==='resume-request-1');
+  assert.deepEqual(slotRequests[1],{method:'POST',body:{action:'resume',session:'academy-build',generation:'$1|100|%1|1001'},token:'synthetic-control-token'});
+  fleet.slot_actions.unshift({id:'resume-request-1',session:'academy-build',generation:'$1|100|%1|1001',status:'succeeded',action:'resume',paused:false,updated_at:101,reason:'operator_resumed'});
+  await page.evaluate(()=>load());
+  assert.equal(await page.locator('[data-slot-session="academy-build"] [data-slot-action="resume"]').count(),0);
+
+  slotReply={status:409,body:{ok:false,reason:'generation_changed',message:'Generation changed <script>window.pwned=1</script>'}};
+  await page.locator('[data-slot-session="academy-review"] [data-slot-action="release"]').click();
+  await page.waitForFunction(()=>slotActionMessages.has('academy-review'));
+  assert.deepEqual(slotRequests[2].body,{action:'release',session:'academy-review',generation:'$2|100|%2|1002'});
+  assert.match(await page.locator('[data-slot-session="academy-review"] .slot-action-message').innerText(),/Generation changed <script>/);
+  assert.equal(await page.evaluate(()=>window.pwned),undefined);
+  assert(await page.locator('[data-slot-session="academy-review"]').isVisible());
+  await page.evaluate(()=>{
+    pendingSlotActions.set('academy-review',{id:'delayed-refusal',generation:'$2|100|%2|1002'});
+    fleet.slot_actions=[{id:'delayed-refusal',session:'academy-review',generation:'$2|100|%2|1002',status:'refused',reason:'release_proof_required',message:'Worker retained',proof_reasons:['worktree_not_clean','processes_not_quiescent']}];
+    renderNow();
+  });
+  assert.match(await page.locator('[data-slot-session="academy-review"] .slot-action-message').innerText(),/worktree not clean.*processes not quiescent/i);
+  await page.evaluate(()=>{delete fleet.controls_token;renderNow();});
+  assert(await page.locator('[data-slot-session="academy-build"] [data-slot-action="stop"]').isDisabled());
+  fleet.slot_actions=[];
+  await page.evaluate(()=>{pendingSlotActions.clear();slotActionMessages.clear();slotActionSummary='';return load();});
+
   assert.match(await page.locator(".stat-slots").innerText(), /Slots occupied/);
   assert.match(await page.locator(".stat-slots .number").innerText(), /5\s*\/\s*6/);
   assert.match(await page.locator(".slot-states").innerText(), /2 working/);
@@ -300,19 +372,19 @@ const fs = require("fs"),
 
   assert.match(await page.locator(".slot-roles").first().innerText(), /Review 3\/3/);
   assert.match(await page.locator(".provider-outages").innerText(), /Claude unavailable.*retry in 60m/);
-  assert.equal(await page.locator(".working-stack .issue-card").count(), 1);
-  assert.match(await page.locator(".working-stack .issue-card").innerText(), /Codex/);
-  assert.equal(await page.locator(".pending-stack .issue-card").count(), 3);
+  assert.equal(await page.locator(".working-stack .issue-card").count(), 2);
+  assert.match(await page.locator(".working-stack .issue-card.moving").innerText(), /Codex/);
+  assert.equal(await page.locator(".pending-stack .issue-card").count(), 2);
   assert.equal(await page.locator(".mini-card.moving").count(), 1);
   assert.equal(await page.locator(".role-card.working").count(), 0);
   await page.evaluate(()=>{fleet.repos[0].repo='Example/Academy';for(const issue of fleet.issue_flow.issues) if(issue.repo==='example/academy') issue.repo='Example/Academy';renderNow();});
-  assert.equal(await page.locator('.working-stack .issue-card').count(),1);
-  assert.equal(await page.locator('.working-stack .issue-card button').getAttribute('data-repo'),'Example/Academy');
+  assert.equal(await page.locator('.working-stack .issue-card').count(),2);
+  assert.equal(await page.locator('[data-slot-session="academy-build"] .issue-card button').getAttribute('data-repo'),'Example/Academy');
   assert.equal(await page.locator('.assignment-gap').count(),0);
   await page.evaluate(()=>{fleet.repos[0].repo='example/academy';for(const issue of fleet.issue_flow.issues) if(issue.repo==='Example/Academy') issue.repo='example/academy';renderNow();});
 
   await page.evaluate(()=>{window.savedIssue=fleet.issue_flow.issues.shift();renderNow();});
-  assert.match(await page.locator('.working-stack .issue-card').innerText(),/Issue #1 · details not collected/);
+  assert.match(await page.locator('[data-slot-session="academy-build"] .issue-card').innerText(),/Issue #1 · details not collected/);
   assert.equal(await page.locator('.assignment-gap').count(),0);
   await page.evaluate(()=>{fleet.issue_flow.issues.unshift(window.savedIssue);delete window.savedIssue;renderNow();});
 
@@ -366,6 +438,22 @@ const fs = require("fs"),
   assert.match(await page.locator('#unified-older').innerText(), /academy.*working.*#1/i);
   assert.equal(await page.locator('#workflow-history-more').innerText(),'Load older workflow events');
   await page.locator('#unified-source').selectOption('all');
+
+  const slotsBeforeParked=await page.locator('.stat-slots .number').innerText();
+  await page.evaluate(()=>{
+    fleet.parked_work={status:"ok",issues:[{repo:fleet.repos[0].repo,number:612,summary:"Typecheck: 451 diagnostics <script>bad()</script>",branch:"issue-612-patched-dependencies",head:"a".repeat(40),branch_url:`https://github.com/${fleet.repos[0].repo}/tree/issue-612-patched-dependencies`,checkpoint_url:`https://github.com/${fleet.repos[0].repo}/commit/${"a".repeat(40)}`,next:"Fix failing checks on the preserved branch, then resume."}]};render();
+  });
+  const parkedCard=page.locator('#attention [data-card-issue$="#612"]');
+  assert.equal(await parkedCard.count(),1);
+  assert.equal(await page.locator('.stat-slots .number').innerText(),slotsBeforeParked);
+  assert.equal(await parkedCard.locator('.attention-state').innerText(),'STALLED');
+  assert.equal(await parkedCard.evaluate(e=>e.classList.contains('moving')),false);
+  assert.equal(await parkedCard.locator('script').count(),0);
+  await parkedCard.locator('summary').click();
+  assert.match(await parkedCard.innerText(),/Fix failing checks on the preserved branch/);
+  assert.equal(await parkedCard.locator('a[href*="/commit/"]').count(),2);
+  assert.equal(await page.locator('[data-worker-fault*="612"]').count(),0);
+  await page.evaluate(()=>{delete fleet.parked_work;render();});
 
   await page.locator('#unified-expanded > summary').click();
   await page.evaluate(()=>{
@@ -485,7 +573,7 @@ const fs = require("fs"),
   await page.evaluate(()=>{fleet.repos[0].build.generation_id="$9|200|%9|1009";renderNow();renderRepos();});
   assert.equal(await page.locator(".issue-card.moving").count(), 0);
   assert.equal(await page.locator(".repo-row .mini-card.moving").count(), 0);
-  assert.equal(await page.locator(".assignment-gap").count(), 1);
+  assert.match(await page.locator('[data-slot-session="academy-build"]').innerText(), /Unassigned slot/);
   await page.evaluate(() => {
     fleet.repos[0].build.generation_id="$1|100|%1|1001";
     fleet.issue_flow.unlinked_prs = [];

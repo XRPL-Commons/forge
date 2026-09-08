@@ -52,7 +52,10 @@ The dashboard is implemented in `legacy/dashboard.html` and
 `legacy/forge-status.py`. It reads local state and refreshes automatically. Its
 repository drawer groups pull requests, reviews, and security audits beneath
 issue cards. The server exposes local worker output; keep it on a trusted private
-network. It has no application authentication layer.
+network. It has no per-user application authentication layer. Slot controls use
+a per-process capability token and require the exact bound address and same-origin
+JSON requests; only the supervisor executes them. See the
+[monitoring guide](docs/monitoring.md) for Stop, Resume, and Release behavior.
 
 See [observability](docs/observability.md), [activity](docs/activity.md),
 [workflow and slots](docs/workflow.md), [handoffs](docs/handoff.md), and [capacity](docs/capacity.md) for the data model and

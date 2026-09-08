@@ -37,9 +37,12 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("anton", dashboard.allowed_sessions())
 
     def test_slots_count_disabled_survivors_without_private_panes(self):
-        with patch('forge.capacity.read_sessions', return_value=(['one-build','parked-review','private-dev'], 'observed')):
+        with patch('forge.capacity.read_sessions', return_value=(['one-build','parked-review','private-dev'], 'observed')), \
+             patch('forge.lifecycle.observe_generation', return_value={'id':'$1|2|%3|4'}) as identity:
             slots = dashboard.slot_inventory()
         self.assertEqual(slots['occupied'], 2)
+        self.assertEqual([r['session'] for r in slots['sessions']],['one-build','parked-review'])
+        self.assertEqual(identity.call_count,2)
         self.assertEqual(slots['roles'], {'build':1, 'review':1, 'audit':0})
         with patch('forge.capacity.read_sessions', side_effect=ValueError('unknown')):
             self.assertEqual(dashboard.slot_inventory()['status'], 'unknown')
@@ -142,6 +145,8 @@ class DashboardHistoryTests(unittest.TestCase):
 
     def request(self, path):
         handler = object.__new__(dashboard.H)
+        handler.server=unittest.mock.Mock(server_address=("100.1.2.3",8787))
+        handler.headers={"Host":"100.1.2.3:8787"}
         handler.path = path
         handler._send = unittest.mock.Mock()
         handler.send_error = unittest.mock.Mock()
@@ -179,6 +184,8 @@ class DashboardHistoryTests(unittest.TestCase):
 class WorkflowApiTests(unittest.TestCase):
     def request(self,path):
         handler=object.__new__(dashboard.H);handler.path=path
+        handler.server=unittest.mock.Mock(server_address=("100.1.2.3",8787))
+        handler.headers={"Host":"100.1.2.3:8787"}
         handler._send=unittest.mock.Mock();handler.send_error=unittest.mock.Mock()
         handler.do_GET();return handler
 
@@ -228,3 +235,50 @@ class WorkflowApiTests(unittest.TestCase):
             self.assertFalse((Path(temporary)/'state').exists())
             with patch('forge.workflow.read_state',side_effect=ValueError('corrupt')):
                 self.assertEqual(dashboard.workflow_view()['status'],'unavailable')
+
+
+class SlotActionHttpTests(unittest.TestCase):
+    def request(self, *, token=None, origin='http://100.1.2.3:8787', content_type='application/json', body=None, extra=None):
+        import io
+        handler=object.__new__(dashboard.H)
+        handler.server=unittest.mock.Mock(server_address=("100.1.2.3",8787))
+        handler.path='/api/slots/action'
+        encoded=json.dumps(body if body is not None else {'action':'release','session':'one-build','generation':'$1|2|%3|4'}).encode()
+        handler.headers={'Host':'100.1.2.3:8787','Origin':origin,'X-Forge-Action':dashboard.CONTROLS_TOKEN if token is None else token,
+                         'Content-Type':content_type,'Content-Length':str(len(encoded))}
+        handler.headers.update(extra or {})
+        handler.rfile=io.BytesIO(encoded)
+        handler._send=unittest.mock.Mock();handler.send_error=unittest.mock.Mock()
+        handler.do_POST()
+        return handler
+
+    def test_cross_origin_and_missing_capability_cannot_queue(self):
+        for kwargs in ({'token':''},{'origin':'https://attacker.example'},{'extra':{'Sec-Fetch-Site':'cross-site'}}):
+            handler=self.request(**kwargs)
+            handler.send_error.assert_called_once_with(403)
+            handler._send.assert_not_called()
+
+    def test_form_and_oversized_requests_rejected(self):
+        self.request(content_type='text/plain').send_error.assert_called_once_with(415)
+        handler=self.request(extra={'Content-Length':'99999'})
+        self.assertEqual(json.loads(handler._send.call_args.args[0])['ok'],False)
+        handler=self.request(body={'action':'release','session':'one-build','generation':'x','command':'arbitrary'})
+        self.assertEqual(json.loads(handler._send.call_args.args[0])['reason'],'invalid_action_request')
+
+    def test_valid_request_queues_exact_generation_without_shell(self):
+        with patch('forge.slot_actions.request',return_value={'ok':True,'id':'test','reason':'queued'}) as enqueue, \
+             patch.object(dashboard,'sh',side_effect=AssertionError('HTTP must not execute worker actions')):
+            handler=self.request()
+        enqueue.assert_called_once_with(Path(dashboard.WD)/'repos.d',Path(dashboard.WD)/'state',
+            action='release',session='one-build',generation='$1|2|%3|4')
+        self.assertEqual(json.loads(handler._send.call_args.args[0])['id'],'test')
+
+    def test_rebound_hostname_cannot_read_token_or_post_even_with_token(self):
+        handler=self.request(origin='http://attacker.example:8787',extra={'Host':'attacker.example:8787'})
+        handler.send_error.assert_called_once_with(403)
+        handler=object.__new__(dashboard.H)
+        handler.server=unittest.mock.Mock(server_address=('100.1.2.3',8787))
+        handler.headers={'Host':'attacker.example:8787'};handler.path='/api/status'
+        handler.send_error=unittest.mock.Mock();handler._send=unittest.mock.Mock()
+        handler.do_GET()
+        handler.send_error.assert_called_once_with(403);handler._send.assert_not_called()

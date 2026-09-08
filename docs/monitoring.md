@@ -22,6 +22,17 @@ has ambiguous issue identity. Forge uses explicit issue references from the same
 snapshot as the PR queue, then enriches them with collected GitHub evidence. It
 does not guess links from similar titles or the mere presence of a builder claim.
 
+
+Every occupied worker slot remains visible in its workstation, including stalled
+workers. Cards show an exact issue assignment when one is recorded; otherwise
+identity is explicitly unconfirmed. **Stop worker** sends an interrupt and pauses
+that worker generation. **Resume worker** clears that pause and lets normal
+execution checks decide whether it can continue. **Release slot** requests the
+existing verified cleanup: dirty, unpublished, or still-running work is retained
+with the reason displayed. These controls do not close issues or merge PRs.
+Requests and results are retained locally and executed by the locked supervisor;
+a stale card cannot act on a replacement worker.
+
 ## Needs attention
 
 - **CRITICAL:** the current candidate has a recorded audit PASS and requires human

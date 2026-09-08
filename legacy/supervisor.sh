@@ -380,6 +380,14 @@ watch(){ # Existing sessions must be observed before any input is sent.
 
 role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when this role has work
   local sess="$1" dir="$2" role="$3" nudge="$4" pending="$5" short="$6" repo="${7:-}"
+  # Operator intent is processed under the same lock as dispatch. A stop pauses
+  # only this generation; a replacement worker never inherits the pause.
+  if [ -d "$STATE/slot-actions" ] && { [ -f "$STATE/slot-actions/pause-$sess.json" ] || [ ! -f "$STATE/slot-actions/.pending-indexed" ] || compgen -G "$STATE/slot-actions/pending/$sess/*.json" >/dev/null; }; then
+    python3 -m forge.slot_actions process --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null || { glog "[$sess] operator action failed; inspect slot action receipt"; return; }
+    local pause_status
+    python3 -m forge.slot_actions paused --state "$STATE" --session "$sess"; pause_status=$?
+    [ "$pause_status" -eq 1 ] || return
+  fi
   [ "$pending" = "?" ] && return
   if sess_up "$sess" && maybe_handover "$sess"; then
     glog "[$short] verified provider handover preserved existing work; returning to admission"

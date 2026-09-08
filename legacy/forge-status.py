@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""forge-status — read-only, tailnet-only dashboard for the agent supervisor.
+"""Tailnet dashboard with generation-fenced, supervisor-serialized slot controls.
 
-Security model: binds ONLY to the Tailscale IP (unreachable off-tailnet),
-serves read-only data (tmux pane text, supervisor log tail, gh queue counts),
-takes no write actions, has no dependencies beyond the stdlib.
+Writes require a same-origin JSON request and a per-process capability token.
+The HTTP server queues intent; only the locked supervisor controls workers.
 """
-import json, re, subprocess, time, html, os, sqlite3
+import json, re, subprocess, time, html, os, sqlite3, secrets, hmac
 from pathlib import Path
 from forge.config import load_repositories
 from forge.activity import observe_tmux
@@ -20,6 +19,7 @@ HOME = str(Path.home())
 WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
 SESS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _cache = {}  # key -> (expires, value)
+CONTROLS_TOKEN = secrets.token_urlsafe(32)
 
 
 def sh(cmd, timeout=25):
@@ -66,11 +66,15 @@ def slot_inventory():
     """Count configured survivors, including disabled repos, without capturing their panes."""
     from forge.capacity import read_sessions
     try:
-        configured = {r.short + '-' + role for r in load_repositories(Path(WD)/'repos.d')
+        configured = {r.short + '-' + role: (r.repo,role) for r in load_repositories(Path(WD)/'repos.d')
                       for role in ('build','review','audit')}
         names, _ = read_sessions()
-        occupied = sorted(set(names) & configured)
+        occupied = sorted(set(names) & configured.keys())
+        from forge.lifecycle import observe_generation
+        identities={session:observe_generation(session) for session in occupied}
         return {'status':'ok', 'observed_at':time.time(), 'occupied':len(occupied),
+                'sessions':[{'session':session,'repo':configured[session][0],'role':configured[session][1],
+                             'generation':(identities[session] or {}).get('id')} for session in occupied],
                 'roles':{role:sum(s.endswith('-'+role) for s in occupied)
                          for role in ('build','review','audit')}}
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -376,8 +380,16 @@ def status():
     except (ImportError, OSError, ValueError, sqlite3.Error):
         out['session_blockers'] = {}
     worker_fault_context(Path(WD)/'state',out['session_blockers'],out['issue_flow'],out['activity'])
-    out['workflow'] = dashboard_workflow(workflow_view(include_history=False),out['repos'],out['issue_flow'])
+    workflow = workflow_view(include_history=False)
+    out['workflow'] = dashboard_workflow(workflow,out['repos'],out['issue_flow'])
     out['slots'] = slot_inventory()
+    out['controls_token'] = CONTROLS_TOKEN
+    try:
+        from forge.slot_actions import read_actions
+        out['slot_actions'] = read_actions(Path(WD)/'state')
+    except (ImportError,OSError,ValueError,TypeError):
+        out['slot_actions'] = []
+        out['controls_token'] = None
     try:
         from forge.routing import read_routing
         routing = read_routing(Path(WD)/'state')
@@ -422,7 +434,50 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _trusted_host(self):
+        # Reject DNS rebinding even when Origin and Host agree with each other.
+        # Only the address actually bound by this tailnet server can read its
+        # capability token or submit an operator action.
+        address,port=self.server.server_address[:2]
+        expected=f'[{address}]:{port}' if ':' in address else f'{address}:{port}'
+        return self.headers.get('Host','')==expected
+
+    def do_POST(self):
+        if not self._trusted_host():
+            self.send_error(403);return
+        if self.path != '/api/slots/action':
+            self.send_error(404);return
+        # An attacker may cause a browser to send a form, but cannot read the
+        # dashboard token or set this header cross-origin without CORS approval.
+        token=self.headers.get('X-Forge-Action','')
+        origin=urlparse(self.headers.get('Origin',''))
+        host=self.headers.get('Host','')
+        if (not hmac.compare_digest(token,CONTROLS_TOKEN) or origin.scheme!='http'
+                or origin.netloc!=host or origin.path or origin.query or origin.fragment
+                or self.headers.get('Sec-Fetch-Site','same-origin')!='same-origin'):
+            self.send_error(403);return
+        if (self.headers.get('Content-Type','').split(';')[0].strip()!='application/json'
+                or self.headers.get('Transfer-Encoding')):
+            self.send_error(415);return
+        try:
+            length=int(self.headers.get('Content-Length','0'))
+            if not 0<length<=2048:raise ValueError('invalid_request_size')
+            value=json.loads(self.rfile.read(length))
+            if (not isinstance(value,dict) or set(value)!={'action','session','generation'}
+                    or any(not isinstance(v,str) for v in value.values())):
+                raise ValueError('invalid_action_request')
+            from forge.slot_actions import request
+            result=request(Path(WD)/'repos.d',Path(WD)/'state',**value)
+            _cache.pop('status',None)
+            self._send(json.dumps(result))
+        except (ValueError,TypeError) as exc:
+            self._send(json.dumps({'ok':False,'reason':str(exc)}))
+        except (OSError,ImportError,subprocess.SubprocessError):
+            self._send(json.dumps({'ok':False,'reason':'slot_action_unavailable'}))
+
     def do_GET(self):
+        if not self._trusted_host():
+            self.send_error(403);return
         u = urlparse(self.path)
         if u.path == "/":
             self._send(PAGE, "text/html; charset=utf-8")

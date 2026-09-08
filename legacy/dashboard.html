@@ -856,6 +856,16 @@
         position: relative;
         overflow: hidden;
       }
+      .occupied-slot { border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+      .occupied-slot > .issue-card { margin: 8px 0; }
+      .slot-heading { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; font-size:12px; }
+      .slot-heading strong { overflow-wrap:anywhere; }
+      .slot-note, .slot-action-message { margin:8px 0; font-size:12px; overflow-wrap:anywhere; }
+      .slot-buttons { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+      .slot-buttons button { padding:6px 9px; min-height:34px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); cursor:pointer; }
+      .slot-buttons button:disabled { opacity:.5; cursor:not-allowed; }
+      .slot-action-message { color:var(--amber); }
+      #slot-action-status { grid-column:1/-1; margin:0; font-size:12px; }
       .live-worker .pill.blue::before {
         content: "";
         display: inline-block;
@@ -1861,6 +1871,7 @@
             90;
         const watch = fleet.health?.account_until > Date.now() / 1000;
         const messages = [];
+        if (fleet.parked_work?.status === "unavailable") messages.push("Preserved-work checkpoints could not be read; parked issue blockers may be missing.");
         if (tracking.observed_at && !activityFresh)
           messages.push(
             "Activity data is stale; work indicators may be out of date.",
@@ -1928,9 +1939,24 @@
         if (fleet.workflow?.status !== "ok") return null;
         return (fleet.workflow.issues || []).find(row => row.repo?.toLowerCase() === i.repo.toLowerCase() && row.number === i.number) || null;
       }
+      function parkedIssue(i) {
+        return fleet.parked_work?.status === "ok" ? (fleet.parked_work.issues || []).find(p => p.repo?.toLowerCase() === i.repo.toLowerCase() && p.number === i.number) : null;
+      }
+      function projectParkedIssue(i) {
+        const parked = parkedIssue(i);
+        if (!parked || ["completed","closed","done","cancelled"].includes(i.state)) return i;
+        return {...i, parked, attention_state:"STALLED", actions:[...(i.actions || []).filter(a=>a.kind!=="parked_work"),
+          {kind:"parked_work",role:"build",why:parked.summary,next:parked.next,link:parked.checkpoint_url}]};
+      }
+      function parkedEvidence(i) {
+        const parked=i?.parked;
+        if (!parked) return "";
+        const key=`parked:${i.repo}:${i.number}`;
+        return `<details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>${esc(parked.summary)}</summary><p>Reported blocker · preserved work</p><p>${safeGithub(parked.branch_url) ? `<a href="${esc(parked.branch_url)}" target="_blank" rel="noopener noreferrer">${esc(parked.branch)} · ${esc(parked.head?.slice(0,12))} ↗</a>` : esc(parked.branch || "Preserved branch")}</p><p>${esc(parked.next)}</p>${safeGithub(parked.checkpoint_url) ? `<p><a href="${esc(parked.checkpoint_url)}" target="_blank" rel="noopener noreferrer">Recorded checkpoint ↗</a></p>` : ""}</details>`;
+      }
       function projectWorkflowIssue(i) {
         const tracked = workflowIssue(i);
-        if (!tracked) return i;
+        if (!tracked) return projectParkedIssue(i);
         const repo=fleet.repos.find(r=>r.repo.toLowerCase()===i.repo.toLowerCase()),
           assignment=repo && workflowAssignment(workflowSlot(repo,"build")),
           assignedBuild=assignment?.issue_numbers?.includes(i.number),
@@ -1939,7 +1965,7 @@
         const state = ["queued","backlog"].includes(tracked.stage)
           ? assignedBuild ? "build" : ready ? "ready" : i.state==="backlog" ? "backlog" : "unknown"
           : tracked.stage === "unknown" ? i.state : {done:"completed",cancelled:"closed"}[tracked.stage] || tracked.stage;
-        return {...i, state, step: roles.includes(state) ? roles.indexOf(state)+1 : 0, workflow:tracked};
+        return projectParkedIssue({...i, state, step: roles.includes(state) ? roles.indexOf(state)+1 : 0, workflow:tracked});
       }
       function workflowSlot(r, role) {
         return fleet.workflow?.status === "ok" ? (fleet.workflow.slots || []).find(slot => slot.session === r.short+"-"+role && slot.repo?.toLowerCase() === r.repo.toLowerCase() && slot.state !== "free") : null;
@@ -1961,6 +1987,11 @@
           const repo = fleet.repos.find(r=>r.repo.toLowerCase() === tracked.repo?.toLowerCase());
           if (repo && Number.isSafeInteger(tracked.number) && tracked.number > 0 && !items.some(i=>i.repo.toLowerCase() === tracked.repo.toLowerCase() && i.number === tracked.number))
             items.push({repo:repo.repo,number:tracked.number,title:`Issue #${tracked.number} · details not collected`,state:"unknown",pr_numbers:(tracked.prs || []).map(pr=>pr.number),blockers:[]});
+        }
+        for (const parked of fleet.parked_work?.issues || []) {
+          const repo=fleet.repos.find(r=>r.repo.toLowerCase()===parked.repo?.toLowerCase());
+          if (repo && !items.some(i=>i.repo.toLowerCase()===parked.repo.toLowerCase() && i.number===parked.number))
+            items.push({repo:repo.repo,number:parked.number,title:`Issue #${parked.number}`,state:"build",step:1,pr_numbers:[],blockers:[]});
         }
         return items.map(projectWorkflowIssue);
       }
@@ -1989,7 +2020,7 @@
         const r = fleet.repos.find((r) => r.repo === i.repo),
           active = !decision && issueWorking(i),
           action = decision
-            ? i.actions?.find((a) => ["human_approval", "stalled_audit"].includes(a.kind))
+            ? i.actions?.find((a) => ["human_approval", "stalled_audit", "parked_work"].includes(a.kind))
             : null,
           a = r ? fleet.activity?.sessions?.[r.short + "-" + role] : null;
         const timing = a?.dispatched_at
@@ -2005,7 +2036,7 @@
         ]
           .filter(Boolean)
           .join(" · ");
-        return `<article class="issue-card compact-issue ${active ? "moving" : "waiting"} ${decision || ["critical","stalled"].includes(i.workflow?.disposition) ? "needs-decision" : ""}" data-station="${role}" data-card-issue="${esc(i.repo)}#${Number(i.number)}" title="${esc(notes)}"><div class="compact-identity"><span>${esc(i.repo.split("/").at(-1))} · #${Number(i.number)}</span><span class="compact-meta">${[decision ? `<span class="attention-state">${esc(i.attention_state || (action?.kind === "human_approval" ? "CRITICAL" : "STALLED"))}</span>` : "", i.workflow?.stage === "unknown" ? "State unverified" : "", !decision && ["critical","stalled"].includes(i.workflow?.disposition) ? `<span class="attention-state">${esc(i.workflow.disposition.toUpperCase())}</span>` : "", !i.step ? esc(i.on_hold ? "On hold" : i.state === "held" ? "Waiting" : "Ready") : "", action ? `<a href="${esc(action.link)}" target="_blank" rel="noopener noreferrer" title="${esc(action.why)}">${action.kind === "human_approval" ? "Human review" : "Inspect blocker"} ↗</a>` : "", active && providerName(r,role) ? `<span>${esc(providerName(r,role))}</span>` : "", active && timing ? `<span title="${esc(timing)}; dispatch is not a confirmed execution start">${esc(ago(a.dispatched_at))}</span>` : ""].filter(Boolean).join(" · ")}</span></div><button class="issue-card-title" data-repo="${esc(i.repo)}" data-issue="${Number(i.number)}" title="${esc(i.title)}">${esc(i.title)}</button></article>`;
+        return `<article class="issue-card compact-issue ${active ? "moving" : "waiting"} ${decision || ["critical","stalled"].includes(i.workflow?.disposition) ? "needs-decision" : ""}" data-station="${role}" data-card-issue="${esc(i.repo)}#${Number(i.number)}" title="${esc(notes)}"><div class="compact-identity"><span>${esc(i.repo.split("/").at(-1))} · #${Number(i.number)}</span><span class="compact-meta">${[decision ? `<span class="attention-state">${esc(i.attention_state || (action?.kind === "human_approval" ? "CRITICAL" : "STALLED"))}</span>` : "", i.workflow?.stage === "unknown" ? "State unverified" : "", !decision && ["critical","stalled"].includes(i.workflow?.disposition) ? `<span class="attention-state">${esc(i.workflow.disposition.toUpperCase())}</span>` : "", !i.step ? esc(i.on_hold ? "On hold" : i.state === "held" ? "Waiting" : "Ready") : "", action ? `<a href="${esc(action.link)}" target="_blank" rel="noopener noreferrer" title="${esc(action.why)}">${action.kind === "human_approval" ? "Human review" : "Inspect blocker"} ↗</a>` : "", active && providerName(r,role) ? `<span>${esc(providerName(r,role))}</span>` : "", active && timing ? `<span title="${esc(timing)}; dispatch is not a confirmed execution start">${esc(ago(a.dispatched_at))}</span>` : ""].filter(Boolean).join(" · ")}</span></div><button class="issue-card-title" data-repo="${esc(i.repo)}" data-issue="${Number(i.number)}" title="${esc(i.title)}">${esc(i.title)}</button>${parkedEvidence(i)}</article>`;
       }
       const expandedStations = new Set();
       function waitingOrder(a, b) {
@@ -2025,6 +2056,96 @@
             "",
           )}${moving ? "" : `<span class="pile-badge">${items.length}</span>`}</span></span>`;
       }
+      const pendingSlotActions = new Map(), slotActionMessages = new Map(), seenSlotActions = new Map();
+      let slotActionSummary = "";
+      function occupiedSlots() {
+        const bySession = new Map();
+        if (fleet.workflow?.status === "ok") for (const slot of fleet.workflow.slots || []) {
+          if (roles.includes(slot.role) && slot.state !== "free") bySession.set(slot.session,{slot,session:slot.session,role:slot.role,repo:slot.repo});
+        }
+        for (const physical of fleet.slots?.sessions || []) {
+          if (!roles.includes(physical.role) || !physical.session || !physical.repo) continue;
+          bySession.set(physical.session,{...bySession.get(physical.session),session:physical.session,role:physical.role,repo:physical.repo,inventory:physical});
+        }
+        for (const r of fleet.repos) for (const role of roles) if (r[role]?.up) {
+          const session=r.short+"-"+role;
+          bySession.set(session,{...bySession.get(session),session,role,repo:r.repo,r});
+        }
+        return [...bySession.values()].map(row=>{
+          const r=row.r || fleet.repos.find(r=>r.repo.toLowerCase()===row.repo?.toLowerCase()),
+            physical=!!r?.[row.role]?.up || !!row.inventory,
+            actualGeneration=physical ? (r?.[row.role]?.generation_id || row.inventory?.generation || fleet.activity?.sessions?.[row.session]?.generation_id) : null,
+            generation=physical ? actualGeneration : row.slot?.generation,
+            candidate=workflowAssignment(row.slot),
+            assignment=candidate && candidate.generation === generation && row.slot?.generation === generation && candidate.role === row.role ? candidate : null,
+            blocker=fleet.session_blockers?.[row.session],
+            context=blocker?.context,
+            contextNumber=context?.repo?.toLowerCase() === row.repo?.toLowerCase() ? (context.issue_number || context.issue) : null,
+            numbers=assignment ? assignment.issue_numbers : physical && Number.isSafeInteger(contextNumber) && contextNumber>0 ? [contextNumber] : [],
+            observed=physical && r?.[row.role]?.up ? workerState(r,row.role) : "unknown",
+            state=observed === "working" ? "working" : observed === "paused" || row.slot?.state === "blocked" ? "stalled" : physical && observed === "idle" ? "idle" : !physical && row.slot?.state === "working" ? "unknown" : row.slot?.state || "unknown";
+          return {...row,r,physical,generation:generation || null,assignment,issueNumbers:numbers || [],reported:!assignment && numbers.length>0,observed,state,blocker};
+        });
+      }
+      function slotActionOutcomes() {
+        const raw=fleet.slot_actions;
+        return Array.isArray(raw) ? raw : raw?.requests || raw?.items || [];
+      }
+      function reconcileSlotActions() {
+        const slots=occupiedSlots();
+        for (const result of slotActionOutcomes()) {
+          const pending=pendingSlotActions.get(result.session), state=result.status || result.state || result.phase,
+            matches=slots.some(slot=>slot.session === result.session && slot.generation === result.generation),
+            fingerprint=JSON.stringify([result.id,state,result.reason,result.message,result.proof_reasons]);
+          if (!result.id || pending && pending.id !== result.id || !pending && !matches || seenSlotActions.get(result.id) === fingerprint) continue;
+          if (["queued","pending","running"].includes(state)) {
+            pendingSlotActions.set(result.session,{id:result.id,generation:result.generation});
+            slotActionSummary=`${result.session}: action ${state}; waiting for the supervisor.`;
+          } else if (["succeeded","refused","failed"].includes(state)) {
+            const message=[result.message || reasonText(result.reason || state), ...(result.proof_reasons || []).map(reasonText)].join(" · ");
+            slotActionMessages.set(result.session,message);
+            slotActionSummary=`${result.session}: ${message}`;
+            pendingSlotActions.delete(result.session);
+          } else continue;
+          seenSlotActions.set(result.id,fingerprint);
+        }
+      }
+      function slotIsStopped(session,generation) {
+        const latest=slotActionOutcomes().filter(result=>result.session === session && result.generation === generation && result.status === "succeeded" && ["stop","resume"].includes(result.action))
+          .sort((a,b)=>Number(b.updated_at || b.created_at || 0)-Number(a.updated_at || a.created_at || 0))[0];
+        return latest?.action === "stop" && latest.paused === true;
+      }
+      function occupiedSlotCard(row,records) {
+        const {session,role,r,assignment,generation}=row,
+          items=row.issueNumbers.map(number=>records.find(i=>i.repo.toLowerCase()===row.repo.toLowerCase() && i.number===number) || {repo:row.repo,number,title:`Issue #${number} · details not collected`,state:role,step:roles.indexOf(role)+1}),
+          pending=pendingSlotActions.has(session),
+          stopped=slotIsStopped(session,generation),
+          validGeneration=typeof generation === "string" && /^\$\d+\|\d+\|%\d+\|\d+$/.test(generation),
+          enabled=!!fleet.controls_token && validGeneration && !pending,
+          why=row.blocker?.why || (row.slot?.reason ? reasonText(row.slot.reason) : row.state === "idle" ? "Execution finished; slot still occupied" : "Worker slot is occupied"),
+          label={working:"Working",stalled:"Stalled",idle:"Idle · occupied",retiring:"Awaiting release",reserved:"Reserved",starting:"Starting",unknown:"State unverified",shell:"Shell · occupied"}[row.state] || human(row.state),
+          note=assignment ? `Assignment ${assignment.id.slice(0,8)}${assignment.pr ? " · PR #"+assignment.pr.number : ""}` : row.reported ? "Reported issue context · started without a tracked assignment" : row.slot?.reason === "started_before_assignment_tracking" ? "Started before assignment tracking · issue unassigned" : "Unassigned slot · no verified issue identity",
+          message=slotActionMessages.get(session),
+          disabledReason=!fleet.controls_token ? "Worker controls unavailable" : !validGeneration ? "Worker generation unavailable; controls disabled" : pending ? "Action queued; awaiting supervisor result" : "Stop preserves edits. Release requires verified idle work.";
+        return `<section class="occupied-slot" data-slot-session="${esc(session)}" data-slot-state="${esc(row.state)}"><div class="slot-heading"><strong>${esc(session)}</strong><span class="${row.state === "working" ? "" : "attention-state"}">${esc(label)}</span></div><p class="slot-note muted">${esc(note)}</p>${items.map(i=>issueCard(i,role,!!i.attention_state)).join("")}<p class="slot-note">${esc(why)}</p>${r ? `<button data-repo="${esc(r.repo)}" data-role="${role}">Inspect worker output →</button>` : ""}<div class="slot-buttons"><button data-slot-action="stop" data-session="${esc(session)}" data-generation="${esc(generation || "")}" ${!enabled || !row.physical ? "disabled" : ""}>Stop worker</button>${stopped ? `<button data-slot-action="resume" data-session="${esc(session)}" data-generation="${esc(generation || "")}" ${!enabled || !row.physical ? "disabled" : ""}>Resume worker</button>` : ""}<button data-slot-action="release" data-session="${esc(session)}" data-generation="${esc(generation || "")}" ${!enabled ? "disabled" : ""}>Release slot</button></div><p class="slot-note muted">${esc(disabledReason)}</p>${message ? `<p class="slot-action-message" role="status">${esc(message)}</p>` : ""}</section>`;
+      }
+      async function requestSlotAction(button) {
+        const session=button.dataset.session, generation=button.dataset.generation, action=button.dataset.slotAction;
+        if (button.disabled || pendingSlotActions.has(session) || !fleet.controls_token) return;
+        pendingSlotActions.set(session,{id:null,generation});slotActionMessages.delete(session);renderNow();
+        try {
+          const response=await fetch("/api/slots/action",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Forge-Action":fleet.controls_token},body:JSON.stringify({action,session,generation}),signal:AbortSignal.timeout(60000)});
+          const result=await response.json().catch(()=>({reason:`HTTP ${response.status}`}));
+          if (!response.ok || result.ok !== true || !result.id) throw new Error([result.message || reasonText(result.reason || `HTTP ${response.status}`), ...(result.proof_reasons || []).map(reasonText)].join(" · "));
+          pendingSlotActions.set(session,{id:result.id,generation});
+          slotActionSummary=`${session}: ${{stop:"Stop",resume:"Resume",release:"Release"}[action]} queued; waiting for the supervisor.`;
+        } catch(error) {
+          pendingSlotActions.delete(session);
+          const message=error instanceof Error ? error.message : "Worker action failed";
+          slotActionMessages.set(session,message);slotActionSummary=`${session}: ${message}`;
+        }
+        renderNow();await load();
+      }
       function unassignedWorkers(role) {
         return fleet.repos.filter(
           (r) =>
@@ -2041,17 +2162,17 @@
           all = pipelineIssues();
         const focus = document.activeElement?.dataset.issue,
           focusRepo = document.activeElement?.dataset.repo;
-        $("now-workers").innerHTML = roles
+        reconcileSlotActions();
+        const slots=occupiedSlots(), records=currentIssueRecords();
+        $("now-workers").innerHTML = `<p id="slot-action-status" role="status" aria-live="polite">${esc(slotActionSummary)}</p>` + roles
           .map((role) => {
             const items = all.filter((i) => issueLane(i) === role),
-              working = items.filter(issueWorking),
-              unassigned = unassignedWorkers(role),
-              pending = items
-                .filter((i) => !issueWorking(i))
-                .sort(waitingOrder);
-            return `<section class="role-card" data-station="${role}"><div class="section-title"><h2>${{ build: "Build", review: "Review", audit: "Security audit" }[role]}</h2><span class="muted">${working.length ? `${working.length} working` : unassigned.length ? "Worker context" : pending.length ? "" : "Empty"}</span></div><div class="working-stack">${working.map((i) => issueCard(i, role)).join("")}${unassigned.map((r) => `<div class="assignment-gap"><span class="card-pile" aria-hidden="true"><span class="mini-card moving" style="--card-index:0"></span></span><button data-repo="${esc(r.repo)}" data-role="${role}">${esc(r.short)} · ${esc(workerOwnershipNote(r,role))} →</button></div>`).join("")}</div>${pending.length ? `<details class="more-pending" data-expand-station="${role}" ${expandedStations.has(role) ? "open" : ""}><summary>${cardPile(pending)}<span class="muted">waiting</span></summary><div class="pending-stack">${pending.map((i) => issueCard(i, role)).join("")}</div></details>` : ""}</section>`;
-          })
-          .join("");
+              occupied=slots.filter(slot=>slot.role===role),
+              represented=new Set(occupied.flatMap(slot=>slot.issueNumbers.map(number=>slot.repo.toLowerCase()+"#"+number))),
+              working=occupied.filter(slot=>slot.state==="working"),
+              pending=items.filter(i=>!represented.has(i.repo.toLowerCase()+"#"+i.number)).sort(waitingOrder);
+            return `<section class="role-card" data-station="${role}"><div class="section-title"><h2>${{ build: "Build", review: "Review", audit: "Security audit" }[role]}</h2><span class="muted">${occupied.length ? `${occupied.length} occupied · ${working.length} working` : pending.length ? "No worker" : "Empty"}</span></div><div class="working-stack">${occupied.map(slot=>occupiedSlotCard(slot,records)).join("")}</div>${pending.length ? `<details class="more-pending" data-expand-station="${role}" ${expandedStations.has(role) ? "open" : ""}><summary>${cardPile(pending)}<span class="muted">waiting</span></summary><div class="pending-stack">${pending.map(i=>issueCard(i,role)).join("")}</div></details>` : ""}</section>`;
+          }).join("");
         document
           .querySelectorAll("[data-expand-station]")
           .forEach((el) =>
@@ -2218,8 +2339,8 @@
         const focusedKey = focused?.dataset.attentionDetails;
         const focusedTag = document.activeElement?.tagName;
 
-        const decisionIssues = (fleet.issue_flow?.issues || []).filter((i) =>
-          (i.actions || []).some((a) => ["human_approval", "stalled_audit"].includes(a.kind)),
+        const decisionIssues = currentIssueRecords().filter((i) =>
+          (i.actions || []).some((a) => ["human_approval", "stalled_audit", "parked_work"].includes(a.kind)),
         );
         let total = decisionIssues.length;
         $("attention").innerHTML =
@@ -2229,7 +2350,7 @@
             fleet.repos
               .map((r) => {
                 const reasons = attentionReasons(r).filter(
-                  (e) => !["human_approval", "stalled_audit"].includes(e.kind),
+                  (e) => !["human_approval", "stalled_audit", "parked_work"].includes(e.kind),
                 );
                 total += reasons.length;
                 return reasons
@@ -2551,7 +2672,7 @@
           const moving = current && !["completed","closed"].includes(stage) && issueWorking(current);
           const station = ["build","review","audit"].includes(stage) ? stage : "";
           const attention = current?.actions?.length || current?.on_hold;
-          return `<article class="issue issue-card compact-issue drawer-issue ${moving ? "moving" : "waiting"} ${attention ? "needs-decision" : ""}" data-station="${station}" data-drawer-issue="${Number(i.number)}"><div class="compact-identity"><span>${esc(r.short)} · #${Number(i.number)}</span><span class="compact-meta drawer-stage">${current?.attention_state ? `<span class="attention-state">${esc(current.attention_state)}</span> · ` : ""}${(current?.reconciliation_pending ? "Verifying status" : stageLabel(stage))}</span></div><a class="issue-card-title" href="${itemLink(r.repo,i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.title)} ↗</a>${renderRecord(i)}${supporting.length ? `<div class="drawer-support"><p class="drawer-support-label">Supporting pull requests · reviews · security audits</p>${supporting.map(renderRecord).join("")}</div>` : ""}</article>`;
+          return `<article class="issue issue-card compact-issue drawer-issue ${moving ? "moving" : "waiting"} ${attention ? "needs-decision" : ""}" data-station="${station}" data-drawer-issue="${Number(i.number)}"><div class="compact-identity"><span>${esc(r.short)} · #${Number(i.number)}</span><span class="compact-meta drawer-stage">${current?.attention_state ? `<span class="attention-state">${esc(current.attention_state)}</span> · ` : ""}${(current?.reconciliation_pending ? "Verifying status" : stageLabel(stage))}</span></div><a class="issue-card-title" href="${itemLink(r.repo,i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.title)} ↗</a>${parkedEvidence(current)}${renderRecord(i)}${supporting.length ? `<div class="drawer-support"><p class="drawer-support-label">Supporting pull requests · reviews · security audits</p>${supporting.map(renderRecord).join("")}</div>` : ""}</article>`;
         };
         const markup = (d?.errors || []).map(x => `<p class="banner">${esc(typeof x === "string" ? x : x.error || x.message || JSON.stringify(x))}</p>`).join("") + (visible.map(renderGroup).join("") || '<p class="empty">No collected work matches this view.</p>');
         if ($("work-items").dataset.markup !== markup) {
@@ -2785,6 +2906,8 @@
       $("scrim").onclick = closeRepo;
       $("detail-refresh").onclick = loadDetail;
       document.addEventListener("click", (e) => {
+        const slotAction=e.target.closest("[data-slot-action]");
+        if (slotAction) { e.preventDefault(); requestSlotAction(slotAction); return; }
         const repo = e.target.closest("[data-repo]");
         if (repo) {
           openRepo(repo.dataset.repo);
