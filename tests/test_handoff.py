@@ -687,3 +687,71 @@ class HandoffTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewerRejectionTests(unittest.TestCase):
+    fake_run=HandoffTests.fake_run
+    save=HandoffTests.save
+
+    def setUp(self):
+        HandoffTests.setUp(self)
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_REVIEW={self.clone}\n')
+        self.snapshot['counts']={'review':0}
+        self.snapshot['work']={'review':[],'audit':[],'sentback':[2]}
+        self.identity=self.identity.replace('one-build','one-review')
+        self.pr.update(number=2,url='https://github.com/o/one/pull/2',labels=[{'name':'changes-requested'}],
+            reviews=[{'id':'review-1','author':{'login':'forge-bot'},'state':'COMMENTED',
+                      'commit':{'oid':self.head},'submittedAt':'1970-01-01T00:01:10Z',
+                      'body':'Review of `'+self.head+'`: changes requested.'}])
+        self.save()
+
+    def decision(self):return check(self.config,self.state,'one-review',run=self.fake_run,now=100)
+
+    def test_clean_named_and_detached_current_pr_head_can_release(self):
+        for branch in ('issue-1-fix',None):
+            self.branch=branch;result=self.decision()
+            self.assertTrue(result['eligible'],result)
+            self.assertEqual(result['evidence']['checkout_basis'],'current_pr_head_reviewer_rejection')
+            self.assertEqual(result['evidence']['review_id'],'review-1')
+            self.assertFalse(any(c[:2]==['tmux','kill-session'] for c in self.calls))
+
+    def test_old_generation_wrong_author_or_old_head_review_rejects(self):
+        for key,value in [('submittedAt','1970-01-01T00:00:40Z'),('commit',{'oid':'d'*40}),('author',{'login':'other'})]:
+            old=self.pr['reviews'][0][key];self.pr['reviews'][0][key]=value
+            self.assertFalse(self.decision()['eligible']);self.pr['reviews'][0][key]=old
+
+    def test_body_quote_or_approval_cannot_authorize_rejection(self):
+        for body in ('Review passed.\nReview of `'+self.head+'`: changes requested.','All good.'):
+            self.pr['reviews'][0]['body']=body
+            self.assertFalse(self.decision()['eligible'])
+
+    def test_conflicting_labels_dirty_work_and_child_jobs_are_preserved(self):
+        self.pr['labels'].append({'name':'ready-for-audit'});self.assertFalse(self.decision()['eligible'])
+        self.pr['labels']=[{'name':'changes-requested'}]
+        self.status=' M file';self.assertFalse(self.decision()['eligible']);self.status=''
+        self.processes+='\n12 11 npm';self.assertFalse(self.decision()['eligible'])
+
+    def test_new_review_queue_and_unpublished_head_reject_release(self):
+        self.live_queue=[{'number':3,'labels':[{'name':'ready-for-review'}]}]
+        self.assertFalse(self.decision()['eligible']);self.live_queue=[]
+        self.head='e'*40;self.assertFalse(self.decision()['eligible'])
+
+    def test_replaced_generation_or_changed_pr_between_proofs_never_kills(self):
+        self.change_on_second=lambda:self.pr['labels'].append({'name':'ready-for-review'})
+        result=release(self.config,self.state,'one-review',run=self.fake_run,now=100)
+        self.assertFalse(result['released']);self.assertFalse(any(c[:2]==['tmux','kill-session'] for c in self.calls))
+
+    def test_latest_review_supersedes_earlier_rejection(self):
+        self.pr['reviews'].append({**self.pr['reviews'][0],'id':'review-2','submittedAt':'1970-01-01T00:01:20Z','state':'APPROVED','body':'Approved'})
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_release_repeats_entire_proof_then_kills_only_verified_generation(self):
+        result=release(self.config,self.state,'one-review',run=self.fake_run,now=100)
+        self.assertTrue(result['released'],result)
+        self.assertEqual(self.pr_reads,2)
+        self.assertEqual([c for c in self.calls if c[:2]==['tmux','kill-session']],
+                         [['tmux','kill-session','-t','$1']])
+
+    def test_same_timestamp_conflicting_review_decisions_are_ambiguous(self):
+        self.pr['reviews'].append({**self.pr['reviews'][0],'id':'review-2','state':'APPROVED'})
+        self.assertFalse(self.decision()['eligible'])

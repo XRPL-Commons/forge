@@ -219,11 +219,12 @@ def reconcile(state, repo, revision, observed_at, issues, *, source_event_id, no
             row=db.execute('SELECT * FROM issues WHERE repo=? AND number=?',(repo,item['number'])).fetchone()
             before.append(dict(row) if row else None)
             disposition=item['disposition']
-            active=db.execute("SELECT role,state,reason,issue_numbers FROM assignments WHERE repo=? AND state!='retired'",(repo,)).fetchall()
+            active=db.execute("SELECT role,state,reason,issue_numbers,pr FROM assignments WHERE repo=? AND state!='retired'",(repo,)).fetchall()
             assigned=[a for a in active if item['number'] in json.loads(a['issue_numbers'])]
             if item['stage']=='queued' and any(a['role']=='build' for a in assigned):item['stage']='build'
             if disposition=='pending' and item['stage'] not in {'done','cancelled','unknown'}:
-                matching=[a for a in assigned if a['role']==item['stage']]
+                matching=[a for a in assigned if a['role']==item['stage'] and
+                          (not a['pr'] or json.loads(a['pr']) in item['prs'])]
                 if any(a['state']=='working' for a in matching):disposition='working'
                 blocked=next((a for a in matching if a['state'] in {'blocked','uncertain'}),None)
                 if blocked:disposition='stalled';item['reason']=blocked['reason']
@@ -340,9 +341,11 @@ def transition(state, assignment_id, action, *, source_event_id, generation=None
             if (not isinstance(proof,dict) or proof.get('verified') is not True
                     or proof.get('kind')!='verified_delivery' or proof.get('assignment_id')!=assignment_id
                     or proof.get('generation')!=generation):raise Refused('verified_delivery_proof_required')
-        if action in {'submitted','working'}:
+        # Eligibility authorizes delivery; it must not hide an already-running
+        # exact-generation process after that execution advances GitHub facts.
+        if action=='submitted':
             snapshot=db.execute('SELECT * FROM repositories WHERE repo=?',(old['repo'],)).fetchone()
-            if action=='submitted' and (not snapshot or not 0<=now-snapshot['observed_at']<=300):
+            if not snapshot or not 0<=now-snapshot['observed_at']<=300:
                 raise Refused('snapshot_not_fresh')
             for number in old['issue_numbers']:
                 item=db.execute('SELECT * FROM issues WHERE repo=? AND number=?',(old['repo'],number)).fetchone()
@@ -382,7 +385,13 @@ def transition(state, assignment_id, action, *, source_event_id, generation=None
         for number in old['issue_numbers']:
             row=db.execute('SELECT * FROM issues WHERE repo=? AND number=?',(old['repo'],number)).fetchone()
             if not row or row['stage']!=old['role'] or row['disposition']=='critical':continue
-            if action=='working':disposition='working'
+            if action=='working':
+                if row['disposition'] not in {'pending','working'}:continue
+                if old['pr']:
+                    link=db.execute('SELECT head,base FROM pr_links WHERE repo=? AND issue_number=? AND number=?',
+                                    (old['repo'],number,old['pr']['number'])).fetchone()
+                    if not link or link['head']!=old['pr']['head'] or link['base']!=old['pr']['base']:continue
+                disposition='working'
             elif action in {'blocked','uncertain'}:disposition='stalled'
             elif (row['disposition']=='working' or action=='migrate'
                     or action in {'bind','submitted'} and old['state'] in {'blocked','uncertain'} and row['reason']==old['reason']):disposition='pending'

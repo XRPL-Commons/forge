@@ -60,6 +60,49 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(v['slots'][0]['state'],'free');self.assertIsNone(v['slots'][0]['assignment_id'])
         self.assertEqual(v['issues'][0]['stage'],'build') # releasing a worker never completes an issue
 
+    def test_running_process_survives_stage_advance_without_regressing_issue(self):
+        a=self.submitted()
+        self.now=1001
+        self.sync(revision='v2',observed_at=1001,issues=[{'number':1,'stage':'review','prs':[self.pr]}])
+        self.change(a,'working')
+        view=self.view()
+        self.assertEqual(view['slots'][0]['state'],'working')
+        self.assertEqual(view['assignments'][0]['state'],'working')
+        self.assertEqual((view['issues'][0]['stage'],view['issues'][0]['disposition']),('review','pending'))
+        self.change(a,'idle')
+        with self.assertRaisesRegex(w.Refused,'target_changed'):self.change(a,'submitted')
+
+    def test_running_old_pr_revision_does_not_claim_new_revision_during_observe_or_reconcile(self):
+        self.sync(issues=[{'number':1,'stage':'review','prs':[self.pr]}])
+        a=self.reserve(role='review',pr=self.pr)
+        self.change(a,'bind',provider='codex');self.change(a,'submitted')
+        for key in ('head','base'):
+            with self.subTest(changed=key):
+                changed={**self.pr,key:'c'*40}
+                self.now+=1
+                self.sync(revision='v'+str(self.now),observed_at=self.now,issues=[{'number':1,'stage':'review','prs':[changed]}])
+                self.change(a,'working')
+                self.assertEqual(self.view()['slots'][0]['state'],'working')
+                self.assertEqual(self.view()['issues'][0]['disposition'],'pending')
+                self.now+=1
+                self.sync(revision='v'+str(self.now),observed_at=self.now,issues=[{'number':1,'stage':'review','prs':[changed]}])
+                self.assertEqual(self.view()['issues'][0]['disposition'],'pending')
+                self.change(a,'idle')
+                with self.assertRaisesRegex(w.Refused,'pr_revision_changed'):self.change(a,'submitted')
+
+    def test_running_process_preserves_authoritative_critical_and_stalled_states(self):
+        a=self.submitted()
+        for disposition in ('critical','stalled'):
+            with self.subTest(disposition=disposition):
+                self.now+=1
+                self.sync(revision='v'+str(self.now),observed_at=self.now,issues=[
+                    {'number':1,'stage':'build','disposition':disposition,'reason':'recorded_issue_blocker'}])
+                self.change(a,'working')
+                self.assertEqual(self.view()['slots'][0]['state'],'working')
+                issue=self.view()['issues'][0]
+                self.assertEqual(issue['disposition'],disposition)
+                self.assertEqual(issue['reason'],'recorded_issue_blocker')
+
     def test_event_replay_is_idempotent_but_payload_change_refused(self):
         args=(self.state,self.repo,'build','repo-build','v1',[1])
         a=w.reserve(*args,source_event_id='reserve-once',now=1000)

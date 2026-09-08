@@ -4,6 +4,8 @@ The supervisor singleton serializes this with admission. This does not change
 claims or PRs. Terminal quiescence alone never authorizes release.
 """
 import argparse
+from datetime import datetime
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -419,12 +421,108 @@ def _completed_role(config, state, session, run, now):
         **({'checkout': {**checkout, 'verified_bases': [main]}} if checkout else {}), **identity}}
 
 
+def _review_rejection(config, state, session, run, now):
+    """An authored, current-head rejection is a completed reviewer handoff."""
+    began=time.monotonic()
+    matches=[r for r in load_repositories(config) if r.enabled and r.short+'-review'==session]
+    if len(matches)!=1:raise Unverified('not_enabled_reviewer')
+    repo=matches[0]
+    path=snapshot_path(state,repo.repo);snapshot=json.loads(path.read_text())
+    at=snapshot.get('observed_at')
+    if (snapshot.get('repo')!=repo.repo or snapshot.get('status')!='ok' or snapshot.get('enabled') is not True
+            or type(at) not in (int,float) or not math.isfinite(at) or not 0<=now-at<=300):
+        raise Unverified('snapshot_not_fresh')
+    if snapshot.get('counts',{}).get('review')!=0 or snapshot.get('work',{}).get('review')!=[]:
+        raise Unverified('review_queue_not_empty')
+    candidates=snapshot.get('work',{}).get('sentback',[])
+    active=snapshot.get('schedule',{}).get('active',[])
+    if (not isinstance(candidates,list) or not candidates or len(candidates)>10
+            or not isinstance(active,list) or not active
+            or any(type(n) is not int or n<=0 for n in candidates+active)):
+        raise Unverified('no_bounded_rejection_queue')
+    # A fresh full queue read prevents a stale empty review snapshot freeing a
+    # reviewer that has newly assigned review work.
+    queued=json.loads(command(['gh','pr','list','--repo',repo.repo,'--state','open',
+        '--label','ready-for-review','--limit','11','--json','number,labels,isDraft'],run))
+    if not isinstance(queued,list) or queued:raise Unverified('live_review_queue_not_empty')
+    clone=Path(repo.clone_review or Path.home()/(repo.short+'-review')).resolve()
+    git=['git','-C',str(clone)]
+    if Path(command(git+['rev-parse','--show-toplevel'],run)).resolve()!=clone:raise Unverified('clone_mismatch')
+    remote=command(git+['remote','get-url','origin'],run)
+    if remote not in {f'git@github.com:{repo.repo}.git',f'https://github.com/{repo.repo}.git',f'https://github.com/{repo.repo}'}:
+        raise Unverified('remote_mismatch')
+    if command(git+['status','--porcelain=v1','--untracked-files=all'],run):raise Unverified('worktree_not_clean')
+    head=command(git+['rev-parse','HEAD'],run);branch=_checkout_branch(git,run)
+    if not re.fullmatch('[0-9a-f]{40,64}',head):raise Unverified('invalid_head')
+    identity=session_identity(session,run,state=state)
+    verified=[]
+    for number in sorted(set(candidates)):
+        pr=json.loads(command(['gh','pr','view',str(number),'--repo',repo.repo,'--json',
+            'number,url,state,isDraft,headRefOid,baseRefOid,closingIssuesReferences,labels,author,reviews'],run))
+        labels={label['name'] for label in pr['labels']}
+        if (pr.get('number')!=number or pr.get('url','').lower()!=f'https://github.com/{repo.repo}/pull/{number}'.lower()
+                or pr.get('state')!='OPEN' or pr.get('isDraft') is not False
+                or pr.get('author',{}).get('login','').lower()!=repo.author.lower()
+                or labels & {'ready-for-review','ready-for-audit','changes-requested'}!={'changes-requested'}
+                or 'hold' in labels or pr.get('headRefOid')!=head
+                or not re.fullmatch('[0-9a-f]{40,64}',pr.get('baseRefOid',''))):continue
+        references=pr.get('closingIssuesReferences')
+        if not isinstance(references,list) or not references or len(references)>20:continue
+        numbers=[];valid=True
+        for ref in references:
+            n=ref.get('number');linked_repo=ref.get('repository',{}).get('nameWithOwner');url=ref.get('url')
+            if (type(n) is not int or n not in active or not (linked_repo or url)
+                    or linked_repo and linked_repo.lower()!=repo.repo.lower()
+                    or url and url.lower()!=f'https://github.com/{repo.repo}/issues/{n}'.lower()):valid=False;break
+            numbers.append(n)
+        if not valid:continue
+        reviews=pr.get('reviews')
+        if not isinstance(reviews,list) or len(reviews)>100:raise Unverified('review_inventory_unbounded')
+        authored=[]
+        for review in reviews:
+            if review.get('author',{}).get('login','').lower()!=repo.author.lower():continue
+            try:submitted=datetime.fromisoformat(review['submittedAt'].replace('Z','+00:00')).timestamp()
+            except (KeyError,ValueError,TypeError):raise Unverified('review_time_unknown')
+            authored.append((submitted,review))
+        if not authored:continue
+        submitted,review=max(authored,key=lambda value:value[0])
+        if sum(at==submitted for at,_ in authored)!=1:continue
+        body=review.get('body','')
+        if (not isinstance(body,str) or not identity['session_created']<=submitted<=now
+                or review.get('commit',{}).get('oid')!=head or not review.get('id')):continue
+        # COMMENTED is required for an account reviewing its own PR. Match only
+        # a current-head review heading, never quoted findings or task prose.
+        explicit=bool(re.match(r'(?i)^(?:correctness\s+)?review of\s+`?'+re.escape(head)+r'`?:\s*changes requested\b',body.strip()))
+        if review.get('state')!='CHANGES_REQUESTED' and not (review.get('state')=='COMMENTED' and explicit):continue
+        verified.append({'pr':number,'issues':sorted(set(numbers)),'pr_head':head,'pr_base':pr['baseRefOid'],
+                         'review_id':review['id'],'review_at':submitted,
+                         'review_digest':hashlib.sha256(body.encode()).hexdigest()})
+    if len(verified)!=1:raise Unverified('current_reviewer_rejection_not_unique')
+    if json.loads(path.read_text())!=snapshot:raise Unverified('snapshot_changed')
+    if now+time.monotonic()-began-at>300:raise Unverified('snapshot_expired')
+    if (command(git+['remote','get-url','origin'],run)!=remote
+            or command(git+['rev-parse','HEAD'],run)!=head or _checkout_branch(git,run)!=branch
+            or command(git+['status','--porcelain=v1','--untracked-files=all'],run)):
+        raise Unverified('rejection_checkout_changed')
+    if session_identity(session,run,state=state)!=identity:raise Unverified('session_changed')
+    return {'eligible':True,'reason':'verified_handoff','evidence':{
+        'repo':repo.repo,'role':'review','clone':str(clone),'head':head,'branch':branch,
+        'checkout_basis':'current_pr_head_reviewer_rejection',**verified[0],**identity}}
+
+
 def _check_with_fallback(config, state, session, run, now):
     try:
         return _check(config, state, session, run, now)
     except Unverified as exc:
         if session.rsplit('-', 1)[-1] in {'build', 'review', 'audit'} and str(exc) in {
                 'claim_not_unique', 'no_bounded_handoff_queue', 'published_handoff_not_unique', 'role_not_supported'}:
+            if session.endswith('-review'):
+                repo=next((r.repo for r in load_repositories(config)
+                    if r.enabled and r.short+'-review'==session),None)
+                if repo is None:raise Unverified('configuration_changed')
+                snapshot=json.loads(snapshot_path(state,repo).read_text())
+                if snapshot.get('work',{}).get('sentback'):
+                    return _review_rejection(config,state,session,run,now)
             return _completed_role(config, state, session, run, now)
         raise
 

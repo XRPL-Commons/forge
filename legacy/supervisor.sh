@@ -265,7 +265,7 @@ _nav_prompts(){ local t="$1" p; p=$(tmux capture-pane -p -t "$t" 2>/dev/null||ec
   echo "$p"|grep -qi "Bypass Permissions mode" && { tmux send-keys -t "$t" Down; sleep 0.3; tmux send-keys -t "$t" Enter; sleep 4; }
 }
 launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred continuation
-  local sess="$1" dir="$2" role="$3" nudge="$4" t="=$1:1.1" p provider_command generation provider executable full_generation
+  local sess="$1" dir="$2" role="$3" nudge="$4" t="=$1:1.1" p provider_command generation provider executable full_generation reservation_result
   if ! python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
     glog "[$sess] capacity admission deferred; see state/capacity.json"
     activity admission_deferred "$sess" capacity_guard
@@ -275,7 +275,7 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
   # A clone may take two minutes: recheck current pressure immediately before launch.
   python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null || { activity admission_deferred "$sess" capacity_recheck; return; }
   if workflow_enabled; then
-    workflow_call reserve "$sess" >/dev/null || { glog "[$sess] exact workflow reservation deferred"; return; }
+    reservation_result=$(workflow_call reserve "$sess" 2>&1) || { glog "[$sess] workflow reservation deferred: $reservation_result"; return; }
   fi
   # Reserve a provider probe only after this worker has passed admission.
   provider=$(python3 -m forge.routing --state "$STATE" --config "$DIR/repos.d" select --session "$sess") || { if workflow_enabled; then workflow_call blocked "$sess" --reason provider_unavailable >/dev/null || true; fi; glog "[$sess] no provider available"; return; }
