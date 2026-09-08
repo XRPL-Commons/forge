@@ -266,6 +266,38 @@ const fs = require("fs"),
   assert.match(await page.locator('.slot-context').innerText(), /quiet #20.*build.*capacity admission pending/i);
   await page.evaluate(()=>{fleet.workflow.assignments=fleet.workflow.assignments.filter(a=>a.id!=='reserved-only');fleet.workflow.slots=fleet.workflow.slots.filter(s=>s.session!=='quiet-build');renderStats();});
 
+  const readyGate=await page.evaluate(()=>{
+    const original=JSON.parse(JSON.stringify(fleet)), baseline=pipelineIssues().length, r=fleet.repos[0];
+    fleet.issue_flow.backlog=Array.from({length:124},(_,n)=>({repo:r.repo,number:1000+n,title:`Unlabeled backlog ${n}`,state:"backlog"}));
+    fleet.workflow.issues.push(...fleet.issue_flow.backlog.map(i=>({repo:r.repo.toLowerCase(),number:i.number,stage:"queued",disposition:"pending",prs:[]})),
+      ...[2000,2001,2002].map(number=>({repo:r.repo.toLowerCase(),number,stage:"queued",disposition:"pending",prs:[]})));
+    r.queue_status="ok";r.observed_at=Date.now()/1000;r.work={...r.work,ready:[...(r.work?.ready || []),2001]};
+    r.schedule={eligible:[],blocked:{2001:["depends_on:2000"]}};
+    fleet.issue_flow.issues.push({repo:r.repo,number:2002,title:"Source ready label",state:"ready"});
+    render();
+    const fresh={count:pipelineIssues().length,backlog:currentIssueRecords().find(i=>i.number===1000),
+      unknown:currentIssueRecords().find(i=>i.number===2000).state,
+      blockedReady:currentIssueRecords().find(i=>i.number===2001).state,
+      backlogCards:document.querySelectorAll('[data-card-issue*="#10"]').length};
+    r.observed_at=Date.now()/1000-301;
+    const stale=currentIssueRecords().find(i=>i.number===2001).state;
+    fleet=original;render();return {baseline,fresh,stale};
+  });
+  assert.equal(readyGate.fresh.count,readyGate.baseline+2);
+  assert.equal(readyGate.fresh.backlog.state,'backlog');
+  assert.equal(readyGate.fresh.backlog.title,'Unlabeled backlog 0');
+  assert.equal(readyGate.fresh.unknown,'unknown');
+  assert.equal(readyGate.fresh.blockedReady,'ready');
+  assert.equal(readyGate.fresh.backlogCards,0);
+  assert.equal(readyGate.stale,'unknown');
+  // Old loaded scripts still map queued to ready; the status API now supplies only gated inventory.
+  const oldClient=await page.evaluate(status=>{
+    const projected=status.workflow.issues.map(i=>({...i,state:({queued:"ready",backlog:"ready"}[i.stage] || i.stage)}));
+    return {waiting:projected.filter(i=>i.state==="ready").length,backlog:projected.filter(i=>i.number>=1000).length};
+  },{workflow:{projection:"pipeline",inventory_issue_count:126,issues:[{number:1,stage:"queued"},{number:2,stage:"queued"},{number:3,stage:"build"}]}});
+  assert.deepEqual(oldClient,{waiting:2,backlog:0});
+
+
   assert.match(await page.locator(".slot-roles").first().innerText(), /Review 3\/3/);
   assert.match(await page.locator(".provider-outages").innerText(), /Claude unavailable.*retry in 60m/);
   assert.equal(await page.locator(".working-stack .issue-card").count(), 1);

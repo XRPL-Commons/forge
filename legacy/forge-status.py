@@ -231,6 +231,37 @@ def workflow_view(repo=None, after=0, limit=100, include_history=True, recent=Fa
                 'assignments':[],'slots':[],'repositories':[],'events':[],'next_after':after,'has_more':False}
 
 
+def dashboard_workflow(value, repositories, flow, *, now=None):
+    """Compatibility projection: queued inventory is not ready pipeline demand.
+
+    Keep the complete durable inventory on /api/workflow. Filtering /api/status
+    also fixes clients still running an older cached dashboard script.
+    """
+    now=time.time() if now is None else now
+    ready=set()
+    fresh={r['repo'].lower():r for r in repositories if r.get('queue_status')=='ok'
+           and type(r.get('observed_at')) in (int,float) and 0<=now-r['observed_at']<=300}
+    for repo,row in fresh.items():
+        ready.update((repo,n) for n in row.get('work',{}).get('ready',[]) if type(n) is int)
+        ready.update((repo,n) for n in row.get('schedule',{}).get('eligible',[]) if type(n) is int)
+    ready.update((i['repo'].lower(),i['number']) for i in flow.get('issues',[])
+                 if i.get('state')=='ready' and i['repo'].lower() in fresh)
+    slots={s['assignment_id']:s for s in value.get('slots',[]) if s.get('assignment_id') and s.get('state')!='free'}
+    assigned=set()
+    for a in value.get('assignments',[]):
+        slot=slots.get(a['id'])
+        if (a.get('role')=='build' and a.get('state')!='retired' and slot
+                and slot.get('session')==a.get('session') and slot.get('repo')==a.get('repo')):
+            assigned.update((a['repo'].lower(),n) for n in a.get('issue_numbers',[]))
+    issues=[]
+    for item in value.get('issues',[]):
+        key=(item['repo'].lower(),item['number']);stage=item.get('stage')
+        if stage in {'build','review','audit'}:issues.append(item)
+        elif stage in {'queued','backlog'} and key in assigned:issues.append({**item,'stage':'build'})
+        elif stage in {'queued','backlog'} and key in ready:issues.append(item)
+    return {**value,'issues':issues,'projection':'pipeline','inventory_issue_count':len(value.get('issues',[]))}
+
+
 def worker_fault_context(state, blockers, flow, activity):
     """Related historical queue context, never inferred worker assignment."""
     path=Path(state)/'activity.sqlite3'
@@ -345,7 +376,7 @@ def status():
     except (ImportError, OSError, ValueError, sqlite3.Error):
         out['session_blockers'] = {}
     worker_fault_context(Path(WD)/'state',out['session_blockers'],out['issue_flow'],out['activity'])
-    out['workflow'] = workflow_view(include_history=False)
+    out['workflow'] = dashboard_workflow(workflow_view(include_history=False),out['repos'],out['issue_flow'])
     out['slots'] = slot_inventory()
     try:
         from forge.routing import read_routing

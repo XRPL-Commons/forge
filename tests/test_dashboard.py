@@ -44,6 +44,23 @@ class DashboardTests(unittest.TestCase):
         with patch('forge.capacity.read_sessions', side_effect=ValueError('unknown')):
             self.assertEqual(dashboard.slot_inventory()['status'], 'unknown')
 
+    def test_status_workflow_does_not_feed_backlog_to_old_ready_projection(self):
+        issues=[{'repo':'o/one','number':n,'stage':'queued'} for n in range(1,125)]
+        issues += [{'repo':'o/one','number':200,'stage':'done'},{'repo':'o/one','number':201,'stage':'unknown'}]
+        value={'status':'ok','issues':issues,'assignments':[{'id':'a','repo':'o/one','role':'build','session':'one-build','state':'reserved','issue_numbers':[3]}],
+               'slots':[{'assignment_id':'a','repo':'o/one','session':'one-build','state':'reserved'}]}
+        rows=[{'repo':'O/One','queue_status':'ok','observed_at':100,'work':{'ready':[1]},'schedule':{'eligible':[],'blocked':{'1':['depends_on:2']}}}]
+        flow={'issues':[{'repo':'o/one','number':2,'state':'ready'}]}
+        filtered=dashboard.dashboard_workflow(value,rows,flow,now=101)
+        self.assertEqual([(i['number'],i['stage']) for i in filtered['issues']],[(1,'queued'),(2,'queued'),(3,'build')])
+        # Reproduce the pre-fix browser's unconditional queued -> ready mapping.
+        old_js_states=['ready' if i['stage'] in {'queued','backlog'} else i['stage'] for i in filtered['issues']]
+        self.assertEqual(old_js_states.count('ready'),2)
+        self.assertEqual(len(value['issues']),126) # full API/engine inventory unchanged
+        self.assertEqual(filtered['inventory_issue_count'],126)
+        stale=dashboard.dashboard_workflow(value,rows,flow,now=401)
+        self.assertEqual([i['number'] for i in stale['issues']],[3])
+
     def test_counts_are_snapshot_only_and_stale_is_unknown(self):
         path = snapshot_path(self.root / "state", "o/one")
         atomic_json(path, {"status": "ok", "observed_at": time.time(), "counts": {"audit": 2}})

@@ -1931,7 +1931,14 @@
       function projectWorkflowIssue(i) {
         const tracked = workflowIssue(i);
         if (!tracked) return i;
-        const state = tracked.stage === "unknown" ? i.state : {backlog:"ready",queued:"ready",done:"completed",cancelled:"closed"}[tracked.stage] || tracked.stage;
+        const repo=fleet.repos.find(r=>r.repo.toLowerCase()===i.repo.toLowerCase()),
+          assignment=repo && workflowAssignment(workflowSlot(repo,"build")),
+          assignedBuild=assignment?.issue_numbers?.includes(i.number),
+          fresh=repo?.queue_status==="ok" && typeof repo.observed_at==="number" && Date.now()/1000-repo.observed_at>=0 && Date.now()/1000-repo.observed_at<=300,
+          ready=i.state==="ready" || fresh && ((repo.work?.ready || []).includes(i.number) || (repo.schedule?.eligible || []).includes(i.number));
+        const state = ["queued","backlog"].includes(tracked.stage)
+          ? assignedBuild ? "build" : ready ? "ready" : i.state==="backlog" ? "backlog" : "unknown"
+          : tracked.stage === "unknown" ? i.state : {done:"completed",cancelled:"closed"}[tracked.stage] || tracked.stage;
         return {...i, state, step: roles.includes(state) ? roles.indexOf(state)+1 : 0, workflow:tracked};
       }
       function workflowSlot(r, role) {
@@ -1945,7 +1952,11 @@
         return slot?.reason === "started_before_assignment_tracking" && slot.generation === r[role]?.generation_id ? "Started before assignment tracking" : fleet.workflow?.status !== "ok" ? "Assignment tracking unavailable" : "Assignment record missing · reconciliation needed";
       }
       function currentIssueRecords() {
-        const items = [...(fleet.issue_flow?.issues || [])];
+        const items = [], seen = new Set();
+        for (const i of [...(fleet.issue_flow?.issues || []), ...(fleet.issue_flow?.backlog || []).map(i=>({...i,state:i.state || "backlog"})), ...(fleet.issue_flow?.completed || []).map(i=>({...i,state:i.state || "completed"}))]) {
+          const key=i.repo.toLowerCase()+"#"+i.number;
+          if (!seen.has(key)) {items.push(i);seen.add(key);}
+        }
         if (fleet.workflow?.status === "ok") for (const tracked of fleet.workflow.issues || []) {
           const repo = fleet.repos.find(r=>r.repo.toLowerCase() === tracked.repo?.toLowerCase());
           if (repo && Number.isSafeInteger(tracked.number) && tracked.number > 0 && !items.some(i=>i.repo.toLowerCase() === tracked.repo.toLowerCase() && i.number === tracked.number))
@@ -1955,7 +1966,7 @@
       }
       function pipelineIssues() {
         return currentIssueRecords().filter(i =>
-          !i.on_hold && !i.attention_state &&
+          issueLane(i) !== null && !i.on_hold && !i.attention_state &&
           !(i.actions || []).some(a => a.kind === "human_approval"));
       }
       function issueLane(i) {
