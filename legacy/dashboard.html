@@ -1791,6 +1791,10 @@
             entries.push({
               kind: "worker_fault",
               summary: ["cleanup_retained", "worker_runtime"].includes(blocker?.kind) ? blocker.why : null,
+              context: blocker?.context || null,
+              blocker_kind: blocker?.kind,
+              observed_at: blocker?.observed_at,
+              since: blocker?.since,
               reason: blocker?.reason || (fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason),
               why: blocker ? `${role}: ${blocker.why}` : `${role}: ${reasonText(fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason)}`,
               impact: blocker?.impact || "Automatic work on this session is paused.",
@@ -2138,14 +2142,25 @@
       }
 
       function workerAttentionCard(r, e) {
-        // A paused role does not establish an issue assignment. Keep this a worker
-        // card unless a canonical issue action itself supplies that association.
-        const label = {build:"Build", review:"Review", audit:"Audit"}[e.role] || "Worker";
-        const summary = e.summary || (e.reason === "provider_start_failed"
-          ? `${label} worker · startup not confirmed`
-          : `${label} worker · ${reasonText(e.reason || "paused")}`);
-        const key = `${r.repo}:${e.role}:${e.reason || "paused"}`;
-        return `<article class="issue-card compact-issue waiting needs-decision worker-attention-card" data-station="${esc(e.role)}" data-worker-fault="${esc(r.short + "-" + e.role)}"><div class="compact-identity"><span>${esc(r.short)} · ${esc(e.role)}</span><span class="compact-meta attention-state">WORKER</span></div><button class="issue-card-title" data-repo="${esc(r.repo)}" data-role="${esc(e.role)}" title="${esc(e.why)}">${esc(summary)}</button><details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Details and next step</summary><p>${esc(e.why)}</p><p>${e.link && safeGithub(e.link) ? `<a href="${esc(e.link)}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p><p class="muted">Worker status only; no exact issue assignment is established by this alert.</p></details></article>`;
+        const label = {build:"Build", review:"Review", audit:"Audit"}[e.role] || "Worker",
+          cleanup = ["detached_merged_pr_not_unique", "worktree_not_clean", "read_failed", "verification_unavailable", "verification_deadline_exceeded"].includes(e.reason) || e.blocker_kind === "cleanup_retained",
+          headlines = {
+            detached_merged_pr_not_unique: `${label} cleanup · merged PR not identified`,
+            read_failed: `${label} cleanup · repository read failed`,
+            verification_unavailable: `${label} cleanup · evidence unavailable`,
+            verification_deadline_exceeded: `${label} cleanup · verification timed out`,
+            provider_start_failed: `${label} worker · startup not confirmed`,
+          },
+          summary = headlines[e.reason] || e.summary || `${label} worker · ${reasonText(e.reason || "paused")}`,
+          context = e.context && e.context.repo?.toLowerCase() === r.repo.toLowerCase() ? e.context : null,
+          issue = Number.isSafeInteger(context?.issue) && context.issue > 0 ? context.issue : null,
+          pr = Number.isSafeInteger(context?.pr) && context.pr > 0 ? context.pr : null,
+          identity = issue ? `${r.short} · #${issue}` : `${r.short} · ${e.role}`,
+          key = `${r.repo}:${e.role}:${e.reason || "paused"}`;
+        const related = pr || issue ? `<p class="worker-context">${pr ? `<a href="${esc(url(r.repo, "/pull/" + pr))}" target="_blank" rel="noopener noreferrer">PR #${pr} ↗</a>` : ""}${issue ? `${pr ? " · " : ""}<a href="${esc(itemLink(r.repo,issue))}" target="_blank" rel="noopener noreferrer">Issue #${issue} ↗</a>` : ""}${context?.basis ? `<span class="muted"> · ${esc(context.basis)}</span>` : ""}</p>` : "";
+        const why = !e.summary && e.reason === "provider_start_failed" && e.why ? `<p>${esc(e.why.replace(new RegExp("^"+e.role+":\\s*"),""))}</p>` : "";
+        const since = e.since ? `<p class="muted">Slot held since ${esc(ago(e.since))}</p>` : "";
+        return `<article class="issue-card compact-issue waiting needs-decision worker-attention-card" data-station="${esc(e.role)}" data-worker-fault="${esc(r.short + "-" + e.role)}"><div class="compact-identity"><span>${esc(identity)}</span><span class="compact-meta attention-state">${cleanup ? "CLEANUP" : "WORKER"}</span></div><button class="issue-card-title" data-repo="${esc(r.repo)}" ${issue ? `data-issue="${issue}"` : `data-role="${esc(e.role)}"`}>${esc(summary)}</button>${related}<details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Next step and evidence</summary>${why}<p>${e.link && safeGithub(e.link) ? `<a href="${esc(e.link)}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p>${since}</details></article>`;
       }
       function renderAttention() {
         const expanded = new Set(Array.from($("attention").querySelectorAll("details[data-attention-details][open]")).map(el => el.dataset.attentionDetails));

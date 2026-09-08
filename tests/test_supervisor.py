@@ -119,6 +119,7 @@ elif name=='ps': print('10 1 bash')
     def test_capacity_denial_does_not_launch_or_clone(self):
         calls = self.run_pass(['ready-for-audit'], capacity_allowed=False)
         self.assertFalse(any(c[:2] == ['tmux', 'new-session'] or c[0] == 'git' for c in calls))
+        self.assertFalse(any(c[:3] == ['python3', '-m', 'forge.routing'] and 'select' in c for c in calls))
         self.assertTrue(any(c[:4] == ['python3', '-m', 'forge.capacity', 'check'] for c in calls))
 
     def test_shell_configuration_never_executes_and_blocks_admission(self):
@@ -178,6 +179,7 @@ elif name=='ps': print('10 1 bash')
 
     def test_capacity_is_rechecked_after_clone_without_charging_launch_budget(self):
         calls = self.run_pass(['ready-for-audit'], capacity_sequence=[True, False])
+        self.assertFalse(any(c[:3] == ['python3', '-m', 'forge.routing'] and 'select' in c for c in calls))
         self.assertTrue(any(c[:2] == ['git', 'clone'] for c in calls))
         self.assertFalse(any(c[:2] == ['tmux', 'new-session'] for c in calls))
         self.assertFalse(any(c[:4] == ['python3', '-m', 'forge.legacy_health', 'launch'] for c in calls))

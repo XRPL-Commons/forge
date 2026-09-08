@@ -76,6 +76,10 @@ if name == 'gh':
             finish(json.dumps([items]))
         if endpoint in [f'repos/o/fixture/issues/{n}/dependencies/blocked_by?per_page=100' for n in (1,3)]:
             finish('[[]]')
+    if args == ['pr','list','--repo','o/fixture','--state','open','--label','changes-requested','--limit','11','--json','number,labels,isDraft']:
+        finish('[]')
+    if args == ['api','repos/o/fixture/git/ref/heads/main']:
+        finish(json.dumps({'object':{'sha':'b'*40}}))
     if args[:3] == ['pr', 'view', '2']:
         finish(json.dumps(dict(state='OPEN', isDraft=False, headRefOid='a'*40, baseRefOid='b'*40,
             author={'login':'fixture-bot'}, labels=[{'name':'ready-for-review'}],

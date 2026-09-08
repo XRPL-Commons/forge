@@ -317,7 +317,7 @@ const fs = require("fs"),
   assert(await workerAlert.locator('details').evaluate(el=>el.open));
   assert.equal(await page.evaluate(()=>document.activeElement.tagName),'SUMMARY');
   assert((await workerAlert.innerText()).includes('Configure the native executable'));
-  assert((await workerAlert.innerText()).includes('no exact issue assignment'));
+  assert(!(await workerAlert.innerText()).includes('no exact issue assignment'));
   assert.equal(await page.evaluate(()=>window.pwned),undefined);
   await page.evaluate(()=>{
     delete fleet.health.sessions['quiet-review'];
@@ -328,6 +328,25 @@ const fs = require("fs"),
   assert((await workerAlert.locator('.issue-card-title').innerText()).includes('Uncommitted files'));
   await workerAlert.locator('summary').click();
   assert((await workerAlert.innerText()).includes('Preserve generated files'));
+  await page.evaluate(()=>{
+    fleet.session_blockers['quiet-review']={kind:'cleanup_retained',reason:'detached_merged_pr_not_unique',
+      why:'The reviewer finished, but Forge could not identify one merged PR for its checkout.',
+      next:'Match the checkout to its published PR before releasing the idle session.',
+      context:{repo:'example/quiet',issue:127,pr:131,basis:'Previously queued'}};
+    render();
+  });
+  assert.match(await workerAlert.locator('.compact-identity').innerText(), /quiet · #127/);
+  assert.equal(await workerAlert.locator('.issue-card-title').innerText(),'Review cleanup · merged PR not identified');
+  assert.equal(await workerAlert.locator('.issue-card-title').getAttribute('data-issue'),'127');
+  assert.equal(await workerAlert.locator('a[href="https://github.com/example/quiet/pull/131"]').count(),1);
+  assert.match(await workerAlert.innerText(), /Previously queued/);
+  await workerAlert.locator('summary').click();
+  assert(!(await workerAlert.innerText()).includes('The reviewer finished'));
+  assert(!(await workerAlert.innerText()).includes('no exact issue assignment'));
+  await page.evaluate(()=>{fleet.session_blockers['quiet-review'].context.repo='other/repo';renderAttention();});
+  assert.equal(await workerAlert.locator('[data-issue]').count(),0);
+  assert.equal(await workerAlert.locator('.worker-context').count(),0);
+
   await page.evaluate(()=>{
     fleet.repos[1].review={up:false,busy:false};
     delete fleet.health.sessions['quiet-review'];

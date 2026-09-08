@@ -130,7 +130,7 @@ send_codex_command(){
   return 0
 }
 watch_codex(){
-  local sess="$1" role_file="$2" nudge="$3" generation observation failure command
+  local sess="$1" role_file="$2" nudge="$3" generation observation failure command reason metadata
   generation=$(session_generation_full "$sess") || return
   observation=$(python3 -m forge.startup codex-observe --state "$STATE" --config "$DIR/repos.d" --session "$sess" --generation "$generation" --field state) || observation=unknown
   case "$observation" in
@@ -140,13 +140,31 @@ watch_codex(){
       [ -z "$failure" ] || route_failure "$sess" "$failure" || true
       glog "[$sess] Codex execution blocked: ${failure:-execution_failed}; work preserved"
       return ;;
-    idle) route_success "$sess" || true ;;
+    idle)
+      route_success "$sess" || true
+      if [[ "$sess" == *-build ]] && release_worker forge.handoff cleanup "$sess"; then
+        glog "[$sess] released completed builder before admitting subsequent work"
+        return
+      fi
+      ;;
     *) glog "[$sess] Codex execution state unknown; no input sent"; return ;;
   esac
   health check "$sess" >/dev/null || return
   # This command refuses unchanged work, missing exact thread identity, pending
   # children, or a nonempty shell. Completed execution is never task completion.
-  command=$(python3 -m forge.startup codex-command --config "$DIR/repos.d" --state "$STATE" --session "$sess" --executable "$FORGE_CODEX_BIN" --generation "$generation" --resume --prompt "$(role_prompt "$sess" "$role_file" "$nudge")") || { glog "[$sess] Codex resume deferred pending verified changed work"; return; }
+  command=$(python3 -m forge.startup codex-command --config "$DIR/repos.d" --state "$STATE" --session "$sess" --executable "$FORGE_CODEX_BIN" --generation "$generation" --resume --prompt "$(role_prompt "$sess" "$role_file" "$nudge")") || {
+    if [[ "$sess" == *-build ]]; then
+      # Keep the repeated completion proof as the authoritative retained-slot
+      # decision; resume diagnostics must not reset its duration every poll.
+      metadata=$(printf '%s' "$command" | python3 -c 'import json,sys; value=json.load(sys.stdin); print(json.dumps(dict(reason=value.get("reason", "codex_preparation_unavailable"), phase="codex_resume", outcome="retained", generation_id=sys.argv[1])))' "$generation") || metadata='{}'
+      python3 -m forge.activity --state "$STATE" --config "$DIR/repos.d" event --session "$sess" --event lifecycle_decision --metadata "$metadata" >/dev/null || true
+    else
+      python3 -m forge.lifecycle --state "$STATE" --config "$DIR/repos.d" decision --session "$sess" --phase codex_resume --generation "$generation" --result "$command" --exit-code 1 >/dev/null || true
+    fi
+    reason=$(printf '%s' "$command" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason", "codex_preparation_unavailable"))') || reason=codex_preparation_unavailable
+    glog "[$sess] Codex resume deferred: $reason"
+    return
+  }
   send_codex_command "$sess" "$generation" "$command" || true
 }
 
@@ -220,6 +238,15 @@ _nav_prompts(){ local t="$1" p; p=$(tmux capture-pane -p -t "$t" 2>/dev/null||ec
 }
 launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred continuation
   local sess="$1" dir="$2" role="$3" nudge="$4" t="=$1:1.1" p provider_command generation provider executable full_generation
+  if ! python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
+    glog "[$sess] capacity admission deferred; see state/capacity.json"
+    activity admission_deferred "$sess" capacity_guard
+    return
+  fi
+  ensure_clone "${REPO}" "$dir" || return
+  # A clone may take two minutes: recheck current pressure immediately before launch.
+  python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null || { activity admission_deferred "$sess" capacity_recheck; return; }
+  # Reserve a provider probe only after this worker has passed admission.
   provider=$(python3 -m forge.routing --state "$STATE" --config "$DIR/repos.d" select --session "$sess") || { glog "[$sess] no provider available"; return; }
   case "$provider" in claude) executable="$FORGE_CLAUDE_BIN" ;; codex) executable="$FORGE_CODEX_BIN" ;; *) return ;; esac
   if ! provider_command=$(python3 -m forge.startup command --state "$STATE" --session "$sess" --executable "$executable"); then
@@ -229,14 +256,6 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
     glog "[$sess] provider executable unavailable; configure selected provider executable"
     return
   fi
-  if ! python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
-    glog "[$sess] capacity admission deferred; see state/capacity.json"
-    activity admission_deferred "$sess" capacity_guard
-    return
-  fi
-  ensure_clone "${REPO}" "$dir" || return
-  # A clone may take two minutes: recheck current pressure immediately before launch.
-  python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null || { activity admission_deferred "$sess" capacity_recheck; return; }
   health launch "$sess" >/dev/null || return
   if [ -f "$STATE/$sess.up" ]; then notify "[forge] WARNING: $sess was up but vanished — relaunching (crash?)"; glog "crash-relaunch $sess"; else glog "wake $sess"; fi
   tmux new-session -d -s "$sess" -c "$dir" || { glog "session launch conflict $sess"; return 1; }; activity session_created "$sess" launch; sleep 2
@@ -293,6 +312,10 @@ watch(){ # Existing sessions must be observed before any input is sent.
     health progress "$sess" >/dev/null || true
     [ "$progress_seen" = 0 ] || route_success "$sess" || true
     idle[$sess]=0; nudges[$sess]=0; return
+  fi
+  if [ "$state" = idle ] && [[ "$sess" == *-build ]] && release_worker forge.handoff cleanup "$sess"; then
+    glog "[$sess] released completed builder before admitting subsequent work"
+    return
   fi
   if [ "$progress_seen" = 1 ]; then health progress "$sess" >/dev/null || true; fi
   health check "$sess" >/dev/null || return

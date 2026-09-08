@@ -17,10 +17,28 @@ import time
 from .config import load_repositories
 from .control import atomic_json, snapshot_path
 
-PHASES = {'cleanup', 'human_wait_cleanup', 'startup_cleanup', 'provider_handover'}
+PHASES = {'cleanup', 'human_wait_cleanup', 'startup_cleanup', 'provider_handover', 'codex_resume'}
 QUIET_REASONS = {'role_has_work', 'multi_claim_role_has_work', 'no_tmux_server'}
 LONG_WAIT_REASONS = {'not_explicitly_idle', 'processes_not_quiescent'}
 EXPLANATIONS = {
+    'detached_merged_pr_not_unique': ('The reviewer finished, but Forge could not identify one merged PR for its checkout.',
+                         'Forge must match the checkout to its published PR before releasing this idle session. This is a cleanup problem, not a request for another review.'),
+    'resume_requires_changed_work': ('This Codex turn finished and there is no changed assignment to resume.',
+                         'Check its completion and slot-release result. Forge should release completed work before starting the next issue.'),
+    'resume_requires_completed_execution': ('The previous Codex execution has not been verified as finished.',
+                         'Inspect the current worker result and remaining processes before retrying.'),
+    'resume_thread_unavailable': ('Forge cannot identify the prior Codex conversation to resume.',
+                         'Inspect the saved execution receipt before starting another worker on this issue.'),
+    'resume_receipt_mismatch': ('The saved Codex conversation does not match this worker.',
+                         'Reconcile the current worker and saved execution before retrying; Forge has preserved the checkout.'),
+    'resume_requires_completed_execution_and_changed_work': ('The Codex turn ended, but its recorded work has not changed.',
+                         'Inspect its last result and cleanup decision. Finished work should release the slot; unresolved work needs a recorded blocker before a retry.'),
+    'fresh_role_work_unavailable': ('The supervisor cannot verify fresh work for this execution.',
+                         'Check repository snapshot freshness and access. Forge will retry after reconciliation.'),
+    'not_empty_shell_prompt': ('The worker shell contains input and cannot safely accept another command.',
+                         'Inspect the worker terminal and resolve the pending input without overwriting it.'),
+    'shell_has_child_work': ('A child process still owns work in this session.',
+                         'Inspect the remaining process and its result before resuming or releasing the worker.'),
     'processes_not_quiescent': ('Background processes still prevent worker cleanup.',
                          'Inspect the remaining worker jobs for a completed build or a stalled wait. Preserve running work until it finishes.'),
     'not_explicitly_idle': ('The worker has not reached a verified empty prompt for cleanup.',

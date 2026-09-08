@@ -284,6 +284,23 @@ class HumanWaitTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(Unverified):
                 self.historical_check(**changes)
 
+    def test_detached_historical_audit_requires_merged_publication_and_all_bases(self):
+        from forge.human_wait import _published_checkout
+        from forge.handoff import Unverified
+        proof = {'basis':'exact_tree_of_verified_merged_pr','merge':'d'*40,'head':'e'*40,'branch':None}
+        with patch('forge.handoff._checkout_branch', return_value=None), \
+             patch('forge.handoff._detached_merged_checkout', return_value=proof) as published, \
+             patch('forge.human_wait._canonical_ancestor') as ancestor:
+            result = _published_checkout(['git','-C','/clone'], 'owner/app', proof['head'], {self.base}, self.fake_run)
+            self.assertEqual(result['verified_bases'], [self.base])
+            published.assert_called_once()
+            ancestor.assert_called_once_with(['git','-C','/clone'], 'owner/app', proof['merge'], self.base, self.fake_run)
+            ancestor.side_effect = Unverified('head_not_verified_base_ancestor')
+            with self.assertRaises(Unverified):
+                _published_checkout(['git','-C','/clone'], 'owner/app', proof['head'], {self.base}, self.fake_run)
+            with self.assertRaises(Unverified):
+                _published_checkout(['git','-C','/clone'], 'owner/app', proof['head'], set(), self.fake_run)
+
     def test_old_main_requires_ancestry_to_every_fresh_candidate_base(self):
         from forge.human_wait import _published_checkout
         from forge.handoff import Unverified

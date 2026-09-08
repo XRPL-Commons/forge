@@ -525,7 +525,7 @@ class HandoffTests(unittest.TestCase):
         result = check(self.config, self.state, 'one-build', run=self.fake_run, now=100)
         self.assertTrue(result['eligible'], result)
         self.assertEqual(result['reason'], 'verified_build_complete')
-        for key in ('ready', 'sentback', 'conflicts', 'limbo'):
+        for key in ('sentback', 'conflicts', 'limbo'):
             self.snapshot['work'][key] = [9]
             self.save()
             self.assertFalse(self.decision()['eligible'])
@@ -575,6 +575,61 @@ class HandoffTests(unittest.TestCase):
             {'number':True, 'repository':{'nameWithOwner':'o/one'}}]:
             self.pr['closingIssuesReferences'] = [reference]
             self.assertFalse(self.decision()['eligible'])
+
+    def test_builder_handoff_with_next_ready_requires_all_claims_handed_off(self):
+        self.snapshot['counts']['builder'] = 1
+        self.snapshot['schedule'].update(handed_off=[1], reserving=[])
+        self.snapshot['work'].update(ready=[3], sentback=[], conflicts=[], limbo=[])
+        self.save()
+        self.assertTrue(self.decision()['eligible'])
+        self.pr['headRefOid'] = 'f' * 40
+        self.assertFalse(self.decision()['eligible'])
+        self.pr['headRefOid'] = self.head
+        for field, value in [('handed_off', []), ('reserving', [1])]:
+            prior = self.snapshot['schedule'][field]
+            self.snapshot['schedule'][field] = value
+            self.save()
+            self.assertEqual(self.decision()['reason'], 'role_has_work')
+            self.snapshot['schedule'][field] = prior
+        self.snapshot['work']['sentback'] = [2]
+        self.save()
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_completed_builder_next_ready_still_requires_exact_publication(self):
+        self.completed_builder_setup()
+        self.snapshot['counts']['builder'] = 1
+        self.snapshot['schedule'].update(active=[], handed_off=[], reserving=[])
+        self.snapshot['work']['ready'] = [3]
+        self.save()
+        self.assertTrue(self.decision()['eligible'])
+        self.status = '?? unfinished'
+        self.assertFalse(self.decision()['eligible'])
+        self.assertFalse(any(c[:2] == ['tmux', 'kill-session'] for c in self.calls))
+
+    def test_detached_older_commit_requires_final_pr_history_and_main_ancestry(self):
+        self.completed_audit_setup()
+        self.branch = None
+        final_head, merge = 'c' * 40, 'd' * 40
+        self.detached_prs = [{'number': 130, 'state': 'closed', 'merged_at': '2026-09-08',
+            'head': {'sha': final_head}, 'base': {'repo': {'full_name': 'o/one'}}, 'merge_commit_sha': merge}]
+        old_compare = 'ahead'
+        def run(args, **kwargs):
+            if '/compare/' + self.head + '...' + final_head in ' '.join(args):
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'status':old_compare,
+                    'base_commit':{'sha':self.head},'behind_by':0}), stderr='')
+            return self.fake_run(args, **kwargs)
+        self.compare_base = merge
+        result = check(self.config, self.state, 'one-audit', run=run, now=100)
+        self.assertTrue(result['eligible'], result)
+        self.assertEqual(result['evidence']['checkout']['final_head'], final_head)
+        old_compare = 'diverged'
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=run, now=100)['eligible'])
+        old_compare = 'ahead'
+        self.compare_status = 'diverged'
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=run, now=100)['eligible'])
+        self.compare_status = 'ahead'
+        self.detached_prs.append(dict(self.detached_prs[0], number=131))
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=run, now=100)['eligible'])
 
     def test_detached_reviewer_reaches_completed_fallback(self):
         self.review_setup()

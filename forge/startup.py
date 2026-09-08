@@ -232,9 +232,14 @@ def codex_command(config, state, session, executable, generation, prompt, *, res
     if resume:
         value = observe(state, session, generation=expected, repo=repo.repo)
         prior = json.loads(info_path.read_text())
-        if (value.get('state') != 'idle' or not value.get('thread_id') or prior.get('generation') != generation
-                or prior.get('repo') != repo.repo or prior.get('progress_key') == progress):
-            raise ValueError('resume_requires_completed_execution_and_changed_work')
+        if value.get('state') != 'idle':
+            raise ValueError('resume_requires_completed_execution')
+        if not value.get('thread_id'):
+            raise ValueError('resume_thread_unavailable')
+        if prior.get('generation') != generation or prior.get('repo') != repo.repo:
+            raise ValueError('resume_receipt_mismatch')
+        if prior.get('progress_key') == progress:
+            raise ValueError('resume_requires_changed_work')
         thread = value['thread_id']
     # Sending a command is safe only in this exact empty shell with no child job.
     identity = command(['tmux','list-panes','-s','-t','='+session,'-F',
@@ -351,7 +356,16 @@ def main():
                 else:
                     print(json.dumps(value,sort_keys=True))
             return 0
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+            if args.action == 'codex-command':
+                reasons = {'provider_executable_unavailable', 'clone_mismatch', 'remote_mismatch',
+                    'fresh_role_work_unavailable', 'prior_dispatch_uncertain',
+                    'resume_requires_completed_execution', 'resume_thread_unavailable',
+                    'resume_receipt_mismatch', 'resume_requires_changed_work',
+                    'not_verified_codex_shell', 'not_empty_shell_prompt', 'shell_has_child_work',
+                    'shell_identity_unknown', 'codex_dispatch_evidence_changed', 'codex_shell_changed'}
+                reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else 'codex_preparation_unavailable'
+                print(json.dumps({'reason': reason}))
             return 1
     if args.action == 'is-uncertain':
         return 0 if dispatch_is_uncertain(args.state, args.session, args.generation or '') else 1

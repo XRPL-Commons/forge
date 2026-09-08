@@ -180,6 +180,53 @@ def current_work_context(repository_rows):
         if db:
             db.close()
 
+def worker_fault_context(state, blockers, flow, activity):
+    """Related historical queue context, never inferred worker assignment."""
+    path=Path(state)/'activity.sqlite3'
+    if not path.exists():
+        return
+    db=None
+    try:
+        db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2)
+        for session,blocker in blockers.items():
+            if blocker.get('kind')!='cleanup_retained' or blocker.get('context'):
+                continue
+            worker=activity.get('sessions',{}).get(session,{})
+            identity=blocker.get('evidence',{}).get('generation_id')
+            if not identity or identity!=worker.get('generation_id') or not worker.get('session_started_at'):
+                continue
+            created=db.execute("SELECT id FROM events WHERE session=? AND event='session_created' ORDER BY id DESC LIMIT 1",(session,)).fetchone()
+            if not created:
+                continue
+            latest=None
+            role=session.rsplit('-',1)[-1]
+            field='claimed' if role=='build' else 'queued'
+            for repo,at,raw in db.execute("SELECT repo,at,metadata FROM events WHERE session=? AND event='pipeline_observed' AND id>? AND at>=? ORDER BY id DESC LIMIT 100",(session,created[0],worker['session_started_at'])):
+                numbers=json.loads(raw).get(field,[])
+                if numbers:
+                    latest=(repo,at,numbers)
+                    break
+            if latest is None:
+                continue
+            repo,at,numbers=latest
+            if not isinstance(repo,str) or not isinstance(numbers,list) or len(numbers)!=1 or type(numbers[0]) is not int or numbers[0]<=0:
+                continue
+            candidates=[issue for issue in flow.get('issues',[]) if isinstance(issue.get('repo'),str) and issue['repo'].lower()==repo.lower()
+                        and (issue.get('number')==numbers[0] if role=='build' else numbers[0] in issue.get('pr_numbers',[]))]
+            context={'repo':repo,'basis':'Previously claimed' if role=='build' else 'Previously queued','observed_at':at}
+            if role!='build':
+                context['pr']=numbers[0]
+            if len(candidates)==1 and type(candidates[0].get('number')) is int and candidates[0]['number']>0:
+                context['issue']=candidates[0]['number']
+            if context.get('pr') or context.get('issue'):
+                blocker['context']=context
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,sqlite3.Error):
+        return
+    finally:
+        if db:
+            db.close()
+
+
 def status():
     sess = tmux_sessions()
     out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "repos": [], "mode": "legacy-contained"}
@@ -245,6 +292,7 @@ def status():
         out['session_blockers'] = read_blockers(Path(WD) / 'state', out['repos'], out['health'], out['activity'])
     except (ImportError, OSError, ValueError, sqlite3.Error):
         out['session_blockers'] = {}
+    worker_fault_context(Path(WD)/'state',out['session_blockers'],out['issue_flow'],out['activity'])
     out['slots'] = slot_inventory()
     try:
         from forge.routing import read_routing

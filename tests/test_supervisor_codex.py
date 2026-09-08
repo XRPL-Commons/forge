@@ -59,7 +59,7 @@ class CodexPreparationTests(unittest.TestCase):
         args=shlex.split(self.prepare(resume=True))
         self.assertEqual(args[args.index('--resume-thread')+1],self.observation['thread_id'])
         self.progress='work-three';self.observation['state']='busy'
-        with self.assertRaisesRegex(ValueError,'changed_work'):self.prepare(resume=True)
+        with self.assertRaisesRegex(ValueError,'completed_execution'):self.prepare(resume=True)
 
     def test_typed_input_child_work_wrong_remote_unknown_work_are_preserved(self):
         for key,value in [('pane','user@host:~/one$ unfinished'),('processes','10 1 bash\n11 10 test'),('remote','git@github.com:other/repo.git'),('progress',None)]:
@@ -80,6 +80,20 @@ class CodexPreparationTests(unittest.TestCase):
         self.processes='10 1 bash';self.identities=0
         self.change=lambda:setattr(self,'pane','user@host:~/one$ unfinished')
         with self.assertRaisesRegex(ValueError,'shell_changed'):self.prepare()
+
+    def test_cli_reports_fixed_preparation_reason_without_raw_errors(self):
+        import contextlib
+        import io
+        from forge.startup import main
+        args=['startup','codex-command','--config',str(self.config),'--state',str(self.state),
+              '--session','one-build','--generation',self.generation,'--resume']
+        for error,expected in [(ValueError('resume_requires_changed_work'),'resume_requires_changed_work'),
+                               (ValueError('PRIVATE_PATH_OR_PROVIDER_TEXT'),'codex_preparation_unavailable')]:
+            output=io.StringIO()
+            with patch('sys.argv',args), patch('forge.startup.codex_command',side_effect=error), contextlib.redirect_stdout(output):
+                self.assertEqual(main(),1)
+            self.assertEqual(json.loads(output.getvalue()),{'reason':expected})
+            self.assertNotIn('PRIVATE',output.getvalue())
 
 
 class CodexStartupRetryTests(unittest.TestCase):

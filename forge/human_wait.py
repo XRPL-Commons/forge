@@ -145,7 +145,15 @@ def _canonical_ancestor(git, repo, ancestor, base, run):
 
 def _published_checkout(git, repo, head, bases, run):
     """Prove an old audit checkout is exactly a merged, reachable tree."""
-    branch = command(git + ['symbolic-ref', '--quiet', '--short', 'HEAD'], run)
+    from .handoff import _checkout_branch, _detached_merged_checkout
+    branch = _checkout_branch(git, run)
+    if branch is None:
+        if not bases:
+            raise Unverified('historical_candidate_bases_missing')
+        proof = _detached_merged_checkout(git, repo, head, run)
+        for base in sorted(bases):
+            _canonical_ancestor(git, repo, proof['merge'], base, run)
+        return {**proof, 'verified_bases': sorted(bases)}
     if branch == 'main':
         # A clean old main is published history when reachable from every
         # freshly verified GitHub candidate base; no local remote ref is trusted.

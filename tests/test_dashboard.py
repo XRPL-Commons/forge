@@ -66,6 +66,56 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(focus['basis'], 'queued')
 
 
+class WorkerFaultContextTests(unittest.TestCase):
+    def setUp(self):
+        from forge.activity import record, stamp
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.state=Path(self.temporary.name)/'state'
+        self.record=record
+        record(self.state,'session_created','Map-review',repo='owner/Map',role='review',now=100)
+        record(self.state,'pipeline_observed','Map-review',repo='owner/Map',role='review',metadata={'queued':[131]},now=110)
+        record(self.state,'pipeline_observed','Map-review',repo='owner/Map',role='review',metadata={'queued':[]},now=120)
+        self.identity='$7|100|%7|1000'
+        self.blockers={'Map-review':{'kind':'cleanup_retained','evidence':{'generation_id':self.identity}}}
+        self.activity={'sessions':{'Map-review':{'generation_id':self.identity,'session_started_at':stamp(100)}}}
+        self.flow={'issues':[{'repo':'owner/Map','number':127,'state':'completed','pr_numbers':[131]}]}
+
+    def context(self):
+        dashboard.worker_fault_context(self.state,self.blockers,self.flow,self.activity)
+        return self.blockers['Map-review'].get('context')
+
+    def test_last_unique_generation_queue_links_completed_issue_without_assigning_it(self):
+        context=self.context()
+        self.assertEqual((context['pr'],context['issue']),(131,127))
+        self.assertEqual(context['basis'],'Previously queued')
+        self.assertNotIn('assigned',context)
+
+    def test_replacement_or_mismatched_generation_never_reuses_old_queue(self):
+        self.record(self.state,'session_created','Map-review',now=130)
+        self.assertIsNone(self.context())
+        self.blockers['Map-review']['evidence']['generation_id']='$8|130|%8|1001'
+        self.assertIsNone(self.context())
+
+    def test_unannounced_replacement_rejects_queue_older_than_current_birth(self):
+        from forge.activity import stamp
+        self.activity['sessions']['Map-review']['session_started_at']=stamp(130)
+        self.assertIsNone(self.context())
+
+    def test_ambiguous_latest_queue_never_selects_arbitrary_or_older_pr(self):
+        self.record(self.state,'pipeline_observed','Map-review',repo='owner/Map',metadata={'queued':[131,132]},now=125)
+        self.assertIsNone(self.context())
+
+    def test_multiple_canonical_issues_keep_pr_context_without_guessing_one_issue(self):
+        self.flow['issues'].append({'repo':'owner/Map','number':128,'pr_numbers':[131]})
+        context=self.context()
+        self.assertEqual(context['pr'],131)
+        self.assertNotIn('issue',context)
+
+    def test_canonical_join_is_repository_scoped(self):
+        self.flow['issues'][0]['repo']='other/Map'
+        self.assertNotIn('issue',self.context())
+
+
 class DashboardHistoryTests(unittest.TestCase):
     def test_repository_details_are_local_only(self):
         with patch.object(dashboard, 'read_repository', return_value={'items': []}) as read, \

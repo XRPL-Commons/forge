@@ -185,7 +185,16 @@ def _check(config, state, session, run, now):
         raise Unverified('snapshot_not_fresh')
     counts = snapshot['counts']
     if counts.get('builder' if role == 'build' else 'review') != 0:
-        raise Unverified('role_has_work')
+        schedule = snapshot.get('schedule', {})
+        active_claims, handed = schedule.get('active'), schedule.get('handed_off')
+        if (role != 'build' or type(counts.get('builder')) is not int or counts['builder'] < 0
+                or not isinstance(active_claims, list) or not isinstance(handed, list)
+                or any(type(n) is not int or n <= 0 for n in active_claims + handed)
+                or not set(active_claims) <= set(handed) or schedule.get('reserving') != []
+                or any(snapshot.get('work', {}).get(k) != [] for k in ('sentback', 'conflicts', 'limbo'))):
+            raise Unverified('role_has_work')
+        # New ready issues do not invalidate the old claim's canonical PR proof.
+        # This only permits verification; it does not authorize a release itself.
     active = snapshot['schedule']['active']
     if role == 'build' and isinstance(active, list) and len(active) > 1:
         from .builder_handoff import check_multiple
@@ -290,7 +299,7 @@ def _detached_merged_checkout(git, repo, head, run):
     if not isinstance(prs, list) or len(prs) > 10:
         raise Unverified('detached_pr_search_unbounded')
     matches = [pr for pr in prs if pr.get('state') == 'closed' and pr.get('merged_at')
-               and (pr.get('head') or {}).get('sha') == head
+               and isinstance((pr.get('head') or {}).get('sha'), str)
                and ((pr.get('base') or {}).get('repo') or {}).get('full_name', '').lower() == repo.lower()]
     if len(matches) != 1:
         raise Unverified('detached_merged_pr_not_unique')
@@ -298,6 +307,20 @@ def _detached_merged_checkout(git, repo, head, run):
     merge = pr.get('merge_commit_sha')
     if not isinstance(merge, str) or not re.fullmatch(r'[0-9a-f]{40,64}', merge):
         raise Unverified('historical_commit_invalid')
+    final_head = pr['head']['sha']
+    if not re.fullmatch(r'[0-9a-f]{40,64}', final_head):
+        raise Unverified('historical_commit_invalid')
+    if final_head != head:
+        # A reviewer may finish before later reviewed fixes advance the PR.
+        # Prove its exact commit was retained in the final canonical PR history.
+        comparison = json.loads(command(['gh', 'api', f'repos/{repo}/compare/{head}...{final_head}',
+            '--jq', '{status,base_commit:{sha:.base_commit.sha},behind_by}'], run))
+        if (comparison.get('status') not in {'ahead', 'identical'}
+                or comparison.get('base_commit', {}).get('sha') != head
+                or comparison.get('behind_by') != 0):
+            raise Unverified('historical_head_not_in_merged_pr')
+        return {'basis': 'ancestor_of_verified_merged_pr_head', 'branch': None,
+                'pr': pr['number'], 'head': head, 'final_head': final_head, 'merge': merge}
     commit = json.loads(command(['gh', 'api', f'repos/{repo}/git/commits/{merge}'], run))
     tree = command(git + ['rev-parse', head + '^{tree}'], run)
     if commit.get('sha') != merge or (commit.get('tree') or {}).get('sha') != tree:
@@ -322,9 +345,11 @@ def _completed_role(config, state, session, run, now):
             or snapshot.get('repo') != repo.repo or type(observed) not in (int, float)
             or not math.isfinite(observed) or not 0 <= now - observed <= 300):
         raise Unverified('snapshot_not_fresh')
-    if (snapshot['counts'].get('builder' if role == 'build' else role) != 0
+    if ((role != 'build' and snapshot['counts'].get(role) != 0)
             or (role != 'build' and snapshot['work'].get(role) != [])
-            or (role == 'build' and any(snapshot['work'].get(k) != [] for k in ('ready', 'sentback', 'conflicts', 'limbo')))):
+            or (role == 'build' and (type(snapshot['counts'].get('builder')) is not int
+                or snapshot['counts']['builder'] < 0
+                or any(snapshot['work'].get(k) != [] for k in ('sentback', 'conflicts', 'limbo'))))):
         raise Unverified('role_queue_not_empty')
     clone = Path((repo.clone_build if role == 'build' else repo.clone_review if role == 'review' else repo.clone_audit)
                  or Path.home() / (repo.short if role == 'build' else repo.short + '-' + role)).resolve()
@@ -389,7 +414,8 @@ def _completed_role(config, state, session, run, now):
     return {'eligible': True, 'reason': 'verified_' + role + '_complete', 'evidence': {
         'repo': repo.repo, 'role': role, 'clone': str(clone), 'head': head,
         'published_main': main, 'branch': branch,
-        'checkout_basis': 'merged_pr_tree_on_published_main' if checkout else 'published_main_ancestor',
+        'checkout_basis': ('merged_pr_history_on_published_main' if checkout and checkout.get('basis') == 'ancestor_of_verified_merged_pr_head'
+                           else 'merged_pr_tree_on_published_main' if checkout else 'published_main_ancestor'),
         **({'checkout': {**checkout, 'verified_bases': [main]}} if checkout else {}), **identity}}
 
 
