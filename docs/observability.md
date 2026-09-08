@@ -40,8 +40,10 @@ No collector command changes issues, labels, PRs, reviews or fleet workers.
 
 ### Issue cards and live activity
 
-The dashboard projects each issue into a single Build, Review, or Audit workstation, with Working and Pending stacks. It joins only explicit same-repository PR references; a merged PR alone does not prove issue completion. Unlinked PRs and unknown stages appear under Unconfirmed work. Grey cards are waiting; role colors and card animation indicate observed work. Held cards have a hold marker. Motion is disabled when reduced motion is requested.
+The dashboard projects each issue into a single Build, Review, or Audit workstation, with Working and Pending stacks. It joins only explicit same-repository PR references; a merged PR alone does not prove issue completion. Unlinked PRs and unknown stages appear under Unconfirmed work. Grey cards are waiting; role colors and card animation indicate observed work. Critical approval waits appear separately as issue cards in Needs attention. Motion is disabled when reduced motion is requested.
 
 Worker activity is not sufficient to identify an issue when several issues or unresolved PR candidates share the role. Those cards remain pending with assignment uncertainty. Activity observations are sampled every thirty seconds, and the dashboard refreshes every twenty seconds. Dispatch timestamps are labeled as dispatch, not asserted execution start times.
 
-The repository list uses the same issue projection. Diagnostics and notification history are collapsed; waiting work appears as compact icon stacks with counts; expanding a stack reveals its issues. Started work precedes ready work and held work. No aggregate task/PR action counts are used as issue throughput.
+The repository list uses the same issue projection. A unified Activity panel follows the chart; waiting work appears as compact icon stacks with counts; expanding a stack reveals its issues. Started work precedes ready work and held work. No aggregate task/PR action counts are used as issue throughput.
+
+See [Reading the monitoring page](monitoring.md) for operator states and actions.
