@@ -46,6 +46,9 @@ class HandoffTests(unittest.TestCase):
         self.tracking_branch = ''
         self.merged_prs = []
         self.trees = {}
+        self.remote_merge_tree = 'e' * 40
+        self.remote_merge_sha = None
+        self.detached_prs = []
 
     def test_native_provider_preserves_exact_quiet_process_proof(self):
         from forge.handoff import session_identity, Unverified
@@ -78,6 +81,8 @@ class HandoffTests(unittest.TestCase):
             elif cmd == ['rev-parse', 'origin/main']:
                 text = self.main_head
             elif cmd in (['symbolic-ref', '--short', 'HEAD'], ['symbolic-ref', '--quiet', '--short', 'HEAD']):
+                if self.branch is None:
+                    return SimpleNamespace(returncode=1, stdout='', stderr='')
                 text = self.branch
             elif cmd[:2] == ['config', '--get']:
                 text = self.tracking_remote if cmd[-1].endswith('.remote') else self.tracking_branch
@@ -97,6 +102,10 @@ class HandoffTests(unittest.TestCase):
                 if self.main_reads == 2 and self.on_second_main:
                     self.on_second_main()
                 text = json.dumps({'object': {'sha': self.published_main}})
+            elif '/commits/' in args[2] and '/pulls?' in args[2]:
+                text = json.dumps(self.detached_prs)
+            elif '/git/commits/' in args[2]:
+                text = json.dumps({'sha': self.remote_merge_sha or args[2].rsplit('/', 1)[-1], 'tree': {'sha': self.remote_merge_tree}})
             elif '/compare/' in args[2]:
                 text = json.dumps({'status': self.compare_status, 'base_commit': {'sha': self.compare_base or self.head}, 'behind_by': 0})
             else:
@@ -464,6 +473,82 @@ class HandoffTests(unittest.TestCase):
         def failure(*args, **kwargs):
             raise OSError('unavailable')
         self.assertFalse(check(self.config, self.state, 'one-build', run=failure, now=100)['eligible'])
+
+    def test_detached_completed_auditor_requires_published_ancestry(self):
+        self.completed_audit_setup()
+        self.branch = None
+        self.published_main = self.head
+        self.assertTrue(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+        self.compare_status = 'diverged'
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+
+    def test_detached_checkout_change_between_checks_preserves_worker(self):
+        self.completed_audit_setup()
+        self.branch = None
+        self.published_main = self.head
+        self.on_second_main = lambda: setattr(self, 'branch', 'main')
+        result = release(self.config, self.state, 'one-audit', run=self.fake_run, now=100)
+        self.assertFalse(result['released'])
+        self.assertFalse(any(c[:2] == ['tmux', 'kill-session'] for c in self.calls))
+
+    def test_missing_merge_object_uses_exact_canonical_remote_tree(self):
+        self.historical_checkout_setup()
+        del self.trees[self.historical_merge + '^{tree}']
+        result = check(self.config, self.state, 'one-review', run=self.fake_run, now=100)
+        self.assertTrue(result['eligible'], result)
+        self.assertTrue(any('/git/commits/' + self.historical_merge in ' '.join(c) for c in self.calls))
+        self.remote_merge_tree = 'f' * 40
+        self.assertFalse(check(self.config, self.state, 'one-review', run=self.fake_run, now=100)['eligible'])
+        self.remote_merge_tree = 'e' * 40
+        self.remote_merge_sha = 'f' * 40
+        self.assertFalse(check(self.config, self.state, 'one-review', run=self.fake_run, now=100)['eligible'])
+
+    def completed_builder_setup(self):
+        self.historical_checkout_setup()
+        self.identity = self.identity.replace('one-review', 'one-build')
+        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_BUILD={self.clone}\n')
+        self.snapshot['counts']['builder'] = 0
+        self.snapshot['schedule']['active'] = [1]
+        self.snapshot['work'].update(ready=[], sentback=[], conflicts=[], limbo=[], review=[], audit=[])
+        self.save()
+
+    def test_completed_builder_requires_exact_merged_branch_and_no_actionable_work(self):
+        self.completed_builder_setup()
+        result = check(self.config, self.state, 'one-build', run=self.fake_run, now=100)
+        self.assertTrue(result['eligible'], result)
+        self.assertEqual(result['reason'], 'verified_build_complete')
+        for key in ('ready', 'sentback', 'conflicts', 'limbo'):
+            self.snapshot['work'][key] = [9]
+            self.save()
+            self.assertFalse(self.decision()['eligible'])
+            self.snapshot['work'][key] = []
+        self.save()
+        self.live_queue = [{'number': 9}]
+        self.assertFalse(self.decision()['eligible'])
+        self.live_queue = []
+        self.branch = 'main'
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_completed_builder_does_not_erase_untracked_files(self):
+        self.completed_builder_setup()
+        self.status = '?? .nuxtrc'
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_detached_squashed_auditor_requires_canonical_pr_and_exact_tree(self):
+        self.completed_audit_setup()
+        self.branch = None
+        merge = 'd' * 40
+        self.detached_prs = [{'number': 130, 'state': 'closed', 'merged_at': '2026-09-08',
+                             'head': {'sha': self.head}, 'base': {'repo': {'full_name': 'o/one'}},
+                             'merge_commit_sha': merge}]
+        self.trees[self.head + '^{tree}'] = 'e' * 40
+        self.compare_base = merge
+        self.assertTrue(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+        self.remote_merge_tree = 'f' * 40
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+        self.remote_merge_tree = 'e' * 40
+        self.detached_prs[0]['base']['repo']['full_name'] = 'other/one'
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
 
 
 if __name__ == '__main__':

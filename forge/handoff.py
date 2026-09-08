@@ -141,6 +141,10 @@ def _check(config, state, session, run, now):
     if counts.get('builder' if role == 'build' else 'review') != 0:
         raise Unverified('role_has_work')
     active = snapshot['schedule']['active']
+    if role == 'build' and isinstance(active, list) and len(active) > 1:
+        from .builder_handoff import check_multiple
+        return check_multiple(repo, snapshot, state, session, clone, run, now, began,
+                              read_command=command, identify_session=session_identity, unverified=Unverified)
     if len(active) != 1 or type(active[0]) is not int or active[0] <= 0:
         raise Unverified('claim_not_unique')
     work = snapshot['work']
@@ -216,11 +220,48 @@ def _check(config, state, session, run, now):
         'head': head, **identity}}
 
 
+def _checkout_branch(git, run):
+    result = run(git + ['symbolic-ref', '--short', 'HEAD'],
+                 capture_output=True, text=True, timeout=15)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if result.returncode == 1:  # Detached HEAD; publication still needs remote proof.
+        return None
+    # Without --quiet Git reports a detached HEAD as 128. Verify explicitly
+    # with --quiet so other repository/read errors cannot masquerade as detached.
+    result = run(git + ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+                 capture_output=True, text=True, timeout=15)
+    if result.returncode == 1:
+        return None
+    raise Unverified('branch_unavailable')
+
+
+def _detached_merged_checkout(git, repo, head, run):
+    prs = json.loads(command(['gh', 'api', f'repos/{repo}/commits/{head}/pulls?per_page=11'], run))
+    if not isinstance(prs, list) or len(prs) > 10:
+        raise Unverified('detached_pr_search_unbounded')
+    matches = [pr for pr in prs if pr.get('state') == 'closed' and pr.get('merged_at')
+               and (pr.get('head') or {}).get('sha') == head
+               and ((pr.get('base') or {}).get('repo') or {}).get('full_name', '').lower() == repo.lower()]
+    if len(matches) != 1:
+        raise Unverified('detached_merged_pr_not_unique')
+    pr = matches[0]
+    merge = pr.get('merge_commit_sha')
+    if not isinstance(merge, str) or not re.fullmatch(r'[0-9a-f]{40,64}', merge):
+        raise Unverified('historical_commit_invalid')
+    commit = json.loads(command(['gh', 'api', f'repos/{repo}/git/commits/{merge}'], run))
+    tree = command(git + ['rev-parse', head + '^{tree}'], run)
+    if commit.get('sha') != merge or (commit.get('tree') or {}).get('sha') != tree:
+        raise Unverified('historical_checkout_differs_from_merged_tree')
+    return {'basis': 'exact_tree_of_verified_merged_pr', 'branch': None,
+            'pr': pr['number'], 'head': head, 'merge': merge, 'tree': tree}
+
+
 def _completed_role(config, state, session, run, now):
     """Completed review/audit roles remain reclaimable after their PR/claim disappears."""
     began = time.monotonic()
     role = session.rsplit('-', 1)[-1]
-    if role not in {'review', 'audit'}:
+    if role not in {'build', 'review', 'audit'}:
         raise Unverified('role_not_supported')
     matches = [r for r in load_repositories(config) if r.enabled and r.short + '-' + role == session]
     if len(matches) != 1:
@@ -232,38 +273,45 @@ def _completed_role(config, state, session, run, now):
             or snapshot.get('repo') != repo.repo or type(observed) not in (int, float)
             or not math.isfinite(observed) or not 0 <= now - observed <= 300):
         raise Unverified('snapshot_not_fresh')
-    if snapshot['counts'].get(role) != 0 or snapshot['work'].get(role) != []:
+    if (snapshot['counts'].get('builder' if role == 'build' else role) != 0
+            or (role != 'build' and snapshot['work'].get(role) != [])
+            or (role == 'build' and any(snapshot['work'].get(k) != [] for k in ('ready', 'sentback', 'conflicts', 'limbo')))):
         raise Unverified('role_queue_not_empty')
-    clone = Path((repo.clone_review if role == 'review' else repo.clone_audit)
-                 or Path.home() / (repo.short + '-' + role)).resolve()
+    clone = Path((repo.clone_build if role == 'build' else repo.clone_review if role == 'review' else repo.clone_audit)
+                 or Path.home() / (repo.short if role == 'build' else repo.short + '-' + role)).resolve()
     git = ['git', '-C', str(clone)]
     if Path(command(git + ['rev-parse', '--show-toplevel'], run)).resolve() != clone:
         raise Unverified('clone_mismatch')
     remote = command(git + ['remote', 'get-url', 'origin'], run)
     if remote not in {f'git@github.com:{repo.repo}.git', f'https://github.com/{repo.repo}.git', f'https://github.com/{repo.repo}'}:
         raise Unverified('remote_mismatch')
-    branch = command(git + ['symbolic-ref', '--short', 'HEAD'], run)
+    branch = _checkout_branch(git, run)
     if command(git + ['status', '--porcelain=v1', '--untracked-files=all'], run):
         raise Unverified('worktree_not_clean')
     head = command(git + ['rev-parse', 'HEAD'], run)
     if not re.fullmatch(r'[0-9a-f]{40,64}', head):
         raise Unverified('invalid_head')
     queued = json.loads(command(['gh', 'pr', 'list', '--repo', repo.repo, '--state', 'open',
-                                 '--label', 'ready-for-' + role, '--limit', '1', '--json', 'number'], run))
+                                 '--label', 'changes-requested' if role == 'build' else 'ready-for-' + role, '--limit', '1', '--json', 'number'], run))
     if queued != []:
         raise Unverified('live_role_queue_not_empty')
     main = json.loads(command(['gh', 'api', f'repos/{repo.repo}/git/ref/heads/main'], run))['object']['sha']
     if not isinstance(main, str) or not re.fullmatch(r'[0-9a-f]{40,64}', main):
         raise Unverified('invalid_published_main')
     checkout = None
+    if role == 'build' and branch in ('main', None):
+        raise Unverified('builder_completed_pr_required')
     published = head
-    if branch != 'main':
+    if branch not in ('main', None):
         # Reuse the exact merged-PR tree proof. Verify ancestry remotely below,
         # so a missing local object for today's main tip does not require fetch.
         from .human_wait import _published_checkout
         checkout = _published_checkout(git, repo.repo, head, set(), run)
         if checkout.get('branch') != branch or checkout.get('basis') != 'exact_tree_of_verified_merged_pr':
             raise Unverified('historical_checkout_changed')
+        published = checkout['merge']
+    if branch is None and head != main:
+        checkout = _detached_merged_checkout(git, repo.repo, head, run)
         published = checkout['merge']
     comparison = json.loads(command(['gh', 'api', f'repos/{repo.repo}/compare/{published}...{main}',
                                       '--jq', '{status,base_commit:{sha:.base_commit.sha},behind_by}'], run))
@@ -276,7 +324,7 @@ def _completed_role(config, state, session, run, now):
         raise Unverified('snapshot_changed')
     if now + time.monotonic() - began - observed > 300:
         raise Unverified('snapshot_expired')
-    if (command(git + ['symbolic-ref', '--short', 'HEAD'], run) != branch
+    if (_checkout_branch(git, run) != branch
             or command(git + ['rev-parse', 'HEAD'], run) != head
             or command(git + ['remote', 'get-url', 'origin'], run) != remote):
         raise Unverified('checkout_changed')
@@ -294,7 +342,7 @@ def _check_with_fallback(config, state, session, run, now):
     try:
         return _check(config, state, session, run, now)
     except Unverified as exc:
-        if session.rsplit('-', 1)[-1] in {'review', 'audit'} and str(exc) in {
+        if session.rsplit('-', 1)[-1] in {'build', 'review', 'audit'} and str(exc) in {
                 'claim_not_unique', 'no_bounded_handoff_queue', 'published_handoff_not_unique', 'role_not_supported'}:
             return _completed_role(config, state, session, run, now)
         raise

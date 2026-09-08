@@ -154,7 +154,18 @@ def _published_checkout(git, repo, head, bases, run):
                and all(c in '0123456789abcdef' for c in sha) for sha in (head, merge)):
         raise Unverified('historical_commit_invalid')
     tree = command(git + ['rev-parse', head + '^{tree}'], run)
-    if tree != command(git + ['rev-parse', merge + '^{tree}'], run):
+    local_merge = run(git + ['rev-parse', merge + '^{tree}'],
+                      capture_output=True, text=True, timeout=15)
+    if local_merge.returncode == 0:
+        merge_tree = local_merge.stdout.strip()
+    else:
+        # Completed clones need not have fetched the squash/merge object.
+        # Ask for this immutable canonical commit; never substitute branch tip.
+        commit = json.loads(command(['gh', 'api', f'repos/{repo}/git/commits/{merge}'], run))
+        if commit.get('sha') != merge:
+            raise Unverified('historical_commit_identity_changed')
+        merge_tree = (commit.get('tree') or {}).get('sha')
+    if tree != merge_tree:
         raise Unverified('historical_checkout_differs_from_merged_tree')
     for base in sorted(bases):
         command(git + ['merge-base', '--is-ancestor', merge, base], run)
