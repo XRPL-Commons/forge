@@ -117,6 +117,81 @@ class StartupTests(unittest.TestCase):
         self.assertFalse(result['released'])
         self.assertFalse(any(c[:2]==['tmux','kill-session'] for c in self.calls))
 
+    def test_never_dispatched_reviewer_can_recover_with_current_pr_demand(self):
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_REVIEW={self.clone}\n')
+        self.snap['work']['review']=[2];self.snap['counts']['review']=1
+        self.snap['schedule']['active']=[1];self.snap['counts']['wip']=1;self.save()
+        self.identity=self.identity.replace('one-build','one-review')
+        self.db.execute("UPDATE events SET session='one-review'");self.db.commit()
+        self.assertTrue(check(self.config,self.state,'one-review',run=self.fake_run,now=100)['eligible'])
+        self.snap['work']['review']=[];self.save()
+        self.assertFalse(check(self.config,self.state,'one-review',run=self.fake_run,now=100)['eligible'])
+
+    def test_never_dispatched_auditor_requires_fresh_audit_queue(self):
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_AUDIT={self.clone}\n')
+        self.snap['work']['audit']=[2];self.snap['counts']['audit']=1
+        self.snap['schedule']['active']=[1];self.snap['counts']['wip']=1;self.save()
+        self.identity=self.identity.replace('one-build','one-audit')
+        self.db.execute("UPDATE events SET session='one-audit'");self.db.commit()
+        self.assertTrue(check(self.config,self.state,'one-audit',run=self.fake_run,now=100)['eligible'])
+        self.snap['work']['audit']=[];self.save()
+        self.assertFalse(check(self.config,self.state,'one-audit',run=self.fake_run,now=100)['eligible'])
+
+    def test_auditor_with_previous_dispatch_is_never_recovered(self):
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_AUDIT={self.clone}\n')
+        self.snap['work']['audit']=[2];self.snap['counts']['audit']=1;self.save()
+        self.identity=self.identity.replace('one-build','one-audit')
+        self.event('dispatch')
+        self.db.execute("UPDATE events SET session='one-audit'");self.db.commit()
+        decision=check(self.config,self.state,'one-audit',run=self.fake_run,now=100)
+        self.assertFalse(decision['eligible'])
+        self.assertEqual(decision['reason'],'startup_was_dispatched_or_active')
+
+    def test_launch_command_uses_quoted_absolute_binary_and_exit_receipt(self):
+        from forge.startup import launch_command
+        import shlex
+        binary=self.root/'provider name'
+        binary.write_text('#!/bin/sh\nexit 0\n');binary.chmod(0o700)
+        value=launch_command(str(binary),self.state,'one-review')
+        self.assertTrue(value.startswith(shlex.quote(str(binary))+' --dangerously-skip-permissions'))
+        self.assertIn('record-exit',value)
+        self.assertIn('forge_provider_exit=$?',value)
+        with self.assertRaises(ValueError):launch_command(str(self.root/'missing'),self.state,'one-review')
+
+    def test_startup_failure_guard_is_short_and_preserves_failure_budget(self):
+        from forge.legacy_health import LegacyGuard
+        guard=LegacyGuard(self.state)
+        guard.transact('launch','one-review',now=100)
+        self.assertFalse(guard.transact('start_failed','one-review',now=101)[0])
+        stored=json.loads((self.state/'legacy-health/guard.json').read_text())['sessions']['one-review']
+        self.assertEqual(stored,{'launches':[100],'reason':'provider_start_failed','until':161})
+        self.assertFalse(guard.transact('check','one-review',now=160)[0])
+        self.assertTrue(guard.transact('check','one-review',now=162)[0])
+        guard.transact('observe','one-review','authentication failed',now=163)
+        guard.transact('start_failed','one-review',now=164)
+        stored=json.loads((self.state/'legacy-health/guard.json').read_text())['sessions']['one-review']
+        self.assertEqual(stored['reason'],'blocked_auth')
+        self.assertEqual(stored['until'],3763)
+
+    def test_provider_receipt_is_generation_specific_and_normal_exit_is_distinct(self):
+        from forge.startup import record_failure
+        import os
+        generation=['$1|10']
+        def run(args, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=generation[0] if args[1]=='display-message' else 'provider: failed', stderr='')
+        result=record_failure(self.state,'one-review',exit_code=127,startup=False,run=run,now=20)
+        self.assertEqual(result['reason'],'provider_start_failed')
+        self.assertEqual(record_failure(self.state,'one-review',run=run)['exit_code'],127)
+        generation[0]='$2|30'
+        self.assertIsNone(record_failure(self.state,'one-review',run=run)['exit_code'])
+        marker=self.state/'one-review.up';marker.touch();os.utime(marker,(35,35))
+        result=record_failure(self.state,'one-review',exit_code=0,startup=False,run=run)
+        self.assertEqual(result['reason'],'provider_exited')
+        self.assertIsNone(result['diagnostic'])
+        # An old startup marker cannot turn a new failed start into a normal exit.
+        generation[0]='$3|40'
+        self.assertEqual(record_failure(self.state,'one-review',exit_code=1,startup=False,run=run)['reason'],'provider_start_failed')
+
     def test_requires_supervisor_lock(self):
         self.assertFalse(release(self.config,self.state,'one-build',lock_fd=-1,run=self.fake_run)['released'])
         self.assertEqual(self.calls,[])

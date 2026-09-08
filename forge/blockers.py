@@ -66,6 +66,14 @@ def read_blockers(state, repositories, health, activity, now=None):
                     item['evidence'] = {'event': 'paused', 'reason': reason,
                                         'observed_at': pause[0], 'session': session, 'role': role}
                     item['basis'] = 'Local supervisor health guard and matching pause activity receipt'
+            elif reason == 'provider_start_failed':
+                item.update(
+                    why=f'The worker application failed to start. The supervisor can retry after {retry_at}.',
+                    next='Check the provider executable and its startup output. No task result was produced by this failed start; retry still depends on capacity and the launch guard.')
+            elif reason == 'launch_budget_exhausted':
+                item.update(
+                    why=f'The worker reached its hourly launch limit; retries are paused until {retry_at}.',
+                    next='Inspect repeated startup failures or incomplete runs. Verified successful handoffs return their launch allowance automatically; other launch charges expire after one hour.')
             elif reason in {'blocked_auth','blocked_quota','blocked_permission'}:
                 item['next'] = {'blocked_auth':'Restore the worker account login, then allow the supervisor to recheck.',
                                 'blocked_quota':'Restore provider quota or wait for its reset; the local cooldown is not the provider reset time.',

@@ -290,6 +290,33 @@ const fs = require("fs"),
   assert((await page.locator('#attention').innerText()).includes('other eligible issues can continue'));
   assert.equal(await page.locator('#attention-title').innerText(),'Needs attention');
   await page.evaluate(()=>{delete fleet.repos[0].triage;delete fleet.repos[0].schedule.blocked[21];render();});
+  await page.evaluate(() => {
+    fleet.repos[1].review = {up:true,busy:false};
+    fleet.health.sessions['quiet-review'] = {until:Date.now()/1000+60,reason:'provider_start_failed'};
+    fleet.session_blockers = {'quiet-review':{reason:'provider_start_failed',why:'Provider startup was not confirmed <script>bad()</script>',next:'Configure the native executable and inspect startup diagnostics.'}};
+    render();
+  });
+  const workerAlert=page.locator('.worker-attention-card[data-worker-fault="quiet-review"]');
+  assert.equal(await workerAlert.count(),1);
+  assert(await workerAlert.evaluate(el=>el.classList.contains('compact-issue') && !el.classList.contains('moving')));
+  assert.equal(await workerAlert.locator('[data-card-issue], [data-issue]').count(),0);
+  assert((await workerAlert.locator('.compact-identity').innerText()).includes('WORKER'));
+  assert(!(await workerAlert.innerText()).includes('Configure the native executable'));
+  await workerAlert.locator('summary').click();
+  await workerAlert.locator('summary').focus();
+  await page.evaluate(()=>renderAttention());
+  assert(await workerAlert.locator('details').evaluate(el=>el.open));
+  assert.equal(await page.evaluate(()=>document.activeElement.tagName),'SUMMARY');
+  assert((await workerAlert.innerText()).includes('Configure the native executable'));
+  assert((await workerAlert.innerText()).includes('no exact issue assignment'));
+  assert.equal(await page.evaluate(()=>window.pwned),undefined);
+  await page.evaluate(()=>{
+    fleet.repos[1].review={up:false,busy:false};
+    delete fleet.health.sessions['quiet-review'];
+    fleet.session_blockers={};
+    render();
+  });
+  assert.equal(await page.locator('.worker-attention-card').count(),0);
   await page.emulateMedia({ reducedMotion: "reduce" });
   assert.equal(
     await page

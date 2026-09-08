@@ -42,6 +42,22 @@ class HandoffTests(unittest.TestCase):
         self.compare_status = 'diverged'
         self.compare_base = None
         self.on_second_main = None
+        self.tracking_remote = ''
+        self.tracking_branch = ''
+        self.merged_prs = []
+        self.trees = {}
+
+    def test_native_provider_preserves_exact_quiet_process_proof(self):
+        from forge.handoff import session_identity, Unverified
+        self.identity=self.identity.replace('|claude','|claude.exe')
+        self.processes=self.processes.replace('10 claude','10 claude.exe')
+        self.assertEqual(session_identity('one-build',self.fake_run)['processes'],[10,11])
+        self.processes+='\n12 11 node'
+        with self.assertRaises(Unverified):session_identity('one-build',self.fake_run)
+        self.processes='10 1 bash\n11 10 claude'
+        with self.assertRaises(Unverified):session_identity('one-build',self.fake_run)
+        self.identity=self.identity.replace('|claude.exe','|other-claude.exe')
+        with self.assertRaises(Unverified):session_identity('one-build',self.fake_run)
 
     def save(self):
         atomic_json(snapshot_path(self.state, 'o/one'), self.snapshot)
@@ -61,14 +77,20 @@ class HandoffTests(unittest.TestCase):
                 text = self.head
             elif cmd == ['rev-parse', 'origin/main']:
                 text = self.main_head
-            elif cmd == ['symbolic-ref', '--short', 'HEAD']:
+            elif cmd in (['symbolic-ref', '--short', 'HEAD'], ['symbolic-ref', '--quiet', '--short', 'HEAD']):
                 text = self.branch
+            elif cmd[:2] == ['config', '--get']:
+                text = self.tracking_remote if cmd[-1].endswith('.remote') else self.tracking_branch
+            elif cmd[0] == 'rev-parse' and cmd[-1].endswith('^{tree}'):
+                text = self.trees.get(cmd[-1], '')
+                if not text:
+                    return SimpleNamespace(returncode=1, stdout='', stderr='')
             elif cmd[:2] == ['merge-base', '--is-ancestor']:
                 return SimpleNamespace(returncode=0 if self.ancestor else 1, stdout='', stderr='')
             else:
                 self.fail(args)
         elif args[:3] == ['gh', 'pr', 'list']:
-            text = json.dumps(self.live_queue)
+            text = json.dumps(self.merged_prs if 'merged' in args else self.live_queue)
         elif args[:2] == ['gh', 'api']:
             if '/git/ref/' in args[2]:
                 self.main_reads += 1
@@ -386,6 +408,57 @@ class HandoffTests(unittest.TestCase):
         self.completed_audit_setup()
         self.live_queue = [{'number': 3}]
         self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+
+    def historical_checkout_setup(self, role='review'):
+        if role == 'audit':
+            self.completed_audit_setup()
+        else:
+            self.completed_review_setup()
+        self.branch = 'old-reviewed-branch'
+        self.tracking_remote = 'origin'
+        self.tracking_branch = 'refs/heads/old-reviewed-branch'
+        self.historical_merge = 'd' * 40
+        self.merged_prs = [{'number': 34, 'headRefOid': self.head,
+                           'headRefName': 'old-reviewed-branch', 'state': 'MERGED',
+                           'mergedAt': '2026-01-01', 'mergeCommit': {'oid': self.historical_merge}}]
+        self.trees = {self.head+'^{tree}': 'e'*40, self.historical_merge+'^{tree}': 'e'*40}
+        self.compare_base = self.historical_merge
+
+    def test_completed_reviewer_on_exact_historical_merged_tree_can_release(self):
+        self.historical_checkout_setup()
+        result = release(self.config, self.state, 'one-review', run=self.fake_run, now=100)
+        self.assertTrue(result['released'], result)
+        proof = result['evidence']
+        self.assertEqual(proof['checkout_basis'], 'merged_pr_tree_on_published_main')
+        self.assertEqual(proof['checkout']['pr'], 34)
+        self.assertEqual(proof['checkout']['merge'], self.historical_merge)
+        self.assertEqual(proof['checkout']['verified_bases'], [self.published_main])
+        self.assertTrue(any(self.historical_merge+'...'+self.published_main in ' '.join(c) for c in self.calls))
+        self.assertFalse(any('fetch' in c or 'checkout' in c for c in self.calls))
+
+    def test_completed_auditor_on_exact_historical_merged_tree_can_release(self):
+        self.historical_checkout_setup(role='audit')
+        self.assertTrue(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+
+    def test_historical_branch_unpublished_tree_wrong_remote_or_live_work_rejects(self):
+        self.historical_checkout_setup()
+        for attr, value in [('tracking_remote', 'fork'), ('merged_prs', []),
+                            ('trees', {self.head+'^{tree}': 'e'*40, self.historical_merge+'^{tree}': 'f'*40}),
+                            ('compare_status', 'diverged'), ('compare_base', 'c'*40),
+                            ('live_queue', [{'number': 99}]), ('status', ' M unfinished.py'),
+                            ('pane', '❯ unsent input\n bypass permissions on')]:
+            with self.subTest(attr=attr):
+                old = getattr(self, attr)
+                setattr(self, attr, value)
+                self.assertFalse(check(self.config, self.state, 'one-review', run=self.fake_run, now=100)['eligible'])
+                setattr(self, attr, old)
+
+    def test_historical_checkout_change_between_verifications_prevents_release(self):
+        self.historical_checkout_setup()
+        self.on_second_main = lambda: setattr(self, 'tracking_branch', 'refs/heads/replaced')
+        result = release(self.config, self.state, 'one-review', run=self.fake_run, now=100)
+        self.assertFalse(result['released'])
+        self.assertFalse(any(c[:2] == ['tmux', 'kill-session'] for c in self.calls))
 
     def test_unknown_read_fails_closed(self):
         def failure(*args, **kwargs):

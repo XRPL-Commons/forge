@@ -8,6 +8,8 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="$DIR"
+# Configure a stable native executable; repository shell/fnm PATH may change.
+FORGE_CLAUDE_BIN="${FORGE_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
 # Fleet capacity: concurrent agent sessions host-wide and per role (build/review/audit).
 # Defaults reserve one slot per role. Validate capacity against your own host.
 MAX_SESSIONS="${MAX_SESSIONS:-3}"
@@ -51,7 +53,12 @@ ensure_clone(){
   timeout 120 git clone "git@github.com:$1.git" "$2" >/dev/null 2>&1
 }
 sess_up(){ tmux has-session -t "=$1" 2>/dev/null; }
-sess_client(){ [ "$(tmux display-message -p -t "=$1:1.1" '#{pane_current_command}' 2>/dev/null)" = claude ]; }
+sess_client(){
+  case "$(tmux display-message -p -t "=$1:1.1" '#{pane_current_command}' 2>/dev/null)" in
+    claude|claude.exe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 sess_busy(){ tmux capture-pane -p -t "=$1:1.1" 2>/dev/null | grep -q "esc to interrupt"; }
 
 _nav_prompts(){ local t="$1" p; p=$(tmux capture-pane -p -t "$t" 2>/dev/null||echo "")
@@ -60,7 +67,14 @@ _nav_prompts(){ local t="$1" p; p=$(tmux capture-pane -p -t "$t" 2>/dev/null||ec
   echo "$p"|grep -qi "Bypass Permissions mode" && { tmux send-keys -t "$t" Down; sleep 0.3; tmux send-keys -t "$t" Enter; sleep 4; }
 }
 launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred continuation
-  local sess="$1" dir="$2" role="$3" nudge="$4" t="=$1:1.1" p
+  local sess="$1" dir="$2" role="$3" nudge="$4" t="=$1:1.1" p provider_command
+  if ! provider_command=$(python3 -m forge.startup command --state "$STATE" --session "$sess" --executable "$FORGE_CLAUDE_BIN"); then
+    python3 -m forge.startup record-failure --state "$STATE" --session "$sess" >/dev/null 2>&1 || true
+    health start_failed "$sess" >/dev/null || true
+    activity paused "$sess" provider_start_failed
+    glog "[$sess] provider executable unavailable; configure FORGE_CLAUDE_BIN"
+    return
+  fi
   if ! python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
     glog "[$sess] capacity admission deferred; see state/capacity.json"
     activity admission_deferred "$sess" capacity_guard
@@ -72,10 +86,12 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
   health launch "$sess" >/dev/null || return
   if [ -f "$STATE/$sess.up" ]; then notify "[forge] WARNING: $sess was up but vanished — relaunching (crash?)"; glog "crash-relaunch $sess"; else glog "wake $sess"; fi
   tmux new-session -d -s "$sess" -c "$dir" || { glog "session launch conflict $sess"; return 1; }; activity session_created "$sess" launch; sleep 2
-  tmux send-keys -t "$t" "claude --dangerously-skip-permissions" Enter; sleep 12
+  tmux send-keys -t "$t" -l "$provider_command"; tmux send-keys -t "$t" Enter; sleep 12
   if ! sess_client "$sess"; then
-    health park "$sess" >/dev/null || true
-    glog "$sess did not reach Claude foreground; parked without typing instructions"
+    python3 -m forge.startup record-failure --state "$STATE" --session "$sess" >/dev/null || true
+    health start_failed "$sess" >/dev/null || true
+    activity paused "$sess" provider_start_failed
+    glog "$sess provider startup failed; diagnostic in state/provider-starts; no task dispatched"
     return
   fi
   _nav_prompts "$t"
@@ -85,7 +101,7 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
     return
   fi
   sleep 3
-  sess_client "$sess" || { health park "$sess" >/dev/null || true; return; }
+  sess_client "$sess" || { python3 -m forge.startup record-failure --state "$STATE" --session "$sess" >/dev/null || true; health start_failed "$sess" >/dev/null || true; activity paused "$sess" provider_start_failed; return; }
   if tmux send-keys -t "$t" -l "Read your role file at $role and operate strictly per it. You were (re)started by the supervisor — process currently eligible work for this dispatch. $nudge"; then
     sleep 0.5
     if tmux send-keys -t "$t" Enter; then activity dispatch "$sess" initial_task; else glog "[$sess] initial dispatch failed"; fi
@@ -145,6 +161,13 @@ watch(){ # sess short pending nudge
 role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when this role has work
   local sess="$1" dir="$2" role="$3" nudge="$4" pending="$5" short="$6" repo="${7:-}"
   [ "$pending" = "?" ] && return
+  # A supervisor restart may interrupt launch before the first task dispatch.
+  # Reclaim only a verified old empty shell; never touch claimed or dirty work.
+  if [[ "$sess" == *-build || "$sess" == *-review || "$sess" == *-audit ]] && sess_up "$sess" && ! sess_client "$sess"; then
+    if python3 -m forge.startup release --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
+      glog "[$short] recovered interrupted startup; returning to normal admission"
+    fi
+  fi
   if [[ "$sess" == *-audit ]] && [ "$pending" -gt 0 ] && [ -n "$repo" ]; then
     if python3 -m forge.human_wait check --config "$DIR/repos.d" --state "$STATE" --repo "$repo" >/dev/null; then
       if [ "${human_waiting[$sess]:-0}" != 1 ]; then
@@ -169,13 +192,6 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
       fi
     fi
     return
-  fi
-  # A supervisor restart may interrupt launch before the first task dispatch.
-  # Reclaim only a verified old empty shell; never touch claimed or dirty work.
-  if [[ "$sess" == *-build ]] && sess_up "$sess" && ! sess_client "$sess"; then
-    if python3 -m forge.startup release --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
-      glog "[$short] recovered interrupted startup; returning to normal admission"
-    fi
   fi
   health check "$sess" >/dev/null || return
   if sess_up "$sess"; then watch "$sess" "$short" "$pending" "$nudge"; else launch "$sess" "$dir" "$role" "$nudge"; fi

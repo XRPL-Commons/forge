@@ -231,6 +231,8 @@ def release(config, state, repo, *, session=None, lock_fd=8, run=subprocess.run)
         from .activity import record
         record(state, 'session_stopped', session, repo=repo, role='audit',
                metadata={'reason': result['reason'], 'candidates': second['candidates']})
+        from .launch_budget import refund
+        result['launch_budget_refund'] = refund(config, state, session=session, proof=result, lock_fd=lock_fd)
     except (OSError, ValueError, TypeError, AttributeError, ImportError, sqlite3.Error):
         result['receipt_error'] = True
     return result

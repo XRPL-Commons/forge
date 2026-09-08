@@ -1447,6 +1447,12 @@
         .unified-row { grid-template-columns: 58px 72px minmax(0,1fr); gap: 6px; }
         .unified-row time, .unified-origin { font-size: 10px; }
       }
+
+      .worker-attention-card { align-self: start; }
+      .worker-attention-card .worker-fault-details { margin-top: 5px; font-size: 12px; }
+      .worker-fault-details > summary { color: var(--muted); font-size: 11px; }
+      .worker-fault-details p { margin: 8px 0; overflow-wrap: anywhere; }
+      .worker-attention-card .issue-card-title { color: var(--text); }
     </style>
   </head>
   <body>
@@ -1790,6 +1796,8 @@
             const guard = fleet.health?.sessions?.[r.short + "-" + role];
             const blocker = fleet.session_blockers?.[r.short + "-" + role];
             entries.push({
+              kind: "worker_fault",
+              reason: blocker?.reason || (fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason),
               why: blocker ? `${role}: ${blocker.why}` : `${role}: ${reasonText(fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason)}`,
               impact: "Automatic work on this session is paused.",
               action: blocker?.next || "Open worker output to inspect the reported blocker.",
@@ -2164,7 +2172,22 @@
           '<p class="empty">No repositories match this view.</p>';
       }
 
+      function workerAttentionCard(r, e) {
+        // A paused role does not establish an issue assignment. Keep this a worker
+        // card unless a canonical issue action itself supplies that association.
+        const label = {build:"Build", review:"Review", audit:"Audit"}[e.role] || "Worker";
+        const summary = e.reason === "provider_start_failed"
+          ? `${label} worker · startup not confirmed`
+          : `${label} worker · ${reasonText(e.reason || "paused")}`;
+        const key = `${r.repo}:${e.role}:${e.reason || "paused"}`;
+        return `<article class="issue-card compact-issue waiting needs-decision worker-attention-card" data-station="${esc(e.role)}" data-worker-fault="${esc(r.short + "-" + e.role)}"><div class="compact-identity"><span>${esc(r.short)} · ${esc(e.role)}</span><span class="compact-meta attention-state">WORKER</span></div><button class="issue-card-title" data-repo="${esc(r.repo)}" data-role="${esc(e.role)}" title="${esc(e.why)}">${esc(summary)}</button><details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Details and next step</summary><p>${esc(e.why)}</p><p>${e.link && safeGithub(e.link) ? `<a href="${esc(e.link)}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p><p class="muted">Worker status only; no exact issue assignment is established by this alert.</p></details></article>`;
+      }
       function renderAttention() {
+        const expanded = new Set(Array.from($("attention").querySelectorAll("details[data-attention-details][open]")).map(el => el.dataset.attentionDetails));
+        const focused = document.activeElement?.closest("details[data-attention-details]");
+        const focusedKey = focused?.dataset.attentionDetails;
+        const focusedTag = document.activeElement?.tagName;
+
         const decisionIssues = (fleet.issue_flow?.issues || []).filter((i) =>
           (i.actions || []).some((a) => ["human_approval", "stalled_audit"].includes(a.kind)),
         );
@@ -2181,13 +2204,17 @@
                 total += reasons.length;
                 return reasons
                   .map(
-                    (e) =>
+                    (e) => e.kind === "worker_fault" ? workerAttentionCard(r, e) :
                       `<div class="attention-item"><button data-repo="${esc(r.repo)}" ${e.role ? `data-role="${e.role}"` : ""}>${esc(r.short)} →</button><p><strong>${esc(e.why)}</strong></p><p><b>Impact:</b> ${esc(e.impact)}</p><p><b>Next:</b> ${e.link ? `<a href="${e.link}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p>${e.evidence_url ? `<p><a href="${esc(e.evidence_url)}" target="_blank" rel="noopener noreferrer">Recorded audit ↗</a></p>` : ""}</div>`,
                   )
                   .join("");
               })
               .join("") ||
           '<p class="muted">No intervention needed in the current data.</p>';
+        for (const el of $("attention").querySelectorAll("details[data-attention-details]")) {
+          el.open = expanded.has(el.dataset.attentionDetails);
+          if (focusedKey === el.dataset.attentionDetails) el.querySelector(focusedTag === "A" ? "a" : "summary")?.focus({preventScroll:true});
+        }
         const approvals = decisionIssues.filter(i => i.actions?.some(a => a.kind === "human_approval")).length;
         const stalled = decisionIssues.length - approvals;
         $("attention-title").textContent = total > decisionIssues.length ? "Needs attention" : stalled ? `${approvals ? approvals + " critical · " : ""}${stalled} stalled · Needs attention` : approvals

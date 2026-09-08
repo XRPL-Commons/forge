@@ -53,6 +53,10 @@ class LegacyGuard:
             if action == "park":
                 record["reason"] = "no_progress"
                 record["until"] = now + 3600
+            if action == "start_failed" and record.get("reason") not in {
+                    "blocked_auth", "blocked_quota", "blocked_permission", "launch_budget_exhausted"}:
+                record["reason"] = "provider_start_failed"
+                record["until"] = now + 60
             allowed = max(record["until"], state["account_until"]) <= now
             reason = state.get("account_reason", "cooldown") if state["account_until"] > now else record.get("reason", "healthy")
             if action == "launch" and allowed:
@@ -69,7 +73,7 @@ class LegacyGuard:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("check", "observe", "launch", "park"))
+    parser.add_argument("action", choices=("check", "observe", "launch", "park", "start_failed"))
     parser.add_argument("--state", required=True)
     parser.add_argument("--session", required=True)
     args = parser.parse_args()

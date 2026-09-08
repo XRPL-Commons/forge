@@ -11,7 +11,7 @@ ROOT = Path(__file__).parents[1]
 
 
 class SupervisorTests(unittest.TestCase):
-    def run_pass(self, labels, *, gh_fail=False, capacity_allowed=True, config_extra="", foreground="claude", capacity_sequence=None, human_wait_verified=False, existing_sessions=()):
+    def run_pass(self, labels, *, gh_fail=False, capacity_allowed=True, config_extra="", foreground="claude", capacity_sequence=None, human_wait_verified=False, existing_sessions=(), provider_available=True):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for directory in ('repos.d', 'bin', 'roles', 'mockbin'):
@@ -44,12 +44,12 @@ elif name=='tmux':
  if sys.argv[1]=='ls': sys.exit(1)
 elif name=='git' and 'get-url' in sys.argv: print('git@github.com:o/fixture.git')
 '''
-            for name in ('gh', 'tmux', 'git', 'sleep', 'python3'):
+            for name in ('gh', 'tmux', 'git', 'sleep', 'python3', 'claude'):
                 path = root / 'mockbin' / name
                 path.write_text(executable)
                 path.chmod(0o755)
             env = dict(os.environ, PATH=str(root / 'mockbin') + ':' + os.environ['PATH'],
-                       FORGE_ONCE='1', FORGE_QUIET_START='1', HOME=str(root), CALLS=str(root / 'calls'),
+                       FORGE_ONCE='1', FORGE_QUIET_START='1', FORGE_CLAUDE_BIN=str(root/'mockbin'/('claude' if provider_available else 'missing-claude')), HOME=str(root), CALLS=str(root / 'calls'),
                        TEST_LABELS=json.dumps(labels), GH_FAIL='1' if gh_fail else '0',
                        CAPACITY_ALLOWED='1' if capacity_allowed else '0', FOREGROUND=foreground, CAPACITY_SEQUENCE=json.dumps(capacity_sequence or []), HUMAN_WAIT_VERIFIED='1' if human_wait_verified else '0', EXISTING_SESSIONS=json.dumps(existing_sessions))
             result = subprocess.run(['bash', str(root / 'supervisor.sh')], env=env, capture_output=True, text=True, timeout=15)
@@ -64,11 +64,25 @@ elif name=='git' and 'get-url' in sys.argv: print('git@github.com:o/fixture.git'
         self.assertIn('fixture-audit', launches[0])
         self.assertEqual(len([c for c in calls if c[0] == 'gh']), 5)  # snapshot + fresh ownership/inventory/current PR checks
 
+    def test_native_executable_gets_full_initial_role_dispatch(self):
+        calls=self.run_pass(['ready-for-audit'],foreground='claude.exe')
+        commands=[c[-1] for c in calls if c[:2]==['tmux','send-keys']]
+        self.assertTrue(any('Read your role file at ' in value for value in commands))
+        self.assertFalse(any(c[:4]==['python3','-m','forge.legacy_health','start_failed'] for c in calls))
+
     def test_verified_human_wait_does_not_launch_or_nudge_auditor(self):
         calls = self.run_pass(['ready-for-audit'], human_wait_verified=True)
         self.assertTrue(any(c[:4] == ['python3', '-m', 'forge.human_wait', 'check'] for c in calls))
         self.assertFalse(any(c[:2] in (['tmux', 'new-session'], ['tmux', 'send-keys']) for c in calls))
         self.assertFalse(any(c[:4] == ['python3', '-m', 'forge.capacity', 'check'] for c in calls))
+
+    def test_empty_auditor_startup_checked_before_human_wait(self):
+        calls=self.run_pass(['ready-for-audit'], human_wait_verified=True,
+                            existing_sessions=['fixture-audit'], foreground='bash')
+        startup=next(i for i,c in enumerate(calls) if c[:4]==['python3','-m','forge.startup','release'])
+        human=next(i for i,c in enumerate(calls) if c[:4]==['python3','-m','forge.human_wait','check'])
+        self.assertLess(startup,human)
+        self.assertFalse(any(c[:2]==['tmux','send-keys'] for c in calls))
 
     def test_completed_auditor_is_considered_for_cleanup_while_other_role_has_work(self):
         calls = self.run_pass([], existing_sessions=['fixture-audit'])
@@ -101,9 +115,16 @@ elif name=='git' and 'get-url' in sys.argv: print('git@github.com:o/fixture.git'
     def test_failed_client_start_never_receives_role_text_in_shell(self):
         calls = self.run_pass(['ready-for-audit'], foreground='bash')
         sent = [c for c in calls if c[:2] == ['tmux', 'send-keys']]
-        self.assertEqual(len(sent), 1)
-        self.assertIn('claude --dangerously-skip-permissions', sent[0])
+        self.assertEqual(len(sent), 2)
+        self.assertTrue(any('--dangerously-skip-permissions' in arg for arg in sent[0]))
+        self.assertTrue(any(c[:4] == ['python3','-m','forge.legacy_health','start_failed'] for c in calls))
         self.assertFalse(any('Read your role' in arg for c in sent for arg in c))
+
+    def test_missing_provider_is_detected_before_session_or_launch_budget(self):
+        calls=self.run_pass(['ready-for-audit'],provider_available=False)
+        self.assertFalse(any(c[:2]==['tmux','new-session'] for c in calls))
+        self.assertFalse(any(c[:4]==['python3','-m','forge.legacy_health','launch'] for c in calls))
+        self.assertTrue(any(c[:4]==['python3','-m','forge.legacy_health','start_failed'] for c in calls))
 
     def test_capacity_is_rechecked_after_clone_without_charging_launch_budget(self):
         calls = self.run_pass(['ready-for-audit'], capacity_sequence=[True, False])

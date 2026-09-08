@@ -94,7 +94,7 @@ def session_identity(session, run):
     values = rows[0].split('|')
     if (len(values) != 6 or values[0] != session or not re.fullmatch(r'\$\d+', values[1])
             or not values[2].isdigit() or not re.fullmatch(r'%\d+', values[3])
-            or not values[4].isdigit() or values[5] != 'claude'):
+            or not values[4].isdigit() or values[5] not in {'claude', 'claude.exe'}):
         raise Unverified('session_not_claude')
     pane = command(['tmux', 'capture-pane', '-e', '-p', '-t', values[3]], run)
     if not idle_prompt(pane):
@@ -113,7 +113,7 @@ def session_identity(session, run):
         descendants = expanded
     names = [processes[pid][1] for pid in descendants]
     if (len(descendants) != 2 or processes[root][1] != 'bash'
-            or sorted(names) != ['bash', 'claude']):
+            or sorted(names) != ['bash', values[5]]):
         raise Unverified('processes_not_quiescent')
     return dict(session_id=values[1], session_created=int(values[2]), pane_id=values[3],
                 pane_pid=root, processes=sorted(descendants))
@@ -242,8 +242,7 @@ def _completed_role(config, state, session, run, now):
     remote = command(git + ['remote', 'get-url', 'origin'], run)
     if remote not in {f'git@github.com:{repo.repo}.git', f'https://github.com/{repo.repo}.git', f'https://github.com/{repo.repo}'}:
         raise Unverified('remote_mismatch')
-    if command(git + ['symbolic-ref', '--short', 'HEAD'], run) != 'main':
-        raise Unverified('review_clone_not_on_main')
+    branch = command(git + ['symbolic-ref', '--short', 'HEAD'], run)
     if command(git + ['status', '--porcelain=v1', '--untracked-files=all'], run):
         raise Unverified('worktree_not_clean')
     head = command(git + ['rev-parse', 'HEAD'], run)
@@ -256,10 +255,20 @@ def _completed_role(config, state, session, run, now):
     main = json.loads(command(['gh', 'api', f'repos/{repo.repo}/git/ref/heads/main'], run))['object']['sha']
     if not isinstance(main, str) or not re.fullmatch(r'[0-9a-f]{40,64}', main):
         raise Unverified('invalid_published_main')
-    comparison = json.loads(command(['gh', 'api', f'repos/{repo.repo}/compare/{head}...{main}',
+    checkout = None
+    published = head
+    if branch != 'main':
+        # Reuse the exact merged-PR tree proof. Verify ancestry remotely below,
+        # so a missing local object for today's main tip does not require fetch.
+        from .human_wait import _published_checkout
+        checkout = _published_checkout(git, repo.repo, head, set(), run)
+        if checkout.get('branch') != branch or checkout.get('basis') != 'exact_tree_of_verified_merged_pr':
+            raise Unverified('historical_checkout_changed')
+        published = checkout['merge']
+    comparison = json.loads(command(['gh', 'api', f'repos/{repo.repo}/compare/{published}...{main}',
                                       '--jq', '{status,base_commit:{sha:.base_commit.sha},behind_by}'], run))
     if (comparison.get('status') not in {'ahead', 'identical'}
-            or comparison.get('base_commit', {}).get('sha') != head
+            or comparison.get('base_commit', {}).get('sha') != published
             or comparison.get('behind_by') != 0):
         raise Unverified('head_not_published_main_ancestor')
     # This proof does not need a local object for the new main tip or a fetch.
@@ -267,7 +276,7 @@ def _completed_role(config, state, session, run, now):
         raise Unverified('snapshot_changed')
     if now + time.monotonic() - began - observed > 300:
         raise Unverified('snapshot_expired')
-    if (command(git + ['symbolic-ref', '--short', 'HEAD'], run) != 'main'
+    if (command(git + ['symbolic-ref', '--short', 'HEAD'], run) != branch
             or command(git + ['rev-parse', 'HEAD'], run) != head
             or command(git + ['remote', 'get-url', 'origin'], run) != remote):
         raise Unverified('checkout_changed')
@@ -276,7 +285,9 @@ def _completed_role(config, state, session, run, now):
     identity = session_identity(session, run)
     return {'eligible': True, 'reason': 'verified_' + role + '_complete', 'evidence': {
         'repo': repo.repo, 'role': role, 'clone': str(clone), 'head': head,
-        'published_main': main, 'branch': 'main', 'checkout_basis': 'published_main_ancestor', **identity}}
+        'published_main': main, 'branch': branch,
+        'checkout_basis': 'merged_pr_tree_on_published_main' if checkout else 'published_main_ancestor',
+        **({'checkout': {**checkout, 'verified_bases': [main]}} if checkout else {}), **identity}}
 
 
 def _check_with_fallback(config, state, session, run, now):
@@ -319,6 +330,8 @@ def release(config, state, session, *, run=subprocess.run, now=None):
         from .activity import record
         record(state, 'session_stopped', session, repo=second['evidence']['repo'], role=second['evidence']['role'],
                metadata={'reason': second['reason']}, now=now)
+        from .launch_budget import refund
+        result['launch_budget_refund'] = refund(config, state, session=session, proof=result, now=now)
     except (OSError, ValueError, ImportError, sqlite3.Error):
         result['receipt_error'] = True
     return result
