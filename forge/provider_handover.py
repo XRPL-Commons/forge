@@ -180,14 +180,18 @@ def release(config,state,session,provider,*,run=subprocess.run,now=None,lock_fd=
         'instruction':'Resume the existing claims and branch. Preserve all dirty and untracked work; inspect this manifest before claiming new work. Never reset, clean, or discard this checkout.'}
     try:
         private_json(path,manifest)
+        from .workflow_lifecycle import prepare, confirmed
+        workflow_ticket = prepare(state, session, second, action='migrate')
         release_command(['tmux','kill-session','-t',evidence['session_id']],run,action_run)
-    except (OSError,ValueError,subprocess.SubprocessError):
-        return {'eligible':False,'released':False,'reason':'handover_release_failed','evidence':{}}
+    except (OSError,ValueError,subprocess.SubprocessError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('workflow_') else 'handover_release_failed'
+        return {'eligible':False,'released':False,'reason':reason,'evidence':{}}
     manifest.update(released=True,released_at=time.time())
     result={'eligible':True,'released':True,'reason':'verified_provider_handover','evidence':{
         'provider':provider,'session_id':evidence['session_id'],'session_created':evidence['session_created'],
         'repo':evidence['repo'],'role':evidence['role'],'head':evidence['head'],'claims':evidence['claims'],
         'manifest':str(path)}}
+    result['workflow'] = confirmed(state, workflow_ticket)
     try:
         private_json(path,manifest)
         # This compare-and-clear keeps unrelated/account guards and launch charges.

@@ -41,8 +41,8 @@ const fs = require("fs"),
       },
     },
     work: { review: [3], audit: [4] },
-    build: { up: true, busy: true, provider: "codex" },
-    review: { up: true, busy: false },
+    build: { up: true, busy: true, provider: "codex", generation_id:"$1|100|%1|1001" },
+    review: { up: true, busy: false, generation_id:"$2|100|%2|1002" },
     audit: { up: false, busy: false },
   };
   const fleet = {
@@ -208,6 +208,15 @@ const fs = require("fs"),
     events: history.events,
     errors: [],
   };
+  fleet.workflow = {status:"ok",read_at:now,repositories:[{repo:repo.repo,observed_at:now}],
+    issues:[{repo:repo.repo,number:1,stage:"build",disposition:"working",prs:[]},
+            {repo:repo.repo,number:5,stage:"review",disposition:"pending",prs:[{number:3,head:"a",base:"b"}]}],
+    assignments:[{id:"build-assignment",repo:repo.repo,role:"build",session:"academy-build",issue_numbers:[1],state:"working",provider:"codex",generation:"$1|100|%1|1001"},
+                 {id:"review-assignment",repo:repo.repo,role:"review",session:"academy-review",issue_numbers:[5],pr:{number:3,head:"a",base:"b"},state:"submitted",provider:"claude",generation:"$2|100|%2|1002"}],
+    slots:[{session:"academy-build",repo:repo.repo,role:"build",state:"working",assignment_id:"build-assignment",generation:"$1|100|%1|1001",reason:"execution_running"},
+           {session:"academy-review",repo:repo.repo,role:"review",state:"reserved",assignment_id:"review-assignment",generation:"$2|100|%2|1002",reason:"waiting_for_provider"},
+           {session:"stale-build",repo:"example/stale",role:"build",state:"working",assignment_id:null,generation:"$1|100|%1|1001",reason:"started_before_assignment_tracking"}]};
+  let workflowPages = [];
   await page.route("http://forge.test/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/")
@@ -223,6 +232,8 @@ const fs = require("fs"),
     const data =
       url.pathname === "/api/status"
         ? fleet
+        : url.pathname === "/api/workflow"
+          ? (workflowPages.shift() || {...fleet.workflow,events:[],next_after:Number(url.searchParams.get("after")),has_more:false})
         : url.pathname === "/api/history"
           ? history
           : url.pathname === "/api/repository"
@@ -243,6 +254,18 @@ const fs = require("fs"),
   assert.match(await page.locator(".stat-slots .number").innerText(), /5\s*\/\s*6/);
   assert.match(await page.locator(".slot-states").innerText(), /2 working/);
   assert.match(await page.locator(".slot-states").innerText(), /1 unknown/);
+  assert.match(await page.locator(".slot-states").innerText(), /1 reserved/);
+  assert.match(await page.locator(".slot-context").innerText(), /academy #5.*review.*waiting for provider/i);
+  assert.match(await page.locator(".slot-context").innerText(), /Started before assignment tracking/);
+  await page.evaluate(()=>{
+    fleet.workflow.assignments.push({id:'reserved-only',repo:'example/quiet',session:'quiet-build',role:'build',issue_numbers:[20],state:'reserved',generation:null});
+    fleet.workflow.slots.push({session:'quiet-build',repo:'example/quiet',role:'build',state:'reserved',assignment_id:'reserved-only',reason:'capacity_admission_pending',generation:null});
+    renderStats();
+  });
+  assert.match(await page.locator('.stat-slots .number').innerText(), /6\s*\/\s*6/);
+  assert.match(await page.locator('.slot-context').innerText(), /quiet #20.*build.*capacity admission pending/i);
+  await page.evaluate(()=>{fleet.workflow.assignments=fleet.workflow.assignments.filter(a=>a.id!=='reserved-only');fleet.workflow.slots=fleet.workflow.slots.filter(s=>s.session!=='quiet-build');renderStats();});
+
   assert.match(await page.locator(".slot-roles").first().innerText(), /Review 3\/3/);
   assert.match(await page.locator(".provider-outages").innerText(), /Claude unavailable.*retry in 60m/);
   assert.equal(await page.locator(".working-stack .issue-card").count(), 1);
@@ -250,6 +273,25 @@ const fs = require("fs"),
   assert.equal(await page.locator(".pending-stack .issue-card").count(), 3);
   assert.equal(await page.locator(".mini-card.moving").count(), 1);
   assert.equal(await page.locator(".role-card.working").count(), 0);
+  await page.evaluate(()=>{fleet.repos[0].repo='Example/Academy';for(const issue of fleet.issue_flow.issues) if(issue.repo==='example/academy') issue.repo='Example/Academy';renderNow();});
+  assert.equal(await page.locator('.working-stack .issue-card').count(),1);
+  assert.equal(await page.locator('.working-stack .issue-card button').getAttribute('data-repo'),'Example/Academy');
+  assert.equal(await page.locator('.assignment-gap').count(),0);
+  await page.evaluate(()=>{fleet.repos[0].repo='example/academy';for(const issue of fleet.issue_flow.issues) if(issue.repo==='Example/Academy') issue.repo='example/academy';renderNow();});
+
+  await page.evaluate(()=>{window.savedIssue=fleet.issue_flow.issues.shift();renderNow();});
+  assert.match(await page.locator('.working-stack .issue-card').innerText(),/Issue #1 · details not collected/);
+  assert.equal(await page.locator('.assignment-gap').count(),0);
+  await page.evaluate(()=>{fleet.issue_flow.issues.unshift(window.savedIssue);delete window.savedIssue;renderNow();});
+
+  await page.evaluate(()=>{fleet.workflow.status='unavailable';render();});
+  assert.equal(await page.locator('.issue-card.moving').count(),0);
+  assert(await page.locator('#workflow-state-note').isVisible());
+  assert.match(await page.locator('#workflow-state-note').innerText(),/Workflow state unavailable/);
+  assert.equal(await page.locator('#stats .stat').nth(1).locator('.number').innerText(),'—');
+  await page.evaluate(()=>{fleet.workflow.status='ok';render();});
+  assert.equal(await page.locator('.issue-card.moving').count(),1);
+
   assert(!(await page.locator("#repos").innerText()).includes("Snapshot"));
   assert.equal(await page.locator('#interventions, #timeline, #logs, #activity').count(), 0);
   assert.equal(await page.locator('#unified-activity').count(), 1);
@@ -285,6 +327,14 @@ const fs = require("fs"),
   await page.locator('#unified-source').selectOption('operator');
   assert((await page.locator('#unified-older').innerText()).includes('No longer present'));
   await page.locator('#unified-source').selectOption('all');
+  workflowPages.push({...fleet.workflow,events:[{id:10,repo:repo.repo,operation:"transition",at:now,payload:{action:"working",after:{role:"build",issue_numbers:[1]}}}],next_before:10,has_more:true});
+  await page.evaluate(()=>load()); // Recent transitions load on the normal automatic refresh path.
+  await page.waitForFunction(()=>document.querySelector('#workflow-history-status').textContent.includes('1 durable'));
+  await page.locator('#unified-source').selectOption('workflow');
+  assert.match(await page.locator('#unified-older').innerText(), /academy.*working.*#1/i);
+  assert.equal(await page.locator('#workflow-history-more').innerText(),'Load older workflow events');
+  await page.locator('#unified-source').selectOption('all');
+
   await page.locator('#unified-expanded > summary').click();
   await page.evaluate(()=>{
     const r=fleet.repos[0];
@@ -399,10 +449,13 @@ const fs = require("fs"),
     renderNow();
     renderRepos();
   });
+  assert.equal(await page.locator(".issue-card.moving").count(), 1); // Unrelated PR cannot erase exact assignment.
+  await page.evaluate(()=>{fleet.repos[0].build.generation_id="$9|200|%9|1009";renderNow();renderRepos();});
   assert.equal(await page.locator(".issue-card.moving").count(), 0);
   assert.equal(await page.locator(".repo-row .mini-card.moving").count(), 0);
   assert.equal(await page.locator(".assignment-gap").count(), 1);
   await page.evaluate(() => {
+    fleet.repos[0].build.generation_id="$1|100|%1|1001";
     fleet.issue_flow.unlinked_prs = [];
     fleet.issue_flow.issues = fleet.issue_flow.issues.filter(
       (i) => i.number < 20,
@@ -434,6 +487,9 @@ const fs = require("fs"),
   await page.locator('#item-search').fill('');
   await page.evaluate(() => {
     fleet.repos[0].review.busy = true;
+    fleet.workflow.issues.find(i=>i.number===5).disposition="working";
+    fleet.workflow.assignments.find(a=>a.id==="review-assignment").state="working";
+    fleet.workflow.slots.find(s=>s.session==="academy-review").state="working";
     renderDetail();
   });
   assert.equal(await page.locator('.drawer-issue.moving[data-station="review"]').count(), 1);

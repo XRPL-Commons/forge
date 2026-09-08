@@ -260,12 +260,15 @@ def release(config, state, repo, *, session=None, lock_fd=8, run=subprocess.run)
         second = _release_evidence(config, state, repo, session, run)
         if first != second or not _locked(state, lock_fd):
             raise Unverified('audit_wait_changed')
+        from .workflow_lifecycle import prepare, confirmed
+        workflow_ticket = prepare(state, session, {'reason': 'verified_awaiting_human_approval', 'evidence': second})
         release_command(['tmux', 'kill-session', '-t', second['session_id']], run, action_run)
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         return {'eligible': False, 'released': False,
-                'reason': str(exc) if isinstance(exc, Unverified) else 'verification_unavailable', 'evidence': {}}
+                'reason': str(exc) if isinstance(exc, Unverified) or isinstance(exc, ValueError) and str(exc).startswith('workflow_') else 'verification_unavailable', 'evidence': {}}
     result = {'eligible': True, 'released': True, 'reason': 'verified_awaiting_human_approval',
               'evidence': second, 'observed_at': time.time()}
+    result['workflow'] = confirmed(state, workflow_ticket)
     try:
         (Path(state) / (session + '.up')).unlink(missing_ok=True)
         result['cleared_no_progress'] = _clear_verified_no_progress(state, session)

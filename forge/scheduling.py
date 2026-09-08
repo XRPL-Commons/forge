@@ -298,9 +298,10 @@ def main(argv=None):
     parser.add_argument("--state", default=str(Path.home() / "ops/forge-watchdog/state"))
     parser.add_argument("--repo")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--assignment", default=os.environ.get("FORGE_ASSIGNMENT_ID"))
     parser.add_argument("--mode", choices=["local", "llm"], default=os.environ.get("FORGE_TRIAGE_MODE", "local"))
     args = parser.parse_args(argv)
-    configurations = [c for c in load_repositories(args.config) if c.enabled and (args.repo is None or c.repo == args.repo)]
+    configurations = [c for c in load_repositories(args.config) if c.enabled and (args.repo is None or c.repo.lower() == args.repo.lower())]
     if args.repo and not configurations:
         raise SystemExit("Repository is not enabled/configured")
     if args.mode == "llm" and os.environ.get("FORGE_LLM_TRIAGE_ALLOWED") != "1":
@@ -328,7 +329,11 @@ def main(argv=None):
                 value = create_plan(config.repo, issues, github.dependency_map(config.repo, issues), args.state,
                                     handed_off=handed_off)
             if args.action == "next":
-                if value["eligible"]:
+                if args.assignment:
+                    from .workflow_control import next_for_assignment
+                    number = next_for_assignment(args.state,config.repo,args.assignment,value)
+                    if number is not None:next_candidates.append(number)
+                elif value["eligible"]:
                     number = value["eligible"][0]
                     if type(number) is not int or number < 1:
                         raise ValueError("Invalid next issue identity")

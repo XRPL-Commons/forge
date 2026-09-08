@@ -157,3 +157,57 @@ class DashboardHistoryTests(unittest.TestCase):
             handler = self.request('/api/repository?repo=o%2Fone')
             read.assert_called_once_with('o/one')
             self.assertEqual(json.loads(handler._send.call_args.args[0]), {'items': []})
+
+
+class WorkflowApiTests(unittest.TestCase):
+    def request(self,path):
+        handler=object.__new__(dashboard.H);handler.path=path
+        handler._send=unittest.mock.Mock();handler.send_error=unittest.mock.Mock()
+        handler.do_GET();return handler
+
+    def test_route_validates_bounded_cursor_limit_and_configured_repo(self):
+        with patch.object(dashboard,'repos',return_value=['Owner/One']),patch.object(dashboard,'workflow_view',return_value={'status':'ok'}) as read:
+            handler=self.request('/api/workflow?repo=owner/one&after=12&limit=20')
+            read.assert_called_once_with('owner/one',12,20)
+            self.assertEqual(json.loads(handler._send.call_args.args[0])['status'],'ok')
+            for query in ('limit=0','limit=101','after=-1','after=abc','repo=private/repo','after=1&after=2','unknown=true','recent=2','before=3','recent=1&after=2','recent=1&before=-1'):
+                with self.subTest(query=query):
+                    read.reset_mock();handler=self.request('/api/workflow?'+query)
+                    handler.send_error.assert_called_once_with(400);read.assert_not_called()
+
+    def test_state_and_history_filter_disabled_repositories_and_keep_cursor_progress(self):
+        value={'status':'ok','issues':[{'repo':'owner/one','number':1},{'repo':'private/repo','number':9}],
+               'assignments':[],'slots':[],'repositories':[{'repo':'owner/one'}]}
+        events=[{'id':13,'repo':'private/repo'},{'id':14,'repo':'owner/one'},{'id':15,'repo':'owner/one'}]
+        with patch.object(dashboard,'repos',return_value=['Owner/One']),patch('forge.workflow.read_state',return_value=value),patch('forge.workflow.history',return_value=events) as history:
+            result=dashboard.workflow_view(after=12,limit=2)
+        self.assertEqual(result['issues'],[{'repo':'owner/one','number':1}])
+        self.assertEqual(result['events'],[events[1]])
+        self.assertEqual(result['next_after'],14);self.assertTrue(result['has_more'])
+        self.assertEqual(history.call_args.kwargs,{'repo':None,'after':12,'limit':3})
+
+    def test_recent_history_starts_at_newest_enabled_event_and_pages_backwards(self):
+        import sqlite3
+        value={'status':'ok','issues':[],'assignments':[],'slots':[],'repositories':[]}
+        with tempfile.TemporaryDirectory() as temporary,patch.object(dashboard,'WD',temporary),patch.object(dashboard,'repos',return_value=['Owner/One']),patch('forge.workflow.read_state',return_value=value):
+            state=Path(temporary)/'state';state.mkdir()
+            with sqlite3.connect(state/'workflow.sqlite3') as db:
+                db.execute('CREATE TABLE events(id INTEGER PRIMARY KEY,repo TEXT,payload TEXT,result TEXT)')
+                db.executemany('INSERT INTO events VALUES(?,?,?,?)',[(n,'owner/one','{}','{}') for n in range(1,131)]+[(131,'private/repo','{}','{}')])
+            latest=dashboard.workflow_view(recent=True,limit=100)
+            self.assertEqual([e['id'] for e in latest['events']],list(range(130,30,-1)))
+            self.assertEqual(latest['next_before'],31);self.assertTrue(latest['has_more'])
+            older=dashboard.workflow_view(recent=True,before=31,limit=100)
+            self.assertEqual([e['id'] for e in older['events']],list(range(30,0,-1)))
+            self.assertFalse(older['has_more'])
+            with patch.object(dashboard,'workflow_view',return_value=latest) as read:
+                self.request('/api/workflow?recent=1&before=131&limit=100')
+                read.assert_called_once_with(None,0,100,recent=True,before=131)
+
+    def test_uninitialized_read_never_creates_authority_and_corruption_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temporary,patch.object(dashboard,'WD',temporary),patch.object(dashboard,'repos',return_value=['o/one']):
+            result=dashboard.workflow_view()
+            self.assertEqual(result['status'],'uninitialized')
+            self.assertFalse((Path(temporary)/'state').exists())
+            with patch('forge.workflow.read_state',side_effect=ValueError('corrupt')):
+                self.assertEqual(dashboard.workflow_view()['status'],'unavailable')

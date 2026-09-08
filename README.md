@@ -5,6 +5,9 @@ moving through **Build → Review → Security audit**.
 
 GitHub holds the issues, pull requests, reviews, and audit evidence. Local queue
 snapshots, activity events, and SQLite history power the operator dashboard.
+A durable local state machine tracks each issue, its exact execution assignment,
+and the worker slot that owns it. Reservations and generation checks prevent
+independent workers from taking the same assignment.
 
 - Issue cards show what is working, waiting, or needs a human decision.
 - Workers start on demand and release their slots after verified handoffs.
@@ -50,7 +53,7 @@ issue cards. The server exposes local worker output; keep it on a trusted privat
 network. It has no application authentication layer.
 
 See [observability](docs/observability.md), [activity](docs/activity.md),
-[handoffs](docs/handoff.md), and [capacity](docs/capacity.md) for the data model and
+[workflow and slots](docs/workflow.md), [handoffs](docs/handoff.md), and [capacity](docs/capacity.md) for the data model and
 operational behavior. GitHub raw content remains authoritative; cached summaries
 and observed transitions are not independent proof of approval or completion.
 

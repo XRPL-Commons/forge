@@ -43,6 +43,23 @@ health(){
   fi
   return "$status"
 }
+workflow_enabled(){ [ -f "$STATE/workflow.enabled" ]; }
+workflow_call(){
+  local action="$1" sess="$2"; shift 2
+  python3 -m forge.workflow_control "$action" --state "$STATE" --config "$DIR/repos.d" --session "$sess" "$@"
+}
+workflow_guard(){
+  workflow_enabled || return 0
+  local generation
+  generation=$(session_generation_full "$1") || return 1
+  workflow_call guard "$1" --generation "$generation"
+}
+workflow_delivery(){
+  workflow_enabled || return 0
+  local generation
+  generation=$(session_generation_full "$2") || return 1
+  workflow_call "$1" "$2" --generation "$generation"
+}
 declare -A idle prev owner_alerted empty nudges stale_alerted human_waiting seen_generation last_progress
 
 LABELS=( "ready:0E8A16:eligible for builder" "wip:FBCA04:claimed by builder" "ready-for-review:1D76DB:eligible for reviewer" "changes-requested:D93F0B:reviewer sent back - builder must fix" "ready-for-audit:8E44AD:reviewer passed - auditor may merge" "epic:5319E7:epic parent" "hold:B60205:do NOT auto-pick (overrides ready)" )
@@ -120,12 +137,15 @@ send_codex_command(){
   [ "$(tmux display-message -p -t "=$sess:1.1" '#{pane_current_command}')" = bash ] || return 1
   python3 -m forge.startup is-uncertain --state "$STATE" --session "$sess" --generation "$short_generation"; status=$?
   [ "$status" = 1 ] || return 1
+  workflow_guard "$sess" || { glog "[$sess] workflow assignment prevents dispatch"; return 1; }
+  workflow_delivery begin-send "$sess" || return 1
   if ! tmux send-keys -t "$pane" -l "$command" || [ "$(session_generation_full "$sess")" != "$generation" ] || ! tmux send-keys -t "$pane" Enter; then
     python3 -m forge.startup dispatch-uncertain --state "$STATE" --session "$sess" --generation "$short_generation" >/dev/null || true
     glog "[$sess] Codex command submission uncertain; input preserved"
     return 1
   fi
   python3 -m forge.startup mark-dispatched --state "$STATE" --session "$sess" --generation "$short_generation" >/dev/null || { glog "[$sess] Codex dispatch marker failed"; return 1; }
+  workflow_delivery submitted "$sess" || { glog "[$sess] workflow delivery confirmation missing; preserved as uncertain"; return 1; }
   activity dispatch "$sess" codex_exec_submitted
   return 0
 }
@@ -209,6 +229,13 @@ submit_task(){ # A dispatch means submitted, never proof that work began.
     glog "[$sess] prior partial dispatch requires reconciliation; input preserved"
     return 1
   fi
+  if workflow_enabled; then
+    local assignment_text
+    assignment_text=$(workflow_call prompt "$sess") || return 1
+    text="$assignment_text $text"
+  fi
+  workflow_guard "$sess" || { glog "[$sess] workflow assignment prevents dispatch"; return 1; }
+  workflow_delivery begin-send "$sess" || return 1
   pane="${generation##*|}"
   if ! tmux send-keys -t "$pane" -l "$text"; then
     python3 -m forge.startup dispatch-uncertain --state "$STATE" --session "$sess" --generation "$generation" >/dev/null || true
@@ -227,6 +254,7 @@ submit_task(){ # A dispatch means submitted, never proof that work began.
     glog "[$sess] submitted dispatch receipt failed; automatic resubmission blocked"
     return 1
   fi
+  workflow_delivery submitted "$sess" || { glog "[$sess] workflow delivery confirmation missing; preserved as uncertain"; return 1; }
   activity dispatch "$sess" "$reason"
   return 0
 }
@@ -246,8 +274,11 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
   ensure_clone "${REPO}" "$dir" || return
   # A clone may take two minutes: recheck current pressure immediately before launch.
   python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null || { activity admission_deferred "$sess" capacity_recheck; return; }
+  if workflow_enabled; then
+    workflow_call reserve "$sess" >/dev/null || { glog "[$sess] exact workflow reservation deferred"; return; }
+  fi
   # Reserve a provider probe only after this worker has passed admission.
-  provider=$(python3 -m forge.routing --state "$STATE" --config "$DIR/repos.d" select --session "$sess") || { glog "[$sess] no provider available"; return; }
+  provider=$(python3 -m forge.routing --state "$STATE" --config "$DIR/repos.d" select --session "$sess") || { if workflow_enabled; then workflow_call blocked "$sess" --reason provider_unavailable >/dev/null || true; fi; glog "[$sess] no provider available"; return; }
   case "$provider" in claude) executable="$FORGE_CLAUDE_BIN" ;; codex) executable="$FORGE_CODEX_BIN" ;; *) return ;; esac
   if ! provider_command=$(python3 -m forge.startup command --state "$STATE" --session "$sess" --executable "$executable"); then
     python3 -m forge.startup record-failure --state "$STATE" --session "$sess" >/dev/null 2>&1 || true
@@ -260,6 +291,10 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
   if [ -f "$STATE/$sess.up" ]; then notify "[forge] WARNING: $sess was up but vanished — relaunching (crash?)"; glog "crash-relaunch $sess"; else glog "wake $sess"; fi
   tmux new-session -d -s "$sess" -c "$dir" || { glog "session launch conflict $sess"; return 1; }; activity session_created "$sess" launch; sleep 2
   generation=$(session_generation "$sess") || { glog "[$sess] startup identity unavailable"; return; }
+  if workflow_enabled; then
+    full_generation=$(session_generation_full "$sess") || return
+    workflow_call bind "$sess" --generation "$full_generation" --provider "$provider" || { glog "[$sess] workflow binding failed; shell preserved without task"; return; }
+  fi
   seen_generation[$sess]="$generation"; idle[$sess]=0; nudges[$sess]=0
   last_progress[$sess]=$(python3 -m forge.lifecycle --state "$STATE" --config "$DIR/repos.d" progress --session "$sess" 2>/dev/null) || last_progress[$sess]=""
   if [ "$provider" = codex ]; then
@@ -399,6 +434,9 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
 
 glog "=== supervisor started (demand-loaded; sleep after ${SLEEP_AFTER_EMPTY_POLLS} empty polls) ==="; [ "${FORGE_QUIET_START:-0}" = 1 ] || notify "[forge] supervisor up"
 while true; do
+  if workflow_enabled; then
+    python3 -m forge.workflow_control observe --state "$STATE" --config "$DIR/repos.d" || glog "workflow observation unavailable; existing work preserved"
+  fi
   if ! config_records=$(python3 -m forge.config --config "$DIR/repos.d" --home "$HOME" --state "$STATE"); then
     glog "repository configuration invalid; admission paused"
     [ "${FORGE_ONCE:-0}" = 1 ] && break
@@ -445,6 +483,9 @@ SNAPSHOT_PY
     # Empty inventory alone never authorizes termination. Each role's verified
     # completion proof above owns release, including clean checkout and children.
   done <<< "$config_records"
+  if workflow_enabled; then
+    python3 -m forge.workflow_control observe --state "$STATE" --config "$DIR/repos.d" || glog "workflow observation unavailable; existing work preserved"
+  fi
   [ "${FORGE_ONCE:-0}" = 1 ] && break
   sleep "$POLL"
 done

@@ -123,10 +123,14 @@ def release(config, state, session, *, lock_fd=8, run=subprocess.run, now=None):
     if not second['eligible'] or first != second or not _locked(state, lock_fd):
         return {'eligible': False, 'released': False, 'reason': 'startup_changed', 'evidence': {}}
     try:
+        from .workflow_lifecycle import prepare, confirmed
+        workflow_ticket = prepare(state, session, second, unbound_startup=True)
         command(['tmux', 'kill-session', '-t', second['evidence']['session_id']], run)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return {**second, 'released': False, 'reason': 'release_failed'}
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('workflow_') else 'release_failed'
+        return {**second, 'released': False, 'reason': reason}
     result = {**second, 'released': True, 'observed_at': time.time() if now is None else now}
+    result['workflow'] = confirmed(state, workflow_ticket)
     try:
         result['cleared_no_progress'] = _clear_verified_no_progress(state, session)
         atomic_json(Path(state) / 'startup-recoveries' / (session + '.json'), result)
@@ -209,6 +213,9 @@ def codex_observation(config, state, session, generation):
 
 
 def codex_command(config, state, session, executable, generation, prompt, *, resume=False, run=subprocess.run):
+    from .workflow_control import enabled, assignment_prompt
+    if enabled(state):
+        prompt = assignment_prompt(state,session) + '\n' + prompt
     from .codex_worker import observe, parse_generation
     from .lifecycle import progress_key
     repo, role = _codex_repo(config, session)

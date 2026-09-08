@@ -454,10 +454,14 @@ def release(config, state, session, *, run=subprocess.run, now=None, lock_fd=8):
     try:
         # IDs are never reused during a tmux server lifetime; target the verified
         # generation rather than a potentially replaced named session.
+        from .workflow_lifecycle import prepare, confirmed
+        workflow_ticket = prepare(state, session, second)
         release_command(['tmux', 'kill-session', '-t', second['evidence']['session_id']], run, action_run)
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return {**second, 'released': False, 'reason': 'release_failed'}
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('workflow_') else 'release_failed'
+        return {**second, 'released': False, 'reason': reason}
     result = {**second, 'released': True, 'observed_at': time.time() if now is None else now}
+    result['workflow'] = confirmed(state, workflow_ticket)
     try:
         (Path(state) / (session + '.up')).unlink(missing_ok=True)
         atomic_json(Path(state) / 'handoffs' / (session + '.json'), result)

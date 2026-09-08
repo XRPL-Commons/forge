@@ -44,6 +44,15 @@ def observe(repository, state, github=None):
         result = {"repo": repository.repo, "enabled": repository.enabled, "status": "unknown",
                   "observed_at": time.time(), "reason": type(exc).__name__}
     atomic_json(snapshot_path(state, repository.repo), result)
+    if (Path(state)/'workflow.enabled').is_file() and result.get('status') == 'ok':
+        try:
+            from .workflow_control import reconcile_repository
+            from .workflow_lifecycle import reconcile as reconcile_releases
+            reconcile_releases(state)
+            reconcile_repository(state,repository.repo)
+        except Exception:
+            # Keep the valid GitHub snapshot but fail NEW admission closed.
+            result = {**result, 'status':'workflow_unavailable', 'reason':'workflow_reconciliation_failed'}
     return result
 
 

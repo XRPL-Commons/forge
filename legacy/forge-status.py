@@ -45,7 +45,8 @@ def tmux_sessions():
     observations = observe_tmux(present, state=Path(WD)/'state')
     return {session: {'busy': observation['state'] == 'busy',
                       'state': observation['state'], 'reason': observation['reason'],
-                      'provider': observation.get('provider','unknown')}
+                      'provider': observation.get('provider','unknown'),
+                      'generation_id': observation.get('generation_id')}
             for session, observation in observations.items()
             if observation['state'] != 'exited'}
 
@@ -180,6 +181,56 @@ def current_work_context(repository_rows):
         if db:
             db.close()
 
+def recent_workflow_events(state, allowed, limit, before=None):
+    """Newest enabled-repository events, with an exclusive backwards cursor."""
+    path=Path(state)/'workflow.sqlite3'
+    if not path.exists() or not allowed:
+        return []
+    conditions=['lower(repo) IN ('+','.join('?' for _ in allowed)+')']
+    parameters=sorted(allowed)
+    if before is not None:
+        conditions.append('id<?');parameters.append(before)
+    parameters.append(limit)
+    from contextlib import closing
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as db:
+        db.row_factory=sqlite3.Row
+        rows=db.execute('SELECT * FROM events WHERE '+' AND '.join(conditions)+' ORDER BY id DESC LIMIT ?',parameters)
+        result=[]
+        for row in rows:
+            event=dict(row)
+            for key in ('payload','result'):event[key]=json.loads(event[key])
+            result.append(event)
+        return result
+
+
+def workflow_view(repo=None, after=0, limit=100, include_history=True, recent=False, before=None):
+    """Read workflow authority without exposing disabled repositories or writing state."""
+    allowed={value.lower() for value in repos()}
+    if repo is not None and repo.lower() not in allowed:
+        raise ValueError('Repository is not enabled')
+    try:
+        from forge.workflow import read_state, history
+        value=read_state(Path(WD)/'state', repo=repo.lower() if repo else None)
+        if value.get('status') not in {'ok','uninitialized'}:
+            raise ValueError('Invalid workflow status')
+        result={'status':value['status'],'read_at':time.time()}
+        for key in ('issues','assignments','slots','repositories'):
+            if not isinstance(value.get(key),list):
+                raise ValueError('Invalid workflow collection')
+            result[key]=[row for row in value[key] if isinstance(row,dict) and str(row.get('repo','')).lower() in allowed]
+        if include_history:
+            rows=(recent_workflow_events(Path(WD)/'state', {repo.lower()} if repo else allowed, limit+1, before)
+                  if recent else history(Path(WD)/'state',repo=repo.lower() if repo else None,after=after,limit=limit+1))
+            page=rows[:limit]
+            result.update(events=[row for row in page if str(row.get('repo','')).lower() in allowed],
+                          next_after=page[-1]['id'] if page else after,has_more=len(rows)>limit)
+            if recent:result['next_before']=page[-1]['id'] if page else before
+        return result
+    except (ImportError,OSError,ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error):
+        return {'status':'unavailable','reason':'Workflow state could not be read','issues':[],
+                'assignments':[],'slots':[],'repositories':[],'events':[],'next_after':after,'has_more':False}
+
+
 def worker_fault_context(state, blockers, flow, activity):
     """Related historical queue context, never inferred worker assignment."""
     path=Path(state)/'activity.sqlite3'
@@ -254,7 +305,8 @@ def status():
             s = sess.get(f"{short}-{role}")
             r[role] = {"up": s is not None, "busy": bool(s and s["busy"]),
                        "state": s.get("state", "unknown") if s else "exited",
-                       "provider": s.get("provider", "unknown") if s else None}
+                       "provider": s.get("provider", "unknown") if s else None,
+                       "generation_id": s.get("generation_id") if s else None}
         out["repos"].append(r)
     current_work_context(out["repos"])
     out["log"] = sh(["tail", "-n", "40", f"{WD}/logs/supervisor.log"]).splitlines()
@@ -293,6 +345,7 @@ def status():
     except (ImportError, OSError, ValueError, sqlite3.Error):
         out['session_blockers'] = {}
     worker_fault_context(Path(WD)/'state',out['session_blockers'],out['issue_flow'],out['activity'])
+    out['workflow'] = workflow_view(include_history=False)
     out['slots'] = slot_inventory()
     try:
         from forge.routing import read_routing
@@ -344,6 +397,20 @@ class H(BaseHTTPRequestHandler):
             self._send(PAGE, "text/html; charset=utf-8")
         elif u.path == "/api/status":
             self._send(json.dumps(cached("status", 10, status)))
+        elif u.path == "/api/workflow":
+            query=parse_qs(u.query)
+            repo=query.get('repo',[None])[0]
+            after=query.get('after',['0'])[0]
+            limit=query.get('limit',['100'])[0]
+            recent=query.get('recent',['0'])[0];before=query.get('before',[None])[0]
+            if (set(query)-{'repo','after','limit','recent','before'} or any(len(values)!=1 for values in query.values()) or
+                    repo is not None and repo.lower() not in {r.lower() for r in repos()} or
+                    recent not in {'0','1'} or (before is not None and (recent!='1' or not re.fullmatch(r'[0-9]{1,18}',before))) or
+                    (recent=='1' and 'after' in query) or not re.fullmatch(r'[0-9]{1,18}',after) or not re.fullmatch(r'[0-9]{1,3}',limit) or not 1<=int(limit)<=100):
+                self.send_error(400)
+                return
+            self._send(json.dumps(workflow_view(repo,int(after),int(limit),recent=True,before=int(before) if before else None)
+                                  if recent=='1' else workflow_view(repo,int(after),int(limit))))
         elif u.path == "/api/history":
             raw_days = parse_qs(u.query).get("days", ["30"])[0]
             if raw_days not in {"7", "30", "90"}:
