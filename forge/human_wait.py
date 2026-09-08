@@ -34,13 +34,16 @@ def _repository(config, repo):
     return matches[0]
 
 
-def _check(config, state, repo, run):
+def _check(config, state, repo, run, *, assignment=None):
     repository = _repository(config, repo)
     ownership = {x['name'] for x in _pages(f'repos/{repo}/labels?per_page=100', run) if x['name'].startswith('auto:owned-by-')}
     if ownership != {repository.owner_label}:
         raise Unverified('ownership_uncertain')
-    inventory = _pages(f'repos/{repo}/issues?state=open&labels=ready-for-audit&per_page=100', run)
-    numbers = sorted({x['number'] for x in inventory if 'pull_request' in x})
+    if assignment is None:
+        inventory = _pages(f'repos/{repo}/issues?state=open&labels=ready-for-audit&per_page=100', run)
+        numbers = sorted({x['number'] for x in inventory if 'pull_request' in x})
+    else:
+        numbers = [assignment['pr']['number']]
     if not numbers or len(numbers) > 20:
         raise Unverified('no_bounded_audit_queue')
     candidates = []
@@ -48,7 +51,7 @@ def _check(config, state, repo, run):
         live = json.loads(command(['gh', 'pr', 'view', str(number), '--repo', repo, '--json',
             'number,state,isDraft,headRefOid,baseRefOid,labels,author,reviewDecision,closingIssuesReferences'], run))
         labels = {x['name'] for x in live['labels']}
-        if live['number'] == number and live['state'] == 'OPEN' and 'hold' in labels:
+        if assignment is None and live['number'] == number and live['state'] == 'OPEN' and 'hold' in labels:
             continue  # Parked by policy; not actionable audit demand.
         if (live['number'] != number or live['state'] != 'OPEN' or live['isDraft']
                 or 'critical' not in {s.lower() for s in labels}
@@ -88,6 +91,10 @@ def _check(config, state, repo, run):
         current_refs = _references({'raw_pr_summary': live}, repo)
         if not current_refs:
             raise Unverified('current_issue_links_unavailable')
+        if assignment is not None and (live['headRefOid']!=assignment['pr']['head']
+                or live['baseRefOid']!=assignment['pr']['base']
+                or sorted(current_refs)!=assignment['issue_numbers']):
+            raise Unverified('audit_assignment_target_changed')
         candidates.append({'pr': number, 'head': live['headRefOid'], 'base': live['baseRefOid'],
                            'issues': sorted(current_refs), 'audit_url': action['evidence_url']})
     if not candidates:
@@ -203,8 +210,26 @@ def _published_checkout(git, repo, head, bases, run):
             'merge': merge, 'tree': tree, 'verified_bases': sorted(bases)}
 
 
+def _tracked_audit_assignment(state, repo, session):
+    """Only the durable exact assignment can narrow a repository-wide wait."""
+    from .workflow import read_state
+    view=read_state(state)
+    if view['status']=='uninitialized':return None
+    slot=next((s for s in view['slots'] if s['session']==session),None)
+    if slot and slot.get('bootstrap') and slot.get('assignment_id') is None:return None
+    assignment=next((a for a in view['assignments'] if slot and a['id']==slot.get('assignment_id')),None)
+    if (not assignment or not assignment.get('pr') or assignment['role']!='audit'
+            or assignment['repo'].lower()!=repo.lower() or assignment['session']!=session
+            or assignment.get('submitted_at') is None or assignment['state'] not in {'submitted','working','blocked'}
+            or not assignment.get('generation') or slot.get('generation')!=assignment['generation']
+            or slot.get('repo','').lower()!=repo.lower() or slot.get('role')!='audit'):
+        raise Unverified('exact_audit_assignment_required')
+    return assignment
+
+
 def _release_evidence(config, state, repo, session, run):
-    result = check(config, state, repo, run=run)
+    assignment = _tracked_audit_assignment(state, repo, session)
+    result = _check(config, state, repo, run, assignment=assignment)
     if not result['eligible']:
         raise Unverified(result['reason'])
     repository = _repository(config, repo)
@@ -226,6 +251,10 @@ def _release_evidence(config, state, repo, session, run):
         checkout = _published_checkout(git, repo, head,
                     {c['base'] for c in result['evidence']['candidates']}, run)
     identity = session_identity(session, run, state=state)
+    if assignment is not None:
+        generation='|'.join(str(identity[k]) for k in ('session_id','session_created','pane_id','pane_pid'))
+        if generation!=assignment['generation']:raise Unverified('audit_assignment_generation_changed')
+        result['evidence']['assignment_id']=assignment['id']
     return {**result['evidence'], 'session': session, 'role': 'audit', 'clone': str(clone), 'head': head, 'checkout': checkout, **identity}
 
 

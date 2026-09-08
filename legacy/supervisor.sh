@@ -399,6 +399,15 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
       glog "[$short] recovered interrupted startup; returning to normal admission"
     fi
   fi
+  # A tracked execution owns one assignment, not the remaining role queue.
+  # Verify its completed handoff before considering work on a different PR.
+  if workflow_enabled && sess_up "$sess" && workflow_call current "$sess" >/dev/null 2>&1 && [ "$(provider_state "$sess")" = idle ]; then
+    if [[ "$sess" == *-audit ]] && release_worker forge.human_wait human_wait_cleanup "$sess" "$repo"; then
+      glog "[$short] released completed assigned audit awaiting human approval"
+    elif release_worker forge.handoff cleanup "$sess"; then
+      glog "[$short] released completed assignment; remaining queue can be admitted"
+    fi
+  fi
   if [[ "$sess" == *-audit ]] && [ "$pending" -gt 0 ] && [ -n "$repo" ]; then
     if python3 -m forge.human_wait check --config "$DIR/repos.d" --state "$STATE" --repo "$repo" >/dev/null; then
       if [ "${human_waiting[$sess]:-0}" != 1 ]; then

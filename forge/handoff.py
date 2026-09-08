@@ -510,7 +510,129 @@ def _review_rejection(config, state, session, run, now):
         'checkout_basis':'current_pr_head_reviewer_rejection',**verified[0],**identity}}
 
 
+def _tracked_completion_assignment(state, session):
+    from .workflow import read_state
+    view=read_state(state)
+    if view['status']=='uninitialized':return None
+    slot=next((row for row in view['slots'] if row['session']==session),None)
+    if slot and slot.get('bootstrap') and slot.get('assignment_id') is None:return None
+    assignment=next((row for row in view['assignments'] if slot and row['id']==slot.get('assignment_id')),None)
+    if (not assignment or assignment['session']!=session or assignment['role'] not in {'review','audit'}
+            or assignment.get('submitted_at') is None or assignment['state'] not in {'submitted','working','blocked','handoff'}
+            or not assignment.get('pr') or not assignment.get('generation')
+            or slot.get('generation')!=assignment['generation'] or slot.get('role')!=assignment['role']
+            or slot.get('repo','').lower()!=assignment['repo'].lower()):
+        raise Unverified('exact_completion_assignment_required')
+    return assignment
+
+
+def _tracked_role_completion(config,state,session,assignment,run,now):
+    """Complete only this assigned PR, never the repository's unrelated queue."""
+    began=time.monotonic();role=assignment['role']
+    matches=[r for r in load_repositories(config) if r.enabled and r.short+'-'+role==session
+             and r.repo.lower()==assignment['repo'].lower()]
+    if len(matches)!=1:raise Unverified('not_enabled_worker')
+    repo=matches[0];path=snapshot_path(state,repo.repo);snapshot=json.loads(path.read_text());at=snapshot.get('observed_at')
+    if (snapshot.get('repo')!=repo.repo or snapshot.get('status')!='ok' or snapshot.get('enabled') is not True
+            or type(at) not in (int,float) or not math.isfinite(at) or not 0<=now-at<=300):raise Unverified('snapshot_not_fresh')
+    identity=session_identity(session,run,state=state)
+    generation='|'.join(str(identity[k]) for k in ('session_id','session_created','pane_id','pane_pid'))
+    if generation!=assignment['generation']:raise Unverified('assignment_generation_changed')
+    clone=Path(getattr(repo,'clone_'+role) or Path.home()/(repo.short+'-'+role)).resolve();git=['git','-C',str(clone)]
+    if Path(command(git+['rev-parse','--show-toplevel'],run)).resolve()!=clone:raise Unverified('clone_mismatch')
+    remote=command(git+['remote','get-url','origin'],run)
+    if remote not in {f'git@github.com:{repo.repo}.git',f'https://github.com/{repo.repo}.git',f'https://github.com/{repo.repo}'}:raise Unverified('remote_mismatch')
+    if command(git+['status','--porcelain=v1','--untracked-files=all'],run):raise Unverified('worktree_not_clean')
+    head=command(git+['rev-parse','HEAD'],run);branch=_checkout_branch(git,run)
+    if not re.fullmatch('[0-9a-f]{40,64}',head):raise Unverified('invalid_head')
+    number=assignment['pr']['number']
+    pr=json.loads(command(['gh','pr','view',str(number),'--repo',repo.repo,'--json',
+        'number,url,state,isDraft,headRefOid,baseRefOid,mergeCommit,mergedAt,closingIssuesReferences,labels,author,reviews'],run))
+    labels={label['name'] for label in pr['labels']}
+    if (pr.get('number')!=number or pr.get('url','').lower()!=f'https://github.com/{repo.repo}/pull/{number}'.lower()
+            or pr.get('author',{}).get('login','').lower()!=repo.author.lower() or pr.get('isDraft') is not False
+            or pr.get('headRefOid')!=assignment['pr']['head'] or 'hold' in labels):raise Unverified('assigned_pr_changed')
+    refs=pr.get('closingIssuesReferences');numbers=[]
+    if not isinstance(refs,list) or not refs or len(refs)>20:raise Unverified('assigned_pr_links_unknown')
+    for ref in refs:
+        n=ref.get('number');r=ref.get('repository',{}).get('nameWithOwner');url=ref.get('url')
+        if (type(n) is not int or n<=0 or not (r or url) or r and r.lower()!=repo.repo.lower()
+                or url and url.lower()!=f'https://github.com/{repo.repo}/issues/{n}'.lower()):raise Unverified('assigned_pr_links_changed')
+        numbers.append(n)
+    if sorted(set(numbers))!=assignment['issue_numbers']:raise Unverified('assigned_pr_links_changed')
+    evidence={'assignment_id':assignment['id'],'pr':number,'issues':assignment['issue_numbers'],
+              'pr_head':pr['headRefOid'],'pr_base':pr.get('baseRefOid'),'assigned_base':assignment['pr']['base']}
+    if pr.get('state')=='MERGED':
+        merge=(pr.get('mergeCommit') or {}).get('oid')
+        try:merged_at=datetime.fromisoformat(pr['mergedAt'].replace('Z','+00:00')).timestamp()
+        except (KeyError,ValueError,TypeError):raise Unverified('assigned_merge_time_unknown')
+        if (not isinstance(merge,str) or not re.fullmatch('[0-9a-f]{40,64}',merge)
+                or not max(identity['session_created'],assignment['submitted_at'])<=merged_at<=now):raise Unverified('assigned_merge_unverified')
+        published=head
+        if head==pr['headRefOid']:
+            local_tree=command(git+['rev-parse',head+'^{tree}'],run)
+            commit=json.loads(command(['gh','api',f'repos/{repo.repo}/git/commits/{merge}'],run))
+            if commit.get('sha')!=merge or (commit.get('tree') or {}).get('sha')!=local_tree:raise Unverified('assigned_merged_tree_changed')
+            published=merge
+        elif head!=merge and branch!='main':raise Unverified('assigned_checkout_not_published')
+        main=json.loads(command(['gh','api',f'repos/{repo.repo}/git/ref/heads/main'],run))['object']['sha']
+        if not isinstance(main,str) or not re.fullmatch('[0-9a-f]{40,64}',main):raise Unverified('invalid_published_main')
+        comparison=json.loads(command(['gh','api',f'repos/{repo.repo}/compare/{published}...{main}',
+            '--jq','{status,base_commit:{sha:.base_commit.sha},behind_by}'],run))
+        if (comparison.get('status') not in {'ahead','identical'} or comparison.get('base_commit',{}).get('sha')!=published
+                or comparison.get('behind_by')!=0):raise Unverified('assigned_merge_not_on_main')
+        evidence.update(checkout_basis='assigned_merged_pr_on_main',merge=merge,published_main=main)
+    else:
+        stages=labels & {'ready-for-review','ready-for-audit','changes-requested'}
+        permitted=({'ready-for-audit'},{'changes-requested'}) if role=='review' else ({'changes-requested'},)
+        if (pr.get('state')!='OPEN' or stages not in permitted
+                or not isinstance(pr.get('baseRefOid'),str) or not re.fullmatch('[0-9a-f]{40,64}',pr['baseRefOid'])
+                or head!=assignment['pr']['head']):raise Unverified('assigned_step_not_complete')
+        rejection=stages=={'changes-requested'}
+        reviews=pr.get('reviews')
+        if not isinstance(reviews,list) or len(reviews)>100:raise Unverified('review_inventory_unbounded')
+        authored=[]
+        for review in reviews:
+            if review.get('author',{}).get('login','').lower()!=repo.author.lower():continue
+            try:submitted=datetime.fromisoformat(review['submittedAt'].replace('Z','+00:00')).timestamp()
+            except (KeyError,ValueError,TypeError):raise Unverified('review_time_unknown')
+            authored.append((submitted,review))
+        if not authored:raise Unverified('assigned_step_record_missing')
+        submitted,review=max(authored,key=lambda pair:pair[0]);body=review.get('body','')
+        if (sum(at==submitted for at,_ in authored)!=1 or not isinstance(body,str) or not review.get('id')
+                or review.get('commit',{}).get('oid')!=assignment['pr']['head']
+                or not max(identity['session_created'],assignment['submitted_at'])<=submitted<=now):raise Unverified('assigned_step_record_changed')
+        if role=='audit':
+            marked=bool(re.match(r'(?i)^(?:#{1,6}\s*)?(?:\*{1,2})?(?:security audit|auditor|audit)\s*[:—-]\s*FAIL\b',body.strip()))
+            if not (marked and assignment['pr']['head'] in body and assignment['pr']['base'] in body
+                    and review.get('state') in {'COMMENTED','CHANGES_REQUESTED'}):raise Unverified('assigned_audit_rejection_unverified')
+        else:
+            outcome=r'(?:changes requested|FAIL)' if rejection else r'(?:PASS|approved)'
+            marked=bool(re.match(r'(?i)^(?:(?:correctness\s+)?review of\s+`?'+re.escape(pr['headRefOid'])+r'`?:\s*'+outcome+
+                r'\b|(?:#{1,6}\s*)?(?:\*{1,2})?review(?:er)?\s*[:—-]\s*'+outcome+r'\b)',body.strip()))
+            if review.get('state')!=('CHANGES_REQUESTED' if rejection else 'APPROVED') and not (review.get('state')=='COMMENTED' and marked):raise Unverified('assigned_review_result_unverified')
+        evidence.update(checkout_basis='assigned_current_pr_head_'+('rejection' if rejection else 'review_pass'),
+            review_id=review['id'],review_at=submitted,review_digest=hashlib.sha256(body.encode()).hexdigest())
+    if json.loads(path.read_text())!=snapshot:raise Unverified('snapshot_changed')
+    if now+time.monotonic()-began-at>300:raise Unverified('snapshot_expired')
+    if (command(git+['remote','get-url','origin'],run)!=remote or command(git+['rev-parse','HEAD'],run)!=head
+            or _checkout_branch(git,run)!=branch or command(git+['status','--porcelain=v1','--untracked-files=all'],run)):
+        raise Unverified('assigned_checkout_changed')
+    if session_identity(session,run,state=state)!=identity:raise Unverified('session_changed')
+    if _tracked_completion_assignment(state,session)!=assignment:raise Unverified('completion_assignment_changed')
+    return {'eligible':True,'reason':'verified_handoff','evidence':{'repo':repo.repo,'role':role,'clone':str(clone),
+        'head':head,'branch':branch,**evidence,**identity}}
+
+
 def _check_with_fallback(config, state, session, run, now):
+    if session.endswith("-build"):
+        from .workflow_build_release import check as build_check
+        result=build_check(config,state,session,run,now,unverified=Unverified,read_command=command,
+            identify_session=lambda name,runner:session_identity(name,runner,state=state))
+        if result is not None:return result
+    if session.endswith(('-review','-audit')):
+        assignment=_tracked_completion_assignment(state,session)
+        if assignment is not None:return _tracked_role_completion(config,state,session,assignment,run,now)
     try:
         return _check(config, state, session, run, now)
     except Unverified as exc:
@@ -532,7 +654,7 @@ def check(config, state, session, *, run=subprocess.run, now=None):
         return _check_with_fallback(config, state, session, bounded_run(run), time.time() if now is None else now)
     except Unverified as exc:
         return {'eligible': False, 'reason': str(exc), 'evidence': {}}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, sqlite3.Error, subprocess.SubprocessError):
         return {'eligible': False, 'reason': 'verification_unavailable', 'evidence': {}}
 
 

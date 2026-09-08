@@ -155,6 +155,89 @@ class HumanWaitTests(unittest.TestCase):
         result = check(self.config, self.state, 'owner/app', run=lambda *a, **k: CompletedProcess(a, 1, '', ''))
         self.assertFalse(result['eligible'])
 
+    def tracked_auditor(self):
+        import time
+        from forge import workflow as w
+        self.clone=self.state.parent/'audit-clone'
+        with (self.config/'app.repo').open('a') as f:f.write('CLONE_AUDIT='+str(self.clone)+'\n')
+        now=time.time();self.generation='$7|100|%7|700'
+        pr={'number':10,'head':self.head,'base':self.base}
+        w.reconcile(self.state,'owner/app','v1',now,[{'number':1,'stage':'audit','prs':[pr]}],source_event_id='sync',now=now)
+        a=w.reserve(self.state,'owner/app','audit','app-audit','v1',[1],pr=pr,source_event_id='reserve',now=now)
+        w.transition(self.state,a['id'],'bind',generation=self.generation,provider='claude',source_event_id='bind',now=now)
+        w.transition(self.state,a['id'],'submitted',generation=self.generation,source_event_id='submit',now=now)
+        w.reconcile(self.state,'owner/app','v2',now+0.001,[{'number':1,'stage':'audit','disposition':'critical',
+                    'reason':'human_approval_required','prs':[pr]}],source_event_id='critical',now=now+0.001)
+        self.inventory.append({'number':11,'pull_request':{}})
+        self.dirty=False;self.busy=False;self.replaced=False;self.killed=[]
+        return a
+
+    def scoped_run(self,args,**kwargs):
+        if args[:3]==['gh','pr','view'] and args[3]=='11':
+            self.calls.append(args)
+            return CompletedProcess(args,0,json.dumps({**self.live,'number':11,'labels':[{'name':'ready-for-audit'}]}),'')
+        if args[0]=='gh':return self.fake_run(args,**kwargs)
+        self.calls.append(args)
+        if args[0]=='git':
+            if args[-2:]==['rev-parse','--show-toplevel']:value=str(self.clone)
+            elif args[-3:]==['remote','get-url','origin']:value='https://github.com/owner/app.git'
+            elif 'status' in args:value=' M pending.txt' if self.dirty else ''
+            elif args[-2:]==['rev-parse','HEAD']:value=self.head
+            else:raise AssertionError(args)
+        elif args[:2]==['tmux','list-panes']:
+            value='app-audit|$8|200|%8|800|claude' if self.replaced else 'app-audit|$7|100|%7|700|claude'
+        elif args[:2]==['tmux','capture-pane']:
+            value='Working · esc to interrupt' if self.busy else 'Done.\n❯\n bypass permissions on'
+        elif args[:2]==['tmux','kill-session']:
+            self.killed.append(args);value=''
+        elif args[0]=='ps':
+            value='800 1 bash\n801 800 claude' if self.replaced else '700 1 bash\n701 700 claude'
+        else:raise AssertionError(args)
+        return CompletedProcess(args,0,value,'')
+
+    def scoped_release(self):
+        lock=self.state.parent/'state-supervisor.lock'
+        with lock.open('w') as f:
+            fcntl.flock(f,fcntl.LOCK_EX)
+            return release(self.config,self.state,'owner/app',session='app-audit',lock_fd=f.fileno(),run=self.scoped_run)
+
+    def test_exact_audit_wait_releases_with_another_actionable_pr_and_retires_only_assignment(self):
+        from forge import workflow as w
+        a=self.tracked_auditor()
+        global_wait=check(self.config,self.state,'owner/app',run=self.scoped_run)
+        self.assertFalse(global_wait['eligible'])
+        self.calls.clear()
+        result=self.scoped_release()
+        self.assertTrue(result['released'],result)
+        self.assertEqual(result['evidence']['assignment_id'],a['id'])
+        self.assertEqual([p['pr'] for p in result['evidence']['candidates']],[10])
+        self.assertEqual(self.killed,[['tmux','kill-session','-t','$7']])
+        self.assertEqual([args[3] for args in self.calls if args[:3]==['gh','pr','view']],['10','10'])
+        view=w.read_state(self.state)
+        self.assertEqual(view['assignments'][0]['state'],'retired')
+        self.assertEqual(view['slots'][0]['state'],'free')
+        self.assertEqual((view['issues'][0]['stage'],view['issues'][0]['disposition']),('audit','critical'))
+
+    def test_scoped_wait_never_releases_dirty_busy_replaced_or_changed_target(self):
+        self.tracked_auditor()
+        for flag in ('dirty','busy','replaced'):
+            with self.subTest(flag=flag):
+                setattr(self,flag,True)
+                result=self.scoped_release()
+                self.assertFalse(result['released'],result);self.assertEqual(self.killed,[])
+                setattr(self,flag,False)
+        self.live['closingIssuesReferences']=[{'number':2,'url':'https://github.com/owner/app/issues/2'}]
+        self.assertEqual(self.scoped_release()['reason'],'audit_assignment_target_changed')
+        self.assertEqual(self.killed,[])
+
+    def test_scoped_wait_rejects_new_head_even_when_new_audit_is_valid(self):
+        self.tracked_auditor()
+        self.live['headRefOid']='c'*40
+        self.reviews[0]['commit_id']='c'*40
+        self.reviews[0]['body']=self.reviews[0]['body'].replace(self.head,'c'*40)
+        self.assertEqual(self.scoped_release()['reason'],'audit_assignment_target_changed')
+        self.assertEqual(self.killed,[])
+
     def test_release_requires_inherited_supervisor_lock(self):
         result = release(self.config, self.state, 'owner/app', lock_fd=-1, run=self.fake_run)
         self.assertFalse(result['released'])

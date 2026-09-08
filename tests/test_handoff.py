@@ -755,3 +755,97 @@ class ReviewerRejectionTests(unittest.TestCase):
     def test_same_timestamp_conflicting_review_decisions_are_ambiguous(self):
         self.pr['reviews'].append({**self.pr['reviews'][0],'id':'review-2','state':'APPROVED'})
         self.assertFalse(self.decision()['eligible'])
+
+
+class TrackedRoleCompletionTests(unittest.TestCase):
+    fake_run=HandoffTests.fake_run
+    save=HandoffTests.save
+
+    def setUp(self):
+        ReviewerRejectionTests.setUp(self)
+        self.role='review'
+
+    def assign(self,role='review'):
+        from forge import workflow as w
+        self.role=role
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_{role.upper()}={self.clone}\n')
+        self.identity=self.identity.replace('one-review','one-'+role)
+        pr={'number':2,'head':self.head,'base':'c'*40}
+        w.reconcile(self.state,'o/one','v1',60,[{'number':1,'stage':role,'prs':[pr]}],source_event_id='sync',now=60)
+        a=w.reserve(self.state,'o/one',role,'one-'+role,'v1',[1],pr=pr,source_event_id='reserve',now=60)
+        w.transition(self.state,a['id'],'bind',generation='$1|50|%1|10',provider='claude',source_event_id='bind',now=61)
+        w.transition(self.state,a['id'],'submitted',generation='$1|50|%1|10',source_event_id='submit',now=65)
+        self.assignment=a
+        self.snapshot['counts'][role]=2
+        self.snapshot['work'][role]=[3,4]
+        self.save()
+
+    def decision(self):return check(self.config,self.state,'one-'+self.role,run=self.fake_run,now=100)
+
+    def merged(self):
+        self.pr.update(state='MERGED',mergeCommit={'oid':'d'*40},mergedAt='1970-01-01T00:01:20Z',baseRefOid='b'*40)
+        self.trees[self.head+'^{tree}']='e'*40
+        self.compare_status='ahead';self.compare_base='d'*40
+
+    def test_reviewer_rejection_ignores_unrelated_review_queue(self):
+        self.assign();result=self.decision()
+        self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['assignment_id'],self.assignment['id'])
+        self.assertFalse(any(c[:3]==['gh','pr','list'] for c in self.calls))
+
+    def test_reviewer_pass_ignores_unrelated_review_queue(self):
+        self.assign();self.pr['labels']=[{'name':'ready-for-audit'}]
+        self.pr['reviews'][0]['body']='Reviewer: PASS'
+        self.assertTrue(self.decision()['eligible'])
+
+    def test_auditor_merged_completion_survives_base_advance(self):
+        self.assign('audit');self.merged();self.branch=None
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['checkout_basis'],'assigned_merged_pr_on_main')
+
+    def test_reviewer_merged_completion_with_other_work(self):
+        self.assign();self.merged();self.assertTrue(self.decision()['eligible'])
+
+    def test_audit_rejection_requires_actual_current_candidate_audit(self):
+        self.assign('audit')
+        self.assertFalse(self.decision()['eligible'])
+        self.pr['reviews'][0]['body']='Security audit: FAIL\nHead: '+self.head+'\nBase: '+'c'*40
+        self.assertTrue(self.decision()['eligible'])
+        self.pr['reviews'][0]['body']='Security audit: FAIL\nHead: '+self.head
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_exact_generation_head_base_links_and_author_are_required(self):
+        self.assign()
+        for key,value in [('headRefOid','f'*40),('baseRefOid','invalid'),('author',{'login':'other'}),('closingIssuesReferences',[{'number':8,'repository':{'nameWithOwner':'o/one'}}])]:
+            old=self.pr[key];self.pr[key]=value
+            self.assertFalse(self.decision()['eligible']);self.pr[key]=old
+        self.identity=self.identity.replace('$1','$2');self.assertFalse(self.decision()['eligible'])
+
+    def test_dirty_child_work_and_held_target_are_not_released(self):
+        self.assign();self.status=' M important';self.assertFalse(self.decision()['eligible']);self.status=''
+        self.processes+='\n12 11 npm';self.assertFalse(self.decision()['eligible'])
+        self.processes=self.processes.rsplit('\n',1)[0]
+        self.pr['labels'].append({'name':'hold'});self.assertFalse(self.decision()['eligible'])
+
+    def test_wrong_latest_review_or_old_review_cannot_complete_assignment(self):
+        self.assign();self.pr['reviews'][0]['submittedAt']='1970-01-01T00:01:00Z'
+        self.assertFalse(self.decision()['eligible'])
+        self.pr['reviews'][0]['submittedAt']='1970-01-01T00:01:10Z'
+        self.pr['reviews'].append({**self.pr['reviews'][0],'id':'new','submittedAt':'1970-01-01T00:01:20Z','body':'Reviewer: PASS'})
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_merged_tree_or_main_ancestry_mismatch_preserves_worker(self):
+        self.assign('audit');self.merged();self.remote_merge_tree='f'*40
+        self.assertFalse(self.decision()['eligible']);self.remote_merge_tree='e'*40
+        self.compare_status='diverged';self.assertFalse(self.decision()['eligible'])
+
+    def test_double_proof_change_never_releases(self):
+        self.assign();self.change_on_second=lambda:self.pr['labels'].append({'name':'ready-for-review'})
+        result=release(self.config,self.state,'one-review',run=self.fake_run,now=100)
+        self.assertFalse(result['released']);self.assertFalse(any(c[:2]==['tmux','kill-session'] for c in self.calls))
+
+    def test_open_handoff_base_advance_retires_only_old_execution(self):
+        self.assign();self.pr['baseRefOid']='f'*40
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['assigned_base'],'c'*40)
+        self.assertEqual(result['evidence']['pr_base'],'f'*40)
