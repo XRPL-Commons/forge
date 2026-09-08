@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile Forge issue priorities when ready work changes
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=240s
+Unit=forge-triage.service
+
+[Install]
+WantedBy=timers.target

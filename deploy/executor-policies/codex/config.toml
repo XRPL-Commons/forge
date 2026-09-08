@@ -1,0 +1,12 @@
+# Immutable client config, bind read-only over $CODEX_HOME/config.toml.
+# Profile definition comes ONLY from requirements.toml; never duplicate it here.
+default_permissions = "forge_dummy_executor"
+approval_policy = "never"
+web_search = "disabled"
+[shell_environment_policy]
+inherit = "none"
+ignore_default_excludes = false
+[shell_environment_policy.set]
+PATH = "/usr/bin:/bin"
+HOME = "/home/forge/workspace"
+TMPDIR = "/home/forge/workspace/.tmp"

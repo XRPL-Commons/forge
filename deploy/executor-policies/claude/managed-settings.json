@@ -1,0 +1,96 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "blockReadsOutsideWorkingDirectories": true,
+    "allow": [
+      "Bash"
+    ],
+    "deny": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Task"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": [],
+    "enableWeakerNestedSandbox": false,
+    "filesystem": {
+      "disabled": false,
+      "allowManagedReadPathsOnly": true,
+      "denyRead": [
+        "/home/forge/client",
+        "/root",
+        "/var/lib/forge-clients",
+        "/run/user",
+        "/etc/forge"
+      ],
+      "allowRead": [
+        "/home/forge/workspace"
+      ],
+      "denyWrite": [
+        "/home/forge/client",
+        "/etc",
+        "/var/lib/forge-clients",
+        "/run"
+      ]
+    },
+    "network": {
+      "allowManagedDomainsOnly": true,
+      "allowedDomains": [],
+      "allowUnixSockets": [],
+      "allowAllUnixSockets": false,
+      "allowLocalBinding": false
+    },
+    "credentials": {
+      "files": [
+        {
+          "path": "/home/forge/client/dummy-credential",
+          "mode": "deny"
+        }
+      ],
+      "envVars": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "CLAUDE_CODE_OAUTH_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "OPENAI_API_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "CODEX_API_KEY",
+          "mode": "deny"
+        },
+        {
+          "name": "GH_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "GITHUB_TOKEN",
+          "mode": "deny"
+        },
+        {
+          "name": "SSH_AUTH_SOCK",
+          "mode": "deny"
+        }
+      ]
+    }
+  },
+  "allowManagedPermissionRulesOnly": true,
+  "allowedMcpServers": [],
+  "disableAllHooks": true
+}

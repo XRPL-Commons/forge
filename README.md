@@ -1,0 +1,92 @@
+# Forge
+
+Forge coordinates coding agents across GitHub repositories and shows each issue
+moving through **Build → Review → Security audit**.
+
+GitHub holds the issues, pull requests, reviews, and audit evidence. Local queue
+snapshots, activity events, and SQLite history power the operator dashboard.
+
+- Issue cards show what is working, waiting, or needs a human decision.
+- Workers start on demand and release their slots after verified handoffs.
+- Capacity checks account for memory, pressure, and per-role limits.
+- Critical changes require human approval. Failed audits return work to Build.
+- A unified activity log records dispatches, progress, releases, and blockers.
+
+**Status: experimental.** The tmux supervisor is the working execution path.
+The newer isolated executor and policy modules are staged components; live
+repository execution through those adapters remains disabled. See
+[implementation status](docs/implementation.md).
+
+## Start with observation
+
+Use Linux, Python 3.10 or newer, Git, and the GitHub CLI (`gh`). Authenticate `gh`
+with access to the repositories you want to observe.
+
+```sh
+mkdir -p local/repos.d
+cp examples/repos.d/example.repo.example local/repos.d/project.repo
+# Edit project.repo: repository, ownership label, bot identity, and clone paths.
+bin/forge shadow --config ./local/repos.d --state ./local/state
+```
+
+The example starts disabled. Before enabling a repository, deliberately provision
+its configured `auto:owned-by-*` ownership label. Shadow mode reads queues and
+writes local snapshots; it does not launch workers, change labels, or merge PRs.
+Set `RECOVERY_AUTHOR` explicitly to the GitHub identity used by your workers.
+
+Live execution additionally needs tmux, supported coding-agent CLIs, separate
+worker clones, and an operator-managed service installation. The files in
+`deploy/` are templates and containment utilities, not a one-command production
+installer. Configure paths, agent identities, credentials, and merge policy for
+your own installation before starting a supervisor. Never copy another fleet's
+operational state or credentials.
+
+## Dashboard and history
+
+The dashboard is implemented in `legacy/dashboard.html` and
+`legacy/forge-status.py`. It reads local state and refreshes automatically. Its
+repository drawer groups pull requests, reviews, and security audits beneath
+issue cards. The server exposes local worker output; keep it on a trusted private
+network. It has no application authentication layer.
+
+See [observability](docs/observability.md), [activity](docs/activity.md),
+[handoffs](docs/handoff.md), and [capacity](docs/capacity.md) for the data model and
+operational behavior. GitHub raw content remains authoritative; cached summaries
+and observed transitions are not independent proof of approval or completion.
+
+## Development
+
+The Python runtime uses the standard library. Run:
+
+```sh
+python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s observer/tests -v
+```
+
+Browser checks use Playwright and an installed Chromium browser:
+
+```sh
+FORGE_PLAYWRIGHT_MODULE=/path/to/playwright-core \
+FORGE_BROWSER_PATH=/path/to/chromium node tests/browser_dashboard.cjs
+```
+
+These checks use synthetic local fixtures and do not mutate GitHub or send
+notifications. Optional systemd integration tests are documented separately and
+must be enabled explicitly.
+
+## Source layout
+
+| Directory | Purpose |
+| --- | --- |
+| `forge/` | Queue, scheduling, activity, evidence, capacity, and lifecycle logic |
+| `legacy/` | Working tmux supervisor, role instructions, and dashboard |
+| `observer/` | Independent observation and isolation experiments |
+| `deploy/` | Service templates and controlled deployment utilities |
+| `tests/` | Deterministic backend and browser regression checks |
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and
+[SECURITY.md](SECURITY.md) for security reporting and operational boundaries.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

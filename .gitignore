@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+state/
+logs/
+local/
+config.env
+*.repo
+*.bak*
+.venv/
+node_modules/
+
+# Private local configuration and evidence
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.pem
+*.key
+backups/
+.claude/
+.codex/

@@ -1,0 +1,2743 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Forge · Fleet</title>
+    <style>
+      [hidden] {
+        display: none !important;
+      }
+      :root {
+        color-scheme: dark;
+        --bg: #111315;
+        --surface: #191c1f;
+        --line: #30353a;
+        --muted: #a0a8b0;
+        --text: #edf0f2;
+        --blue: #94c4ff;
+        --amber: #f0bd73;
+        --green: #9cdbb3;
+        --red: #ffaaa4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+      button,
+      a,
+      input,
+      select,
+      summary {
+        outline-offset: 4px;
+      }
+      button {
+        cursor: pointer;
+      }
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      button {
+        color: inherit;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+      }
+      button:hover {
+        background: #292e33;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      .shell {
+        max-width: 1440px;
+        margin: auto;
+        padding: 30px 40px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 38px;
+      }
+      .brand {
+        font-size: 24px;
+        font-weight: 750;
+        letter-spacing: -1px;
+      }
+      .brand span {
+        color: var(--amber);
+      }
+      .eyebrow {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1.8px;
+        color: var(--muted);
+      }
+      h1 {
+        font-size: 32px;
+        font-weight: 600;
+        letter-spacing: -1px;
+        margin: 6px 0;
+      }
+      h2 {
+        font-size: 17px;
+        margin: 0 0 14px;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      p {
+        margin: 6px 0;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .topline,
+      .section-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+      .topline {
+        margin-bottom: 24px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1px;
+        background: var(--line);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 28px;
+      }
+      .stat {
+        padding: 20px;
+        background: var(--surface);
+      }
+      .stat strong {
+        font-size: 30px;
+        display: block;
+        font-weight: 550;
+        letter-spacing: -1px;
+      }
+      .stat span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 28px;
+      }
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 18px;
+      }
+      .attention-item {
+        padding: 10px 0;
+        border-top: 1px solid var(--line);
+      }
+      .attention-item:first-child {
+        border-top: 0;
+      }
+      .attention-item button {
+        border: 0;
+        padding: 0;
+        background: none;
+        text-align: left;
+        color: var(--blue);
+      }
+      .attention-item p {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 5px;
+        font-size: 11px;
+        background: #292e33;
+        color: var(--muted);
+        margin: 2px 4px 2px 0;
+      }
+      .pill.blue {
+        background: #243345;
+        color: var(--blue);
+      }
+      .pill.amber {
+        background: #3a3023;
+        color: var(--amber);
+      }
+      .pill.green {
+        background: #23372b;
+        color: var(--green);
+      }
+      .pill.red {
+        background: #3c2928;
+        color: var(--red);
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        margin: 16px 0;
+      }
+      input,
+      select {
+        min-width: 0;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+      }
+      input {
+        flex: 1;
+      }
+      .repo-head,
+      .repo-row {
+        display: grid;
+        grid-template-columns:
+          minmax(140px, 1.4fr) minmax(190px, 1.2fr) minmax(90px, 0.7fr)
+          minmax(120px, 1fr);
+        gap: 14px;
+        align-items: center;
+      }
+      .repo-head {
+        padding: 8px 14px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .repo-row {
+        width: 100%;
+        border-radius: 0;
+        border: 0;
+        border-top: 1px solid var(--line);
+        background: transparent;
+        padding: 16px 14px;
+        text-align: left;
+      }
+      .repo-row:hover,
+      .repo-row.selected {
+        background: var(--surface);
+      }
+      .repo-name {
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .repo-name small {
+        display: block;
+        font-weight: 400;
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 3px;
+      }
+      .workers {
+        display: flex;
+        gap: 6px;
+      }
+      .worker {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .worker b {
+        display: block;
+        font-weight: 500;
+      }
+      .worker.busy {
+        color: var(--blue);
+      }
+      .worker.paused {
+        color: var(--amber);
+      }
+      .queue,
+      .reason {
+        font-size: 12px;
+      }
+      .reason {
+        color: var(--muted);
+      }
+      .empty {
+        padding: 32px 16px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .banner {
+        padding: 12px 16px;
+        border: 1px solid #6a5132;
+        background: #30271e;
+        color: var(--amber);
+        border-radius: 8px;
+        margin-bottom: 18px;
+      }
+      .hidden {
+        display: none !important;
+      }
+      .event {
+        border-top: 1px solid var(--line);
+        padding: 12px 0;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .event time {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .channels {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      #activity {
+        max-height: 550px;
+        overflow: auto;
+      }
+      .activity-controls {
+        display: flex;
+        gap: 6px;
+        margin: 8px 0;
+      }
+      .activity-controls button {
+        font-size: 11px;
+        padding: 5px 8px;
+      }
+      .activity-controls button[aria-pressed="true"] {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+      pre {
+        font:
+          12px/1.6 ui-monospace,
+          SFMono-Regular,
+          monospace;
+        background: #0d0f11;
+        border: 1px solid var(--line);
+        padding: 14px;
+        border-radius: 8px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 450px;
+        overflow: auto;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+        padding: 8px 0;
+        font-size: 12px;
+      }
+      .drawer {
+        position: fixed;
+        inset: 0 0 0 auto;
+        width: min(760px, 100%);
+        background: #15181b;
+        border-left: 1px solid var(--line);
+        z-index: 5;
+        box-shadow: -20px 0 70px #0006;
+        display: flex;
+        flex-direction: column;
+      }
+      .drawer-head {
+        padding: 22px 24px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      .drawer-head h2 {
+        font-size: 23px;
+        margin: 4px 0;
+      }
+      .drawer-body {
+        padding: 24px;
+        overflow: auto;
+        flex: 1;
+      }
+      .scrim {
+        position: fixed;
+        inset: 0;
+        background: #0006;
+        z-index: 4;
+      }
+      .links {
+        display: flex;
+        gap: 14px;
+        font-size: 12px;
+        margin: 10px 0;
+      }
+      .issue {
+        padding: 14px 0;
+        border-top: 1px solid var(--line);
+      }
+      .issue-title {
+        font-weight: 550;
+        overflow-wrap: anywhere;
+      }
+      .issue p {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .worker-tabs {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .worker-tabs button[aria-pressed="true"] {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+      .detail-section {
+        margin-bottom: 26px;
+      }
+      .refresh-note {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .capacity-reason {
+        font-size: 16px;
+        margin-bottom: 8px;
+      }
+      #pane-output {
+        min-height: 120px;
+      }
+      .header-status {
+        text-align: right;
+        font-size: 12px;
+      }
+      .number {
+        font-variant-numeric: tabular-nums;
+      }
+      @media (min-width: 1500px) {
+        body.detail-open .shell {
+          margin-right: 760px;
+          padding: 26px;
+          max-width: none;
+        }
+        body.detail-open .layout {
+          grid-template-columns: 1fr;
+        }
+        body.detail-open .scrim {
+          display: none;
+        }
+      }
+      @media (max-width: 1100px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+        .aside {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 18px;
+        }
+        .shell {
+          padding: 24px;
+        }
+        .repo-head,
+        .repo-row {
+          grid-template-columns: 1.2fr 1.3fr 0.7fr 1fr;
+        }
+      }
+      @media (max-width: 650px) {
+        .shell {
+          padding: 18px 14px;
+        }
+        header {
+          margin-bottom: 26px;
+        }
+        .topline {
+          align-items: start;
+        }
+        h1 {
+          font-size: 27px;
+        }
+        .stats {
+          grid-template-columns: 1fr 1fr;
+        }
+        .stat {
+          padding: 14px;
+        }
+        .stat strong {
+          font-size: 25px;
+        }
+        .aside {
+          display: block;
+        }
+        .repo-head {
+          display: none;
+        }
+        .repo-row {
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          padding: 16px 4px;
+        }
+        .repo-name {
+          font-size: 15px;
+        }
+        .workers {
+          justify-content: flex-end;
+        }
+        .queue {
+          grid-column: 1;
+        }
+        .reason {
+          text-align: right;
+        }
+        .toolbar {
+          flex-wrap: wrap;
+        }
+        input {
+          flex-basis: 100%;
+        }
+        select {
+          flex: 1;
+        }
+        .drawer-body {
+          padding: 18px;
+        }
+        .drawer-head {
+          padding: 18px;
+        }
+        .header-status {
+          max-width: 180px;
+        }
+        .topline .eyebrow {
+          display: none;
+        }
+      }
+
+      .history {
+        margin-bottom: 28px;
+      }
+      .history-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .history-top h2 {
+        margin: 0;
+      }
+      .history-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+        gap: 24px;
+      }
+      .pipeline {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 7px;
+        margin: 18px 0;
+      }
+      .stage {
+        min-width: 0;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px 8px;
+      }
+      .stage strong {
+        font-size: 23px;
+        display: block;
+      }
+      .stage span {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .stage[data-stage="completed"] {
+        border-color: #355240;
+      }
+      .chart {
+        width: 100%;
+        height: 160px;
+        display: block;
+      }
+      .chart-labels {
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .legend {
+        display: flex;
+        gap: 14px;
+        color: var(--muted);
+        font-size: 11px;
+        margin: 8px 0;
+      }
+      .legend i {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        margin-right: 5px;
+      }
+      .timeline-event {
+        border-left: 2px solid var(--line);
+        padding: 0 0 14px 14px;
+        font-size: 12px;
+      }
+      .timeline-event p {
+        color: var(--muted);
+      }
+      .timeline-event time {
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .timeline-event a {
+        font-weight: 550;
+      }
+      .evidence {
+        background: #1b2024;
+        padding: 10px 12px;
+        border-radius: 8px;
+        margin: 8px 0;
+      }
+      .evidence summary {
+        color: var(--text);
+      }
+      .evidence pre {
+        max-height: 350px;
+      }
+      .evidence p {
+        white-space: pre-wrap;
+      }
+      .item-tools {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0;
+      }
+      .item-tools input {
+        width: 100%;
+      }
+      .chart-tip {
+        min-height: 22px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .history-empty {
+        color: var(--muted);
+        padding: 20px 0;
+      }
+      .timeline {
+        max-height: 340px;
+        overflow: auto;
+      }
+      .stage:focus-visible {
+        outline: 2px solid var(--blue);
+      }
+      @media (max-width: 850px) {
+        .history-grid {
+          grid-template-columns: 1fr;
+        }
+        .pipeline {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+      @media (max-width: 650px) {
+        .pipeline {
+          grid-template-columns: repeat(4, 1fr);
+        }
+        .stage {
+          padding: 10px 6px;
+        }
+        .stage span {
+          font-size: 10px;
+        }
+      }
+
+      header {
+        margin-bottom: 22px;
+      }
+      .topline {
+        margin-bottom: 12px;
+      }
+      .view-nav {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+        font-size: 12px;
+        margin-bottom: 20px;
+      }
+      .now-workers {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+      .role-card {
+        padding: 16px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        min-width: 0;
+      }
+      .role-card.working {
+        border-top: 3px solid var(--blue);
+        padding-top: 14px;
+      }
+      .role-card h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+      .role-card .section-title {
+        margin-bottom: 10px;
+      }
+      .live-worker {
+        padding: 12px 0;
+        border-top: 1px solid var(--line);
+      }
+      .live-worker:first-of-type {
+        border-top: 0;
+      }
+      .live-worker p {
+        font-size: 12px;
+      }
+      .live-worker .work-title {
+        font-size: 14px;
+        font-weight: 550;
+        line-height: 1.45;
+        margin: 8px 0;
+        overflow-wrap: anywhere;
+      }
+      .live-worker .work-title a {
+        color: var(--text);
+      }
+      .live-worker .worker-action {
+        font-size: 11px;
+        padding: 5px 9px;
+        margin-top: 8px;
+      }
+      .work-label {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .pressure-section {
+        margin: 0 0 16px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      .pressure-section h2 {
+        margin: 0;
+      }
+      .pressure-stages {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 22px;
+        margin: 18px 0 12px;
+      }
+      .pressure-stage strong {
+        font-size: 28px;
+        display: inline-block;
+        margin-right: 6px;
+        font-weight: 550;
+      }
+      .pressure-stage .muted {
+        font-size: 11px;
+      }
+      .pressure-bar {
+        height: 5px;
+        background: #292e33;
+        border-radius: 4px;
+        margin: 7px 0 10px;
+        overflow: hidden;
+      }
+      .pressure-bar span {
+        height: 100%;
+        display: block;
+        background: var(--blue);
+        border-radius: 4px;
+      }
+      .pressure-stage.held .pressure-bar span {
+        background: var(--amber);
+      }
+      .pressure-summary {
+        font-size: 13px;
+      }
+      .fleet-totals {
+        margin-bottom: 20px;
+      }
+      #history-section {
+        margin-top: 36px;
+        scroll-margin-top: 20px;
+      }
+      @media (max-width: 750px) {
+        .now-workers {
+          grid-template-columns: 1fr;
+          gap: 10px;
+        }
+        .role-card {
+          padding: 14px;
+        }
+        .pressure-stages {
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+        .view-nav {
+          gap: 12px;
+        }
+        .pressure-section .section-title {
+          align-items: start;
+        }
+        .role-card .section-title {
+          margin-bottom: 6px;
+        }
+        .live-worker {
+          padding: 8px 0;
+        }
+      }
+
+      .operator-health {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        flex-wrap: wrap;
+        padding: 12px 16px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        margin: 0 0 16px;
+        font-size: 12px;
+      }
+      .operator-health strong {
+        font-weight: 600;
+      }
+      .interventions {
+        padding: 14px 16px;
+        margin-bottom: 18px;
+        border: 1px solid #6a5132;
+        border-radius: 10px;
+        background: #272219;
+      }
+      .interventions h2 {
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+      .intervention {
+        font-size: 12px;
+        margin: 6px 0;
+      }
+      .execution-time {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
+
+      .role-card {
+        position: relative;
+        overflow: hidden;
+      }
+      .live-worker .pill.blue::before {
+        content: "";
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        margin-right: 5px;
+        animation: work-pulse 2s ease-in-out infinite;
+      }
+      .pressure-stage.flowing .pressure-bar span {
+        background: repeating-linear-gradient(
+          110deg,
+          #94c4ff 0px,
+          #94c4ff 12px,
+          #b4d7ff 12px,
+          #b4d7ff 24px
+        );
+        background-size: 48px 100%;
+        animation: queue-flow 3s linear infinite;
+      }
+      .pressure-stage.waiting .pressure-bar span {
+        background: var(--amber);
+      }
+      .attention-item strong {
+        color: var(--text);
+        font-weight: 550;
+      }
+      .attention-item b {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      @keyframes work-flow {
+        to {
+          left: 100%;
+        }
+      }
+      @keyframes work-pulse {
+        50% {
+          opacity: 0.4;
+        }
+      }
+      @keyframes queue-flow {
+        to {
+          background-position: 48px 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .role-card.working::before,
+        .live-worker .pill.blue::before,
+        .pressure-stage.flowing .pressure-bar span {
+          animation: none;
+        }
+      }
+
+      .issue-card-title {
+        display: block;
+        border: 0;
+        background: none;
+        font-size: 15px;
+        font-weight: 600;
+        text-align: left;
+        padding: 7px 0;
+        color: var(--text);
+        width: 100%;
+      }
+      .issue-card-title:hover {
+        background: none;
+        color: var(--blue);
+      }
+      .issue-card-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        margin-top: 8px;
+      }
+      .issue-card-actions .worker-action {
+        margin: 0;
+      }
+      .issue-blocker {
+        color: var(--amber);
+      }
+      .pressure-stages:empty {
+        display: none;
+      }
+      .pressure-section {
+        padding: 12px 16px;
+      }
+      .pressure-summary {
+        margin: 8px 0 0;
+      }
+
+      .repo-head,
+      .repo-row {
+        grid-template-columns: minmax(100px, 0.8fr) repeat(
+            3,
+            minmax(90px, 1fr)
+          );
+      }
+      .station {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: center;
+        min-height: 42px;
+        padding: 5px;
+        border-left: 1px solid var(--line);
+      }
+      .mini-card {
+        position: relative;
+        display: inline-flex;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 11px;
+        box-shadow:
+          2px 2px 0 var(--surface),
+          3px 3px 0 var(--line);
+      }
+      [data-station="build"] {
+        --station-color: #76a9ff;
+      }
+      [data-station="review"] {
+        --station-color: #c4a0ff;
+      }
+      [data-station="audit"] {
+        --station-color: #67cfb4;
+      }
+      .mini-card.moving,
+      .issue-card.moving {
+        border-color: var(--station-color);
+        color: var(--station-color);
+      }
+      .mini-card.moving:after,
+      .issue-card.moving:after {
+        content: "";
+        position: absolute;
+        height: 2px;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--station-color),
+          transparent
+        );
+        background-size: 64px 100%;
+        animation: conveyor 1.4s linear infinite;
+      }
+      @keyframes conveyor {
+        from {
+          background-position: 0 0;
+        }
+        to {
+          background-position: 64px 0;
+        }
+      }
+      .issue-card {
+        position: relative;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin: 10px 0;
+        padding: 12px;
+      }
+      .issue-card.waiting {
+        color: var(--muted);
+      }
+      .issue-card.waiting .issue-card-title {
+        color: var(--muted);
+      }
+      .stack-heading {
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 12px;
+        margin: 16px 0 8px;
+      }
+      .pending-stack {
+        max-height: 350px;
+        overflow: auto;
+        padding-right: 5px;
+      }
+      .card-overflow {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .repo-name .repo-alert {
+        color: var(--amber);
+        font-size: 10px;
+      }
+      @media (max-width: 650px) {
+        .repo-head {
+          display: grid;
+          padding: 8px 0;
+          font-size: 10px;
+        }
+        .repo-head,
+        .repo-row {
+          grid-template-columns: minmax(75px, 0.8fr) repeat(3, minmax(0, 1fr));
+          gap: 4px;
+        }
+        .station {
+          gap: 5px;
+          padding: 3px;
+        }
+        .mini-card {
+          padding: 5px;
+          font-size: 10px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .mini-card.moving:after,
+        .issue-card.moving:after {
+          animation: none;
+        }
+      }
+      .more-pending {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .pending-stack {
+        max-height: none;
+        overflow: visible;
+      }
+      .more-pending[open] {
+        max-height: 450px;
+        overflow: auto;
+      }
+      #operator-health {
+        padding: 10px 14px;
+      }
+      .pile-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--muted);
+      }
+      .card-pile {
+        position: relative;
+        display: inline-block;
+        width: 38px;
+        height: 32px;
+        flex-shrink: 0;
+      }
+      .card-pile .mini-card {
+        position: absolute;
+        width: 25px;
+        height: 29px;
+        padding: 0;
+        left: calc(var(--card-index) * 4px);
+        top: calc(var(--card-index) * -3px + 3px);
+        box-shadow: none;
+        border-radius: 5px;
+        background: #242a30;
+      }
+      .card-pile .mini-card.moving {
+        background: color-mix(in srgb, var(--station-color) 20%, #20262d);
+        animation: card-processing 2.4s ease-in-out infinite;
+        animation-delay: calc(var(--card-index) * 0.15s);
+      }
+      @keyframes card-processing {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-3px);
+        }
+      }
+      .more-pending > summary {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 12px 0;
+        cursor: pointer;
+      }
+      .more-pending > summary:after {
+        content: "▸";
+        margin-left: auto;
+      }
+      .more-pending[open] > summary:after {
+        content: "▾";
+      }
+      .station {
+        gap: 14px;
+      }
+      .pile-count {
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      @media (max-width: 650px) {
+        .card-pile {
+          width: 27px;
+          height: 27px;
+        }
+        .card-pile .mini-card {
+          width: 18px;
+          height: 23px;
+        }
+        .pile-group {
+          gap: 3px;
+        }
+        .station {
+          gap: 5px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .card-pile .mini-card.moving {
+          animation: none;
+        }
+      }
+      .role-card[data-station] > .section-title h2,
+      .repo-head [data-station] {
+        color: var(--station-color);
+      }
+      .role-card[data-station] > .section-title h2::before,
+      .repo-head [data-station]::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--station-color);
+        margin-right: 7px;
+        vertical-align: middle;
+      }
+      .card-pile .mini-card.waiting {
+        border-color: #42484f;
+        background: #242a30;
+      }
+      .pile-count {
+        color: var(--muted);
+      }
+      .issue-card.moving {
+        background: color-mix(in srgb, var(--station-color) 6%, var(--surface));
+      }
+      .active-pile .pile-count {
+        color: var(--station-color);
+      }
+      .operator-decisions {
+        border-color: #806337;
+        background: #211e18;
+        margin-bottom: 18px;
+      }
+      .operator-decisions > h2 {
+        color: var(--amber);
+        margin-bottom: 12px;
+      }
+      .operator-decisions #attention {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));
+        gap: 16px;
+      }
+      .operator-decisions .attention-item {
+        border: 0;
+        border-left: 2px solid #806337;
+        padding: 0 14px;
+      }
+      .assignment-gap {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin: 14px 0;
+        font-size: 12px;
+      }
+      .assignment-gap button {
+        color: var(--station-color);
+        text-align: left;
+      }
+      .fleet-header {
+        margin-bottom: 16px;
+        gap: 12px;
+      }
+      .fleet-heading {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .fleet-heading h1 {
+        font-size: 14px;
+        letter-spacing: 0;
+        color: var(--muted);
+        margin: 0;
+        font-weight: 500;
+      }
+      .fleet-indicators {
+        font-size: 13px;
+        color: var(--muted);
+        margin: 0;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      @media (max-width: 650px) {
+        .fleet-heading {
+          gap: 8px;
+        }
+        .fleet-heading .brand {
+          font-size: 19px;
+        }
+        .fleet-heading h1 {
+          font-size: 11px;
+        }
+        .fleet-indicators {
+          font-size: 11px;
+        }
+      }
+      .role-card[data-station] > .section-title h2::before,
+      .repo-head [data-station]::before {
+        content: none;
+      }
+      .compact-issue {
+        padding: 9px 11px;
+        margin: 8px 0;
+      }
+      .compact-identity {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 4px;
+      }
+      .compact-meta {
+        flex-shrink: 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .compact-issue .issue-card-title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: block;
+        width: 100%;
+        font-size: 13px;
+        padding: 0;
+        margin: 0;
+        line-height: 1.5;
+      }
+      .mini-card.moving:after,
+      .issue-card.moving:after {
+        top: 0;
+        bottom: auto;
+      }
+      .card-pile .mini-card.moving {
+        animation: none;
+      }
+      .compact-issue {
+        border-radius: 5px;
+        padding: 7px 10px;
+      }
+      .working-stack:empty {
+        display: none;
+      }
+      .issue-card.needs-decision {
+        border-color: var(--amber);
+      }
+      .issue-card.needs-decision .issue-card-title {
+        color: var(--text);
+      }
+      .needs-decision .compact-meta a {
+        color: var(--amber);
+      }
+      #stats {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        margin-bottom: 18px;
+      }
+      #stats .stat {
+        padding: 14px 18px;
+      }
+      #stats .number {
+        font-size: 34px;
+        line-height: 1.3;
+        white-space: nowrap;
+      }
+      #stats .stat > .muted {
+        font-size: 12px;
+      }
+      @media (max-width: 650px) {
+        #stats {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        #stats .stat {
+          padding: 10px;
+        }
+        #stats .number {
+          font-size: 24px;
+        }
+        #stats .stat > .muted {
+          font-size: 10px;
+        }
+        #stats .stat span {
+          font-size: 10px;
+        }
+      }
+      .pile-badge {
+        position: absolute;
+        z-index: 2;
+        right: 5px;
+        top: 3px;
+        min-width: 22px;
+        height: 22px;
+        padding: 0 2px;
+        border: 1px solid #737d88;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--surface);
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1;
+      }
+      .active-pile .card-pile {
+        width: 46px;
+      }
+      .card-pile .mini-card.moving {
+        width: 44px;
+        height: 29px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      @media (max-width: 650px) {
+        .pile-badge {
+          min-width: 18px;
+          height: 18px;
+          right: 1px;
+          top: 2px;
+          font-size: 10px;
+        }
+        .active-pile .card-pile {
+          width: 40px;
+        }
+        .card-pile .mini-card.moving {
+          width: 38px;
+          height: 25px;
+          font-size: 10px;
+        }
+      }
+      .stat { position: relative; }
+      .stat-working::after {
+        content: ""; position: absolute; inset: 0 0 auto; height: 3px;
+        background: linear-gradient(90deg, transparent, #94c4ff, transparent);
+        background-size: 64px 100%; animation: conveyor 1.4s linear infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .stat-working::after { animation: none; }
+      }
+
+      /* Repository issues share fleet cards; PR evidence remains supporting detail. */
+      .drawer-issue { overflow: hidden; }
+      .drawer-issue .drawer-stage { color: var(--text); font-weight: 600; }
+      .drawer-issue .issue-card-title { white-space: normal; overflow-wrap: anywhere; }
+      .drawer-record { min-width: 0; font-size: 12px; }
+      .drawer-record p { margin: 7px 0; }
+      .drawer-record .pill { margin-top: 5px; }
+      .drawer-support { border-left: 2px solid var(--line); margin: 12px 0 2px 3px; padding-left: 12px; }
+      .drawer-support-label { color: var(--muted); font-size: 10px; letter-spacing: .04em; margin: 9px 0; }
+      .supporting-pr + .supporting-pr { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+      .drawer-record .issue-title { font-size: 12px; overflow-wrap: anywhere; }
+      .drawer-unlinked { border-style: dashed; }
+      .drawer-issue .evidence { background: var(--surface); }
+
+      .unified-activity { margin: 0 0 20px; border: 1px solid var(--line); border-radius: 8px; padding: 12px 15px; }
+      .unified-activity .section-title { margin-bottom: 7px; }
+      .unified-activity h2 { font-size: 13px; }
+      .unified-row { display: grid; grid-template-columns: 70px 100px minmax(0,1fr); gap: 10px; padding: 5px 0; font-size: 12px; line-height: 1.45; border-bottom: 1px solid var(--line); }
+      .unified-row time, .unified-origin { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+      .unified-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .current-warning .unified-origin { color: var(--amber); }
+      #unified-expanded { margin-top: 9px; }
+      #unified-expanded > summary { font-size: 12px; color: var(--muted); }
+      #unified-expanded .unified-message, .unified-activity:has(#unified-expanded[open]) #unified-latest .unified-message { white-space: normal; overflow-wrap: anywhere; }
+      #unified-older { max-height: 420px; overflow-y: auto; }
+      .unified-filters { margin-top: 12px; }
+      .unified-diagnostics { margin-top: 12px; }
+      .history-grid, .layout { grid-template-columns: minmax(0,1fr); }
+      @media (max-width:650px) {
+        .unified-activity { padding: 9px 10px; }
+        .unified-row { grid-template-columns: 58px 72px minmax(0,1fr); gap: 6px; }
+        .unified-row time, .unified-origin { font-size: 10px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell" id="main">
+      <header class="fleet-header">
+        <div class="fleet-heading">
+          <div class="brand"><span>▰</span> forge</div>
+          <h1>Fleet operations</h1>
+        </div>
+      </header>
+      <div id="error" class="banner hidden" role="alert"></div>
+      <section id="stats" class="stats" aria-label="Fleet statistics"></section>
+      <section
+        id="operator-decisions"
+        class="panel operator-decisions hidden"
+        aria-label="Operator decisions"
+      >
+        <h2>
+          <span id="attention-title">Needs attention</span>
+          <span id="attention-count"></span>
+        </h2>
+        <div id="attention"></div>
+      </section>
+      <section id="current-work" aria-label="Current Forge work">
+        <div id="now-workers" class="now-workers">
+          <p class="muted">Reading worker state…</p>
+        </div>
+      </section>
+      <section class="history" id="history-section">
+        <div class="history-top">
+          <div>
+            <h2>Issue throughput</h2>
+            <p id="history-freshness" class="refresh-note">
+              Loading local history…
+            </p>
+          </div>
+          <select id="history-range" aria-label="History time range">
+            <option value="7">7 days</option>
+            <option value="30" selected>30 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </div>
+        <div id="history-error" class="banner hidden" role="status"></div>
+
+        <div class="history-grid">
+          <section class="panel">
+            
+            <div class="legend">
+              <span><i style="background: #94c4ff"></i>Issues opened</span
+              ><span><i style="background: #9cdbb3"></i>Issues completed</span
+              >
+            </div>
+            <div id="chart"></div>
+            <div id="chart-tip" class="chart-tip">
+              Select a day to inspect its counts.
+            </div>
+            <p class="refresh-note">
+              Shaded days are outside collected history.
+            </p>
+          </section>
+
+        </div>
+      </section>
+      <section id="unified-activity" class="unified-activity" aria-label="Forge activity log">
+        <div class="section-title"><h2>Activity</h2><span id="unified-count" class="muted"></span></div>
+        <div id="unified-latest"><p class="muted">Reading local activity…</p></div>
+        <details id="unified-expanded">
+          <summary>Browse activity and diagnostics</summary>
+          <div class="toolbar unified-filters"><input id="unified-search" type="search" placeholder="Search loaded activity…" aria-label="Search activity"/><select id="unified-source" aria-label="Activity source"><option value="all">All sources</option><option value="worker">Workers</option><option value="pipeline">Pipeline</option><option value="supervisor">Supervisor</option><option value="operator">Health and dispatch</option><option value="notification">Notification failures</option></select></div>
+          <p class="refresh-note">Current warnings stay visible above recent activity. Routine capacity deferrals appear here. Searches loaded local records. Earlier events depend on collection coverage; unknown timestamps are shown last. Supervisor timestamps use the host’s UTC clock.</p>
+          <div id="unified-older"></div>
+          <details class="unified-diagnostics"><summary>Latest dispatch decision · raw evidence</summary><div id="capacity"></div><pre id="capacity-raw"></pre></details>
+        </details>
+      </section>
+      <div class="layout">
+        <section>
+          <div class="section-title">
+            <h2>Repositories <span class="muted" id="repo-count"></span></h2>
+          </div>
+          <div class="toolbar">
+            <input
+              id="search"
+              type="search"
+              placeholder="Find a repository…"
+              aria-label="Search repositories"
+            /><select id="filter" aria-label="Filter repositories">
+              <option value="all">All repositories</option>
+              <option value="attention">Needs attention</option>
+              <option value="active">Working issues</option>
+              <option value="queued">Waiting issues</option>
+              <option value="quiet">Quiet</option></select
+            ><select id="sort" aria-label="Sort repositories">
+              <option value="attention">Attention first</option>
+              <option value="queue">Largest queue</option>
+              <option value="name">Name A–Z</option>
+            </select>
+          </div>
+          <div class="repo-head" aria-hidden="true">
+            <span>Repository</span><span data-station="build">Build</span
+            ><span data-station="review">Review</span
+            ><span data-station="audit">Audit</span>
+          </div>
+          <div id="repos"><p class="empty">Loading repositories…</p></div>
+        </section>
+      </div>
+    </div>
+    <div class="scrim hidden" id="scrim"></div>
+    <section
+      id="drawer"
+      class="drawer hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="detail-title"
+    >
+      <div class="drawer-head">
+        <div>
+          <div class="eyebrow">Repository workspace</div>
+          <h2 id="detail-title"></h2>
+          <div id="detail-links" class="links"></div>
+          <div id="detail-freshness" class="refresh-note"></div>
+        </div>
+        <button id="close" aria-label="Close repository detail">Close ×</button>
+      </div>
+      <div class="drawer-body">
+        <div id="detail-summary" class="detail-section"></div>
+        <section class="detail-section">
+          <div class="section-title">
+            <h3>Issues & pull requests</h3>
+            <button id="detail-refresh">Refresh details</button>
+          </div>
+          <div id="detail-meta" class="refresh-note" role="status"></div>
+          <div class="item-tools">
+            <input
+              id="item-search"
+              type="search"
+              placeholder="Search issue or PR…"
+              aria-label="Search issue or pull request"
+            /><select id="item-stage" aria-label="Filter work by stage">
+              <option value="all">All stages</option>
+              <option value="pending">Pending</option>
+              <option value="build">Building</option>
+              <option value="review">In review</option>
+              <option value="audit">Security audit</option>
+              <option value="held">On hold</option>
+              <option value="completed">Completed</option>
+              <option value="closed">Closed</option>
+              <option value="unknown">Unknown stage</option>
+            </select>
+          </div>
+          <div id="work-items"></div>
+          <h3 style="margin-top: 24px">Recorded pipeline history</h3>
+          <div id="repo-timeline" class="timeline"></div>
+        </section>
+        <section class="detail-section">
+          <h3>Worker output</h3>
+          <div class="worker-tabs" id="worker-tabs"></div>
+          <pre id="pane-output">Choose a worker to inspect its output.</pre>
+        </section>
+        <details>
+          <summary>Scheduling & triage evidence</summary>
+          <pre id="detail-raw"></pre>
+        </details>
+      </div>
+    </section>
+    <script>
+      "use strict";
+      const $ = (id) => document.getElementById(id),
+        roles = ["build", "review", "audit"];
+      let history = null,
+        historyVersion = 0;
+      let fleet = null,
+        selected = null,
+        selectedRole = null,
+        loading = false,
+        returnFocus = null,
+        paneVersion = 0;
+      const details = new Map(),
+        detailLoading = new Set();
+      const esc = (x) =>
+        String(x ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+      const count = (x) => (typeof x === "number" ? x : 0);
+      const ago = (t) => {
+        if (!t) return "Unknown";
+        const n = Math.max(
+          0,
+          Math.floor(
+            Date.now() / 1000 -
+              (typeof t === "number" ? t : Date.parse(t) / 1000),
+          ),
+        );
+        return Number.isNaN(n)
+          ? "Unknown"
+          : n < 60
+            ? "just now"
+            : n < 3600
+              ? `${Math.floor(n / 60)}m ago`
+              : n < 86400
+                ? `${Math.floor(n / 3600)}h ago`
+                : `${Math.floor(n / 86400)}d ago`;
+      };
+      const pill = (s, c = "") => `<span class="pill ${c}">${esc(s)}</span>`;
+      const url = (r, s = "") =>
+        "https://github.com/" +
+        r.split("/").map(encodeURIComponent).join("/") +
+        s;
+      const itemLink = (r, n, kind = "issue") =>
+        url(r, `/${kind === "pr" ? "pull" : "issues"}/${Number(n)}`);
+      const human = (s) =>
+        String(s || "Unknown")
+          .replaceAll("_", " ")
+          .replaceAll(":", ": ");
+      const reasonText = (s) => {
+        const [key, ...tail] = String(s).split(":");
+        const names = {
+          hold: "On hold",
+          not_ready: "Not marked ready",
+          active_claim: "Assigned to builder",
+          dependency_open: "Waiting for dependency",
+          blocked_prerequisite: "Blocked by prerequisite",
+          dependency_cycle: "Dependency cycle needs resolution",
+          dependency_snapshot_missing: "Dependency data unavailable",
+          builder_reserved_by: "Builder assigned to",
+          fleet_session_limit: "Fleet worker limit reached",
+          role_session_limit: "Role worker limit reached",
+          memory_headroom: "Waiting for memory headroom",
+          memory_pressure: "Waiting for memory pressure to fall",
+          capacity_available: "Capacity available",
+          session_already_exists: "Worker already running",
+          telemetry_unavailable: "Capacity telemetry unavailable",
+          blocked_auth: "Provider login required",
+          blocked_quota: "Provider usage limit reached",
+          no_progress: "Worker paused after no progress",
+          launch_budget_exhausted: "Worker restart limit reached",
+        };
+        return (
+          (names[key] || human(key)) +
+          (tail.length ? ": " + tail.join(":") : "")
+        );
+      };
+      function workerState(r, role) {
+        const h = fleet?.health || {},
+          s = h.sessions?.[r.short + "-" + role];
+        if (h.account_until > Date.now() / 1000 || s?.until > Date.now() / 1000)
+          return "paused";
+        const a = fleet.activity,
+          sample =
+            typeof a?.observed_at === "number"
+              ? a.observed_at * 1000
+              : Date.parse(a?.observed_at || ""),
+          observed = a?.sessions?.[r.short + "-" + role];
+        if (
+          r[role]?.up &&
+          observed &&
+          Number.isFinite(sample) &&
+          Date.now() - sample < 90000
+        )
+          return observed.state === "busy"
+            ? "working"
+            : observed.state === "blocked"
+              ? "paused"
+              : observed.state === "idle"
+                ? "idle"
+                : "unknown";
+        return r[role]?.busy ? "working" : r[role]?.up ? "idle" : "asleep";
+      }
+      function queue(r) {
+        return pipelineIssues().filter(
+          (i) => i.repo === r.repo && issueLane(i) && !issueWorking(i),
+        ).length;
+      }
+
+      function attentionReasons(r) {
+        const entries = (fleet.issue_flow?.issues || [])
+          .filter((i) => i.repo === r.repo)
+          .flatMap((i) =>
+            (i.actions || []).map((a) => ({
+              kind: a.kind,
+              role: a.role,
+              why: a.why,
+              impact: a.impact,
+              action: a.next,
+              link: a.link,
+              evidence_url: a.evidence_url,
+            })),
+          );
+        if (r.queue_status !== "ok")
+          entries.push({
+            why:
+              r.queue_status === "stale"
+                ? `Queue snapshot is stale (${ago(r.observed_at)})`
+                : r.queue_reason || "Queue state unavailable",
+            impact: "Forge cannot safely use this queue for new admission.",
+            action: "Inspect snapshot and supervisor errors.",
+            link: url(r.repo),
+          });
+        if (count(r.counts.conflicts))
+          entries.push({
+            why: `${r.counts.conflicts} PRs carry conflicting pipeline labels`,
+            impact: "The next responsible role is ambiguous.",
+            action: "Open the PRs and correct the stage labels.",
+            link: url(r.repo, "/pulls"),
+          });
+        const exceptional = Object.values(r.schedule?.blocked || {})
+          .flat()
+          .filter(
+            (x) =>
+              !["not_ready", "active_claim", "hold", "triage_pending"].includes(x) &&
+              ![
+                "dependency_open:",
+                "blocked_prerequisite:",
+                "builder_reserved_by:",
+                "triage_pending:",
+              ].some((prefix) => x.startsWith(prefix)),
+          );
+        if (r.triage?.status === "failed") {
+          const pending = r.schedule?.triage_pending || [];
+          const failure = r.triage.error || r.triage.reason || r.triage.message || "No failure detail recorded";
+          entries.push({kind:"triage_failed",why:`Triage failed${pending.length ? " · pending " + pending.map(n=>"#"+Number(n)).join(", ") : ""}: ${typeof failure === "string" ? failure.slice(0,300) : JSON.stringify(failure).slice(0,300)}`,
+            impact:"Affected untriaged issues may wait; other eligible issues can continue.",
+            action:r.triage.retry_at ? `Inspect the reported failure. Retry becomes eligible ${ago(r.triage.retry_at)}.` : "Inspect the reported triage failure. No exact retry time is recorded.",link:url(r.repo,"/issues")});
+        }
+        if (exceptional.length)
+          entries.push({
+            why: reasonText(exceptional[0]),
+            impact: "The scheduler cannot select affected issues.",
+            action: "Inspect dependencies and priority labels.",
+            link: url(r.repo, "/issues"),
+          });
+        for (const role of roles)
+          if (r[role]?.up && workerState(r, role) === "paused" && !entries.some(e => e.kind === "stalled_audit" && e.role === role)) {
+            const guard = fleet.health?.sessions?.[r.short + "-" + role];
+            const blocker = fleet.session_blockers?.[r.short + "-" + role];
+            entries.push({
+              why: blocker ? `${role}: ${blocker.why}` : `${role}: ${reasonText(fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason)}`,
+              impact: "Automatic work on this session is paused.",
+              action: blocker?.next || "Open worker output to inspect the reported blocker.",
+              role,
+            });
+          }
+        const d = details.get(r.repo);
+        if (d && Date.now() - Date.parse(d.observed_at) < 900000)
+          for (const i of d.items || []) {
+            if (
+              i.state === "closed" ||
+              ["completed", "closed"].includes(i.stage)
+            )
+              continue;
+            if (
+              i.review_decision === "REVIEW_REQUIRED" &&
+              i.labels?.includes("critical") &&
+              !entries.some((e) => e.link === itemLink(r.repo, i.number, "pr"))
+            )
+              entries.push({
+                why: `PR #${i.number} requires review and is marked critical`,
+                impact: "It cannot follow the automatic merge path.",
+                action:
+                  "Review the recorded audit and obtain the required human approval.",
+                link: itemLink(r.repo, i.number, "pr"),
+              });
+            if (i.checks?.failed)
+              entries.push({
+                why: `PR #${i.number}: ${i.checks.failed} checks failing`,
+                impact: "Validation is failing on the recorded candidate.",
+                action: "Open the failed checks to identify the fix.",
+                link: itemLink(r.repo, i.number, "pr"),
+              });
+          }
+        return entries;
+      }
+      function issues(r) {
+        return attentionReasons(r).map((e) => e.why);
+      }
+      async function fetchJSON(path) {
+        const r = await fetch(path, { signal: AbortSignal.timeout(60000) });
+        if (!r.ok) throw Error(`HTTP ${r.status}`);
+        return r.json();
+      }
+
+      function renderOperator() {
+        const h = fleet.host || {},
+          services = h.services || {},
+          c = fleet.capacity || {};
+        const supervisor = services["forge-supervisor.service"];
+        const tracking = fleet.activity || {};
+        const activityFresh =
+          tracking.observed_at &&
+          Date.now() / 1000 -
+            (typeof tracking.observed_at === "number"
+              ? tracking.observed_at
+              : Date.parse(tracking.observed_at) / 1000) <
+            90;
+        const watch = fleet.health?.account_until > Date.now() / 1000;
+        const messages = [];
+        if (tracking.observed_at && !activityFresh)
+          messages.push(
+            "Activity data is stale; work indicators may be out of date.",
+          );
+        if (Number(h.memory_pressure?.full?.avg60 || 0) >= 1)
+          messages.push(
+            "Memory pressure is elevated; worker admission may be delayed.",
+          );
+        if (supervisor && supervisor !== "active")
+          messages.push(
+            "Supervisor is " +
+              supervisor +
+              "; automatic dispatch may not be running.",
+          );
+        if (watch)
+          messages.push(
+            reasonText(fleet.health.account_reason) +
+              ". Work admission is paused.",
+          );
+        if (c.reason === "role_session_limit") {
+          const role =
+            c.requested_role || (c.requested_session || "").split("-").at(-1);
+          const idleWorkers = fleet.repos.filter(
+            (r) => r[role]?.up && workerState(r, role) !== "working",
+          );
+          const fresh =
+            c.observed_at && Date.now() / 1000 - c.observed_at < 900;
+          if (fresh && idleWorkers.length)
+            messages.push(
+              `Last admission: ${role} slots full; ${idleWorkers.map((r) => r.short).join(", ")} ${idleWorkers.length === 1 ? "has an idle or paused session" : "have idle or paused sessions"}. Check their handoff or blocker before freeing a slot.`,
+            );
+        }
+        const observed = eventTime(h.observed_at) ?? eventTime(tracking.observed_at);
+        const active = new Set(messages);
+        for (const entry of operatorWarnings.values()) entry.current = active.has(entry.message);
+        for (const message of messages) {
+          if (!operatorWarnings.has(message)) operatorWarnings.set(message, {source:"operator", time:observed, message, current:true});
+          else operatorWarnings.get(message).current = true;
+        }
+      }
+      function executionTiming(r, role) {
+        const a = fleet.activity?.sessions?.[r.short + "-" + role];
+        if (!a)
+          return '<p class="execution-time">Execution timing not recorded yet.</p>';
+        const text = [];
+        if (a.dispatched_at) text.push("Dispatched " + ago(a.dispatched_at));
+        else text.push("Dispatch time unknown");
+        if (a.observed_active_since)
+          text.push("Activity observed since " + ago(a.observed_active_since));
+        if (a.last_activity_at)
+          text.push("Last event " + ago(a.last_activity_at));
+        return `<p class="execution-time">${esc(text.join(" · "))}</p>`;
+      }
+
+      function pipelineIssues() {
+        return (fleet.issue_flow?.issues || []).filter(
+          (i) =>
+            !i.on_hold && !i.attention_state &&
+            !(i.actions || []).some((a) => a.kind === "human_approval"),
+        );
+      }
+      function issueLane(i) {
+        if (roles.includes(i.state)) return i.state;
+        if (i.state === "ready") return "build";
+        if (i.state === "held")
+          return roles[Math.max(0, (i.step || 1) - 1)] || "build";
+        return null;
+      }
+      function issueWorking(i) {
+        const role = issueLane(i),
+          r = fleet.repos.find((r) => r.repo === i.repo);
+        if (
+          !r ||
+          r.queue_status !== "ok" ||
+          i.state !== role ||
+          workerState(r, role) !== "working"
+        )
+          return false;
+        if (
+          (fleet.issue_flow?.unlinked_prs || []).some(
+            (p) =>
+              p.repo === i.repo &&
+              (p.stage === role ||
+                (role === "build" && ["sentback", "limbo"].includes(p.stage))),
+          )
+        )
+          return false;
+        // A role-level signal cannot identify one issue among several candidates.
+        return (
+          (fleet.issue_flow?.issues || []).filter(
+            (x) => x.repo === i.repo && x.state === role,
+          ).length === 1
+        );
+      }
+      function issueCard(i, role, decision = false) {
+        const r = fleet.repos.find((r) => r.repo === i.repo),
+          active = !decision && issueWorking(i),
+          action = decision
+            ? i.actions?.find((a) => ["human_approval", "stalled_audit"].includes(a.kind))
+            : null,
+          a = r ? fleet.activity?.sessions?.[r.short + "-" + role] : null;
+        const timing = a?.dispatched_at
+          ? `Dispatched ${ago(a.dispatched_at)}`
+          : "";
+        const notes = [
+          i.on_hold ? "On hold" : active ? "Working" : "Pending",
+          ...(i.blockers || []),
+          action?.why,
+          action?.next,
+          timing,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        return `<article class="issue-card compact-issue ${active ? "moving" : "waiting"} ${decision ? "needs-decision" : ""}" data-station="${role}" data-card-issue="${esc(i.repo)}#${Number(i.number)}" title="${esc(notes)}"><div class="compact-identity"><span>${esc(i.repo.split("/").at(-1))} · #${Number(i.number)}</span><span class="compact-meta">${[decision ? `<span class="attention-state">${esc(i.attention_state || (action?.kind === "human_approval" ? "CRITICAL" : "STALLED"))}</span>` : "", !i.step ? esc(i.on_hold ? "On hold" : i.state === "held" ? "Waiting" : "Ready") : "", action ? `<a href="${esc(action.link)}" target="_blank" rel="noopener noreferrer" title="${esc(action.why)}">${action.kind === "human_approval" ? "Human review" : "Inspect blocker"} ↗</a>` : "", active && timing ? `<span title="${esc(timing)}; dispatch is not a confirmed execution start">${esc(ago(a.dispatched_at))}</span>` : ""].filter(Boolean).join(" · ")}</span></div><button class="issue-card-title" data-repo="${esc(i.repo)}" data-issue="${Number(i.number)}" title="${esc(i.title)}">${esc(i.title)}</button></article>`;
+      }
+      const expandedStations = new Set();
+      function waitingOrder(a, b) {
+        const rank = (i) =>
+          i.state === "held" ? 2 : i.state === "ready" ? 1 : 0;
+        return rank(a) - rank(b);
+      }
+      function cardPile(items, moving = false) {
+        if (!items.length) return '<span class="muted">—</span>';
+        return `<span class="pile-group ${moving ? "active-pile" : ""}" title="${esc(items.map((i) => "#" + i.number + " " + i.title).join(" · "))}" aria-label="${items.length} ${moving ? "working" : "waiting"} issues"><span class="card-pile" aria-hidden="true">${items
+          .slice(0, 3)
+          .map(
+            (i, n) =>
+              `<span class="mini-card ${moving ? "moving" : "waiting"}" style="--card-index:${n}">${moving ? "#" + Number(i.number) : ""}</span>`,
+          )
+          .join(
+            "",
+          )}${moving ? "" : `<span class="pile-badge">${items.length}</span>`}</span></span>`;
+      }
+      function unassignedWorkers(role) {
+        return fleet.repos.filter(
+          (r) =>
+            r.queue_status === "ok" &&
+            workerState(r, role) === "working" &&
+            !(fleet.issue_flow?.issues || []).some(
+              (i) =>
+                i.repo === r.repo && issueLane(i) === role && issueWorking(i),
+            ),
+        );
+      }
+      function renderNow() {
+        const flow = fleet.issue_flow || {},
+          all = pipelineIssues();
+        const live = all.filter((i) => roles.includes(i.state));
+        const ready = all.filter((i) => i.state === "ready").length;
+        const focus = document.activeElement?.dataset.issue,
+          focusRepo = document.activeElement?.dataset.repo;
+        $("now-workers").innerHTML = roles
+          .map((role) => {
+            const items = all.filter((i) => issueLane(i) === role),
+              working = items.filter(issueWorking),
+              unassigned = unassignedWorkers(role),
+              pending = items
+                .filter((i) => !issueWorking(i))
+                .sort(waitingOrder);
+            return `<section class="role-card" data-station="${role}"><div class="section-title"><h2>${{ build: "Build", review: "Review", audit: "Security audit" }[role]}</h2><span class="muted">${working.length ? `${working.length} working` : unassigned.length ? "Active · issue unconfirmed" : pending.length ? "" : "Empty"}</span></div><div class="working-stack">${working.map((i) => issueCard(i, role)).join("")}${unassigned.map((r) => `<div class="assignment-gap"><span class="card-pile" aria-hidden="true"><span class="mini-card moving" style="--card-index:0"></span></span><button data-repo="${esc(r.repo)}" data-role="${role}">${esc(r.short)} · worker active, issue link unconfirmed →</button></div>`).join("")}</div>${pending.length ? `<details class="more-pending" data-expand-station="${role}" ${expandedStations.has(role) ? "open" : ""}><summary>${cardPile(pending)}<span class="muted">waiting</span></summary><div class="pending-stack">${pending.map((i) => issueCard(i, role)).join("")}</div></details>` : ""}</section>`;
+          })
+          .join("");
+        document
+          .querySelectorAll("[data-expand-station]")
+          .forEach((el) =>
+            el.addEventListener("toggle", () =>
+              el.open
+                ? expandedStations.add(el.dataset.expandStation)
+                : expandedStations.delete(el.dataset.expandStation),
+            ),
+          );
+        const gaps =
+          (flow.unlinked_prs || []).length +
+          all.filter((i) => !issueLane(i)).length;
+        if (gaps)
+          $("now-workers").insertAdjacentHTML(
+            "beforeend",
+            `<details class="refresh-note" style="grid-column:1/-1"><summary>Unconfirmed work: ${flow.unlinked_prs?.length || 0} PRs without issue links · ${all.filter((i) => !issueLane(i)).length} issues without a stage</summary><p>These items cannot be placed reliably. Open a PR to confirm its issue link, or inspect an issue's labels.</p>${(flow.unlinked_prs || []).map((p) => `<p><a href="${itemLink(p.repo, p.number, "pr")}" target="_blank" rel="noopener noreferrer">${esc(p.repo.split("/").at(-1))} PR #${Number(p.number)}</a> · ${esc(p.title || "")}</p>`).join("")}${all
+              .filter((i) => !issueLane(i))
+              .map(
+                (i) =>
+                  `<p><a href="${itemLink(i.repo, i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.repo.split("/").at(-1))} #${Number(i.number)}</a> · ${esc((i.blockers || []).join(" · "))}</p>`,
+              )
+              .join("")}</details>`,
+          );
+        if (focus && focusRepo)
+          Array.from($("now-workers").querySelectorAll("[data-issue]"))
+            .find(
+              (b) => b.dataset.issue === focus && b.dataset.repo === focusRepo,
+            )
+            ?.focus({ preventScroll: true });
+      }
+      function renderStats() {
+        const flow = fleet.issue_flow || {},
+          items = pipelineIssues(),
+          h = fleet.host || {};
+        const active = fleet.repos.reduce(
+          (n, r) =>
+            n +
+            roles.filter(
+              (role) => r[role]?.up && workerState(r, role) === "working",
+            ).length,
+          0,
+        );
+        const sessions = fleet.repos.reduce(
+          (n, r) => n + roles.filter((role) => r[role]?.up).length,
+          0,
+        );
+        const unknown = roles.reduce(
+          (n, role) => n + unassignedWorkers(role).length,
+          0,
+        );
+        const supervisor = h.services?.["forge-supervisor.service"];
+        const stats = [
+          [
+            "Issues working",
+            flow.status === "ok" ? items.filter(issueWorking).length : "—",
+            unknown
+              ? `${unknown} active worker${unknown === 1 ? "" : "s"} · issue unconfirmed`
+              : "",
+          ],
+          [
+            "Issues waiting",
+            flow.status === "ok"
+              ? items.filter((i) => issueLane(i) && !issueWorking(i)).length
+              : "—",
+            "",
+          ],
+          [
+            "Sessions active",
+            `${active}/${sessions}`,
+            supervisor === "active"
+              ? "Forge running"
+              : supervisor
+                ? "Forge " + supervisor
+                : "Status unavailable",
+          ],
+          [
+            "Memory available",
+            typeof h.memory_available_bytes === "number"
+              ? (h.memory_available_bytes / 2 ** 30).toFixed(1) + " GiB"
+              : "—",
+            "",
+          ],
+          [
+            "CPU busy",
+            typeof h.cpu_busy_percent === "number"
+              ? Math.round(h.cpu_busy_percent) + "%"
+              : "—",
+            "",
+          ],
+        ];
+        $("stats").innerHTML = stats
+          .map(
+            ([label, value, note], index) =>
+              `<div class="stat ${index === 0 && Number(value) > 0 ? "stat-working" : ""}"><div class="muted">${esc(label)}</div><strong class="number">${esc(value)}</strong>${note ? `<span>${esc(note)}</span>` : ""}</div>`,
+          )
+          .join("");
+      }
+      function renderRepos() {
+        const search = $("search").value.toLowerCase(),
+          filter = $("filter").value;
+        let rs = fleet.repos.filter((r) =>
+          r.repo.toLowerCase().includes(search),
+        );
+        rs = rs.filter(
+          (r) =>
+            filter === "all" ||
+            (filter === "attention" && issues(r).length) ||
+            (filter === "active" &&
+              (fleet.issue_flow?.issues || []).some(
+                (i) => i.repo === r.repo && issueWorking(i),
+              )) ||
+            (filter === "queued" && queue(r) > 0) ||
+            (filter === "quiet" &&
+              !issues(r).length &&
+              !queue(r) &&
+              !roles.some((k) => r[k]?.up)),
+        );
+        rs.sort(
+          (a, b) =>
+            ($("sort").value === "queue"
+              ? queue(b) - queue(a)
+              : $("sort").value === "attention"
+                ? Number(!!issues(b).length) - Number(!!issues(a).length) ||
+                  Number(roles.some((k) => b[k]?.busy)) -
+                    Number(roles.some((k) => a[k]?.busy))
+                : 0) || a.short.localeCompare(b.short),
+        );
+        $("repo-count").textContent = `${rs.length} / ${fleet.repos.length}`;
+        $("repos").innerHTML =
+          rs
+            .map((r) => {
+              const a = issues(r),
+                cards = pipelineIssues().filter((i) => i.repo === r.repo);
+              return `<button class="repo-row ${selected === r.repo ? "selected" : ""}" data-repo="${esc(r.repo)}" aria-label="Inspect ${esc(r.short)}"><span class="repo-name">${esc(r.short)}${a.length ? `<small class="repo-alert" title="${esc(a[0])}">Needs attention</small>` : ""}</span>${roles
+                .map((role) => {
+                  const lane = cards
+                    .filter((i) => issueLane(i) === role)
+                    .sort(
+                      (a, b) =>
+                        Number(issueWorking(b)) - Number(issueWorking(a)) ||
+                        waitingOrder(a, b),
+                    );
+                  const working = lane.filter(issueWorking),
+                    pending = lane.filter((i) => !issueWorking(i));
+                  return `<span class="station" data-station="${role}" aria-label="${role}: ${working.length} working, ${pending.length} pending">${working.length ? cardPile(working, true) : ""}${pending.length ? cardPile(pending) : ""}${!lane.length ? '<span class="muted">—</span>' : ""}</span>`;
+                })
+                .join("")}</button>`;
+            })
+            .join("") ||
+          '<p class="empty">No repositories match this view.</p>';
+      }
+
+      function renderAttention() {
+        const decisionIssues = (fleet.issue_flow?.issues || []).filter((i) =>
+          (i.actions || []).some((a) => ["human_approval", "stalled_audit"].includes(a.kind)),
+        );
+        let total = decisionIssues.length;
+        $("attention").innerHTML =
+          decisionIssues
+            .map((i) => issueCard(i, issueLane(i) || "audit", true))
+            .join("") +
+            fleet.repos
+              .map((r) => {
+                const reasons = attentionReasons(r).filter(
+                  (e) => !["human_approval", "stalled_audit"].includes(e.kind),
+                );
+                total += reasons.length;
+                return reasons
+                  .map(
+                    (e) =>
+                      `<div class="attention-item"><button data-repo="${esc(r.repo)}" ${e.role ? `data-role="${e.role}"` : ""}>${esc(r.short)} →</button><p><strong>${esc(e.why)}</strong></p><p><b>Impact:</b> ${esc(e.impact)}</p><p><b>Next:</b> ${e.link ? `<a href="${e.link}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p>${e.evidence_url ? `<p><a href="${esc(e.evidence_url)}" target="_blank" rel="noopener noreferrer">Recorded audit ↗</a></p>` : ""}</div>`,
+                  )
+                  .join("");
+              })
+              .join("") ||
+          '<p class="muted">No intervention needed in the current data.</p>';
+        const approvals = decisionIssues.filter(i => i.actions?.some(a => a.kind === "human_approval")).length;
+        const stalled = decisionIssues.length - approvals;
+        $("attention-title").textContent = total > decisionIssues.length ? "Needs attention" : stalled ? `${approvals ? approvals + " critical · " : ""}${stalled} stalled · Needs attention` : approvals
+          ? `${approvals} critical issue${approvals === 1 ? " needs" : "s need"} human review`
+          : "Needs attention";
+        $("attention-count").textContent = total > decisionIssues.length ? total : approvals ? "" : total || "";
+        $("operator-decisions").classList.toggle("hidden", !total);
+      }
+      function renderCapacity() {
+        const c = fleet.capacity || {};
+        $("capacity").innerHTML =
+          `<p class="capacity-reason">${esc(reasonText(c.reason))}</p><p class="muted">${esc(c.requested_session || "No worker decision recorded")}</p><p>${c.observed_at ? pill(c.admitted ? "Admitted" : "Not admitted", c.admitted ? "green" : "amber") : pill("Unknown")} ${pill(ago(c.observed_at))}</p>${c.fleet_count !== undefined ? `<p class="muted">At decision: ${Number(c.fleet_count)} / ${Number(c.limits?.max_sessions)} worker slots used.</p>` : ""}${c.memory_available_bytes !== undefined ? `<p class="muted">${(c.memory_available_bytes / 2 ** 30).toFixed(1)} GiB memory available at decision.</p>` : ""}<p class="refresh-note">Historical decision; current session counts appear in the overview.</p>`;
+        $("capacity-raw").textContent = JSON.stringify(c, null, 2);
+      }
+      const activityArchive = new Map(), operatorWarnings = new Map();
+      function eventTime(value, supervisorUTC = false) {
+        if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value * 1000 : null;
+        if (typeof value !== "string") return null;
+        let text = value.trim();
+        if (supervisorUTC && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) text = text.replace(" ", "T") + "Z";
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) return null;
+        const parsed = Date.parse(text);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      function unifiedRows() {
+        const rows = [];
+        for (const e of fleet.activity?.events || []) {
+          const m=e.metadata || {}, reason=m.capacity?.reason || m.reason;
+          let message = `${e.session || e.repo || "Worker"} · ${human(e.event || "activity")}`;
+          if (e.event === "activity_changed") message = `${e.session} · ${human(m.state || "unknown")}`;
+          if (e.event === "pipeline_observed") message = `${e.repo || e.session} · queue observed${m.claimed?.length ? " · claimed " + m.claimed.map(n=>"#"+Number(n)).join(", ") : ""}${m.queued?.length ? " · queued " + m.queued.map(n=>"#"+Number(n)).join(", ") : ""}`;
+          if (reason) message += " · " + reasonText(reason);
+          rows.push({source:"worker",time:eventTime(e.at),message,routine:e.event === "admission_deferred" && ["role_session_limit","fleet_session_limit"].includes(reason)});
+        }
+        for (const e of history?.events || []) rows.push({source:"pipeline",time:eventTime(e.observed_at),
+          message:`${(e.repo || "").split("/").at(-1)} ${e.kind === "pr" ? "PR" : "issue"} #${Number(e.number)} · ${stageNames[e.previous_stage] || e.previous_stage || "First observed"} → ${stageNames[e.stage] || e.stage || "Recorded"}${e.summary ? " · " + e.summary : ""}`,
+          link:e.repo && Number.isInteger(e.number) ? itemLink(e.repo,e.number,e.kind) : null});
+        for (const r of fleet.repos || []) {
+          const triage=r.triage;
+          if (!triage?.status || !triage.at) continue;
+          const changed=(triage.changes || []).filter(c=>c.changes?.length).map(c=>"#"+Number(c.number));
+          rows.push({source:"pipeline",time:eventTime(triage.at),routine:triage.status === "applied" && !changed.length,
+            message:`${r.short} · triage ${triage.status}${changed.length ? " · updated " + changed.join(", ") : ""}${triage.status === "failed" ? " · " + String(triage.error || triage.reason || "Failure detail unavailable").slice(0,300) : ""}`});
+        }
+        for (const line of fleet.log || []) {
+          const match=String(line).match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(.*)$/);
+          rows.push({source:"supervisor",time:match ? eventTime(match[1],true) : null,message:match ? match[2] : String(line),routine:/capacity admission deferred/.test(String(line))});
+        }
+        for (const e of fleet.notification_events || []) {
+          const failed=Object.entries(e.channels || {}).filter(([,c])=>["failed","retry"].includes(c.status));
+          if (failed.length) rows.push({source:"notification",time:Math.max(...failed.map(([,c])=>eventTime(c.last_attempt_at) || 0)) || null,message:`${e.message} · ${failed.map(([name,c])=>name+": "+c.status).join(" · ")}`, timing:"Delivery failure attempt; missing attempt times remain unknown"});
+        }
+        for (const row of rows) activityArchive.set(JSON.stringify([row.source,row.time,row.message]),row);
+        const sorted=[...activityArchive.entries()].sort((a,b)=>(b[1].time ?? -Infinity)-(a[1].time ?? -Infinity));
+        if (sorted.length > 1500) {activityArchive.clear(); for (const [key,row] of sorted.slice(0,1500)) activityArchive.set(key,row);}
+        return [...activityArchive.values(),...operatorWarnings.values()].sort((a,b)=>(b.time ?? -Infinity)-(a.time ?? -Infinity) || a.source.localeCompare(b.source));
+      }
+      function renderActivity() {
+        const rows=unifiedRows(), search=$("unified-search").value.trim().toLowerCase(), source=$("unified-source").value;
+        const markup = row => {
+          const label={worker:"Worker",pipeline:"Pipeline",supervisor:"Supervisor",operator:row.current ? "Current warning" : "Earlier warning",notification:"Delivery"}[row.source];
+          const timestamp=row.time === null ? "Time unknown" : new Date(row.time).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+          const full=row.time === null ? "No reliable timestamp recorded" : new Date(row.time).toISOString();
+          const message=row.message + (row.source === "operator" && !row.current ? " · No longer present in the latest snapshot" : "");
+          return `<div class="unified-row ${row.current ? "current-warning" : ""}" data-log-source="${row.source}"><time title="${esc(full + (row.timing ? " · " + row.timing : ""))}">${esc(timestamp)}</time><span class="unified-origin">${label}</span><span class="unified-message" title="${esc(message)}">${row.link ? `<a href="${esc(row.link)}" target="_blank" rel="noopener noreferrer">${esc(message)}</a>` : esc(message)}</span></div>`;
+        };
+        const current=rows.filter(row=>row.current), recent=rows.filter(row=>!row.current && !row.routine);
+        const preview=[...current,...recent].slice(0,5), shown=new Set(preview);
+        $("unified-latest").innerHTML=preview.map(markup).join("") || '<p class="muted">No local events recorded yet.</p>';
+        const filtered=rows.filter(row=>(source === "all" || row.source === source) && `${row.source} ${row.message} ${row.time ? new Date(row.time).toISOString() : ""}`.toLowerCase().includes(search));
+        $("unified-older").innerHTML=(search || source !== "all" ? filtered : filtered.filter(row=>!shown.has(row))).map(markup).join("") || '<p class="muted">No more loaded events match this view.</p>';
+        $("unified-count").textContent=`${rows.length} loaded entries`;
+      }
+      function render() {
+        renderOperator();
+        renderNow();
+        renderStats();
+        renderRepos();
+        renderAttention();
+        renderCapacity();
+        renderActivity();
+        if (selected) renderDetail();
+      }
+      async function load() {
+        if (loading) return;
+        loading = true;
+        try {
+          fleet = await fetchJSON("/api/status");
+          $("error").classList.add("hidden");
+          render();
+          if (selectedRole) loadPane();
+          loadHistory();
+          if (selected) loadDetail();
+        } catch (e) {
+          $("error").textContent =
+            `Refresh failed (${e.message}). ${fleet ? "Showing the last successful response; data may be stale." : "No fleet data available."} Retrying every 20 seconds.`;
+          $("error").classList.remove("hidden");
+        } finally {
+          loading = false;
+        }
+      }
+      function openRepo(repo) {
+        returnFocus = document.activeElement;
+        selected = repo;
+        selectedRole = null;
+        $("item-search").value = "";
+        $("item-stage").value = "all";
+        paneVersion++;
+        $("pane-output").textContent = "Choose a worker to inspect its output.";
+        $("drawer").classList.remove("hidden");
+        $("scrim").classList.remove("hidden");
+        document.body.classList.add("detail-open");
+        $("main").inert = true;
+        $("drawer").querySelector(".drawer-body").scrollTop = 0;
+        renderRepos();
+        renderDetail();
+        $("close").focus();
+        loadDetail();
+      }
+      function closeRepo() {
+        selected = null;
+        selectedRole = null;
+        paneVersion++;
+        $("drawer").classList.add("hidden");
+        $("scrim").classList.add("hidden");
+        document.body.classList.remove("detail-open");
+        $("main").inert = false;
+        renderRepos();
+        const next = Array.from(document.querySelectorAll("[data-repo]")).find(
+          (x) => x.dataset.repo === returnFocus?.dataset.repo,
+        );
+        (next || $("search")).focus();
+      }
+      function renderDetail() {
+        const r = fleet.repos.find((r) => r.repo === selected);
+        if (!r) {
+          $("detail-summary").textContent =
+            "This repository is no longer enabled.";
+          return;
+        }
+        $("detail-title").textContent = r.short;
+        $("detail-links").innerHTML =
+          `<a href="${url(r.repo)}" target="_blank" rel="noopener noreferrer">Repository ↗</a><a href="${url(r.repo, "/issues")}" target="_blank" rel="noopener noreferrer">Issues ↗</a><a href="${url(r.repo, "/pulls")}" target="_blank" rel="noopener noreferrer">Pull requests ↗</a>`;
+        $("detail-freshness").textContent =
+          `Queue snapshot ${ago(r.observed_at)} · ${human(r.queue_status)}`;
+        const plan = r.schedule || {};
+        $("detail-summary").innerHTML = r.queue_status !== "ok"
+          ? `<p class="muted">Queue data is ${esc(r.queue_status)}; issue activity may be outdated.</p>` : "";
+        $("detail-raw").textContent = JSON.stringify(
+          { schedule: plan, triage: r.triage },
+          null,
+          2,
+        );
+        $("worker-tabs").innerHTML = roles
+          .map(
+            (role) =>
+              `<button data-role="${role}" aria-pressed="${selectedRole === role}">${role} · ${workerState(r, role)}</button>`,
+          )
+          .join("");
+        renderItems(r);
+      }
+      function renderItems(r) {
+        const d = details.get(r.repo),
+          plan = r.schedule || {};
+        let items = d?.items;
+        if (!items) {
+          const numbers = [
+            ...new Set([
+              ...(plan.ordered || []),
+              ...Object.values(r.work || {}).flat(),
+            ]),
+          ];
+          items = numbers.map((number) => ({
+            number,
+            title: "Title not yet collected",
+            kind: ["review", "audit", "sentback", "limbo", "conflicts"].some(
+              (k) => r.work?.[k]?.includes(number),
+            )
+              ? "pr"
+              : "issue",
+            labels: [],
+          }));
+        }
+        const rank = (n) => {
+          const i = (plan.ordered || []).indexOf(n);
+          return i < 0 ? 1e9 : i;
+        };
+        const canonical = (fleet.issue_flow?.issues || []).filter(i => i.repo === r.repo);
+        const original = [...items];
+        const issueItems = original.filter(i => i.kind !== "pr");
+        const prs = original.filter(i => i.kind === "pr");
+        const links = new Map();
+        for (const pr of prs) {
+          const linked = new Set(canonical.filter(i => (i.pr_numbers || []).includes(pr.number)).map(i => i.number));
+          for (const ref of pr.linked_issues || []) {
+            const repo = typeof ref === "object" ? ref.repo || r.repo : r.repo;
+            const number = Number(typeof ref === "object" ? ref.number : ref);
+            if (repo.toLowerCase() === r.repo.toLowerCase() && Number.isInteger(number) && number > 0) linked.add(number);
+          }
+          links.set(pr.number, linked);
+          for (const number of linked) {
+            if (!issueItems.some(i => i.number === number)) {
+              const current = canonical.find(i => i.number === number);
+              issueItems.push({number, kind: "issue", title: current?.title || "Linked issue · details not collected", stage: current?.state || "unknown", labels: []});
+            }
+          }
+        }
+        const searchValue = $("item-search").value.trim().toLowerCase();
+        const exactNumber = /^#?\d+$/.test(searchValue) ? Number(searchValue.replace("#", "")) : null;
+        const matches = i => exactNumber !== null ? Number(i.number) === exactNumber : `${i.number} ${i.title} ${(i.labels || []).join(" ")}`.toLowerCase().includes(searchValue);
+        const stageFilter = $("item-stage").value;
+        const projection = i => canonical.find(x => x.number === i.number);
+        const stageOf = i => {
+          if (["completed", "closed"].includes(i.stage)) return i.stage;
+          const stage = projection(i)?.state || i.stage;
+          return stage === "done" ? "completed" : ["backlog", "ready"].includes(stage) ? "pending" : stage;
+        };
+        const groups = issueItems.map(i => ({item: i, supporting: prs.filter(pr => links.get(pr.number).has(i.number))}));
+        groups.push(...prs.filter(pr => !links.get(pr.number).size).map(item => ({item, supporting: []})));
+        const visible = groups.filter(({item, supporting}) =>
+          (stageFilter === "all" || stageOf(item) === stageFilter || supporting.some(pr => pr.stage === stageFilter)) &&
+          (matches(item) || supporting.some(matches))
+        ).sort((a,b) => Number(Boolean(projection(b.item) && issueWorking(projection(b.item)))) - Number(Boolean(projection(a.item) && issueWorking(projection(a.item)))) || Number(["completed","closed"].includes(stageOf(a.item))) - Number(["completed","closed"].includes(stageOf(b.item))) || rank(a.item.number) - rank(b.item.number) || (Date.parse(b.item.updated_at)||0) - (Date.parse(a.item.updated_at)||0) || b.item.number-a.item.number);
+        $("detail-meta").textContent = detailLoading.has(r.repo)
+          ? "Reading local evidence…"
+          : d
+            ? `Local collection ${ago(d.observed_at)} · ${d.pending_evidence || 0} items awaiting evidence${d.status === "unavailable" ? " · No collection available" : ""}`
+            : "Local evidence not loaded";
+        const openEvidence = new Set(
+          Array.from($("work-items").querySelectorAll("details[open]")).map(
+            (el) => el.dataset.evidence,
+          ),
+        );
+        const renderRecord = i => {
+              const blockers = (plan.blocked?.[String(i.number)] || []).filter(reason => !["active_claim", "not_ready"].includes(reason)),
+                stages = Object.entries(r.work || {})
+                  .filter(([, ns]) => ns.includes(i.number))
+                  .map(([stage]) => stage);
+              let review = "";
+              if (i.kind === "pr") {
+                const names = {
+                  APPROVED: "Review approved",
+                  CHANGES_REQUESTED: "Changes requested",
+                  REVIEW_REQUIRED: "Review required",
+                  UNKNOWN: "Review status unknown",
+                };
+                review = pill(
+                  names[i.review_decision] ||
+                    (i.evidence?.some((e) => e.kind === "review")
+                      ? "See recorded reviews"
+                      : "Review evidence unavailable"),
+                  i.review_decision === "APPROVED"
+                    ? "green"
+                    : i.review_decision === "REVIEW_REQUIRED"
+                      ? "amber"
+                      : "",
+                );
+                if (i.merge_state)
+                  review += pill(
+                    "Merge: " + human(i.merge_state.toLowerCase()),
+                  );
+                if (i.checks)
+                  review += pill(
+                    i.checks.total
+                      ? `${i.checks.passed}/${i.checks.total} checks passed · ${i.checks.failed} failed · ${i.checks.pending} pending${i.checks.skipped ? ` · ${i.checks.skipped} skipped` : ""}${i.checks.unknown ? ` · ${i.checks.unknown} unknown` : ""}`
+                      : "No checks reported",
+                    i.checks.failed ? "red" : "",
+                  );
+              }
+              return `<section class="drawer-record ${i.kind === "pr" ? "supporting-pr" : "issue-context"}">${i.kind === "pr" ? `<a class="issue-title" href="${itemLink(r.repo, i.number, i.kind)}" target="_blank" rel="noopener noreferrer">PR #${Number(i.number)} · ${esc(i.title)} ↗</a>` : ""}<div>${i.kind === "pr" && i.stage ? pill(stageNames[i.stage] || human(i.stage), "") : ""}${i.draft ? pill("Draft") : ""}${i.kind === "pr" ? stages.filter(s => s !== i.stage).map(s => pill(human(s), "blue")).join("") : ""}${(i.labels || []).filter(l => !["wip", "ready", "ready-for-review", "ready-for-audit"].includes(l) && !(i.kind !== "pr" && l === "critical" && projection(i)?.attention_state)).map(l => pill(l, l === "critical" ? "amber" : "")).join("")}${review}</div>${blockers.length ? `<p>${blockers.map(reasonText).map(esc).join(" · ")}</p>` : ""}${i.labels?.includes("critical") ? "<p>Critical classification recorded. Inspect the audit and review evidence below.</p>" : ""}${i.summary ? `<p>${esc(i.summary)}</p>` : ""}${i.evidence_status === "pending" ? "<p>Evidence collection pending; any previous evidence shown may be outdated.</p>" : ""}${i.head_sha ? `<p>Recorded head: <code>${esc(i.head_sha.slice(0, 12))}</code></p>` : ""}${(i.linked_issues || []).length ? `<p>Linked issues: ${(i.linked_issues || []).map((n) => `<a href="${itemLink(typeof n === "object" && n.repo ? n.repo : r.repo, typeof n === "object" ? n.number : n)}" target="_blank" rel="noopener noreferrer">#${Number(typeof n === "object" ? n.number : n)}</a>`).join(", ")}</p>` : ""}${i.summary_error ? `<p>PR summary unavailable: ${esc(i.summary_error)}. Recorded evidence remains below.</p>` : ""}${renderEvidence(i)}<p>${i.updated_at ? "Updated " + esc(ago(i.updated_at)) : ""}${i.evidence_observed_at ? " · Evidence collected " + esc(ago(i.evidence_observed_at)) : ""}</p></section>`;
+
+        };
+        const stageLabel = stage => ({build: "Build 1/3", review: "Review 2/3", audit: "Audit 3/3", completed: "Completed", closed: "Closed", pending: "Pending", held: "On hold"}[stage] || "Stage unknown");
+        const renderGroup = ({item: i, supporting}) => {
+          if (i.kind === "pr") return `<article class="issue drawer-unlinked"><p class="drawer-support-label">Supporting PR · no linked issue recorded</p>${renderRecord(i)}</article>`;
+          const current = projection(i), stage = !["completed", "closed"].includes(stageOf(i)) && current?.step > 0 && current.step < 4 ? roles[current.step - 1] : stageOf(i);
+          const moving = current && !["completed","closed"].includes(stage) && issueWorking(current);
+          const station = ["build","review","audit"].includes(stage) ? stage : "";
+          const attention = current?.actions?.length || current?.on_hold;
+          return `<article class="issue issue-card compact-issue drawer-issue ${moving ? "moving" : "waiting"} ${attention ? "needs-decision" : ""}" data-station="${station}" data-drawer-issue="${Number(i.number)}"><div class="compact-identity"><span>${esc(r.short)} · #${Number(i.number)}</span><span class="compact-meta drawer-stage">${current?.attention_state ? `<span class="attention-state">${esc(current.attention_state)}</span> · ` : ""}${stageLabel(stage)}</span></div><a class="issue-card-title" href="${itemLink(r.repo,i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.title)} ↗</a>${renderRecord(i)}${supporting.length ? `<div class="drawer-support"><p class="drawer-support-label">Supporting pull requests · reviews · security audits</p>${supporting.map(renderRecord).join("")}</div>` : ""}</article>`;
+        };
+        const markup = (d?.errors || []).map(x => `<p class="banner">${esc(typeof x === "string" ? x : x.error || x.message || JSON.stringify(x))}</p>`).join("") + (visible.map(renderGroup).join("") || '<p class="empty">No collected work matches this view.</p>');
+        if ($("work-items").dataset.markup !== markup) {
+          const focused = document.activeElement;
+          const evidence = focused?.closest("details[data-evidence]");
+          const focusKind = focused?.tagName;
+          const positions = new Map(
+            Array.from($("work-items").querySelectorAll("details")).map(
+              (el) => [
+                el.dataset.evidence,
+                el.querySelector("pre")?.scrollTop || 0,
+              ],
+            ),
+          );
+          $("work-items").innerHTML = markup;
+          $("work-items").dataset.markup = markup;
+          for (const el of $("work-items").querySelectorAll("details")) {
+            if (el.querySelector("pre"))
+              el.querySelector("pre").scrollTop =
+                positions.get(el.dataset.evidence) || 0;
+            if (evidence && el.dataset.evidence === evidence.dataset.evidence) {
+              el.open = true;
+              el.querySelector(focusKind === "A" ? "a" : "summary")?.focus({
+                preventScroll: true,
+              });
+            }
+          }
+        }
+        $("work-items")
+          .querySelectorAll("details")
+          .forEach((el) => {
+            el.open = openEvidence.has(el.dataset.evidence);
+          });
+        $("repo-timeline").innerHTML = renderTimeline(d?.events || [], r.repo);
+      }
+      async function loadDetail() {
+        const repo = selected;
+        if (!repo || detailLoading.has(repo)) return;
+        detailLoading.add(repo);
+        $("detail-refresh").disabled = true;
+        renderDetail();
+        try {
+          details.set(
+            repo,
+            await fetchJSON("/api/repository?repo=" + encodeURIComponent(repo)),
+          );
+        } catch (e) {
+          const old = details.get(repo);
+          details.set(repo, {
+            ...(old || { items: [], observed_at: null }),
+            errors: [
+              `Local evidence refresh failed (${e.message}). ${old ? "Showing previously loaded details." : "Use the GitHub links above."}`,
+            ],
+          });
+        } finally {
+          detailLoading.delete(repo);
+          $("detail-refresh").disabled = detailLoading.has(selected);
+          renderStats();
+          renderAttention();
+          renderRepos();
+          if (selected === repo) renderDetail();
+        }
+      }
+      async function loadPane() {
+        const repo = selected,
+          role = selectedRole,
+          r = fleet.repos.find((x) => x.repo === repo);
+        if (!r || !role) return;
+        const version = ++paneVersion;
+        try {
+          const response = await fetch(
+            "/api/pane?s=" + encodeURIComponent(r.short + "-" + role),
+            { signal: AbortSignal.timeout(30000) },
+          );
+          if (!response.ok) throw Error(`HTTP ${response.status}`);
+          const text = await response.text();
+          if (version === paneVersion)
+            $("pane-output").textContent =
+              text || "Session is not running or output is unavailable.";
+        } catch (e) {
+          if (version === paneVersion)
+            $("pane-output").textContent =
+              "Worker output unavailable: " + e.message;
+        }
+      }
+
+      const stageNames = {
+        pending: "Pending",
+        build: "Building",
+        review: "Review",
+        audit: "Security audit",
+        held: "On hold",
+        completed: "Completed",
+        closed: "Closed",
+        unknown: "Unknown",
+      };
+      function renderEvidence(item) {
+        return (item.evidence || [])
+          .map(
+            (e, index) =>
+              `<details class="evidence" data-evidence="${Number(item.number)}-${index}"><summary>${esc(e.kind === "audit" ? "Security audit" : e.kind === "review" ? "Review" : e.kind === "review_comment" ? "Review comment" : "Discussion")} · ${esc(typeof e.author === "object" ? e.author.login : e.author || "Unknown author")} · ${esc(ago(e.created_at))}</summary><p>${esc(e.summary || e.excerpt || "")}</p>${e.state ? pill(e.state) : ""}${e.commit_id ? `<p>Review commit: <code>${esc(e.commit_id.slice(0, 12))}</code></p>` : ""}<pre>${esc(e.body || "No written content.")}</pre>${e.context?.path ? `<p><code>${esc(e.context.path)}${e.context.line ? ":" + Number(e.context.line) : ""}</code></p>` : ""}${e.context?.diff_hunk ? `<pre>${esc(e.context.diff_hunk)}</pre>` : ""}${safeGithub(e.url) ? `<a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Original evidence on GitHub ↗</a>` : ""}</details>`,
+          )
+          .join("");
+      }
+      function safeGithub(value) {
+        try {
+          return (
+            new URL(value).protocol === "https:" &&
+            new URL(value).hostname === "github.com"
+          );
+        } catch {
+          return false;
+        }
+      }
+      function renderTimeline(events, repo) {
+        return (
+          events
+            .slice(0, 60)
+            .map(
+              (e) =>
+                `<div class="timeline-event"><time>${esc(ago(e.observed_at))}</time><a href="${itemLink(e.repo || repo, e.number, e.kind)}" target="_blank" rel="noopener noreferrer">${esc((e.repo || repo || "").split("/").at(-1))} #${Number(e.number)}</a><p>${esc(`${stageNames[e.previous_stage] || e.previous_stage || "First observed"} → ${stageNames[e.stage] || e.stage || "Recorded"}`)}${e.summary ? "<br>" + esc(e.summary) : ""}</p></div>`,
+            )
+            .join("") ||
+          '<p class="history-empty">No transitions recorded in this period yet.</p>'
+        );
+      }
+      async function loadHistory() {
+        const version = ++historyVersion;
+        try {
+          const value = await fetchJSON(
+            "/api/history?days=" + $("history-range").value,
+          );
+          if (version !== historyVersion) return;
+          history = value;
+          renderHistory();
+        } catch (e) {
+          if (version !== historyVersion) return;
+          $("history-error").textContent =
+            "Local history unavailable: " + e.message;
+          $("history-error").classList.remove("hidden");
+        }
+      }
+      function renderHistory() {
+        const h = history;
+        $("history-freshness").textContent =
+          `Local collection ${ago(h.observed_at)}${h.coverage_since ? " · Historical cutoff " + new Date(typeof h.coverage_since === "number" ? h.coverage_since * 1000 : h.coverage_since).toLocaleDateString() : ""}`;
+        const errors = (h.errors || []).map((e) =>
+          typeof e === "string"
+            ? e
+            : e.message || e.reason || JSON.stringify(e),
+        );
+        if (h.status === "unavailable")
+          errors.unshift(
+            "Local history collection has not started yet. Live worker snapshots remain available below.",
+          );
+        if (h.observed_at && Date.now() - Date.parse(h.observed_at) > 1200000)
+          errors.unshift(
+            "History collection is stale; showing the last recorded evidence.",
+          );
+        $("history-error").textContent = errors.join(" · ");
+        $("history-error").classList.toggle("hidden", !errors.length);
+        renderActivity();
+        renderChart(h.daily || []);
+      }
+      function renderChart(daily) {
+        if (!daily.length) {
+          $("chart").innerHTML =
+            '<p class="history-empty">No lifecycle history collected yet.</p>';
+          return;
+        }
+        const width = Math.max(300, $("chart").clientWidth || 650),
+          height = 150,
+          top = 10,
+          bottom = 130,
+          max = Math.max(
+            1,
+            ...daily.flatMap((d) => [
+              count(d.opened),
+              count(d.completed),
+            ]),
+          ),
+          group = width / daily.length,
+          bw = Math.max(1, Math.min(9, group / 4));
+        let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily issues opened and issues completed"><line x1="0" y1="${bottom}" x2="${width}" y2="${bottom}" stroke="#41474d"/><text x="0" y="10" fill="#a0a8b0" font-size="10">${max}</text>`;
+        daily.forEach((d, index) => {
+          const desc =
+            d.within_coverage === false
+              ? `${d.date}: outside collected coverage`
+              : `${d.date}: ${count(d.opened)} opened, ${count(d.completed)} completed`;
+          svg += `<g tabindex="0" role="button" data-day="${index}" aria-label="${esc(desc)}"><title>${esc(desc)}</title><rect x="${index * group}" y="${top}" width="${group}" height="${bottom - top}" fill="${d.within_coverage === false ? "#282b2e" : "transparent"}"/>`;
+          ["opened", "completed"].forEach((key, k) => {
+            const barHeight = (count(d[key]) / max) * (bottom - top);
+            svg += `<rect x="${index * group + group / 2 + (k - 1) * bw}" y="${bottom - barHeight}" width="${bw - 1 > 0 ? bw - 1 : 0.8}" height="${barHeight}" rx="1" fill="${["#94c4ff", "#9cdbb3", "#f0bd73"][k]}"/>`;
+          });
+          svg += "</g>";
+        });
+        svg += "</svg>";
+        $("chart").innerHTML =
+          svg +
+          `<div class="chart-labels"><span>${esc(daily[0].date)}</span><span>${esc(daily.at(-1).date)}</span></div>`;
+      }
+      function inspectDay(target) {
+        const el = target.closest("[data-day]");
+        if (!el) return;
+        const d = history.daily[Number(el.dataset.day)];
+        $("chart-tip").textContent =
+          d.within_coverage === false
+            ? `${d.date} · Outside historical coverage`
+            : `${d.date} · ${count(d.opened)} issues opened · ${count(d.completed)} issues completed`;
+      }
+      $("chart").addEventListener("click", (e) => inspectDay(e.target));
+      $("chart").addEventListener("focusin", (e) => inspectDay(e.target));
+      $("chart").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          inspectDay(e.target);
+        }
+      });
+      $("history-range").onchange = loadHistory;
+      $("unified-search").oninput = renderActivity;
+      $("unified-source").onchange = renderActivity;
+      $("item-search").oninput = () =>
+        selected && renderItems(fleet.repos.find((r) => r.repo === selected));
+      $("item-stage").onchange = () =>
+        selected && renderItems(fleet.repos.find((r) => r.repo === selected));
+      $("search").oninput = () => fleet && renderRepos();
+      $("filter").onchange = () => fleet && renderRepos();
+      $("sort").onchange = () => fleet && renderRepos();
+      $("close").onclick = closeRepo;
+      $("scrim").onclick = closeRepo;
+      $("detail-refresh").onclick = loadDetail;
+      document.addEventListener("click", (e) => {
+        const repo = e.target.closest("[data-repo]");
+        if (repo) {
+          openRepo(repo.dataset.repo);
+          if (repo.dataset.issue) {
+            $("item-search").value = repo.dataset.issue;
+            renderDetail();
+          }
+        }
+        const role = e.target.closest("[data-role]");
+        if (role) {
+          selectedRole = role.dataset.role;
+          $("pane-output").textContent = "Loading worker output…";
+          renderDetail();
+          loadPane();
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (!selected) return;
+        if (e.key === "Escape") closeRepo();
+        if (e.key === "Tab") {
+          const focusable = Array.from(
+            $("drawer").querySelectorAll(
+              "button:not(:disabled),a[href],summary",
+            ),
+          ).filter((el) => el.getClientRects().length);
+          const first = focusable[0],
+            last = focusable.at(-1);
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      });
+      load();
+      setInterval(load, 20000);
+    </script>
+  </body>
+</html>

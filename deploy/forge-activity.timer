@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe Forge local activity every thirty seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=forge-activity.service
+
+[Install]
+WantedBy=timers.target

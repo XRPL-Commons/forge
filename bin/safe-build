@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Serialize cooperative builds in bounded user-service cgroups (systemd >=254).
+
+This is resource/lifecycle control, not a sandbox or a credential boundary.
+SAFE_BUILD_{WAIT_SECONDS,TIMEOUT_SECONDS,STOP_SECONDS} set deadlines; defaults
+are 900/1800/15 seconds. SAFE_BUILD_MEM_MAX/SWAP_MAX/HEAP may only lower caps.
+The existing /tmp/forge-build.lock is retained for migration compatibility.
+The manager holds a duplicate lock descriptor until service teardown completes;
+repository commands never inherit that descriptor or NOTIFY_SOCKET.
+"""
+import array
+import fcntl
+import json
+import math
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+
+class BuildError(Exception):
+    pass
+
+
+def seconds(name, default):
+    try:
+        value = float(os.environ.get(name, default))
+    except ValueError as exc:
+        raise BuildError(f"{name} must be a positive finite duration") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise BuildError(f"{name} must be a positive finite duration")
+    return value
+
+
+def capped_size(name, default, maximum):
+    raw = os.environ.get(name, default)
+    match = re.fullmatch(r"([0-9]+)([KMGT]?)", raw)
+    if not match:
+        raise BuildError(f"invalid {name}")
+    value = int(match[1]) * 1024 ** ("KMGT".find(match[2]) + 1 if match[2] else 0)
+    if value <= 0 or value > maximum:
+        raise BuildError(f"{name} exceeds policy cap or is zero")
+    return str(value)
+
+
+def settings():
+    return {
+        "wait": seconds("SAFE_BUILD_WAIT_SECONDS", "900"),
+        "timeout": seconds("SAFE_BUILD_TIMEOUT_SECONDS", "1800"),
+        "stop": seconds("SAFE_BUILD_STOP_SECONDS", "15"),
+        "memory": capped_size("SAFE_BUILD_MEM_MAX", "6G", 6 * 1024**3),
+        "swap": capped_size("SAFE_BUILD_SWAP_MAX", "3G", 3 * 1024**3),
+        "heap": capped_size("SAFE_BUILD_HEAP", "4096", 4096),
+    }
+
+
+def open_lock(path):
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+            raise BuildError("unsafe build lock file")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def acquire_lock(fd, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise BuildError("build lock wait deadline exceeded")
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        # Any other failure is fatal: never invoke the command without a lock.
+
+
+def store_lock(fd, unit):
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not address:
+        raise BuildError("missing systemd notify socket; refusing untracked execution")
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        client.settimeout(5)
+        client.connect(address)
+        client.sendmsg([b"FDSTORE=1\nFDNAME=build-lock\nFDPOLL=0"],
+                       [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))])
+        read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
+        try:
+            client.sendmsg([b"BARRIER=1"],
+                           [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [write_fd]))])
+            os.close(write_fd)
+            write_fd = -1
+            if not select.select([read_fd], [], [], 5)[0] or os.read(read_fd, 1) != b"":
+                raise BuildError("systemd descriptor-store acknowledgement timed out")
+        finally:
+            os.close(read_fd)
+            if write_fd >= 0:
+                os.close(write_fd)
+    result = subprocess.run(["systemctl", "--user", "show", unit,
+                             "--property=NFileDescriptorStore", "--value"],
+                            capture_output=True, text=True, timeout=5, check=True)
+    if result.stdout.strip() != "1":
+        raise BuildError("systemd did not retain the build lock")
+
+
+def write_metadata(directory, data):
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise BuildError("metadata directory must be private and owned by the runner")
+    temporary = directory / ("." + uuid.uuid4().hex)
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump(data, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, directory / "owner.json")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def inner(unit, command, config):
+    fd = open_lock(os.environ.get("SAFE_BUILD_LOCK", "/tmp/forge-build.lock"))
+    try:
+        print("[safe-build] waiting for global build lock", flush=True)
+        acquire_lock(fd, config["wait"])
+        store_lock(fd, unit)
+        directory = Path(os.environ.get("SAFE_BUILD_STATE_DIR",
+                         os.environ["XDG_RUNTIME_DIR"] + "/forge-build"))
+        metadata = {"unit": unit, "pid": os.getpid(), "directory": os.getcwd(),
+                    "started_at": time.time(), "deadline": time.time() + config["timeout"],
+                    "state": "running"}
+        # Do not persist argv: build arguments can contain credentials.
+        write_metadata(directory, metadata)
+        environment = dict(os.environ)
+        for key in ("NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"):
+            environment.pop(key, None)
+        environment["SAFE_BUILD_ACTIVE"] = unit
+        environment["NODE_OPTIONS"] = "--max-old-space-size=" + config["heap"]
+        print(f"[safe-build] acquired lock: unit={unit}", flush=True)
+        child = subprocess.Popen(command, env=environment, close_fds=True)
+        try:
+            rc = child.wait(timeout=config["timeout"])
+            rc = 128 - rc if rc < 0 else rc
+        except subprocess.TimeoutExpired:
+            rc = 124
+            print("[safe-build] execution deadline exceeded", file=sys.stderr, flush=True)
+        metadata.update(state="stopping", command_exit=rc, command_finished_at=time.time())
+        write_metadata(directory, metadata)
+        # Main-process exit triggers KillMode=control-group, including background
+        # descendants. Do not unlock explicitly: the manager's duplicate remains
+        # locked until teardown. owner.json is historical; query unit for liveness.
+        return rc
+    finally:
+        os.close(fd)
+
+
+def service_command(unit, command, config):
+    total = config["wait"] + config["timeout"] + 30
+    args = ["systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet",
+            "--service-type=exec", "--unit=" + unit, "--working-directory=" + os.getcwd()]
+    properties = {
+        "MemoryMax": config["memory"], "MemorySwapMax": config["swap"],
+        "OOMPolicy": "kill", "KillMode": "control-group",
+        "TimeoutStopSec": str(config["stop"]), "SendSIGKILL": "yes",
+        "RuntimeMaxSec": str(total), "FileDescriptorStoreMax": "1",
+        "FileDescriptorStorePreserve": "no", "NotifyAccess": "main", "Restart": "no",
+    }
+    for name, value in properties.items():
+        args += ["--property=" + name + "=" + value]
+    # Preserve build configuration only; do not forward the complete shell env.
+    for name in ("PATH", "HOME", "XDG_RUNTIME_DIR", "SAFE_BUILD_LOCK", "SAFE_BUILD_STATE_DIR",
+                 "SAFE_BUILD_WAIT_SECONDS", "SAFE_BUILD_TIMEOUT_SECONDS", "SAFE_BUILD_STOP_SECONDS",
+                 "SAFE_BUILD_MEM_MAX", "SAFE_BUILD_SWAP_MAX", "SAFE_BUILD_HEAP"):
+        if name in os.environ:
+            args += ["--setenv=" + name + "=" + os.environ[name]]
+    return args + ["--", sys.executable, str(Path(__file__).resolve()), "--forge-internal", unit, *command]
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if os.environ.get("SAFE_BUILD_ACTIVE"):
+            raise BuildError("nested safe-build is forbidden; run the inner command directly")
+        os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        config = settings()
+        if argv and argv[0] == "--forge-internal":
+            if len(argv) < 3 or not re.fullmatch(r"forge-build-[a-f0-9]{32}\.service", argv[1]):
+                raise BuildError("invalid internal service invocation")
+            return inner(argv[1], argv[2:], config)
+        command = argv or ["pnpm", "build"]
+        if command[0] == "--":
+            command = command[1:]
+        if not command:
+            raise BuildError("missing build command")
+        unit = "forge-build-" + uuid.uuid4().hex + ".service"
+
+        def cancel(signum, _frame):
+            # systemctl waits for cgroup teardown; systemd remains responsible
+            # even if this frontend is killed, with RuntimeMaxSec as the bound.
+            subprocess.run(["systemctl", "--user", "stop", unit],
+                           timeout=config["stop"] + 10, check=False)
+            raise SystemExit(128 + signum)
+
+        signal.signal(signal.SIGTERM, cancel)
+        signal.signal(signal.SIGINT, cancel)
+        return subprocess.call(service_command(unit, command, config))
+    except (BuildError, OSError, subprocess.SubprocessError) as exc:
+        print(f"[safe-build] refused/failed: {exc}", file=sys.stderr)
+        return 125
+
+
+if __name__ == "__main__":
+    sys.exit(main())

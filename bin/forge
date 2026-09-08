@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+FORGE_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$FORGE_SOURCE"
+case "${1:-}" in
+  triage|plan|next) exec /usr/bin/python3 -m forge.scheduling "$@";;
+  *) exec /usr/bin/python3 -m forge.control "$@";;
+esac

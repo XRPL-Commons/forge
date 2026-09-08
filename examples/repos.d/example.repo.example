@@ -1,0 +1,9 @@
+# Copy to a private config directory with a .repo extension and edit all values.
+REPO="your-org/your-project"
+OWNER_LABEL="auto:owned-by-your-forge"
+RECOVERY_AUTHOR="your-github-bot"
+ENABLED=false
+# Separate absolute clone paths are required for live worker isolation.
+CLONE_BUILD="/srv/forge/clones/your-project-build"
+CLONE_REVIEW="/srv/forge/clones/your-project-review"
+CLONE_AUDIT="/srv/forge/clones/your-project-audit"
