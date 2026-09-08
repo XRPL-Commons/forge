@@ -1326,7 +1326,7 @@
         color: var(--amber);
       }
       #stats {
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: minmax(310px, 2fr) repeat(4, minmax(0, 1fr));
         margin-bottom: 18px;
       }
       #stats .stat {
@@ -1357,6 +1357,10 @@
           font-size: 10px;
         }
       }
+      #stats .slot-states, #stats .slot-roles { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 5px; font-size: 12px; }
+      #stats .slot-states b { color: var(--text); font-weight: 600; }
+      #stats .slot-roles { padding-top: 6px; border-top: 1px solid var(--line); }
+      @media (max-width: 900px) { #stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } #stats .stat-slots { grid-column: 1 / -1; } }
       .pile-badge {
         position: absolute;
         z-index: 2;
@@ -1703,30 +1707,19 @@
         );
       };
       function workerState(r, role) {
-        const h = fleet?.health || {},
-          s = h.sessions?.[r.short + "-" + role];
-        if (h.account_until > Date.now() / 1000 || s?.until > Date.now() / 1000)
-          return "paused";
+        if (!r[role]?.up) return "asleep";
         const a = fleet.activity,
-          sample =
-            typeof a?.observed_at === "number"
-              ? a.observed_at * 1000
-              : Date.parse(a?.observed_at || ""),
-          observed = a?.sessions?.[r.short + "-" + role];
-        if (
-          r[role]?.up &&
-          observed &&
-          Number.isFinite(sample) &&
-          Date.now() - sample < 90000
-        )
-          return observed.state === "busy"
-            ? "working"
-            : observed.state === "blocked"
-              ? "paused"
-              : observed.state === "idle"
-                ? "idle"
-                : "unknown";
-        return r[role]?.busy ? "working" : r[role]?.up ? "idle" : "asleep";
+          sample = typeof a?.observed_at === "number" ? a.observed_at * 1000 : Date.parse(a?.observed_at || ""),
+          observed = a?.sessions?.[r.short + "-" + role],
+          fresh = observed && Number.isFinite(sample) && Date.now() - sample >= -5000 && Date.now() - sample < 90000,
+          state = fresh ? observed.state : r[role]?.state;
+        // Admission cooldowns never erase positively observed current execution.
+        if (state === "busy" || (!state && r[role]?.busy)) return "working";
+        if (state === "blocked") return "paused";
+        if (state && !["idle", "shell"].includes(state)) return "unknown";
+        const h = fleet?.health || {}, guard = h.sessions?.[r.short + "-" + role];
+        if (h.account_until > Date.now() / 1000 || guard?.until > Date.now() / 1000) return "paused";
+        return state === "idle" ? "idle" : state === "shell" || r[role]?.provider === "codex" ? "unknown" : "idle";
       }
       function queue(r) {
         return pipelineIssues().filter(
@@ -1792,14 +1785,15 @@
             link: url(r.repo, "/issues"),
           });
         for (const role of roles)
-          if (r[role]?.up && workerState(r, role) === "paused" && !entries.some(e => e.kind === "stalled_audit" && e.role === role)) {
+          if (r[role]?.up && (workerState(r, role) === "paused" || ["cleanup_retained", "worker_runtime"].includes(fleet.session_blockers?.[r.short + "-" + role]?.kind)) && !entries.some(e => e.kind === "stalled_audit" && e.role === role)) {
             const guard = fleet.health?.sessions?.[r.short + "-" + role];
             const blocker = fleet.session_blockers?.[r.short + "-" + role];
             entries.push({
               kind: "worker_fault",
+              summary: ["cleanup_retained", "worker_runtime"].includes(blocker?.kind) ? blocker.why : null,
               reason: blocker?.reason || (fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason),
               why: blocker ? `${role}: ${blocker.why}` : `${role}: ${reasonText(fleet.health?.account_until > Date.now() / 1000 ? fleet.health.account_reason : guard?.reason)}`,
-              impact: "Automatic work on this session is paused.",
+              impact: blocker?.impact || "Automatic work on this session is paused.",
               action: blocker?.next || "Open worker output to inspect the reported blocker.",
               role,
             });
@@ -1898,11 +1892,18 @@
           else operatorWarnings.get(message).current = true;
         }
       }
+      function providerName(r, role) {
+        const provider = r?.[role]?.provider ?? fleet.activity?.sessions?.[r?.short + "-" + role]?.provider;
+        return provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : "";
+      }
       function executionTiming(r, role) {
         const a = fleet.activity?.sessions?.[r.short + "-" + role];
         if (!a)
           return '<p class="execution-time">Execution timing not recorded yet.</p>';
         const text = [];
+        const provider = providerName(r, role);
+        if (provider) text.push(provider);
+        if (a.execution_started_at) text.push("Execution runner started " + ago(a.execution_started_at));
         if (a.dispatched_at) text.push("Dispatched " + ago(a.dispatched_at));
         else text.push("Dispatch time unknown");
         if (a.observed_active_since)
@@ -1971,7 +1972,7 @@
         ]
           .filter(Boolean)
           .join(" · ");
-        return `<article class="issue-card compact-issue ${active ? "moving" : "waiting"} ${decision ? "needs-decision" : ""}" data-station="${role}" data-card-issue="${esc(i.repo)}#${Number(i.number)}" title="${esc(notes)}"><div class="compact-identity"><span>${esc(i.repo.split("/").at(-1))} · #${Number(i.number)}</span><span class="compact-meta">${[decision ? `<span class="attention-state">${esc(i.attention_state || (action?.kind === "human_approval" ? "CRITICAL" : "STALLED"))}</span>` : "", !i.step ? esc(i.on_hold ? "On hold" : i.state === "held" ? "Waiting" : "Ready") : "", action ? `<a href="${esc(action.link)}" target="_blank" rel="noopener noreferrer" title="${esc(action.why)}">${action.kind === "human_approval" ? "Human review" : "Inspect blocker"} ↗</a>` : "", active && timing ? `<span title="${esc(timing)}; dispatch is not a confirmed execution start">${esc(ago(a.dispatched_at))}</span>` : ""].filter(Boolean).join(" · ")}</span></div><button class="issue-card-title" data-repo="${esc(i.repo)}" data-issue="${Number(i.number)}" title="${esc(i.title)}">${esc(i.title)}</button></article>`;
+        return `<article class="issue-card compact-issue ${active ? "moving" : "waiting"} ${decision ? "needs-decision" : ""}" data-station="${role}" data-card-issue="${esc(i.repo)}#${Number(i.number)}" title="${esc(notes)}"><div class="compact-identity"><span>${esc(i.repo.split("/").at(-1))} · #${Number(i.number)}</span><span class="compact-meta">${[decision ? `<span class="attention-state">${esc(i.attention_state || (action?.kind === "human_approval" ? "CRITICAL" : "STALLED"))}</span>` : "", !i.step ? esc(i.on_hold ? "On hold" : i.state === "held" ? "Waiting" : "Ready") : "", action ? `<a href="${esc(action.link)}" target="_blank" rel="noopener noreferrer" title="${esc(action.why)}">${action.kind === "human_approval" ? "Human review" : "Inspect blocker"} ↗</a>` : "", active && providerName(r,role) ? `<span>${esc(providerName(r,role))}</span>` : "", active && timing ? `<span title="${esc(timing)}; dispatch is not a confirmed execution start">${esc(ago(a.dispatched_at))}</span>` : ""].filter(Boolean).join(" · ")}</span></div><button class="issue-card-title" data-repo="${esc(i.repo)}" data-issue="${Number(i.number)}" title="${esc(i.title)}">${esc(i.title)}</button></article>`;
       }
       const expandedStations = new Set();
       function waitingOrder(a, b) {
@@ -2051,71 +2052,35 @@
             ?.focus({ preventScroll: true });
       }
       function renderStats() {
-        const flow = fleet.issue_flow || {},
-          items = pipelineIssues(),
-          h = fleet.host || {};
-        const active = fleet.repos.reduce(
-          (n, r) =>
-            n +
-            roles.filter(
-              (role) => r[role]?.up && workerState(r, role) === "working",
-            ).length,
-          0,
-        );
-        const sessions = fleet.repos.reduce(
-          (n, r) => n + roles.filter((role) => r[role]?.up).length,
-          0,
-        );
-        const unknown = roles.reduce(
-          (n, role) => n + unassignedWorkers(role).length,
-          0,
-        );
-        const supervisor = h.services?.["forge-supervisor.service"];
+        const flow = fleet.issue_flow || {}, items = pipelineIssues(), h = fleet.host || {},
+          counts = {working: 0, paused: 0, idle: 0, unknown: 0}, roleCounts = {build: 0, review: 0, audit: 0};
+        fleet.repos.forEach(r => roles.forEach(role => {
+          if (r[role]?.up) { roleCounts[role]++; counts[workerState(r, role)]++; }
+        }));
+        const known = Object.values(roleCounts).reduce((a,b) => a+b, 0),
+          slots = fleet.slots, slotsFresh = slots?.status === "ok" && Date.now()/1000 - slots.observed_at < 90,
+          occupied = slotsFresh ? slots.occupied : known,
+          limits = fleet.capacity?.limits || {}, cap = Number.isFinite(limits.max_sessions) ? limits.max_sessions : "?",
+          perRole = Number.isFinite(limits.max_sessions_per_role) ? limits.max_sessions_per_role : "?",
+          unknownWorkers = roles.reduce((n,role) => n + unassignedWorkers(role).length, 0);
+        counts.unknown += Math.max(0, occupied-known);
+        const stateLine = [["working","working"],["paused","blocked"],["idle","idle"],["unknown","unknown"]]
+          .map(([key,label]) => `<span><b>${counts[key]}</b> ${label}</span>`).join("");
+        const roleLine = roles.map(role => `<span>${esc(role[0].toUpperCase()+role.slice(1))} <b>${slotsFresh ? slots.roles?.[role] ?? roleCounts[role] : roleCounts[role]}/${perRole}</b></span>`).join("");
+        const inventoryNote = slots && !slotsFresh ? `<span>Slot inventory unavailable · ${known} workers last observed</span>` : "";
+        const outages = Object.entries(fleet.routing?.providers || {}).filter(([provider,data]) =>
+          ["claude","codex"].includes(provider) && data.blocked_until > Date.now()/1000)
+          .map(([provider,data]) => `${provider === "codex" ? "Codex" : "Claude"} unavailable · ${reasonText(data.reason)} · retry in ${Math.ceil((data.blocked_until-Date.now()/1000)/60)}m`);
+        const outageLine = outages.length ? `<div class="slot-roles provider-outages">${outages.map(text => `<span>${esc(text)}</span>`).join("")}</div>` : "";
+        const slotCard = `<div class="stat stat-slots"><div class="muted">Slots occupied</div><strong class="number">${slots && !slotsFresh ? "?" : occupied}<small> / ${cap}</small></strong><div class="slot-states">${stateLine}</div><div class="slot-roles">${roleLine}</div>${inventoryNote}${outageLine}</div>`;
         const stats = [
-          [
-            "Issues working",
-            flow.status === "ok" ? items.filter(issueWorking).length : "—",
-            unknown
-              ? `${unknown} active worker${unknown === 1 ? "" : "s"} · issue unconfirmed`
-              : "",
-          ],
-          [
-            "Issues waiting",
-            flow.status === "ok"
-              ? items.filter((i) => issueLane(i) && !issueWorking(i)).length
-              : "—",
-            "",
-          ],
-          [
-            "Sessions active",
-            `${active}/${sessions}`,
-            supervisor === "active"
-              ? "Forge running"
-              : supervisor
-                ? "Forge " + supervisor
-                : "Status unavailable",
-          ],
-          [
-            "Memory available",
-            typeof h.memory_available_bytes === "number"
-              ? (h.memory_available_bytes / 2 ** 30).toFixed(1) + " GiB"
-              : "—",
-            "",
-          ],
-          [
-            "CPU busy",
-            typeof h.cpu_busy_percent === "number"
-              ? Math.round(h.cpu_busy_percent) + "%"
-              : "—",
-            "",
-          ],
+          ["Issues working", flow.status === "ok" ? items.filter(issueWorking).length : "—", unknownWorkers ? `${unknownWorkers} working · issue unconfirmed` : ""],
+          ["Issues waiting", flow.status === "ok" ? items.filter(i => issueLane(i) && !issueWorking(i)).length : "—", ""],
+          ["Memory available", typeof h.memory_available_bytes === "number" ? (h.memory_available_bytes / 2 ** 30).toFixed(1) + " GiB" : "—", ""],
+          ["CPU busy", typeof h.cpu_busy_percent === "number" ? Math.round(h.cpu_busy_percent) + "%" : "—", ""]
         ];
-        $("stats").innerHTML = stats
-          .map(
-            ([label, value, note], index) =>
-              `<div class="stat ${index === 0 && Number(value) > 0 ? "stat-working" : ""}"><div class="muted">${esc(label)}</div><strong class="number">${esc(value)}</strong>${note ? `<span>${esc(note)}</span>` : ""}</div>`,
-          )
-          .join("");
+        $("stats").innerHTML = slotCard + stats.map(([label,value,note],index) =>
+          `<div class="stat ${index === 0 && Number(value) > 0 ? "stat-working" : ""}"><div class="muted">${esc(label)}</div><strong class="number">${esc(value)}</strong>${note ? `<span>${esc(note)}</span>` : ""}</div>`).join("");
       }
       function renderRepos() {
         const search = $("search").value.toLowerCase(),
@@ -2176,9 +2141,9 @@
         // A paused role does not establish an issue assignment. Keep this a worker
         // card unless a canonical issue action itself supplies that association.
         const label = {build:"Build", review:"Review", audit:"Audit"}[e.role] || "Worker";
-        const summary = e.reason === "provider_start_failed"
+        const summary = e.summary || (e.reason === "provider_start_failed"
           ? `${label} worker · startup not confirmed`
-          : `${label} worker · ${reasonText(e.reason || "paused")}`;
+          : `${label} worker · ${reasonText(e.reason || "paused")}`);
         const key = `${r.repo}:${e.role}:${e.reason || "paused"}`;
         return `<article class="issue-card compact-issue waiting needs-decision worker-attention-card" data-station="${esc(e.role)}" data-worker-fault="${esc(r.short + "-" + e.role)}"><div class="compact-identity"><span>${esc(r.short)} · ${esc(e.role)}</span><span class="compact-meta attention-state">WORKER</span></div><button class="issue-card-title" data-repo="${esc(r.repo)}" data-role="${esc(e.role)}" title="${esc(e.why)}">${esc(summary)}</button><details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Details and next step</summary><p>${esc(e.why)}</p><p>${e.link && safeGithub(e.link) ? `<a href="${esc(e.link)}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p><p class="muted">Worker status only; no exact issue assignment is established by this alert.</p></details></article>`;
       }
@@ -2245,9 +2210,10 @@
           const m=e.metadata || {}, reason=m.capacity?.reason || m.reason;
           let message = `${e.session || e.repo || "Worker"} · ${human(e.event || "activity")}`;
           if (e.event === "activity_changed") message = `${e.session} · ${human(m.state || "unknown")}`;
+          if (e.event === "lifecycle_decision") message = `${e.session} · ${m.outcome === "released" ? "Slot released" : m.outcome === "retained" ? "Cleanup deferred" : "Cleanup status unknown"}`;
           if (e.event === "pipeline_observed") message = `${e.repo || e.session} · queue observed${m.claimed?.length ? " · claimed " + m.claimed.map(n=>"#"+Number(n)).join(", ") : ""}${m.queued?.length ? " · queued " + m.queued.map(n=>"#"+Number(n)).join(", ") : ""}`;
           if (reason) message += " · " + reasonText(reason);
-          rows.push({source:"worker",time:eventTime(e.at),message,routine:e.event === "admission_deferred" && ["role_session_limit","fleet_session_limit"].includes(reason)});
+          rows.push({source:"worker",time:eventTime(e.at),message,routine:(e.event === "admission_deferred" && ["role_session_limit","fleet_session_limit"].includes(reason)) || (e.event === "lifecycle_decision" && ["not_explicitly_idle","processes_not_quiescent","role_has_work"].includes(reason))});
         }
         for (const e of history?.events || []) rows.push({source:"pipeline",time:eventTime(e.observed_at),
           message:`${(e.repo || "").split("/").at(-1)} ${e.kind === "pr" ? "PR" : "issue"} #${Number(e.number)} · ${stageNames[e.previous_stage] || e.previous_stage || "First observed"} → ${stageNames[e.stage] || e.stage || "Recorded"}${e.summary ? " · " + e.summary : ""}`,

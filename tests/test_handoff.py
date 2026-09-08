@@ -1,8 +1,12 @@
+from tests.host_isolation import deny_host_tmux
 import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+import fcntl
+from unittest.mock import patch
+from forge.human_wait import _locked as real_locked
 
 from forge.control import atomic_json, snapshot_path
 from forge.handoff import check, idle_prompt, release
@@ -10,13 +14,17 @@ from forge.handoff import check, idle_prompt, release
 
 class HandoffTests(unittest.TestCase):
     def setUp(self):
+        deny_host_tmux(self)
+        self.lock_patch = patch('forge.human_wait._locked', return_value=True)
+        self.lock_patch.start()
+        self.addCleanup(self.lock_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.config = self.root / 'repos.d'
         self.config.mkdir()
         self.clone = self.root / 'clone'
-        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_BUILD={self.clone}\n')
+        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_BUILD={self.clone}\n')
         self.state = self.root / 'state'
         self.snapshot = dict(repo='o/one', enabled=True, status='ok', observed_at=99,
                              counts={'builder': 0}, schedule={'active': [1]}, work={'review': [2], 'audit': []})
@@ -263,7 +271,7 @@ class HandoffTests(unittest.TestCase):
         self.assertFalse(release(self.config, self.state, 'one-build', run=self.fake_run, now=100)['released'])
 
     def review_setup(self):
-        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_REVIEW={self.clone}\n')
+        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_REVIEW={self.clone}\n')
         self.snapshot['counts']['review'] = 0
         self.snapshot['work'] = {'review': [], 'audit': [2]}
         self.save()
@@ -393,7 +401,7 @@ class HandoffTests(unittest.TestCase):
 
     def completed_audit_setup(self):
         self.completed_review_setup()
-        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_AUDIT={self.clone}\n')
+        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_AUDIT={self.clone}\n')
         self.snapshot['counts']['audit'] = 0
         self.save()
         self.identity = 'one-audit|$1|50|%1|10|claude'
@@ -506,7 +514,7 @@ class HandoffTests(unittest.TestCase):
     def completed_builder_setup(self):
         self.historical_checkout_setup()
         self.identity = self.identity.replace('one-review', 'one-build')
-        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_BUILD={self.clone}\n')
+        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_BUILD={self.clone}\n')
         self.snapshot['counts']['builder'] = 0
         self.snapshot['schedule']['active'] = [1]
         self.snapshot['work'].update(ready=[], sentback=[], conflicts=[], limbo=[], review=[], audit=[])
@@ -549,6 +557,77 @@ class HandoffTests(unittest.TestCase):
         self.remote_merge_tree = 'e' * 40
         self.detached_prs[0]['base']['repo']['full_name'] = 'other/one'
         self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+
+    def test_release_requires_real_inherited_lock_before_any_proof(self):
+        path = self.state.parent / 'state-supervisor.lock'
+        with path.open('a') as lock, patch('forge.human_wait._locked', side_effect=real_locked):
+            result = release(self.config, self.state, 'one-build', lock_fd=lock.fileno(), run=self.fake_run, now=100)
+            self.assertEqual(result['reason'], 'supervisor_lock_required')
+            self.assertEqual(self.calls, [])
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = release(self.config, self.state, 'one-build', lock_fd=lock.fileno(), run=self.fake_run, now=100)
+            self.assertTrue(result['released'], result)
+
+    def test_conflicting_single_claim_identity_never_authorizes_release(self):
+        for reference in [
+            {'number':1, 'repository':{'nameWithOwner':'other/one'}, 'url':'https://github.com/o/one/issues/1'},
+            {'number':1, 'repository':{'nameWithOwner':'o/one'}, 'url':'https://github.com/other/one/issues/1'},
+            {'number':True, 'repository':{'nameWithOwner':'o/one'}}]:
+            self.pr['closingIssuesReferences'] = [reference]
+            self.assertFalse(self.decision()['eligible'])
+
+    def test_detached_reviewer_reaches_completed_fallback(self):
+        self.review_setup()
+        self.head = 'd' * 40
+        self.branch = None
+        self.published_main = self.head
+        self.compare_status = 'identical'
+        result = check(self.config, self.state, 'one-review', run=self.fake_run, now=100)
+        self.assertTrue(result['eligible'], result)
+
+    def test_completed_auditor_ignores_only_explicitly_held_live_queue(self):
+        self.completed_audit_setup()
+        self.live_queue = [{'number':117, 'labels':[{'name':'hold'}, {'name':'ready-for-audit'}]}]
+        self.assertTrue(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+        self.live_queue[0]['labels'] = [{'name':'ready-for-audit'}]
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+        self.live_queue = [{'number':117}]
+        self.assertFalse(check(self.config, self.state, 'one-audit', run=self.fake_run, now=100)['eligible'])
+
+    def test_proof_deadline_clamps_remote_calls_and_preserves_worker(self):
+        clock = [0]
+        def slow(args, **kwargs):
+            self.assertLessEqual(kwargs['timeout'], 30)
+            result = self.fake_run(args, **kwargs)
+            clock[0] += 31
+            return result
+        with patch('forge.handoff.time.monotonic', side_effect=lambda: clock[0]):
+            result = release(self.config, self.state, 'one-build', run=slow, now=100)
+        self.assertEqual(result['reason'], 'verification_deadline_exceeded')
+        self.assertFalse(any(c[:2] == ['tmux','kill-session'] for c in self.calls))
+
+    def test_successful_teardown_crossing_deadline_still_records_success(self):
+        clock = [0]
+        def run(args, **kwargs):
+            result = self.fake_run(args, **kwargs)
+            if args[:2] == ['tmux', 'kill-session']:
+                clock[0] = 61
+            return result
+        with patch('forge.handoff.time.monotonic', side_effect=lambda: clock[0]):
+            result = release(self.config, self.state, 'one-build', run=run, now=100)
+        self.assertTrue(result['released'], result)
+        receipt = json.loads((self.state / 'handoffs' / 'one-build.json').read_text())
+        self.assertTrue(receipt['released'])
+
+    def test_expired_proof_never_starts_teardown(self):
+        from forge.handoff import bounded_run, release_command, Unverified
+        clock = [0]
+        with patch('forge.handoff.time.monotonic', side_effect=lambda: clock[0]):
+            bounded = bounded_run(self.fake_run)
+            clock[0] = 31
+            with self.assertRaises(Unverified):
+                release_command(['tmux','kill-session','-t','$1'], bounded, self.fake_run)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ import time
 
 from .config import load_repositories
 from .control import atomic_json
-from .handoff import Unverified, command, session_identity
+from .handoff import Unverified, command, session_identity, bounded_run, release_command
 from .issue_flow import _approval_action, _references
 from .observability import classify_evidence
 
@@ -48,6 +48,8 @@ def _check(config, state, repo, run):
         live = json.loads(command(['gh', 'pr', 'view', str(number), '--repo', repo, '--json',
             'number,state,isDraft,headRefOid,baseRefOid,labels,author,reviewDecision,closingIssuesReferences'], run))
         labels = {x['name'] for x in live['labels']}
+        if live['number'] == number and live['state'] == 'OPEN' and 'hold' in labels:
+            continue  # Parked by policy; not actionable audit demand.
         if (live['number'] != number or live['state'] != 'OPEN' or live['isDraft']
                 or 'critical' not in {s.lower() for s in labels}
                 or 'ready-for-audit' not in labels or labels & {'hold', 'changes-requested', 'ready-for-review'}
@@ -88,13 +90,15 @@ def _check(config, state, repo, run):
             raise Unverified('current_issue_links_unavailable')
         candidates.append({'pr': number, 'head': live['headRefOid'], 'base': live['baseRefOid'],
                            'issues': sorted(current_refs), 'audit_url': action['evidence_url']})
+    if not candidates:
+        raise Unverified('no_bounded_audit_queue')
     return {'eligible': True, 'reason': 'verified_awaiting_human_approval',
             'evidence': {'repo': repo, 'candidates': candidates}}
 
 
 def check(config, state, repo, *, run=subprocess.run):
     try:
-        return _check(config, state, repo, run)
+        return _check(config, state, repo, bounded_run(run))
     except Unverified as exc:
         return {'eligible': False, 'reason': str(exc), 'evidence': {}}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, sqlite3.Error, subprocess.SubprocessError):
@@ -122,6 +126,23 @@ def _locked(state, fd):
     return False
 
 
+def _canonical_ancestor(git, repo, ancestor, base, run):
+    local = run(git + ['merge-base', '--is-ancestor', ancestor, base],
+                capture_output=True, text=True, timeout=15)
+    if local.returncode == 0:
+        return
+    if local.returncode == 1:
+        raise Unverified('head_not_verified_base_ancestor')
+    # The fresh canonical base may not exist in this clone yet. Verify remotely
+    # instead of fetching/mutating the worker checkout.
+    comparison = json.loads(command(['gh', 'api', f'repos/{repo}/compare/{ancestor}...{base}',
+        '--jq', '{status,base_commit:{sha:.base_commit.sha},behind_by}'], run))
+    if (comparison.get('status') not in ('ahead', 'identical')
+            or comparison.get('base_commit', {}).get('sha') != ancestor
+            or comparison.get('behind_by') != 0):
+        raise Unverified('head_not_verified_base_ancestor')
+
+
 def _published_checkout(git, repo, head, bases, run):
     """Prove an old audit checkout is exactly a merged, reachable tree."""
     branch = command(git + ['symbolic-ref', '--quiet', '--short', 'HEAD'], run)
@@ -129,7 +150,7 @@ def _published_checkout(git, repo, head, bases, run):
         # A clean old main is published history when reachable from every
         # freshly verified GitHub candidate base; no local remote ref is trusted.
         for base in sorted(bases):
-            command(git + ['merge-base', '--is-ancestor', head, base], run)
+            _canonical_ancestor(git, repo, head, base, run)
         return {'basis': 'main_ancestor_of_verified_candidate_bases',
                 'branch': branch, 'head': head, 'verified_bases': sorted(bases)}
     if not branch or command(git + ['config', '--get', f'branch.{branch}.remote'], run) != 'origin':
@@ -168,7 +189,7 @@ def _published_checkout(git, repo, head, bases, run):
     if tree != merge_tree:
         raise Unverified('historical_checkout_differs_from_merged_tree')
     for base in sorted(bases):
-        command(git + ['merge-base', '--is-ancestor', merge, base], run)
+        _canonical_ancestor(git, repo, merge, base, run)
     return {'basis': 'exact_tree_of_verified_merged_pr', 'branch': branch,
             'remote_branch': remote_branch, 'pr': pr['number'], 'head': head,
             'merge': merge, 'tree': tree, 'verified_bases': sorted(bases)}
@@ -196,7 +217,7 @@ def _release_evidence(config, state, repo, session, run):
     if head not in candidate_commits:
         checkout = _published_checkout(git, repo, head,
                     {c['base'] for c in result['evidence']['candidates']}, run)
-    identity = session_identity(session, run)
+    identity = session_identity(session, run, state=state)
     return {**result['evidence'], 'session': session, 'role': 'audit', 'clone': str(clone), 'head': head, 'checkout': checkout, **identity}
 
 
@@ -224,12 +245,14 @@ def release(config, state, repo, *, session=None, lock_fd=8, run=subprocess.run)
     if not _locked(state, lock_fd):
         return {'eligible': False, 'released': False, 'reason': 'supervisor_lock_required', 'evidence': {}}
     try:
+        action_run = run
+        run = bounded_run(run, 60)
         session = session or _repository(config, repo).short + '-audit'
         first = _release_evidence(config, state, repo, session, run)
         second = _release_evidence(config, state, repo, session, run)
         if first != second or not _locked(state, lock_fd):
             raise Unverified('audit_wait_changed')
-        command(['tmux', 'kill-session', '-t', second['session_id']], run)
+        release_command(['tmux', 'kill-session', '-t', second['session_id']], run, action_run)
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as exc:
         return {'eligible': False, 'released': False,
                 'reason': str(exc) if isinstance(exc, Unverified) else 'verification_unavailable', 'evidence': {}}

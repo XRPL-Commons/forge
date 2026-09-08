@@ -89,7 +89,7 @@ def _cycle_members(graph):
     return cycles
 
 
-def order_issues(issues, dependencies, *, first_ready=None):
+def order_issues(issues, dependencies, *, first_ready=None, handed_off=()):
     """Return a stable forecast, admitted numbers, blockers, claims and priorities.
 
     ``dependencies`` maps issue numbers to complete lists of REST dependency
@@ -97,13 +97,22 @@ def order_issues(issues, dependencies, *, first_ready=None):
     malformed list blocks admission. Cross-repository dependencies never alias a
     local issue with the same number. Closed dependencies are satisfied only when
     GitHub reports ``state_reason=completed``. A wip claim reserves this repository's
-    single builder even when that claim also carries hold or is otherwise blocked.
+    single builder even when that claim also carries hold or is otherwise blocked,
+    unless the caller lists it in ``handed_off``: a claim whose PR has left the
+    builder's stage (in review, at audit, or awaiting a human) no longer occupies a
+    worker, so it must not park the rest of the queue. The claim itself stays
+    ``active_claim``-blocked; it can never be started twice.
 
     Pure function: neither input is modified and no clock/network/state is read.
     """
     if not isinstance(dependencies, dict):
         raise ValueError("dependency snapshot must be a mapping")
     first_ready = first_ready or {}
+    released = set()
+    for number in handed_off:
+        if type(number) is not int or number <= 0:
+            raise ValueError("handed-off claims must be positive issue numbers")
+        released.add(number)
     rows, labels = {}, {}
     for issue in issues:
         if not isinstance(issue, dict):
@@ -221,11 +230,16 @@ def order_issues(issues, dependencies, *, first_ready=None):
     placed = set(ordered)
     ordered.extend(sorted((node for node in graph if node not in placed), key=key))
     active = sorted(n for n in open_rows if "wip" in labels[n])
+    # Only a claim still in the builder's hands reserves the builder. A claim
+    # reported as handed off keeps its active_claim blocker but frees the queue.
+    reserving = [n for n in active if n not in released]
+    handed = [n for n in active if n in released]
     candidates = [number for number in ordered if not blocked[number]]
-    if active:
-        reason = "builder_reserved_by:" + ",".join(map(str, active))
+    if reserving:
+        reason = "builder_reserved_by:" + ",".join(map(str, reserving))
         for number in candidates:
             blocked[number].add(reason)
-    return {"repository": repository, "ordered": ordered, "eligible": [] if active else candidates,
+    return {"repository": repository, "ordered": ordered, "eligible": [] if reserving else candidates,
             "blocked": {str(n): sorted(blocked[n]) for n in sorted(blocked) if blocked[n]},
-            "active": active, "priorities": {str(n): "p" + str(priority[n]) for n in sorted(priority)}}
+            "active": active, "reserving": reserving, "handed_off": handed,
+            "priorities": {str(n): "p" + str(priority[n]) for n in sorted(priority)}}

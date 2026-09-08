@@ -27,6 +27,10 @@ class FakeGitHub:
     def issues(self, config):
         return copy.deepcopy(list(self.rows.values()))
 
+    def items(self, config):
+        # Rows may include pull requests (``pull_request`` key); ``issues`` mocks still apply.
+        return self.issues(config)
+
     def dependency_map(self, repo, issues, extra=()):
         return copy.deepcopy(self.dependencies)
 
@@ -247,6 +251,24 @@ class SchedulingTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(stdout.getvalue(), '')
             self.assertIn('API unavailable', stderr.getvalue())
+
+    def test_next_cli_admits_the_queue_behind_a_handed_off_claim(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        from forge.scheduling import main
+        pr = {**issue(30, ('ready-for-audit', 'critical'), body='Closes #10'), 'pull_request': {}, 'user': {'login': 'forge-bot'}}
+        rows = [issue(10, ('wip',)), issue(11, ('ready',)), pr]
+        self.seed({'11': {'triaged_revision': issue_revision(rows[1])}})
+        for extra_pr, expected in ((None, '11\n'), ({**issue(31, ('changes-requested',), body='Fixes #10'), 'pull_request': {}, 'user': {'login': 'forge-bot'}}, '')):
+            github = FakeGitHub(rows + ([extra_pr] if extra_pr else []))
+            stdout = io.StringIO()
+            with patch('forge.scheduling.load_repositories', return_value=[self.config]), \
+                 patch('forge.scheduling.SchedulingGitHub', return_value=github), contextlib.redirect_stdout(stdout):
+                code = main(['next', '--mode', 'local', '--repo', 'X/y', '--state', self.state])
+            self.assertEqual(code, 0)
+            # Audited claim handed off: the next issue is admitted. Sent back too: builder is reserved again.
+            self.assertEqual(stdout.getvalue(), expected)
 
     def test_next_cli_does_not_emit_earlier_candidate_if_later_repo_fails(self):
         import contextlib

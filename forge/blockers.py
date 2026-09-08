@@ -41,6 +41,24 @@ def read_blockers(state, repositories, health, activity, now=None):
             db.close()
     result = {}
     for session,(row,role) in allowed.items():
+        from .lifecycle import _epoch
+        observed_worker = activity.get('sessions', {}).get(session, {})
+        observed_at = _epoch(activity.get('observed_at'))
+        runtime_reason = observed_worker.get('reason')
+        if (runtime_reason in {'runtime_unavailable', 'startup_configuration'}
+                and observed_worker.get('provider') == 'codex' and observed_worker.get('state') == 'blocked'
+                and row.get(role, {}).get('up') and not row.get(role, {}).get('busy')
+                and row.get(role, {}).get('state') == 'blocked' and row.get(role, {}).get('provider') == 'codex'
+                and observed_at is not None and 0 <= now-observed_at <= 90):
+            result[session] = dict(kind='worker_runtime', reason=runtime_reason,
+                basis='Current structured Codex execution receipt',
+                why=('Codex could not start its tool-execution host.' if runtime_reason == 'runtime_unavailable'
+                     else 'Codex rejected conflicting startup options before creating a task.'),
+                impact='This issue is preserved, but this worker cannot continue until its runtime is repaired.',
+                next=('Restore the matching codex-code-mode-host beside the pinned Codex binary, then resume the verified thread.'
+                      if runtime_reason == 'runtime_unavailable' else
+                      'Use --approve-for-me without a separate --sandbox option, then prepare one verified startup retry.'))
+            continue
         guard = health.get('sessions',{}).get(session,{})
         until = max(guard.get('until',0),health.get('account_until',0))
         reason = (health.get('account_reason','account_cooldown') if health.get('account_until',0)>now
@@ -74,11 +92,23 @@ def read_blockers(state, repositories, health, activity, now=None):
                 item.update(
                     why=f'The worker reached its hourly launch limit; retries are paused until {retry_at}.',
                     next='Inspect repeated startup failures or incomplete runs. Verified successful handoffs return their launch allowance automatically; other launch charges expire after one hour.')
-            elif reason in {'blocked_auth','blocked_quota','blocked_permission'}:
+            elif reason in {'blocked_auth','blocked_quota','blocked_model_usage','blocked_permission'}:
+                item['why'] = {
+                    'blocked_auth': f'The provider reported an authentication problem. Retries are paused until {retry_at}.',
+                    'blocked_model_usage': f'The model allowance was exhausted. This provider is paused until {retry_at}; Forge can use the other available harness.',
+                    'blocked_quota': f'The provider reported a usage or credit limit. Retries are paused until {retry_at}; this is not a confirmed provider reset time.',
+                    'blocked_permission': f'The worker reported a permission failure. Retries are paused until {retry_at}.',
+                }[reason]
                 item['next'] = {'blocked_auth':'Restore the worker account login, then allow the supervisor to recheck.',
+                                'blocked_model_usage':'No action is needed if the alternate harness is available. Forge allows one real retry after about an hour; this is not a promised allowance reset.',
                                 'blocked_quota':'Restore provider quota or wait for its reset; the local cooldown is not the provider reset time.',
                                 'blocked_permission':'Inspect the worker permission failure and correct its environment before retrying.'}[reason]
             result[session] = item
+            continue
+        from .lifecycle import retained_blocker
+        retained = retained_blocker(state, session, row, role, activity, now)
+        if retained:
+            result[session] = retained
             continue
         receipt = receipts.get(session)
         if not receipt or receipt[1] != 'admission_deferred' or row.get(role,{}).get('up'):

@@ -27,6 +27,37 @@ def command(args, run):
     return result.stdout.strip()
 
 
+def bounded_run(run, seconds=30):
+    """One proof gets one wall-clock budget, including nested remote reads."""
+    deadline = time.monotonic() + seconds
+    def remaining():
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise Unverified('verification_deadline_exceeded')
+        return value
+    def invoke(args, **kwargs):
+        left = remaining()
+        kwargs['timeout'] = min(kwargs.get('timeout', left), left)
+        try:
+            result = run(args, **kwargs)
+        except subprocess.TimeoutExpired:
+            raise Unverified('verification_deadline_exceeded')
+        if time.monotonic() >= deadline:
+            raise Unverified('verification_deadline_exceeded')
+        return result
+    invoke.remaining = remaining
+    return invoke
+
+
+def release_command(args, proof_run, action_run):
+    # The proof must still be fresh before teardown. Once teardown reports
+    # success, do not turn it into a refusal merely because the clock advanced.
+    def run(args, **kwargs):
+        kwargs['timeout'] = min(kwargs.get('timeout', 15), proof_run.remaining())
+        return action_run(args, **kwargs)
+    return command(args, run)
+
+
 def styled_lines(pane):
     """Keep SGR faint information: Claude's suggested input is faint, typed input is not."""
     escape = re.compile(r'\x1b\[[0-9;]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
@@ -85,7 +116,7 @@ def idle_prompt(pane):
             and not re.search(r'allow|approve|permission required|yes.*no', footer))
 
 
-def session_identity(session, run):
+def session_identity(session, run, *, state=None):
     raw = command(['tmux', 'list-panes', '-s', '-t', '=' + session, '-F',
                    '#{session_name}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_current_command}'], run)
     rows = raw.splitlines()
@@ -94,10 +125,24 @@ def session_identity(session, run):
     values = rows[0].split('|')
     if (len(values) != 6 or values[0] != session or not re.fullmatch(r'\$\d+', values[1])
             or not values[2].isdigit() or not re.fullmatch(r'%\d+', values[3])
-            or not values[4].isdigit() or values[5] not in {'claude', 'claude.exe'}):
+            or not values[4].isdigit() or values[5] not in {'claude', 'claude.exe', 'bash'}):
         raise Unverified('session_not_claude')
     pane = command(['tmux', 'capture-pane', '-e', '-p', '-t', values[3]], run)
-    if not idle_prompt(pane):
+    codex = values[5] == 'bash'
+    if codex:
+        if state is None:
+            raise Unverified('codex_receipt_required')
+        from .codex_worker import observe
+        generation = '|'.join(values[1:5])
+        observation = observe(state, session, generation=generation)
+        if (observation.get('provider') != 'codex' or observation.get('reason') not in
+                {'codex_execution_completed', 'codex_execution_failed'}):
+            raise Unverified('codex_execution_not_quiescent')
+        lines = [''.join(char for char, _ in line).strip() for line in styled_lines(pane)]
+        lines = [line for line in lines if line]
+        if not lines or not re.fullmatch(r'[\w.-]+@[\w.-]+:[^$#\r\n]*[$#]', lines[-1]):
+            raise Unverified('not_empty_shell_prompt')
+    elif not idle_prompt(pane):
         raise Unverified('not_explicitly_idle')
     # Read process names only, never potentially sensitive command arguments.
     processes = {}
@@ -112,8 +157,9 @@ def session_identity(session, run):
             break
         descendants = expanded
     names = [processes[pid][1] for pid in descendants]
-    if (len(descendants) != 2 or processes[root][1] != 'bash'
-            or sorted(names) != ['bash', values[5]]):
+    if (processes[root][1] != 'bash'
+            or (codex and (len(descendants) != 1 or names != ['bash']))
+            or (not codex and (len(descendants) != 2 or sorted(names) != ['bash', values[5]]))):
         raise Unverified('processes_not_quiescent')
     return dict(session_id=values[1], session_created=int(values[2]), pane_id=values[3],
                 pane_pid=root, processes=sorted(descendants))
@@ -144,7 +190,7 @@ def _check(config, state, session, run, now):
     if role == 'build' and isinstance(active, list) and len(active) > 1:
         from .builder_handoff import check_multiple
         return check_multiple(repo, snapshot, state, session, clone, run, now, began,
-                              read_command=command, identify_session=session_identity, unverified=Unverified)
+                              read_command=command, identify_session=lambda s, r: session_identity(s, r, state=state), unverified=Unverified)
     if len(active) != 1 or type(active[0]) is not int or active[0] <= 0:
         raise Unverified('claim_not_unique')
     work = snapshot['work']
@@ -174,7 +220,7 @@ def _check(config, state, session, run, now):
                              and command(git + ['rev-parse', 'origin/main'], run) == head)
         on_stale_main = False
         if role == 'review' and not (on_pr_head or on_published_main):
-            branch = command(git + ['symbolic-ref', '--short', 'HEAD'], run)
+            branch = _checkout_branch(git, run)
             if branch == 'main' and command(git + ['rev-parse', 'origin/main'], run) == pr['baseRefOid']:
                 ancestor = run(git + ['merge-base', '--is-ancestor', head, pr['baseRefOid']],
                                capture_output=True, text=True, timeout=15)
@@ -190,7 +236,10 @@ def _check(config, state, session, run, now):
         for issue in pr['closingIssuesReferences']:
             identity = issue.get('repository', {}).get('nameWithOwner')
             url = issue.get('url', '')
-            if issue.get('number') == active[0] and (identity == repo.repo or url.lower() == f'https://github.com/{repo.repo}/issues/{active[0]}'.lower()):
+            if (type(issue.get('number')) is int and issue['number'] == active[0]
+                    and (identity or url)
+                    and (not identity or isinstance(identity, str) and identity.lower() == repo.repo.lower())
+                    and (not url or isinstance(url, str) and url.lower() == f'https://github.com/{repo.repo}/issues/{active[0]}'.lower())):
                 verified.append((number, pr['headRefOid'], pr['baseRefOid'],
                                  'pr_head' if on_pr_head else ('published_main' if on_published_main else 'published_main_ancestor')))
                 break
@@ -212,7 +261,7 @@ def _check(config, state, session, run, now):
         if (command(git + ['symbolic-ref', '--short', 'HEAD'], run) != 'main'
                 or command(git + ['rev-parse', 'origin/main'], run) != verified[0][2]):
             raise Unverified('published_main_changed')
-    identity = session_identity(session, run)
+    identity = session_identity(session, run, state=state)
     return {'eligible': True, 'reason': 'verified_handoff', 'evidence': {
         'repo': repo.repo, 'role': role, 'clone': str(clone), 'issue': active[0], 'pr': verified[0][0], 'pr_head': verified[0][1],
         'pr_base': verified[0][2], 'checkout_basis': verified[0][3],
@@ -292,9 +341,15 @@ def _completed_role(config, state, session, run, now):
     if not re.fullmatch(r'[0-9a-f]{40,64}', head):
         raise Unverified('invalid_head')
     queued = json.loads(command(['gh', 'pr', 'list', '--repo', repo.repo, '--state', 'open',
-                                 '--label', 'changes-requested' if role == 'build' else 'ready-for-' + role, '--limit', '1', '--json', 'number'], run))
-    if queued != []:
-        raise Unverified('live_role_queue_not_empty')
+                                 '--label', 'changes-requested' if role == 'build' else 'ready-for-' + role, '--limit', '11', '--json', 'number,labels,isDraft'], run))
+    if not isinstance(queued, list) or len(queued) > 10:
+        raise Unverified('live_role_inventory_unbounded')
+    for item in queued:
+        labels = item.get('labels')
+        if not isinstance(labels, list) or any(not isinstance(label, dict) or not isinstance(label.get('name'), str) for label in labels):
+            raise Unverified('live_role_inventory_unknown')
+        if 'hold' not in {label['name'] for label in labels}:
+            raise Unverified('live_role_queue_not_empty')
     main = json.loads(command(['gh', 'api', f'repos/{repo.repo}/git/ref/heads/main'], run))['object']['sha']
     if not isinstance(main, str) or not re.fullmatch(r'[0-9a-f]{40,64}', main):
         raise Unverified('invalid_published_main')
@@ -330,7 +385,7 @@ def _completed_role(config, state, session, run, now):
         raise Unverified('checkout_changed')
     if command(git + ['status', '--porcelain=v1', '--untracked-files=all'], run):
         raise Unverified('worktree_not_clean')
-    identity = session_identity(session, run)
+    identity = session_identity(session, run, state=state)
     return {'eligible': True, 'reason': 'verified_' + role + '_complete', 'evidence': {
         'repo': repo.repo, 'role': role, 'clone': str(clone), 'head': head,
         'published_main': main, 'branch': branch,
@@ -350,25 +405,30 @@ def _check_with_fallback(config, state, session, run, now):
 
 def check(config, state, session, *, run=subprocess.run, now=None):
     try:
-        return _check_with_fallback(config, state, session, run, time.time() if now is None else now)
+        return _check_with_fallback(config, state, session, bounded_run(run), time.time() if now is None else now)
     except Unverified as exc:
         return {'eligible': False, 'reason': str(exc), 'evidence': {}}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, subprocess.SubprocessError):
         return {'eligible': False, 'reason': 'verification_unavailable', 'evidence': {}}
 
 
-def release(config, state, session, *, run=subprocess.run, now=None):
-    """Caller holds the supervisor singleton lock; every release checks twice."""
+def release(config, state, session, *, run=subprocess.run, now=None, lock_fd=8):
+    """Require the inherited supervisor lock before any proof or teardown."""
+    from .human_wait import _locked
+    if not _locked(state, lock_fd):
+        return {'eligible': False, 'released': False, 'reason': 'supervisor_lock_required', 'evidence': {}}
+    action_run = run
+    run = bounded_run(run, 60)
     first = check(config, state, session, run=run, now=now)
     if not first['eligible']:
         return {**first, 'released': False}
     second = check(config, state, session, run=run, now=now)
-    if not second['eligible'] or first['evidence'] != second['evidence']:
+    if not second['eligible'] or first['evidence'] != second['evidence'] or not _locked(state, lock_fd):
         return {'eligible': False, 'released': False, 'reason': 'handoff_changed', 'evidence': {}}
     try:
         # IDs are never reused during a tmux server lifetime; target the verified
         # generation rather than a potentially replaced named session.
-        command(['tmux', 'kill-session', '-t', second['evidence']['session_id']], run)
+        release_command(['tmux', 'kill-session', '-t', second['evidence']['session_id']], run, action_run)
     except (OSError, ValueError, subprocess.SubprocessError):
         return {**second, 'released': False, 'reason': 'release_failed'}
     result = {**second, 'released': True, 'observed_at': time.time() if now is None else now}
@@ -379,7 +439,7 @@ def release(config, state, session, *, run=subprocess.run, now=None):
         record(state, 'session_stopped', session, repo=second['evidence']['repo'], role=second['evidence']['role'],
                metadata={'reason': second['reason']}, now=now)
         from .launch_budget import refund
-        result['launch_budget_refund'] = refund(config, state, session=session, proof=result, now=now)
+        result['launch_budget_refund'] = refund(config, state, session=session, proof=result, now=now, lock_fd=lock_fd)
     except (OSError, ValueError, ImportError, sqlite3.Error):
         result['receipt_error'] = True
     return result

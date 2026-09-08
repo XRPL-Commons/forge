@@ -2,6 +2,8 @@
 import argparse
 from datetime import datetime, timezone
 import json
+import math
+import sys
 import os
 from pathlib import Path
 import re
@@ -14,9 +16,11 @@ from .config import load_repositories
 from .control import snapshot_path
 
 EVENTS = {'dispatch', 'session_created', 'session_stopped', 'admission_deferred', 'paused', 'nudge',
-          'activity_changed', 'pipeline_observed'}
+          'activity_changed', 'pipeline_observed', 'lifecycle_decision'}
 META_KEYS = {'reason', 'state', 'command', 'session_started_at', 'claimed', 'queued', 'counts',
-             'snapshot_observed_at', 'snapshot_status', 'start_basis', 'run_id', 'capacity'}
+             'snapshot_observed_at', 'snapshot_status', 'start_basis', 'run_id', 'capacity',
+             'phase', 'outcome', 'generation_id', 'since', 'session_started_epoch', 'provider', 'provider_run_id', 'provider_thread_id',
+             'provider_observed_at', 'provider_failure', 'execution_started_at'}
 
 
 def stamp(value=None):
@@ -29,9 +33,22 @@ def stamp(value=None):
 
 def metadata_safe(metadata):
     value = {k: v for k, v in (metadata or {}).items() if k in META_KEYS}
-    for key in ('reason', 'state', 'command', 'snapshot_status', 'start_basis', 'run_id'):
+    for key in ('reason', 'state', 'command', 'snapshot_status', 'start_basis', 'run_id', 'phase', 'outcome', 'generation_id', 'provider', 'provider_run_id', 'provider_thread_id', 'provider_failure'):
         if key in value:
             value[key] = re.sub(r'[^a-zA-Z0-9_.:/ -]', '', str(value[key]))[:120]
+    if 'generation_id' in (metadata or {}):
+        generation = metadata['generation_id']
+        value['generation_id'] = generation if isinstance(generation, str) and re.fullmatch(r'\$\d+\|\d+\|%\d+\|\d+', generation) else ''
+    for key in ('since', 'session_started_epoch', 'provider_observed_at'):
+        if key in value and (type(value[key]) not in (int, float) or not math.isfinite(value[key])):
+            del value[key]
+    if 'execution_started_at' in value:
+        try:
+            if type(value['execution_started_at']) not in (int, float, str):
+                raise ValueError('Execution start is unknown')
+            value['execution_started_at'] = stamp(value['execution_started_at'])
+        except (ValueError, TypeError, OverflowError):
+            del value['execution_started_at']
     for key in ('claimed', 'queued'):
         if key in value:
             value[key] = sorted({v for v in value[key] if type(v) is int and v > 0})[:100]
@@ -79,18 +96,45 @@ def _record(db, event, session, repo, role, metadata, at):
     current = json.loads(row[0]) if row else dict(run_id=None, execution_started_at=None,
         dispatched_at=None, observed_active_since=None, last_activity_at=None,
         state='unknown', session_started_at=None, reason=None, repo=repo, role=role)
+    if event == 'lifecycle_decision':
+        db.execute('INSERT INTO events(at,event,session,repo,role,metadata) VALUES(?,?,?,?,?,?)',
+                   (at,event,session,repo,role,json.dumps(metadata,sort_keys=True)))
+        return current
+    if event == 'activity_changed':
+        birth = metadata.get('session_started_at')
+        generation = metadata.get('generation_id')
+        barrier = current.get('generation_event_at')
+        # Captures can finish after a supervisor replacement. Never apply older evidence.
+        if ((generation and generation == current.get('previous_generation_id') and generation != current.get('generation_id')) or
+                (barrier and at < barrier) or
+                (current.get('last_observed_at') and at < current['last_observed_at']) or
+                (current.get('dispatched_at') and at < current['dispatched_at']) or
+                (birth and current.get('session_started_at') and birth < current['session_started_at']) or
+                (not generation and birth and birth == current.get('previous_session_started_at') and birth != current.get('session_started_at')) or
+                (current['state'] == 'exited' and ((generation and generation == current.get('generation_id')) or (not generation and birth and birth == current.get('session_started_at'))) and metadata.get('state') != 'exited') or
+                (barrier and at <= barrier and not birth and metadata.get('state') == 'exited')):
+            return current
+        current['last_observed_at'] = at
     current.update(repo=repo or current.get('repo'), role=role or current.get('role'))
     if event == 'dispatch':
         current.update(run_id=uuid.uuid4().hex, dispatched_at=at, execution_started_at=None,
                        start_basis='supervisor_dispatch', observed_active_since=None)
         metadata['run_id'] = current['run_id']
     elif event == 'session_created':
+        current.update(previous_session_started_at=current.get('session_started_at') or current.get('previous_session_started_at'),
+                       session_started_at=None, session_started_epoch=None, generation_event_at=at,
+                       previous_generation_id=current.get('generation_id') or current.get('previous_generation_id'), generation_id=None)
         current.update(state='starting',run_id=None,dispatched_at=None,execution_started_at=None,
-                       observed_active_since=None)
+                       observed_active_since=None, provider='unknown', provider_run_id=None, provider_thread_id=None, provider_failure=None)
     elif event == 'activity_changed':
-        if (metadata.get('session_started_at') and current.get('session_started_at')
-                and metadata['session_started_at'] != current['session_started_at']):
+        if ((metadata.get('generation_id') and current.get('generation_id') and metadata['generation_id'] != current['generation_id']) or
+                (metadata.get('session_started_at') and current.get('session_started_at')
+                 and metadata['session_started_at'] != current['session_started_at'])):
+            current['previous_session_started_at'] = current['session_started_at']
+            current['previous_generation_id'] = current.get('generation_id')
             current.update(run_id=None,dispatched_at=None,execution_started_at=None,observed_active_since=None)
+        if metadata.get('provider') and metadata['provider'] != current.get('provider'):
+            current.update(execution_started_at=None,provider_run_id=None,provider_thread_id=None,provider_failure=None)
         new_state = metadata.get('state', 'unknown')
         if new_state == 'busy' and (current['state'] != 'busy' or not current.get('observed_active_since')):
             current['observed_active_since'] = at
@@ -100,12 +144,14 @@ def _record(db, event, session, repo, role, metadata, at):
             current.update(run_id=None, dispatched_at=None, execution_started_at=None)
         current['state'] = new_state
     elif event == 'session_stopped':
+        current['generation_event_at'] = at
         current.update(state='exited', run_id=None, dispatched_at=None, execution_started_at=None,
                        observed_active_since=None)
-    for key in ('session_started_at', 'command', 'reason'):
+    for key in ('session_started_at', 'session_started_epoch', 'generation_id', 'command', 'reason', 'provider', 'provider_run_id',
+                'provider_thread_id', 'provider_observed_at', 'provider_failure', 'execution_started_at'):
         if key in metadata:
             current[key] = metadata[key]
-    current['last_activity_at'] = at
+    current['last_activity_at'] = max(at, current.get('last_activity_at') or at)
     db.execute('INSERT INTO events(at,event,session,repo,role,metadata) VALUES(?,?,?,?,?,?)',
                (at,event,session,repo,role,json.dumps(metadata,sort_keys=True)))
     db.execute('INSERT OR REPLACE INTO sessions VALUES(?,?)', (session,json.dumps(current)))
@@ -153,19 +199,42 @@ def run_tmux(arguments):
     return subprocess.run(['tmux',*arguments],capture_output=True,text=True,timeout=3)
 
 
-def observe_tmux(allowed, runner=run_tmux):
+def classify_pane(command, pane):
+    """Classify a bounded provider pane; idle means safe input, never completion."""
+    from .handoff import idle_prompt, styled_lines
+    if command in {'bash', 'zsh', 'sh', 'fish', 'dash'}:
+        return dict(state='shell', reason='shell_prompt')
+    if command not in {'claude', 'claude.exe'}:
+        return dict(state='unknown', reason='unrecognized_foreground')
+    pane = pane[-32768:]
+    lines = [''.join(char for char, _ in line) for line in styled_lines(pane)]
+    tail = '\n'.join(lines[-16:]).lower()
+    if '\x1b' in tail:
+        return dict(state='unknown', reason='unrecognized_terminal_control')
+    if idle_prompt(pane):
+        return dict(state='idle', reason='prompt_observed')
+    if tail.rfind('esc to interrupt') >= 0 and tail.rfind('esc to interrupt') > tail.rfind('❯'):
+        return dict(state='busy', reason='interrupt_indicator')
+    return dict(state='unknown', reason='no_safe_activity_signal')
+
+
+def observe_tmux(allowed, runner=run_tmux, *, state=None, codex_observer=None):
     """Only capture allowlisted role panes; no raw terminal content is retained."""
-    unknown = {s:dict(state='unknown',reason='tmux_unavailable') for s in allowed}
+    unknown = {s:dict(state='unknown',reason='tmux_unavailable',provider='unknown') for s in allowed}
     try:
-        result = runner(['list-sessions','-F','#{session_name}\t#{session_created}'])
+        result = runner(['list-sessions','-F','#{session_name}\t#{session_created}\t#{session_id}'])
         if result.returncode:
             # tmux reports absence of its socket/server this way; all other errors are unknown.
             if 'no server running' in result.stderr or ('error connecting to' in result.stderr and 'No such file or directory' in result.stderr):
                 return {s:dict(state='exited',reason='no_tmux_server') for s in allowed}
             return unknown
         present = {}
+        identities = {}
         for line in result.stdout.splitlines():
-            name, _, started = line.partition('\t')
+            fields = line.split('\t')
+            name, started = (fields + ['', ''])[:2]
+            if len(fields) >= 3:
+                identities[name] = (fields[2], started)
             if name in allowed:
                 present[name] = stamp(float(started)) if started.isdigit() else None
         observations = {}
@@ -173,33 +242,47 @@ def observe_tmux(allowed, runner=run_tmux):
             if session not in present:
                 observations[session] = dict(state='exited',reason='session_absent')
                 continue
-            meta = dict(session_started_at=present[session])
+            meta = dict(session_started_at=present[session],provider='unknown')
+            if present[session]:
+                meta['session_started_epoch'] = int(datetime.fromisoformat(present[session].replace('Z','+00:00')).timestamp())
             try:
-                result = runner(['list-panes','-s','-t','='+session,'-F','#{pane_id}\t#{pane_current_command}\t#{pane_dead}'])
+                result = runner(['list-panes','-s','-t','='+session,'-F','#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{pane_pid}'])
                 panes = [line.split('\t') for line in result.stdout.splitlines()]
-                if result.returncode or len(panes) != 1 or len(panes[0]) != 3:
+                if result.returncode or len(panes) != 1 or len(panes[0]) not in (3, 4):
                     meta.update(state='unknown',reason='pane_unavailable_or_ambiguous')
                 else:
-                    pane,command,dead = panes[0]
+                    pane,command,dead = panes[0][:3]
+                    if session in identities and len(panes[0]) == 4:
+                        meta['generation_id'] = '|'.join((*identities[session], pane, panes[0][3]))
                     meta['command'] = command
+                    if command in {'claude','claude.exe'}:
+                        meta['provider'] = 'claude'
                     if dead == '1':
                         meta.update(state='exited',reason='pane_dead')
+                    elif command not in {'claude','claude.exe'} and state is not None and (
+                            (Path(state)/'codex-workers'/(session+'.json')).exists() or command in {'codex','codex.exe'}):
+                        if codex_observer is None:
+                            from .codex_worker import observe as codex_observer
+                        if not meta.get('generation_id'):
+                            meta.update(state='unknown', reason='codex_generation_unavailable', provider='unknown')
+                        else:
+                            result = codex_observer(state, session, generation=meta['generation_id'])
+                            meta.update(state=result['state'], reason=result['reason'], provider=result.get('provider','unknown'))
+                            if result.get('provider') == 'codex':
+                                for source, destination in (('run_id','provider_run_id'), ('thread_id','provider_thread_id'),
+                                        ('observed_at','provider_observed_at'), ('provider_failure','provider_failure'),
+                                        ('started_at','execution_started_at')):
+                                    if result.get(source) is not None:
+                                        meta[destination] = result[source]
                     elif command in {'bash','zsh','sh','fish','dash'}:
-                        meta.update(state='shell',reason='shell_prompt')
+                        meta.update(state='shell',reason='shell_prompt',provider='unknown')
                     else:
-                        captured = runner(['capture-pane','-p','-t',pane,'-S','-80'])
+                        captured = runner(['capture-pane','-e','-p','-t',pane,'-S','-80'])
                         if captured.returncode:
                             meta.update(state='unknown',reason='capture_failed')
                         else:
-                            tail = '\n'.join(captured.stdout[-32768:].lower().splitlines()[-16:])
-                            busy_at = tail.rfind('esc to interrupt')
-                            prompt_at = tail.rfind('❯')
-                            if busy_at >= 0 and busy_at > prompt_at:
-                                meta.update(state='busy',reason='interrupt_indicator')
-                            elif 'claude' in command.lower() and prompt_at >= 0:
-                                meta.update(state='idle',reason='prompt_observed')
-                            else:
-                                meta.update(state='unknown',reason='no_activity_signal')
+                            meta.update(classify_pane(command, captured.stdout))
+                            meta['provider'] = 'claude' if command in {'claude','claude.exe'} else 'unknown'
             except (OSError,subprocess.TimeoutExpired):
                 meta.update(state='unknown',reason='tmux_timeout_or_error')
             observations[session] = meta
@@ -210,8 +293,8 @@ def observe_tmux(allowed, runner=run_tmux):
 
 def sample(state, config, now=None, runner=run_tmux):
     allowed = configured(config)
-    observations = observe_tmux(allowed,runner)
-    at = stamp(now)
+    at = stamp(now)  # Capture start, so late observations cannot overwrite newer lifecycle events.
+    observations = observe_tmux(allowed,runner,state=state)
     epoch = datetime.fromisoformat(at.replace('Z','+00:00')).timestamp()
     try:
         guard = json.loads((Path(state)/'legacy-health/guard.json').read_text())
@@ -231,7 +314,7 @@ def sample(state, config, now=None, runner=run_tmux):
                 meta = metadata_safe(meta)
                 row = db.execute('SELECT data FROM sessions WHERE session=?',(session,)).fetchone()
                 old = json.loads(row[0]) if row else {}
-                if any(old.get(k) != v for k,v in meta.items()):
+                if any(old.get(k) != v for k,v in meta.items() if k != 'provider_observed_at') or (meta.get('state') == 'busy' and not old.get('observed_active_since')):
                     _record(db,'activity_changed',session,repo,role,meta,at)
                 try:
                     snapshot = json.loads(snapshot_path(state,repo).read_text())
@@ -255,8 +338,8 @@ def sample(state, config, now=None, runner=run_tmux):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--state',required=True)
-    parser.add_argument('--config',required=True)
+    parser.add_argument('--state')
+    parser.add_argument('--config')
     sub = parser.add_subparsers(dest='command',required=True)
     event = sub.add_parser('event')
     event.add_argument('--session',required=True)
@@ -264,7 +347,16 @@ def main():
     event.add_argument('--reason')
     event.add_argument('--metadata',default='{}')
     sub.add_parser('sample')
+    classifier = sub.add_parser('classify')
+    classifier.add_argument('--command', dest='foreground', required=True)
+    classifier.add_argument('--state-only', action='store_true')
     args = parser.parse_args()
+    if args.command == 'classify':
+        result = classify_pane(args.foreground, sys.stdin.read(32769))
+        print(result['state'] if args.state_only else json.dumps(result, sort_keys=True))
+        return 0
+    if not args.state or not args.config:
+        parser.error('--state and --config are required for event/sample')
     allowed = configured(args.config)
     if args.command == 'sample':
         sample(args.state,args.config)

@@ -1,5 +1,5 @@
 const { chromium } = require(
-  process.env.FORGE_PLAYWRIGHT_MODULE || "playwright-core",
+  process.env.FORGE_PLAYWRIGHT_MODULE || "playwright",
 );
 const fs = require("fs"),
   assert = require("assert");
@@ -41,7 +41,7 @@ const fs = require("fs"),
       },
     },
     work: { review: [3], audit: [4] },
-    build: { up: true, busy: true },
+    build: { up: true, busy: true, provider: "codex" },
     review: { up: true, busy: false },
     audit: { up: false, busy: false },
   };
@@ -74,9 +74,11 @@ const fs = require("fs"),
       requested_session: "academy-build",
       admitted: false,
       fleet_count: 3,
-      limits: { max_sessions: 3 },
+      limits: { max_sessions: 6, max_sessions_per_role: 3 },
     },
-    health: { account_until: 0, sessions: {} },
+    slots: {status: "ok", observed_at: now, occupied: 5, roles: {build: 2, review: 3, audit: 0}},
+    health: { account_until: 0, sessions: {"academy-build": {until: now+3600, reason: "no_progress"}} },
+    routing: {status: "ok", providers: {claude: {reason: "blocked_quota", blocked_until: now+3600}}},
     log: ["test <script>bad()</script>"],
     notification_events: [
       {
@@ -237,7 +239,14 @@ const fs = require("fs"),
   assert.equal(await page.locator(".stage").count(), 0);
   assert.equal(await page.locator("#pipeline").count(), 0);
   assert.equal(await page.locator(".issue-card").count(), 4);
+  assert.match(await page.locator(".stat-slots").innerText(), /Slots occupied/);
+  assert.match(await page.locator(".stat-slots .number").innerText(), /5\s*\/\s*6/);
+  assert.match(await page.locator(".slot-states").innerText(), /2 working/);
+  assert.match(await page.locator(".slot-states").innerText(), /1 unknown/);
+  assert.match(await page.locator(".slot-roles").first().innerText(), /Review 3\/3/);
+  assert.match(await page.locator(".provider-outages").innerText(), /Claude unavailable.*retry in 60m/);
   assert.equal(await page.locator(".working-stack .issue-card").count(), 1);
+  assert.match(await page.locator(".working-stack .issue-card").innerText(), /Codex/);
   assert.equal(await page.locator(".pending-stack .issue-card").count(), 3);
   assert.equal(await page.locator(".mini-card.moving").count(), 1);
   assert.equal(await page.locator(".role-card.working").count(), 0);
@@ -310,6 +319,15 @@ const fs = require("fs"),
   assert((await workerAlert.innerText()).includes('Configure the native executable'));
   assert((await workerAlert.innerText()).includes('no exact issue assignment'));
   assert.equal(await page.evaluate(()=>window.pwned),undefined);
+  await page.evaluate(()=>{
+    delete fleet.health.sessions['quiet-review'];
+    fleet.session_blockers['quiet-review']={kind:'cleanup_retained',reason:'worktree_not_clean',why:'Uncommitted files prevent worker cleanup.',next:'Preserve generated files and verify the published handoff.',impact:'This idle worker occupies a slot.'};
+    render();
+  });
+  assert.equal(await workerAlert.count(),1);
+  assert((await workerAlert.locator('.issue-card-title').innerText()).includes('Uncommitted files'));
+  await workerAlert.locator('summary').click();
+  assert((await workerAlert.innerText()).includes('Preserve generated files'));
   await page.evaluate(()=>{
     fleet.repos[1].review={up:false,busy:false};
     delete fleet.health.sessions['quiet-review'];

@@ -1,3 +1,4 @@
+from tests.host_isolation import deny_host_tmux
 import copy
 import json
 import unittest
@@ -11,6 +12,7 @@ class MultipleClaimHandoffTests(unittest.TestCase):
     save = fixtures.HandoffTests.save
 
     def setUp(self):
+        deny_host_tmux(self)
         fixtures.HandoffTests.setUp(self)
         self.snapshot['schedule']['active'] = [1,3]
         self.snapshot['work'] = {'review':[2], 'audit':[4], 'wip':[1,3]}

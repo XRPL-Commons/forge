@@ -1,3 +1,4 @@
+from tests.host_isolation import deny_host_tmux
 import fcntl
 import json
 from pathlib import Path
@@ -12,13 +13,14 @@ from forge.observability import connect
 
 class HumanWaitTests(unittest.TestCase):
     def setUp(self):
+        deny_host_tmux(self)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.state = root / 'state'
         self.config = root / 'config'
         self.config.mkdir()
-        (self.config / 'app.repo').write_text('REPO=owner/app\nOWNER_LABEL=auto:owned-by-forge\n')
+        (self.config / 'app.repo').write_text('REPO=owner/app\nOWNER_LABEL=auto:owned-by-luc\n')
         self.head, self.base = 'a' * 40, 'b' * 40
         body = f'## Security audit PASS\nCriticality: CRITICAL\nHead {self.head}\nBase {self.base}\nAwaiting human approval.'
         self.audit = {'kind': 'audit', 'body': body, 'commit_id': self.head,
@@ -44,7 +46,7 @@ class HumanWaitTests(unittest.TestCase):
         if args[:3] == ['gh', 'pr', 'view']:
             value = self.live
         elif args[-1].endswith('/labels?per_page=100'):
-            value = [[{'name': 'auto:owned-by-forge'}]]
+            value = [[{'name': 'auto:owned-by-luc'}]]
         elif '/issues?' in args[-1]:
             value = [self.inventory]
         elif '/reviews?' in args[-1]:
@@ -165,8 +167,8 @@ class HumanWaitTests(unittest.TestCase):
 
     def test_release_checks_twice_and_targets_exact_id(self):
         evidence = {'repo': 'owner/app', 'role': 'audit', 'session_id': '$7', 'candidates': []}
-        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', return_value=evidence) as checks, patch('forge.human_wait.command') as command:
-            result = release(self.config, self.state, 'owner/app', session='app-audit')
+        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', return_value=evidence) as checks, patch('forge.human_wait.release_command') as command:
+            result = release(self.config, self.state, 'owner/app', session='app-audit', run=self.fake_run)
         self.assertTrue(result['released'])
         self.assertEqual(checks.call_count, 2)
         command.assert_called_once()
@@ -174,8 +176,8 @@ class HumanWaitTests(unittest.TestCase):
         self.assertTrue((self.state / 'human-waits/app-audit.json').exists())
 
     def test_changed_session_is_never_killed(self):
-        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', side_effect=[{'session_id': '$7'}, {'session_id': '$8'}]), patch('forge.human_wait.command') as command:
-            result = release(self.config, self.state, 'owner/app', session='app-audit')
+        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', side_effect=[{'session_id': '$7'}, {'session_id': '$8'}]), patch('forge.human_wait.release_command') as command:
+            result = release(self.config, self.state, 'owner/app', session='app-audit', run=self.fake_run)
         self.assertFalse(result['released'])
         command.assert_not_called()
 
@@ -194,8 +196,8 @@ class HumanWaitTests(unittest.TestCase):
             'other-audit': {'reason': 'no_progress', 'until': 8000, 'launches': [3]}}}
         atomic_json(path, original)
         evidence = {'repo': 'owner/app', 'role': 'audit', 'session_id': '$7', 'candidates': []}
-        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', return_value=evidence), patch('forge.human_wait.command'):
-            result = release(self.config, self.state, 'owner/app', session='app-audit')
+        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', return_value=evidence), patch('forge.human_wait.release_command'):
+            result = release(self.config, self.state, 'owner/app', session='app-audit', run=self.fake_run)
         self.assertTrue(result['released'])
         self.assertTrue(result['cleared_no_progress'])
         expected = json.loads(json.dumps(original))
@@ -219,8 +221,8 @@ class HumanWaitTests(unittest.TestCase):
         original = {'sessions': {'app-audit': {'reason': 'no_progress', 'until': 9000}}}
         atomic_json(path, original)
         evidence = {'repo': 'owner/app', 'role': 'audit', 'session_id': '$7', 'candidates': []}
-        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', return_value=evidence), patch('forge.human_wait.command', side_effect=Unverified('kill_failed')):
-            result = release(self.config, self.state, 'owner/app', session='app-audit')
+        with patch('forge.human_wait._locked', return_value=True), patch('forge.human_wait._release_evidence', return_value=evidence), patch('forge.human_wait.release_command', side_effect=Unverified('kill_failed')):
+            result = release(self.config, self.state, 'owner/app', session='app-audit', run=self.fake_run)
         self.assertFalse(result['released'])
         self.assertEqual(json.loads(path.read_text()), original)
 
@@ -300,3 +302,49 @@ class HumanWaitTests(unittest.TestCase):
         with self.assertRaises(Unverified):
             _published_checkout(['git', '-C', '/clone'], 'owner/app', head, {first_base, second_base}, run)
         self.assertFalse(any('gh' in args for args in calls))
+
+    def test_mixed_held_and_critical_wait_does_not_pin_auditor(self):
+        self.inventory.append({'number':11, 'pull_request':{}})
+        def run(args, **kwargs):
+            if args[:4] == ['gh','pr','view','11']:
+                return CompletedProcess(args, 0, json.dumps({'number':11,'state':'OPEN','labels':[{'name':'hold'},{'name':'ready-for-audit'}]}), '')
+            return self.fake_run(args, **kwargs)
+        result = check(self.config, self.state, 'owner/app', run=run)
+        self.assertTrue(result['eligible'], result)
+        self.assertEqual([c['pr'] for c in result['evidence']['candidates']], [10])
+        self.live['labels'].append({'name':'hold'})
+        result = check(self.config, self.state, 'owner/app', run=run)
+        self.assertFalse(result['eligible'])
+        self.assertEqual(result['reason'], 'no_bounded_audit_queue')
+
+    def test_slow_human_wait_read_expires_whole_proof(self):
+        clock = [0]
+        def slow(args, **kwargs):
+            self.assertLessEqual(kwargs['timeout'], 30)
+            value = self.fake_run(args, **kwargs)
+            clock[0] += 31
+            return value
+        with patch('forge.handoff.time.monotonic', side_effect=lambda: clock[0]):
+            result = check(self.config, self.state, 'owner/app', run=slow)
+        self.assertEqual(result['reason'], 'verification_deadline_exceeded')
+        self.assertFalse(result['eligible'])
+
+    def test_missing_local_base_uses_exact_remote_ancestry(self):
+        from forge.human_wait import _canonical_ancestor
+        from forge.handoff import Unverified
+        calls = []
+        response = {'status':'ahead','base_commit':{'sha':self.head},'behind_by':0}
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[0] == 'git':
+                return CompletedProcess(args, 128, '', 'missing local object')
+            self.assertIn(f'repos/owner/app/compare/{self.head}...{self.base}', args)
+            return CompletedProcess(args, 0, json.dumps(response), '')
+        _canonical_ancestor(['git','-C','/clone'],'owner/app',self.head,self.base,run)
+        self.assertEqual(len(calls),2)
+        for field,value in [('status','diverged'),('base_commit',{'sha':self.base}),('behind_by',1)]:
+            old=response[field];response[field]=value
+            with self.assertRaises(Unverified):
+                _canonical_ancestor(['git','-C','/clone'],'owner/app',self.head,self.base,run)
+            response[field]=old
+        self.assertFalse(any('fetch' in call for call in calls))

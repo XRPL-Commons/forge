@@ -32,6 +32,17 @@ class BlockerTests(unittest.TestCase):
         self.rows[0]['audit']['up']=True
         self.assertEqual(read_blockers(self.tmp.name,self.rows,{}, {},now=200),{})
 
+    def test_current_runtime_failure_has_actionable_cause(self):
+        self.rows[0]['audit'] = {'up': True, 'busy': False, 'state':'blocked', 'provider':'codex'}
+        observation = {'observed_at': 200, 'sessions': {'r-audit': {
+            'provider':'codex', 'state':'blocked', 'reason':'runtime_unavailable'}}}
+        value = read_blockers(self.tmp.name,self.rows,{},observation,now=220)['r-audit']
+        self.assertIn('tool-execution host', value['why'])
+        self.assertIn('codex-code-mode-host', value['next'])
+        self.assertEqual(read_blockers(self.tmp.name,self.rows,{},observation,now=300),{})
+        self.rows[0]['audit']['busy'] = True
+        self.assertEqual(read_blockers(self.tmp.name,self.rows,{},observation,now=220),{})
+
     def test_expired_guard_is_not_current_blocker(self):
         self.assertEqual(read_blockers(self.tmp.name,self.rows,{'sessions':{'r-audit':{'until':100,'reason':'no_progress'}}},{},now=200),{})
 

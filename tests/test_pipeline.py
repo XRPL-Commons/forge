@@ -40,6 +40,28 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(data["counts"]["wip"], 1)
         self.assertEqual(data["counts"]["builder"], 0)
 
+    def test_handed_off_claim_does_not_reserve_the_builder(self):
+        from forge.github import handed_off_claims
+        from forge.ordering import order_issues
+        items = [item(10, ["wip"], pr=False, state="open"), item(11, ["wip"], pr=False, state="open"),
+                 item(12, ["wip"], pr=False, state="open"), item(13, ["ready"], pr=False, state="open"),
+                 item(20, ["ready-for-audit", "critical"], body="Closes #10"),
+                 item(21, ["ready-for-review"], body="Fixes #11"),
+                 item(22, ["changes-requested"], body="Resolves #11"),
+                 item(23, ["ready-for-audit"], body="Closes other/repo#12"),
+                 item(24, ["ready-for-audit"], body="Closes #99")]
+        work = classify(items, "me")["work"]
+        # 10: audited, awaiting a human -> handed off. 11: in review but also sent back -> builder must
+        # return, keeps the reservation. 12: only a cross-repo link -> no evidence, keeps it.
+        self.assertEqual(handed_off_claims(items, work, "o/r"), [10])
+        for row in items:
+            row.setdefault("repository_url", "https://api.github.com/repos/o/r")
+        issues = [i for i in items if "pull_request" not in i]
+        self.assertEqual(order_issues(issues, {}, handed_off=[10])["reserving"], [11, 12])
+        self.assertEqual(order_issues(issues, {}, handed_off=[10, 11, 12])["eligible"], [13])
+        self.assertEqual(handed_off_claims(items, {"wip": [10], "audit": [20]}, "o/r"), [10])
+        self.assertEqual(handed_off_claims(items, {"wip": [], "audit": [20]}, "o/r"), [])
+
     def test_pagination_not_default_thirty(self):
         calls = []
         def run(command, **kwargs):

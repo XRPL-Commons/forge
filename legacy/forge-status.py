@@ -8,6 +8,7 @@ takes no write actions, has no dependencies beyond the stdlib.
 import json, re, subprocess, time, html, os, sqlite3
 from pathlib import Path
 from forge.config import load_repositories
+from forge.activity import observe_tmux
 from forge.observability import read_overview, read_repository
 from forge.control import snapshot_path
 from forge.scheduling import repo_state
@@ -15,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 PORT = 8787
-HOME = str(Path.home())
+HOME = "/home/luc"
 WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
 SESS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _cache = {}  # key -> (expires, value)
@@ -40,14 +41,13 @@ def cached(key, ttl, fn):
 
 def tmux_sessions():
     out = sh(["tmux", "ls", "-F", "#{session_name}"])
-    sessions = {}
-    allowed = allowed_sessions()
-    for s in out.split():
-        if s not in allowed:
-            continue
-        pane = sh(["tmux", "capture-pane", "-p", "-t", f"={s}:1.1"])
-        sessions[s] = {"busy": "esc to interrupt" in pane}
-    return sessions
+    present = set(out.split()) & allowed_sessions()
+    observations = observe_tmux(present, state=Path(WD)/'state')
+    return {session: {'busy': observation['state'] == 'busy',
+                      'state': observation['state'], 'reason': observation['reason'],
+                      'provider': observation.get('provider','unknown')}
+            for session, observation in observations.items()
+            if observation['state'] != 'exited'}
 
 
 def repos():
@@ -59,6 +59,21 @@ def repos():
 
 def allowed_sessions():
     return {repo.split("/")[-1] + "-" + role for repo in repos() for role in ("build", "review", "audit")}
+
+
+def slot_inventory():
+    """Count configured survivors, including disabled repos, without capturing their panes."""
+    from forge.capacity import read_sessions
+    try:
+        configured = {r.short + '-' + role for r in load_repositories(Path(WD)/'repos.d')
+                      for role in ('build','review','audit')}
+        names, _ = read_sessions()
+        occupied = sorted(set(names) & configured)
+        return {'status':'ok', 'observed_at':time.time(), 'occupied':len(occupied),
+                'roles':{role:sum(s.endswith('-'+role) for s in occupied)
+                         for role in ('build','review','audit')}}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {'status':'unknown', 'observed_at':time.time()}
 
 
 def gh_counts(repo):
@@ -190,7 +205,9 @@ def status():
             r["triage"] = {}
         for role in ("build", "review", "audit"):
             s = sess.get(f"{short}-{role}")
-            r[role] = {"up": s is not None, "busy": bool(s and s["busy"]), "provider": "claude"}
+            r[role] = {"up": s is not None, "busy": bool(s and s["busy"]),
+                       "state": s.get("state", "unknown") if s else "exited",
+                       "provider": s.get("provider", "unknown") if s else None}
         out["repos"].append(r)
     current_work_context(out["repos"])
     out["log"] = sh(["tail", "-n", "40", f"{WD}/logs/supervisor.log"]).splitlines()
@@ -228,6 +245,18 @@ def status():
         out['session_blockers'] = read_blockers(Path(WD) / 'state', out['repos'], out['health'], out['activity'])
     except (ImportError, OSError, ValueError, sqlite3.Error):
         out['session_blockers'] = {}
+    out['slots'] = slot_inventory()
+    try:
+        from forge.routing import read_routing
+        routing = read_routing(Path(WD)/'state')
+        out['routing'] = {'status':'ok', 'last_provider':routing.get('last_provider'),
+                          'next_provider':routing.get('next_provider'),
+                          'providers':{provider:{key:value for key,value in details.items()
+                                      if key in {'reason','last_failure','blocked_until','probe_until'}}
+                                       for provider,details in routing.get('providers',{}).items()
+                                       if provider in {'claude','codex'} and isinstance(details,dict)}}
+    except (ImportError, OSError, ValueError, RuntimeError):
+        out['routing'] = {'status':'unknown'}
     return out
 
 

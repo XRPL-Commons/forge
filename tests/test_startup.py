@@ -1,3 +1,4 @@
+from tests.host_isolation import deny_host_tmux
 import json
 from pathlib import Path
 import sqlite3
@@ -12,6 +13,7 @@ from forge.startup import check, release
 
 class StartupTests(unittest.TestCase):
     def setUp(self):
+        deny_host_tmux(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -19,7 +21,7 @@ class StartupTests(unittest.TestCase):
         self.config = self.root / 'config'
         self.config.mkdir()
         self.clone = self.root / 'clone'
-        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_BUILD={self.clone}\n')
+        (self.config / 'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_BUILD={self.clone}\n')
         self.snap = {'repo': 'o/one', 'enabled': True, 'status': 'ok', 'observed_at': 99,
                      'schedule': {'active': [], 'eligible': [1]}, 'counts': {'wip': 0},
                      'work': {k: [] for k in ['wip', 'review', 'audit', 'sentback', 'limbo']}}
@@ -118,7 +120,7 @@ class StartupTests(unittest.TestCase):
         self.assertFalse(any(c[:2]==['tmux','kill-session'] for c in self.calls))
 
     def test_never_dispatched_reviewer_can_recover_with_current_pr_demand(self):
-        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_REVIEW={self.clone}\n')
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_REVIEW={self.clone}\n')
         self.snap['work']['review']=[2];self.snap['counts']['review']=1
         self.snap['schedule']['active']=[1];self.snap['counts']['wip']=1;self.save()
         self.identity=self.identity.replace('one-build','one-review')
@@ -128,7 +130,7 @@ class StartupTests(unittest.TestCase):
         self.assertFalse(check(self.config,self.state,'one-review',run=self.fake_run,now=100)['eligible'])
 
     def test_never_dispatched_auditor_requires_fresh_audit_queue(self):
-        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_AUDIT={self.clone}\n')
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_AUDIT={self.clone}\n')
         self.snap['work']['audit']=[2];self.snap['counts']['audit']=1
         self.snap['schedule']['active']=[1];self.snap['counts']['wip']=1;self.save()
         self.identity=self.identity.replace('one-build','one-audit')
@@ -138,7 +140,7 @@ class StartupTests(unittest.TestCase):
         self.assertFalse(check(self.config,self.state,'one-audit',run=self.fake_run,now=100)['eligible'])
 
     def test_auditor_with_previous_dispatch_is_never_recovered(self):
-        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-forge\nCLONE_AUDIT={self.clone}\n')
+        (self.config/'one.repo').write_text(f'REPO=o/one\nOWNER_LABEL=auto:owned-by-luc\nCLONE_AUDIT={self.clone}\n')
         self.snap['work']['audit']=[2];self.snap['counts']['audit']=1;self.save()
         self.identity=self.identity.replace('one-build','one-audit')
         self.event('dispatch')
@@ -191,6 +193,26 @@ class StartupTests(unittest.TestCase):
         # An old startup marker cannot turn a new failed start into a normal exit.
         generation[0]='$3|40'
         self.assertEqual(record_failure(self.state,'one-review',exit_code=1,startup=False,run=run)['reason'],'provider_start_failed')
+
+    def test_old_generation_marker_does_not_block_new_startup(self):
+        import os
+        marker=self.state/'one-build.up';marker.touch();os.utime(marker,(5,5))
+        self.assertTrue(self.decision()['eligible'])
+        marker.write_text(json.dumps({'generation':'$9|1','status':'submitted'}))
+        self.assertTrue(self.decision()['eligible'])
+        marker.write_text(json.dumps({'generation':'$1|10','status':'submitted'}))
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_dispatch_receipts_bind_exact_generation_and_distinguish_uncertainty(self):
+        from forge.startup import dispatch_receipt, dispatch_is_uncertain, marker_blocks
+        def run(args,**kwargs):return SimpleNamespace(returncode=0,stdout='$1|10|%1',stderr='')
+        dispatch_receipt(self.state,'one-build','$1|10|%1',uncertain=True,run=run,now=20)
+        self.assertTrue(dispatch_is_uncertain(self.state,'one-build','$1|10|%1'))
+        self.assertFalse(dispatch_is_uncertain(self.state,'one-build','$2|30|%2'))
+        self.assertFalse((self.state/'one-build.up').exists())
+        with self.assertRaises(ValueError):dispatch_receipt(self.state,'one-build','$2|30|%2',run=run)
+        dispatch_receipt(self.state,'one-build','$1|10|%1',run=run,now=21)
+        self.assertTrue(marker_blocks(self.state,'one-build','$1|10'))
 
     def test_requires_supervisor_lock(self):
         self.assertFalse(release(self.config,self.state,'one-build',lock_fd=-1,run=self.fake_run)['released'])

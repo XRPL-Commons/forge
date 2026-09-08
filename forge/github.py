@@ -8,6 +8,31 @@ class GitHubError(RuntimeError):
     pass
 
 
+def handed_off_claims(items, work, repo):
+    """Wip claims whose open PR has already left the builder's stage.
+
+    A claim is handed off when an open PR in this repository closes it and that
+    PR sits at ready-for-review or ready-for-audit (including a CRITICAL PR
+    awaiting a human). The builder was released for it, so the claim must not
+    reserve the builder. Any sent-back, unlabeled (limbo) or conflicting PR for
+    the same claim keeps the reservation: the builder has to return to it.
+    Links come from the same inventory bodies the snapshot already holds; no
+    extra GitHub read and no inferred link.
+    """
+    from .issue_flow import _references
+    by_number = {item.get("number"): item for item in items if "pull_request" in item}
+    wip = {n for n in work.get("wip", []) if type(n) is int}
+    past_builder, needs_builder = set(), set()
+    for stage, target in (("review", past_builder), ("audit", past_builder),
+                          ("sentback", needs_builder), ("limbo", needs_builder), ("conflicts", needs_builder)):
+        for number in work.get(stage, []):
+            pr = by_number.get(number)
+            if pr is None:
+                continue
+            target.update(n for n in _references({"body": pr.get("body") or ""}, repo) if n in wip)
+    return sorted(past_builder - needs_builder)
+
+
 class GitHub:
     def __init__(self, run=subprocess.run, timeout=45, state=None):
         self.run = run
@@ -42,9 +67,10 @@ class GitHub:
         from .scheduling import SchedulingGitHub, create_plan
         from .ordering import order_issues
         issues = [i for i in items if "pull_request" not in i]
+        handed_off = handed_off_claims(items, result["work"], repository.repo)
         dependencies = SchedulingGitHub(run=self.run, timeout=self.timeout).dependency_map(repository.repo, issues)
-        schedule = (create_plan(repository.repo, issues, dependencies, self.state) if self.state
-                    else order_issues(issues, dependencies))
+        schedule = (create_plan(repository.repo, issues, dependencies, self.state, handed_off=handed_off) if self.state
+                    else order_issues(issues, dependencies, handed_off=handed_off))
         result["counts"]["ready_total"] = result["counts"]["ready"]
         result["counts"]["ready"] = len(schedule["eligible"])
         result["counts"]["wip"] = len(schedule["active"])

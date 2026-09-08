@@ -1,5 +1,7 @@
 """Recover a never-dispatched worker startup and retain provider diagnostics."""
 import argparse
+import hashlib
+import tempfile
 from datetime import datetime
 import json
 import math
@@ -27,8 +29,6 @@ def _evidence(config, state, session, run, now):
     if len(repos) != 1:
         raise Unverified('not_enabled_worker')
     repo = repos[0]
-    if (Path(state) / (session + '.up')).exists():
-        raise Unverified('startup_already_completed')
     snap = json.loads(snapshot_path(state, repo.repo).read_text())
     observed = snap.get('observed_at')
     if (snap.get('repo') != repo.repo or snap.get('enabled') is not True or snap.get('status') != 'ok'
@@ -68,6 +68,8 @@ def _evidence(config, state, session, run, now):
             or not fields[4].isdigit() or fields[5] != 'bash' or Path(fields[6]).resolve() != clone):
         raise Unverified('not_single_clone_shell')
     created, pid = int(fields[2]), int(fields[4])
+    if marker_blocks(state, session, fields[1] + '|' + fields[2]):
+        raise Unverified('startup_already_completed')
     if now - created < 60:
         raise Unverified('startup_still_in_grace_period')
     captured = command(['tmux', 'capture-pane', '-p', '-t', fields[3]], run)
@@ -91,7 +93,7 @@ def _evidence(config, state, session, run, now):
                 raise Unverified('startup_was_dispatched_or_active')
     finally:
         db.close()
-    if ((Path(state) / (session + '.up')).exists()
+    if (marker_blocks(state, session, fields[1] + '|' + fields[2])
             or json.loads(snapshot_path(state, repo.repo).read_text()) != snap
             or now + time.monotonic() - began - observed > 300):
         raise Unverified('startup_evidence_changed')
@@ -136,6 +138,142 @@ def release(config, state, session, *, lock_fd=8, run=subprocess.run, now=None):
     return result
 
 
+def marker_blocks(state, session, generation):
+    """Old generations do not block recovery; malformed current evidence does."""
+    path = Path(state) / (session + '.up')
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return False
+    if not raw.strip():  # Compatibility with legacy touch markers.
+        return path.stat().st_mtime >= int(generation.split('|')[1])
+    try:
+        value = json.loads(raw)
+        saved = value.get('generation')
+        return not isinstance(saved, str) or not re.fullmatch(r'\$[0-9]+\|[0-9]+', saved) or saved == generation
+    except (ValueError, AttributeError):
+        return True
+
+
+def dispatch_receipt(state, session, generation, *, uncertain=False, run=subprocess.run, now=None):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', session) or not re.fullmatch(r'\$[0-9]+\|[0-9]+\|%[0-9]+', generation):
+        raise ValueError('invalid_dispatch_identity')
+    observed = command(['tmux', 'display-message', '-p', '-t', '=' + session + ':1.1',
+                        '#{session_id}|#{session_created}|#{pane_id}'], run)
+    if observed != generation:
+        raise ValueError('dispatch_generation_changed')
+    identity, created, pane = generation.split('|')
+    value = {'session': session, 'generation': identity + '|' + created, 'pane_id': pane,
+             'observed_at': time.time() if now is None else now,
+             'status': 'uncertain' if uncertain else 'submitted'}
+    path = Path(state) / 'dispatch-uncertain' / (session + '.json') if uncertain else Path(state) / (session + '.up')
+    atomic_json(path, value)
+    return value
+
+
+def dispatch_is_uncertain(state, session, generation):
+    path = Path(state) / 'dispatch-uncertain' / (session + '.json')
+    try:
+        value = json.loads(path.read_text())
+        saved = value.get('generation')
+        return not isinstance(saved, str) or not re.fullmatch(r'\$[0-9]+\|[0-9]+', saved) or saved == '|'.join(generation.split('|')[:2])
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
+def _codex_repo(config, session):
+    role = session.rsplit('-', 1)[-1]
+    if role not in {'build', 'review', 'audit'}:
+        raise ValueError('unknown_role')
+    matches = [r for r in load_repositories(config) if r.enabled and r.short + '-' + role == session]
+    if len(matches) != 1:
+        raise ValueError('not_enabled_worker')
+    return matches[0], role
+
+
+def codex_observation(config, state, session, generation):
+    from .codex_worker import observe, parse_generation
+    repo, role = _codex_repo(config, session)
+    expected = parse_generation(generation)
+    value = observe(state, session, generation=expected, repo=repo.repo)
+    if value.get('provider') != 'codex':
+        try:
+            prepared = json.loads((Path(state)/'codex-dispatches'/(session+'.json')).read_text())
+            if prepared.get('generation') == generation and prepared.get('repo') == repo.repo:
+                return {'provider':'codex','state':'unknown','reason':'codex_start_receipt_pending'}
+        except (OSError, ValueError, AttributeError):
+            pass
+    return value
+
+
+def codex_command(config, state, session, executable, generation, prompt, *, resume=False, run=subprocess.run):
+    from .codex_worker import observe, parse_generation
+    from .lifecycle import progress_key
+    repo, role = _codex_repo(config, session)
+    expected = parse_generation(generation)
+    binary = Path(executable).resolve()
+    if not Path(executable).is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError('provider_executable_unavailable')
+    clone = Path(getattr(repo, 'clone_' + role) or Path.home()/(repo.short if role=='build' else repo.short+'-'+role)).resolve()
+    if command(['git','-C',str(clone),'rev-parse','--show-toplevel'],run) != str(clone):
+        raise ValueError('clone_mismatch')
+    if command(['git','-C',str(clone),'remote','get-url','origin'],run) not in {
+            f'git@github.com:{repo.repo}.git',f'https://github.com/{repo.repo}.git',f'https://github.com/{repo.repo}'}:
+        raise ValueError('remote_mismatch')
+    progress = progress_key(state, repo.repo, role)
+    if not progress:
+        raise ValueError('fresh_role_work_unavailable')
+    if dispatch_is_uncertain(state, session, generation):
+        raise ValueError('prior_dispatch_uncertain')
+    info_path = Path(state)/'codex-dispatches'/(session+'.json')
+    thread = None
+    if resume:
+        value = observe(state, session, generation=expected, repo=repo.repo)
+        prior = json.loads(info_path.read_text())
+        if (value.get('state') != 'idle' or not value.get('thread_id') or prior.get('generation') != generation
+                or prior.get('repo') != repo.repo or prior.get('progress_key') == progress):
+            raise ValueError('resume_requires_completed_execution_and_changed_work')
+        thread = value['thread_id']
+    # Sending a command is safe only in this exact empty shell with no child job.
+    identity = command(['tmux','list-panes','-s','-t','='+session,'-F',
+        '#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}'], run)
+    if identity != generation + '|bash|' + str(clone):
+        raise ValueError('not_verified_codex_shell')
+    pane = command(['tmux','capture-pane','-p','-t',expected['pane_id']], run)
+    lines = [line.rstrip() for line in pane.splitlines() if line.strip()]
+    if not lines or not re.fullmatch(r'[\w.-]+@[\w.-]+:[^$#\r\n]*[$#]', lines[-1]):
+        raise ValueError('not_empty_shell_prompt')
+    processes = [line.split(None,2) for line in command(['ps','-eo','pid=,ppid=,comm='], run).splitlines()]
+    if any(int(parent)==expected['pane_pid'] for pid,parent,name in processes):
+        raise ValueError('shell_has_child_work')
+    if not any(int(pid)==expected['pane_pid'] and name=='bash' for pid,parent,name in processes):
+        raise ValueError('shell_identity_unknown')
+    root = Path(state)/'codex-prompts';root.mkdir(parents=True,exist_ok=True,mode=0o700)
+    fd, name = tempfile.mkstemp(prefix=session+'-',suffix='.txt',dir=root)
+    with os.fdopen(fd,'w') as stream:
+        stream.write(prompt+'\n');stream.flush();os.fsync(stream.fileno())
+    args = ['env','PYTHONPATH='+str(Path(__file__).resolve().parent.parent),sys.executable,'-m','forge.codex_worker','run',
+        '--state',str(Path(state).resolve()),'--session',session,'--repo',repo.repo,'--role',role,'--clone',str(clone),
+        '--prompt-file',name,'--executable',str(binary),'--generation',generation]
+    if thread:
+        args += ['--resume-thread',thread]
+    # Repeat identity and source-of-truth fingerprint immediately before exposing
+    # the command. The runner independently validates its parent generation.
+    if command(['tmux','list-panes','-s','-t','='+session,'-F',
+        '#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_current_path}'], run) != identity or progress_key(state,repo.repo,role) != progress:
+        raise ValueError('codex_dispatch_evidence_changed')
+    final_pane = command(['tmux','capture-pane','-p','-t',expected['pane_id']],run)
+    final_processes = [line.split(None,2) for line in command(['ps','-eo','pid=,ppid=,comm='],run).splitlines()]
+    if (final_pane != pane or any(int(parent)==expected['pane_pid'] for pid,parent,name in final_processes)
+            or not any(int(pid)==expected['pane_pid'] and name=='bash' for pid,parent,name in final_processes)):
+        raise ValueError('codex_shell_changed')
+    atomic_json(info_path,{'provider':'codex','session':session,'repo':repo.repo,'role':role,'generation':generation,
+        'progress_key':progress,'thread_id':thread,'prompt_file':name,'observed_at':time.time(),'status':'prepared'})
+    return shlex.join(args)
+
+
 def launch_command(executable, state, session):
     path = Path(executable).resolve()
     if not Path(executable).is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
@@ -167,7 +305,7 @@ def record_failure(state, session, *, exit_code=None, startup=True, run=subproce
     dispatched = False
     if generation:
         try:
-            dispatched = marker.stat().st_mtime >= int(generation.split('|')[1])
+            dispatched = marker_blocks(state, session, generation)
         except (OSError, ValueError, IndexError):
             pass
     failure = startup or not dispatched
@@ -188,14 +326,41 @@ def record_failure(state, session, *, exit_code=None, startup=True, run=subproce
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check', 'release', 'command', 'record-exit', 'record-failure'))
+    parser.add_argument('action', choices=('check', 'release', 'command', 'record-exit', 'record-failure', 'mark-dispatched', 'dispatch-uncertain', 'is-uncertain', 'codex-command', 'codex-observe'))
     parser.add_argument('--config')
     parser.add_argument('--executable')
+    parser.add_argument('--generation')
+    parser.add_argument('--prompt')
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--field', choices=['state','provider','failure'])
     parser.add_argument('--exit-code', type=int)
     parser.add_argument('--state', required=True)
     parser.add_argument('--session', required=True)
     parser.add_argument('--lock-fd', type=int, default=8)
     args = parser.parse_args()
+    if args.action in {'codex-command', 'codex-observe'}:
+        if not args.config or not args.generation:
+            parser.error('--config and --generation are required')
+        try:
+            if args.action == 'codex-command':
+                print(codex_command(args.config,args.state,args.session,args.executable or '',args.generation,args.prompt or '',resume=args.resume))
+            else:
+                value = codex_observation(args.config,args.state,args.session,args.generation)
+                if args.field:
+                    print(value.get({'failure':'provider_failure'}.get(args.field,args.field)) or '')
+                else:
+                    print(json.dumps(value,sort_keys=True))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            return 1
+    if args.action == 'is-uncertain':
+        return 0 if dispatch_is_uncertain(args.state, args.session, args.generation or '') else 1
+    if args.action in {'mark-dispatched', 'dispatch-uncertain'}:
+        try:
+            dispatch_receipt(args.state, args.session, args.generation or '', uncertain=args.action == 'dispatch-uncertain')
+            return 0
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 1
     if args.action == 'command':
         try:
             print(launch_command(args.executable or '', args.state, args.session))

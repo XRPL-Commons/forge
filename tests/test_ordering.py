@@ -45,6 +45,28 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(active["eligible"], [])
         self.assertIn("builder_reserved_by:5", active["blocked"]["4"])
 
+    def test_handed_off_claim_frees_the_builder_but_never_restarts(self):
+        issues = [issue(4, "ready"), issue(5, "wip"), issue(6, "wip", "ready")]
+        # Only 5 handed off: 6 is still in the builder's hands and keeps the reservation.
+        partial = order_issues(issues, {}, handed_off=[5])
+        self.assertEqual(partial["active"], [5, 6])
+        self.assertEqual(partial["reserving"], [6])
+        self.assertEqual(partial["handed_off"], [5])
+        self.assertEqual(partial["eligible"], [])
+        self.assertIn("builder_reserved_by:6", partial["blocked"]["4"])
+        # Every claim handed off: the queue moves, the claims themselves stay blocked.
+        freed = order_issues(issues, {}, handed_off=[5, 6, 99])
+        self.assertEqual(freed["active"], [5, 6])
+        self.assertEqual(freed["reserving"], [])
+        self.assertEqual(freed["handed_off"], [5, 6])
+        self.assertEqual(freed["eligible"], [4])
+        self.assertIn("active_claim", freed["blocked"]["5"])
+        self.assertIn("active_claim", freed["blocked"]["6"])
+        self.assertNotIn("4", freed["blocked"])
+        self.assertEqual(order_issues(issues, {})["reserving"], [5, 6])
+        with self.assertRaises(ValueError):
+            order_issues(issues, {}, handed_off=["5"])
+
     def test_closed_dependency_requires_completed_reason(self):
         issues = [issue(1, "ready"), issue(2, "ready"), issue(3, "ready"), issue(4, "ready")]
         result = order_issues(issues, {1: [dep(90, "closed", "completed")],

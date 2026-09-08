@@ -25,12 +25,24 @@ class DashboardTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def test_private_and_disabled_sessions_are_not_read(self):
-        with patch.object(dashboard, "sh", return_value="one-build relay parked-audit") as shell:
+        with patch.object(dashboard, "sh", return_value="one-build anton parked-audit") as shell, \
+             patch.object(dashboard, "observe_tmux", return_value={"one-build":{"state":"unknown","reason":"capture_failed"}}) as observe:
             sessions = dashboard.tmux_sessions()
             self.assertEqual(set(sessions), {"one-build"})
-            self.assertEqual(shell.call_count, 2)
+            self.assertEqual(shell.call_count, 1)
+            observe.assert_called_once_with({"one-build"}, state=self.root/"state")
+            self.assertFalse(sessions["one-build"]["busy"])
+            self.assertEqual(sessions["one-build"]["state"], "unknown")
         self.assertIn("one-audit", dashboard.allowed_sessions())
-        self.assertNotIn("relay", dashboard.allowed_sessions())
+        self.assertNotIn("anton", dashboard.allowed_sessions())
+
+    def test_slots_count_disabled_survivors_without_private_panes(self):
+        with patch('forge.capacity.read_sessions', return_value=(['one-build','parked-review','private-dev'], 'observed')):
+            slots = dashboard.slot_inventory()
+        self.assertEqual(slots['occupied'], 2)
+        self.assertEqual(slots['roles'], {'build':1, 'review':1, 'audit':0})
+        with patch('forge.capacity.read_sessions', side_effect=ValueError('unknown')):
+            self.assertEqual(dashboard.slot_inventory()['status'], 'unknown')
 
     def test_counts_are_snapshot_only_and_stale_is_unknown(self):
         path = snapshot_path(self.root / "state", "o/one")

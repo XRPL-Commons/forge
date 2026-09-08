@@ -47,9 +47,13 @@ class SchedulingGitHub(GitHub):
             raise GitHubError("Repository disabled or ownership uncertain")
         return names
 
-    def issues(self, config):
+    def items(self, config):
+        """Complete open inventory, issues and pull requests, after the ownership check."""
         self.owned(config)
-        return [i for i in self.pages(f"repos/{config.repo}/issues?state=open&per_page=100") if "pull_request" not in i]
+        return self.pages(f"repos/{config.repo}/issues?state=open&per_page=100")
+
+    def issues(self, config):
+        return [i for i in self.items(config) if "pull_request" not in i]
 
     def dependency_map(self, repo, issues, extra=()):
         by_number = {i["number"]: i for i in issues}
@@ -123,7 +127,7 @@ def priority_inputs(issues, records):
     return output
 
 
-def create_plan(repo, issues, dependencies, state):
+def create_plan(repo, issues, dependencies, state, *, handed_off=()):
     path = repo_state(state, repo)
     path.parent.mkdir(parents=True, exist_ok=True)
     # The planner never edits triage ownership state. It has its own lock/file.
@@ -135,7 +139,7 @@ def create_plan(repo, issues, dependencies, state):
         since = previous.get("first_ready", {})
         since = {str(i["number"]): since.get(str(i["number"]), now) for i in issues if "ready" in labels(i)}
         plan = {"repo": repo, "observed_at": now, "first_ready": since,
-                **order_issues(issues, dependencies, first_ready=since)}
+                **order_issues(issues, dependencies, first_ready=since, handed_off=handed_off)}
         gate_untriaged(repo, issues, plan, state)
         visible = {i["number"] for i in issues if labels(i) & {"ready", "wip"}}
         plan["ordered"] = [n for n in plan["ordered"] if n in visible]
@@ -313,8 +317,16 @@ def main(argv=None):
                     value = triage(config, args.state, github=github, force=args.force, policy_id=TRIAGE_POLICIES["llm"])
                 value["triage_mode"] = args.mode
             else:
-                issues = github.issues(config)
-                value = create_plan(config.repo, issues, github.dependency_map(config.repo, issues), args.state)
+                # The builder's `next` must see the same handoff evidence as the
+                # supervisor snapshot: a claim whose PR left the builder's stage
+                # no longer reserves the builder, so the next issue is admitted.
+                from .github import handed_off_claims
+                from .pipeline import classify
+                items = github.items(config)
+                issues = [i for i in items if "pull_request" not in i]
+                handed_off = handed_off_claims(items, classify(items, config.author)["work"], config.repo)
+                value = create_plan(config.repo, issues, github.dependency_map(config.repo, issues), args.state,
+                                    handed_off=handed_off)
             if args.action == "next":
                 if value["eligible"]:
                     number = value["eligible"][0]
