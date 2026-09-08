@@ -26,6 +26,8 @@ Use Linux, Python 3.10 or newer, Git, and the GitHub CLI (`gh`). Authenticate `g
 with access to the repositories you want to observe.
 
 ```sh
+git clone https://github.com/XRPL-Commons/forge.git
+cd forge
 mkdir -p local/repos.d
 cp examples/repos.d/example.repo.example local/repos.d/project.repo
 # Edit project.repo: repository, ownership label, bot identity, and clone paths.
@@ -66,12 +68,18 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s observer/tests -v
 ```
 
-Browser checks use Playwright and an installed Chromium browser:
+Browser checks use the pinned Playwright dependency and Chromium:
 
 ```sh
-FORGE_PLAYWRIGHT_MODULE=/path/to/playwright-core \
-FORGE_BROWSER_PATH=/path/to/chromium node tests/browser_dashboard.cjs
+npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+node node_modules/playwright-core/cli.js install --with-deps chromium
+FORGE_PLAYWRIGHT_MODULE=playwright-core npm run test:browser
 ```
+
+Installing Chromium's system dependencies may require administrator access.
+To use an existing browser instead, set `FORGE_BROWSER_PATH` to its executable.
+GitHub Actions runs both Python suites on pushes and pull requests. The optional
+browser job can be enabled when manually running the CI workflow.
 
 These checks use synthetic local fixtures and do not mutate GitHub or send
 notifications. Optional systemd integration tests are documented separately and

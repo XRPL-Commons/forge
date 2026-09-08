@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 PORT = 8787
-HOME = "/home/luc"
+HOME = str(Path.home())
 WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
 SESS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _cache = {}  # key -> (expires, value)
