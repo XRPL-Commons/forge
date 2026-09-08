@@ -1997,8 +1997,6 @@
       function renderNow() {
         const flow = fleet.issue_flow || {},
           all = pipelineIssues();
-        const live = all.filter((i) => roles.includes(i.state));
-        const ready = all.filter((i) => i.state === "ready").length;
         const focus = document.activeElement?.dataset.issue,
           focusRepo = document.activeElement?.dataset.repo;
         $("now-workers").innerHTML = roles
@@ -2021,14 +2019,16 @@
                 : expandedStations.delete(el.dataset.expandStation),
             ),
           );
-        const gaps =
-          (flow.unlinked_prs || []).length +
-          all.filter((i) => !issueLane(i)).length;
+        const unlinked = (flow.unlinked_prs || []).filter(p => {
+          const r = fleet.repos.find(r => r.repo === p.repo);
+          return ["review", "audit", "sentback", "limbo"].some(role => r?.work?.[role]?.includes(p.number));
+        });
+        const unknownIssues = all.filter(i => !issueLane(i) && !i.reconciliation_pending);
+        const gaps = unlinked.length + unknownIssues.length;
         if (gaps)
           $("now-workers").insertAdjacentHTML(
             "beforeend",
-            `<details class="refresh-note" style="grid-column:1/-1"><summary>Unconfirmed work: ${flow.unlinked_prs?.length || 0} PRs without issue links · ${all.filter((i) => !issueLane(i)).length} issues without a stage</summary><p>These items cannot be placed reliably. Open a PR to confirm its issue link, or inspect an issue's labels.</p>${(flow.unlinked_prs || []).map((p) => `<p><a href="${itemLink(p.repo, p.number, "pr")}" target="_blank" rel="noopener noreferrer">${esc(p.repo.split("/").at(-1))} PR #${Number(p.number)}</a> · ${esc(p.title || "")}</p>`).join("")}${all
-              .filter((i) => !issueLane(i))
+            `<details class="refresh-note" style="grid-column:1/-1"><summary>Unconfirmed work: ${unlinked.length} PRs without issue links · ${unknownIssues.length} issues without a stage</summary><p>These items cannot be placed reliably. Open a PR to confirm its issue link, or inspect an issue's labels.</p>${unlinked.map((p) => `<p><a href="${itemLink(p.repo, p.number, "pr")}" target="_blank" rel="noopener noreferrer">${esc(p.repo.split("/").at(-1))} PR #${Number(p.number)}</a> · ${esc(p.title || "")}</p>`).join("")}${unknownIssues
               .map(
                 (i) =>
                   `<p><a href="${itemLink(i.repo, i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.repo.split("/").at(-1))} #${Number(i.number)}</a> · ${esc((i.blockers || []).join(" · "))}</p>`,
@@ -2467,7 +2467,7 @@
           const moving = current && !["completed","closed"].includes(stage) && issueWorking(current);
           const station = ["build","review","audit"].includes(stage) ? stage : "";
           const attention = current?.actions?.length || current?.on_hold;
-          return `<article class="issue issue-card compact-issue drawer-issue ${moving ? "moving" : "waiting"} ${attention ? "needs-decision" : ""}" data-station="${station}" data-drawer-issue="${Number(i.number)}"><div class="compact-identity"><span>${esc(r.short)} · #${Number(i.number)}</span><span class="compact-meta drawer-stage">${current?.attention_state ? `<span class="attention-state">${esc(current.attention_state)}</span> · ` : ""}${stageLabel(stage)}</span></div><a class="issue-card-title" href="${itemLink(r.repo,i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.title)} ↗</a>${renderRecord(i)}${supporting.length ? `<div class="drawer-support"><p class="drawer-support-label">Supporting pull requests · reviews · security audits</p>${supporting.map(renderRecord).join("")}</div>` : ""}</article>`;
+          return `<article class="issue issue-card compact-issue drawer-issue ${moving ? "moving" : "waiting"} ${attention ? "needs-decision" : ""}" data-station="${station}" data-drawer-issue="${Number(i.number)}"><div class="compact-identity"><span>${esc(r.short)} · #${Number(i.number)}</span><span class="compact-meta drawer-stage">${current?.attention_state ? `<span class="attention-state">${esc(current.attention_state)}</span> · ` : ""}${(current?.reconciliation_pending ? "Verifying status" : stageLabel(stage))}</span></div><a class="issue-card-title" href="${itemLink(r.repo,i.number)}" target="_blank" rel="noopener noreferrer">${esc(i.title)} ↗</a>${renderRecord(i)}${supporting.length ? `<div class="drawer-support"><p class="drawer-support-label">Supporting pull requests · reviews · security audits</p>${supporting.map(renderRecord).join("")}</div>` : ""}</article>`;
         };
         const markup = (d?.errors || []).map(x => `<p class="banner">${esc(typeof x === "string" ? x : x.error || x.message || JSON.stringify(x))}</p>`).join("") + (visible.map(renderGroup).join("") || '<p class="empty">No collected work matches this view.</p>');
         if ($("work-items").dataset.markup !== markup) {

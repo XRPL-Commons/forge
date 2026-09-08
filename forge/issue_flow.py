@@ -109,6 +109,19 @@ def _references(pr, repo):
     return result
 
 
+def _absent_from_fresh_queue(item, row):
+    """Absence is useful only in a complete snapshot newer than local evidence."""
+    keys = ('ready', 'wip', 'review', 'audit', 'sentback', 'limbo', 'held', 'conflicts')
+    work = row.get('work') or {}
+    if (row.get('queue_status') != 'ok' or item.get('state') == 'closed'
+            or any(not isinstance(work.get(key), list) for key in keys)):
+        return False
+    observed = _epoch(row.get('observed_at'))
+    if not observed or observed < _epoch(item.get('observed_at')):
+        return False
+    return not any(item['number'] in work[key] for key in keys)
+
+
 def _pr_stage(pr, row):
     number = pr['number']
     if row.get('queue_status') == 'ok':
@@ -122,6 +135,8 @@ def _pr_stage(pr, row):
                 return stage
     if pr.get('state') == 'closed':
         return 'merged' if pr.get('merged_at') else 'closed'
+    if pr.get('stage') in ('build', 'review', 'audit') and _absent_from_fresh_queue(pr, row):
+        return 'unknown'
     return {'completed': 'merged'}.get(pr.get('stage'), pr.get('stage', 'unknown'))
 
 
@@ -390,17 +405,31 @@ def read_flow(state, repository_rows, health=None, *, now=None):
             state_name = 'build'
             basis.append('fresh issue claim; not proof of active execution')
         pr_stages = [_pr_stage(pr, row) for pr, _ in prs]
+        missing_prs = [pr['number'] for pr, _ in prs
+                       if pr.get('stage') in ('build', 'review', 'audit') and _absent_from_fresh_queue(pr, row)]
+        reconciliation_pending = bool(missing_prs)
+        reconciliation_reason = ('Previously active PR ' + ', '.join('#' + str(n) for n in missing_prs)
+                                 + ' is no longer in the current queue; awaiting local status verification.'
+                                 if missing_prs else None)
         unfinished = [s for s in pr_stages if s in ('build', 'review', 'audit')]
         if unfinished:
             state_name = min(unfinished, key=STEPS.get)
         if len(set(unfinished)) > 1:
             blockers.append('Linked PRs are at different stages; showing earliest unfinished step')
         if 'unknown' in pr_stages:
-            state_name = 'unknown'
-            blockers.append('Linked PR stage is unknown or has conflicting labels')
+            conflicting = any(stage == 'unknown' and pr['number'] not in missing_prs
+                              for (pr, _), stage in zip(prs, pr_stages))
+            if conflicting or not unfinished:
+                state_name = 'unknown'
+            if conflicting:
+                blockers.append('Linked PR stage is unknown or has conflicting labels')
         if prs and not unfinished and all(s in ('merged', 'closed') for s in pr_stages):
             state_name = 'unknown'
             blockers.append('Linked PRs are closed; issue completion is not confirmed')
+        if not prs and state_name in ('ready', 'build') and _absent_from_fresh_queue(data, row):
+            state_name = 'unknown'
+            reconciliation_pending = True
+            reconciliation_reason = 'Previously queued issue is no longer in the current queue; awaiting local status verification.'
         held = 'hold' in labels or number in work.get('held', []) or 'held' in pr_stages
         if held:
             blockers.append('Issue or linked PR has a hold label; remove the hold when safe to resume')
@@ -410,14 +439,14 @@ def read_flow(state, repository_rows, health=None, *, now=None):
                 basis.append(f'PR #{pr["number"]}: fresh snapshot inventory')
             wait = verified_waits.get((repo, pr['number']))
             action = (_receipt_action(repo, wait) if wait
-                      else None if repo in checked_waits else _approval_action(pr, repo))
+                      else None if repo in checked_waits or pr['number'] in missing_prs else _approval_action(pr, repo))
             if action:
                 actions.append(action)
                 blockers.append(f'PR #{pr["number"]} awaits human approval after recorded security audit PASS')
                 held = True
-            if not action and pr.get('state') == 'open' and pr.get('review_decision') == 'REVIEW_REQUIRED':
+            if not action and pr['number'] not in missing_prs and pr.get('state') == 'open' and pr.get('review_decision') == 'REVIEW_REQUIRED':
                 blockers.append(f'PR #{pr["number"]} requires a review')
-            if pr.get('state') == 'open' and (pr.get('human_approval_required') or 'human-approval-required' in _labels(pr)):
+            if pr['number'] not in missing_prs and pr.get('state') == 'open' and (pr.get('human_approval_required') or 'human-approval-required' in _labels(pr)):
                 blockers.append(f'PR #{pr["number"]} requires human approval')
                 held = True
         reasons = schedule.get('blocked', {}).get(str(number), [])
@@ -436,6 +465,8 @@ def read_flow(state, repository_rows, health=None, *, now=None):
             step = STEPS.get(state_name)
             blockers = [] if state_name == 'done' else ['Issue closed without completed state reason']
             actions = []
+            reconciliation_pending = False
+            reconciliation_reason = None
         attention_state = 'CRITICAL' if any(action['kind'] == 'human_approval' for action in actions) else None
         stall = stalled.get(repo)
         if state_name == 'audit' and not attention_state and stall:
@@ -461,7 +492,8 @@ def read_flow(state, repository_rows, health=None, *, now=None):
         issues.append({'repo': repo, 'number': number, 'kind': 'issue',
                        'url': data.get('url'), 'created_at': data.get('created_at'),
                        'closed_at': data.get('closed_at'),
-                       'state': state_name, 'attention_state': attention_state, 'on_hold': bool(held), 'step': step, 'total_steps': 4,
+                       'state': state_name, 'attention_state': attention_state,
+                       'reconciliation_pending': reconciliation_pending, 'reconciliation_reason': reconciliation_reason, 'on_hold': bool(held), 'step': step, 'total_steps': 4,
                        'actions': actions, 'pr_numbers': sorted(pr['number'] for pr, _ in prs), 'blockers': list(dict.fromkeys(blockers)),
                        'updated_at': data.get('updated_at'), 'observed_at': data.get('observed_at'),
                        'snapshot_status': row.get('queue_status', 'unknown'), 'workers': workers,

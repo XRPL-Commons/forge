@@ -86,6 +86,20 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result['item_details']['16']['kind'], 'issue')
         self.assertNotIn('linked_issues', result['item_details']['22'])
 
+    def test_completion_failure_cannot_invalidate_successful_admission_snapshot(self):
+        rows=[item(1,['ready'],pr=False,state='open')]
+        def run(command,**kwargs):
+            value=[[{'name':'auto:owned-by-me'}]] if '/labels?' in command[-1] else [rows]
+            return SimpleNamespace(returncode=0,stdout=json.dumps(value))
+        with tempfile.TemporaryDirectory() as state, \
+             patch('forge.scheduling.SchedulingGitHub.dependency_map',return_value={}), \
+             patch('forge.scheduling.create_plan',return_value={'eligible':[1],'active':[]}), \
+             patch('forge.completions.refresh',side_effect=RuntimeError('unavailable')):
+            result=GitHub(run,state=state).snapshot(Repository('o/r','auto:owned-by-me'))
+        self.assertEqual(result['status'],'ok')
+        self.assertEqual(result['counts']['ready'],1)
+        self.assertEqual(result['completion_refresh']['status'],'unavailable')
+
     def test_config_is_data_and_rejects_shell_statements(self):
         with tempfile.TemporaryDirectory() as directory:
             p = Path(directory) / "a.repo"

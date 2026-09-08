@@ -372,3 +372,60 @@ class IssueFlowTests(unittest.TestCase):
         data['evidence'][0]['body'] = '## Audit: PASS — Criticality: CRITICAL — awaiting human approval'
         self.pr(10, **data)
         self.assertEqual(read_flow(self.state, self.rows)['issues'][0]['attention_state'], 'CRITICAL')
+
+    def complete_queue(self, **work):
+        from datetime import datetime, timezone
+        self.rows[0].update(observed_at=datetime(2026, 1, 3, tzinfo=timezone.utc).timestamp(),
+            work={**{key: [] for key in ('ready', 'wip', 'review', 'audit', 'sentback', 'limbo', 'held', 'conflicts')}, **work})
+
+    def test_disappeared_audit_is_reconciling_not_waiting_or_completed(self):
+        self.save(20, labels=['wip'])
+        self.pr(34, issue=20, stage='audit', review_decision='REVIEW_REQUIRED')
+        self.complete_queue()
+        flow = read_flow(self.state, self.rows)
+        item = flow['issues'][0]
+        self.assertEqual((item['number'], item['pr_numbers'], item['title']), (20, [34], 'Title 20'))
+        self.assertEqual(item['state'], 'unknown')
+        self.assertTrue(item['reconciliation_pending'])
+        self.assertIn('awaiting local status verification', item['reconciliation_reason'])
+        self.assertEqual((flow['counts']['in_flight'], flow['counts']['done'], flow['counts']['blocked']), (0, 0, 0))
+        self.assertEqual(item['actions'], [])
+        self.assertIsNone(item['attention_state'])
+
+    def test_disappeared_claim_is_not_kept_as_building(self):
+        self.save(20, labels=['wip'])
+        self.complete_queue()
+        item = read_flow(self.state, self.rows)['issues'][0]
+        self.assertEqual(item['state'], 'unknown')
+        self.assertTrue(item['reconciliation_pending'])
+
+    def test_incomplete_stale_or_older_snapshot_cannot_prove_queue_absence(self):
+        self.save(20, labels=['wip'])
+        self.pr(34, issue=20, stage='audit')
+        self.complete_queue()
+        self.rows[0]['work'].pop('conflicts')
+        self.assertEqual(read_flow(self.state, self.rows)['issues'][0]['state'], 'audit')
+        self.complete_queue()
+        self.rows[0]['queue_status'] = 'stale'
+        self.assertEqual(read_flow(self.state, self.rows)['issues'][0]['state'], 'audit')
+        self.rows[0].update(queue_status='ok', observed_at=1)
+        self.assertEqual(read_flow(self.state, self.rows)['issues'][0]['state'], 'audit')
+
+    def test_observed_issue_closure_resolves_reconciliation_as_done(self):
+        self.save(20, state='closed', state_reason='completed', labels=['wip'])
+        self.pr(34, issue=20, stage='audit')
+        self.complete_queue()
+        flow = read_flow(self.state, self.rows)
+        self.assertEqual(flow['issues'], [])
+        self.assertEqual(flow['counts']['done'], 1)
+        self.assertFalse(flow['completed'][0]['reconciliation_pending'])
+
+    def test_disappeared_pr_does_not_hide_another_current_pr_for_same_issue(self):
+        self.save(20, labels=['wip'])
+        self.pr(34, issue=20, stage='audit')
+        self.pr(35, issue=20, stage='review')
+        self.complete_queue(review=[35])
+        item = read_flow(self.state, self.rows)['issues'][0]
+        self.assertEqual(item['state'], 'review')
+        self.assertEqual(item['pr_numbers'], [34, 35])
+        self.assertTrue(item['reconciliation_pending'])

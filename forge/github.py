@@ -63,4 +63,15 @@ class GitHub:
                 'labels': [label['name'] if isinstance(label, dict) else label for label in item['labels']],
                 'draft': item.get('draft', False),
             } for item in items if item['number'] in referenced}
+        if self.state:
+            # Best-effort lifecycle enrichment cannot turn a complete open
+            # inventory into unknown admission or block on history collection.
+            try:
+                from .control import snapshot_path
+                from .completions import refresh
+                path = snapshot_path(self.state, repository.repo)
+                previous = json.loads(path.read_text()) if path.exists() else {}
+                result['completion_refresh'] = refresh(self.state, repository.repo, items, previous, run=self.run)
+            except Exception:
+                result['completion_refresh'] = {'status': 'unavailable'}
         return {"repo": repository.repo, "enabled": True, "status": "ok", "observed_at": time.time(), **result}
