@@ -10,7 +10,7 @@ class AssignmentCleanupTests(unittest.TestCase):
     def setUp(self):
         deny_host_tmux(self)
 
-    def run_role(self, role='review', *, tracked=True, busy=False, released=True, terminal=False):
+    def run_role(self, role='review', *, tracked=True, busy=False, released=True, terminal=False, handover=False):
         source=(Path(__file__).resolve().parents[1]/'legacy/supervisor.sh').read_text()
         function=source[source.index('role_reconcile(){'):source.index('\nglog "=== supervisor started')]
         retirement=source[source.index('retire_finished_worker(){'):source.index('launch(){')]
@@ -20,7 +20,7 @@ DIR=/unused
 STATE=/unused
 workflow_enabled(){ return 0; }
 sess_up(){ [ "$occupied" = 1 ]; }
-maybe_handover(){ return 1; }
+maybe_handover(){ if [ "$HANDOVER" = 1 ]; then occupied=0; echo handover; return 0; fi; return 1; }
 actual_provider(){ echo codex; }
 sess_client(){ return 0; }
 workflow_call(){ [ "$TRACKED" = 1 ]; }
@@ -34,7 +34,7 @@ watch(){ echo watch; }
 launch(){ echo launch; }
 declare -A human_waiting
 '''+retirement+function+'\nrole_reconcile "fixture-$ROLE" /unused role.md task 2 fixture Org/Fixture\n'
-        env={**os.environ,'ROLE':role,'TRACKED':str(int(tracked)),'BUSY':str(int(busy)),'RELEASED':str(int(released)),'TERMINAL':str(int(terminal))}
+        env={**os.environ,'ROLE':role,'TRACKED':str(int(tracked)),'BUSY':str(int(busy)),'RELEASED':str(int(released)),'TERMINAL':str(int(terminal)),'HANDOVER':str(int(handover))}
         result=subprocess.run(['/bin/bash','-eu','-c',script],env=env,capture_output=True,text=True,timeout=5)
         self.assertEqual(result.returncode,0,result.stderr)
         return result.stdout.splitlines()
@@ -54,6 +54,9 @@ declare -A human_waiting
 
     def test_terminal_failure_releases_slot_without_reusing_its_workspace(self):
         self.assertEqual(self.run_role(released=False,terminal=True),['release forge.handoff','release forge.execution_retirement'])
+
+    def test_provider_fallback_preserves_work_without_quarantining_it(self):
+        self.assertEqual(self.run_role(released=False,terminal=True,handover=True),['handover','launch'])
 
     def test_codex_shell_state_comes_from_receipt_not_claude_classifier(self):
         source=(Path(__file__).resolve().parents[1]/'legacy/supervisor.sh').read_text()

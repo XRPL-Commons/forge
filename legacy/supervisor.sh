@@ -415,12 +415,14 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
     python3 -m forge.slot_actions paused --state "$STATE" --session "$sess"; pause_status=$?
     [ "$pause_status" -eq 1 ] || return
   fi
-  retire_finished_worker "$sess" "$repo"
+  # Preserve the existing provider fallback before parking unresolved execution.
   workspace_available "$sess" || return 0
-  [ "$pending" = "?" ] && return
   if sess_up "$sess" && maybe_handover "$sess"; then
     glog "[$short] verified provider handover preserved existing work; returning to admission"
   fi
+  retire_finished_worker "$sess" "$repo"
+  workspace_available "$sess" || return 0
+  [ "$pending" = "?" ] && return
   if [[ "$sess" == *-build ]] && [ "$pending" -eq 0 ] && ! sess_up "$sess"; then
     local recovery_demand
     recovery_demand=$(python3 -m forge.handover_demand --config "$DIR/repos.d" --state "$STATE" --session "$sess") || recovery_demand=0
