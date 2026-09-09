@@ -45,7 +45,7 @@ def _policy_digest(role):
 
 
 
-def _merged_checkpoint(repo,head,base,read):
+def _published_checkpoint(repo,head,base,read):
     associated=read(['gh','api',f'repos/{repo.repo}/commits/{head}/pulls?per_page=10'])
     if not isinstance(associated,list) or len(associated)>=10:
         raise Unverified('reconciliation_checkout_publication_unbounded')
@@ -55,16 +55,28 @@ def _merged_checkpoint(repo,head,base,read):
         if (type(number) is not int or number<=0 or item.get('html_url','').lower()!=f'https://github.com/{repo.repo}/pull/{number}'.lower()
                 or item.get('base',{}).get('repo',{}).get('full_name','').lower()!=repo.repo.lower()):
             raise Unverified('reconciliation_checkout_publication_identity')
-        if item.get('head',{}).get('sha')==head and item.get('merged_at'):
+        if item.get('state')=='open' or item.get('head',{}).get('sha')==head and item.get('merged_at'):
             candidates.append(number)
     if len(candidates)!=1:raise Unverified('reconciliation_checkout_publication_not_unique')
     number=candidates[0]
-    pr=read(['gh','pr','view',str(number),'--repo',repo.repo,'--json','number,url,state,headRefOid,mergeCommit,author'])
+    pr=read(['gh','pr','view',str(number),'--repo',repo.repo,'--json','number,url,state,headRefOid,mergeCommit,author,labels'])
     merge=(pr.get('mergeCommit') or {}).get('oid')
     if (pr.get('number')!=number or pr.get('url','').lower()!=f'https://github.com/{repo.repo}/pull/{number}'.lower()
-            or pr.get('state')!='MERGED' or pr.get('headRefOid')!=head
+            or pr.get('state') not in {'OPEN','MERGED'}
             or pr.get('author',{}).get('login','').lower()!=repo.author.lower()
-            or not isinstance(merge,str) or not re.fullmatch('[0-9a-f]{40,64}',merge)):
+            or not isinstance(pr.get('labels'),list) or any(label.get('name')=='hold' for label in pr['labels'])):
+        raise Unverified('reconciliation_checkout_publication_identity')
+    if pr['state']=='OPEN':
+        published_head=pr.get('headRefOid')
+        if not isinstance(published_head,str) or not re.fullmatch('[0-9a-f]{40,64}',published_head):
+            raise Unverified('reconciliation_checkout_publication_identity')
+        if published_head!=head:
+            comparison=read(['gh','api',f'repos/{repo.repo}/compare/{head}...{published_head}',
+                '--jq','{status,base_commit:{sha:.base_commit.sha},behind_by}'])
+            if (comparison.get('status') not in {'ahead','identical'} or comparison.get('base_commit',{}).get('sha')!=head
+                    or comparison.get('behind_by')!=0):raise Unverified('reconciliation_checkout_not_published_ancestor')
+        return {'basis':'canonical_open_pr_publication','pr':number,'head':head,'published_head':published_head}
+    if pr.get('headRefOid')!=head or not isinstance(merge,str) or not re.fullmatch('[0-9a-f]{40,64}',merge):
         raise Unverified('reconciliation_checkout_publication_identity')
     commits=[read(['gh','api',f'repos/{repo.repo}/git/commits/{sha}']) for sha in (head,merge)]
     trees=[(commit.get('tree') or {}).get('sha') for commit in commits]
@@ -76,7 +88,7 @@ def _merged_checkpoint(repo,head,base,read):
             '--jq','{status,base_commit:{sha:.base_commit.sha},behind_by}'])
         if (comparison.get('status') not in {'ahead','identical'} or comparison.get('base_commit',{}).get('sha')!=merge
                 or comparison.get('behind_by')!=0):raise Unverified('reconciliation_checkout_merge_not_reachable')
-    return {'pr':number,'head':head,'merge':merge,'tree':trees[0],'verified_base':base}
+    return {'basis':'exact_tree_of_verified_merged_pr','pr':number,'head':head,'merge':merge,'tree':trees[0],'verified_base':base}
 
 
 def _absent(config,clone,run):
@@ -172,14 +184,10 @@ def _proof(config,state,key,run,*,retry_reason=None):
             exact=all(re.search(r'(?<![0-9a-f])'+re.escape(a['pr'][k])+r'(?![0-9a-f])',review.get('body','')) for k in ('head','base'))
             if not exact or outcome=='fail' and not _exact_audit_failure(review,outcome,a):
                 raise Unverified('reconciliation_audit_revision_unverified')
-            if outcome=='pass' and pr['state']!='MERGED':raise Unverified('reconciliation_audit_not_finalized')
     current_head=pr.get('headRefOid');current_base=pr.get('baseRefOid')
     if any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{40,64}',v) for v in (current_head,current_base)):
         raise Unverified('reconciliation_pr_revision_invalid')
-    if role=='audit' and pr['state']=='OPEN' and 'critical' in labels:
-        current_results=[_role_review_outcome(r,current_head) for r in reviews
-                         if r.get('commit',{}).get('oid')==current_head and r.get('author',{}).get('login','').lower()==repo.author.lower()]
-        if ('audit','pass') in current_results:raise Unverified('human_approval_still_required')
+    human_approval_pending=role=='audit' and pr['state']=='OPEN' and 'critical' in labels and outcome=='pass'
     if retry_reason is None and pr['state']=='OPEN' and current_head==a['pr']['head']:
         expected='ready-for-audit' if outcome=='pass' else 'changes-requested'
         if labels & {'ready-for-review','ready-for-audit','changes-requested'}!={expected}:raise Unverified('reconciliation_role_outcome_not_applied')
@@ -190,8 +198,8 @@ def _proof(config,state,key,run,*,retry_reason=None):
             '--jq','{status,base_commit:{sha:.base_commit.sha},behind_by}'])
         if (history.get('status') not in {'ahead','identical'} or history.get('base_commit',{}).get('sha')!=head
                 or history.get('behind_by')!=0):
-            checkout_publication=_merged_checkpoint(repo,head,current_base,read)
-            checkout_basis='exact_tree_of_verified_merged_pr'
+            checkout_publication=_published_checkpoint(repo,head,current_base,read)
+            checkout_basis=checkout_publication['basis']
         else:checkout_basis='ancestor_of_canonical_candidate_base'
     commit=read(['gh','api',f'repos/{repo.repo}/git/commits/{head}'])
     if commit.get('sha')!=head:raise Unverified('reconciliation_checkout_unpublished')
@@ -214,7 +222,7 @@ def _proof(config,state,key,run,*,retry_reason=None):
         'assignment_id':a['id'],'session':e['session'],'repo':repo.repo,'role':role,'pr':number,
         'assigned_head':a['pr']['head'],'assigned_base':a['pr']['base'],'current_head':current_head,'current_base':current_base,
         'current_labels':sorted(labels),'review_id':review['id'],'review_sha256':hashlib.sha256(review.get('body','').encode()).hexdigest(),
-        'outcome':outcome,'checkout_basis':checkout_basis,'checkout_publication':checkout_publication,'published_at':submitted,'head':head,'branch':branch,'checkpoint_sha256':record['checkpoint_sha256']}
+        'outcome':outcome,'human_approval_pending':human_approval_pending,'checkout_basis':checkout_basis,'checkout_publication':checkout_publication,'published_at':submitted,'head':head,'branch':branch,'checkpoint_sha256':record['checkpoint_sha256']}
 
 
 def reconcile(config,state,session,*,lock_fd=8,run=subprocess.run,retry_checkpoint=None,retry_reason=None):

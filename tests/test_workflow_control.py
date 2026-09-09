@@ -312,3 +312,70 @@ class WorkflowControlTests(unittest.TestCase):
         self.pr['closingIssuesReferences'][0]['repository']={'nameWithOwner':'Other/Repository'}
         with self.assertRaisesRegex(engine.Refused,'identity_conflict'):
             control.canonical_pr(self.state,self.repo,9,'review',self.github)
+
+
+class WorkflowCandidateDispatchTests(unittest.TestCase):
+    setUp=WorkflowControlTests.setUp
+    save=WorkflowControlTests.save
+    review_snapshot=WorkflowControlTests.review_snapshot
+    def audit_candidates(self):
+        self.review_snapshot()
+        self.snap['work']['review']=[];self.snap['work']['audit']=[9,10]
+        self.snap['work']['wip']=[1,2]
+        self.snap['schedule'].update(active=[1,2],handed_off=[1,2])
+        self.snap['item_details']['2']={**self.snap['item_details']['1'],'number':2,
+                                      'url':f'https://github.com/{self.repo}/issues/2'}
+        self.snap['item_details']['9']['labels']=['ready-for-audit']
+        self.snap['item_details']['10']={**self.snap['item_details']['9'],'number':10,
+                                       'body':'Closes #2','url':f'https://github.com/{self.repo}/pull/10'}
+        self.pr['labels']=[{'name':'ready-for-audit'}]
+        self.save()
+
+    def candidate_github(self,args,**kwargs):
+        self.calls.append(args)
+        number=int(args[3])
+        if args[:3]==['gh','pr','view']:
+            issue=number-8
+            value={**self.pr,'number':number,'url':f'https://github.com/{self.repo}/pull/{number}',
+                   'closingIssuesReferences':[{'number':issue,'url':f'https://github.com/{self.repo}/issues/{issue}'}]}
+        elif args[:3]==['gh','issue','view']:
+            value={**self.issue,'number':number,'url':f'https://github.com/{self.repo}/issues/{number}'}
+        else:self.fail('unexpected command '+repr(args))
+        return SimpleNamespace(returncode=0,stdout=json.dumps(value),stderr='')
+
+    def blocked_facts(self,blocked):
+        original=control.facts
+        def facts(state,snap,extra=None):
+            values=original(state,snap,extra)
+            for item in values:
+                if item['number'] in blocked:
+                    item.update(disposition='critical',reason='human_approval_required')
+            return values
+        return facts
+
+    def test_first_human_wait_does_not_starve_second_eligible_audit(self):
+        self.audit_candidates()
+        with patch.object(control,'facts',side_effect=self.blocked_facts({1})):
+            assignment=control.reserve(self.config,self.state,'Fixture-audit',run=self.candidate_github)
+        self.assertEqual(assignment['pr']['number'],10)
+        self.assertEqual(assignment['issue_numbers'],[2])
+        view=engine.read_state(self.state)
+        held=next(i for i in view['issues'] if i['number']==1)
+        self.assertEqual((held['stage'],held['disposition'],held['reason']),('audit','critical','human_approval_required'))
+        self.assertEqual(len(view['assignments']),1)
+        self.assertEqual([c[3] for c in self.calls if c[1:3]==['pr','view']],['9','10'])
+
+    def test_all_human_wait_candidates_preserve_holds_and_create_no_reservation(self):
+        self.audit_candidates()
+        with patch.object(control,'facts',side_effect=self.blocked_facts({1,2})):
+            with self.assertRaisesRegex(engine.Refused,'issue_not_dispatchable'):
+                control.reserve(self.config,self.state,'Fixture-audit',run=self.candidate_github)
+        self.assertEqual(engine.read_state(self.state)['assignments'],[])
+        self.assertTrue(all(i['disposition']=='critical' for i in engine.read_state(self.state)['issues']))
+
+    def test_ledger_or_snapshot_failure_is_not_treated_as_candidate_skip(self):
+        self.audit_candidates()
+        with patch.object(control,'reconcile_repository',side_effect=engine.Refused('newer_workflow_evidence_exists')):
+            with self.assertRaisesRegex(engine.Refused,'newer_workflow_evidence_exists'):
+                control.reserve(self.config,self.state,'Fixture-audit',run=self.candidate_github)
+        self.assertEqual([c[3] for c in self.calls if c[1:3]==['pr','view']],['9'])

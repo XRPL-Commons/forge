@@ -33,7 +33,7 @@ class ExecutionReconciliationTests(unittest.TestCase):
                 'submittedAt':datetime.fromtimestamp(time.time()-150,timezone.utc).isoformat(),
                 'commit':{'oid':'a'*40},'body':'Reviewer result: changes requested for this revision'}]}
         self.action_calls=[]
-        self.merged_pr=None;self.associated=[];self.trees={}
+        self.merged_pr=None;self.associated=[];self.trees={};self.compare_overrides={}
         self.sessions=[];self.owners=[{'name':'auto:owned-by-test'}];self.reads=0;self.mutate=None;self.compare_status='ahead'
 
     def runner(self,args,**kwargs):
@@ -48,7 +48,7 @@ class ExecutionReconciliationTests(unittest.TestCase):
             elif '/git/commits/' in args[2]:
                 sha=args[2].rsplit('/',1)[1];data={'sha':sha,'tree':{'sha':self.trees.get(sha,'f'*40)}}
             elif '/pulls?' in args[2]:data=self.associated
-            elif '/compare/' in args[2]:data={'status':self.compare_status,'base_commit':{'sha':args[2].rsplit('/',1)[1].split('...')[0]},'behind_by':0}
+            elif '/compare/' in args[2]:data={'status':self.compare_overrides.get(args[2],self.compare_status),'base_commit':{'sha':args[2].rsplit('/',1)[1].split('...')[0]},'behind_by':0}
             else:self.fail(args)
             return SimpleNamespace(returncode=0,stdout=json.dumps(data),stderr='')
         return self.fixture.runner(args,**kwargs)
@@ -135,9 +135,9 @@ class ExecutionReconciliationTests(unittest.TestCase):
         self.associated=[{'number':8,'html_url':'https://github.com/Owner/App/pull/8',
             'base':{'repo':{'full_name':'Owner/App'}},'head':{'sha':'e'*40},'merged_at':'2026-01-01T00:00:00Z'}]
         self.merged_pr={'number':8,'url':'https://github.com/Owner/App/pull/8','state':'MERGED',
-            'headRefOid':'e'*40,'mergeCommit':{'oid':'b'*40},'author':{'login':'forge-bot'}}
+            'headRefOid':'e'*40,'mergeCommit':{'oid':'b'*40},'author':{'login':'forge-bot'},'labels':[]}
         original=copy.deepcopy(self.merged_pr)
-        for change in [lambda p:p.update(headRefOid='d'*40),lambda p:p.update(state='OPEN'),
+        for change in [lambda p:p.update(headRefOid='d'*40),lambda p:p.update(state='CLOSED'),
                        lambda p:p.update(url='https://github.com/Other/App/pull/8'),
                        lambda p:p.update(author={'login':'other'})]:
             self.merged_pr=copy.deepcopy(original);change(self.merged_pr)
@@ -187,7 +187,7 @@ class ExecutionReconciliationTests(unittest.TestCase):
             (runtime/'reviewer.md').unlink();(runtime/'reviewer.md').symlink_to(source/'reviewer.md')
             with self.assertRaisesRegex(ValueError,'operator_retry_policy_unverified'):reconcile._policy_digest('review')
 
-    def test_audit_failure_exact_revision_reconciles_but_critical_pass_does_not(self):
+    def test_audit_failure_and_critical_pass_release_workspace_preserving_human_hold(self):
         self._setup('audit')
         self.pr['reviews'][0]['body']='Audit FAIL '+self.pr_ref['head']+' '+self.pr_ref['base']
         self.pr['labels'].append({'name':'critical'})
@@ -195,8 +195,35 @@ class ExecutionReconciliationTests(unittest.TestCase):
         self._setup('audit')
         self.pr['reviews'][0]['body']='Audit PASS '+self.pr_ref['head']+' '+self.pr_ref['base']+' awaiting human approval'
         self.pr['labels']=[{'name':'ready-for-audit'},{'name':'critical'}]
-        self.assertFalse(self.run_reconcile()['reconciled'])
+        before=copy.deepcopy(self.pr);result=self.run_reconcile();self.assertTrue(result['reconciled'],result)
+        self.assertEqual(self.pr,before)
+        ack=json.loads((self.fixture.state/'execution-retirements'/'reconciled'/(self.key+'.json')).read_text())
+        self.assertTrue(ack['proof']['human_approval_pending'])
+        self.assertEqual(workflow.read_state(self.fixture.state)['issues'][0]['stage'],'audit')
         self.assertFalse(self.run_reconcile(retry_checkpoint=self.key,retry_reason='retry')['reconciled'])
+
+    def test_open_published_checkpoint_exact_or_ancestor_only(self):
+        self._setup(checkout_head='e'*40);self.compare_status='diverged'
+        self.associated=[{'number':8,'html_url':'https://github.com/Owner/App/pull/8','state':'open',
+            'base':{'repo':{'full_name':'Owner/App'}},'head':{'sha':'d'*40},'merged_at':None}]
+        self.merged_pr={'number':8,'url':'https://github.com/Owner/App/pull/8','state':'OPEN',
+            'headRefOid':'d'*40,'mergeCommit':None,'author':{'login':'forge-bot'},'labels':[]}
+        self.assertFalse(self.run_reconcile()['reconciled'])
+        self.compare_overrides['repos/Owner/App/compare/'+('e'*40)+'...'+('d'*40)]='ahead'
+        original=copy.deepcopy(self.merged_pr)
+        for change in [lambda p:p.update(url='https://github.com/Other/App/pull/8'),
+                       lambda p:p.update(author={'login':'other'}),lambda p:p.update(labels=[{'name':'hold'}])]:
+            self.merged_pr=copy.deepcopy(original);change(self.merged_pr)
+            self.assertFalse(self.run_reconcile()['reconciled'])
+        self.merged_pr=original;self.fixture.status=' M file';self.assertFalse(self.run_reconcile()['reconciled'])
+        self.fixture.status='';self.sessions=['App-build'];self.assertFalse(self.run_reconcile()['reconciled'])
+        self.sessions=[]
+        result=self.run_reconcile();self.assertTrue(result['reconciled'],result)
+        self._setup(checkout_head='e'*40);self.compare_status='diverged'
+        self.associated=[{'number':8,'html_url':'https://github.com/Owner/App/pull/8','state':'open',
+            'base':{'repo':{'full_name':'Owner/App'}},'head':{'sha':'e'*40},'merged_at':None}]
+        self.merged_pr=dict(original,headRefOid='e'*40)
+        self.assertTrue(self.run_reconcile()['reconciled'])
 
     def test_no_lock_no_network_or_ack(self):
         import fcntl

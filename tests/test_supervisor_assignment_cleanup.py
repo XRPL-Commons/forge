@@ -27,7 +27,7 @@ workflow_call(){ [ "$TRACKED" = 1 ]; }
 provider_state(){ if [ "$BUSY" = 1 ]; then echo busy; else echo idle; fi; }
 release_worker(){ echo "release $1"; if [ "$1" = forge.execution_retirement ] && [ "$TERMINAL" = 1 ]; then occupied=0; touch "$STATE/quarantine"; return 0; fi; if [ "$RELEASED" = 1 ]; then occupied=0; return 0; fi; return 1; }
 workspace_available(){ [ ! -f "$STATE/quarantine" ]; }
-glog(){ :; }
+glog(){ echo "$*" >> "$STATE/log"; }
 health(){ return 0; }
 python3(){
   if [ "${2:-}" = forge.execution_reconciliation ]; then
@@ -47,6 +47,7 @@ declare -A human_waiting
             actions=Path(state)/'actions'
             self.reconcile_calls=actions.read_text().splitlines() if actions.exists() else []
             self.quarantine_retained=(Path(state)/'quarantine').exists()
+            self.logged=(Path(state)/'log').read_text() if (Path(state)/'log').exists() else ''
             return result.stdout.splitlines()
 
     def test_completed_review_releases_before_next_queued_assignment(self):
@@ -80,6 +81,7 @@ declare -A human_waiting
         self.assertEqual(self.run_role(initial_quarantine=True),[])
         self.assertEqual(self.reconcile_calls,['reconcile'])
         self.assertTrue(self.quarantine_retained)
+        self.assertIn('workspace reconciliation deferred',self.logged)
 
     def test_builder_never_automatically_reconciles(self):
         self.assertEqual(self.run_role('build',initial_quarantine=True,reconciled=True),[])

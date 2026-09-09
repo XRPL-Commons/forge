@@ -221,8 +221,19 @@ def reserve(config,state,session,*,run=subprocess.run):
     if role=='build':candidates=list(dict.fromkeys(candidates+snap['work'].get('limbo',[])))
     refused=[]
     for number in candidates[:20]:
-        try:target=canonical_pr(state,repo.repo,number,role,run,author=repo.author);numbers=target['issue_numbers'];break
-        except workflow.Refused as exc:refused.append(str(exc))
+        try:candidate=canonical_pr(state,repo.repo,number,role,run,author=repo.author)
+        except workflow.Refused as exc:
+            refused.append(str(exc));continue
+        # Canonical PR eligibility does not imply the linked issues can run:
+        # a completed critical audit can remain ready-for-audit for human review.
+        # Reconcile before choosing, and let independent candidates proceed.
+        # Snapshot/ledger errors stay fatal; they must never become a skip.
+        reconcile_repository(state,repo.repo,extra=candidate)
+        issues={i['number']:i for i in workflow.read_state(state,repo.repo)['issues']}
+        if any(n not in issues or issues[n]['stage'] not in ({'queued','build'} if role=='build' else {role})
+               or issues[n]['disposition']!='pending' for n in candidate['issue_numbers']):
+            refused.append('issue_not_dispatchable');continue
+        target=candidate;numbers=target['issue_numbers'];break
     if target is None:
         eligible=snap['schedule'].get('eligible',[]) if role=='build' else []
         if not eligible:raise workflow.Refused(refused[0] if refused else 'no_eligible_assignment')
