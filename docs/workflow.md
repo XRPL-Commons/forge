@@ -129,3 +129,32 @@ inspect its assignment/generation and the recorded refusal before repairing it.
 Never delete the database or initialization marker, edit rows, or expire leases
 by age to free slots. Restore evidence and use verified transitions. Unknown
 ownership remains blocked until it can be established safely.
+
+## Terminal executions and unresolved work
+
+Execution completion and issue completion are separate facts. A finished provider
+process does not need a slot merely because its PR handoff cannot be verified.
+The supervisor first checks the role-specific published result. Reviewer records
+are selected independently of subsequent audit records; an audit rejection does
+not invalidate an earlier completed review.
+
+If the task outcome remains unresolved, a terminal Codex execution can retire
+through a different proof: its exact generation and execution receipt must match,
+it must have ended at least 60 seconds ago, and fresh process-session inventories
+must show no live children. The shell must be empty. Two matching checks run under
+the supervisor lock before the exact session is removed.
+
+Before removal, Forge records the assignment (or explicitly unknown legacy
+identity), branch, commit, file-state hashes, last worker message, and cleanup
+reason in a private immutable checkpoint. Dirty and untracked files are retained
+in place. A durable quarantine blocks reuse of that resolved checkout, including
+other roles configured to share it. Only the execution retires; issue state,
+GitHub labels, reviews, and approvals are unchanged. Other checkouts can use the
+freed capacity. A prepared but unconfirmed release remains protected.
+
+This is a safety boundary, not automatic retry authorization. Quarantined work
+requires explicit reconciliation before reuse; the dashboard shows its concrete
+worker result separately from occupied slots. It must never turn back into an
+unbounded loop merely because another supervisor pass begins. The current
+fallback is specific to terminal Codex executions; other providers retain their
+existing verified handoff behavior.

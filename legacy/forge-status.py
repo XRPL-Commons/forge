@@ -4,7 +4,7 @@
 Writes require a same-origin JSON request and a per-process capability token.
 The HTTP server queues intent; only the locked supervisor controls workers.
 """
-import json, re, subprocess, time, html, os, sqlite3, secrets, hmac
+import json, re, subprocess, time, html, os, sqlite3, secrets, hmac, hashlib
 from pathlib import Path
 from forge.config import load_repositories
 from forge.activity import observe_tmux
@@ -313,6 +313,28 @@ def worker_fault_context(state, blockers, flow, activity):
             db.close()
 
 
+def execution_quarantine_view(state, blockers):
+    try:
+        from forge.execution_retirement import read_quarantines
+    except ImportError:
+        return {'status':'ok','items':[]}
+    try:
+        items=[]
+        for row in read_quarantines(state):
+            item={k:row.get(k) for k in ('id','session','repo','role','generation','assignment_id','issue_numbers','pr',
+                'phase','released','reason','head','branch','execution_state','final_message','last_lifecycle_failure','identity_basis')}
+            item['final_message']=str(item.get('final_message') or '')[-6000:]
+            context=blockers.get(row['session'],{}).get('context') or {}
+            number=context.get('issue') or context.get('issue_number')
+            if (not item.get('assignment_id') and context.get('repo','').lower()==row['repo'].lower()
+                    and type(number) is int and number>0):
+                item['previous_issue_context']={'number':number,'basis':'Previously claimed; not a tracked assignment'}
+            items.append(item)
+        return {'status':'ok','items':items}
+    except (OSError,ValueError,TypeError,KeyError):
+        return {'status':'unavailable','items':[]}
+
+
 def status():
     sess = tmux_sessions()
     out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "repos": [], "mode": "legacy-contained"}
@@ -382,7 +404,9 @@ def status():
     worker_fault_context(Path(WD)/'state',out['session_blockers'],out['issue_flow'],out['activity'])
     workflow = workflow_view(include_history=False)
     out['workflow'] = dashboard_workflow(workflow,out['repos'],out['issue_flow'])
+    out['execution_quarantines'] = execution_quarantine_view(Path(WD)/'state',out['session_blockers'])
     out['slots'] = slot_inventory()
+    out['dashboard_version'] = PAGE_VERSION
     out['controls_token'] = CONTROLS_TOKEN
     try:
         from forge.slot_actions import read_actions
@@ -418,7 +442,11 @@ def repository_detail(repo):
     return result
 
 
-PAGE = Path(__file__).with_name("dashboard.html").read_text()
+# Stamp exactly the immutable HTML/JS bundle this process serves. Never hash a
+# newer file from status() while still serving an older in-memory PAGE.
+PAGE_TEMPLATE = Path(__file__).with_name("dashboard.html").read_text()
+PAGE_VERSION = hashlib.sha256(PAGE_TEMPLATE.encode()).hexdigest()
+PAGE = PAGE_TEMPLATE.replace("__FORGE_DASHBOARD_VERSION__", PAGE_VERSION)
 
 
 class H(BaseHTTPRequestHandler):

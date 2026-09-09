@@ -220,17 +220,20 @@ const fs = require("fs"),
   fleet.slot_actions = [];
   const slotRequests = [];
   let slotReply = {status:200, body:{ok:true,reason:'queued',id:'slot-request-1'}};
+  let servedDashboardVersion="a".repeat(64), documentRequests=0;
   let workflowPages = [];
   await page.route("http://forge.test/**", async (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/")
+    if (url.pathname === "/") {
+      documentRequests++;
       return route.fulfill({
         contentType: "text/html",
         body: fs.readFileSync(
           require("path").join(__dirname, "../legacy/dashboard.html"),
           "utf8",
-        ),
+        ).replace("__FORGE_DASHBOARD_VERSION__",servedDashboardVersion),
       });
+    }
     if (url.pathname === "/api/slots/action") {
       slotRequests.push({method:route.request().method(),body:route.request().postDataJSON(),token:route.request().headers()['x-forge-action']});
       return route.fulfill({status:slotReply.status,contentType:'application/json',body:JSON.stringify(slotReply.body)});
@@ -262,6 +265,11 @@ const fs = require("fs"),
   assert(await page.locator('[data-slot-session="academy-review"]').isVisible());
   assert.match(await page.locator('[data-slot-session="academy-review"]').innerText(), /#5/);
   assert.equal(await page.locator('[data-slot-session="academy-review"] .moving').count(),0);
+  await page.evaluate(()=>{fleet.workflow.slots.find(s=>s.session==='academy-review').state='retiring';fleet.workflow.slots.find(s=>s.session==='academy-review').reason='codex_execution_completed';renderNow();});
+  assert.match(await page.locator('[data-slot-session="academy-review"]').innerText(), /Retiring.*awaiting release/);
+  assert.match(await page.locator('[data-slot-session="academy-review"]').innerText(), /codex execution completed/i);
+  await page.evaluate(()=>{fleet.workflow.slots.find(s=>s.session==='academy-review').state='reserved';fleet.workflow.slots.find(s=>s.session==='academy-review').reason='waiting_for_provider';renderNow();});
+
   assert.match(await page.locator('[data-slot-session="stale-build"]').innerText(), /issue unassigned/);
   await page.evaluate(()=>{
     window.slotFixture=JSON.parse(JSON.stringify(fleet));
@@ -283,6 +291,7 @@ const fs = require("fs"),
   await page.evaluate(()=>{fleet=window.slotFixture;delete window.slotFixture;renderNow();});
   await page.locator('[data-slot-session="academy-build"] [data-slot-action="stop"]').click();
   await page.waitForFunction(()=>pendingSlotActions.get('academy-build')?.id==='slot-request-1');
+  await page.waitForFunction(()=>!loading);
   assert.deepEqual(slotRequests[0],{method:'POST',body:{action:'stop',session:'academy-build',generation:'$1|100|%1|1001'},token:'synthetic-control-token'});
   assert(await page.locator('[data-slot-session="academy-build"] [data-slot-action="stop"]').isDisabled());
   assert(await page.locator('[data-slot-session="academy-build"]').isVisible()); // Queueing never pretends release succeeded.
@@ -299,6 +308,7 @@ const fs = require("fs"),
   slotReply={status:200,body:{ok:true,reason:'queued',id:'resume-request-1'}};
   await page.locator('[data-slot-session="academy-build"] [data-slot-action="resume"]').click();
   await page.waitForFunction(()=>pendingSlotActions.get('academy-build')?.id==='resume-request-1');
+  await page.waitForFunction(()=>!loading);
   assert.deepEqual(slotRequests[1],{method:'POST',body:{action:'resume',session:'academy-build',generation:'$1|100|%1|1001'},token:'synthetic-control-token'});
   fleet.slot_actions.unshift({id:'resume-request-1',session:'academy-build',generation:'$1|100|%1|1001',status:'succeeded',action:'resume',paused:false,updated_at:101,reason:'operator_resumed'});
   await page.evaluate(()=>load());
@@ -671,6 +681,41 @@ const fs = require("fs"),
     path: "/tmp/forge-mobile-detail.png",
     fullPage: true,
   });
+  await page.evaluate(()=>{
+    closeRepo();window.beforeQuarantineSlots=occupiedSlots().length;
+    fleet.execution_quarantines={status:'ok',items:[
+      {id:'exact-checkpoint',repo:'example/academy',session:'academy-audit',role:'audit',assignment_id:'prior-assignment',issue_numbers:[6],phase:'confirmed',released:true,head:'a'.repeat(40),branch:'issue-6-audit',final_message:'Checks failed <img src=x onerror="window.pwned=1">',last_lifecycle_failure:{reason:'worktree_not_clean'},reason:'workspace_reconciliation_required'},
+      {id:'legacy-checkpoint',repo:'example/academy',session:'academy-build',role:'build',assignment_id:null,issue_numbers:[],previous_issue_context:{number:612},phase:'prepared',released:false,head:'b'.repeat(40),branch:'legacy-work',final_message:'Final result needs reconciliation',reason:'workspace_reconciliation_required'}]};
+    render();
+  });
+  assert.equal(await page.locator('.execution-quarantine-card').count(),2);
+  const held=page.locator('[data-quarantine="exact-checkpoint"]');
+  assert.match(await held.innerText(),/#6/);assert.match(await held.innerText(),/Worker released.*workspace preserved/);
+  await held.locator('summary').click();
+  assert.match(await held.innerText(),/worktree not clean/i);
+  assert.match(await held.innerText(),/Checks failed <img/);
+  assert.equal(await page.evaluate(()=>window.pwned),undefined);
+  assert.equal(await page.evaluate(()=>occupiedSlots().length===window.beforeQuarantineSlots),true);
+  assert.equal(await page.locator('.execution-quarantine-card [data-slot-action]').count(),0);
+  const legacyHeld=page.locator('[data-quarantine="legacy-checkpoint"]');
+  assert.match(await legacyHeld.innerText(),/issue unassigned/);assert.match(await legacyHeld.innerText(),/Previously claimed #612/);
+  assert.match(await legacyHeld.innerText(),/Release unconfirmed/);
+  assert.equal(await legacyHeld.locator('[data-issue]').count(),0);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.evaluate(()=>{fleet.execution_quarantines={status:'ok',items:[]};delete window.beforeQuarantineSlots;render();});
+  const updateStart=documentRequests;
+  servedDashboardVersion="b".repeat(64);fleet.dashboard_version=servedDashboardVersion;
+  await Promise.all([page.waitForURL(url=>url.searchParams.get('ui_version')===servedDashboardVersion),page.evaluate(()=>{void load();})]);
+  await page.waitForSelector('.occupied-slot');
+  assert.equal(documentRequests,updateStart+1);
+  await page.evaluate(()=>load());
+  assert.equal(documentRequests,updateStart+1); // Matching new bundle never loops.
+  servedDashboardVersion="a".repeat(64); // Simulate a proxy repeatedly returning an old bundle.
+  await page.goto('http://forge.test/?stale=1');
+  await page.waitForSelector('.occupied-slot');
+  assert.match(await page.locator('#error').innerText(),/refreshed page did not match/);
+  await page.evaluate(()=>load());
+  assert.equal(documentRequests,updateStart+2); // One attempted reload per target version.
   assert.deepEqual(errors, []);
   console.log(
     "PASS: desktop/mobile, graphs, filters, evidence persistence, escaping, worker output, refresh failure",

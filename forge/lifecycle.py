@@ -17,7 +17,7 @@ import time
 from .config import load_repositories
 from .control import atomic_json, snapshot_path
 
-PHASES = {'cleanup', 'human_wait_cleanup', 'startup_cleanup', 'provider_handover', 'codex_resume'}
+PHASES = {'cleanup', 'human_wait_cleanup', 'startup_cleanup', 'provider_handover', 'codex_resume', 'execution_retirement'}
 QUIET_REASONS = {'role_has_work', 'multi_claim_role_has_work', 'no_tmux_server'}
 LONG_WAIT_REASONS = {'not_explicitly_idle', 'processes_not_quiescent'}
 EXPLANATIONS = {

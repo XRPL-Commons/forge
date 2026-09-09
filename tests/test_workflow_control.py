@@ -58,6 +58,13 @@ class WorkflowControlTests(unittest.TestCase):
             'labels':['ready-for-review'],'url':self.pr['url']}
         self.save()
 
+    def test_quarantine_refuses_before_github_or_new_reservation(self):
+        with patch('forge.execution_retirement.is_quarantined',return_value=True):
+            with self.assertRaisesRegex(engine.Refused,'preserved_workspace_requires_reconciliation'):
+                self.reserve()
+        self.assertEqual(self.calls,[])
+        self.assertEqual(engine.read_state(self.state)['assignments'],[])
+
     def test_builder_reservation_targets_scheduler_first_without_remote_guess(self):
         self.snap['schedule']['eligible']=[1,2];self.save()
         a=self.reserve()

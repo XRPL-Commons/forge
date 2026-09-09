@@ -86,9 +86,10 @@ Path.read_text=read
         self.supervisor()
         self.assertIn('fixture-build',self.world()['sessions'])
         self.assertNotIn(first,self.world()['released'])
-        retained=json.loads((self.root/'state/lifecycle/fixture-build.json').read_text())
-        self.assertEqual(retained['reason'],'not_explicitly_idle')
-        self.assertEqual(retained['outcome'],'retained')
+        # Retirement does not run against a working process. The activity
+        # observation, rather than an unnecessary failed cleanup, records it.
+        self.assertEqual(self.observe()['state'],'busy')
+        self.assertFalse((self.root/'state/lifecycle/fixture-build.json').exists())
         # Idle with a dirty checkout is also retained, with an explicit proof refusal.
         world=self.world();world['sessions']['fixture-build']['state']='idle';world['dirty']=True;self.write_world(world)
         self.supervisor()

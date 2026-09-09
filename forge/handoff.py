@@ -526,6 +526,51 @@ def _tracked_completion_assignment(state, session):
     return assignment
 
 
+def _role_review_outcome(review, head):
+    """Recognize an authored result heading, never a keyword quoted in prose."""
+    body=review.get('body')
+    if not isinstance(body,str):return None,None
+    text=body.strip()
+    prefix=re.match(r'(?i)^(?:#{1,6}\s*)?(?:\*{1,2})?(security audit|auditor|audit|correctness review|reviewer|review)\b',text)
+    role=('audit' if prefix.group(1).lower() in {'security audit','auditor','audit'} else 'review') if prefix else None
+    native={'APPROVED':'pass','CHANGES_REQUESTED':'fail'}.get(review.get('state'))
+    if role is None:return ('review',native) if native else (None,None)
+    tail=text[prefix.end():]
+    # Existing canonical "Review of FULLSHA: ..." and emitted "Reviewer PASS
+    # at/for FULLSHA" are explicit result records, with commit identity below.
+    tail=re.sub(r'^\s+of\s+`?'+re.escape(head)+r'`?\s*:',':',tail,flags=re.I)
+    result=re.match(r'(?i)^(?:\*{1,2})?(?:\s*[:—-]\s*|\s+)(PASS|approved|FAIL|changes requested)\b',tail)
+    outcome=('pass' if result.group(1).lower() in {'pass','approved'} else 'fail') if result else None
+    if review.get('state') not in {'COMMENTED','APPROVED','CHANGES_REQUESTED'} or native and native!=outcome:
+        outcome=None
+    return role,outcome
+
+
+def _latest_role_result(reviews, role, author, assignment, identity, now):
+    authored=[]
+    for review in reviews:
+        if review.get('author',{}).get('login','').lower()!=author.lower():continue
+        record_role,outcome=_role_review_outcome(review,assignment['pr']['head'])
+        if record_role!=role:continue
+        try:submitted=datetime.fromisoformat(review['submittedAt'].replace('Z','+00:00')).timestamp()
+        except (KeyError,ValueError,TypeError):raise Unverified('review_time_unknown')
+        authored.append((submitted,review,outcome))
+    if not authored:raise Unverified('assigned_step_record_missing')
+    submitted,review,outcome=max(authored,key=lambda pair:pair[0])
+    if (sum(at==submitted for at,_,_ in authored)!=1 or not review.get('id')
+            or review.get('commit',{}).get('oid')!=assignment['pr']['head']
+            or not max(identity['session_created'],assignment['submitted_at'])<=submitted<=now):
+        raise Unverified('assigned_step_record_changed')
+    return submitted,review,outcome
+
+
+def _exact_audit_failure(review, outcome, assignment):
+    body=review.get('body','')
+    return (outcome=='fail' and review.get('state') in {'COMMENTED','CHANGES_REQUESTED'}
+            and all(re.search(r'(?<![0-9a-f])'+re.escape(assignment['pr'][key])+r'(?![0-9a-f])',body)
+                    for key in ('head','base')))
+
+
 def _tracked_role_completion(config,state,session,assignment,run,now):
     """Complete only this assigned PR, never the repository's unrelated queue."""
     began=time.monotonic();role=assignment['role']
@@ -587,32 +632,37 @@ def _tracked_role_completion(config,state,session,assignment,run,now):
         permitted=({'ready-for-audit'},{'changes-requested'}) if role=='review' else ({'changes-requested'},)
         if (pr.get('state')!='OPEN' or stages not in permitted
                 or not isinstance(pr.get('baseRefOid'),str) or not re.fullmatch('[0-9a-f]{40,64}',pr['baseRefOid'])
-                or head!=assignment['pr']['head']):raise Unverified('assigned_step_not_complete')
-        rejection=stages=={'changes-requested'}
+                or role!='audit' and head!=assignment['pr']['head']):raise Unverified('assigned_step_not_complete')
         reviews=pr.get('reviews')
         if not isinstance(reviews,list) or len(reviews)>100:raise Unverified('review_inventory_unbounded')
-        authored=[]
-        for review in reviews:
-            if review.get('author',{}).get('login','').lower()!=repo.author.lower():continue
-            try:submitted=datetime.fromisoformat(review['submittedAt'].replace('Z','+00:00')).timestamp()
-            except (KeyError,ValueError,TypeError):raise Unverified('review_time_unknown')
-            authored.append((submitted,review))
-        if not authored:raise Unverified('assigned_step_record_missing')
-        submitted,review=max(authored,key=lambda pair:pair[0]);body=review.get('body','')
-        if (sum(at==submitted for at,_ in authored)!=1 or not isinstance(body,str) or not review.get('id')
-                or review.get('commit',{}).get('oid')!=assignment['pr']['head']
-                or not max(identity['session_created'],assignment['submitted_at'])<=submitted<=now):raise Unverified('assigned_step_record_changed')
+        submitted,review,outcome=_latest_role_result(reviews,role,repo.author,assignment,identity,now)
         if role=='audit':
-            marked=bool(re.match(r'(?i)^(?:#{1,6}\s*)?(?:\*{1,2})?(?:security audit|auditor|audit)\s*[:—-]\s*FAIL\b',body.strip()))
-            if not (marked and assignment['pr']['head'] in body and assignment['pr']['base'] in body
-                    and review.get('state') in {'COMMENTED','CHANGES_REQUESTED'}):raise Unverified('assigned_audit_rejection_unverified')
-        else:
-            outcome=r'(?:changes requested|FAIL)' if rejection else r'(?:PASS|approved)'
-            marked=bool(re.match(r'(?i)^(?:(?:correctness\s+)?review of\s+`?'+re.escape(pr['headRefOid'])+r'`?:\s*'+outcome+
-                r'\b|(?:#{1,6}\s*)?(?:\*{1,2})?review(?:er)?\s*[:—-]\s*'+outcome+r'\b)',body.strip()))
-            if review.get('state')!=('CHANGES_REQUESTED' if rejection else 'APPROVED') and not (review.get('state')=='COMMENTED' and marked):raise Unverified('assigned_review_result_unverified')
-        evidence.update(checkout_basis='assigned_current_pr_head_'+('rejection' if rejection else 'review_pass'),
-            review_id=review['id'],review_at=submitted,review_digest=hashlib.sha256(body.encode()).hexdigest())
+            if not _exact_audit_failure(review,outcome,assignment):raise Unverified('assigned_audit_rejection_unverified')
+        elif outcome not in {'pass','fail'}:
+            raise Unverified('assigned_review_result_unverified')
+        elif stages=={'ready-for-audit'} and outcome!='pass':
+            raise Unverified('assigned_review_result_unverified')
+        elif stages=={'changes-requested'} and outcome=='pass':
+            # A later auditor rejection does not erase the completed review.
+            audit_at,audit,audit_outcome=_latest_role_result(reviews,'audit',repo.author,assignment,identity,now)
+            if audit_at<=submitted or not _exact_audit_failure(audit,audit_outcome,assignment):
+                raise Unverified('assigned_review_result_unverified')
+            evidence['downstream_audit_id']=audit['id']
+        basis='assigned_current_pr_head_'+('rejection' if outcome=='fail' else 'review_pass')
+        if head!=assignment['pr']['head']:
+            # Read-only audits may inspect an exact-head archive while the role
+            # clone stays on an older main. Prove that checkout is published.
+            if role!='audit' or branch!='main':raise Unverified('assigned_checkout_not_published')
+            main=json.loads(command(['gh','api',f'repos/{repo.repo}/git/ref/heads/main'],run))['object']['sha']
+            if not isinstance(main,str) or not re.fullmatch('[0-9a-f]{40,64}',main):raise Unverified('invalid_published_main')
+            comparison=json.loads(command(['gh','api',f'repos/{repo.repo}/compare/{head}...{main}',
+                '--jq','{status,base_commit:{sha:.base_commit.sha},behind_by}'],run))
+            if (comparison.get('status') not in {'ahead','identical'} or comparison.get('base_commit',{}).get('sha')!=head
+                    or comparison.get('behind_by')!=0):raise Unverified('assigned_checkout_not_published')
+            basis='assigned_audit_result_with_published_main_checkout'
+            evidence['published_main']=main
+        evidence.update(checkout_basis=basis,review_outcome=outcome,
+            review_id=review['id'],review_at=submitted,review_digest=hashlib.sha256(review['body'].encode()).hexdigest())
     if json.loads(path.read_text())!=snapshot:raise Unverified('snapshot_changed')
     if now+time.monotonic()-began-at>300:raise Unverified('snapshot_expired')
     if (command(git+['remote','get-url','origin'],run)!=remote or command(git+['rev-parse','HEAD'],run)!=head

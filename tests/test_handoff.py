@@ -798,6 +798,73 @@ class TrackedRoleCompletionTests(unittest.TestCase):
         self.pr['reviews'][0]['body']='Reviewer: PASS'
         self.assertTrue(self.decision()['eligible'])
 
+    def audit_record(self, outcome='FAIL', when='1970-01-01T00:01:20Z'):
+        return {**self.pr['reviews'][0],'id':'audit-2','submittedAt':when,
+                'body':'Security audit '+outcome+' — recorded outcome.\nHead: '+self.pr['headRefOid']+'\nBase: '+'c'*40}
+
+    def test_emitted_reviewer_pass_heading_survives_later_same_author_audit(self):
+        self.assign();self.pr['labels']=[{'name':'ready-for-audit'},{'name':'critical'}]
+        for connector in ('at','for'):
+            with self.subTest(connector=connector):
+                self.pr['reviews'][0]['body']='Reviewer PASS '+connector+' '+self.head+' (issue #1).'
+                self.pr['reviews']=self.pr['reviews'][:1]+[self.audit_record('PASS')]
+                result=self.decision()
+                self.assertTrue(result['eligible'],result)
+                self.assertEqual(result['evidence']['review_id'],'review-1')
+                self.assertEqual(result['evidence']['review_outcome'],'pass')
+        self.assertEqual([x['name'] for x in self.pr['labels']],['ready-for-audit','critical'])
+
+    def test_completed_review_pass_survives_verified_downstream_audit_failure(self):
+        self.assign();self.pr['reviews'][0]['body']='Reviewer PASS at '+self.head+' for #1.'
+        self.pr['reviews'].append(self.audit_record())
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['review_outcome'],'pass')
+        self.assertEqual(result['evidence']['downstream_audit_id'],'audit-2')
+        self.assertEqual([x['name'] for x in self.pr['labels']],['changes-requested'])
+        for changes in ({'commit':{'oid':'d'*40}}, {'author':{'login':'someone-else'}},
+                        {'submittedAt':'1970-01-01T00:01:05Z'}, {'body':'Security audit FAIL without exact revisions'}):
+            previous=self.pr['reviews'][1].copy();self.pr['reviews'][1].update(changes)
+            self.assertFalse(self.decision()['eligible'],changes)
+            self.pr['reviews'][1]=previous
+
+    def test_latest_role_rejection_is_not_hidden_by_old_pass_or_other_role(self):
+        self.assign();self.pr['labels']=[{'name':'ready-for-audit'}]
+        self.pr['reviews'][0]['body']='Reviewer PASS for '+self.head
+        self.pr['reviews'].append({**self.pr['reviews'][0],'id':'review-new','submittedAt':'1970-01-01T00:01:15Z','body':'Reviewer FAIL: blocking defect'})
+        self.pr['reviews'].append(self.audit_record('PASS'))
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_arbitrary_prose_quotes_and_outcome_prefixes_are_not_result_headings(self):
+        self.assign();self.pr['labels']=[{'name':'ready-for-audit'}]
+        for body in ('Notes: Reviewer PASS for '+self.head, '> Reviewer PASS for '+self.head,
+                     'Reviewer PASSING checks now','Discussion\nReviewer PASS for '+self.head):
+            self.pr['reviews'][0]['body']=body
+            self.assertFalse(self.decision()['eligible'],body)
+
+    def test_exact_audit_failure_can_release_clean_canonically_published_stale_main(self):
+        self.assign('audit');self.pr['reviews']=[self.audit_record()]
+        self.head='d'*40;self.branch='main';self.compare_status='ahead'
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['checkout_basis'],'assigned_audit_result_with_published_main_checkout')
+        self.assertEqual(result['evidence']['pr_head'],'a'*40)
+        self.assertEqual(result['evidence']['head'],'d'*40)
+        self.assertTrue(any('/compare/'+self.head+'...'+self.published_main in str(call) for call in self.calls))
+        result=release(self.config,self.state,'one-audit',run=self.fake_run,now=100)
+        self.assertTrue(result['released'],result)
+        self.assertEqual([call for call in self.calls if call[:2]==['tmux','kill-session']],
+                         [['tmux','kill-session','-t','$1']])
+
+    def test_archive_audit_does_not_release_unpublished_or_modified_checkout(self):
+        self.assign('audit');self.pr['reviews']=[self.audit_record()]
+        self.head='d'*40;self.branch='main';self.compare_status='ahead'
+        for attribute,value in (('branch','local-unpublished-work'),('branch',None),('status','?? artifact'),
+                                ('compare_status','diverged'),('compare_base','b'*40),('published_main','invalid')):
+            before=getattr(self,attribute);setattr(self,attribute,value)
+            self.assertFalse(self.decision()['eligible'],(attribute,value))
+            setattr(self,attribute,before)
+        self.pr['reviews'][0]['body']='Audit FAIL in prose without exact head/base'
+        self.assertFalse(self.decision()['eligible'])
+
     def test_auditor_merged_completion_survives_base_advance(self):
         self.assign('audit');self.merged();self.branch=None
         result=self.decision();self.assertTrue(result['eligible'],result)

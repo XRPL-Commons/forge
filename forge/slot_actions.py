@@ -153,6 +153,8 @@ def _release(config,state,session,role,lock_fd,run):
         repo,_=_repository(config,session)
         checks.append(lambda:human_wait.release(config,state,repo.repo,session=session,lock_fd=lock_fd,run=run))
     if role=='build' and blocked_work is not None:checks.append(lambda:blocked_work.release(config,state,session,lock_fd=lock_fd,run=run))
+    from .execution_retirement import release as retire_execution
+    checks.append(lambda:retire_execution(config,state,session,lock_fd=lock_fd,run=run))
     reasons=[]
     for check in checks:
         value=check()

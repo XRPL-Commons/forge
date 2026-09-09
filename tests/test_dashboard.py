@@ -282,3 +282,36 @@ class SlotActionHttpTests(unittest.TestCase):
         handler.send_error=unittest.mock.Mock();handler._send=unittest.mock.Mock()
         handler.do_GET()
         handler.send_error.assert_called_once_with(403);handler._send.assert_not_called()
+
+class DashboardBundleVersionTests(unittest.TestCase):
+    def test_served_page_and_status_use_same_immutable_bundle_version(self):
+        import hashlib
+        self.assertEqual(dashboard.PAGE_VERSION,hashlib.sha256(dashboard.PAGE_TEMPLATE.encode()).hexdigest())
+        self.assertIn('name="forge-dashboard-version" content="'+dashboard.PAGE_VERSION+'"',dashboard.PAGE)
+        self.assertNotIn('__FORGE_DASHBOARD_VERSION__',dashboard.PAGE)
+
+
+class ExecutionQuarantineViewTests(unittest.TestCase):
+    def row(self):
+        return {'id':'checkpoint','repo':'o/one','session':'one-build','role':'build','assignment_id':'assignment',
+                'issue_numbers':[15],'phase':'confirmed','released':True,'head':'a'*40,'branch':'issue-15',
+                'final_message':'Type checks fail','reason':'workspace_reconciliation_required','clone':'/private/clone',
+                'last_lifecycle_failure':{'reason':'worktree_not_clean'}}
+    def test_exact_checkpoint_is_bounded_and_private_clone_path_not_exposed(self):
+        row=self.row();row['final_message']='x'*7000
+        with patch('forge.execution_retirement.read_quarantines',return_value=[row]):
+            result=dashboard.execution_quarantine_view('/unused',{})
+        self.assertEqual(result['status'],'ok');item=result['items'][0]
+        self.assertEqual(item['issue_numbers'],[15]);self.assertNotIn('clone',item)
+        self.assertEqual(len(item['final_message']),6000)
+    def test_legacy_previous_context_does_not_become_assignment(self):
+        row=self.row();row.update(assignment_id=None,issue_numbers=[])
+        with patch('forge.execution_retirement.read_quarantines',return_value=[row]):
+            result=dashboard.execution_quarantine_view('/unused',{'one-build':{'context':{'repo':'o/one','issue':15}}})
+            other=dashboard.execution_quarantine_view('/unused',{'one-build':{'context':{'repo':'other/repo','issue':15}}})
+        item=result['items'][0];self.assertEqual(item['issue_numbers'],[])
+        self.assertEqual(item['previous_issue_context']['number'],15)
+        self.assertNotIn('previous_issue_context',other['items'][0])
+    def test_invalid_checkpoint_is_observably_unavailable(self):
+        with patch('forge.execution_retirement.read_quarantines',side_effect=ValueError('corrupt')):
+            self.assertEqual(dashboard.execution_quarantine_view('/unused',{}),{'status':'unavailable','items':[]})

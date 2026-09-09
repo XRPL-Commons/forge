@@ -183,6 +183,9 @@ def reserve(config,state,session,*,run=subprocess.run):
     from .workflow_lifecycle import reconcile as reconcile_releases
     reconcile_releases(state)
     repo=repository(config,session);role=session.rsplit('-',1)[1]
+    from .execution_retirement import is_quarantined
+    if is_quarantined(config,state,session):
+        raise workflow.Refused('preserved_workspace_requires_reconciliation')
     slot,assignment=current(state,session)
     if assignment:
         if assignment['state'] in {'reserved','blocked'} and assignment['generation'] is None:

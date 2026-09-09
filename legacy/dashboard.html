@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="forge-dashboard-version" content="__FORGE_DASHBOARD_VERSION__" />
     <meta name="color-scheme" content="dark" />
     <title>Forge · Fleet</title>
     <style>
@@ -1871,6 +1872,7 @@
             90;
         const watch = fleet.health?.account_until > Date.now() / 1000;
         const messages = [];
+        if (fleet.execution_quarantines?.status === "unavailable") messages.push("Preserved execution checkpoints could not be read; workspace blockers may be missing.");
         if (fleet.parked_work?.status === "unavailable") messages.push("Preserved-work checkpoints could not be read; parked issue blockers may be missing.");
         if (tracking.observed_at && !activityFresh)
           messages.push(
@@ -1939,6 +1941,13 @@
         if (fleet.workflow?.status !== "ok") return null;
         return (fleet.workflow.issues || []).find(row => row.repo?.toLowerCase() === i.repo.toLowerCase() && row.number === i.number) || null;
       }
+      function executionQuarantines() {
+        return fleet.execution_quarantines?.status === "ok" ? (fleet.execution_quarantines.items || []) : [];
+      }
+      function projectQuarantinedIssue(i) {
+        const held=executionQuarantines().some(q=>q.assignment_id && q.repo?.toLowerCase()===i.repo.toLowerCase() && q.issue_numbers?.includes(i.number));
+        return held && !["completed","closed","done","cancelled"].includes(i.state) ? {...i,attention_state:"STALLED"} : i;
+      }
       function parkedIssue(i) {
         return fleet.parked_work?.status === "ok" ? (fleet.parked_work.issues || []).find(p => p.repo?.toLowerCase() === i.repo.toLowerCase() && p.number === i.number) : null;
       }
@@ -1993,7 +2002,7 @@
           if (repo && !items.some(i=>i.repo.toLowerCase()===parked.repo.toLowerCase() && i.number===parked.number))
             items.push({repo:repo.repo,number:parked.number,title:`Issue #${parked.number}`,state:"build",step:1,pr_numbers:[],blockers:[]});
         }
-        return items.map(projectWorkflowIssue);
+        return items.map(projectWorkflowIssue).map(projectQuarantinedIssue);
       }
       function pipelineIssues() {
         return currentIssueRecords().filter(i =>
@@ -2083,7 +2092,7 @@
             contextNumber=context?.repo?.toLowerCase() === row.repo?.toLowerCase() ? (context.issue_number || context.issue) : null,
             numbers=assignment ? assignment.issue_numbers : physical && Number.isSafeInteger(contextNumber) && contextNumber>0 ? [contextNumber] : [],
             observed=physical && r?.[row.role]?.up ? workerState(r,row.role) : "unknown",
-            state=observed === "working" ? "working" : observed === "paused" || row.slot?.state === "blocked" ? "stalled" : physical && observed === "idle" ? "idle" : !physical && row.slot?.state === "working" ? "unknown" : row.slot?.state || "unknown";
+            state=observed === "working" ? "working" : observed === "paused" || row.slot?.state === "blocked" ? "stalled" : row.slot?.state === "retiring" ? "retiring" : physical && observed === "idle" ? "idle" : !physical && row.slot?.state === "working" ? "unknown" : row.slot?.state || "unknown";
           return {...row,r,physical,generation:generation || null,assignment,issueNumbers:numbers || [],reported:!assignment && numbers.length>0,observed,state,blocker};
         });
       }
@@ -2123,7 +2132,7 @@
           validGeneration=typeof generation === "string" && /^\$\d+\|\d+\|%\d+\|\d+$/.test(generation),
           enabled=!!fleet.controls_token && validGeneration && !pending,
           why=row.blocker?.why || (row.slot?.reason ? reasonText(row.slot.reason) : row.state === "idle" ? "Execution finished; slot still occupied" : "Worker slot is occupied"),
-          label={working:"Working",stalled:"Stalled",idle:"Idle · occupied",retiring:"Awaiting release",reserved:"Reserved",starting:"Starting",unknown:"State unverified",shell:"Shell · occupied"}[row.state] || human(row.state),
+          label={working:"Working",stalled:"Stalled",idle:"Idle · occupied",retiring:"Retiring · awaiting release",reserved:"Reserved",starting:"Starting",unknown:"State unverified",shell:"Shell · occupied"}[row.state] || human(row.state),
           note=assignment ? `Assignment ${assignment.id.slice(0,8)}${assignment.pr ? " · PR #"+assignment.pr.number : ""}` : row.reported ? "Reported issue context · started without a tracked assignment" : row.slot?.reason === "started_before_assignment_tracking" ? "Started before assignment tracking · issue unassigned" : "Unassigned slot · no verified issue identity",
           message=slotActionMessages.get(session),
           disabledReason=!fleet.controls_token ? "Worker controls unavailable" : !validGeneration ? "Worker generation unavailable; controls disabled" : pending ? "Action queued; awaiting supervisor result" : "Stop preserves edits. Release requires verified idle work.";
@@ -2333,6 +2342,19 @@
         const since = e.since ? `<p class="muted">Slot held since ${esc(ago(e.since))}</p>` : "";
         return `<article class="issue-card compact-issue waiting needs-decision worker-attention-card" data-station="${esc(e.role)}" data-worker-fault="${esc(r.short + "-" + e.role)}"><div class="compact-identity"><span>${esc(identity)}</span><span class="compact-meta attention-state">${cleanup ? "CLEANUP" : "WORKER"}</span></div><button class="issue-card-title" data-repo="${esc(r.repo)}" ${issue ? `data-issue="${issue}"` : `data-role="${esc(e.role)}"`}>${esc(summary)}</button>${related}<details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Next step and evidence</summary>${why}<p>${e.link && safeGithub(e.link) ? `<a href="${esc(e.link)}" target="_blank" rel="noopener noreferrer">${esc(e.action)}</a>` : esc(e.action)}</p>${since}</details></article>`;
       }
+      function quarantineFailure(q) { return typeof q.last_lifecycle_failure === "string" ? q.last_lifecycle_failure : q.last_lifecycle_failure?.reason || q.reason; }
+      function executionQuarantineCard(q) {
+        const repo=fleet.repos.find(r=>r.repo.toLowerCase()===q.repo?.toLowerCase()),
+          exact=q.assignment_id ? (q.issue_numbers || []).filter(n=>Number.isSafeInteger(n) && n>0) : [],
+          previous=!exact.length && Number.isSafeInteger(q.previous_issue_context?.number) ? q.previous_issue_context.number : null,
+          key="quarantine:"+q.id,
+          summary=(q.final_message || "").trim().split("\n").find(line=>line.trim())?.slice(0,220) || reasonText(quarantineFailure(q)),
+          label=q.released && q.phase === "confirmed" ? "Worker released · workspace preserved" : "Release unconfirmed · workspace preserved",
+          refs=exact.map(n=>`<a href="${esc(itemLink(q.repo,n))}" target="_blank" rel="noopener noreferrer">Issue #${n} ↗</a>`).join(" · "),
+          title=repo ? `<button class="issue-card-title" data-repo="${esc(repo.repo)}" ${exact.length===1 ? `data-issue="${exact[0]}"` : ""}>${esc(summary)}</button>` : `<p class="issue-card-title">${esc(summary)}</p>`,
+          commit=/^[a-f0-9]{40,64}$/.test(q.head || "") ? `<a href="${esc(url(q.repo,"/commit/"+q.head))}" target="_blank" rel="noopener noreferrer">${esc((q.branch || "Detached checkout")+" · "+q.head.slice(0,12))} ↗</a>` : esc(q.branch || "Checkout identity unavailable");
+        return `<article class="issue-card compact-issue waiting needs-decision execution-quarantine-card" data-quarantine="${esc(q.id)}" data-station="${esc(q.role)}"><div class="compact-identity"><span>${esc(q.repo?.split("/").at(-1))}${exact.length ? " · "+exact.map(n=>"#"+n).join(", ") : " · issue unassigned"}</span><span class="attention-state">STALLED</span></div>${title}<p class="slot-note">${esc(label)}</p>${refs ? `<p>${refs}</p>` : previous ? `<p><a href="${esc(itemLink(q.repo,previous))}" target="_blank" rel="noopener noreferrer">Previously claimed #${previous} ↗</a> · not a tracked assignment</p>` : ""}<details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Execution result and preserved checkpoint</summary><p>${esc(reasonText(quarantineFailure(q)))}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px">${esc(q.final_message || "No final execution message was recorded.")}</pre><p>${commit}</p><p>Reconcile the recorded result and preserved checkout before reusing this workspace. Execution ending does not complete the issue.</p></details></article>`;
+      }
       function renderAttention() {
         const expanded = new Set(Array.from($("attention").querySelectorAll("details[data-attention-details][open]")).map(el => el.dataset.attentionDetails));
         const focused = document.activeElement?.closest("details[data-attention-details]");
@@ -2342,9 +2364,10 @@
         const decisionIssues = currentIssueRecords().filter((i) =>
           (i.actions || []).some((a) => ["human_approval", "stalled_audit", "parked_work"].includes(a.kind)),
         );
-        let total = decisionIssues.length;
+        const quarantines=executionQuarantines();
+        let total = decisionIssues.length+quarantines.length;
         $("attention").innerHTML =
-          decisionIssues
+          quarantines.map(executionQuarantineCard).join("") + decisionIssues
             .map((i) => issueCard(i, issueLane(i) || "audit", true))
             .join("") +
             fleet.repos
@@ -2473,12 +2496,33 @@
         } catch (_) { $("workflow-history-status").textContent = " Workflow history unavailable; loaded events are preserved."; }
         finally { workflowHistoryLoading = false; $("workflow-history-more").disabled = false; }
       }
+      function dashboardReloadDecision(current,target,attempted) {
+        return /^[a-f0-9]{64}$/.test(current || "") && /^[a-f0-9]{64}$/.test(target || "") && current !== target && !attempted;
+      }
+      function refreshDashboardCode(target) {
+        const current=document.querySelector('meta[name="forge-dashboard-version"]')?.content;
+        if (!dashboardReloadDecision(current,target,false) || pendingSlotActions.size) return false;
+        const key="forge-dashboard-reloaded:"+target;
+        try {
+          if (!dashboardReloadDecision(current,target,sessionStorage.getItem(key)==="1")) {
+            $("error").textContent="A dashboard update is available, but the refreshed page did not match. Reload this page once; worker state is unchanged.";
+            $("error").classList.remove("hidden");return false;
+          }
+          sessionStorage.setItem(key,"1");
+          const next=new URL(location.href);next.searchParams.set("ui_version",target);
+          location.replace(next.href);return true;
+        } catch (_) {
+          $("error").textContent="A dashboard update is available. Reload this page once to load the new controls.";
+          $("error").classList.remove("hidden");return false;
+        }
+      }
       async function load() {
         if (loading) return;
         loading = true;
         try {
           fleet = await fetchJSON("/api/status");
           $("error").classList.add("hidden");
+          if (refreshDashboardCode(fleet.dashboard_version)) return;
           render();
           if (selectedRole) loadPane();
           loadHistory();

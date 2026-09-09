@@ -84,3 +84,13 @@ before the agent began. This requires an old enough, empty single-shell session,
 no dispatch or observed work in that session generation, fresh unclaimed work,
 a clean published checkout, and repeated identity checks under the supervisor
 lock. Dirty work, typed input, or active child processes prevent that recovery.
+
+A **Retiring** card means the worker has ended but still occupies a slot while
+release is being verified. Once a terminal execution is released with an
+unresolved result, its preserved-work card stays in Needs attention and no longer
+counts as occupied capacity. The card contains the last worker result and saved
+commit. Its protected checkout cannot be reused until reconciliation; this does
+not hold worker slots for other repositories.
+
+Open dashboards detect a changed page revision and reload their code once. Tabs
+opened before revision detection was introduced need one manual reload.

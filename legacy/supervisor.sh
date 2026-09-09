@@ -191,6 +191,12 @@ watch_codex(){
 provider_state(){
   local foreground pane
   foreground=$(tmux display-message -p -t "=$1:1.1" '#{pane_current_command}') || { echo unknown; return; }
+  if [ "$foreground" = bash ]; then
+    local generation
+    generation=$(session_generation_full "$1") || { echo unknown; return; }
+    python3 -m forge.startup codex-observe --state "$STATE" --config "$DIR/repos.d" --session "$1" --generation "$generation" --field state || echo unknown
+    return
+  fi
   pane=$(tmux capture-pane -e -p -t "=$1:1.1") || { echo unknown; return; }
   printf '%s' "$pane" | python3 -m forge.activity classify --command "$foreground" --state-only || echo unknown
 }
@@ -264,6 +270,26 @@ _nav_prompts(){ local t="$1" p; p=$(tmux capture-pane -p -t "$t" 2>/dev/null||ec
   echo "$p"|grep -qi "fullscreen renderer" && { tmux send-keys -t "$t" Down; sleep 0.3; tmux send-keys -t "$t" Enter; sleep 3; p=$(tmux capture-pane -p -t "$t"||echo ""); }
   echo "$p"|grep -qi "Bypass Permissions mode" && { tmux send-keys -t "$t" Down; sleep 0.3; tmux send-keys -t "$t" Enter; sleep 4; }
 }
+workspace_available(){
+  [ -d "$STATE/execution-retirements" ] || return 0
+  local status
+  python3 -m forge.execution_retirement quarantined --config "$DIR/repos.d" --state "$STATE" --session "$1" >/dev/null; status=$?
+  [ "$status" -eq 1 ]
+}
+retire_finished_worker(){
+  local sess="$1" repo="$2"
+  sess_up "$sess" || return 0
+  case "$(provider_state "$sess")" in idle|blocked) ;; *) return 0 ;; esac
+  # Resolve valid task handoffs first. A terminal execution must still be able
+  # to release capacity if its task result cannot be verified.
+  if [[ "$sess" == *-audit ]] && release_worker forge.human_wait human_wait_cleanup "$sess" "$repo"; then
+    glog "[$sess] completed audit released; issue outcome retained"
+  elif release_worker forge.handoff cleanup "$sess"; then
+    glog "[$sess] verified handoff released"
+  elif [ "$(actual_provider "$sess")" = codex ] && release_worker forge.execution_retirement execution_retirement "$sess"; then
+    glog "[$sess] terminal execution retired; unresolved work preserved separately from capacity"
+  fi
+}
 launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred continuation
   local sess="$1" dir="$2" role="$3" nudge="$4" t="=$1:1.1" p provider_command generation provider executable full_generation reservation_result
   if ! python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null; then
@@ -271,6 +297,7 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
     activity admission_deferred "$sess" capacity_guard
     return
   fi
+  workspace_available "$sess" || { glog "[$sess] preserved workspace needs attention; other repositories remain eligible"; return; }
   ensure_clone "${REPO}" "$dir" || return
   # A clone may take two minutes: recheck current pressure immediately before launch.
   python3 -m forge.capacity check "${CAP_ARGS[@]}" --config "$DIR/repos.d" --state "$STATE" --session "$sess" >/dev/null || { activity admission_deferred "$sess" capacity_recheck; return; }
@@ -388,6 +415,8 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
     python3 -m forge.slot_actions paused --state "$STATE" --session "$sess"; pause_status=$?
     [ "$pause_status" -eq 1 ] || return
   fi
+  retire_finished_worker "$sess" "$repo"
+  workspace_available "$sess" || return 0
   [ "$pending" = "?" ] && return
   if sess_up "$sess" && maybe_handover "$sess"; then
     glog "[$short] verified provider handover preserved existing work; returning to admission"
@@ -407,15 +436,6 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
       glog "[$short] recovered interrupted startup; returning to normal admission"
     fi
   fi
-  # A tracked execution owns one assignment, not the remaining role queue.
-  # Verify its completed handoff before considering work on a different PR.
-  if workflow_enabled && sess_up "$sess" && workflow_call current "$sess" >/dev/null 2>&1 && [ "$(provider_state "$sess")" = idle ]; then
-    if [[ "$sess" == *-audit ]] && release_worker forge.human_wait human_wait_cleanup "$sess" "$repo"; then
-      glog "[$short] released completed assigned audit awaiting human approval"
-    elif release_worker forge.handoff cleanup "$sess"; then
-      glog "[$short] released completed assignment; remaining queue can be admitted"
-    fi
-  fi
   if [[ "$sess" == *-audit ]] && [ "$pending" -gt 0 ] && [ -n "$repo" ]; then
     if python3 -m forge.human_wait check --config "$DIR/repos.d" --state "$STATE" --repo "$repo" >/dev/null; then
       if [ "${human_waiting[$sess]:-0}" != 1 ]; then
@@ -431,16 +451,7 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
     fi
     human_waiting[$sess]=0
   fi
-  if [ "$pending" -eq 0 ]; then
-    # Verified handoffs and completed role queues no longer need a worker slot.
-    # The verifier rechecks GitHub, the clone and exact idle process identity.
-    if [[ "$sess" == *-build || "$sess" == *-review || "$sess" == *-audit ]] && sess_up "$sess"; then
-      if release_worker forge.handoff cleanup "$sess"; then
-        glog "[$short] released idle worker after verified PR handoff"
-      fi
-    fi
-    return
-  fi
+  [ "$pending" -eq 0 ] && return
   if sess_up "$sess"; then
     watch "$sess" "$short" "$pending" "$nudge" "$dir" "$role"
   else
