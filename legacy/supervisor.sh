@@ -278,13 +278,18 @@ workspace_available(){
 }
 reconcile_finished_workspace(){
   local sess="$1" result
+  declare -gA workspace_refusals
   case "$sess" in *-review|*-audit) ;; *) return 0 ;; esac
   workspace_available "$sess" && return 0
   # A published result ends the attempt, even if the issue needs another build.
   # This verifies the preserved checkout under the supervisor lock; it never
   # resets files, bypasses ownership, or retries an unverified result.
   if result=$(python3 -m forge.execution_reconciliation reconcile --config "$DIR/repos.d" --state "$STATE" --session "$sess" --lock-fd 8); then
+    unset 'workspace_refusals[$sess]'
     glog "[$sess] published role result reconciled; workspace available for next issue"
+  elif [ "${workspace_refusals[$sess]:-}" != "${result:-reconciliation failed without evidence}" ]; then
+    workspace_refusals[$sess]="${result:-reconciliation failed without evidence}"
+    glog "[$sess] workspace reconciliation deferred: ${workspace_refusals[$sess]}"
   fi
 }
 retire_finished_worker(){
