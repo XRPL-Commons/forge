@@ -47,6 +47,26 @@ class WorkflowLifecycleTests(unittest.TestCase):
         self.assertEqual(confirmed(self.state,ticket)['status'],'applied')
         self.assertEqual(len([e for e in workflow.history(self.state) if e['source_event_id'].startswith('release:')]),1)
 
+    def test_published_rejection_survives_release_replay_and_counts_once(self):
+        now=time.time();pr={'number':9,'head':'a'*40,'base':'b'*40}
+        workflow.reconcile(self.state,'owner/app','r1',now,[dict(number=1,stage='review',prs=[pr])],source_event_id='facts')
+        a=workflow.reserve(self.state,'owner/app','review','app-review','r1',[1],pr=pr,source_event_id='reserve')
+        workflow.transition(self.state,a['id'],'bind',generation=self.generation,provider='codex',source_event_id='bind')
+        workflow.transition(self.state,a['id'],'submitted',generation=self.generation,source_event_id='submit')
+        self.proof['evidence'].update(role='review',assignment_id=a['id'],pr=9,assigned_head=pr['head'],assigned_base=pr['base'],
+                                      review_outcome='fail',review_id='R1',review_at=time.time(),review_digest='c'*64)
+        ticket=prepare(self.state,'app-review',self.proof)
+        self.assertEqual(workflow.read_state(self.state)['issues'][0]['retry']['rejected_cycles'],0)
+        with patch('forge.workflow.transition',side_effect=sqlite3.OperationalError('locked')):
+            self.assertEqual(confirmed(self.state,ticket)['status'],'pending')
+        self.assertEqual(workflow.read_state(self.state)['issues'][0]['retry']['rejected_cycles'],1)
+        self.assertEqual(reconcile(self.state)[0]['status'],'applied')
+        view=workflow.read_state(self.state)
+        self.assertEqual(view['issues'][0]['retry']['rejected_cycles'],1)
+        self.assertEqual(view['issues'][0]['stage'],'build')
+        self.assertEqual(view['slots'][0]['state'],'free')
+        self.assertEqual(len([e for e in workflow.history(self.state) if e['operation']=='issue_result']),1)
+
     def test_provider_migration_preserves_target_and_assignment(self):
         ident = self.assignment()
         ticket = prepare(self.state,'app-build',self.proof,action='migrate')

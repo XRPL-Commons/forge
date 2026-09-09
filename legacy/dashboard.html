@@ -1634,7 +1634,7 @@
               <option value="build">Building</option>
               <option value="review">In review</option>
               <option value="audit">Security audit</option>
-              <option value="held">On hold</option>
+              <option value="held">On hold</option><option value="failed">Failed</option>
               <option value="completed">Completed</option>
               <option value="closed">Closed</option>
               <option value="unknown">Unknown stage</option>
@@ -1973,18 +1973,22 @@
       }
       function projectQuarantinedIssue(i) {
         const held=executionQuarantines().some(q=>q.assignment_id && q.repo?.toLowerCase()===i.repo.toLowerCase() && q.issue_numbers?.includes(i.number));
-        return held && !["completed","closed","done","cancelled"].includes(i.state) ? {...i,attention_state:"STALLED"} : i;
+        return held && !["completed","closed","done","cancelled","failed"].includes(i.state) ? {...i,attention_state:"STALLED"} : i;
       }
       function parkedIssue(i) {
         return fleet.parked_work?.status === "ok" ? (fleet.parked_work.issues || []).find(p => p.repo?.toLowerCase() === i.repo.toLowerCase() && p.number === i.number) : null;
       }
       function projectParkedIssue(i) {
         const parked = parkedIssue(i);
-        if (!parked || ["completed","closed","done","cancelled"].includes(i.state)) return i;
+        if (!parked || ["completed","closed","done","cancelled","failed"].includes(i.state)) return i;
         return {...i, parked, attention_state:"STALLED", actions:[...(i.actions || []).filter(a=>a.kind!=="parked_work"),
           {kind:"parked_work",role:"build",why:parked.summary,next:parked.next,link:parked.checkpoint_url}]};
       }
       function parkedEvidence(i) {
+        if (i?.state === "failed") {
+          const retry=i.workflow?.retry || {}, prs=i.workflow?.prs || [];
+          return `<details class="worker-fault-details"><summary>${Number(retry.rejected_cycles || 0)} rejected cycles · retry limit reached</summary><p>Automatic work has stopped. Review the findings and approve a new attempt when the repair approach is clear.</p>${prs.map(pr=>`<a href="${esc(itemLink(i.repo,pr.number,"pr"))}" target="_blank" rel="noopener noreferrer">PR #${Number(pr.number)} findings ↗</a>`).join(" · ")}</details>`;
+        }
         const parked=i?.parked;
         if (!parked) return "";
         const key=`parked:${i.repo}:${i.number}`;
@@ -2001,6 +2005,7 @@
         const state = ["queued","backlog"].includes(tracked.stage)
           ? assignedBuild ? "build" : ready ? "ready" : i.state==="backlog" ? "backlog" : "unknown"
           : tracked.stage === "unknown" ? i.state : {done:"completed",cancelled:"closed"}[tracked.stage] || tracked.stage;
+        if (state === "failed") return {...i,state,step:0,workflow:tracked,attention_state:"FAILED",on_hold:false};
         return projectParkedIssue({...i, state, step: roles.includes(state) ? roles.indexOf(state)+1 : 0, workflow:tracked});
       }
       function workflowSlot(r, role) {
@@ -2177,7 +2182,7 @@
           needsDecision=items.some(i=>i.attention_state || ["critical","stalled"].includes(i.workflow?.disposition)),
           icon=(path)=>`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`,
           control=(action,label,path)=>`<button type="button" data-slot-action="${action}" data-session="${esc(session)}" data-generation="${esc(generation || "")}" title="${esc(disabledReason || (action !== "release" && !row.physical ? "Worker is no longer running" : label+" worker"))}" aria-label="${label} ${esc(session)}" ${!enabled || action !== "release" && !row.physical ? "disabled" : ""}>${icon(path)}${label}</button>`;
-        return `<article class="issue-card occupied-slot ${active ? "moving" : ""} ${needsDecision ? "needs-decision" : ""}" data-station="${role}" data-slot-session="${esc(session)}" data-slot-state="${esc(row.state)}"><div class="slot-heading"><span title="${esc(note)}">${esc(session)}${assignment?.pr ? " · PR #"+assignment.pr.number : ""}</span><span class="slot-state" title="${esc(why)}">${esc(stopped ? "Paused" : label)}</span></div>${items.length ? items.map(i=>issueCard(i,role,!!i.attention_state,true)).join("") : `<p class="slot-note muted" title="${esc(note)}">Unassigned worker</p>`}<footer class="slot-buttons" aria-label="${esc(session)} controls">${r ? `<button type="button" data-repo="${esc(r.repo)}" data-role="${role}" title="Inspect worker output" aria-label="Inspect ${esc(session)} output">${icon('<path d="m3 4 4 4-4 4M9 12h4"/>')}Output</button>` : ""}${stopped ? control("resume","Resume",'<path d="m5 3 7 5-7 5Z"/>') : control("stop","Stop",'<rect x="4" y="4" width="8" height="8" rx="1"/>')}${control("release","Release",'<path d="M6 3H3v10h3M7 8h7m-3-3 3 3-3 3"/>')}</footer>${message ? `<p class="slot-action-message" role="status">${esc(message)}</p>` : ""}</article>`;
+        return `<article class="issue-card occupied-slot ${active ? "moving" : ""} ${needsDecision ? "needs-decision" : ""}" data-station="${role}" data-slot-session="${esc(session)}" data-slot-state="${esc(row.state)}"><div class="slot-heading"><span title="${esc(note)}">${esc(session)}${assignment?.pr ? " · PR #"+assignment.pr.number : ""}</span><span class="slot-state" title="${esc(why)}">${esc(stopped ? "Paused" : row.state === "working" && items.length && !active ? "Verifying assignment" : label)}</span></div>${items.length ? items.map(i=>issueCard(i,role,!!i.attention_state,true)).join("") : `<p class="slot-note muted" title="${esc(note)}">Unassigned worker</p>`}<footer class="slot-buttons" aria-label="${esc(session)} controls">${r ? `<button type="button" data-repo="${esc(r.repo)}" data-role="${role}" title="Inspect worker output" aria-label="Inspect ${esc(session)} output">${icon('<path d="m3 4 4 4-4 4M9 12h4"/>')}Output</button>` : ""}${stopped ? control("resume","Resume",'<path d="m5 3 7 5-7 5Z"/>') : control("stop","Stop",'<rect x="4" y="4" width="8" height="8" rx="1"/>')}${control("release","Release",'<path d="M6 3H3v10h3M7 8h7m-3-3 3 3-3 3"/>')}</footer>${message ? `<p class="slot-action-message" role="status">${esc(message)}</p>` : ""}</article>`;
       }
       let slotConfirmation = null;
       function confirmSlotAction(button) {
@@ -2398,7 +2403,7 @@
         return {
           assigned_review_result_unverified: ["Forge could not verify the review handoff.", "Compare the published PR review and current commit with Forge’s assignment, then reconcile the review workspace before retrying."],
           assigned_step_not_complete: ["Forge could not confirm this step was handed off.", "Check the current issue labels and linked PR against the assignment. Resolve any conflicting state, then reconcile the workspace before retrying."],
-          tracked_build_publication_not_unique: ["Forge could not identify a single PR for the build handoff.", "Check the existing PRs and select the one that belongs to this issue. Reconcile the build assignment and preserved work before retrying."],
+          tracked_build_publication_not_unique: ["The last attempt did not produce a verified build handoff.", "Check the existing PRs and select the one that belongs to this issue. Reconcile the build assignment and preserved work before retrying."],
           live_role_queue_not_empty: ["The worker stopped with work still pending.", "Read the reported blocker and decide the remaining repair scope. Reconcile the preserved work and assignment before retrying."]
         }[reason] || ["Forge could not safely reuse this workspace.", "Check the recorded result against the current issue and PR, then reconcile the preserved work before retrying."];
       }
@@ -2410,11 +2415,12 @@
           records=currentIssueRecords().filter(i=>i.repo.toLowerCase()===q.repo?.toLowerCase() && exact.includes(i.number)),
           summary=records.length ? records.map(i=>i.title).join(" · ") : exact.length ? "Issue "+exact.map(n=>"#"+n).join(", ") : "Unassigned workspace",
           guidance=quarantineGuidance(q),
+          currentState=records.length ? [...new Set(records.map(i=>i.state))].map(human).join(" · ") : "Issue identity unverified",
           label=q.released && q.phase === "confirmed" ? "Slot freed · workspace still blocked" : "Slot release unconfirmed · workspace blocked",
           refs=exact.map(n=>`<a href="${esc(itemLink(q.repo,n))}" target="_blank" rel="noopener noreferrer">Issue #${n} ↗</a>`).join(" · "),
           title=repo ? `<button class="issue-card-title" data-repo="${esc(repo.repo)}" ${exact.length===1 ? `data-issue="${exact[0]}"` : ""}>${esc(summary)}</button>` : `<p class="issue-card-title">${esc(summary)}</p>`,
           commit=/^[a-f0-9]{40,64}$/.test(q.head || "") ? `<a href="${esc(url(q.repo,"/commit/"+q.head))}" target="_blank" rel="noopener noreferrer">${esc((q.branch || "Detached checkout")+" · "+q.head.slice(0,12))} ↗</a>` : esc(q.branch || "Checkout identity unavailable");
-        return `<article class="issue-card compact-issue waiting needs-decision execution-quarantine-card" data-quarantine="${esc(q.id)}" data-station="${esc(q.role)}"><div class="compact-identity"><span>${esc(q.repo?.split("/").at(-1))} · ${esc({build:"Build",review:"Review",audit:"Audit"}[q.role] || human(q.role))}</span><span class="attention-state">WORKSPACE</span></div>${title}<p class="workspace-reason">${esc(guidance[0])}</p><details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Why this is blocked · next step</summary><p><strong>Next:</strong> ${esc(guidance[1])}</p><p>${esc(label)}. Freeing the slot preserved the checkout, but Forge will not reuse it until reconciliation is complete.</p>${refs ? `<p>${refs}</p>` : previous ? `<p><a href="${esc(itemLink(q.repo,previous))}" target="_blank" rel="noopener noreferrer">Previously claimed #${previous} ↗</a> · not a tracked assignment</p>` : ""}<p class="muted">Recorded worker report — may predate the current issue or PR state.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px">${esc(q.final_message || "No final execution message was recorded.")}</pre><p>${commit}</p><p class="muted">Recorded handoff check: ${esc(reasonText(quarantineFailure(q)))}</p></details></article>`;
+        return `<article class="issue-card compact-issue waiting needs-decision execution-quarantine-card" data-quarantine="${esc(q.id)}" data-station="${esc(q.role)}"><div class="compact-identity"><span>${esc(q.repo?.split("/").at(-1))} · ${esc({build:"Build",review:"Review",audit:"Audit"}[q.role] || human(q.role))}</span><span class="attention-state">WORKSPACE</span></div>${title}<p class="slot-note muted">Current issue: ${esc(currentState)} · last attempt blocked</p><p class="workspace-reason">${esc(guidance[0])}</p><details class="worker-fault-details" data-attention-details="${esc(key)}"><summary>Why this is blocked · next step</summary><p><strong>Next:</strong> ${esc(guidance[1])}</p><p>${esc(label)}. Freeing the slot preserved the checkout, but Forge will not reuse it until reconciliation is complete.</p>${refs ? `<p>${refs}</p>` : previous ? `<p><a href="${esc(itemLink(q.repo,previous))}" target="_blank" rel="noopener noreferrer">Previously claimed #${previous} ↗</a> · not a tracked assignment</p>` : ""}<p class="muted">Recorded worker report — may predate the current issue or PR state.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px">${esc(q.final_message || "No final execution message was recorded.")}</pre><p>${commit}</p><p class="muted">Recorded handoff check: ${esc(reasonText(quarantineFailure(q)))}</p></details></article>`;
       }
       function renderAttention() {
         const expanded = new Set(Array.from($("attention").querySelectorAll("details[data-attention-details][open]")).map(el => el.dataset.attentionDetails));
@@ -2423,7 +2429,7 @@
         const focusedTag = document.activeElement?.tagName;
 
         const decisionIssues = currentIssueRecords().filter((i) =>
-          (i.actions || []).some((a) => ["human_approval", "stalled_audit", "parked_work"].includes(a.kind)),
+          i.state === "failed" || (i.actions || []).some((a) => ["human_approval", "stalled_audit", "parked_work"].includes(a.kind)),
         );
         const quarantines=executionQuarantines();
         let total = decisionIssues.length+quarantines.length;
@@ -2451,10 +2457,12 @@
           if (focusedKey === el.dataset.attentionDetails) el.querySelector(focusedTag === "A" ? "a" : "summary")?.focus({preventScroll:true});
         }
         const approvals = decisionIssues.filter(i => i.actions?.some(a => a.kind === "human_approval")).length;
-        const stalled = decisionIssues.length - approvals;
+        const failed = decisionIssues.filter(i=>i.state === "failed").length;
+        const stalled = decisionIssues.length - approvals - failed;
         $("attention-title").textContent = total > decisionIssues.length ? "Needs attention" : stalled ? `${approvals ? approvals + " critical · " : ""}${stalled} stalled · Needs attention` : approvals
           ? `${approvals} critical issue${approvals === 1 ? " needs" : "s need"} human review`
           : "Needs attention";
+        if (failed) $("attention-title").textContent = `${failed} failed · Needs attention`;
         if (quarantines.length && total === quarantines.length) $("attention-title").textContent = "Blocked workspaces";
         $("attention-count").textContent = total > decisionIssues.length ? total : approvals ? "" : total || "";
         $("operator-decisions").classList.toggle("hidden", !total);
@@ -2771,7 +2779,7 @@
               return `<section class="drawer-record ${i.kind === "pr" ? "supporting-pr" : "issue-context"}">${i.kind === "pr" ? `<a class="issue-title" href="${itemLink(r.repo, i.number, i.kind)}" target="_blank" rel="noopener noreferrer">PR #${Number(i.number)} · ${esc(i.title)} ↗</a>` : ""}<div>${i.kind === "pr" && i.stage ? pill(stageNames[i.stage] || human(i.stage), "") : ""}${i.draft ? pill("Draft") : ""}${i.kind === "pr" ? stages.filter(s => s !== i.stage).map(s => pill(human(s), "blue")).join("") : ""}${(i.labels || []).filter(l => !["wip", "ready", "ready-for-review", "ready-for-audit"].includes(l) && !(i.kind !== "pr" && l === "critical" && projection(i)?.attention_state)).map(l => pill(l, l === "critical" ? "amber" : "")).join("")}${review}</div>${blockers.length ? `<p>${blockers.map(reasonText).map(esc).join(" · ")}</p>` : ""}${i.labels?.includes("critical") ? "<p>Critical classification recorded. Inspect the audit and review evidence below.</p>" : ""}${i.summary ? `<p>${esc(i.summary)}</p>` : ""}${i.evidence_status === "pending" ? "<p>Evidence collection pending; any previous evidence shown may be outdated.</p>" : ""}${i.head_sha ? `<p>Recorded head: <code>${esc(i.head_sha.slice(0, 12))}</code></p>` : ""}${(i.linked_issues || []).length ? `<p>Linked issues: ${(i.linked_issues || []).map((n) => `<a href="${itemLink(typeof n === "object" && n.repo ? n.repo : r.repo, typeof n === "object" ? n.number : n)}" target="_blank" rel="noopener noreferrer">#${Number(typeof n === "object" ? n.number : n)}</a>`).join(", ")}</p>` : ""}${i.summary_error ? `<p>PR summary unavailable: ${esc(i.summary_error)}. Recorded evidence remains below.</p>` : ""}${renderEvidence(i)}<p>${i.updated_at ? "Updated " + esc(ago(i.updated_at)) : ""}${i.evidence_observed_at ? " · Evidence collected " + esc(ago(i.evidence_observed_at)) : ""}</p></section>`;
 
         };
-        const stageLabel = stage => ({build: "Build 1/3", review: "Review 2/3", audit: "Audit 3/3", completed: "Completed", closed: "Closed", cancelled: "Cancelled", unknown: "State unverified", pending: "Pending", held: "On hold"}[stage] || "Stage unknown");
+        const stageLabel = stage => ({build: "Build 1/3", review: "Review 2/3", audit: "Audit 3/3", completed: "Completed", failed: "Failed", merge: "Merge / awaiting completion", closed: "Closed", cancelled: "Cancelled", unknown: "State unverified", pending: "Pending", held: "On hold"}[stage] || "Stage unknown");
         const renderGroup = ({item: i, supporting}) => {
           if (i.kind === "pr") return `<article class="issue drawer-unlinked"><p class="drawer-support-label">Supporting PR · no linked issue recorded</p>${renderRecord(i)}</article>`;
           const current = projection(i), stage = !["completed", "closed"].includes(stageOf(i)) && current?.step > 0 && current.step < 4 ? roles[current.step - 1] : stageOf(i);

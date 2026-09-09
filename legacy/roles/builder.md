@@ -36,3 +36,7 @@ validation work to finish. Leave no self-managed queue watcher behind. Preserve
 uncommitted work and report it explicitly; do not discard files or reset the
 checkout to make cleanup pass. The supervisor verifies published handoffs and
 retires idle sessions. A later dispatch will resume newly eligible work.
+
+## Issue retry authority
+
+The controller owns the issue transition table and its shared limit of three rejected build cycles. A Review or Audit FAIL returns the same issue/PR to Build while budget remains. Do not implement an independent retry loop or restart a failed issue by changing labels. Work only the current controller assignment, publish the findings, and return after its handoff. Slot release and provider restarts never reset an issue retry budget.

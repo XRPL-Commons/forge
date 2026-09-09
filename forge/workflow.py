@@ -16,7 +16,9 @@ import sqlite3
 import time
 import uuid
 
-STAGES = {'queued', 'build', 'review', 'audit', 'done', 'cancelled', 'unknown'}
+from . import workflow_definition as definition, workflow_cycles as cycles
+
+STAGES = definition.STAGES
 DISPOSITIONS = {'pending', 'working', 'critical', 'stalled'}
 ROLES = {'build', 'review', 'audit'}
 LIVE = {'reserved', 'submitted', 'working', 'handoff', 'blocked', 'uncertain'}
@@ -130,7 +132,7 @@ def _database(state, *, write=False):
         if write:
             db.execute('PRAGMA journal_mode=WAL')
             db.execute('PRAGMA synchronous=FULL')
-            db.executescript(SCHEMA)
+            db.executescript(SCHEMA + cycles.SCHEMA)
             if not marker.exists():
                 try:
                     marker_fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
@@ -218,11 +220,12 @@ def reconcile(state, repo, revision, observed_at, issues, *, source_event_id, no
         for item in normalized:
             row=db.execute('SELECT * FROM issues WHERE repo=? AND number=?',(repo,item['number'])).fetchone()
             before.append(dict(row) if row else None)
+            cycles.project(db,repo,item)
             disposition=item['disposition']
             active=db.execute("SELECT role,state,reason,issue_numbers,pr FROM assignments WHERE repo=? AND state!='retired'",(repo,)).fetchall()
             assigned=[a for a in active if item['number'] in json.loads(a['issue_numbers'])]
             if item['stage']=='queued' and any(a['role']=='build' for a in assigned):item['stage']='build'
-            if disposition=='pending' and item['stage'] not in {'done','cancelled','unknown'}:
+            if disposition=='pending' and item['stage'] not in {'done','cancelled','unknown','failed'}:
                 matching=[a for a in assigned if a['role']==item['stage'] and
                           (not a['pr'] or json.loads(a['pr']) in item['prs'])]
                 if any(a['state']=='working' for a in matching):disposition='working'
@@ -242,6 +245,60 @@ def reconcile(state, repo, revision, observed_at, issues, *, source_event_id, no
             db.execute('INSERT INTO refresh_receipts VALUES(?,?,?,?)',(source_event_id,'reconcile',fingerprint,_json(result)))
             return result
         return _event(db,source_event_id,'reconcile',fingerprint,repo,None,now,dict(before=before,after=normalized,revision=revision),{'status':'applied','revision':revision,'issues':len(normalized)})
+
+
+def record_result(state, assignment_id, evidence, *, source_event_id, now=None):
+    """Record a trusted published Review/Audit result, independently of slot release.
+
+    The adapter verifies author, GitHub review, exact assignment/revision and label
+    handoff. The engine validates identity, deduplicates the attempt, and atomically
+    records its issue transitions and shared rejected-build-cycle budget.
+    """
+    _text(assignment_id,'assignment_id');now=_time(time.time() if now is None else now)
+    if not isinstance(evidence,dict) or set(evidence)!={'verified','assignment_id','generation','role','outcome','pr','result_id','published_at','digest'}:
+        raise Refused('invalid_result_evidence')
+    if (evidence['verified'] is not True or evidence['assignment_id']!=assignment_id
+            or evidence['role'] not in {'review','audit'} or evidence['outcome'] not in {'pass','fail'}):
+        raise Refused('invalid_result_evidence')
+    _generation(evidence['generation']);pr=_pr(evidence['pr'])
+    if not pr or not pr['head'] or not pr['base']:raise Refused('result_revision_required')
+    _text(evidence['result_id'],'result_id')
+    published=_time(evidence['published_at'])
+    if not isinstance(evidence['digest'],str) or not re.fullmatch('[0-9a-f]{64}',evidence['digest']):raise Refused('invalid_result_digest')
+    request=dict(assignment_id=assignment_id,evidence=evidence)
+    with _database(state,write=True) as db:
+        fingerprint,replay=_replay(db,source_event_id,'issue_result',request)
+        if replay is not None:return replay
+        a=_assignment(db.execute('SELECT * FROM assignments WHERE id=?',(assignment_id,)).fetchone())
+        if (a['role']!=evidence['role'] or a['generation']!=evidence['generation'] or a['pr']!=pr
+                or a['submitted_at'] is None or not a['submitted_at']<=published<=now):raise Refused('result_assignment_mismatch')
+        prior=db.execute('SELECT evidence FROM issue_results WHERE assignment_id=?',(assignment_id,)).fetchone()
+        if prior:
+            if json.loads(prior['evidence'])!=evidence:raise Refused('assignment_result_conflict')
+            return {'status':'already_recorded','assignment_id':assignment_id}
+        result={'status':'recorded','assignment_id':assignment_id,'role':a['role'],'outcome':evidence['outcome'],
+                'issues':cycles.record(db,a,evidence,now)}
+        return _event(db,source_event_id,'issue_result',fingerprint,a['repo'],assignment_id,now,request,result)
+
+
+def retry_failed(state, repo, number, *, reason, source_event_id, now=None):
+    """Explicit operator action starts a new budget; history and work remain intact."""
+    repo=_repo(repo);number=_number(number);_text(reason,'retry_reason',500)
+    now=_time(time.time() if now is None else now)
+    request=dict(repo=repo,number=number,reason=reason)
+    with _database(state,write=True) as db:
+        fingerprint,replay=_replay(db,source_event_id,'retry_failed',request)
+        if replay is not None:return replay
+        row=db.execute('SELECT * FROM issues WHERE repo=? AND number=?',(repo,number)).fetchone()
+        if not row or row['stage']!='failed':raise Refused('issue_not_failed')
+        live=db.execute("SELECT issue_numbers FROM assignments WHERE repo=? AND state!='retired'",(repo,))
+        if any(number in json.loads(a['issue_numbers']) for a in live):raise Refused('issue_still_assigned')
+        retry=cycles.retry_state(db,repo,number)
+        db.execute('UPDATE issue_retry_state SET epoch=epoch+1,rejected_cycles=0,failed=0,reset_at=? WHERE repo=? AND number=?',(now,repo,number))
+        # A fresh canonical observation must establish ownership/hold/PR eligibility.
+        db.execute("UPDATE issues SET stage='build',disposition='stalled',reason='explicit_retry_requires_refresh' WHERE repo=? AND number=?",(repo,number))
+        result=dict(number=number,stage=definition.next_stage('failed','retry'),epoch=retry['epoch']+1,reason=reason)
+        return _event(db,source_event_id,'retry_failed',fingerprint,repo,None,now,dict(before=dict(row),after=result),result)
 
 
 def reserve(state, repo, role, session, revision, issue_numbers, *, source_event_id, pr=None, provider=None, max_slots=None, max_per_role=None, now=None):
@@ -266,10 +323,12 @@ def reserve(state, repo, role, session, revision, issue_numbers, *, source_event
         snapshot=db.execute('SELECT * FROM repositories WHERE repo=?',(repo,)).fetchone()
         if not snapshot or snapshot['revision']!=revision:raise Refused('snapshot_revision_changed')
         if not 0<=now-snapshot['observed_at']<=300:raise Refused('snapshot_not_fresh')
+        try:cycles.authorize_dispatch(db,repo,role,pr)
+        except ValueError as exc:raise Refused(str(exc)) from exc
         for number in numbers:
             issue=db.execute('SELECT * FROM issues WHERE repo=? AND number=?',(repo,number)).fetchone()
             if not issue or issue['revision']!=revision:raise Refused('issue_not_in_current_snapshot')
-            if issue['stage'] not in ({'queued','build'} if role=='build' else {role}) or issue['disposition']!='pending':raise Refused('issue_not_dispatchable')
+            if not definition.dispatchable(issue['stage'],issue['disposition'],role):raise Refused('issue_not_dispatchable')
             if pr:
                 link=db.execute('SELECT * FROM pr_links WHERE repo=? AND issue_number=? AND number=?',(repo,number,pr['number'])).fetchone()
                 if not link or link['head']!=pr['head'] or link['base']!=pr['base']:raise Refused('pr_link_or_revision_mismatch')
@@ -455,7 +514,11 @@ def read_state(state, repo=None):
         issues=[dict(row) for row in db.execute('SELECT * FROM issues'+where+' ORDER BY repo,number',parameters)]
         for item in issues:
             item['prs']=[dict(row) for row in db.execute('SELECT number,head,base FROM pr_links WHERE repo=? AND issue_number=? ORDER BY number',(item['repo'],item['number']))]
-        return dict(status='ok',issues=issues,
+        has_cycles=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='issue_retry_state'").fetchone()
+        for item in issues:
+            retry=cycles.retry_state(db,item['repo'],item['number']) if has_cycles else {}
+            item['retry']={**retry,'max_rejected_cycles':definition.MAX_REJECTED_CYCLES}
+        return dict(status='ok',definition=definition.definition(),issues=issues,
             assignments=[_assignment(row) for row in db.execute('SELECT * FROM assignments'+where+' ORDER BY created_at,id',parameters)],
             slots=[{**dict(row),'execution':json.loads(row['execution']) if row['execution'] else None} for row in db.execute('SELECT * FROM slots'+where+' ORDER BY session',parameters)],
             repositories=[dict(row) for row in db.execute('SELECT * FROM repositories'+where+' ORDER BY repo',parameters)])

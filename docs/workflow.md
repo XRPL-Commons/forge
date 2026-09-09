@@ -2,7 +2,8 @@
 
 Forge keeps issue progress and execution ownership in `state/workflow.sqlite3`.
 An issue is the unit of pipeline work: queued → build → review → audit → done.
-Review changes can send it back to build. A stage also has a disposition:
+Review and audit rejection return it to Build. Three rejected build cycles enter
+`failed`; the durable policy and operator retry are defined in [issue-state-machine.md](issue-state-machine.md). A stage also has a disposition:
 `pending`, `working`, `critical` (human approval), or `stalled` (recorded blocker).
 An idle process, a merged PR, or a released worker does not by itself complete an
 issue. GitHub must report the issue closed as completed.

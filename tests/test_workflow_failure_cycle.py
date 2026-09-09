@@ -4,6 +4,7 @@ GitHub responses and worker release proofs are fixture boundaries; no external
 process, network request, or live checkout is used.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ class WorkflowFailureCycleTests(unittest.TestCase):
         self.repo = 'Org/Fixture'; self.now = 1000; self.sequence = 0
         clock = patch('time.time', side_effect=lambda: self.now)
         clock.start(); self.addCleanup(clock.stop)
+        self.reviews=[]
         self.head = 'a' * 40; self.base = 'b' * 40
         self.snapshot('queued')
 
@@ -36,6 +38,13 @@ class WorkflowFailureCycleTests(unittest.TestCase):
         self.now += 1
         labels = {'review': ['ready-for-review'], 'audit': ['ready-for-audit'], 'build': ['changes-requested']}
         self.labels = labels.get(stage, [])
+        if stage in ('build','audit'):
+            attempts=[a for a in engine.read_state(self.state)['assignments'] if a['role'] in ('review','audit') and a['state']!='retired']
+            if attempts:
+                a=attempts[-1];outcome='fail' if stage=='build' else 'pass'
+                record=dict(schema=1,role=a['role'],outcome=outcome,head=a['pr']['head'],base=a['pr']['base'],assignment_id=a['id'])
+                self.reviews.append(dict(id='R'+str(len(self.reviews)+1),author={'login':'forge-bot'},state='COMMENTED',
+                    commit={'oid':a['pr']['head']},submittedAt=datetime.fromtimestamp(self.now,timezone.utc).isoformat(),body='FORGE_RESULT: '+json.dumps(record)))
         work = {k: [] for k in ('ready', 'wip', 'review', 'audit', 'sentback', 'limbo', 'conflicts', 'held')}
         work['ready' if stage == 'queued' else 'wip'] = [17]
         if stage in ('review', 'audit'): work[stage] = [22]
@@ -60,7 +69,7 @@ class WorkflowFailureCycleTests(unittest.TestCase):
         if argv[:3] == ['gh', 'pr', 'view']:
             value = {'number': 22, 'url': f'https://github.com/{self.repo}/pull/22', 'state': 'OPEN',
                      'isDraft': False, 'headRefOid': self.head, 'baseRefOid': self.base,
-                     'labels': [{'name': x} for x in self.labels], 'author': {'login': 'forge-bot'},
+                     'labels': [{'name': x} for x in self.labels], 'reviews': self.reviews, 'author': {'login': 'forge-bot'},
                      'closingIssuesReferences': [{'number': 17, 'url': f'https://github.com/{self.repo}/issues/17'}]}
         elif argv[:3] == ['gh', 'issue', 'view']:
             value = {'number': 17, 'url': f'https://github.com/{self.repo}/issues/17', 'state': 'OPEN', 'labels': [{'name': 'wip'}]}

@@ -231,6 +231,8 @@ def reconcile(config,state,session,*,lock_fd=8,run=subprocess.run,retry_checkpoi
         if first!=second:raise Unverified('reconciliation_evidence_changed')
         if not _locked(state,lock_fd):raise Unverified('supervisor_lock_required')
         proof_run.remaining()
+        from .workflow_results import from_reconciliation, record
+        record(state,from_reconciliation(first))
         path=retirement._directory(state)/'reconciled';path.mkdir(mode=0o700,exist_ok=True)
         if path.is_symlink() or path.stat().st_mode & 0o077:raise Unverified('reconciliation_directory_not_private')
         atomic_json(path/(key+'.json'),{'schema':1,'id':key,'checkpoint_sha256':first['checkpoint_sha256'],

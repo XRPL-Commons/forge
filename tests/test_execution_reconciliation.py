@@ -61,7 +61,8 @@ class ExecutionReconciliationTests(unittest.TestCase):
         f=self.fixture;path=f.state/'execution-retirements'/'checkpoints'/(self.key+'.json');before=path.read_bytes()
         result=self.run_reconcile();self.assertTrue(result['reconciled'],result)
         self.assertEqual(path.read_bytes(),before);self.assertEqual(retirement.read_quarantines(f.state),[])
-        self.assertEqual(workflow.read_state(f.state)['issues'][0]['stage'],'review')
+        self.assertEqual(workflow.read_state(f.state)['issues'][0]['stage'],'build')
+        self.assertEqual(workflow.read_state(f.state)['issues'][0]['retry']['rejected_cycles'],1)
         self.assertFalse(any(c[:2]==['tmux','kill-session'] for c in self.action_calls))
 
     def test_changed_revision_does_not_erase_old_published_failure(self):

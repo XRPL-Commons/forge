@@ -82,3 +82,7 @@ complete the issue. On failure, retain the same linked issue and send the PR bac
 with `changes-requested`; the controller releases this completed role attempt.
 If the controller did not supply an assignment UUID, do not invent one: report
 that limitation and retain the explicit head/base-bound human-readable review.
+
+## Issue retry authority
+
+The controller owns the issue transition table and its shared limit of three rejected build cycles. A Review or Audit FAIL returns the same issue/PR to Build while budget remains. Do not implement an independent retry loop or restart a failed issue by changing labels. Work only the current controller assignment, publish the findings, and return after its handoff. Slot release and provider restarts never reset an issue retry budget.

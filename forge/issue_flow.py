@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .observability import connect
+from .workflow_definition import QUEUES
 
 STEPS = {'backlog': 0, 'ready': 0, 'build': 1, 'review': 2, 'audit': 3, 'done': 4}
 
@@ -130,7 +131,7 @@ def _pr_stage(pr, row):
             return 'held'
         if number in work.get('conflicts', []):
             return 'unknown'
-        for key, stage in [('sentback', 'build'), ('limbo', 'build'), ('review', 'review'), ('audit', 'audit')]:
+        for key, stage in QUEUES.items():
             if number in work.get(key, []):
                 return stage
     if pr.get('state') == 'closed':

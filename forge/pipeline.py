@@ -1,5 +1,6 @@
 """Shared eligibility used by the controller, legacy bridge, and dashboard."""
-STAGES = frozenset({"ready-for-review", "ready-for-audit", "changes-requested"})
+from .workflow_definition import PR_LABELS
+STAGES = frozenset(PR_LABELS)
 
 
 def classify(items, author):

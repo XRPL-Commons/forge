@@ -91,6 +91,9 @@ def prepare(state, session, proof, *, action='retired', unbound_startup=False):
                  'slot_generation': slot.get('generation') if slot else None,
                  'unbound_startup': cancelling_unbound,
                  'action': action, 'reason': proof['reason'], 'phase': 'prepared', 'prepared_at': time.time()}
+        from .workflow_results import from_handoff
+        result=from_handoff(evidence) if action=='retired' else None
+        if result is not None:value['issue_result']=result
         directory = _directory(state)
         prepared = directory / 'prepared'
         prepared.mkdir(mode=0o700, exist_ok=True)
@@ -115,6 +118,9 @@ def _apply(state, ticket):
              'verified': True, 'released': True, 'assignment_id': ticket['assignment_id'],
              'generation': generation, 'released_generation': ticket['generation'],
              'session': ticket['session'], 'reason': ticket['reason']}
+    if ticket.get('issue_result') is not None:
+        from .workflow_results import record
+        record(state,ticket['issue_result'])
     if ticket['assignment_id']:
         result = engine.transition(state, ticket['assignment_id'], ticket['action'],
             generation=generation, reason=ticket['reason'], proof=proof,

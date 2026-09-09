@@ -58,7 +58,7 @@ def gh_json(args,run=subprocess.run):
 
 def canonical_pr(state,repo,number,role,run=subprocess.run,*,author=None):
     value=gh_json(['pr','view',str(number),'--repo',repo,'--json',
-        'number,url,state,isDraft,headRefOid,baseRefOid,closingIssuesReferences,labels,author'],run)
+        'number,url,state,isDraft,headRefOid,baseRefOid,closingIssuesReferences,labels,author,reviews'],run)
     labels={x['name'] for x in value.get('labels',[])}
     needed={'review':'ready-for-review','audit':'ready-for-audit'}
     if (value.get('number')!=number or value.get('url')!=f'https://github.com/{repo}/pull/{number}'
@@ -86,6 +86,9 @@ def canonical_pr(state,repo,number,role,run=subprocess.run,*,author=None):
             raise workflow.Refused('linked_issue_not_open_and_eligible')
         numbers.append(n)
     if not numbers:raise workflow.Refused('pr_requires_linked_issue')
+    if role=='audit' or role=='build' and stage_labels=={'changes-requested'}:
+        from .workflow_results import before_rework
+        before_rework(state,repo,value,author,next_role=role)
     record={'repo':repo,'number':number,'head':value['headRefOid'],'base':value['baseRefOid'],
             'issue_numbers':sorted(set(numbers)),'role':role,'observed_at':time.time()}
     atomic_json(pr_path(state,repo,number),record)
@@ -104,7 +107,7 @@ def facts(state,snap,extra=None):
         elif item.get('attention_state')=='STALLED' or item.get('on_hold'):disposition='stalled';reason='recorded_issue_blocker'
         if stage=='held':stage={1:'build',2:'review',3:'audit'}.get(item.get('step'),'queued')
         if stage in ('ready','backlog'):stage='queued'
-        if stage not in {'queued','build','review','audit','done','cancelled','unknown'}:stage='unknown'
+        if stage not in workflow.STAGES:stage='unknown'
         prs=[]
         for number in item.get('pr_numbers',[]):
             pr={'number':number,'head':None,'base':None}
@@ -159,6 +162,9 @@ def current(state,session):
 
 def validate_target(config,state,a,*,run=subprocess.run):
     repo=repository(config,repo=a['repo']);snap=snapshot(state,repo.repo)
+    issues=workflow.read_state(state,repo.repo)['issues']
+    if any(i['number'] in a['issue_numbers'] and i['stage']=='failed' for i in issues):
+        raise workflow.Refused('issue_retry_limit_reached')
     if a.get('pr'):
         target=canonical_pr(state,repo.repo,a['pr']['number'],a['role'],run,author=repo.author)
         if target['issue_numbers']!=a['issue_numbers'] or any(target[k]!=a['pr'][k] for k in ('head','base')):
@@ -186,7 +192,7 @@ def confirmed_absent(session,run=subprocess.run):
 
 
 CANCELABLE_TARGET_REASONS = {
-    'assignment_candidate_changed', 'assignment_no_longer_eligible', 'assignment_issue_not_open',
+    'issue_retry_limit_reached', 'assignment_candidate_changed', 'assignment_no_longer_eligible', 'assignment_issue_not_open',
     'pr_not_currently_eligible', 'pr_stage_changed', 'pr_author_changed',
     'linked_issue_not_open_and_eligible', 'pr_requires_linked_issue', 'issue_link_identity_conflict',
 }
@@ -217,14 +223,20 @@ def reserve(config,state,session,*,run=subprocess.run):
         else:raise workflow.Refused('existing_execution_requires_reconciliation')
     if slot and slot['state']!='free':raise workflow.Refused('existing_slot_still_occupied')
     snap=snapshot(state,repo.repo);target=None;numbers=[]
+    def exhausted(numbers):
+        return any(i['number'] in numbers and i['stage']=='failed' for i in workflow.read_state(state,repo.repo)['issues'])
     candidates=snap['work'].get({'build':'sentback','review':'review','audit':'audit'}[role],[])
     if role=='build':candidates=list(dict.fromkeys(candidates+snap['work'].get('limbo',[])))
     refused=[]
     for number in candidates[:20]:
-        try:target=canonical_pr(state,repo.repo,number,role,run,author=repo.author);numbers=target['issue_numbers'];break
+        try:
+            candidate=canonical_pr(state,repo.repo,number,role,run,author=repo.author)
+            if exhausted(candidate['issue_numbers']):
+                refused.append('issue_retry_limit_reached');continue
+            target=candidate;numbers=target['issue_numbers'];break
         except workflow.Refused as exc:refused.append(str(exc))
     if target is None:
-        eligible=snap['schedule'].get('eligible',[]) if role=='build' else []
+        eligible=[n for n in snap['schedule'].get('eligible',[]) if not exhausted([n])] if role=='build' else []
         if not eligible:raise workflow.Refused(refused[0] if refused else 'no_eligible_assignment')
         numbers=[eligible[0]]
     snap,revision=reconcile_repository(state,repo.repo,extra=target)
@@ -336,17 +348,22 @@ def next_for_assignment(state,repo,assignment_id,plan):
     observed=observe_generation(a['session'])
     if not observed or observed['id']!=a['generation']:raise workflow.Refused('assignment_generation_changed')
     number=a['issue_numbers'][0]
+    if any(i['number']==number and i['stage']=='failed' for i in data['issues']):return None
     return number if number in plan.get('eligible',[]) else None
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['bootstrap','reconcile','observe','reserve','prompt','current','guard','bind','submitted','uncertain','begin-send','blocked'])
+    parser.add_argument('action',choices=['retry-failed','bootstrap','reconcile','observe','reserve','prompt','current','guard','bind','submitted','uncertain','begin-send','blocked'])
     parser.add_argument('--state',required=True);parser.add_argument('--config',required=True)
     parser.add_argument('--session');parser.add_argument('--repo');parser.add_argument('--generation');parser.add_argument('--provider');parser.add_argument('--reason')
+    parser.add_argument('--issue',type=int);parser.add_argument('--event-id')
     args=parser.parse_args()
     try:
-        if args.action=='bootstrap':
+        if args.action=='retry-failed':
+            repo=repository(args.config,repo=args.repo)
+            print(json.dumps(workflow.retry_failed(args.state,repo.repo,args.issue,reason=args.reason,source_event_id=args.event_id)))
+        elif args.action=='bootstrap':
             for repo in load_repositories(args.config):
                 if repo.enabled:
                     try:reconcile_repository(args.state,repo.repo)

@@ -734,6 +734,28 @@ const fs = require("fs"),
   assert.equal(await legacyHeld.locator('[data-issue]').count(),0);
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await page.evaluate(()=>{fleet.execution_quarantines={status:'ok',items:[]};delete window.beforeQuarantineSlots;render();});
+  await page.evaluate(()=>{
+    const issue=fleet.workflow.issues.find(i=>i.number===1);
+    window.retryIssueBefore=JSON.parse(JSON.stringify(issue));
+    Object.assign(issue,{stage:"failed",disposition:"stalled",reason:"rejected_cycle_limit",retry:{rejected_cycles:3,max_rejected_cycles:3}});
+    render();
+  });
+  const failedIssue=page.locator('#attention [data-card-issue="example/academy#1"]');
+  assert.equal(await failedIssue.count(),1);
+  assert.match(await failedIssue.innerText(),/FAILED/);
+  assert.match(await failedIssue.innerText(),/3 rejected cycles/);
+  assert.equal(await failedIssue.locator('[data-slot-action]').count(),0);
+  assert.match(await page.locator('#attention-title').innerText(),/failed/);
+  await page.evaluate(()=>{
+    Object.assign(fleet.workflow.issues.find(i=>i.number===1),window.retryIssueBefore);
+    delete fleet.workflow.issues.find(i=>i.number===1).retry;
+    delete window.retryIssueBefore;
+    const issue=fleet.workflow.issues.find(i=>i.number===1);
+    window.priorDisposition=issue.disposition;issue.disposition="pending";
+    render();
+  });
+  assert.match(await page.locator('[data-slot-session="academy-build"] .slot-state').innerText(),/Verifying assignment/);
+  await page.evaluate(()=>{fleet.workflow.issues.find(i=>i.number===1).disposition=window.priorDisposition;delete window.priorDisposition;render();});
   const updateStart=documentRequests;
   servedDashboardVersion="b".repeat(64);fleet.dashboard_version=servedDashboardVersion;
   await Promise.all([page.waitForURL(url=>url.searchParams.get('ui_version')===servedDashboardVersion),page.evaluate(()=>{void load();})]);
