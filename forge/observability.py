@@ -166,7 +166,15 @@ def classify_evidence(item):
     # Audit headings and explicit criticality lines identify audit-related content,
     # including Markdown used by the live auditor. They never certify a pass.
     marker = r'(?im)^\s*(?:#{1,6}\s*)?(?:\*{1,2})?(?:Criticality:\s*(?:NORMAL|CRITICAL|UNKNOWN)\b|Security audit\b|Criticality classification\b)'
-    if item.get('kind') != 'audit' and re.search(marker, item.get('body', '')):
+    from .role_result import parse_role_result
+    try:
+        result = parse_role_result(item.get('body') or '')
+        structured_audit = result is not None and result['role'] == 'audit'
+    except ValueError:
+        # Retain an ambiguous result in audit history so it cannot silently
+        # expose an older PASS. The approval verifier rejects the invalid record.
+        structured_audit = True
+    if item.get('kind') != 'audit' and (structured_audit or re.search(marker, item.get('body', ''))):
         item['source_kind'] = item['kind']
         item['kind'] = 'audit'
     elif item.get('kind') == 'comment' and re.search(

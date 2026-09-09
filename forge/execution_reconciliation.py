@@ -27,7 +27,7 @@ def acknowledged(state,record,checkpoint):
             or value.get('proof_sha256')!=retirement._digest(proof) or not isinstance(proof,dict)
             or proof.get('checkpoint_id')!=record['id'] or proof.get('generation')!=checkpoint['evidence']['generation']
             or proof.get('assignment_id')!=(checkpoint['evidence'].get('assignment') or {}).get('id')
-            or proof.get('session')!=checkpoint['evidence']['session'] or proof.get('kind') not in {'verified_published_role_result','verified_operator_role_retry'}):
+            or proof.get('session')!=checkpoint['evidence']['session'] or proof.get('kind') not in {'verified_published_role_result','verified_operator_role_retry','verified_human_approval_wait'}):
         raise Unverified('reconciliation_receipt_invalid')
     return True
 
@@ -168,7 +168,7 @@ def _proof(config,state,key,run,*,retry_reason=None):
     if not isinstance(reviews,list) or len(reviews)>=100:raise Unverified('reconciliation_reviews_unbounded')
     # The shared parser scopes to the exact assigned revision. Later revisions
     # cannot erase a published result from this retired execution.
-    policy_sha=None
+    policy_sha=None;wait_proof=None
     if retry_reason is not None:
         expected='ready-for-review' if role=='review' else 'ready-for-audit'
         if (pr['state']!='OPEN' or labels & {'ready-for-review','ready-for-audit','changes-requested'}!={expected}
@@ -177,19 +177,28 @@ def _proof(config,state,key,run,*,retry_reason=None):
         submitted=None;review={'id':None,'body':''};outcome='retry'
     else:
         old=[r for r in reviews if r.get('commit',{}).get('oid')==a['pr']['head']]
-        submitted,review,outcome=_latest_role_result(old,role,repo.author,a,{'session_created':e['session_created']},time.time())
-        if outcome not in {'pass','fail'} or submitted>record['released_at']:
+        try:
+            submitted,review,outcome=_latest_role_result(old,role,repo.author,a,{'session_created':e['session_created']},time.time())
+        except Unverified as exc:
+            if role!='audit' or str(exc)!='assigned_step_record_missing':raise
+            # A redundant auditor can correctly stop without publishing another
+            # result. Verify the current policy wait, never attribute an earlier
+            # worker's PASS to this assignment or count another build cycle.
+            from .human_wait import _check
+            wait_proof=_check(config,state,repo.repo,run,assignment=a)['evidence']
+            submitted=None;review={'id':None,'body':''};outcome='waiting'
+        if wait_proof is None and (outcome not in {'pass','fail'} or submitted>record['released_at']):
             raise Unverified('reconciliation_role_result_unverified')
-        if role=='audit':
+        if role=='audit' and wait_proof is None:
             exact=all(re.search(r'(?<![0-9a-f])'+re.escape(a['pr'][k])+r'(?![0-9a-f])',review.get('body','')) for k in ('head','base'))
             if not exact or outcome=='fail' and not _exact_audit_failure(review,outcome,a):
                 raise Unverified('reconciliation_audit_revision_unverified')
     current_head=pr.get('headRefOid');current_base=pr.get('baseRefOid')
     if any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{40,64}',v) for v in (current_head,current_base)):
         raise Unverified('reconciliation_pr_revision_invalid')
-    human_approval_pending=role=='audit' and pr['state']=='OPEN' and 'critical' in labels and outcome=='pass'
+    human_approval_pending=role=='audit' and pr['state']=='OPEN' and 'critical' in labels and outcome in {'pass','waiting'}
     if retry_reason is None and pr['state']=='OPEN' and current_head==a['pr']['head']:
-        expected='ready-for-audit' if outcome=='pass' else 'changes-requested'
+        expected='ready-for-audit' if outcome in {'pass','waiting'} else 'changes-requested'
         if labels & {'ready-for-review','ready-for-audit','changes-requested'}!={expected}:raise Unverified('reconciliation_role_outcome_not_applied')
     if retry_reason is not None and head!=e['head']:raise Unverified('operator_retry_checkpoint_changed')
     checkout_basis='canonical_candidate_commit';checkout_publication=None
@@ -217,12 +226,13 @@ def _proof(config,state,key,run,*,retry_reason=None):
     if current_assignment!=assignments or any(s.get('assignment_id') or s.get('generation') for s in current_view['slots'] if s['session']==e['session']):
         raise Unverified('reconciliation_assignment_changed')
     _absent(config,clone,run);run.remaining()
-    return {'kind':'verified_operator_role_retry' if retry_reason is not None else 'verified_published_role_result',
+    return {'kind':('verified_operator_role_retry' if retry_reason is not None else
+                    'verified_human_approval_wait' if wait_proof is not None else 'verified_published_role_result'),
         'source':'operator_retry' if retry_reason is not None else 'automatic_result','retry_reason':retry_reason,'policy_sha256':policy_sha,'checkpoint_id':key,'generation':e['generation'],
         'assignment_id':a['id'],'session':e['session'],'repo':repo.repo,'role':role,'pr':number,
         'assigned_head':a['pr']['head'],'assigned_base':a['pr']['base'],'current_head':current_head,'current_base':current_base,
         'current_labels':sorted(labels),'review_id':review['id'],'review_sha256':hashlib.sha256(review.get('body','').encode()).hexdigest(),
-        'outcome':outcome,'human_approval_pending':human_approval_pending,'checkout_basis':checkout_basis,'checkout_publication':checkout_publication,'published_at':submitted,'head':head,'branch':branch,'checkpoint_sha256':record['checkpoint_sha256']}
+        'outcome':outcome,'human_wait':wait_proof,'human_approval_pending':human_approval_pending,'checkout_basis':checkout_basis,'checkout_publication':checkout_publication,'published_at':submitted,'head':head,'branch':branch,'checkpoint_sha256':record['checkpoint_sha256']}
 
 
 def reconcile(config,state,session,*,lock_fd=8,run=subprocess.run,retry_checkpoint=None,retry_reason=None):
@@ -245,6 +255,7 @@ def reconcile(config,state,session,*,lock_fd=8,run=subprocess.run,retry_checkpoi
         if path.is_symlink() or path.stat().st_mode & 0o077:raise Unverified('reconciliation_directory_not_private')
         atomic_json(path/(key+'.json'),{'schema':1,'id':key,'checkpoint_sha256':first['checkpoint_sha256'],
             'proof':first,'proof_sha256':retirement._digest(first),'reconciled_at':time.time()})
+        (Path(state)/(session+'.up')).unlink(missing_ok=True)
         return {'reconciled':True,'reason':first['kind'],'id':key}
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         return {'reconciled':False,'reason':str(exc) if isinstance(exc,Unverified) else 'reconciliation_evidence_unavailable'}

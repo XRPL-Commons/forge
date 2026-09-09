@@ -2400,6 +2400,13 @@
       function quarantineFailure(q) { return typeof q.last_lifecycle_failure === "string" ? q.last_lifecycle_failure : q.last_lifecycle_failure?.reason || q.reason; }
       function quarantineGuidance(q) {
         const reason=quarantineFailure(q);
+        // Describe the recorded blocker, without using prose to change workflow state.
+        const report=q.final_message || "";
+        if (/Automatic approval review rejected/i.test(report)) return ["The worker reported a permission requirement.", "Review the exact permission request in the worker report before resuming validation."];
+        if (/GitHub reports conflicts|merge conflicts/i.test(report)) return ["The worker reported merge conflicts in the PR.", "Return the PR to Build to resolve the conflicts, then repeat Review and Audit."];
+        if (/overlap(?:s|ping)?\b/i.test(report)) return ["The worker reported overlapping work in an existing PR.", "Decide which PR should own this work and explicitly assign it before resuming the builder."];
+        if (/(?:forbid|prohibit|hard-fail rule)/i.test(report) && /workflow|policy/i.test(report)) return ["The worker reported conflicting scope and policy instructions.", "Resolve the conflicting instructions before resuming this assignment. Repeating the same request will leave it blocked."];
+        if (/blocked on typechecking/i.test(report)) return ["The worker reported failing typechecks.", "Decide the typecheck repair scope, then resume the preserved build. The recorded report contains the passing and failing checks."];
         return {
           assigned_review_result_unverified: ["Forge could not verify the review handoff.", "Compare the published PR review and current commit with Forge’s assignment, then reconcile the review workspace before retrying."],
           assigned_step_not_complete: ["Forge could not confirm this step was handed off.", "Check the current issue labels and linked PR against the assignment. Resolve any conflicting state, then reconcile the workspace before retrying."],

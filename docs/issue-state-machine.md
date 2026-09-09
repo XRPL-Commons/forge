@@ -84,6 +84,20 @@ records do not expire automatically. Their issue status and historical attempt a
 shown separately. This change does not delete preserved work or guess a legacy
 assignment to clear those records.
 
+Completed role workspaces can be recovered when their clean checkout is verified
+as published history, including an ancestor of an open PR. An audit PASS awaiting
+human approval finishes the worker step without authorizing a merge. Human-wait
+recognition consumes the revision-bound `FORGE_RESULT` record; it does not depend
+on the worker choosing a particular prose heading. Legacy explicit headings remain
+supported, while malformed or mismatched records fail closed.
+
+A redundant auditor that stops without a duplicate review can be recovered only
+after fresh verification of the exact candidate's existing human-approval wait.
+That recovery does not attribute the earlier PASS to the new assignment or record
+another rejected cycle. Intentional retirement clears the running marker after
+successful teardown; reconciliation also clears stale markers from older releases.
+Neither operation treats a recovered workspace as a crashed worker.
+
 ## Rollout and validation
 
 The schema is additive (`issue_retry_state`, `issue_results`, `rejected_build_cycles`).

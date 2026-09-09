@@ -196,11 +196,15 @@ class ExecutionReconciliationTests(unittest.TestCase):
         self._setup('audit')
         self.pr['reviews'][0]['body']='Audit PASS '+self.pr_ref['head']+' '+self.pr_ref['base']+' awaiting human approval'
         self.pr['labels']=[{'name':'ready-for-audit'},{'name':'critical'}]
+        workflow.reconcile(self.fixture.state,'owner/app','critical',time.time(),
+            [{'number':1,'stage':'audit','disposition':'critical','reason':'human_approval_required','prs':[self.pr_ref]}],
+            source_event_id='critical')
         before=copy.deepcopy(self.pr);result=self.run_reconcile();self.assertTrue(result['reconciled'],result)
         self.assertEqual(self.pr,before)
         ack=json.loads((self.fixture.state/'execution-retirements'/'reconciled'/(self.key+'.json')).read_text())
         self.assertTrue(ack['proof']['human_approval_pending'])
-        self.assertEqual(workflow.read_state(self.fixture.state)['issues'][0]['stage'],'audit')
+        issue=workflow.read_state(self.fixture.state)['issues'][0]
+        self.assertEqual(issue['stage'],'merge');self.assertEqual(issue['disposition'],'critical')
         self.assertFalse(self.run_reconcile(retry_checkpoint=self.key,retry_reason='retry')['reconciled'])
 
     def test_open_published_checkpoint_exact_or_ancestor_only(self):
@@ -230,6 +234,39 @@ class ExecutionReconciliationTests(unittest.TestCase):
         import fcntl
         fcntl.flock(self.fixture.lock,fcntl.LOCK_UN)
         self.assertEqual(self.run_reconcile()['reason'],'supervisor_lock_required');self.assertEqual(self.reads,0)
+
+    def test_reconciliation_clears_legacy_running_marker_after_verification(self):
+        marker=self.fixture.state/(self.fixture.session+'.up');marker.write_text('running')
+        self.fixture.status=' M file'
+        self.assertFalse(self.run_reconcile()['reconciled']);self.assertTrue(marker.exists())
+        self.fixture.status=''
+        self.assertTrue(self.run_reconcile()['reconciled']);self.assertFalse(marker.exists())
+
+    def test_redundant_auditor_uses_fresh_wait_without_inventing_assignment_result(self):
+        self._setup('audit');self.pr['reviews']=[]
+        self.pr['labels']=[{'name':'ready-for-audit'},{'name':'critical'}]
+        evidence={'repo':'Owner/App','candidates':[{'pr':9,'head':'a'*40,'base':'b'*40,
+                  'issues':[1],'audit_url':'https://github.com/Owner/App/pull/9#pullrequestreview-1'}]}
+        with patch('forge.human_wait._check',return_value={'eligible':True,'evidence':evidence}) as check:
+            result=self.run_reconcile()
+        self.assertTrue(result['reconciled'],result)
+        self.assertEqual(check.call_count,2)
+        self.assertEqual(check.call_args.kwargs['assignment']['id'],self.a['id'])
+        ack=json.loads((self.fixture.state/'execution-retirements'/'reconciled'/(self.key+'.json')).read_text())
+        self.assertEqual(ack['proof']['kind'],'verified_human_approval_wait')
+        self.assertEqual(ack['proof']['outcome'],'waiting')
+        self.assertEqual(ack['proof']['human_wait'],evidence)
+        from forge.workflow_results import from_reconciliation
+        self.assertIsNone(from_reconciliation(ack['proof']))
+
+    def test_redundant_auditor_remains_blocked_when_wait_cannot_be_verified(self):
+        from forge.handoff import Unverified
+        self._setup('audit');self.pr['reviews']=[]
+        self.pr['labels']=[{'name':'ready-for-audit'},{'name':'critical'}]
+        with patch('forge.human_wait._check',side_effect=Unverified('approval_requires_recheck')):
+            result=self.run_reconcile()
+        self.assertFalse(result['reconciled']);self.assertEqual(result['reason'],'approval_requires_recheck')
+        self.assertTrue(retirement.read_quarantines(self.fixture.state))
 
 
 if __name__=='__main__':unittest.main()

@@ -107,6 +107,13 @@ class ExecutionRetirementTests(unittest.TestCase):
         result=self.release();self.assertTrue(result['released'],result)
         self.assertEqual(retirement.read_quarantines(self.state)[0]['execution_state'],'failed')
 
+    def test_intentional_retirement_clears_running_marker_only_after_successful_kill(self):
+        marker=self.state/(self.session+'.up');marker.write_text('running')
+        self.kill_fail=True
+        self.assertFalse(self.release()['released']);self.assertTrue(marker.exists())
+        self.kill_fail=False
+        self.assertTrue(self.release()['released']);self.assertFalse(marker.exists())
+
     def test_exact_assignment_execution_mismatch_keeps_worker(self):
         self.assign()
         value=workflow.read_state(self.state)
@@ -164,8 +171,10 @@ class ExecutionRetirementTests(unittest.TestCase):
 
     def test_postkill_ledger_error_retains_outbox_and_quarantine(self):
         self.assign()
+        marker=self.state/(self.session+'.up');marker.write_text('running')
         with patch.object(workflow,'transition',side_effect=OSError('db unavailable')):result=self.release()
         self.assertTrue(result['released']);self.assertEqual(result['workflow']['status'],'pending')
+        self.assertFalse(marker.exists())
         self.assertTrue(retirement.is_quarantined(self.config,self.state,self.session))
         self.assertEqual(len(list((self.state/'workflow-releases').glob('*.json'))),1)
 

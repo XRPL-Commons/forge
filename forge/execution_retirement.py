@@ -239,10 +239,13 @@ def release(config,state,session,*,lock_fd=8,run=subprocess.run):
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         return {'released':False,'reason':str(exc) if isinstance(exc,Unverified) else 'retirement_evidence_unavailable'}
     # Successful teardown remains successful even if durable follow-up needs replay.
+    marker_error = False
+    try:(Path(state)/(session+'.up')).unlink(missing_ok=True)
+    except OSError:marker_error = True
     ledger=workflow_lifecycle.confirmed(state,ticket)
     try:atomic_json(root/(key+'.json'),{**record,'phase':'confirmed','released':True,'released_at':time.time()})
     except OSError:return {'released':True,'reason':'workspace_quarantined','workflow':ledger,'quarantine':'confirmation_pending'}
-    return {'released':True,'reason':'workspace_quarantined','workflow':ledger,'quarantine':key}
+    return {'released':True,'reason':'workspace_quarantined','workflow':ledger,'quarantine':key,'marker_cleanup_pending':marker_error}
 
 
 def main():

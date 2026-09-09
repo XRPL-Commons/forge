@@ -733,6 +733,10 @@ const fs = require("fs"),
   assert.match(await legacyHeld.innerText(),/Slot release unconfirmed/);
   assert.equal(await legacyHeld.locator('[data-issue]').count(),0);
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.evaluate(()=>{fleet.execution_quarantines.items[0].final_message='GitHub reports conflicts and an old base.';render();});
+  assert.match(await held.innerText(),/reported merge conflicts/);
+  await page.evaluate(()=>{fleet.execution_quarantines.items[0].final_message='Reviewer policy forbids workflow changes.';render();});
+  assert.match(await held.innerText(),/conflicting scope and policy/);
   await page.evaluate(()=>{fleet.execution_quarantines={status:'ok',items:[]};delete window.beforeQuarantineSlots;render();});
   await page.evaluate(()=>{
     const issue=fleet.workflow.issues.find(i=>i.number===1);

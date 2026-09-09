@@ -157,9 +157,16 @@ def _approval_action(pr, repo):
     # A critical label or aggregate GitHub review requirement alone says nothing
     # about audit completion. Require the auditor's explicit PASS and waiting
     # record bound to the collected candidate; later audit records supersede it.
-    if not (re.search(r'(?im)^\s*(?:#{1,6}\s*)?(?:\*{1,2})?(?:security audit|auditor|audit)\b[^\n]*\bPASS\b', body)
-            and re.search(r'(?i)criticality:\s*CRITICAL\b', body)
-            and re.search(r'(?i)awaiting human approval', body)):
+    from .role_result import parse_role_result
+    try:
+        result = parse_role_result(body, expected_head=head, expected_base=pr.get('base_sha'), expected_role='audit')
+    except ValueError:
+        return None  # A malformed or mismatched record cannot fall back to prose.
+    passed = (result['outcome'] == 'pass' if result is not None else
+              bool(re.search(r'(?im)^\s*(?:#{1,6}\s*)?(?:\*{1,2})?(?:security audit|auditor|audit)\b[^\n]*\bPASS\b', body)))
+    if not (passed and (result is not None or (
+            re.search(r'(?i)criticality:\s*CRITICAL\b', body)
+            and re.search(r'(?i)awaiting human approval', body)))):
         return None
     if audit.get('commit_id'):
         if audit['commit_id'] != head:

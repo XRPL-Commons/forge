@@ -125,6 +125,32 @@ class HumanWaitTests(unittest.TestCase):
         self.reviews[0]['body'] = body
         self.assertTrue(self.check()['eligible'])
 
+    def test_structured_pass_accepts_natural_heading_and_rejects_changed_record(self):
+        record = {'schema': 1, 'role': 'audit', 'outcome': 'pass', 'head': self.head,
+                  'base': self.base, 'assignment_id': '11111111-1111-4111-8111-111111111111'}
+        body = 'PASS: no blocking findings.'
+        def publish(value):self.reviews[0]['body'] = body + '\nFORGE_RESULT: ' + json.dumps(value)
+        publish(record)
+        self.assertTrue(self.check()['eligible'])
+        for key, value in [('outcome', 'fail'), ('head', 'c'*40), ('base', 'c'*40),
+                           ('role', 'review'), ('schema', 2)]:
+            with self.subTest(key=key):
+                publish({**record, key: value})
+                self.assertFalse(self.check()['eligible'])
+        publish(record)
+        self.reviews[0]['body'] += '\nFORGE_RESULT: ' + json.dumps(record)
+        self.assertFalse(self.check()['eligible'])
+
+    def test_structured_pass_preserves_authorship_and_human_approval_gates(self):
+        record = {'schema': 1, 'role': 'audit', 'outcome': 'pass', 'head': self.head,
+                  'base': self.base, 'assignment_id': '11111111-1111-4111-8111-111111111111'}
+        self.reviews[0]['body'] = self.audit['body'] + '\nFORGE_RESULT: ' + json.dumps(record)
+        self.reviews[0]['user']['login'] = 'untrusted'
+        self.assertFalse(self.check()['eligible'])
+        self.reviews[0]['user']['login'] = 'forge-bot'
+        self.reviews.append({'state': 'APPROVED', 'commit_id': self.head, 'user': {'login': 'human'}})
+        self.assertEqual(self.check()['reason'], 'approval_requires_recheck')
+
     def test_changed_head_or_base_resumes_auditing(self):
         for key in ('headRefOid', 'baseRefOid'):
             with self.subTest(key=key):
