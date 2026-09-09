@@ -12,6 +12,28 @@ from .workflow import read_state
 SHA = re.compile(r'[0-9a-f]{40,64}')
 
 
+def _rejected_after_build(pr, builder, view, author, now):
+    """A rejection after this build's publication does not undo its handoff.
+
+    An unchanged PR rejected before the builder started is still unfinished
+    rework. Treating that as a handoff would create endless no-progress launches.
+    """
+    from .handoff import _latest_role_result, _exact_audit_failure, Unverified
+    reviews=pr.get('reviews')
+    if not isinstance(reviews,list) or len(reviews)>=100:return False
+    candidate={'number':pr['number'],'head':pr['headRefOid'],'base':pr['baseRefOid']}
+    attempts=[a for a in view['assignments'] if a.get('role') in {'review','audit'} and a.get('pr')==candidate
+              and a.get('submitted_at') is not None and a['submitted_at']>=builder['submitted_at']]
+    if not attempts:return False
+    latest=max(attempts,key=lambda a:(a['submitted_at'],a['role']=='audit'))
+    try:
+        at,review,outcome=_latest_role_result(reviews,latest['role'],author,latest,
+                                            {'session_created':int(latest['generation'].split('|')[1])},now)
+        return (outcome=='fail' and at>=builder['submitted_at']
+                and (latest['role']!='audit' or _exact_audit_failure(review,outcome,latest)))
+    except (Unverified,ValueError,TypeError,KeyError,AttributeError):return False
+
+
 def check(config,state,session,run,now,*,unverified,read_command,identify_session):
     if not session.endswith('-build'):
         return None
@@ -63,7 +85,7 @@ def check(config,state,session,run,now,*,unverified,read_command,identify_sessio
     verified=[]
     for number in sorted(set(candidates)):
         pr=json.loads(command(['gh','pr','view',str(number),'--repo',repo.repo,'--json',
-            'number,url,state,isDraft,headRefOid,baseRefOid,closingIssuesReferences,labels,author,mergeCommit,mergedAt']))
+            'number,url,state,isDraft,headRefOid,baseRefOid,closingIssuesReferences,labels,author,mergeCommit,mergedAt,reviews']))
         if (pr.get('number')!=number or pr.get('url','').lower()!=f'https://github.com/{repo.repo}/pull/{number}'.lower()
                 or pr.get('author',{}).get('login','').lower()!=repo.author.lower()
                 or pr.get('isDraft') is not False or not SHA.fullmatch(pr.get('headRefOid',''))
@@ -80,9 +102,10 @@ def check(config,state,session,run,now,*,unverified,read_command,identify_sessio
         if not valid or linked!=set(numbers):continue
         merge=(pr.get('mergeCommit') or {}).get('oid')
         if pr['state']=='OPEN':
-            if (labels & {'ready-for-review','ready-for-audit','changes-requested'} not in
-                    ({'ready-for-review'},{'ready-for-audit'}) or head!=pr['headRefOid']):continue
-            publication='current_published_pr_head'
+            stages=labels & {'ready-for-review','ready-for-audit','changes-requested'}
+            if stages not in ({'ready-for-review'},{'ready-for-audit'},{'changes-requested'}) or head!=pr['headRefOid']:continue
+            if stages=={'changes-requested'} and not _rejected_after_build(pr,assignment,view,repo.author,now):continue
+            publication='current_published_pr_head_rejected' if stages=={'changes-requested'} else 'current_published_pr_head'
         elif pr['state']=='MERGED' and pr.get('mergedAt') and isinstance(merge,str) and SHA.fullmatch(merge):
             if head!=merge:
                 if head!=pr['headRefOid']:continue

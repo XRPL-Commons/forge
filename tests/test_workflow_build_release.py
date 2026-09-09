@@ -69,6 +69,25 @@ class TrackedBuildReleaseTests(unittest.TestCase):
         self.pr['labels']=[{'name':'ready-for-review'}];self.pr['isDraft']=True
         with self.assertRaises(Refused):self.decision()
 
+    def test_reviewer_rejection_after_build_publication_does_not_quarantine_builder(self):
+        from datetime import datetime,timezone
+        reviewer=dict(id='review-1',role='review',submitted_at=80,generation='$2|70|%2|20',
+                      pr=dict(number=10,head=self.head,base=self.main))
+        self.view['assignments'].append(reviewer)
+        self.pr['labels']=[{'name':'changes-requested'}]
+        self.pr['reviews']=[dict(id='R1',author={'login':'worker'},state='CHANGES_REQUESTED',body='Fix the design log',
+                                commit={'oid':self.head},submittedAt=datetime.fromtimestamp(90,timezone.utc).isoformat())]
+        result=self.decision()
+        self.assertEqual(result['evidence']['checkout_basis'],'current_published_pr_head_rejected')
+        # A builder assigned after this rejection has no new completed handoff.
+        self.a['submitted_at']=95
+        with self.assertRaises(Refused):self.decision()
+        self.a['submitted_at']=60
+        for change in ({'author':{'login':'other'}},{'commit':{'oid':'f'*40}},{'state':'DISMISSED'}):
+            original=copy.deepcopy(self.pr['reviews'][0]);self.pr['reviews'][0].update(change)
+            with self.subTest(change=change),self.assertRaises(Refused):self.decision()
+            self.pr['reviews'][0]=original
+
     def test_dirty_unpublished_and_changed_generation_are_preserved(self):
         self.status='?? unfinished'
         with self.assertRaisesRegex(Refused,'worktree_not_clean'):self.decision()
