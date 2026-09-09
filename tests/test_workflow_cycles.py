@@ -50,6 +50,17 @@ class RetryBudgetTests(Fixture):
             with self.assertRaises(engine.Refused):self.start('build')
         self.assertEqual(sum(a['state']!='retired' for a in engine.read_state(self.state)['assignments']),0)
 
+    def test_failed_issue_and_policy_survive_real_dashboard_api_projection(self):
+        from tests.test_dashboard import dashboard
+        from unittest.mock import patch
+        for _ in range(3):self.reject_observed()
+        with patch.object(dashboard,'WD',str(self.state.parent)),patch.object(dashboard,'repos',return_value=[self.repo]):
+            value=dashboard.workflow_view(include_history=False)
+        self.assertEqual(value['definition']['max_rejected_cycles'],3)
+        projected=dashboard.dashboard_workflow(value,[],{'issues':[]})
+        self.assertEqual([(i['number'],i['stage']) for i in projected['issues']],[(17,'failed')])
+        self.assertEqual(projected['issues'][0]['retry']['rejected_cycles'],3)
+
     def test_repeated_observation_and_receipt_do_not_consume_extra_cycles(self):
         self.reject_observed()
         from forge.workflow_results import before_rework

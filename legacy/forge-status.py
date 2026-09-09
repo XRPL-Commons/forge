@@ -218,6 +218,7 @@ def workflow_view(repo=None, after=0, limit=100, include_history=True, recent=Fa
         if value.get('status') not in {'ok','uninitialized'}:
             raise ValueError('Invalid workflow status')
         result={'status':value['status'],'read_at':time.time()}
+        if isinstance(value.get('definition'),dict):result['definition']=value['definition']
         for key in ('issues','assignments','slots','repositories'):
             if not isinstance(value.get(key),list):
                 raise ValueError('Invalid workflow collection')
@@ -260,7 +261,7 @@ def dashboard_workflow(value, repositories, flow, *, now=None):
     issues=[]
     for item in value.get('issues',[]):
         key=(item['repo'].lower(),item['number']);stage=item.get('stage')
-        if stage in {'build','review','audit'}:issues.append(item)
+        if stage in {'build','review','audit','merge','failed'}:issues.append(item)
         elif stage in {'queued','backlog'} and key in assigned:issues.append({**item,'stage':'build'})
         elif stage in {'queued','backlog'} and key in ready:issues.append(item)
     return {**value,'issues':issues,'projection':'pipeline','inventory_issue_count':len(value.get('issues',[]))}
