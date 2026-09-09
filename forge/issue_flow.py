@@ -342,7 +342,22 @@ def read_flow(state, repository_rows, health=None, *, now=None):
             number = entry.get('number')
             if (type(number) is not int or number <= 0 or str(number) != str(key)
                     or entry.get('kind') not in ('issue', 'pr') or entry.get('state') != 'open'
-                    or entry.get('repo', repo) != repo or (repo, number) in items):
+                    or entry.get('repo', repo) != repo):
+                continue
+            prior=items.get((repo,number))
+            if prior:
+                # A fresh revision envelope supersedes head/base projection,
+                # while historical review/audit evidence stays available. Old
+                # summaries cannot pass approval checks for the new head.
+                if (entry['kind']=='pr' and 'revision_status' in entry
+                        and _epoch(row.get('observed_at'))>=_epoch(prior.get('observed_at'))):
+                    revision_ok=(entry.get('revision_status')=='canonical' and all(
+                        isinstance(entry.get(k),str) and re.fullmatch('[0-9a-f]{40,64}',entry[k])
+                        for k in ('head_sha','base_sha')))
+                    prior.update(head_sha=entry['head_sha'] if revision_ok else None,
+                                 base_sha=entry['base_sha'] if revision_ok else None)
+                    prior.update({k:entry[k] for k in ('title','body','labels','updated_at') if k in entry})
+                    prior['observed_at']=row.get('observed_at')
                 continue
             labels = entry.get('labels') if isinstance(entry.get('labels'), list) else []
             body = entry.get('body') if isinstance(entry.get('body'), str) else ''
@@ -352,6 +367,9 @@ def read_flow(state, repository_rows, health=None, *, now=None):
                 'url': entry.get('url') or entry.get('html_url'),
                 'created_at': entry.get('created_at'), 'updated_at': entry.get('updated_at'),
                 'observed_at': row.get('observed_at'), 'metadata_source': 'snapshot_inventory'}
+            if entry['kind']=='pr' and entry.get('revision_status')=='canonical':
+                items[(repo,number)].update({k:entry[k] for k in ('head_sha','base_sha')
+                    if isinstance(entry.get(k),str) and re.fullmatch('[0-9a-f]{40,64}',entry[k])})
     # Issue identity is explicit in ready/wip and scheduling issue lists. Held
     # snapshots mix issue and PR identities, so unknown held numbers stay unknown.
     for repo, row in rows.items():

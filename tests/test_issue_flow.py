@@ -1,4 +1,5 @@
 import json
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +146,21 @@ class IssueFlowTests(unittest.TestCase):
                 'evidence': [{'kind': 'audit', 'created_at': '2026-01-02', 'commit_id': head,
                               'body': '## Security audit — PASS · Criticality: CRITICAL\nAwaiting human approval.',
                               'url': 'https://github.com/owner/app/pull/10#review'}], **overrides}
+
+    def test_new_snapshot_head_cannot_inherit_old_critical_audit_pass(self):
+        self.save(1,labels=['wip'])
+        self.pr(10,**self.audited_pr())
+        self.rows[0].update(observed_at=time.time(),work={'audit':[10]},item_details={'10':{
+            'kind':'pr','number':10,'state':'open','body':'Closes #1','labels':['critical','ready-for-audit'],
+            'head_sha':'c'*40,'base_sha':'d'*40,'revision_status':'canonical'}})
+        issue=read_flow(self.state,self.rows)['issues'][0]
+        self.assertEqual(issue['state'],'audit')
+        self.assertFalse(any(a['kind']=='human_approval' for a in issue.get('actions',[])))
+        # History is still stored with the original head and evidence.
+        db=connect(self.state)
+        raw=json.loads(db.execute("SELECT data FROM items WHERE number=10").fetchone()[0])
+        db.close()
+        self.assertEqual(raw['head_sha'],'a'*40)
 
     def test_current_audited_critical_pr_exposes_action_without_drawer(self):
         self.save(1, labels=['wip'])

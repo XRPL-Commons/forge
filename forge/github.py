@@ -1,5 +1,7 @@
 """Bounded, paginated GitHub reads. Errors never mean an empty queue."""
 import json
+import re
+from datetime import datetime
 import subprocess
 import time
 
@@ -52,6 +54,65 @@ class GitHub:
         except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
             raise GitHubError(f"GitHub state unavailable: {type(exc).__name__}") from exc
 
+    def pr_revisions(self, repository, details, previous):
+        """Join a canonical pull inventory to this issue observation, never by age alone."""
+        prs = {n: d for n, d in details.items() if d['kind'] == 'pr'}
+        if not prs:
+            return
+        old = (previous.get('item_details', {}) if previous.get('status') == 'ok'
+               and str(previous.get('repo', '')).lower() == repository.repo.lower() else {})
+        if not isinstance(old, dict):
+            old = {}
+        pending = {}
+        for number, detail in prs.items():
+            saved = old.get(number, {})
+            if not isinstance(saved, dict):
+                saved = {}
+            stamp = detail.get('updated_at')
+            try:
+                parsed = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                valid_stamp = parsed.tzinfo is not None
+            except (AttributeError, TypeError, ValueError):
+                valid_stamp = False
+            if (valid_stamp and saved.get('kind') == 'pr'
+                    and saved.get('revision_status') == 'canonical'
+                    and saved.get('revision_updated_at') == stamp == saved.get('updated_at')
+                    and all(isinstance(saved.get(k), str) and re.fullmatch('[0-9a-f]{40,64}', saved[k])
+                            for k in ('head_sha', 'base_sha'))):
+                detail.update({k: saved[k] for k in ('head_sha', 'base_sha', 'revision_status', 'revision_updated_at')})
+            else:
+                detail.update(head_sha=None, base_sha=None, revision_status='unknown', revision_updated_at=None)
+                if valid_stamp:
+                    pending[number] = detail
+        if not pending:
+            return
+        pulls = self.pages(f"repos/{repository.repo}/pulls?state=open&per_page=100")
+        if len(pulls) > 10000:
+            raise GitHubError('PR revision inventory unbounded')
+        by_number = {}
+        for pr in pulls:
+            if not isinstance(pr, dict) or type(pr.get('number')) is not int:
+                raise GitHubError('PR revision inventory malformed')
+            key = str(pr['number'])
+            if key in by_number:
+                raise GitHubError('PR revision inventory duplicated')
+            by_number[key] = pr
+        for number, detail in pending.items():
+            pr = by_number.get(number, {})
+            base, head = pr.get('base') or {}, pr.get('head') or {}
+            if not isinstance(base, dict) or not isinstance(head, dict) or not isinstance(base.get('repo'), dict):
+                continue
+            stamp = detail.get('updated_at')
+            if (not isinstance(stamp, str) or not stamp or pr.get('updated_at') != stamp
+                    or pr.get('state') != 'open'
+                    or str(pr.get('html_url', '')).lower() != f'https://github.com/{repository.repo}/pull/{number}'.lower()
+                    or str((base.get('repo') or {}).get('full_name', '')).lower() != repository.repo.lower()
+                    or any(not isinstance(ref.get('sha'), str) or not re.fullmatch('[0-9a-f]{40,64}', ref['sha'])
+                           for ref in (head, base))):
+                continue
+            detail.update(head_sha=head['sha'], base_sha=base['sha'],
+                          revision_status='canonical', revision_updated_at=stamp)
+
     def snapshot(self, repository):
         if not repository.enabled:
             return {"repo": repository.repo, "enabled": False, "status": "disabled", "observed_at": time.time()}
@@ -78,7 +139,8 @@ class GitHub:
         result["schedule"] = schedule
         # Carry identity and explicit closing text in the same observation as
         # queue numbers. The slower history collector must not gate attribution
-        # of a newly opened PR. No extra GitHub request or inferred claim link.
+        # of a newly opened PR. Explicit links come from this inventory; canonical
+        # revision enrichment below adds at most one paginated pull inventory.
         referenced = {number for values in result['work'].values() for number in values}
         result['item_details'] = {
             str(item['number']): {
@@ -89,14 +151,22 @@ class GitHub:
                 'labels': [label['name'] if isinstance(label, dict) else label for label in item['labels']],
                 'draft': item.get('draft', False),
             } for item in items if item['number'] in referenced}
+        previous = {}
+        if self.state:
+            try:
+                from .control import snapshot_path
+                path = snapshot_path(self.state, repository.repo)
+                previous = json.loads(path.read_text()) if path.exists() else {}
+                if not isinstance(previous, dict):
+                    previous = {}
+            except (OSError, ValueError):
+                previous = {}
+        self.pr_revisions(repository, result['item_details'], previous)
         if self.state:
             # Best-effort lifecycle enrichment cannot turn a complete open
             # inventory into unknown admission or block on history collection.
             try:
-                from .control import snapshot_path
                 from .completions import refresh
-                path = snapshot_path(self.state, repository.repo)
-                previous = json.loads(path.read_text()) if path.exists() else {}
                 result['completion_refresh'] = refresh(self.state, repository.repo, items, previous, run=self.run)
             except Exception:
                 result['completion_refresh'] = {'status': 'unavailable'}

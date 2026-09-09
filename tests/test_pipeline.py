@@ -88,19 +88,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(GitHub(run).snapshot(Repository("o/r", "auto:owned-by-me"))["status"], "ownership_blocked")
         self.assertEqual(len(calls), 1)
 
-    def test_snapshot_carries_new_pr_link_evidence_without_extra_reads(self):
+    def test_snapshot_carries_new_pr_links_and_canonical_revision(self):
         rows = [item(16, ['wip'], pr=False, title='Implement fix', state='open'),
                 item(22, ['ready-for-review'], body='Closes #16', title='Fix implementation',
                      html_url='https://github.com/o/r/pull/22', updated_at='2026-09-08T00:00:00Z')]
         calls = []
         def run(command, **kwargs):
             calls.append(command)
-            value = [[{'name': 'auto:owned-by-me'}]] if '/labels?' in command[-1] else [rows]
+            if '/pulls?' in command[-1]:
+                value=[[{'number':22,'state':'open','updated_at':'2026-09-08T00:00:00Z',
+                    'html_url':'https://github.com/o/r/pull/22','head':{'sha':'a'*40},
+                    'base':{'sha':'b'*40,'repo':{'full_name':'o/r'}}}]]
+            else:value = [[{'name': 'auto:owned-by-me'}]] if '/labels?' in command[-1] else [rows]
             return SimpleNamespace(returncode=0, stdout=json.dumps(value))
         with patch('forge.scheduling.SchedulingGitHub.dependency_map', return_value={}), \
              patch('forge.ordering.order_issues', return_value={'eligible': [], 'active': [16]}):
             result = GitHub(run).snapshot(Repository('o/r', 'auto:owned-by-me'))
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(result['item_details']['22']['head_sha'],'a'*40)
         self.assertEqual(result['work']['review'], [22])
         self.assertEqual(result['item_details']['22']['body'], 'Closes #16')
         self.assertEqual(result['item_details']['22']['kind'], 'pr')

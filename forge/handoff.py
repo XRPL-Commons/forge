@@ -490,6 +490,10 @@ def _review_rejection(config, state, session, run, now):
         body=review.get('body','')
         if (not isinstance(body,str) or not identity['session_created']<=submitted<=now
                 or review.get('commit',{}).get('oid')!=head or not review.get('id')):continue
+        from .role_result import parse_role_result
+        try:record=parse_role_result(body)
+        except ValueError as exc:raise Unverified('structured_role_result_invalid') from exc
+        if record is not None:raise Unverified('structured_role_result_requires_assignment')
         # COMMENTED is required for an account reviewing its own PR. Match only
         # a current-head review heading, never quoted findings or task prose.
         explicit=bool(re.match(r'(?i)^(?:correctness\s+)?review of\s+`?'+re.escape(head)+r'`?:\s*changes requested\b',body.strip()))
@@ -526,10 +530,23 @@ def _tracked_completion_assignment(state, session):
     return assignment
 
 
-def _role_review_outcome(review, head):
+def _role_review_outcome(review, head, assignment=None, expected_role=None):
     """Recognize an authored result heading, never a keyword quoted in prose."""
     body=review.get('body')
     if not isinstance(body,str):return None,None
+    from .role_result import parse_role_result
+    try:
+        record=parse_role_result(body,expected_head=head,
+            expected_base=assignment['pr']['base'] if assignment else None,
+            expected_assignment_id=assignment['id'] if assignment else None,
+            expected_role=expected_role)
+    except ValueError as exc:
+        raise Unverified('structured_role_result_invalid') from exc
+    if record is not None:
+        native={'APPROVED':'pass','CHANGES_REQUESTED':'fail'}.get(review.get('state'))
+        if review.get('state') not in {'COMMENTED','APPROVED','CHANGES_REQUESTED'} or native and native!=record['outcome']:
+            raise Unverified('structured_role_result_state_conflict')
+        return record['role'],record['outcome']
     text=body.strip()
     prefix=re.match(r'(?i)^(?:#{1,6}\s*)?(?:\*{1,2})?(security audit|auditor|audit|correctness review|reviewer|review)\b',text)
     role=('audit' if prefix.group(1).lower() in {'security audit','auditor','audit'} else 'review') if prefix else None
@@ -538,7 +555,8 @@ def _role_review_outcome(review, head):
     tail=text[prefix.end():]
     # Existing canonical "Review of FULLSHA: ..." and emitted "Reviewer PASS
     # at/for FULLSHA" are explicit result records, with commit identity below.
-    tail=re.sub(r'^\s+of\s+`?'+re.escape(head)+r'`?\s*:',':',tail,flags=re.I)
+    tail=re.sub(r'^\s+of\s+(?:exact\s+head\s+)?`?'+re.escape(head)+r'`?\s*:',':',tail,flags=re.I)
+    tail=re.sub(r'^\s+(?:result|outcome)\s*:',':',tail,flags=re.I)
     result=re.match(r'(?i)^(?:\*{1,2})?(?:\s*[:—-]\s*|\s+)(PASS|approved|FAIL|changes requested)\b',tail)
     outcome=('pass' if result.group(1).lower() in {'pass','approved'} else 'fail') if result else None
     if review.get('state') not in {'COMMENTED','APPROVED','CHANGES_REQUESTED'} or native and native!=outcome:
@@ -550,10 +568,18 @@ def _latest_role_result(reviews, role, author, assignment, identity, now):
     authored=[]
     for review in reviews:
         if review.get('author',{}).get('login','').lower()!=author.lower():continue
+        if review.get('commit',{}).get('oid')!=assignment['pr']['head']:continue
         record_role,outcome=_role_review_outcome(review,assignment['pr']['head'])
         if record_role!=role:continue
         try:submitted=datetime.fromisoformat(review['submittedAt'].replace('Z','+00:00')).timestamp()
         except (KeyError,ValueError,TypeError):raise Unverified('review_time_unknown')
+        # The unbound parse above must still be valid, but a result published
+        # before this execution cannot belong to its assignment. Same-head
+        # retries keep historical results without borrowing their UUIDs.
+        if submitted<max(identity['session_created'],assignment['submitted_at']):continue
+        # Only this role's current marker may bind to this assignment. A separate
+        # audit record is not evidence for the review assignment UUID.
+        record_role,outcome=_role_review_outcome(review,assignment['pr']['head'],assignment,role)
         authored.append((submitted,review,outcome))
     if not authored:raise Unverified('assigned_step_record_missing')
     submitted,review,outcome=max(authored,key=lambda pair:pair[0])
@@ -596,7 +622,10 @@ def _tracked_role_completion(config,state,session,assignment,run,now):
     labels={label['name'] for label in pr['labels']}
     if (pr.get('number')!=number or pr.get('url','').lower()!=f'https://github.com/{repo.repo}/pull/{number}'.lower()
             or pr.get('author',{}).get('login','').lower()!=repo.author.lower() or pr.get('isDraft') is not False
-            or pr.get('headRefOid')!=assignment['pr']['head'] or 'hold' in labels):raise Unverified('assigned_pr_changed')
+            or not isinstance(pr.get('headRefOid'),str) or not re.fullmatch('[0-9a-f]{40,64}',pr['headRefOid'])
+            or 'hold' in labels):raise Unverified('assigned_pr_changed')
+    historical=pr['headRefOid']!=assignment['pr']['head']
+    if historical and pr.get('state')!='OPEN':raise Unverified('assigned_pr_changed')
     refs=pr.get('closingIssuesReferences');numbers=[]
     if not isinstance(refs,list) or not refs or len(refs)>20:raise Unverified('assigned_pr_links_unknown')
     for ref in refs:
@@ -606,7 +635,7 @@ def _tracked_role_completion(config,state,session,assignment,run,now):
         numbers.append(n)
     if sorted(set(numbers))!=assignment['issue_numbers']:raise Unverified('assigned_pr_links_changed')
     evidence={'assignment_id':assignment['id'],'pr':number,'issues':assignment['issue_numbers'],
-              'pr_head':pr['headRefOid'],'pr_base':pr.get('baseRefOid'),'assigned_base':assignment['pr']['base']}
+              'pr_head':pr['headRefOid'],'pr_base':pr.get('baseRefOid'),'assigned_base':assignment['pr']['base'],'assigned_head':assignment['pr']['head']}
     if pr.get('state')=='MERGED':
         merge=(pr.get('mergeCommit') or {}).get('oid')
         try:merged_at=datetime.fromisoformat(pr['mergedAt'].replace('Z','+00:00')).timestamp()
@@ -630,17 +659,18 @@ def _tracked_role_completion(config,state,session,assignment,run,now):
     else:
         stages=labels & {'ready-for-review','ready-for-audit','changes-requested'}
         permitted=({'ready-for-audit'},{'changes-requested'}) if role=='review' else ({'changes-requested'},)
-        if (pr.get('state')!='OPEN' or stages not in permitted
+        if (pr.get('state')!='OPEN' or (stages not in permitted and not (historical and len(stages)==1))
                 or not isinstance(pr.get('baseRefOid'),str) or not re.fullmatch('[0-9a-f]{40,64}',pr['baseRefOid'])
                 or role!='audit' and head!=assignment['pr']['head']):raise Unverified('assigned_step_not_complete')
         reviews=pr.get('reviews')
         if not isinstance(reviews,list) or len(reviews)>100:raise Unverified('review_inventory_unbounded')
         submitted,review,outcome=_latest_role_result(reviews,role,repo.author,assignment,identity,now)
+        if historical and outcome!='fail':raise Unverified('historical_rejection_unverified')
         if role=='audit':
             if not _exact_audit_failure(review,outcome,assignment):raise Unverified('assigned_audit_rejection_unverified')
         elif outcome not in {'pass','fail'}:
             raise Unverified('assigned_review_result_unverified')
-        elif stages=={'ready-for-audit'} and outcome!='pass':
+        elif not historical and stages=={'ready-for-audit'} and outcome!='pass':
             raise Unverified('assigned_review_result_unverified')
         elif stages=={'changes-requested'} and outcome=='pass':
             # A later auditor rejection does not erase the completed review.
@@ -648,7 +678,8 @@ def _tracked_role_completion(config,state,session,assignment,run,now):
             if audit_at<=submitted or not _exact_audit_failure(audit,audit_outcome,assignment):
                 raise Unverified('assigned_review_result_unverified')
             evidence['downstream_audit_id']=audit['id']
-        basis='assigned_current_pr_head_'+('rejection' if outcome=='fail' else 'review_pass')
+        basis=('assigned_historical_pr_head_rejection' if historical else
+               'assigned_current_pr_head_'+('rejection' if outcome=='fail' else 'review_pass'))
         if head!=assignment['pr']['head']:
             # Read-only audits may inspect an exact-head archive while the role
             # clone stays on an older main. Prove that checkout is published.

@@ -196,6 +196,8 @@ def read_quarantines(state):
                 or value.get('phase') not in {'prepared','confirmed'}):raise Unverified('quarantine_record_invalid')
         checkpoint=_read(root/'checkpoints'/(path.stem+'.json'),4*1024*1024)
         if _digest(checkpoint)!=value.get('checkpoint_sha256'):raise Unverified('quarantine_checkpoint_changed')
+        from .execution_reconciliation import acknowledged
+        if acknowledged(state,value,checkpoint):continue
         e=checkpoint['evidence']
         rows.append({'id':value['id'],'session':e['session'],'repo':e['repo'],'role':e['role'],'clone':e['clone'],
             'generation':e['generation'],'assignment_id':(e.get('assignment') or {}).get('id'),

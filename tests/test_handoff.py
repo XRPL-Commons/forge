@@ -883,7 +883,7 @@ class TrackedRoleCompletionTests(unittest.TestCase):
 
     def test_exact_generation_head_base_links_and_author_are_required(self):
         self.assign()
-        for key,value in [('headRefOid','f'*40),('baseRefOid','invalid'),('author',{'login':'other'}),('closingIssuesReferences',[{'number':8,'repository':{'nameWithOwner':'o/one'}}])]:
+        for key,value in [('headRefOid','invalid'),('baseRefOid','invalid'),('author',{'login':'other'}),('closingIssuesReferences',[{'number':8,'repository':{'nameWithOwner':'o/one'}}])]:
             old=self.pr[key];self.pr[key]=value
             self.assertFalse(self.decision()['eligible']);self.pr[key]=old
         self.identity=self.identity.replace('$1','$2');self.assertFalse(self.decision()['eligible'])
@@ -916,3 +916,125 @@ class TrackedRoleCompletionTests(unittest.TestCase):
         result=self.decision();self.assertTrue(result['eligible'],result)
         self.assertEqual(result['evidence']['assigned_base'],'c'*40)
         self.assertEqual(result['evidence']['pr_base'],'f'*40)
+
+
+    def test_explicit_result_heading_and_historical_rejection(self):
+        self.assign()
+        self.pr['reviews'][0]['body']='Reviewer result: changes requested for '+self.head
+        self.assertTrue(self.decision()['eligible'])
+        self.pr['headRefOid']='f'*40
+        self.pr['labels']=[{'name':'ready-for-review'}]
+        self.pr['reviews'].append({**self.pr['reviews'][0], 'id':'new-revision',
+            'commit':{'oid':'f'*40}, 'submittedAt':'1970-01-01T00:01:20Z', 'body':'Reviewer PASS'})
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['assigned_head'],self.head)
+        self.assertEqual(result['evidence']['pr_head'],'f'*40)
+        self.assertEqual(result['evidence']['review_id'],'review-1')
+        self.assertEqual(result['evidence']['checkout_basis'],'assigned_historical_pr_head_rejection')
+        self.pr['reviews'][0]['body']='Reviewer result: PASS'
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_result_heading_rejects_prose_and_unbound_old_revision(self):
+        self.assign();self.pr['headRefOid']='f'*40
+        for body in ['Reviewer result might be changes requested', 'The Reviewer result: changes requested',
+                     '> Reviewer result: changes requested', 'Reviewer result: changes requestedness']:
+            self.pr['reviews'][0]['body']=body
+            self.assertFalse(self.decision()['eligible'],body)
+        self.pr['reviews'][0]['body']='Reviewer result: changes requested'
+        self.pr['reviews'][0]['commit']['oid']='e'*40
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_historical_audit_rejection_requires_exact_assigned_revisions(self):
+        self.assign('audit');self.pr['reviews']=[self.audit_record()]
+        self.pr['headRefOid']='f'*40;self.pr['labels']=[{'name':'ready-for-review'}]
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.pr['reviews'][0]['body']='Security audit result: FAIL on '+self.head
+        self.assertFalse(self.decision()['eligible'])
+
+
+class StructuredRoleHandoffTests(unittest.TestCase):
+    fake_run=HandoffTests.fake_run
+    save=HandoffTests.save
+    setUp=TrackedRoleCompletionTests.setUp
+    assign=TrackedRoleCompletionTests.assign
+    decision=TrackedRoleCompletionTests.decision
+    audit_record=TrackedRoleCompletionTests.audit_record
+
+    def structured(self,role='review',outcome='fail',**changes):
+        record={'schema':1,'role':role,'outcome':outcome,'head':self.assignment['pr']['head'],
+                'base':self.assignment['pr']['base'],'assignment_id':self.assignment['id']}
+        record.update(changes)
+        return 'Evidence is published below.\nFORGE_RESULT: '+json.dumps(record)
+
+    def test_exact_structured_review_pass_and_fail_with_all_checkout_proofs(self):
+        self.assign()
+        for outcome,stage in [('fail','changes-requested'),('pass','ready-for-audit')]:
+            self.pr['labels']=[{'name':stage}]
+            self.pr['reviews'][0]['body']=self.structured(outcome=outcome)
+            result=self.decision();self.assertTrue(result['eligible'],result)
+            self.assertEqual(result['evidence']['review_outcome'],outcome)
+        self.status=' M unfinished'
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_structured_audit_failure_binds_exact_assignment_and_revisions(self):
+        self.assign('audit');self.pr['reviews']=[self.audit_record()]
+        self.pr['reviews'][0]['body']=self.structured('audit')
+        self.assertTrue(self.decision()['eligible'])
+        self.pr['reviews'][0]['body']=self.structured('review')
+        self.assertFalse(self.decision()['eligible'])
+
+    def test_invalid_or_wrong_binding_cannot_fall_back_to_legacy_fail_heading(self):
+        self.assign()
+        for marker in ('FORGE_RESULT: broken',self.structured(head='d'*40),
+                       self.structured(base='d'*40),
+                       self.structured(assignment_id='11111111-1111-4111-8111-111111111111'),
+                       self.structured()+'\n'+self.structured()):
+            self.pr['reviews'][0]['body']='Reviewer FAIL: blocking defect\n'+marker
+            result=self.decision();self.assertFalse(result['eligible'],marker)
+            self.assertEqual(result['reason'],'structured_role_result_invalid')
+
+    def test_structured_result_conflicting_with_native_review_is_not_accepted(self):
+        self.assign();self.pr['reviews'][0]['body']=self.structured()
+        self.pr['reviews'][0]['state']='APPROVED'
+        self.assertEqual(self.decision()['reason'],'structured_role_result_state_conflict')
+
+    def test_other_role_marker_does_not_borrow_current_assignment_identity(self):
+        self.assign();self.pr['reviews'][0]['body']=self.structured()
+        other={**self.pr['reviews'][0],'id':'audit-other',
+               'body':self.structured('audit',assignment_id='11111111-1111-4111-8111-111111111111')}
+        self.pr['reviews'].append(other)
+        self.assertTrue(self.decision()['eligible'])
+
+    def test_actual_legacy_outcome_and_exact_head_forms_remain_anchored(self):
+        self.assign()
+        for body in ('Review outcome: changes requested for head '+self.head,
+                     'Review of exact head '+self.head+': changes requested'):
+            self.pr['reviews'][0]['body']=body
+            self.assertTrue(self.decision()['eligible'],body)
+            self.pr['reviews'][0]['body']='Notes: '+body
+            self.assertFalse(self.decision()['eligible'],body)
+
+
+    def test_same_head_retry_ignores_valid_earlier_assignment_result(self):
+        self.assign()
+        current={**self.pr['reviews'][0],'id':'current-result',
+                 'submittedAt':'1970-01-01T00:01:10Z','body':self.structured()}
+        earlier={**current,'id':'earlier-result','submittedAt':'1970-01-01T00:01:04Z',
+                 'body':self.structured(assignment_id='11111111-1111-4111-8111-111111111111')}
+        self.pr['reviews']=[earlier,current]
+        result=self.decision();self.assertTrue(result['eligible'],result)
+        self.assertEqual(result['evidence']['review_id'],'current-result')
+        self.pr['reviews']=[earlier]
+        result=self.decision();self.assertFalse(result['eligible'])
+        self.assertEqual(result['reason'],'assigned_step_record_missing')
+
+    def test_same_head_current_wrong_assignment_or_malformed_record_still_refuses(self):
+        self.assign()
+        current={**self.pr['reviews'][0],'body':self.structured()}
+        earlier={**current,'id':'earlier-result','submittedAt':'1970-01-01T00:01:04Z',
+                 'body':self.structured(assignment_id='11111111-1111-4111-8111-111111111111')}
+        for body in ('FORGE_RESULT: broken',
+                     self.structured(assignment_id='22222222-2222-4222-8222-222222222222')):
+            self.pr['reviews']=[earlier,{**current,'body':body}]
+            result=self.decision();self.assertFalse(result['eligible'])
+            self.assertEqual(result['reason'],'structured_role_result_invalid')

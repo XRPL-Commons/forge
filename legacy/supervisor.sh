@@ -276,6 +276,17 @@ workspace_available(){
   python3 -m forge.execution_retirement quarantined --config "$DIR/repos.d" --state "$STATE" --session "$1" >/dev/null; status=$?
   [ "$status" -eq 1 ]
 }
+reconcile_finished_workspace(){
+  local sess="$1" result
+  case "$sess" in *-review|*-audit) ;; *) return 0 ;; esac
+  workspace_available "$sess" && return 0
+  # A published result ends the attempt, even if the issue needs another build.
+  # This verifies the preserved checkout under the supervisor lock; it never
+  # resets files, bypasses ownership, or retries an unverified result.
+  if result=$(python3 -m forge.execution_reconciliation reconcile --config "$DIR/repos.d" --state "$STATE" --session "$sess" --lock-fd 8); then
+    glog "[$sess] published role result reconciled; workspace available for next issue"
+  fi
+}
 retire_finished_worker(){
   local sess="$1" repo="$2"
   sess_up "$sess" || return 0
@@ -415,12 +426,14 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
     python3 -m forge.slot_actions paused --state "$STATE" --session "$sess"; pause_status=$?
     [ "$pause_status" -eq 1 ] || return
   fi
+  reconcile_finished_workspace "$sess"
   # Preserve the existing provider fallback before parking unresolved execution.
   workspace_available "$sess" || return 0
   if sess_up "$sess" && maybe_handover "$sess"; then
     glog "[$short] verified provider handover preserved existing work; returning to admission"
   fi
   retire_finished_worker "$sess" "$repo"
+  reconcile_finished_workspace "$sess"
   workspace_available "$sess" || return 0
   [ "$pending" = "?" ] && return
   if [[ "$sess" == *-build ]] && [ "$pending" -eq 0 ] && ! sess_up "$sess"; then

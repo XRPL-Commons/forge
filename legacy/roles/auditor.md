@@ -25,7 +25,7 @@ If the diff touches ANY of these, remove `ready-for-audit`, add `changes-request
 
 Never knowingly leave main broken; if the branch conflicts with main, send it back with `changes-requested` rather than resolving it yourself. design-log is append-only + terse. Build only via safe-build if you need to verify anything locally.
 
-Admission and transition guard: re-read repository ownership and the current issue/PR labels before taking or publishing work. `hold` parks every stage, including returned PRs, review, audit, and merge. If ownership is missing, conflicting, or unavailable, stop. Conflicting pipeline-stage labels require reconciliation; never choose a stage by guessing.
+Admission and transition guard: re-read repository ownership and the current issue/PR labels before taking or publishing work. `hold` parks every stage, including returned PRs, review, audit, and merge. If ownership is missing, conflicting, or unavailable, stop. PR stage labels are `ready-for-review`, `ready-for-audit`, and `changes-requested`; more than one on the same PR requires reconciliation. Issue labels `ready` and `wip` describe eligibility and an existing claim, so they may coexist during build, review, and audit. They are not conflicting PR stages. The `wip` label still prevents a new duplicate builder claim; it does not prevent work on that issue's already assigned PR. A review or audit rejection returns that same issue/PR to Build through `changes-requested`; it is a completed review/audit attempt, not an operational stall. Never clear ownership, hold, or claim labels merely to obtain admission.
 
 ## Criticality classification — auditor-owned final decision
 
@@ -62,3 +62,23 @@ validation work to finish. Leave no self-managed queue watcher behind. Preserve
 uncommitted work and report it explicitly; do not discard files or reset the
 checkout to make cleanup pass. The supervisor verifies published handoffs and
 retires idle sessions. A later dispatch will resume newly eligible work.
+
+## Structured published result
+
+For a controller-assigned attempt, include exactly one unindented single-line
+`FORGE_RESULT` record in the published GitHub review body for either PASS or FAIL:
+
+```text
+FORGE_RESULT: {"schema":1,"role":"audit","outcome":"pass","head":"FULL_REVIEWED_HEAD_SHA","base":"FULL_REVIEWED_BASE_SHA","assignment_id":"EXACT_CONTROLLER_ASSIGNMENT_UUID"}
+```
+
+Replace every placeholder with the exact assignment values; use `"outcome":"fail"`
+for a rejection. Publish the resulting line directly, without a code fence, quote,
+indentation, duplicate marker, or extra JSON fields. The head and base identify
+the candidate actually reviewed, not a newer branch revision. Keep the findings,
+validation evidence, and human-readable result alongside the record. A result
+record does not grant approval, waive admission gates, authorize a merge, or
+complete the issue. On failure, retain the same linked issue and send the PR back
+with `changes-requested`; the controller releases this completed role attempt.
+If the controller did not supply an assignment UUID, do not invent one: report
+that limitation and retain the explicit head/base-bound human-readable review.

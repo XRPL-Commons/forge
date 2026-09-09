@@ -65,6 +65,16 @@ class WorkflowControlTests(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.assertEqual(engine.read_state(self.state)['assignments'],[])
 
+    def test_pending_pr_projection_uses_new_snapshot_revision_not_old_dispatch_cache(self):
+        self.review_snapshot()
+        atomic_json(control.pr_path(self.state,self.repo,9),{'repo':self.repo,'issue_numbers':[1],
+                    'head':'a'*40,'base':'b'*40,'observed_at':self.now})
+        self.snap['item_details']['9'].update(head_sha='c'*40,base_sha='d'*40,revision_status='canonical')
+        projected=control.facts(self.state,self.snap)
+        self.assertEqual(projected[0]['prs'],[{'number':9,'head':'c'*40,'base':'d'*40}])
+        self.snap['item_details']['9'].update(head_sha=None,base_sha=None,revision_status='unknown')
+        self.assertEqual(control.facts(self.state,self.snap)[0]['prs'],[{'number':9,'head':None,'base':None}])
+
     def test_builder_reservation_targets_scheduler_first_without_remote_guess(self):
         self.snap['schedule']['eligible']=[1,2];self.save()
         a=self.reserve()

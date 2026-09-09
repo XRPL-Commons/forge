@@ -13,6 +13,7 @@ import subprocess
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 
 from . import workflow
 from .config import load_repositories
@@ -107,11 +108,23 @@ def facts(state,snap,extra=None):
         prs=[]
         for number in item.get('pr_numbers',[]):
             pr={'number':number,'head':None,'base':None}
-            try:
-                cached=json.loads(pr_path(state,snap['repo'],number).read_text())
-                if cached['repo']==snap['repo'] and item['number'] in cached['issue_numbers']:
-                    pr.update(head=cached['head'],base=cached['base'])
-            except (OSError,ValueError,KeyError,TypeError):pass
+            detail=(snap.get('item_details') or {}).get(str(number),{})
+            if (detail.get('kind')=='pr' and detail.get('number')==number
+                    and detail.get('revision_status')=='canonical'
+                    and all(isinstance(detail.get(k),str) and re.fullmatch('[0-9a-f]{40,64}',detail[k])
+                            for k in ('head_sha','base_sha'))):
+                pr.update(head=detail['head_sha'],base=detail['base_sha'])
+            elif 'revision_status' not in detail:
+                # Old snapshots have no revision envelope. A dispatch cache is
+                # usable only when no newer PR update is recorded locally.
+                try:
+                    cached=json.loads(pr_path(state,snap['repo'],number).read_text())
+                    updated=detail.get('updated_at')
+                    updated=datetime.fromisoformat(updated.replace('Z','+00:00')).timestamp() if updated else 0
+                    if (cached['repo']==snap['repo'] and item['number'] in cached['issue_numbers']
+                            and cached.get('observed_at',0)>=updated):
+                        pr.update(head=cached['head'],base=cached['base'])
+                except (OSError,ValueError,KeyError,TypeError):pass
             prs.append(pr)
         result[item['number']]={'number':item['number'],'stage':stage,'disposition':disposition,'reason':reason,'prs':prs}
     for number in snap.get('schedule',{}).get('eligible',[]):
