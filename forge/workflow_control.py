@@ -161,6 +161,9 @@ def current(state,session):
 
 
 def validate_target(config,state,a,*,run=subprocess.run):
+    from .settings import Settings
+    access=Settings(Path(config).parent).admission(a['repo'])
+    if not access['allowed']:raise workflow.Refused(access['reason'])
     repo=repository(config,repo=a['repo']);snap=snapshot(state,repo.repo)
     issues=workflow.read_state(state,repo.repo)['issues']
     if any(i['number'] in a['issue_numbers'] and i['stage']=='failed' for i in issues):
@@ -202,6 +205,9 @@ def reserve(config,state,session,*,run=subprocess.run):
     from .workflow_lifecycle import reconcile as reconcile_releases
     reconcile_releases(state)
     repo=repository(config,session);role=session.rsplit('-',1)[1]
+    from .settings import Settings
+    access=Settings(Path(config).parent).admission(repo.repo)
+    if not access['allowed']:raise workflow.Refused(access['reason'])
     from .execution_retirement import is_quarantined
     if is_quarantined(config,state,session):
         raise workflow.Refused('preserved_workspace_requires_reconciliation')

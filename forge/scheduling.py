@@ -310,6 +310,10 @@ def main(argv=None):
     next_candidates = []
     for config in configurations:
         try:
+            from .settings import Settings
+            access = Settings(Path(args.config).parent).admission(config.repo)
+            if not access['allowed']:
+                raise GitHubError(access['reason'])
             if args.action == "triage":
                 if args.mode == "local":
                     from .triage_rules import propose as local_propose

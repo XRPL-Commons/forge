@@ -18,6 +18,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  source-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reject tracked private artifacts
+        run: python3 tools/check_public_source.py
+      - name: Install checksum-pinned secret scanner
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --retry 2 --max-time 90 \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan source and history with redacted findings
+        run: |
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --log-opts=--all .
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner .
+
   python:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

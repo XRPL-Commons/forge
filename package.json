@@ -1,6 +1,6 @@
 {
   "name": "forge-dashboard-checks",
   "private": true,
-  "scripts": {"test:browser": "node tests/browser_dashboard.cjs"},
+  "scripts": {"test:browser": "node tests/browser_dashboard.cjs && node tests/browser_settings.cjs"},
   "devDependencies": {"playwright-core": "1.58.2"}
 }

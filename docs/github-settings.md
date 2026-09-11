@@ -1,0 +1,178 @@
+# GitHub setup and repository access
+
+Forge separates three decisions: GitHub grants repository access, the settings
+sync discovers it, and `factory.json` records which repositories the operator
+wants to automate. Discovery never enables a repository automatically.
+
+The `/settings` page provides App connection forms, a repository access matrix,
+activation controls, sync timing, and a JSON editor. UI edits and agent edits use
+the same configuration file. Saves validate the complete configuration and reject
+stale revisions rather than overwriting another editor's changes.
+
+## Start disabled
+
+The settings component requires Python 3.10+, OpenSSL, and outbound HTTPS to
+`api.github.com`. It uses the Python standard library. No administrator token,
+OAuth client secret, webhook endpoint, or additional Python package is needed.
+
+```sh
+mkdir -p local
+cp examples/factory.json.example local/factory.json
+bin/forge settings validate --root ./local
+bin/forge settings show --root ./local
+```
+
+The example has no connections or enabled repositories. The default sync interval
+is five minutes; access observations expire after fifteen minutes. A settings GET
+reads local data only. Refresh requests run in a background thread. Each role sync
+has a 90-second deadline, with up to 15 seconds for its final in-flight HTTP call;
+large or inconsistent paginated responses fail rather than becoming empty lists.
+
+To use the settings UI, set `FORGE_ROOT` to the absolute directory containing
+`factory.json`, `repos.d/`, and `state/`, then run the existing dashboard service.
+It binds to its Tailscale IPv4 address and port 8787. Visit `/settings` using that
+exact address. As with the fleet dashboard, keep this service on a trusted private
+network: it does not provide per-user login. Mutating requests require the bound
+Host, matching Origin, JSON, and a per-process capability token.
+
+For a local preview, without Tailscale or live workers:
+
+```sh
+FORGE_ROOT="$PWD/local" FORGE_BIND_ADDRESS=127.0.0.1 PYTHONPATH=. \
+  python3 legacy/forge-status.py
+```
+
+Open `http://127.0.0.1:8787/settings`. Set `FORGE_PORT` if that port is in use.
+This starts only the dashboard and access sync, not the supervisor or any workers.
+
+## Create and install role Apps
+
+In the owning account or organization's GitHub settings, open **Developer settings
+→ GitHub Apps → New GitHub App**. Create four distinct Apps with names unique to
+your installation. Each role has its own identity; multiple installation tokens
+for the same App would not create distinct role identities.
+
+- Use the owning account URL as the homepage.
+- Leave user authorization, device flow, callback and setup URLs unset.
+- Disable webhook Active; the first version uses polling.
+- For a private installation, choose Only on this account. Open-source adopters
+  can create their own Apps; they do not need the maintainer's credentials.
+- Leave organization and account permissions unset.
+
+Grant these repository permissions (Metadata read access is implicit):
+
+| Permission | Builder | Reviewer | Auditor | Controller |
+| --- | --- | --- | --- | --- |
+| Contents | Read & write | Read | Read | Read & write |
+| Issues | Read & write | Read | Read | Read & write |
+| Pull requests | Read & write | Read & write | Read & write | Read & write |
+| Checks | None | Read & write | Read & write | Read & write |
+
+These are minimum role capabilities for the proposed factory. Extra permissions
+are not required by discovery. Editing GitHub Actions workflow files additionally
+requires Builder Workflows write permission and an explicit repository policy
+allowing that work. Administration is not requested; repository protections remain
+a human setup responsibility. Settings access readiness does not certify branch
+protections or authorize a merge.
+
+Install every App on the same pilot repository using **Only select repositories**.
+Access must be granted separately for each App. Record the numeric App ID from
+its settings and the installation ID from its installation settings URL. Generate
+one private key per App. Do not put private keys, installation tokens, or customer
+repository configuration in version control or issue comments.
+
+## Private key references
+
+Store downloaded PEM files outside the source tree in a directory accessible only
+to the trusted service account. Restrict the directory to mode 0700 and each key to
+0600. Copy `examples/github-credentials.env.example` to a private service environment
+file and edit the paths. For example:
+
+```sh
+export FORGE_BUILD_KEY_FILE=/srv/forge/credentials/build.pem
+```
+
+The variable contains a file path, not the key itself. Configure the four variables
+in the dashboard and standalone sync service environment before starting them.
+Runners must not inherit App private keys or the controller's environment. Changing
+service environment variables requires restarting that service; replacing key
+contents at the same referenced path is picked up on the next sync.
+
+In Settings, enter App ID, installation ID, and the corresponding environment
+variable name for each role. Save connections, then click **Refresh access**. The
+sync authenticates each App, verifies its installation identity and grants, and
+creates a metadata-only installation token to list accessible repositories. Tokens
+and JWTs exist only in memory; error responses omit GitHub response bodies and
+private key paths. No repository, App installation, label, or protection is changed.
+
+An example connection entry, using placeholder identifiers:
+
+```json
+"build": {
+  "app_id": 123456,
+  "installation_id": 234567,
+  "private_key_env": "FORGE_BUILD_KEY_FILE"
+}
+```
+
+## Enable, reconcile, dispatch
+
+Each discovered repository initially shows Enable. All four roles must have a
+fresh, successful observation, the required grants, and access to the same numeric
+repository identity. Archived or disabled repositories are ineligible. The Enable
+dialog explains that eligible issues may be processed after execution setup and
+initial reconciliation. Enabling stores the repository ID, current name, and
+`enabled: true` in `factory.json`.
+
+Repository renames or transfers require updating the configured name after checking
+the identity and access. A newly created repository with the old name must not
+inherit activation from a different numeric ID.
+
+The supervisor's snapshot and capacity/assignment gates consult this access state.
+An enabled repository with missing, expired, suspended, or unverified access cannot
+start new work. Failed syncs preserve intent and the last known inventory but do
+not authorize dispatch from stale facts. Existing issue history is retained. This
+gate does not revoke the credentials of an already-running legacy worker.
+
+## Legacy migration boundary
+
+Without `factory.json`, the existing `.repo` configuration continues unchanged.
+Once `factory.json` exists, it is authoritative for repository activation. Saving
+the first empty configuration therefore pauses new dispatch for previously
+configured repositories until they are explicitly enabled and access is verified.
+Legacy `.repo` files temporarily retain clone paths and ownership labels. Deselected
+legacy repositories remain visible to resource inventory for cleanup.
+
+New repositories use the legacy ownership label `auto:owned-by-forge` and default
+clone paths until their execution configuration is supplied. The existing
+supervisor still requires its ownership label and complete issue/PR observation
+before admission. Access sync does not provision these prerequisites.
+
+**This change implements setup, discovery, activation, and admission checks. It
+does not switch the legacy coding harnesses from their shared GitHub CLI identity
+to per-role App credentials.** The deterministic runner and scoped credential
+adapter must be integrated and tested before claiming role isolation or switching
+the live fleet to the new identities. Do not grant runners access to the App keys
+as a shortcut. See [implementation status](implementation.md).
+
+## Sync without the dashboard
+
+```sh
+bin/forge settings sync --root ./local
+bin/forge settings watch --root ./local
+```
+
+`watch` syncs at startup and on the configured interval. The dashboard also starts
+this loop. A shared file lock prevents concurrent syncs from duplicating API work.
+The one-shot `sync` command exits nonzero when configured access cannot be verified;
+exit code 2 means another sync already owns the lock.
+A crash leaves an interrupted indicator; restarting or clicking Refresh retries
+the observation. Configuration changes invalidate observations for affected App
+connections immediately. Failed refreshes never remove configured repositories.
+
+## References
+
+- [Register a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
+- [Install your GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
+- [Manage private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)
+- [List installation repositories](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation)

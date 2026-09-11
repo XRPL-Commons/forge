@@ -125,6 +125,12 @@ def observe(config, session, *, limits=None, run=subprocess.run, read_text=None,
         if session not in configured:
             decision['reason'] = 'session_not_configured'
             return decision
+        from .settings import Settings
+        requested_repo = next(r for r in repositories if session in {r.short + '-' + role for role in ROLES})
+        access = Settings(Path(config).parent).admission(requested_repo.repo)
+        if not access['allowed']:
+            decision.update(reason=access['reason'], github_access=access)
+            return decision
         names, source = read_sessions(run)
         fleet = sorted(set(names) & configured)
         role_counts = {role: sum(name.endswith('-' + role) for name in fleet) for role in ROLES}

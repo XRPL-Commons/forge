@@ -4,7 +4,7 @@
 Writes require a same-origin JSON request and a per-process capability token.
 The HTTP server queues intent; only the locked supervisor controls workers.
 """
-import json, re, subprocess, time, html, os, sqlite3, secrets, hmac, hashlib
+import json, re, subprocess, time, html, os, sqlite3, secrets, hmac, hashlib, threading, ipaddress
 from pathlib import Path
 from forge.config import load_repositories
 from forge.activity import observe_tmux
@@ -448,6 +448,12 @@ def repository_detail(repo):
 PAGE_TEMPLATE = Path(__file__).with_name("dashboard.html").read_text()
 PAGE_VERSION = hashlib.sha256(PAGE_TEMPLATE.encode()).hexdigest()
 PAGE = PAGE_TEMPLATE.replace("__FORGE_DASHBOARD_VERSION__", PAGE_VERSION)
+SETTINGS_PAGE = Path(__file__).with_name('settings.html').read_text()
+
+
+def settings_service():
+    from forge.settings import Settings
+    return Settings(WD)
 
 
 class H(BaseHTTPRequestHandler):
@@ -474,7 +480,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path != '/api/slots/action':
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -490,8 +496,20 @@ class H(BaseHTTPRequestHandler):
             self.send_error(415);return
         try:
             length=int(self.headers.get('Content-Length','0'))
-            if not 0<length<=2048:raise ValueError('invalid_request_size')
+            maximum = 262144 if self.path == '/api/settings' else 2048
+            if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
+            if self.path == '/api/settings/sync':
+                if value != {}:raise ValueError('Expected an empty sync request')
+                settings_service().start_refresh()
+                self._send(json.dumps({'ok':True,'message':'Access refresh requested'}));return
+            if self.path == '/api/settings':
+                if not isinstance(value,dict) or set(value) != {'config','revision'}:
+                    raise ValueError('Expected config and revision')
+                result=settings_service().save(value['config'],value['revision'])
+                result.update(ok=True,controls_token=CONTROLS_TOKEN)
+                _cache.clear()
+                self._send(json.dumps(result));return
             if (not isinstance(value,dict) or set(value)!={'action','session','generation'}
                     or any(not isinstance(v,str) for v in value.values())):
                 raise ValueError('invalid_action_request')
@@ -502,7 +520,7 @@ class H(BaseHTTPRequestHandler):
         except (ValueError,TypeError) as exc:
             self._send(json.dumps({'ok':False,'reason':str(exc)}))
         except (OSError,ImportError,subprocess.SubprocessError):
-            self._send(json.dumps({'ok':False,'reason':'slot_action_unavailable'}))
+            self._send(json.dumps({'ok':False,'reason':'Operation unavailable; check server configuration'}))
 
     def do_GET(self):
         if not self._trusted_host():
@@ -510,6 +528,15 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/":
             self._send(PAGE, "text/html; charset=utf-8")
+        elif u.path == '/settings':
+            self._send(SETTINGS_PAGE, 'text/html; charset=utf-8')
+        elif u.path == '/api/settings':
+            try:
+                result=settings_service().view()
+                result.update(ok=True,controls_token=CONTROLS_TOKEN)
+                self._send(json.dumps(result))
+            except (OSError,ValueError,TypeError,KeyError):
+                self._send(json.dumps({'ok':False,'reason':'Settings unavailable. Validate factory.json on the server.'}))
         elif u.path == "/api/status":
             self._send(json.dumps(cached("status", 10, status)))
         elif u.path == "/api/workflow":
@@ -549,8 +576,16 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ip = sh(["tailscale", "ip", "-4"]).strip().split("\n")[0]
+    ip = os.environ.get('FORGE_BIND_ADDRESS') or sh(["tailscale", "ip", "-4"]).strip().split("\n")[0]
     if not ip:
-        raise SystemExit("no tailscale ip — refusing to bind")
-    print(f"forge-status on http://{ip}:{PORT}")
-    ThreadingHTTPServer((ip, PORT), H).serve_forever()
+        raise SystemExit('Set FORGE_BIND_ADDRESS=127.0.0.1 for local use or configure Tailscale')
+    try:
+        address=ipaddress.ip_address(ip)
+        port=int(os.environ.get('FORGE_PORT',str(PORT)))
+        if address.version != 4 or address.is_unspecified or not 1 <= port <= 65535:
+            raise ValueError()
+    except ValueError:
+        raise SystemExit('A specific IPv4 bind address and valid FORGE_PORT are required')
+    print(f"forge-status on http://{ip}:{port}")
+    threading.Thread(target=settings_service().watch,daemon=True).start()
+    ThreadingHTTPServer((ip, port), H).serve_forever()

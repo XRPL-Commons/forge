@@ -492,8 +492,20 @@ while true; do
     continue
   fi
   while IFS=$'\t' read -r REPO OWNER_LABEL CLONE_BUILD CLONE_REVIEW CLONE_AUDIT RECOVERY_AUTHOR ENABLED; do
-    [ "$ENABLED" = true ] || continue; [ -n "$REPO" ] || continue
+    [ -n "$REPO" ] || continue
     short="${REPO##*/}"
+    # Operator stop/release requests must remain actionable after a repository is
+    # disabled or access sync fails. They run under the supervisor lock before
+    # any admission gate; processing intent does not authorize new dispatch.
+    if [ -d "$STATE/slot-actions" ]; then
+      for control_role in build review audit; do
+        control_session="$short-$control_role"
+        if [ ! -f "$STATE/slot-actions/.pending-indexed" ] || compgen -G "$STATE/slot-actions/pending/$control_session/*.json" >/dev/null; then
+          python3 -m forge.slot_actions process --config "$DIR/repos.d" --state "$STATE" --session "$control_session" >/dev/null || glog "[$control_session] operator action needs reconciliation"
+        fi
+      done
+    fi
+    [ "$ENABLED" = true ] || continue
     # One paginated snapshot supplies every stage. Unknown ownership/API state blocks admission.
     read -r bw rw aw wc cw lw bp < <(timeout --kill-after=2 120 "$DIR/bin/forge" snapshot --repo "$REPO" --owner "$OWNER_LABEL" --state "$STATE" --author "${RECOVERY_AUTHOR:-forge-bot}")
     if [ "${bp:-?}" = "?" ]; then

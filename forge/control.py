@@ -38,6 +38,13 @@ def snapshot_path(state, repo):
 
 
 def observe(repository, state, github=None):
+    from .settings import Settings
+    access = Settings(Path(state).parent).admission(repository.repo)
+    if not access['allowed']:
+        # Preserve the last inventory and lifecycle history. This return value
+        # blocks new scheduling without overwriting old evidence as empty data.
+        return {'repo': repository.repo, 'enabled': repository.enabled,
+                'status': 'access_blocked', 'observed_at': time.time(), 'reason': access['reason']}
     try:
         result = (github or GitHub(state=state)).snapshot(repository)
     except Exception as exc:

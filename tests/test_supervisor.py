@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 
 
 class SupervisorTests(unittest.TestCase):
-    def run_pass(self, labels, *, gh_fail=False, capacity_allowed=True, config_extra="", foreground="claude", capacity_sequence=None, human_wait_verified=False, existing_sessions=(), provider_available=True, pane="❯\n────\n ⏵⏵ bypass permissions on", capture_fail=False, task_send_fail=None, empty_inventory=False, selected_provider="claude"):
+    def run_pass(self, labels, *, gh_fail=False, capacity_allowed=True, config_extra="", foreground="claude", capacity_sequence=None, human_wait_verified=False, existing_sessions=(), provider_available=True, pane="❯\n────\n ⏵⏵ bypass permissions on", capture_fail=False, task_send_fail=None, empty_inventory=False, selected_provider="claude", queued_action=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for directory in ('repos.d', 'bin', 'roles', 'mockbin'):
@@ -23,11 +23,17 @@ class SupervisorTests(unittest.TestCase):
             (root / 'repos.d/fixture.repo').write_text('REPO="o/fixture"\nOWNER_LABEL="auto:owned-by-me"\n' + config_extra)
             (root / 'notify.sh').write_text('#!/bin/sh\nexit 0\n')
             (root / 'notify.sh').chmod(0o755)
+            if queued_action:
+                pending=root/'state/slot-actions/pending/fixture-audit'
+                pending.mkdir(parents=True)
+                (root/'state/slot-actions/.pending-indexed').touch()
+                (pending/'request.json').write_text('{}')
             executable = '''#!/usr/bin/python3
 import json, os, sys
 name=os.path.basename(sys.argv[0])
 with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps([name]+sys.argv[1:])+'\\n')
 if name=='python3':
+ if sys.argv[1:4]==['-m','forge.slot_actions','process']: sys.exit(0)
  if sys.argv[1:3]==['-m','forge.routing']:
   if 'select' in sys.argv: print(os.environ['SELECTED_PROVIDER']); sys.exit(0)
   if 'current' in sys.argv: sys.exit(1)
@@ -77,6 +83,16 @@ elif name=='ps': print('10 1 bash')
             self.last_markers={p.name:json.loads(p.read_text()) for p in (root/'state').glob('*.up')}
             self.last_uncertain=list((root/'state/dispatch-uncertain').glob('*.json'))
             return [json.loads(line) for line in (root / 'calls').read_text().splitlines()]
+
+    def test_operator_requests_are_processed_before_disabled_or_unknown_admission(self):
+        for kwargs in ({'config_extra':'ENABLED=false\n'}, {'gh_fail':True}):
+            calls=self.run_pass(['ready-for-audit'],queued_action=True,**kwargs)
+            actions=[c for c in calls if c[:4]==['python3','-m','forge.slot_actions','process']]
+            self.assertEqual(len(actions),1)
+            self.assertEqual(actions[0][-1],'fixture-audit')
+            self.assertFalse(any(c[:2]==['tmux','new-session'] for c in calls))
+            github=[i for i,c in enumerate(calls) if c[0]=='gh']
+            if github:self.assertLess(calls.index(actions[0]),github[0])
 
     def test_audit_ready_launches_only_auditor(self):
         calls = self.run_pass(['ready-for-audit'])

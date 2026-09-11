@@ -23,3 +23,5 @@ node_modules/
 backups/
 .claude/
 .codex/
+factory.json
+github-credentials.env

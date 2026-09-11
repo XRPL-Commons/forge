@@ -48,6 +48,13 @@ operational state or credentials.
 
 ## Dashboard and history
 
+The [GitHub settings guide](docs/github-settings.md) covers the `/settings` page,
+human-managed App installation, repository discovery, and explicit activation.
+Start with `examples/factory.json.example`: it has no credentials or enabled
+repositories. Settings are editable in the UI or as a file; secrets remain outside
+the source tree. This setup layer does not yet replace the legacy harness's shared
+GitHub authentication with per-role execution credentials.
+
 The dashboard is implemented in `legacy/dashboard.html` and
 `legacy/forge-status.py`. It reads local state and refreshes automatically. Its
 repository drawer groups pull requests, reviews, and security audits beneath

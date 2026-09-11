@@ -25,7 +25,7 @@ class DashboardTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def test_private_and_disabled_sessions_are_not_read(self):
-        with patch.object(dashboard, "sh", return_value="one-build anton parked-audit") as shell, \
+        with patch.object(dashboard, "sh", return_value="one-build private-agent parked-audit") as shell, \
              patch.object(dashboard, "observe_tmux", return_value={"one-build":{"state":"unknown","reason":"capture_failed"}}) as observe:
             sessions = dashboard.tmux_sessions()
             self.assertEqual(set(sessions), {"one-build"})
@@ -34,7 +34,7 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(sessions["one-build"]["busy"])
             self.assertEqual(sessions["one-build"]["state"], "unknown")
         self.assertIn("one-audit", dashboard.allowed_sessions())
-        self.assertNotIn("anton", dashboard.allowed_sessions())
+        self.assertNotIn("private-agent", dashboard.allowed_sessions())
 
     def test_slots_count_disabled_survivors_without_private_panes(self):
         with patch('forge.capacity.read_sessions', return_value=(['one-build','parked-review','private-dev'], 'observed')), \
@@ -145,8 +145,8 @@ class DashboardHistoryTests(unittest.TestCase):
 
     def request(self, path):
         handler = object.__new__(dashboard.H)
-        handler.server=unittest.mock.Mock(server_address=("100.1.2.3",8787))
-        handler.headers={"Host":"100.1.2.3:8787"}
+        handler.server=unittest.mock.Mock(server_address=("127.0.0.1",8787))
+        handler.headers={"Host":"127.0.0.1:8787"}
         handler.path = path
         handler._send = unittest.mock.Mock()
         handler.send_error = unittest.mock.Mock()
@@ -184,8 +184,8 @@ class DashboardHistoryTests(unittest.TestCase):
 class WorkflowApiTests(unittest.TestCase):
     def request(self,path):
         handler=object.__new__(dashboard.H);handler.path=path
-        handler.server=unittest.mock.Mock(server_address=("100.1.2.3",8787))
-        handler.headers={"Host":"100.1.2.3:8787"}
+        handler.server=unittest.mock.Mock(server_address=("127.0.0.1",8787))
+        handler.headers={"Host":"127.0.0.1:8787"}
         handler._send=unittest.mock.Mock();handler.send_error=unittest.mock.Mock()
         handler.do_GET();return handler
 
@@ -238,13 +238,13 @@ class WorkflowApiTests(unittest.TestCase):
 
 
 class SlotActionHttpTests(unittest.TestCase):
-    def request(self, *, token=None, origin='http://100.1.2.3:8787', content_type='application/json', body=None, extra=None):
+    def request(self, *, token=None, origin='http://127.0.0.1:8787', content_type='application/json', body=None, extra=None):
         import io
         handler=object.__new__(dashboard.H)
-        handler.server=unittest.mock.Mock(server_address=("100.1.2.3",8787))
+        handler.server=unittest.mock.Mock(server_address=("127.0.0.1",8787))
         handler.path='/api/slots/action'
         encoded=json.dumps(body if body is not None else {'action':'release','session':'one-build','generation':'$1|2|%3|4'}).encode()
-        handler.headers={'Host':'100.1.2.3:8787','Origin':origin,'X-Forge-Action':dashboard.CONTROLS_TOKEN if token is None else token,
+        handler.headers={'Host':'127.0.0.1:8787','Origin':origin,'X-Forge-Action':dashboard.CONTROLS_TOKEN if token is None else token,
                          'Content-Type':content_type,'Content-Length':str(len(encoded))}
         handler.headers.update(extra or {})
         handler.rfile=io.BytesIO(encoded)
@@ -277,7 +277,7 @@ class SlotActionHttpTests(unittest.TestCase):
         handler=self.request(origin='http://attacker.example:8787',extra={'Host':'attacker.example:8787'})
         handler.send_error.assert_called_once_with(403)
         handler=object.__new__(dashboard.H)
-        handler.server=unittest.mock.Mock(server_address=('100.1.2.3',8787))
+        handler.server=unittest.mock.Mock(server_address=('127.0.0.1',8787))
         handler.headers={'Host':'attacker.example:8787'};handler.path='/api/status'
         handler.send_error=unittest.mock.Mock();handler._send=unittest.mock.Mock()
         handler.do_GET()

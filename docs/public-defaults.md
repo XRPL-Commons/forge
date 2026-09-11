@@ -1,6 +1,18 @@
 # Public template defaults
 
-This source snapshot contains no operational state, logs, credentials, repository declarations, Git history, or deployment receipts. Examples start disabled. Configure the worker bot identity explicitly with `RECOVERY_AUTHOR` before enabling live execution; the neutral `forge-bot` fallback is for compatibility, not identity discovery.
+Operational state, logs, credentials, and customer repository declarations belong
+outside the source tree. Examples start disabled. The Git repository retains its
+source history and author attribution; publication audits must check history as
+well as current files. Configure the legacy worker bot identity explicitly with
+`RECOVERY_AUTHOR` before enabling live execution; the neutral `forge-bot` fallback
+is for compatibility, not identity discovery.
+
+`examples/factory.json.example` has no App connections or enabled repositories.
+Its five-minute sync and fifteen-minute access expiry are configurable. Private
+key environment references are documented in `examples/github-credentials.env.example`;
+that file contains placeholder paths only. Real `factory.json`, credential environment
+files, PEM files, and state are ignored by Git. See [GitHub settings](github-settings.md)
+for setup order and the boundary between access readiness and live execution.
 
 The public auditor template grants no administrative merge bypass. NORMAL and CRITICAL work must satisfy repository-required approvals and all other protections; CRITICAL work additionally needs a qualifying human review of the current candidate. Role instructions remain cooperative operating policy, not credential isolation.
 

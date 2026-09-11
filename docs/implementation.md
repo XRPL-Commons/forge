@@ -6,6 +6,12 @@ Structured adapters, atomic attempt state, policy validation, provider circuit b
 
 ## Remaining integration gates
 
+The GitHub settings layer is implemented: file-backed configuration, App-authenticated
+read-only installation sync, role access checks, explicit repository activation,
+and admission guards. Per-role credentials are not yet injected into live legacy
+harnesses. Settings readiness means access has been verified; it is not evidence
+of execution isolation, branch-protection configuration, or completed migration.
+
 - Isolate worker credentials, repository tools, and host resources with dedicated identities and tested containment.
 - Connect structured attempts to live reconciliation and safe restart/cancellation behavior.
 - Separate trusted merge credentials and validate current candidates against effective repository policy.

@@ -1,8 +1,9 @@
 """Parse legacy repository declarations as data, never execute shell config."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import shlex
+from .app_access import REPO_PATTERN
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ def load_repositories(directory):
             values[key] = value
         repo = values.get("REPO", "")
         owner = values.get("OWNER_LABEL", "")
-        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not re.fullmatch(r"auto:owned-by-[\w.-]+", owner):
+        if not REPO_PATTERN.fullmatch(repo) or not re.fullmatch(r"auto:owned-by-[\w.-]+", owner):
             raise ValueError(f"Invalid repository/owner in {path.name}")
         enabled = values.get("ENABLED", "true")
         if enabled not in {"true", "false"}:
@@ -50,6 +51,21 @@ def load_repositories(directory):
         if any(value is not None and (not Path(value).is_absolute() or any(ord(c) < 32 for c in value)) for value in clones):
             raise ValueError(f"Clone paths must be absolute without control characters in {path.name}")
         result.append(Repository(repo, owner, enabled == "true", author, *clones))
+    factory = Path(directory).parent / 'factory.json'
+    if factory.exists():
+        from .settings import Settings
+        settings = Settings(factory.parent)
+        configured = settings.load()['repositories']
+        legacy = {r.repo.lower(): r for r in result}
+        selected = {r['name'].lower() for r in configured}
+        # Legacy files retain clone/ownership metadata during migration. The
+        # canonical enabled flag comes ONLY from factory.json when present.
+        result = [replace(legacy[row['name'].lower()], enabled=row['enabled'])
+                  if row['name'].lower() in legacy else
+                  Repository(row['name'], 'auto:owned-by-forge', row['enabled'])
+                  for row in configured]
+        # Preserve visibility of old workers for cleanup, even after deselection.
+        result.extend(replace(repo, enabled=False) for name, repo in legacy.items() if name not in selected)
     if len({r.repo.lower() for r in result}) != len(result):
         raise ValueError("Duplicate repository identity")
     # Legacy tmux still uses short names. Reject rather than cross-wire two repos.

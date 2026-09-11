@@ -169,12 +169,12 @@ class WorkflowLifecycleTests(unittest.TestCase):
         self.assertEqual(workflow.read_state(self.state)['slots'][0]['generation'],'$2|200|%3|20')
 
     def test_live_mixed_case_repo_matches_normalized_slot_but_not_other_repo(self):
-        workflow.observe_slot(self.state,'Map-review','XRPL-Commons/Map','review',self.generation,'retiring',
+        workflow.observe_slot(self.state,'Map-review','Example-Org/Map','review',self.generation,'retiring',
             source_event_id='map-legacy',bootstrap=True)
         proof={'reason':'verified_review_complete','evidence':{
-            **self.proof['evidence'],'repo':'XRPL-Commons/Map','role':'review'}}
+            **self.proof['evidence'],'repo':'Example-Org/Map','role':'review'}}
         ticket=prepare(self.state,'Map-review',proof)
-        self.assertEqual(ticket['repo'],'xrpl-commons/map')
+        self.assertEqual(ticket['repo'],'example-org/map')
         self.assertEqual(confirmed(self.state,ticket)['status'],'applied')
         self.assertEqual(workflow.read_state(self.state)['slots'][0]['state'],'free')
         proof['evidence']['repo']='Other-Org/Map'
