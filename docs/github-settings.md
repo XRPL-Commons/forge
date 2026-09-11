@@ -24,7 +24,7 @@ bin/forge settings show --root ./local
 
 The example has no connections or enabled repositories. The default sync interval
 is five minutes; access observations expire after fifteen minutes. A settings GET
-reads local data only. Refresh requests run in a background thread. Each role sync
+reads local data only. Refresh requests run in a background thread. Each installation sync
 has a 90-second deadline, with up to 15 seconds for its final in-flight HTTP call;
 large or inconsistent paginated responses fail rather than becoming empty lists.
 
@@ -55,8 +55,9 @@ for the same App would not create distinct role identities.
 - Use the owning account URL as the homepage.
 - Leave user authorization, device flow, callback and setup URLs unset.
 - Disable webhook Active; the first version uses polling.
-- For a private installation, choose Only on this account. Open-source adopters
-  can create their own Apps; they do not need the maintainer's credentials.
+- For one account, choose Only on this account. To manage repositories across
+  accounts, allow installation on those accounts and configure each installation ID.
+  Open-source adopters create their own Apps; they do not need maintainer credentials.
 - Leave organization and account permissions unset.
 
 Grant these repository permissions (Metadata read access is implicit):
@@ -67,12 +68,13 @@ Grant these repository permissions (Metadata read access is implicit):
 | Issues | Read & write | Read | Read | Read & write |
 | Pull requests | Read & write | Read & write | Read & write | Read & write |
 | Checks | None | Read & write | Read & write | Read & write |
+| Administration | None | None | None | Read |
 
-These are minimum role capabilities for the proposed factory. Extra permissions
+These are minimum role capabilities for the factory. Extra permissions
 are not required by discovery. Editing GitHub Actions workflow files additionally
 requires Builder Workflows write permission and an explicit repository policy
-allowing that work. Administration is not requested; repository protections remain
-a human setup responsibility. Settings access readiness does not certify branch
+allowing that work. Administration write permission is not requested; repository
+protections remain a human setup responsibility. The controller reads them before dispatch. Settings access readiness does not certify branch
 protections or authorize a merge.
 
 Install every App on the same pilot repository using **Only select repositories**.
@@ -176,3 +178,22 @@ connections immediately. Failed refreshes never remove configured repositories.
 - [Install your GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
 - [Manage private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)
 - [List installation repositories](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation)
+
+## Durable factory integration
+
+The new controller and resettable runners are implemented in `forge/factory`; see
+[factory runtime](factory-runtime.md) for image/native-sandbox provisioning, the
+three-failure budget, approval enforcement and explicit legacy cutover. Controller
+App permissions now also include **Administration: read** for branch-protection
+verification. This does not grant administration writes.
+
+For repositories across accounts, register Apps for installation on the relevant
+accounts and install each role App on both accounts. Enter comma-separated
+installation IDs in Settings, or use `installation_ids: [101, 202]` instead of
+`installation_id` in a connection. Forge maps repository IDs to their installation
+before minting a scoped token. Changing that mapping requires a fresh sync. A failed
+installation observation conservatively pauses the role until access is known.
+
+`runtime.json` starts dispatch and merge disabled and is editable in Settings.
+Authorized human logins and the pilot repository still need real operator values;
+examples deliberately contain no private identities, keys or enabled repositories.

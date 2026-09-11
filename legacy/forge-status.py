@@ -449,6 +449,7 @@ PAGE_TEMPLATE = Path(__file__).with_name("dashboard.html").read_text()
 PAGE_VERSION = hashlib.sha256(PAGE_TEMPLATE.encode()).hexdigest()
 PAGE = PAGE_TEMPLATE.replace("__FORGE_DASHBOARD_VERSION__", PAGE_VERSION)
 SETTINGS_PAGE = Path(__file__).with_name('settings.html').read_text()
+FACTORY_PAGE = Path(__file__).with_name('factory.html').read_text()
 
 
 def settings_service():
@@ -480,7 +481,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -496,9 +497,21 @@ class H(BaseHTTPRequestHandler):
             self.send_error(415);return
         try:
             length=int(self.headers.get('Content-Length','0'))
-            maximum = 262144 if self.path == '/api/settings' else 2048
+            maximum = 262144 if self.path in ('/api/settings', '/api/runtime') else 8192
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
+            if self.path == '/api/factory/action':
+                from forge.factory.control import queue
+                if not isinstance(value, dict) or set(value) != {'action', 'target', 'reason'}:
+                    raise ValueError('Expected action, target, and reason')
+                identifier=queue(WD, **value)
+                self._send(json.dumps({'ok':True,'request':identifier}));return
+            if self.path == '/api/runtime':
+                from forge.factory.control import save_runtime
+                if not isinstance(value, dict) or set(value) != {'config', 'revision'}:
+                    raise ValueError('Expected config and revision')
+                result=save_runtime(WD, **value)
+                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
             if self.path == '/api/settings/sync':
                 if value != {}:raise ValueError('Expected an empty sync request')
                 settings_service().start_refresh()
@@ -527,7 +540,25 @@ class H(BaseHTTPRequestHandler):
             self.send_error(403);return
         u = urlparse(self.path)
         if u.path == "/":
-            self._send(PAGE, "text/html; charset=utf-8")
+            self._send(FACTORY_PAGE if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
+        elif u.path == '/factory':
+            self._send(FACTORY_PAGE, 'text/html; charset=utf-8')
+        elif u.path == '/api/factory':
+            try:
+                from forge.factory.control import view
+                self._send(json.dumps({**view(WD),'ok':True,'controls_token':CONTROLS_TOKEN}))
+            except (ValueError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
+        elif u.path == '/api/factory/output':
+            try:
+                from forge.factory.ledger import Ledger
+                from forge.factory.contracts import identifier
+                query=parse_qs(u.query)
+                if set(query) != {'id'} or len(query['id']) != 1:raise ValueError('Invalid execution')
+                job=Ledger(Path(WD)/'state'/'factory').read()['jobs'][identifier(query['id'][0])]
+                self._send(json.dumps({'ok':True,'logs':(job.get('capture') or job.get('observation') or {}).get('logs','')}))
+            except (ValueError,KeyError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Execution output unavailable'}))
         elif u.path == '/settings':
             self._send(SETTINGS_PAGE, 'text/html; charset=utf-8')
         elif u.path == '/api/settings':

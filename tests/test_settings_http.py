@@ -18,7 +18,7 @@ class SettingsHTTPTests(unittest.TestCase):
         return handler
 
     def test_page_and_api_require_trusted_host(self):
-        for path in ('/settings','/api/settings'):
+        for path in ('/settings','/api/settings','/factory','/api/factory','/api/factory/output?id=invalid'):
             handler = self.handler(path, Host='attacker.example:8787')
             handler.do_GET(); handler.send_error.assert_called_once_with(403)
 
@@ -31,7 +31,7 @@ class SettingsHTTPTests(unittest.TestCase):
         service.start_refresh.assert_not_called(); service.refresh.assert_not_called()
 
     def test_settings_mutations_reject_cross_origin_and_bad_token(self):
-        for path in ('/api/settings','/api/settings/sync'):
+        for path in ('/api/settings','/api/settings/sync','/api/factory/action','/api/runtime'):
             for headers in ({'Origin':'http://attacker.example'}, {'X-Forge-Action':'bad'}, {'Sec-Fetch-Site':'cross-site'}):
                 with patch.object(dashboard,'settings_service') as service:
                     handler = self.handler(path,{},**headers); handler.do_POST()

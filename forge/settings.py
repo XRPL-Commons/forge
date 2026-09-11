@@ -48,11 +48,13 @@ def validate(config):
     if not isinstance(connections, dict) or set(connections) - set(ROLES):
         raise ValueError('Connection roles must be build, review, audit, or controller')
     for role, value in connections.items():
-        if not isinstance(value, dict) or set(value) != {'app_id', 'installation_id', 'private_key_env'}:
-            raise ValueError(role + ': provide App ID, installation ID, and private key environment reference')
-        for key in ('app_id', 'installation_id'):
-            if type(value[key]) is not int or not 0 < value[key] < 2**53:
-                raise ValueError(role + ': ' + key + ' must be a positive integer')
+        if not isinstance(value, dict) or set(value) not in ({'app_id', 'installation_id', 'private_key_env'}, {'app_id', 'installation_ids', 'private_key_env'}):
+            raise ValueError(role + ': provide App ID, installation ID(s), and private key environment reference')
+        ids = value.get('installation_ids', [value.get('installation_id')])
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 20:
+            raise ValueError(role + ': provide one to twenty installation IDs')
+        if any(type(v) is not int or not 0 < v < 2**53 for v in [value['app_id'], *ids]) or len(set(ids)) != len(ids):
+            raise ValueError(role + ': App and installation IDs must be distinct positive integers')
         if not isinstance(value['private_key_env'], str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', value['private_key_env']):
             raise ValueError(role + ': private_key_env must be an environment variable name, not a secret')
     if len({c['app_id'] for c in connections.values()}) != len(connections):

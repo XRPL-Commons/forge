@@ -1,0 +1,10 @@
+*
+!forge/
+!forge/factory/
+!forge/factory/job.py
+!forge/factory/harness.py
+!deploy/
+!deploy/runner/
+!deploy/runner/Dockerfile
+
+!deploy/runner/requirements.toml

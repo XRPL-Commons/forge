@@ -23,3 +23,9 @@ Model triage is opt-in. Service templates default to local rules and disable mod
 The optional remote queue notification channel is named `relay`; configure the `RELAY_*` environment variables only if using that adapter. No channels are connected by this repository. The package manifest is private and pins browser-test tooling; it is not an npm publication package.
 
 Provider isolation and executor integration tools are experimental, opt-in components. Synthetic tests are not evidence that an arbitrary production installation is isolated. See [implementation status](implementation.md).
+
+The durable factory has its own disabled `examples/runtime.json.example`: four
+Build, two Review, one Audit and one Recovery slot, a shared cap of eight, and
+separate dispatch/merge switches. Its image, native policy and internal network are
+operator-provisioned; cloning source does not alter host security or start workers.
+See [factory runtime](factory-runtime.md). The legacy defaults above remain separate.

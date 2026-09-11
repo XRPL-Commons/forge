@@ -1,0 +1,320 @@
+import copy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import Mock
+
+from forge.factory.contracts import candidate, digest, result, submission, references_issue
+from forge.factory.config import validate, policy
+from forge.factory.ledger import Ledger
+from forge.factory.supervisor import Supervisor
+from forge.factory.runner import RunnerError
+from forge.factory.github import GitHubUnavailable
+from forge.state import StateError
+
+
+class FactoryTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.now = 1000
+        self.ledger = Ledger(self.directory.name, clock=lambda: self.now)
+        self.config = validate({'enabled': True, 'merge_enabled': True, 'image': 'sha256:' + 'a'*64, 'harness_argv': ['/adapter']})
+        self.settings = Mock()
+        self.settings.admission.return_value = {'allowed': True}
+        self.settings.view.return_value = {'repositories': []}
+        self.github = Mock()
+        self.github.publisher.side_effect = lambda role: role + '[bot]'
+        self.github.issue.return_value = ({'state': 'open', 'labels': []}, 'requirements')
+        self.github.publication.return_value = None
+        self.github.pr.return_value = {'number': 2, 'head': {'sha': 'a'*40}, 'base': {'sha': 'b'*40},
+                                      'draft': False, 'state': 'open', 'merged': False, 'mergeable': True}
+        self.github.human.return_value = (True, False)
+        self.github.gates.return_value = True
+        self.github.protections.return_value = True
+        self.runner = Mock()
+        self.runner.observe.return_value = {'logs': 'Running output says success', 'at': 1000}
+        self.runner.inspect.return_value = {'status': 'running', 'running': True}
+        self.runner.create.return_value = 'container'
+        self.runner.capture.return_value = {'result': None, 'logs': 'execution log', 'missing': []}
+        self.runner.reset.return_value = {'container_absent': True, 'capacity_ready': True}
+        self.supervisor = Supervisor(self.ledger, self.runner, self.github, self.settings, self.config, clock=lambda: self.now)
+        self.key = self.ledger.discover({'id': 1, 'name': 'example/project'}, 1, 'requirements')
+
+    def test_existing_pr_association_uses_exact_issue_identity(self):
+        job = self.job()
+        body = '<!-- forge-submission ' + json.dumps({'version': 1, 'issue': 1, 'attempt': job['id'], 'head': None}) + ' -->'
+        self.assertTrue(references_issue(body, 'example/project', 1))
+        self.assertTrue(references_issue('Fixes #1.', 'example/project', 1))
+        self.assertTrue(references_issue('https://github.com/example/project/issues/1', 'example/project', 1))
+        self.assertFalse(references_issue('Fixes #11', 'example/project', 1))
+        self.assertFalse(references_issue('https://github.com/example/project/issues/11', 'example/project', 1))
+        self.assertFalse(references_issue('https://github.com/other/project/issues/1', 'example/project', 1))
+
+    def test_explicit_hold_fences_work_without_cancelling_issue(self):
+        job = self.job()
+        self.github.issue.return_value = ({'state': 'open', 'labels': [{'name': 'hold'}]}, 'requirements')
+        self.supervisor.reconcile(self.item())
+        self.assertEqual(self.item()['state'], 'hold')
+        self.assertIsNone(self.item()['active'])
+        self.assertTrue(self.ledger.read()['jobs'][job['id']]['fenced'])
+        self.supervisor.execution(self.ledger.read()['jobs'][job['id']])
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+
+    def test_external_cancellation_is_idempotent(self):
+        self.ledger.cancel(self.key, 'Closed')
+        events = len(self.ledger.read()['events'])
+        self.ledger.cancel(self.key, 'Closed')
+        self.assertEqual(len(self.ledger.read()['events']), events)
+
+    def test_live_output_does_not_establish_completion(self):
+        job = self.job()
+        self.ledger.job_update(job['id'], phase='running')
+        self.supervisor.execution(self.ledger.read()['jobs'][job['id']])
+        current = self.ledger.read()['jobs'][job['id']]
+        self.assertIn('success', current['observation']['logs'])
+        self.assertIsNone(current['outcome'])
+        self.assertNotIn('capture', current)
+        self.assertEqual(self.item()['active'], job['id'])
+        self.assertEqual(self.item()['state'], 'ready')
+
+    def test_discovery_rotates_repositories_after_exhausted_api_budget(self):
+        self.settings.view.return_value = {'repositories': [
+            {'id': 2, 'name': 'example/first', 'dispatch_allowed': True},
+            {'id': 3, 'name': 'example/second', 'dispatch_allowed': True}]}
+        def unavailable(item):
+            self.github.deadline = 0
+            raise GitHubUnavailable('Budget exhausted')
+        self.github.deadline = float('inf')
+        self.github.pulls.side_effect = unavailable
+        self.supervisor.discover()
+        self.assertEqual(self.github.pulls.call_count, 1)
+        self.github.deadline = float('inf')
+        self.supervisor.discover()
+        self.assertEqual(self.github.pulls.call_args.args[0]['repo_id'], 3)
+
+    def item(self):
+        return self.ledger.read()['issues'][self.key]
+
+    def job(self, role='build', failure=None):
+        return self.ledger.reserve(self.key, role, role+'-1', publisher=role+'[bot]',
+                                   policy=digest(policy(self.config)), timeout=120, failure=failure)
+
+    def clean(self, job):
+        self.ledger.job_update(job['id'], fenced=True, phase='stopping')
+        self.ledger.release(job['id'])
+
+    def candidate(self, job):
+        return {'repo_id': 1, 'issue': 1, 'pr': 2, 'head': 'a'*40, 'base': 'b'*40, 'base_ref': 'main',
+                'build_attempt': job['id'], 'key': 'candidate', 'requirements': 'requirements',
+                'policy': job['policy'], 'branch': job['branch']}
+
+    def report(self, job, outcome='pass'):
+        value = {'version': 1, 'role': job['role'], 'attempt': job['id'], 'outcome': outcome, 'summary': 'Specific findings'}
+        if job['role'] in ('review', 'audit'):
+            value['candidate'] = job['candidate']['key']
+        if job['role'] == 'audit':
+            value.update(human_required='required', human_reason='Sensitive change')
+        return value
+
+    def investigate(self, pattern='tests', alternative=None, incomplete=False):
+        failure = self.item()['failures'][-1]
+        job = self.job('recovery', failure)
+        self.ledger.findings(job['id'], {'summary': 'Diagnosis', 'pattern': pattern, 'evidence': ['test output'],
+                                      'uncertainty': '', 'alternative': alternative, 'incomplete': incomplete})
+        self.clean(job)
+        return job
+
+    def test_durable_reservation_prevents_duplicate_issue_and_slot(self):
+        job = self.job()
+        other = Ledger(self.directory.name)
+        self.assertEqual(other.read()['slots']['build-1'], job['id'])
+        with self.assertRaises(StateError):
+            self.job()
+        self.ledger.accept(job['id'], candidate=self.candidate(job))
+        with self.assertRaises(StateError):
+            self.job('review')
+        self.clean(job)
+        self.assertEqual(self.job('review')['role'], 'review')
+
+    def test_success_does_not_reset_issue_wide_budget(self):
+        first = self.job()
+        self.ledger.fail(first['id'], 'Build failed')
+        self.clean(first); self.investigate()
+        build = self.job()
+        self.ledger.accept(build['id'], candidate=self.candidate(build)); self.clean(build)
+        review = self.job('review')
+        self.ledger.fail(review['id'], 'Rejected', rejection=True); self.clean(review)
+        self.investigate('logic')
+        build = self.job()
+        self.ledger.fail(build['id'], 'Different failure'); self.clean(build)
+        self.assertEqual(self.item()['state'], 'failed')
+        self.assertEqual(self.ledger.failure_count(self.item()), 3)
+        self.investigate('environment')
+        self.assertEqual(self.item()['state'], 'failed')
+        with self.assertRaises(StateError):
+            self.job()
+
+    def test_repeated_failure_requires_changed_third_attempt(self):
+        for _ in range(2):
+            job = self.job(); self.ledger.fail(job['id'], 'tests failed'); self.clean(job); self.investigate()
+        self.assertEqual(self.item()['state'], 'hold')
+        self.assertEqual(self.ledger.failure_count(self.item()), 2)
+
+    def test_supported_alternative_is_passed_to_next_assignment(self):
+        first = self.job(); self.ledger.fail(first['id'], 'tests failed'); self.clean(first); self.investigate()
+        second = self.job(); self.ledger.fail(second['id'], 'tests failed'); self.clean(second)
+        alternative = {'change': 'Replace network fixture with local fake', 'reason': 'Offline dependency', 'evidence': 'Connection failure in test output'}
+        self.investigate(alternative=alternative)
+        self.assertEqual(self.job()['history']['retry_plan'], alternative)
+
+    def test_failed_investigation_never_recurses_or_charges_again(self):
+        job = self.job(); self.ledger.fail(job['id'], 'Failure'); self.clean(job)
+        recovery = self.job('recovery', self.item()['failures'][0])
+        self.ledger.job_update(recovery['id'], capture={'result': None})
+        self.supervisor.outcome(self.ledger.read()['jobs'][recovery['id']])
+        self.assertEqual(self.ledger.failure_count(self.item()), 1)
+        self.assertEqual(self.item()['failures'][0]['investigation'], 'complete')
+        self.assertTrue(self.item()['failures'][0]['findings']['incomplete'])
+
+    def test_failure_observed_twice_is_charged_once_after_restart(self):
+        job = self.job()
+        self.ledger.fail(job['id'], 'failure')
+        Ledger(self.directory.name).fail(job['id'], 'duplicate')
+        self.assertEqual(self.ledger.failure_count(self.item()), 1)
+
+    def test_crash_after_build_publication_recovers_without_failure(self):
+        job = self.job()
+        self.github.publication.return_value = self.candidate(job)
+        self.ledger.job_update(job['id'], capture={'result': None, 'missing': ['worker output']})
+        self.supervisor.outcome(self.ledger.read()['jobs'][job['id']])
+        self.assertEqual(self.item()['state'], 'built')
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+
+    def test_success_prose_does_not_advance_without_publication(self):
+        job = self.job()
+        self.ledger.job_update(job['id'], capture={'result': self.report(job)})
+        self.supervisor.outcome(self.ledger.read()['jobs'][job['id']])
+        self.assertEqual(self.item()['state'], 'investigating')
+
+    def test_missing_container_resets_before_network_reconciliation(self):
+        job = self.job(); self.ledger.job_update(job['id'], phase='running')
+        self.runner.inspect.return_value = None
+        self.github.issue.side_effect = RuntimeError('Should not be called by reset')
+        self.supervisor.execution(self.ledger.read()['jobs'][job['id']])
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertEqual(self.item()['active'], job['id'])
+        self.runner.reset.assert_called_once()
+
+    def test_failed_teardown_preserves_slot_and_verified_milestone(self):
+        job = self.job()
+        self.ledger.accept(job['id'], candidate=self.candidate(job))
+        self.ledger.job_update(job['id'], fenced=True, phase='stopping')
+        self.runner.reset.side_effect = RunnerError('Engine unavailable')
+        with self.assertRaises(RunnerError):
+            self.supervisor.execution(self.ledger.read()['jobs'][job['id']])
+        self.assertEqual(self.item()['state'], 'built')
+        self.assertEqual(self.ledger.read()['slots']['build-1'], job['id'])
+
+    def test_stale_release_cannot_free_replacement(self):
+        first = self.job(); self.ledger.wait(first['id'], 'Quota', 0); self.clean(first)
+        replacement = self.job()
+        with self.assertRaises(StateError):
+            self.ledger.release(first['id'])
+        self.assertEqual(self.ledger.read()['slots']['build-1'], replacement['id'])
+
+    def test_cleanup_runs_when_factory_and_repository_disabled(self):
+        job = self.job(); self.ledger.job_update(job['id'], phase='running')
+        self.ledger.cancel(self.key, 'Operator stop')
+        self.config['enabled'] = False
+        self.settings.admission.return_value = {'allowed': False}
+        self.supervisor.execution(self.ledger.read()['jobs'][job['id']])
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+
+    def test_human_wait_releases_audit_and_does_not_repeat_it(self):
+        build = self.job(); self.ledger.accept(build['id'], candidate=self.candidate(build)); self.clean(build)
+        review = self.job('review'); self.ledger.accept(review['id'], evidence={'check_id': 1}); self.clean(review)
+        audit = self.job('audit'); self.ledger.accept(audit['id'], evidence={**self.report(audit), 'check_id': 2}); self.clean(audit)
+        self.github.human.return_value = (False, False)
+        self.supervisor.merge(self.item(), self.github.pr.return_value)
+        self.assertEqual(self.item()['state'], 'approval_needed')
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertEqual(self.supervisor.choose('audit', self.ledger.read()), (None, None))
+        self.github.merge.assert_not_called()
+
+    def test_human_approval_cannot_waive_technical_gate(self):
+        build = self.job(); self.ledger.accept(build['id'], candidate=self.candidate(build)); self.clean(build)
+        with self.ledger.transaction() as data:
+            data['issues'][self.key].update(state='audited', evidence={'audit': {'human_required': 'required'}})
+        self.github.gates.return_value = False
+        self.supervisor.merge(self.item(), self.github.pr.return_value)
+        self.github.merge.assert_not_called()
+
+    def test_explicit_human_retry_retains_previous_failures(self):
+        for n in range(3):
+            job = self.job(); self.ledger.fail(job['id'], 'failure'); self.clean(job); self.investigate(str(n))
+        self.ledger.retry(self.key, 'Operator corrected the infrastructure')
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+        self.assertEqual(len(self.item()['failures']), 3)
+        self.assertEqual(self.item()['state'], 'ready')
+
+    def test_missing_provider_credentials_wait_without_charging_or_leaking_a_slot(self):
+        from forge.factory.runner import RunnerUnavailable
+        job = self.job()
+        self.runner.inspect.return_value = {'status': 'created', 'running': False}
+        self.runner.prepare.side_effect = RunnerUnavailable('Provider credentials unavailable')
+        self.supervisor.execution(job)
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertGreater(self.ledger.read()['provider_retry_after'], self.now)
+
+    def test_initialized_but_incomplete_json_never_resets_ownership(self):
+        self.job()
+        Path(self.directory.name, 'factory-ledger.json').write_text('{"version":1}')
+        with self.assertRaises(StateError):
+            Ledger(self.directory.name).read()
+
+    def test_recovery_corrects_a_failure_once_and_cannot_undo_cancellation(self):
+        job = self.job(); self.ledger.fail(job['id'], 'Publication initially absent'); self.clean(job)
+        self.assertTrue(self.ledger.recover_publication(job['id'], self.candidate(job)))
+        self.assertFalse(self.ledger.recover_publication(job['id'], self.candidate(job)))
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+        self.assertEqual(self.item()['state'], 'built')
+        self.ledger.cancel(self.key, 'Operator decision')
+        self.ledger.hold(self.key, 'Old observation failed')
+        self.assertEqual(self.item()['state'], 'cancelled')
+
+    def test_unknown_investigation_does_not_replace_failed_milestone_with_hold(self):
+        for number in range(3):
+            job = self.job(); self.ledger.fail(job['id'], 'Failure'); self.clean(job); self.investigate(str(number))
+        self.ledger.hold(self.key, 'Old observation unavailable')
+        self.assertEqual(self.item()['state'], 'failed')
+
+    def test_contract_binds_author_attempt_issue_branch_head_and_repository(self):
+        job = self.job()
+        block = {'version': 1, 'issue': 1, 'attempt': job['id'], 'head': 'a'*40}
+        pr = {'number': 2, 'body': '<!-- forge-submission '+json.dumps(block)+' -->',
+              'head': {'sha': 'a'*40, 'ref': job['branch'], 'repo': {'id': 1}},
+              'base': {'sha': 'b'*40, 'ref': 'main', 'repo': {'id': 1}},
+              'user': {'login': 'build[bot]', 'type': 'Bot'}, 'draft': False, 'state': 'open'}
+        self.assertEqual(candidate(pr, job, 'r', 'p')['head'], 'a'*40)
+        for field, value in [('draft', True), ('state', 'closed'), ('user', {'login': 'other', 'type': 'Bot'})]:
+            changed = {**pr, field: value}
+            with self.assertRaises(ValueError):
+                candidate(changed, job, 'r', 'p')
+        with self.assertRaises(ValueError):
+            submission(pr['body'] + pr['body'])
+
+    def test_stale_result_cannot_advance_new_candidate(self):
+        build = self.job(); self.ledger.accept(build['id'], candidate=self.candidate(build)); self.clean(build)
+        review = self.job('review')
+        self.ledger.invalidate(self.key, 'new head')
+        self.assertFalse(self.ledger.accept(review['id'], evidence={'check_id': 1}))
+        self.assertEqual(self.item()['state'], 'ready')
+
+
+if __name__ == '__main__':
+    unittest.main()

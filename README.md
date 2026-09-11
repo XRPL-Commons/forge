@@ -1,24 +1,27 @@
 # Forge
 
-Forge coordinates coding agents across GitHub repositories and shows each issue
-moving through **Build → Review → Security audit**.
+The durable factory implementation is available through `bin/forge factory` and
+`/factory`: resettable runners, supervisor-owned issue history, sequential review
+and audit, mandatory failure investigations, and a shared three-failure budget.
+Start with [runtime setup](docs/factory-runtime.md) and the
+[workflow contract](docs/software-factory-spec.md). It uses an explicit cutover;
+installing this source does not take over the legacy fleet.
 
-GitHub holds the issues, pull requests, reviews, and audit evidence. Local queue
-snapshots, activity events, and SQLite history power the operator dashboard.
-A durable local state machine tracks each issue, its exact execution assignment,
-and the worker slot that owns it. Reservations and generation checks prevent
-independent workers from taking the same assignment.
 
-- Issue cards show what is working, waiting, or needs a human decision.
-- Workers start on demand and release their slots after verified handoffs.
-- Capacity checks account for memory, pressure, and per-role limits.
-- Critical changes require human approval. Failed audits return work to Build.
-- A unified activity log records dispatches, progress, releases, and blockers.
+Forge moves GitHub issues through **Build → Review → Security audit → Merge**.
+GitHub holds requirements, code and review evidence. The supervisor owns the durable
+issue ledger, assignments, failure history and resource allocation. Workers receive
+one assignment and run inside disposable containers; completion is verified against
+GitHub before the issue advances.
 
-**Status: experimental.** The tmux supervisor is the working execution path.
-The newer isolated executor and policy modules are staged components; live
-repository execution through those adapters remains disabled. See
-[implementation status](docs/implementation.md).
+**Status: experimental.** The durable factory is implemented and independently
+selectable. It has synthetic workflow/restart tests and real credential-free runner
+canaries; an authenticated repository pilot is still required before live cutover.
+The existing tmux fleet and earlier staged systemd components remain separate.
+See [implementation status](docs/implementation.md).
+
+The following observation and monitoring instructions describe the compatibility
+path. New installations should begin with the runtime setup linked above.
 
 ## Start with observation
 
@@ -39,7 +42,7 @@ its configured `auto:owned-by-*` ownership label. Shadow mode reads queues and
 writes local snapshots; it does not launch workers, change labels, or merge PRs.
 Set `RECOVERY_AUTHOR` explicitly to the GitHub identity used by your workers.
 
-Live execution additionally needs tmux, supported coding-agent CLIs, separate
+Legacy live execution additionally needs tmux, supported coding-agent CLIs, separate
 worker clones, and an operator-managed service installation. The files in
 `deploy/` are templates and containment utilities, not a one-command production
 installer. Configure paths, agent identities, credentials, and merge policy for
@@ -52,8 +55,8 @@ The [GitHub settings guide](docs/github-settings.md) covers the `/settings` page
 human-managed App installation, repository discovery, and explicit activation.
 Start with `examples/factory.json.example`: it has no credentials or enabled
 repositories. Settings are editable in the UI or as a file; secrets remain outside
-the source tree. This setup layer does not yet replace the legacy harness's shared
-GitHub authentication with per-role execution credentials.
+the source tree. The durable factory issues repository-scoped role credentials;
+the compatibility supervisor retains its existing authentication.
 
 The dashboard is implemented in `legacy/dashboard.html` and
 `legacy/forge-status.py`. It reads local state and refreshes automatically. Its

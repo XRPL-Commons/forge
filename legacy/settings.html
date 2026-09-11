@@ -51,6 +51,7 @@
     <form id="timing-form"><div class="timing"><label>Sync interval (seconds)<input id="sync-interval" type="number" min="30" max="86400" required></label><label>Access expires after (seconds)<input id="max-age" type="number" min="30" max="86400" required></label></div><p><button id="save-timing" disabled>Save sync settings</button></p></form>
     <details id="config-details"><summary>View or edit configuration</summary><label for="config-editor">JSON configuration</label><textarea id="config-editor" spellcheck="false"></textarea><button id="save-json" disabled>Validate and save</button> <button id="reload">Reload from file</button></details>
   </section>
+  <section aria-labelledby="runtime-title"><h2 id="runtime-title">Factory workflow</h2><p class="muted">Runner capacity, execution limits, approval policy, and merge controls are saved in <code>runtime.json</code>. <a href="/factory">Open factory view</a></p><details><summary>Edit workflow configuration</summary><label for="runtime-editor">Runtime JSON</label><textarea id="runtime-editor" spellcheck="false"></textarea><button id="save-runtime">Validate and save workflow</button></details></section>
   <dialog id="enable-dialog" aria-labelledby="enable-title"><h2 id="enable-title">Enable repository?</h2><p id="enable-message"></p><p>Forge may pick up eligible issues once reconciliation and execution setup are complete.</p><div class="toolbar"><button id="cancel-enable">Cancel</button><button id="confirm-enable">Enable automation</button></div></dialog>
 </main>
 <script>
@@ -67,7 +68,7 @@
       const permissions=Object.entries(r.required_permissions).map(([key,value])=>`${key.replaceAll('_',' ')}: ${value}`).join(' · ');
       // Only server-generated, canonical GitHub links are actionable.
       const link=r.installation_url&&/^https:\/\/github\.com\/(?:organizations\/[A-Za-z0-9_.-]+\/)?settings\/installations\/[0-9]+$/.test(r.installation_url)?`<a href="${esc(r.installation_url)}" target="_blank" rel="noopener noreferrer">Manage access ↗</a>`:'';
-      return `<article class="connection"><div class="heading"><h3>${labels[role]}</h3>${badge(r.status)}</div><p><small>${esc(permissions)}</small></p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<div class="fields"><label>App ID<input id="${role}-app" inputmode="numeric" pattern="[0-9]+" value="${esc(c.app_id)}"></label><label>Installation ID<input id="${role}-installation" inputmode="numeric" pattern="[0-9]+" value="${esc(c.installation_id)}"></label><label>Private key environment variable<input id="${role}-key" placeholder="FORGE_${role.toUpperCase()}_KEY_FILE" value="${esc(c.private_key_env)}" autocomplete="off"></label></div><p>${link}</p></article>`;
+      return `<article class="connection"><div class="heading"><h3>${labels[role]}</h3>${badge(r.status)}</div><p><small>${esc(permissions)}</small></p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<div class="fields"><label>App ID<input id="${role}-app" inputmode="numeric" pattern="[0-9]+" value="${esc(c.app_id)}"></label><label>Installation IDs<input id="${role}-installation" inputmode="text" pattern="[0-9, ]+" value="${esc(c.installation_ids?.join(', ')||c.installation_id)}"></label><label>Private key environment variable<input id="${role}-key" placeholder="FORGE_${role.toUpperCase()}_KEY_FILE" value="${esc(c.private_key_env)}" autocomplete="off"></label></div><p>${link}</p></article>`;
     }).join('');
     $('repositories').innerHTML=current.repositories.map(r=>`<tr><td><strong>${esc(r.name)}</strong>${r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td><button data-repo="${r.id}" ${!r.enabled&&!r.access_ready?'disabled':''}>${r.enabled?'Disable':'Enable'}</button></td></tr>`).join('');
     $('repo-count').textContent=`${current.repositories.filter(r=>r.enabled).length} enabled · ${current.repositories.length} discovered or configured`;
@@ -96,7 +97,7 @@
     const config=structuredClone(current.config);config.connections={};
     for(const role of roles){const app=$(role+'-app').value.trim(),installation=$(role+'-installation').value.trim(),key=$(role+'-key').value.trim();if(!app&&!installation&&!key)continue;
       if(!app||!installation||!key)throw Error(`Complete all three fields for ${labels[role]}`);
-      config.connections[role]={app_id:Number(app),installation_id:Number(installation),private_key_env:key};}
+      const ids=installation.split(',').map(v=>Number(v.trim()));config.connections[role]={app_id:Number(app),...(ids.length===1?{installation_id:ids[0]}:{installation_ids:ids}),private_key_env:key};}
     await save(config);
   });
   $('timing-form').onsubmit=guarded(()=>save({...current.config,sync_interval_seconds:Number($('sync-interval').value),access_max_age_seconds:Number($('max-age').value)}));
@@ -113,6 +114,9 @@
   async function setEnabled(repo,enabled){const config=structuredClone(current.config),row=config.repositories.find(r=>r.id===repo.id);if(row)row.enabled=enabled;else config.repositories.push({id:repo.id,name:repo.name,enabled});await save(config)}
   $('cancel-enable').onclick=()=>$('enable-dialog').close();
   $('confirm-enable').onclick=guarded(async()=>{$('enable-dialog').close();await setEnabled(pendingRepo,true)});
-  load().catch(error=>message(error.message,true));
+  let runtimeRevision=null;
+  async function loadRuntime(){const v=await request('/api/factory');runtimeRevision=v.runtime_revision;$('runtime-editor').value=JSON.stringify(v.runtime,null,2)}
+  $('save-runtime').onclick=guarded(async()=>{const v=await request('/api/runtime',{config:JSON.parse($('runtime-editor').value),revision:runtimeRevision});runtimeRevision=v.runtime_revision;message('Workflow configuration saved. The supervisor applies it on its next cycle.')});
+  load().then(loadRuntime).catch(error=>message(error.message,true));
   setInterval(()=>{if(!busy&&!dirty&&!$('enable-dialog').open)load().catch(error=>message(error.message,true))},5000);
 </script></body></html>

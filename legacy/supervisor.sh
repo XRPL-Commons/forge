@@ -22,6 +22,8 @@ CAP_ARGS=(--max-sessions "$MAX_SESSIONS" --max-sessions-per-role "$MAX_SESSIONS_
           --max-memory-psi-some "$MAX_MEMORY_PSI_SOME" --max-memory-psi-full "$MAX_MEMORY_PSI_FULL")
 exec 8>"$DIR/state-supervisor.lock"
 flock -n 8 || exit 0
+# An explicit cutover fences legacy restarts as well as concurrent supervisors.
+[ ! -f "$DIR/state/factory-v2.enabled" ] || exit 0
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POLL="${SUPERVISOR_POLL:-60}"
 SLEEP_AFTER_EMPTY_POLLS="${SLEEP_AFTER_EMPTY_POLLS:-2}"   # sleep after this many consecutive empty+idle polls

@@ -18,13 +18,16 @@ ROLE_PERMISSIONS = {
     'build': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write'},
     'review': {'contents': 'read', 'issues': 'read', 'pull_requests': 'write', 'checks': 'write'},
     'audit': {'contents': 'read', 'issues': 'read', 'pull_requests': 'write', 'checks': 'write'},
-    'controller': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write', 'checks': 'write'},
+    'controller': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write', 'checks': 'write', 'administration': 'read'},
 }
 REPO_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9_.-]+')
 
 
 class AccessError(ValueError):
     """An intentionally credential-free error suitable for the settings UI."""
+    def __init__(self, message, *, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -58,10 +61,10 @@ class AppClient:
                 raw = response.read(4 * 1024 * 1024 + 1)
                 if len(raw) > 4 * 1024 * 1024:
                     raise AccessError('GitHub response exceeded the size limit')
-                return json.loads(raw)
+                return json.loads(raw) if raw else None
         except HTTPError as error:
             # Never echo response bodies, headers, tokens, or key paths.
-            raise AccessError(f'GitHub returned HTTP {error.code}; check installation access') from None
+            raise AccessError(f'GitHub returned HTTP {error.code}; check installation access', status=error.code) from None
         except (URLError, TimeoutError, OSError, ValueError):
             raise AccessError('GitHub access could not be verified; retry the sync') from None
 
@@ -85,6 +88,24 @@ class AppClient:
         return (message + b'.' + encode(result.stdout)).decode()
 
     def discover(self, connection):
+        if 'installation_ids' not in connection:
+            return self._discover_one(connection)
+        installations = [self._discover_one({'app_id': connection['app_id'], 'installation_id': identifier,
+                                             'private_key_env': connection['private_key_env']})
+                         for identifier in connection['installation_ids']]
+        repositories = []
+        for identifier, installation in zip(connection['installation_ids'], installations):
+            repositories.extend({**r, 'installation_id': identifier} for r in installation['repositories'])
+        if len({r['id'] for r in repositories}) != len(repositories):
+            raise AccessError('A repository appears in multiple installations; refresh access')
+        levels = {'none': 0, 'read': 1, 'write': 2, 'admin': 3}
+        names = set().union(*(set(i['permissions']) for i in installations))
+        permissions = {name: min((i['permissions'].get(name, 'none') for i in installations), key=levels.get) for name in names}
+        return {**installations[0], 'repositories': repositories, 'permissions': permissions,
+                'account': ', '.join(i['account'] for i in installations),
+                'installation_urls': [i['installation_url'] for i in installations]}
+
+    def _discover_one(self, connection):
         deadline = time.monotonic() + 90
         def request(method, path, token, payload=None):
             if time.monotonic() >= deadline:

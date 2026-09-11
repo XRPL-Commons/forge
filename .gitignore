@@ -25,3 +25,5 @@ backups/
 .codex/
 factory.json
 github-credentials.env
+
+runtime.json

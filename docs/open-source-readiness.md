@@ -1,6 +1,6 @@
 # Open-source readiness review
 
-Reviewed on 2026-09-11 against the settings implementation based on `6dfc22b`.
+Reviewed on 2026-09-11 against the durable factory implementation on `feat/github-app-settings`.
 This review covers source distribution; it does not certify production isolation
 or authorize publishing the repository.
 
@@ -8,9 +8,7 @@ or authorize publishing the repository.
 
 - Gitleaks 8.30.1, using its default rules and redacted reports, found no secrets
   in the working source or Git history. All reachable refs were included; the
-  history scan reported 21 scanned commits (the base has 22 reachable commits,
-  including a merge commit). The scanner binary was verified against the release
-  asset's SHA-256 before execution.
+  scanner binary was verified against the release asset's SHA-256 before execution.
 - Additional inspection found no private key blocks, common credential-token
   formats, credential-bearing database/HTTP URLs, or developer home paths in the
   current source. Deployment-specific account/project identifiers in test fixtures
@@ -39,39 +37,49 @@ This review did not rewrite Git history, rotate credentials, or publish anything
   role grants, activation, and migration are documented in `github-settings.md`.
 - A local dashboard preview can bind to loopback without Tailscale. Production
   usage still requires a trusted private network; there is no per-user login.
-- Legacy examples remain disabled. Legacy capacity defaults remain conservative;
-  the proposed four/two/one role allocation belongs to the new runner design and
-  has not silently changed the existing supervisor's limits.
-- Relative Markdown documentation links were checked. The design spec is included
-  separately from implementation status so proposed behavior is not presented as
-  an already deployed guarantee.
+- Both factory and runtime examples disable automation and contain no account or
+  repository inventory. New capacity defaults are four Build, two Review, one Audit
+  and one Recovery slot under a shared cap of eight. Legacy examples stay separate.
+- The runner image build context excludes everything except its source and policy.
+  Codex is version-pinned; production image digests, App keys and provider login
+  are supplied by the operator. Native sandbox/egress configuration and exact
+  protection requirements are documented in `factory-runtime.md`.
+- Documentation distinguishes implemented behavior, tested boundaries, legacy
+  components, and the authenticated qualification still required before cutover.
 
 ## Verification
 
-The Linux backend suite passed 809 tests (four optional tests skipped), and the
-observer suite passed 68 tests. After the final admission/cleanup changes, 132
-focused Linux tests passed; the final settings/API checks passed 31 tests locally.
-Existing fleet and new settings desktop/mobile browser checks passed. Coverage
-includes permissions missing, access lost,
-expired observations, installation suspension, renamed repositories, partial API
-inventories, concurrent configuration edits, interrupted syncs, and activation
-confirmation. HTTP tests cover Host/Origin/token enforcement and asynchronous sync.
-Stop/Release requests are processed before disabled/access-failed admission gates;
-direct triage and assignment reservation also enforce current access.
+The Linux backend suite passed 845 tests (four optional tests skipped) in an
+isolated source copy. The final local factory, adapter, settings and HTTP checks
+passed 77 tests after additional exact-issue-link and hold/cancellation fixes.
+The earlier observer suite passed 68 tests. All three dashboard, factory and settings browser suites passed locally; desktop/mobile
+screenshots were inspected. Coverage includes complete
+sequential routing across supervisor restarts, rejection and rebuild, exact PR
+publication recovery, stale revisions, mandatory investigations, shared retry
+budgets, missing credentials, lost resources and same-origin operator controls.
 
-The full lifecycle suite targets Linux. The Mac run encountered existing Linux
-`/proc` and path-identity assumptions; the complete suite was therefore run on
-Linux in an isolated source copy with synthetic tools. Optional real-systemd
-canaries were not enabled. No test modified GitHub or the running fleet.
+Real credential-free Linux canaries demonstrated full container teardown, repeat
+reset, slot reuse, stale-reset protection and the pinned image's native sandbox:
+repository writes succeeded while a synthetic provider file and outside writes
+were denied. The sandbox test used a unique temporary AppArmor profile and removed
+it afterward; it did not relax global host settings. No test used real GitHub or
+model credentials or modified the running fleet. These checks do not establish
+that an authenticated coding workflow is production-ready.
 
-## Remaining production work
+The full lifecycle suite targets Linux. The Mac environment has existing Linux
+`/proc` and path-identity incompatibilities. Optional real-systemd canaries were
+not enabled. The earlier complete Linux result and later focused local result are reported
+separately; the complete Linux suite has not yet been rerun after the final fixes.
 
-The current change supplies GitHub setup, access discovery, explicit activation,
-and admission guards. It does not yet replace shared legacy harness credentials
-with per-role App credentials, implement the new resettable runner, or complete
-the proposed supervisor/recovery state machine. GitHub branch protections and
-authorized human approvers must still be configured and verified before cutover.
+## Deployment and publication boundaries
 
-Source publication and production cutover are separate decisions. Use
-`docs/software-factory-spec.md` for the agreed target and `docs/implementation.md`
-for current execution limits.
+The new supervisor, role-scoped App credentials, resettable runner, recovery flow,
+settings and dashboard are implemented. Live cutover still requires operator-owned
+App installations/keys, provider authentication, native runner host policy, internal
+network/proxy, required branch protections and a credentialed pilot repository.
+The source does not install those changes or activate the existing fleet.
+
+Source publication and production cutover are separate decisions. See the
+[workflow contract](software-factory-spec.md), [implementation status](implementation.md)
+and [runtime setup](factory-runtime.md). This review does not authorize a push or a
+repository visibility change.

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "enabled": false,
+  "merge_enabled": false,
+  "slots": {
+    "build": 4,
+    "review": 2,
+    "audit": 1,
+    "recovery": 1
+  },
+  "max_running": 8,
+  "cycle_seconds": 30,
+  "timeout_seconds": {
+    "build": 2700,
+    "review": 1200,
+    "audit": 1200,
+    "recovery": 600
+  },
+  "grace_seconds": 10,
+  "availability_retry_seconds": 300,
+  "image": "",
+  "engine": "/usr/bin/docker",
+  "engine_socket": "/var/run/docker.sock",
+  "apparmor_profile": "forge-runner-native",
+  "seccomp_profile_env": "FORGE_RUNNER_SECCOMP",
+  "network": "forge-workers",
+  "proxy": "http://forge-egress:3128",
+  "memory": "4g",
+  "cpus": 2,
+  "pids_limit": 256,
+  "harness_argv": [
+    "/usr/local/bin/python3",
+    "-I",
+    "/opt/forge/harness.py"
+  ],
+  "provider_environment": [
+    "OPENAI_API_KEY"
+  ],
+  "human_reviewers": [],
+  "human_required": false,
+  "provider_auth_file_env": null,
+  "cycle_budget_seconds": 60,
+  "ready_label": "ready",
+  "hold_labels": [
+    "hold",
+    "blocked"
+  ],
+  "merge_method": "squash"
+}

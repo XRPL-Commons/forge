@@ -1,0 +1,37 @@
+# Image-owned policy. Worker repositories cannot replace or expand it.
+default_permissions = "forge_runner"
+allowed_approval_policies = ["never"]
+allowed_web_search_modes = []
+allow_login_shell = false
+allow_managed_hooks_only = true
+allow_remote_control = false
+allow_appshots = false
+[allowed_permission_profiles]
+forge_runner = true
+[permissions.filesystem]
+deny_read = ["/work/home", "/work/credentials.json"]
+[permissions.forge_runner.filesystem]
+":root" = "deny"
+":minimal" = "read"
+"/usr" = "read"
+"/opt/forge" = "read"
+"/work/repository" = "write"
+"/work/assignment.json" = "read"
+"/work/askpass" = "read"
+"/work/home" = "deny"
+":tmpdir" = "write"
+":slash_tmp" = "write"
+[permissions.forge_runner.network]
+enabled = true
+[features]
+apps = false
+plugins = false
+remote_plugin = false
+hooks = false
+shell_snapshot = false
+multi_agent = false
+multi_agent_v2 = false
+browser_use = false
+computer_use = false
+skill_mcp_dependency_install = false
+request_permissions_tool = false

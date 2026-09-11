@@ -1,0 +1,24 @@
+# Run from this directory after reviewing the allowlist. No host ports or sockets.
+services:
+  egress:
+    image: python:3.12-slim
+    command: ["python3", "-I", "/opt/forge/egress.py"]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    volumes:
+      - ./egress.py:/opt/forge/egress.py:ro
+    networks:
+      workers:
+        aliases: [forge-egress]
+      uplink: {}
+networks:
+  workers:
+    name: forge-workers
+    internal: true
+  uplink: {}

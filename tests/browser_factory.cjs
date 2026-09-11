@@ -1,0 +1,18 @@
+const {chromium}=require(process.env.FORGE_PLAYWRIGHT_MODULE||'playwright-core');
+const fs=require('fs'),path=require('path'),assert=require('assert');
+(async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.FORGE_BROWSER_PATH,args:['--no-sandbox']});try{
+const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],actions=[];
+page.on('pageerror',e=>errors.push(e.message));
+const issue={key:'1:1',repo:'example/project',number:1,title:'Repair issue-to-PR publication',state:'ready',active:'11111111-1111-4111-8111-111111111111',failure_count:0,failures:[]};
+const failed={...issue,key:'1:2',number:2,title:'Stop repeated failures',state:'failed',active:null,failure_count:3,reason:'Three attempts failed',failures:[{cause:'<img src=x onerror="window.injected=1">',findings:{summary:'Repeated test failures',alternative:null}}]};
+const fixture={ok:true,controls_token:'synthetic',active:true,runtime:{enabled:true,slots:{build:4,review:2,audit:1}},slots:{'build-1':issue.active},issues:[issue,failed],jobs:[{id:issue.active,role:'build',slot:'build-1',phase:'running',cleanup:false}]};
+await page.route('http://forge.test/**',route=>{const url=new URL(route.request().url());if(url.pathname==='/factory')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/factory.html'),'utf8')});if(url.pathname==='/api/factory')return route.fulfill({json:fixture});if(url.pathname==='/api/factory/output')return route.fulfill({json:{ok:true,logs:'<script>window.injected=1</script>\nCaptured output'}});if(url.pathname==='/api/factory/action'){assert.equal(route.request().headers()['x-forge-action'],'synthetic');actions.push(route.request().postDataJSON());return route.fulfill({json:{ok:true,request:'one'}})}return route.fulfill({status:404})});
+await page.goto('http://forge.test/factory');await page.getByText('Repair issue-to-PR publication').waitFor();
+assert.equal(await page.getByRole('button',{name:'Stop',exact:true}).count(),1);
+assert.equal(await page.getByRole('button',{name:'Release',exact:true}).count(),0);
+await page.getByRole('button',{name:'Stop',exact:true}).click();await page.getByRole('dialog').waitFor();assert.equal(actions.length,0);
+await page.getByRole('button',{name:'Close',exact:true}).click();assert.equal(actions.length,0);
+await page.getByRole('button',{name:'Output',exact:true}).click();await page.getByText('Captured output',{exact:false}).waitFor();assert.equal(await page.evaluate(()=>window.injected),undefined);await page.getByRole('button',{name:'Close',exact:true}).click();
+await page.getByRole('button',{name:'Retry',exact:true}).click();await page.locator('#reason').fill('Corrected the test environment');await page.getByRole('button',{name:'Retry issue',exact:true}).click();await page.getByText('Action queued for the supervisor.').waitFor();assert.equal(actions[0].action,'retry');assert.equal(actions[0].target,'1:2');
+await page.screenshot({path:'/tmp/forge-factory-desktop.png',fullPage:true});await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await page.screenshot({path:'/tmp/forge-factory-mobile.png',fullPage:true});assert.deepEqual(errors,[]);console.log('Factory browser checks passed: compact actions, confirmation, retry reason, escaped output, responsive layout.');
+}finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});

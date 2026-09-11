@@ -15,6 +15,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.route('http://forge.test/**',async route=>{
       const req=route.request(),url=new URL(req.url());
       if(url.pathname==='/settings')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/settings.html'),'utf8')});
+      if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,runtime:{version:1,enabled:false},runtime_revision:'runtime-one'}});
       if(url.pathname==='/api/settings/sync'){synced=true;return route.fulfill({json:{ok:true}})}
       if(url.pathname==='/api/settings'){
         if(req.method()==='POST'){

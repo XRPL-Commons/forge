@@ -1,27 +1,54 @@
 # Implementation status
 
-Forge is an experimental coordination system. The tmux supervisor is the working compatibility path: it manages configured role sessions, checks queue ownership and capacity, records local activity, and releases idle workers after verified handoffs. The dashboard uses local queue snapshots, activity history, and collected GitHub evidence.
+The new `forge/factory` path implements the [durable factory contract](software-factory-spec.md).
+It has an explicit controller mode and does not replace the running compatibility
+fleet merely because its source is installed. See [runtime setup](factory-runtime.md)
+for the exact configuration, host policy and cutover procedure.
 
-Structured adapters, atomic attempt state, policy validation, provider circuit breakers, isolated executor fixtures, and independent-observer modules are included as staged components. Their presence and passing synthetic tests do not mean production repository execution through those paths is enabled or that a complete security boundary has been established.
+## Implemented
 
-## Remaining integration gates
+- Supervisor-owned issue history and assignments, with serialized durable
+  reservations before launch and checked ownership invariants on load/save.
+- Sequential Build, Review, Audit and merge routing; one three-failure issue budget,
+  mandatory bounded investigations, repeat-pattern holds and explicit human retry.
+- Exact PR submission metadata, revision-bound verdicts, role App publication,
+  protected-target admission and controller-only merge authority.
+- Disposable container runners with native Codex policy, external reset, verified
+  teardown, stale-execution fencing and bounded evidence capture.
+- GitHub App discovery and multiple installations per role, repository-scoped
+  execution tokens, explicit activation, and configuration files shared with Settings.
+- A factory view with compact actions, confirmation dialogs, current attention
+  separated from historical failures, runner cleanup and issue history.
 
-The GitHub settings layer is implemented: file-backed configuration, App-authenticated
-read-only installation sync, role access checks, explicit repository activation,
-and admission guards. Per-role credentials are not yet injected into live legacy
-harnesses. Settings readiness means access has been verified; it is not evidence
-of execution isolation, branch-protection configuration, or completed migration.
+## Qualification and deployment
 
-- Isolate worker credentials, repository tools, and host resources with dedicated identities and tested containment.
-- Connect structured attempts to live reconciliation and safe restart/cancellation behavior.
-- Separate trusted merge credentials and validate current candidates against effective repository policy.
-- Provision an independent observer mirror with an explicitly reviewed baseline and complete accepted-patch coverage.
-- Prove bounded provider handoff, state-loss recovery, and cleanup before production expansion.
+The code has synthetic full-pipeline/restart tests and real credential-free runner
+and native sandbox canaries. The image policy was tested for successful workspace
+writes and denial of a synthetic provider authentication file. Those checks do not
+prove an authenticated production workflow against a particular repository.
 
-## Practical limits
+Production cutover still requires operator-owned App installations/keys, provider
+authentication, the named runner host policy/internal network, protected branches,
+and an authenticated pilot. No existing fleet is automatically stopped, no global
+sandbox setting is relaxed, and no administrator credential is used to configure
+GitHub. The first adapter handles classic branch protection and conservative
+wildcard human CODEOWNERS gates; ruleset-only/merge-queue alternatives are held.
 
-Same-user tmux workers retain their ambient authority. Role prompts and a cooperative build wrapper are operating conventions, not credential isolation. Terminal activity is observational and does not prove task assignment, start time, or completion. Holds and admission gates cannot revoke an already running worker's capabilities. GitHub evidence and approvals remain authoritative.
+## Compatibility and separate staged components
 
-The public role templates require repository protections and do not inherit administrative merge authorization from any existing fleet. Operator-managed deployment, credentials, and policy review are required.
+The tmux supervisor remains available for existing installations. Its workers retain
+ambient same-user authority; terminal observations do not prove assignment or task
+success. The updated supervisor exits when the new controller selection marker is
+present, and both modes use the same runtime lock.
 
-See [capacity](capacity.md), [scheduling](scheduling.md), [worker recovery](worker-recovery.md), and [executor policy](executor-policy.md).
+The earlier `forge/executor.py` systemd scaffold remains gated to synthetic workloads.
+Its separate activation/isolation requirements have not been removed. Independent
+observer/mirror components also retain their own provisioning and baseline checks;
+the new factory does not claim those are deployed.
+
+The factory ledger is local JSON with atomic fsync/replace and invariants, not a
+distributed claim service. Do not operate separate controller roots against the same
+repositories. GitHub grants are coarser than individual builder actions; role prompts
+are cooperative restrictions for those writes, while submission acceptance and
+protected-target merge authority are independently checked. History/evidence remains
+private runtime data and has no automatic retention deletion in this version.
