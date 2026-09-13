@@ -1,6 +1,6 @@
 # Open-source readiness review
 
-Reviewed on 2026-09-11 against the durable factory implementation on `feat/github-app-settings`.
+Reviewed on 2026-09-13 against the durable factory implementation on `feat/github-app-settings`.
 This review covers source distribution; it does not certify production isolation
 or authorize publishing the repository.
 
@@ -49,10 +49,10 @@ This review did not rewrite Git history, rotate credentials, or publish anything
 
 ## Verification
 
-The Linux backend suite passed 845 tests (four optional tests skipped) in an
-isolated source copy. The final local factory, adapter, settings and HTTP checks
-passed 77 tests after additional exact-issue-link and hold/cancellation fixes.
-The earlier observer suite passed 68 tests. All three dashboard, factory and settings browser suites passed locally; desktop/mobile
+The final Linux backend suite passed 859 tests (four optional tests skipped) in an
+isolated source copy verified against the committed source. The observer suite
+passed 68 tests. The local factory, adapter, settings and HTTP checks also passed
+77 tests. All three dashboard, factory and settings browser suites passed locally; desktop/mobile
 screenshots were inspected. Coverage includes complete
 sequential routing across supervisor restarts, rejection and rebuild, exact PR
 publication recovery, stale revisions, mandatory investigations, shared retry
@@ -68,8 +68,8 @@ that an authenticated coding workflow is production-ready.
 
 The full lifecycle suite targets Linux. The Mac environment has existing Linux
 `/proc` and path-identity incompatibilities. Optional real-systemd canaries were
-not enabled. The earlier complete Linux result and later focused local result are reported
-separately; the complete Linux suite has not yet been rerun after the final fixes.
+not enabled. The complete Linux suite includes the final issue-reference,
+hold/cancellation, running-output and GitHub completion reconciliation fixes.
 
 ## Deployment and publication boundaries
 
