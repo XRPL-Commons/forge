@@ -21,7 +21,7 @@ class Repository:
         return self.repo.split("/")[-1]
 
 
-def load_repositories(directory):
+def load_repositories(directory, *, include_factory=True):
     result = []
     for path in sorted(Path(directory).glob("*.repo")):
         values = {}
@@ -52,7 +52,7 @@ def load_repositories(directory):
             raise ValueError(f"Clone paths must be absolute without control characters in {path.name}")
         result.append(Repository(repo, owner, enabled == "true", author, *clones))
     factory = Path(directory).parent / 'factory.json'
-    if factory.exists():
+    if include_factory and factory.exists():
         from .settings import Settings
         settings = Settings(factory.parent)
         configured = settings.load()['repositories']

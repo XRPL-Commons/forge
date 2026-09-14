@@ -85,7 +85,7 @@ def view(root):
         observation = read_json(Path(root) / 'state' / 'factory' / 'supervisor.json')
     except (OSError, ValueError):
         observation = {}
-    return {'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': load(root),
+    return {'repositories': Settings(root).load()['repositories'], 'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': load(root),
             'runtime_revision': digest(load(root)), 'active': (Path(root) / 'state' / 'factory-v2.enabled').exists()}
 
 
@@ -135,10 +135,13 @@ def main(argv=None):
                 raise ValueError('New controller is not selected; run activate after draining legacy workers')
             last_sync = 0
             while True:
+                if (root / 'state/factory-paused.json').exists():
+                    raise ValueError('Factory is paused for reset; use the setup supervisor')
                 config = load(root)
                 if args.command == 'run' and time.time() - last_sync >= settings.load()['sync_interval_seconds']:
                     settings.start_refresh(); last_sync = time.time()
-                runner = ContainerRunner(config)
+                from ..credentials import Credentials
+                runner = ContainerRunner(config, environ=Credentials(root).environment())
                 github = GitHub(settings, config)
                 supervisor = Supervisor(ledger, runner, github, settings, config)
                 requests(root, ledger)

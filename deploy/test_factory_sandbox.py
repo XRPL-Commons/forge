@@ -23,7 +23,8 @@ home=pathlib.Path('/work/home/.codex');home.mkdir(parents=True)
 repo=pathlib.Path('/work/repository');repo.mkdir()
 (home/'config.toml').write_text('default_permissions = "forge_runner"\\n')
 (home/'private-canary').write_text('SYNTHETIC_PROVIDER_CREDENTIAL')
-command='printf sandbox-ok > /work/repository/proof && cat /work/repository/proof; if cat /work/home/.codex/private-canary; then exit 98; fi; if printf forbidden > /outside/forbidden; then exit 99; fi'
+(home/'auth.json').write_text('{"OPENAI_API_KEY":"synthetic-no-network-access"}')
+command='printf sandbox-ok > /work/repository/proof && cat /work/repository/proof; if cat /work/home/.codex/private-canary; then exit 98; fi; if cat /work/home/.codex/auth.json; then exit 97; fi; if printf forbidden > /outside/forbidden; then exit 99; fi'
 p=subprocess.run(['codex','sandbox','-P','forge_runner','--include-managed-config','-C',str(repo),'/bin/sh','-c',command])
 raise SystemExit(p.returncode)
 """

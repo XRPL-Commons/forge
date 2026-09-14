@@ -79,7 +79,7 @@ class AdapterTests(unittest.TestCase):
         github, _, _ = self.github()
         protection = {'required_status_checks': {'strict': True, 'checks': [
             {'context':'forge/review','app_id':2},{'context':'forge/audit','app_id':3},{'context':'forge/merge-policy','app_id':4}]},
-            'required_pull_request_reviews': {'dismiss_stale_reviews':True}, 'enforce_admins':{'enabled':True},
+            'required_pull_request_reviews': {'dismiss_stale_reviews':True, 'required_approving_review_count':2}, 'enforce_admins':{'enabled':True},
             'restrictions': {'apps':[{'id':4}], 'users':[], 'teams':[]}}
         github.call = Mock(return_value=protection)
         self.assertTrue(github.protections({}, {'base_ref':'main'}))
@@ -157,6 +157,8 @@ class AdapterTests(unittest.TestCase):
         resolver.return_value=[(2,1,6,'',('93.184.215.14',443))]
         self.assertTrue(module.destinations('api.github.com',resolver))
         self.assertFalse(module.allowed('github.com.attacker.example'))
+        self.assertTrue(module.allowed('auth.openai.com'))
+        self.assertFalse(module.allowed('auth.openai.com.attacker.example'))
 
 
 if __name__ == '__main__': unittest.main()

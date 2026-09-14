@@ -3,7 +3,7 @@
 The durable factory implementation is available through `bin/forge factory` and
 `/factory`: resettable runners, supervisor-owned issue history, sequential review
 and audit, mandatory failure investigations, and a shared three-failure budget.
-Start with [runtime setup](docs/factory-runtime.md) and the
+Start with [guided onboarding](docs/onboarding.md) and [runtime setup](docs/factory-runtime.md) and the
 [workflow contract](docs/software-factory-spec.md). It uses an explicit cutover;
 installing this source does not take over the legacy fleet.
 
@@ -16,8 +16,8 @@ GitHub before the issue advances.
 
 **Status: experimental.** The durable factory is implemented and independently
 selectable. It has synthetic workflow/restart tests and real credential-free runner
-canaries; an authenticated repository pilot is still required before live cutover.
-The existing tmux fleet and earlier staged systemd components remain separate.
+canaries. GitHub App installation and repository protection still require owner setup before a live run.
+The guided setup verifies access, provider authentication and disposable runner cleanup before Start. Human GitHub App approvals still happen on GitHub. Existing tmux fleets remain active until an explicit reset.
 See [implementation status](docs/implementation.md).
 
 The following observation and monitoring instructions describe the compatibility

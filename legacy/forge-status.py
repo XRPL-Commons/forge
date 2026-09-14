@@ -450,25 +450,48 @@ PAGE_VERSION = hashlib.sha256(PAGE_TEMPLATE.encode()).hexdigest()
 PAGE = PAGE_TEMPLATE.replace("__FORGE_DASHBOARD_VERSION__", PAGE_VERSION)
 SETTINGS_PAGE = Path(__file__).with_name('settings.html').read_text()
 FACTORY_PAGE = Path(__file__).with_name('factory.html').read_text()
+ONBOARDING_PAGE = Path(__file__).with_name('onboarding.html').read_text()
 
 
 def settings_service():
     from forge.settings import Settings
-    return Settings(WD)
+    from forge.onboarding import Onboarding
+    return Settings(WD) if (Path(WD)/'state/factory-v2.enabled').exists() else Onboarding(WD).settings()
 
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
-    def _send(self, body, ctype="application/json"):
+    def _send(self, body, ctype="application/json", headers=None):
         data = body.encode()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        for key,value in (headers or {}).items():
+            self.send_header(key,value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _browser(self):
+        from http.cookies import SimpleCookie, CookieError
+        try:
+            cookie=SimpleCookie(self.headers.get('Cookie',''))
+            value=cookie['forge_setup'].value if 'forge_setup' in cookie else ''
+            return value if re.fullmatch(r'[A-Za-z0-9_-]{32,128}',value) else ''
+        except CookieError:
+            return ''
+
+    def _redirect(self, target):
+        self.send_response(303)
+        self.send_header('Location',target)
+        self.send_header('Cache-Control','no-store')
+        self.send_header('Referrer-Policy','no-referrer')
+        self.send_header('Content-Length','0')
+        self.end_headers()
 
     def _trusted_host(self):
         # Reject DNS rebinding even when Origin and Host agree with each other.
@@ -481,7 +504,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -500,6 +523,26 @@ class H(BaseHTTPRequestHandler):
             maximum = 262144 if self.path in ('/api/settings', '/api/runtime') else 8192
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
+            if self.path == '/api/onboarding':
+                from forge.onboarding import Onboarding
+                setup=Onboarding(WD)
+                if not isinstance(value,dict):raise ValueError('Expected a setup action')
+                action=value.pop('action',None)
+                fields={'github':{'role','owner','account_type'},'refresh':set(),'repository':{'repo_id'},
+                        'provider':{'api_key'},'check':{'revision'},'start':{'revision'},'reset':{'generation'}}
+                if action not in fields or set(value)!=fields[action]:raise ValueError('Invalid setup action')
+                result={}
+                if action=='github':result=setup.begin(**value,origin='http://'+host,browser=self._browser())
+                elif action=='refresh':result=setup.refresh()
+                elif action=='repository':setup.select(value['repo_id'])
+                elif action=='provider':setup.provider(value['api_key'])
+                else:result={'request':setup.queue(action,**value)}
+                self._send(json.dumps({'ok':True,**result}));return
+            if (Path(WD)/'state/factory-paused.json').exists():
+                raise ValueError('Factory reset is in progress')
+            setup_state=Path(WD)/'state/onboarding/setup.json'
+            if self.path in ('/api/settings','/api/runtime') and setup_state.is_file() and json.loads(setup_state.read_text()).get('phase')!='active':
+                raise ValueError('Use guided setup until the factory has started')
             if self.path == '/api/factory/action':
                 from forge.factory.control import queue
                 if not isinstance(value, dict) or set(value) != {'action', 'target', 'reason'}:
@@ -539,18 +582,45 @@ class H(BaseHTTPRequestHandler):
         if not self._trusted_host():
             self.send_error(403);return
         u = urlparse(self.path)
-        if u.path == "/":
+        if u.path.startswith('/api/') and u.path!='/api/onboarding' and (Path(WD)/'state/factory-paused.json').exists():
+            self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
+        if u.path == '/onboarding/github/callback':
+            from forge.onboarding import Onboarding
+            try:
+                query=parse_qs(u.query)
+                if set(query)!={'state','code'} or any(len(v)!=1 for v in query.values()):
+                    raise ValueError('Invalid GitHub callback')
+                target=Onboarding(WD).callback(query['state'][0],query['code'][0],self._browser())
+                self._redirect(target)
+            except (ValueError,OSError,RuntimeError):
+                self._redirect('/onboarding?connection_error=1')
+            return
+        if u.path in ('/onboarding','/reset'):
+            cookie=self._browser() or secrets.token_urlsafe(32)
+            self._send(ONBOARDING_PAGE,'text/html; charset=utf-8',
+                       {'Set-Cookie':'forge_setup='+cookie+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600'})
+        elif u.path == '/api/onboarding':
+            from forge.onboarding import Onboarding
+            try:
+                self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':CONTROLS_TOKEN}))
+            except (ValueError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Setup state is unavailable; inspect the supervisor service'}))
+        elif u.path == "/" and not (Path(WD)/'state/factory-v2.enabled').exists() and ((Path(WD)/'state/factory-onboarding.enabled').exists() or not any((Path(WD)/'repos.d').glob('*.repo'))):
+            self._redirect('/onboarding')
+        elif u.path == "/":
             self._send(FACTORY_PAGE if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
         elif u.path == '/factory':
             self._send(FACTORY_PAGE, 'text/html; charset=utf-8')
         elif u.path == '/api/factory':
             try:
+                if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
                 from forge.factory.control import view
                 self._send(json.dumps({**view(WD),'ok':True,'controls_token':CONTROLS_TOKEN}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
         elif u.path == '/api/factory/output':
             try:
+                if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
                 from forge.factory.ledger import Ledger
                 from forge.factory.contracts import identifier
                 query=parse_qs(u.query)
@@ -559,15 +629,22 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,'logs':(job.get('capture') or job.get('observation') or {}).get('logs','')}))
             except (ValueError,KeyError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Execution output unavailable'}))
-        elif u.path == '/settings':
+        elif u.path == '/settings' and not (Path(WD)/'state/factory-v2.enabled').exists():
+            self._redirect('/onboarding')
+        elif u.path in ('/settings','/settings/advanced'):
             self._send(SETTINGS_PAGE, 'text/html; charset=utf-8')
         elif u.path == '/api/settings':
             try:
+                if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
                 result=settings_service().view()
                 result.update(ok=True,controls_token=CONTROLS_TOKEN)
                 self._send(json.dumps(result))
             except (OSError,ValueError,TypeError,KeyError):
                 self._send(json.dumps({'ok':False,'reason':'Settings unavailable. Validate factory.json on the server.'}))
+        elif u.path == '/setup-help':
+            guide=(Path(WD)/'docs/onboarding.md')
+            if not guide.is_file():guide=Path(__file__).resolve().parents[1]/'docs/onboarding.md'
+            self._send('<!doctype html><meta name="viewport" content="width=device-width"><title>Forge setup help</title><style>body{max-width:900px;margin:40px auto;padding:20px;background:#101416;color:#edf1ee;font:16px/1.6 system-ui}a{color:#abcfff}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><a href="/onboarding">← Setup</a><pre>'+html.escape(guide.read_text())+'</pre>','text/html; charset=utf-8')
         elif u.path == "/api/status":
             self._send(json.dumps(cached("status", 10, status)))
         elif u.path == "/api/workflow":

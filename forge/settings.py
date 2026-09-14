@@ -102,11 +102,16 @@ class Settings:
         self.root = Path(root)
         self.path = self.root / 'factory.json'
         self.state = self.root / 'state' / 'github-access'
-        self.client = client or AppClient()
+        from .credentials import Credentials
+        self.client = client or AppClient(environ=Credentials(root).environment())
         self.clock = clock
 
     def load(self):
         return validate(read_json(self.path)) if self.path.exists() else json.loads(json.dumps(DEFAULT))
+
+    def paused(self):
+        root = self.root.parent if self.root.name == 'setup' else self.root
+        return (root / 'state/factory-paused.json').exists()
 
     @contextmanager
     def locked(self, name, *, blocking=True):
@@ -123,6 +128,8 @@ class Settings:
             return {'roles': {}}
 
     def save(self, config, revision):
+        if self.paused():
+            raise ValueError('Factory reset is in progress')
         validate(config)
         with self.locked('config'):
             if revision != digest(self.load()):
@@ -141,8 +148,12 @@ class Settings:
         return self.view()
 
     def refresh(self):
+        if self.paused():
+            return False
         try:
             with self.locked('sync', blocking=False):
+                if self.paused():
+                    return False
                 config, previous = self.load(), self.observation()
                 start = self.clock()
                 write_json(self.state / 'sync.json', {'status': 'running', 'started_at': start})
@@ -164,6 +175,8 @@ class Settings:
                     return role, row
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     roles = dict(pool.map(collect, ROLES))
+                if self.paused():
+                    return False
                 write_json(self.state / 'access.json', {'roles': roles, 'observed_at': self.clock()})
                 write_json(self.state / 'sync.json', {'status': 'complete', 'finished_at': self.clock()})
                 return True
@@ -228,6 +241,10 @@ class Settings:
                 'sync': sync, 'config_file': 'factory.json'}
 
     def admission(self, repo):
+        if (self.root / 'state/factory-paused.json').exists():
+            return {'allowed': False, 'reason': 'factory_paused'}
+        if (self.root / 'state/factory-onboarding.enabled').exists() and not (self.root / 'state/factory-v2.enabled').exists():
+            return {'allowed': False, 'reason': 'setup_not_started'}
         if not self.path.exists():
             return {'allowed': True, 'reason': 'legacy_configuration'}
         try:

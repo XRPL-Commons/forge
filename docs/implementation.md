@@ -7,6 +7,11 @@ for the exact configuration, host policy and cutover procedure.
 
 ## Implemented
 
+- Guided three-screen onboarding with GitHub App manifests, staged configuration,
+  server-owned readiness checks, and supervisor-applied Start and full reset.
+- Reset archives lifecycle history only after verified teardown. Its journal
+  survives restarts, and old reset intents cannot affect a newer installation.
+
 - Supervisor-owned issue history and assignments, with serialized durable
   reservations before launch and checked ownership invariants on load/save.
 - Sequential Build, Review, Audit and merge routing; one three-failure issue budget,
@@ -29,7 +34,7 @@ prove an authenticated production workflow against a particular repository.
 
 Production cutover still requires operator-owned App installations/keys, provider
 authentication, the named runner host policy/internal network, protected branches,
-and an authenticated pilot. No existing fleet is automatically stopped, no global
+and a successful setup readiness check. No existing fleet is automatically stopped, no global
 sandbox setting is relaxed, and no administrator credential is used to configure
 GitHub. The first adapter handles classic branch protection and conservative
 wildcard human CODEOWNERS gates; ruleset-only/merge-queue alternatives are held.

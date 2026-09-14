@@ -3,6 +3,7 @@
 !forge/factory/
 !forge/factory/job.py
 !forge/factory/harness.py
+!forge/factory/probe.py
 !deploy/
 !deploy/runner/
 !deploy/runner/Dockerfile

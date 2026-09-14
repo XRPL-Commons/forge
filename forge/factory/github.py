@@ -18,7 +18,7 @@ class GitHubUnavailable(RuntimeError):
 class GitHub:
     def __init__(self, settings, runtime, *, client=None, clock=time.time):
         self.settings, self.runtime = settings, runtime
-        self.client, self.clock = client or AppClient(), clock
+        self.client, self.clock = client or settings.client, clock
         self.tokens = {}
 
     def connection(self, role, repo_id=None):
@@ -231,6 +231,7 @@ class GitHub:
         reviews = protection.get('required_pull_request_reviews') or {}
         bypass = reviews.get('bypass_pull_request_allowances') or {}
         if (not expected.issubset(checks) or not required.get('strict')
+                or reviews.get('required_approving_review_count', 0) < 2
                 or not reviews.get('dismiss_stale_reviews') or not protection.get('enforce_admins', {}).get('enabled')
                 or any(bypass.get(k) for k in ('users', 'teams', 'apps'))
                 or protection.get('allow_force_pushes', {}).get('enabled')):

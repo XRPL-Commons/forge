@@ -27,3 +27,8 @@ factory.json
 github-credentials.env
 
 runtime.json
+host-runtime.json
+credentials/
+archives/
+setup/
+runner-seccomp.json

@@ -13,8 +13,8 @@ def main():
     root = Path(__file__).resolve().parents[1]
     names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
     findings = []
-    forbidden_dirs = {'state', 'logs', 'local', 'backups', '.claude', '.codex', 'node_modules', '__pycache__'}
-    forbidden_names = {'runtime.json', 'factory.json', 'github-credentials.env', '.env', 'config.env'}
+    forbidden_dirs = {'state', 'logs', 'local', 'backups', 'credentials', 'archives', 'setup', '.claude', '.codex', 'node_modules', '__pycache__'}
+    forbidden_names = {'runtime.json', 'host-runtime.json', 'factory.json', 'github-credentials.env', '.env', 'config.env'}
     forbidden_suffixes = {'.pem', '.key', '.sqlite', '.sqlite3', '.db', '.pyc', '.tar', '.gz', '.zip'}
     for name in names:
         if not name:

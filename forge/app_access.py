@@ -52,7 +52,7 @@ class AppClient:
             raise AccessError('Invalid GitHub API path')
         data = None if payload is None else json.dumps(payload).encode()
         request = Request('https://api.github.com' + path, data=data, method=method,
-                          headers={'Authorization': 'Bearer ' + token,
+                          headers={**({'Authorization': 'Bearer ' + token} if token else {}),
                                    'Accept': 'application/vnd.github+json',
                                    'X-GitHub-Api-Version': '2022-11-28',
                                    'User-Agent': 'forge-settings', 'Content-Type': 'application/json'})

@@ -9,7 +9,7 @@ allow_appshots = false
 [allowed_permission_profiles]
 forge_runner = true
 [permissions.filesystem]
-deny_read = ["/work/home", "/work/credentials.json"]
+deny_read = ["/work/credentials.json"]
 [permissions.forge_runner.filesystem]
 ":root" = "deny"
 ":minimal" = "read"
@@ -19,6 +19,11 @@ deny_read = ["/work/home", "/work/credentials.json"]
 "/work/assignment.json" = "read"
 "/work/askpass" = "read"
 "/work/home" = "deny"
+# Codex exec adds its generated launcher directory to the tool environment.
+# It contains executable shims, never provider authentication. Keep every other
+# home path denied by this image-owned, exclusively allowed profile. A second
+# deny_read mask on auth.json conflicts with its already-hidden parent in bwrap.
+"/work/home/.codex/tmp/arg0" = "read"
 ":tmpdir" = "write"
 ":slash_tmp" = "write"
 [permissions.forge_runner.network]

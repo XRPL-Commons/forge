@@ -24,6 +24,8 @@ exec 8>"$DIR/state-supervisor.lock"
 flock -n 8 || exit 0
 # An explicit cutover fences legacy restarts as well as concurrent supervisors.
 [ ! -f "$DIR/state/factory-v2.enabled" ] || exit 0
+[ ! -f "$DIR/state/factory-onboarding.enabled" ] || exit 0
+[ ! -f "$DIR/state/factory-paused.json" ] || exit 0
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 POLL="${SUPERVISOR_POLL:-60}"
 SLEEP_AFTER_EMPTY_POLLS="${SLEEP_AFTER_EMPTY_POLLS:-2}"   # sleep after this many consecutive empty+idle polls
@@ -484,6 +486,7 @@ role_reconcile(){ # sess dir role nudge pending short — launch/nudge only when
 
 glog "=== supervisor started (demand-loaded; sleep after ${SLEEP_AFTER_EMPTY_POLLS} empty polls) ==="; [ "${FORGE_QUIET_START:-0}" = 1 ] || notify "[forge] supervisor up"
 while true; do
+  [ ! -f "$DIR/state/factory-paused.json" ] || exit 0
   if workflow_enabled; then
     python3 -m forge.workflow_control observe --state "$STATE" --config "$DIR/repos.d" || glog "workflow observation unavailable; existing work preserved"
   fi

@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certi
 COPY --from=codex /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
-COPY forge/factory/job.py forge/factory/harness.py /opt/forge/
+COPY forge/factory/job.py forge/factory/harness.py forge/factory/probe.py /opt/forge/
 COPY deploy/runner/requirements.toml /etc/codex/requirements.toml
 USER 1000:1000
 WORKDIR /work
