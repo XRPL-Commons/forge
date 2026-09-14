@@ -89,10 +89,19 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(self.setup.view()['can_start'])
 
     def test_manifest_role_permissions_and_no_admin_token(self):
-        value = self.setup.begin('build','example','organization','http://127.0.0.1:8787',self.browser)
-        self.assertEqual(value['manifest']['default_permissions'],ROLE_PERMISSIONS['build'])
-        self.assertFalse(value['manifest']['hook_attributes']['active'])
-        self.assertNotIn('pem', json.dumps(value))
+        origin = 'http://127.0.0.1:8787'
+        for role in ROLES:
+            with self.subTest(role=role):
+                value = self.setup.begin(role,'example','organization',origin,self.browser)
+                manifest = value['manifest']
+                self.assertEqual(manifest['default_permissions'],ROLE_PERMISSIONS[role])
+                self.assertEqual(manifest['url'], origin)
+                # Both URL fields are required by GitHub's manifest schema, even
+                # though this polling integration never enables webhook delivery.
+                self.assertEqual(manifest['hook_attributes']['url'], origin + '/github/events')
+                self.assertFalse(manifest['hook_attributes']['active'])
+                self.assertEqual(manifest['default_events'], [])
+                self.assertNotIn('pem', json.dumps(value))
         self.api.request.assert_not_called()
 
     def test_callback_requires_cookie_nonce_and_is_single_use(self):

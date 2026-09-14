@@ -103,7 +103,8 @@ class Onboarding:
                       if account_type == 'organization' else 'https://github.com/settings/apps/new')
             manifest = {'name': 'Forge ' + role + ' ' + secrets.token_hex(4), 'url': origin,
                         'description': 'Forge software factory — ' + role,
-                        'public': False, 'hook_attributes': {'active': False},
+                        # GitHub requires a webhook URL even when delivery is disabled.
+                        'public': False, 'hook_attributes': {'url': origin + '/github/events', 'active': False},
                         'redirect_url': origin + '/onboarding/github/callback',
                         'setup_url': origin + '/onboarding',
                         'default_permissions': ROLE_PERMISSIONS[role], 'default_events': []}

@@ -18,6 +18,11 @@ keys arrive through GitHub's manifest exchange and are stored as private files i
 credentials/, with references in configuration. Installation IDs supplied by a
 browser are never accepted as proof of access.
 
+Forge polls GitHub rather than receiving webhooks. Its App manifest includes the
+webhook URL required by GitHub's schema, with delivery disabled and no subscribed
+events. If registration fails, return to /onboarding and press Connect again;
+reopening the GitHub registration URL alone does not resend the manifest form.
+
 ## GitHub repository protection
 
 An administrator must configure the default branch before Start can pass. Forge's
