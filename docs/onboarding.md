@@ -23,6 +23,27 @@ webhook URL required by GitHub's schema, with delivery disabled and no subscribe
 events. If registration fails, return to /onboarding and press Connect again;
 reopening the GitHub registration URL alone does not resend the manifest form.
 
+## Maintain GitHub access
+
+Open GitHub access from onboarding or settings (/settings/github). This operator
+view shows the four Forge role Apps, their identities, installation links, and a
+searchable repository-by-role access matrix. It is available before setup finishes.
+An App registration alone is not verified installation access. Use Install App or
+Manage access on GitHub, then Refresh access in Forge to verify the result.
+
+The matrix includes repositories discovered through at least one connected role
+or explicitly configured in Forge. Repositories invisible to every role are not
+discoverable here. Missing, stale, or unknown access never enables new work. During
+onboarding, complete setup before enabling automation; afterward the same page
+supports enabling or disabling repositories. Credential references and workflow
+configuration remain under Advanced settings.
+
+All four installations need access to the same selected repositories. GitHub also
+provides an API for adding individual repository grants, but that endpoint requires
+a classic personal access token with repo scope and repository admin access; App
+tokens and fine-grained PATs cannot grant it. Forge does not store an administrator
+PAT or grant itself additional repository access.
+
 ## GitHub repository protection
 
 An administrator must configure the default branch before Start can pass. Forge's

@@ -1,11 +1,16 @@
 import io
 import json
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from tests.test_dashboard import dashboard
 
 
 class SettingsHTTPTests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        root=patch.object(dashboard,'WD',temporary.name);root.start();self.addCleanup(root.stop)
+
     def handler(self, path, body=None, **headers):
         handler = object.__new__(dashboard.H)
         handler.server = Mock(server_address=('127.0.0.1',8787))
@@ -18,9 +23,13 @@ class SettingsHTTPTests(unittest.TestCase):
         return handler
 
     def test_page_and_api_require_trusted_host(self):
-        for path in ('/settings','/api/settings','/factory','/api/factory','/api/factory/output?id=invalid','/onboarding','/reset','/api/onboarding','/onboarding/github/callback'):
+        for path in ('/settings','/settings/github','/api/settings','/factory','/api/factory','/api/factory/output?id=invalid','/onboarding','/reset','/api/onboarding','/onboarding/github/callback'):
             handler = self.handler(path, Host='attacker.example:8787')
             handler.do_GET(); handler.send_error.assert_called_once_with(403)
+
+    def test_github_access_page_is_available_during_setup(self):
+        handler=self.handler('/settings/github');handler.do_GET()
+        handler._send.assert_called_once_with(dashboard.SETTINGS_PAGE,'text/html; charset=utf-8')
 
     def test_settings_get_is_local_only(self):
         service = Mock(); service.view.return_value = {'config':{},'revision':'abc'}

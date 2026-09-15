@@ -631,7 +631,7 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':False,'reason':'Execution output unavailable'}))
         elif u.path == '/settings' and not (Path(WD)/'state/factory-v2.enabled').exists():
             self._redirect('/onboarding')
-        elif u.path in ('/settings','/settings/advanced'):
+        elif u.path in ('/settings','/settings/advanced','/settings/github'):
             self._send(SETTINGS_PAGE, 'text/html; charset=utf-8')
         elif u.path == '/api/settings':
             try:

@@ -11,7 +11,7 @@
     section{margin:28px 0;padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
     button,input,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px 12px}button{cursor:pointer}button:hover{border-color:var(--blue)}button:disabled{opacity:.5;cursor:default}
     :focus-visible{outline:2px solid var(--blue);outline-offset:3px}label{display:block;font-size:13px;margin-top:12px}input{width:100%;margin-top:5px;min-width:0}
-    .connections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}.connection{border:1px solid var(--line);border-radius:8px;padding:18px}
+    .connections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}.connection{border:1px solid var(--line);border-radius:8px;padding:18px;min-width:0;overflow-wrap:anywhere}
     .fields{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.fields label:last-child{grid-column:1/-1}.badge{font-size:12px;border-radius:20px;padding:4px 9px;background:#252b30;display:inline-block;color:var(--amber)}.badge.ready{color:var(--green)}
     .table-wrap{overflow:auto;margin:16px 0}table{border-collapse:collapse;width:100%;text-align:left}th,td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px}td:first-child{overflow-wrap:anywhere;min-width:180px}
     #notice{position:sticky;top:12px;z-index:2;background:#242b30;border:1px solid var(--line);border-radius:8px;padding:12px;margin:16px 0}#notice:empty{display:none}.error{color:#ffaaa4}
@@ -21,12 +21,12 @@
   </style>
 </head>
 <body><main>
-  <header><div><a href="/">← Fleet</a><h1>Settings</h1><a href="/reset">Reset Forge</a><p class="muted">Connect GitHub, verify repository access, then enable automation.</p></div></header>
+  <header><div><a href="/">← Fleet</a><h1 id="page-title">Settings</h1><div class="toolbar"><a href="/settings/github" id="access-link">GitHub access</a><a href="/onboarding" id="setup-link" hidden>Continue setup</a><a href="/settings/advanced" id="advanced-link" hidden>Advanced settings</a><a href="/reset">Reset Forge</a></div><p class="muted" id="page-description">Connect GitHub, verify repository access, then enable automation.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
     <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" disabled>Refresh access</button></div>
     <p class="muted" id="sync-status">Loading settings…</p>
-    <details><summary>Set up the GitHub Apps</summary>
+    <details id="manual-setup"><summary>Set up the GitHub Apps</summary>
       <ol>
         <li>In your GitHub account or organization settings, open <strong>Developer settings → GitHub Apps → New GitHub App</strong>. Create a separate App for each role below.</li>
         <li>Use your account URL as the homepage. Leave user authorization, callback URLs, and device flow off. Disable webhooks; Forge polls for changes.</li>
@@ -42,6 +42,7 @@
   <section aria-labelledby="repos-title">
     <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span></div>
     <p class="muted">Enable a repository after all four roles have verified access. Newly discovered repositories start disabled.</p>
+    <label for="repo-search">Find a repository<input id="repo-search" type="search" placeholder="Repository name" autocomplete="off"></label>
     <div class="table-wrap"><table><thead><tr><th>Repository</th><th>Builder</th><th>Reviewer</th><th>Auditor</th><th>Controller</th><th>Automation</th></tr></thead><tbody id="repositories"></tbody></table></div>
     <p id="repo-empty" class="muted" hidden>Save your App connections, then refresh access to discover repositories.</p>
     <p class="muted">Forge checks existing issues and pull requests before starting work. If access is lost, new work pauses and issue history is kept.</p>
@@ -58,20 +59,43 @@
   const $=id=>document.getElementById(id), roles=['build','review','audit','controller'];
   const labels={build:'Builder',review:'Reviewer',audit:'Auditor',controller:'Controller'};
   const statusNames={ready:'Access verified',ok:'Connected',unknown:'Access unknown',not_configured:'Not connected',stale:'Refresh needed',missing_permissions:'Permissions missing',missing_access:'No access',name_changed:'Repository renamed',archived:'Archived or disabled'};
-  let current=null,dirty=false,busy=false,pendingRepo=null;
+  const accessPage=location.pathname==='/settings/github';
+  let current=null,onboarding=null,dirty=false,busy=false,pendingRepo=null;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const message=(text,error=false)=>{$('notice').textContent=text;$('notice').classList.toggle('error',error)};
   function badge(status){return `<span class="badge ${['ok','ready'].includes(status)?'ready':''}">${esc(statusNames[status]||status)}</span>`}
+  if(accessPage){
+    document.title='Forge · GitHub access';$('page-title').textContent='GitHub access';
+    $('page-description').textContent='See the four Forge Apps, their verified permissions, and repository access. Refresh after changing access on GitHub.';
+    for(const id of ['access-link','manual-setup','save-connections','config-title','runtime-title']){
+      const el=$(id);(id.endsWith('-title')?el.closest('section'):el).hidden=true;
+    }
+  }
+  function filterRepositories(){const query=$('repo-search').value.trim().toLowerCase();document.querySelectorAll('#repositories tr').forEach(row=>row.hidden=!row.dataset.name.includes(query));}
+  $('repo-search').oninput=filterRepositories;
   function render(){
+    const settingUp=accessPage&&onboarding?.phase!=='active';
+    $('setup-link').hidden=!settingUp;$('advanced-link').hidden=!accessPage||settingUp;
     $('connections').innerHTML=roles.map(role=>{
       const c=current.config.connections[role]||{},r=current.roles[role];
       const permissions=Object.entries(r.required_permissions).map(([key,value])=>`${key.replaceAll('_',' ')}: ${value}`).join(' · ');
       // Only server-generated, canonical GitHub links are actionable.
       const link=r.installation_url&&/^https:\/\/github\.com\/(?:organizations\/[A-Za-z0-9_.-]+\/)?settings\/installations\/[0-9]+$/.test(r.installation_url)?`<a href="${esc(r.installation_url)}" target="_blank" rel="noopener noreferrer">Manage access ↗</a>`:'';
+      if(accessPage){
+        const registration=settingUp?onboarding?.roles?.[role]:null;
+        const install=registration?.install_url?.match(/^https:\/\/github\.com\/apps\/([A-Za-z0-9-]+)\/installations\/new$/);
+        const slug=r.app_slug||install?.[1],appID=c.app_id||registration?.app_id;
+        const status=!c.app_id&&registration?.registered?'Installation unverified':r.status;
+        const ids=c.installation_ids||[c.installation_id].filter(Boolean);
+        const count=current.repositories.filter(repo=>repo.access[role]==='ready').length;
+        const action=link||(!c.app_id&&install?`<a href="${esc(install[0])}" target="_blank" rel="noopener noreferrer">Install App ↗</a>`:!c.app_id?'<a href="/onboarding">Connect in setup →</a>':'');
+        return `<article class="connection"><div class="heading"><h3>${labels[role]}</h3>${badge(status)}</div><p>${esc(slug||'No App connected')}</p>${appID?`<p class="muted small">App ${esc(appID)}${ids.length?' · Installation '+esc(ids.join(', ')):''}</p>`:''}<p class="muted">${r.status==='ok'?`${count} ${count===1?'repository':'repositories'} with verified access`:r.observed_at?'Last checked '+esc(new Date(r.observed_at*1000).toLocaleString()):'Access has not been verified.'}</p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<details><summary>Required permissions</summary><p>${esc(permissions)}</p></details><p>${action}</p></article>`;
+      }
       return `<article class="connection"><div class="heading"><h3>${labels[role]}</h3>${badge(r.status)}</div><p><small>${esc(permissions)}</small></p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<div class="fields"><label>App ID<input id="${role}-app" inputmode="numeric" pattern="[0-9]+" value="${esc(c.app_id)}"></label><label>Installation IDs<input id="${role}-installation" inputmode="text" pattern="[0-9, ]+" value="${esc(c.installation_ids?.join(', ')||c.installation_id)}"></label><label>Private key environment variable<input id="${role}-key" placeholder="FORGE_${role.toUpperCase()}_KEY_FILE" value="${esc(c.private_key_env)}" autocomplete="off"></label></div><p>${link}</p></article>`;
     }).join('');
-    $('repositories').innerHTML=current.repositories.map(r=>`<tr><td><strong>${esc(r.name)}</strong>${r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td><button data-repo="${r.id}" ${!r.enabled&&!r.access_ready?'disabled':''}>${r.enabled?'Disable':'Enable'}</button></td></tr>`).join('');
-    $('repo-count').textContent=`${current.repositories.filter(r=>r.enabled).length} enabled · ${current.repositories.length} discovered or configured`;
+    $('repositories').innerHTML=current.repositories.map(r=>`<tr data-name="${esc(r.name.toLowerCase())}"><td><strong>${esc(r.name)}</strong>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td>${settingUp?'<a href="/onboarding">Finish setup</a>':`<button data-repo="${r.id}" ${!r.enabled&&!r.access_ready?'disabled':''}>${r.enabled?'Disable':'Enable'}</button>`}</td></tr>`).join('');
+    filterRepositories();
+    $('repo-count').textContent=`${settingUp?'Setup in progress':current.repositories.filter(r=>r.enabled).length+' enabled'} · ${current.repositories.length} discovered or configured`;
     $('repo-empty').hidden=!!current.repositories.length;
     const sync=current.sync;
     $('sync-status').textContent=sync.status==='running'?'Refreshing GitHub access…':sync.status==='complete'?`Last refresh ${new Date(sync.finished_at*1000).toLocaleString()}`:sync.status==='interrupted'?'Previous refresh was interrupted. Refresh again.':'Access has not been refreshed yet.';
@@ -85,7 +109,11 @@
     const response=await fetch(path,options);if(!response.ok)throw Error(`Request failed (${response.status})`);
     const value=await response.json();if(!value.ok)throw Error(value.reason||'Settings unavailable');return value;
   }
-  async function load(){current=await request('/api/settings');dirty=false;render()}
+  async function load(){
+    if(accessPage){const values=await Promise.all([request('/api/settings'),request('/api/onboarding')]);current=values[0];onboarding=values[1];}
+    else current=await request('/api/settings');
+    dirty=false;render();
+  }
   async function save(config){
     busy=true;
     try{current=await request('/api/settings',{config,revision:current.revision});dirty=false;message('Settings saved.');}
@@ -103,7 +131,13 @@
   $('timing-form').onsubmit=guarded(()=>save({...current.config,sync_interval_seconds:Number($('sync-interval').value),access_max_age_seconds:Number($('max-age').value)}));
   $('save-json').onclick=guarded(()=>save(JSON.parse($('config-editor').value)));
   $('reload').onclick=guarded(async()=>{await load();message('Reloaded configuration.')});
-  $('refresh').onclick=guarded(async()=>{if(dirty)throw Error('Save or reload your edits before refreshing access.');await request('/api/settings/sync',{});message('Access refresh requested.');setTimeout(()=>{if(!dirty)load().catch(e=>message(e.message,true))},500)});
+  $('refresh').onclick=guarded(async()=>{if(dirty)throw Error('Save or reload your edits before refreshing access.');
+    if(accessPage&&onboarding?.phase==='setup'){
+      busy=true;$('refresh').disabled=true;message('Checking App installations and repository access…');
+      try{await request('/api/onboarding',{action:'refresh'});await load();message('Access refreshed.');}
+      finally{busy=false;$('refresh').disabled=false;}
+    }else{await request('/api/settings/sync',{});message('Access refresh requested.');setTimeout(()=>{if(!dirty)load().catch(e=>message(e.message,true))},500)}
+  });
   $('repositories').onclick=guarded(async event=>{
     const button=event.target.closest('[data-repo]');if(!button||button.disabled)return;
     if(dirty)throw Error('Save or reload your edits before changing repository activation.');
@@ -117,6 +151,6 @@
   let runtimeRevision=null;
   async function loadRuntime(){const v=await request('/api/factory');runtimeRevision=v.runtime_revision;$('runtime-editor').value=JSON.stringify(v.runtime,null,2)}
   $('save-runtime').onclick=guarded(async()=>{const v=await request('/api/runtime',{config:JSON.parse($('runtime-editor').value),revision:runtimeRevision});runtimeRevision=v.runtime_revision;message('Workflow configuration saved. The supervisor applies it on its next cycle.')});
-  load().then(loadRuntime).catch(error=>message(error.message,true));
+  load().then(()=>{if(!accessPage)return loadRuntime()}).catch(error=>message(error.message,true));
   setInterval(()=>{if(!busy&&!dirty&&!$('enable-dialog').open)load().catch(error=>message(error.message,true))},5000);
 </script></body></html>

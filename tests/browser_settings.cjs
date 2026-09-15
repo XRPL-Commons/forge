@@ -8,13 +8,18 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     const roles=['build','review','audit','controller'];
     let config={version:1,sync_interval_seconds:300,access_max_age_seconds:900,connections:{},repositories:[]};
     let synced=false, failSync=false, revision=1, saves=0;
+    let setup={ok:true,phase:'setup',roles:{build:{registered:true,app_id:1,install_url:'https://github.com/apps/forge-builder-example/installations/new'}}}, setupRefreshes=0;
     const view=()=>({ok:true,controls_token:'synthetic',revision:String(revision),config:structuredClone(config),
-      roles:Object.fromEntries(roles.map(role=>[role,{status:!config.connections[role]?'not_configured':failSync?'unknown':synced?'ok':'unknown',required_permissions:{contents:role==='build'?'write':'read'},missing_permissions:[],reason:failSync?'Could not reach GitHub':null}])),
+      roles:Object.fromEntries(roles.map(role=>[role,{status:!config.connections[role]?'not_configured':failSync?'unknown':synced?'ok':'unknown',required_permissions:{contents:role==='build'?'write':'read'},missing_permissions:[],reason:failSync?'Could not reach GitHub':null,app_slug:config.connections[role]?'forge-'+role+'-example':null,installation_url:config.connections[role]?'https://github.com/organizations/example/settings/installations/'+config.connections[role].installation_id:null}])),
       sync:synced?{status:'complete',finished_at:Date.now()/1000}:{status:'never'},
-      repositories:synced?[{id:10,name:'example/project',enabled:config.repositories[0]?.enabled||false,access_ready:!failSync,access:Object.fromEntries(roles.map(r=>[r,failSync?'unknown':'ready']))}]:[]});
+      repositories:synced?[{id:10,name:'example/project',enabled:config.repositories[0]?.enabled||false,access_ready:!failSync&&roles.every(r=>config.connections[r]),access:Object.fromEntries(roles.map(r=>[r,!config.connections[r]?'not_configured':failSync?'unknown':'ready']))}]:[]});
     await page.route('http://forge.test/**',async route=>{
       const req=route.request(),url=new URL(req.url());
-      if(url.pathname==='/settings')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/settings.html'),'utf8')});
+      if(['/settings','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/settings.html'),'utf8')});
+      if(url.pathname==='/api/onboarding'){
+        if(req.method()==='POST'){assert.equal(req.headers()['x-forge-action'],'synthetic');assert.deepEqual(req.postDataJSON(),{action:'refresh'});setupRefreshes++;}
+        return route.fulfill({json:setup});
+      }
       if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,runtime:{version:1,enabled:false},runtime_revision:'runtime-one'}});
       if(url.pathname==='/api/settings/sync'){synced=true;return route.fulfill({json:{ok:true}})}
       if(url.pathname==='/api/settings'){
@@ -55,7 +60,33 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.setViewportSize({width:390,height:844});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     await page.screenshot({path:'/tmp/forge-settings-mobile.png',fullPage:true});
+    // The operator page is useful before any installation exists and must not
+    // confuse saved registration or a draft selection with verified access.
+    config.connections={};config.repositories=[];synced=false;failSync=false;
+    await page.goto('http://forge.test/settings/github');
+    await page.getByRole('heading',{name:'GitHub access',exact:true}).waitFor();
+    await page.getByText('Installation unverified',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('link',{name:'Install App ↗'}).getAttribute('href'),setup.roles.build.install_url);
+    assert.equal(await page.locator('#build-key').count(),0);
+    assert(await page.locator('#save-connections').isHidden());assert(await page.locator('#runtime-title').isHidden());
+    const beforeOperatorSaves=saves;
+    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByText('Access refreshed.',{exact:true}).waitFor();assert.equal(setupRefreshes,1);
+    config.connections={build:{app_id:1,installation_id:101,private_key_env:'FORGE_BUILD_KEY_FILE'}};synced=true;
+    await page.reload();await page.getByText('example/project',{exact:true}).waitFor();
+    assert.equal(await page.locator('#repositories').getByText('Not connected',{exact:true}).count(),3);
+    assert.equal(await page.locator('#repositories button').count(),0);
+    assert.equal(await page.getByRole('link',{name:'Manage access ↗'}).getAttribute('href'),'https://github.com/organizations/example/settings/installations/101');
+    await page.locator('#repo-search').fill('missing');assert(await page.locator('#repositories tr').isHidden());
+    await page.locator('#repo-search').fill('PROJECT');assert(await page.locator('#repositories tr').isVisible());
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.screenshot({path:'/tmp/forge-github-access-mobile.png',fullPage:true});
+    setup.phase='active';await page.reload();
+    await page.getByRole('link',{name:'Advanced settings',exact:true}).waitFor();
+    assert(await page.getByRole('button',{name:'Enable',exact:true}).isDisabled());
+    assert.equal(saves,beforeOperatorSaves);
+    await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'/tmp/forge-github-access-desktop.png',fullPage:true});
     assert.deepEqual(errors,[]);
-    console.log('Settings browser checks passed: setup, sync, activation confirmation, access loss, edit conflict, mobile layout.');
+    console.log('Settings browser checks passed: setup, sync, activation confirmation, access loss, edit conflict, operator App inventory, partial grants, search, mobile layout.');
   } finally {await browser.close()}
 })().catch(e=>{console.error(e);process.exit(1)});
