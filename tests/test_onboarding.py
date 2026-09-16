@@ -88,6 +88,20 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(self.setup.settings().load()['repositories'][0]['enabled'])
         self.assertFalse(self.setup.view()['can_start'])
 
+    def test_failed_repository_verification_stops_checking_without_starting_workers(self):
+        self.connected()
+        service, engine, resets = self.service()
+        service.github_class.return_value.protections.return_value = False
+        self.setup.queue('check', self.setup.view()['revision'])
+        for _ in range(4): service.tick()
+        view = self.setup.view()
+        self.assertIsNone(view['operation'])
+        self.assertEqual(view['checks']['github'], 'failed')
+        self.assertIn('Protect the default branch', view['error'])
+        self.assertFalse(view['can_start'])
+        self.assertFalse(engine)
+        self.assertFalse(resets)
+
     def test_manifest_role_permissions_and_no_admin_token(self):
         origin = 'http://127.0.0.1:8787'
         for role in ROLES:

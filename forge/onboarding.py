@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import secrets
+import shlex
 import time
 import uuid
 from pathlib import Path
@@ -209,7 +210,10 @@ class Onboarding:
                  'models': [{'id': e['id'], 'model': e['model'],
                              'status': status(e)}
                             for e in pool if e['provider'] == key],
-                 'login_command': 'bin/forge setup login ' + key + ' --root ' + __import__('shlex').quote(str(self.root))}
+                 'login_command': shlex.join([str(Path(__file__).resolve().parents[1] / 'bin/forge'),
+                                              'setup', 'login', key, '--root', str(self.root)]),
+                 'check_command': shlex.join([str(Path(__file__).resolve().parents[1] / 'bin/forge'),
+                                              'setup', 'check', '--root', str(self.root)])}
                 for key, item in manifests().items()]
 
     def connect(self, provider, *, api_key=None, auth_value=None, models=None):

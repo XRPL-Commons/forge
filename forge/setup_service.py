@@ -361,7 +361,11 @@ class Service:
                             job['fenced'] = True
                         self.update(op, error=message, probe_error=message, probe_jobs=data['probe_jobs'])
                     else:
-                        self.update(op, error=message, **({'operation': None} if op['action'] != 'reset' else {}))
+                        finished = {'operation': None} if op['action'] != 'reset' else {}
+                        if op['action'] in ('check', 'harness_check'):
+                            finished['checks'] = {key: 'failed' if value == 'checking' else value
+                                                  for key, value in data['checks'].items()}
+                        self.update(op, error=message, **finished)
                 except StateError:
                     pass  # Reset superseded this check/activation.
             return
