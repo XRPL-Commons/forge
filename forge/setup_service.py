@@ -141,8 +141,12 @@ class Service:
         metadata = github.call('controller', item, 'GET', '')
         if metadata.get('id') != repo['id'] or metadata.get('archived') or metadata.get('disabled'):
             raise ValueError('The selected repository is no longer available')
-        if not github.protections(item, {'base_ref': metadata['default_branch']}):
-            raise ValueError('Protect the default branch with Forge review, audit and merge-policy checks, stale approval dismissal, strict checks, administrator enforcement, and Controller-only pushes. See setup documentation')
+        report = github.protection_report(item, {'base_ref': metadata['default_branch']})
+        if data.get('operation'):
+            self.update(data['operation'], repository_check=report)
+        missing = [row for row in report['requirements'] if not row['passed']]
+        if not report['available'] or missing:
+            raise ValueError('Repository protection needs attention on ' + metadata['default_branch'] + '. See the specific requirements below.')
         return config
 
     def new_probe(self, config, kind):
@@ -160,7 +164,7 @@ class Service:
             # Old probes are retained until verified absent, including interrupted checks.
             for job in data['probe_jobs']:
                 job['fenced'] = True
-            self.update(op, probe_jobs=data['probe_jobs'], checks={} if op['action'] == 'harness_check' else {'github': 'checking'}, probe_error=None,
+            self.update(op, probe_jobs=data['probe_jobs'], checks={} if op['action'] == 'harness_check' else {'github': 'checking'}, probe_error=None, repository_check=None,
                         operation={**op, 'step': 'prepare'})
             return
         if op['step'] == 'prepare':
@@ -335,7 +339,7 @@ class Service:
                 write_json(self.root / 'state/factory-onboarding.enabled', {'generation': generation})
                 write_json(archive / 'receipt.json', {'operation': op['id'], 'generation': data['generation'],
                                                    'at': time.time(), 'resources_verified_absent': True})
-                self.update(op, generation=generation, phase='setup', operation=None, apps={}, checks={}, probe_jobs=[],
+                self.update(op, generation=generation, phase='setup', operation=None, apps={}, checks={}, repository_check=None, probe_jobs=[],
                             selected=None, provider_revision=None, provider_checks={}, provider_errors={}, probe_plan=[], probe_ids=[], readiness=None, error=None, owner='', account_type=None,
                             challenge=None, activation_request=None, activation_revision=None,
                             reset_receipt={'id': op['id'], 'generation': op['generation'], 'at': time.time()})

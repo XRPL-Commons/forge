@@ -7,10 +7,14 @@ Open /onboarding on the trusted private dashboard address.
    repositories for every installation. Return to Forge after installation;
    Refresh access verifies connections without granting additional access.
 2. Choose one shared repository. This saves a draft, without starting work.
-3. Connect Codex and/or Claude Code from `bin/forge setup` on the VM. Forge runs
-   one small provider request, checks GitHub protection, and verifies isolated
-   runner startup, forced termination, cleanup, and reuse. Provider usage charges
-   may apply. Press Start Forge once the checks pass.
+3. Connect Codex and/or Claude Code from `bin/forge setup` on the VM. Terminal
+   verification checks the connected accounts and isolated worker lifecycle.
+4. On the Start page, press Verify repository. Forge checks GitHub protection,
+   coding accounts and worker cleanup. If protection fails, the page lists the
+   specific unmet requirements and links to the repository settings. A check
+   marked “Not run in this attempt” was skipped because an earlier check failed;
+   it does not invalidate an account verified previously. Small model requests
+   may incur provider charges. Press Start Forge once verification passes.
 
 You own the Apps. Forge does not request a personal administrator token. GitHub
 requires a human to approve each App registration and installation. App private
@@ -49,6 +53,10 @@ PAT or grant itself additional repository access.
 An administrator must configure the default branch before Start can pass. Forge's
 Controller has read-only Administration access and cannot configure its own gates.
 Use classic branch protection with these settings:
+
+Open the repository's Settings → Branches and edit the rule for its default
+branch. See [GitHub's branch protection guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule)
+for the location of each setting.
 
 - Require pull requests and two approving reviews; dismiss stale approvals.
 - Require branches to be up to date before merging.

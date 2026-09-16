@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory() as root:
 `],{cwd:path.join(__dirname,'..'),encoding:'utf8'}));
 (async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.FORGE_BROWSER_PATH});try{
 const page=await browser.newPage({viewport:{width:1440,height:1080}}),errors=[],actions=[];
-let registering=true,manifestSubmitted=false,rejectVerification=false;
+let registering=true,manifestSubmitted=false,rejectVerification=false,checkGate=null;
 await page.route('https://github.com/**',async route=>{
 const request=route.request();assert.equal(request.url(),registration.action);assert.equal(request.method(),'POST');
 assert(request.headers()['content-type'].startsWith('application/x-www-form-urlencoded'));
@@ -27,11 +27,13 @@ assert.equal(request.headers()['x-forge-action'],'synthetic-browser-token');cons
 if(action.action==='github'){assert.equal(action.owner,'example');return route.fulfill({json:{ok:true,...(registering?registration:{install_url:'http://forge.test/install'})}});}
 if(action.action==='repository'){assert.equal(action.repo_id,10);state.selected={id:10,name:'example/project'};state.revision='selected';}
 if(action.action==='provider'){assert.equal(action.api_key,null);state.provider_connected=true;}
+if(action.action==='check'&&checkGate)await checkGate;
 if(action.action==='check'&&rejectVerification)return route.fulfill({status:409,json:{ok:false,reason:'Setup changed; reload before continuing'}});
-if(action.action==='check'){state.operation={action:'check',step:'probe'};state.checks={github:'passed',provider:'checking',runner:'checking'};}
+if(action.action==='check'){state.activity={target:'github',label:'Checking repository access and protection'};state.operation={action:'check',step:'probe'};state.checks={github:'passed',provider:'checking',runner:'checking'};}
 if(action.action==='start'){assert(state.can_start);state.phase='active';state.operation={action:'start'};}
 if(action.action==='reset'){state.phase='resetting';state.operation={action:'reset',step:'stop_workers'};}
 return route.fulfill({json:{ok:true}});}
+if(url.pathname==='/setup-help')return route.fulfill({contentType:'text/html',body:execFileSync('python3',['-c',"from pathlib import Path;from forge.setup_help import render;print(render(Path('docs/onboarding.md').read_text()))"],{cwd:path.join(__dirname,'..'),encoding:'utf8'})});
 if(url.pathname==='/factory')return route.fulfill({contentType:'text/html',body:'<h1>Actual factory dashboard</h1>'});
 return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/onboarding.html'),'utf8')});});
 await page.goto('http://forge.test/onboarding');await page.getByRole('heading',{name:'Connect your GitHub workspace'}).waitFor();
@@ -52,15 +54,24 @@ assert((await verify.boundingBox()).y+(await verify.boundingBox()).height<800,'P
 await verify.focus();await page.evaluate(()=>window.originalVerify=document.querySelector('[data-action=check]'));
 await page.waitForTimeout(3300);assert(await page.evaluate(()=>window.originalVerify===document.activeElement),'Unchanged polling must retain focus and the button');
 await page.screenshot({path:'/tmp/forge-onboarding-verify.png',fullPage:true});
-rejectVerification=true;await verify.click();await page.getByRole('alert').filter({hasText:'Setup changed; reload before continuing'}).waitFor();
+rejectVerification=true;let releaseCheck;checkGate=new Promise(resolve=>releaseCheck=resolve);const pendingClick=verify.click();await verify.locator('.spinner').waitFor();assert.equal(await verify.locator('.spinner').count(),1);assert.equal(await verify.getAttribute('aria-busy'),'true');releaseCheck();checkGate=null;await pendingClick;await page.getByRole('alert').filter({hasText:'Setup changed; reload before continuing'}).waitFor();
 state.revision='updated-by-another-client';await page.waitForTimeout(3300);assert((await page.getByRole('alert').textContent()).includes('Setup changed; reload before continuing'),'Request errors must survive polling');
 rejectVerification=false;await verify.click();await page.getByText('Verification in progress…',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'Start Forge',exact:true}).count(),0);
-state.operation=null;state.checks={github:'failed'};state.error='Default branch protection needs required checks.';
+assert.equal(await page.getByRole('status').filter({hasText:'Checking repository access and protection'}).locator('.spinner').count(),1);
+state.activity={target:'provider',provider:'claude',model_id:'claude',label:'Checking Claude Code'};state.checks={github:'passed',provider:'checking',runner:'checking'};
+await page.locator('.row').filter({has:page.getByText('Claude Code',{exact:true})}).locator('.spinner').waitFor();
+assert.equal(await page.locator('.row').filter({has:page.getByText('Codex',{exact:true})}).locator('.spinner').count(),0);
+await page.screenshot({path:'/tmp/forge-onboarding-account-progress.png',fullPage:true});
+await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('.spinner:visible').first().evaluate(e=>getComputedStyle(e).animationName),'none');await page.emulateMedia({reducedMotion:'no-preference'});
+state.operation=null;state.activity=null;state.checks={github:'failed'};state.error='Default branch protection needs required checks.';
+state.repository_check={branch:'main',available:true,requirements:[{id:'admins',label:'Apply protection to administrators',passed:false,detail:'Enable administrator enforcement.'},{id:'reviews',label:'Two approving reviews',passed:true,detail:''}]};
 await page.getByRole('heading',{name:'Setup needs attention',exact:true}).waitFor();
-await page.getByText(state.error,{exact:true}).waitFor();assert.equal(await page.getByRole('link',{name:'Check GitHub access',exact:true}).count(),1);
+await page.getByRole('heading',{name:'1 repository setting needs attention'}).waitFor();assert.equal(await page.getByRole('link',{name:'Open branch protection ↗'}).getAttribute('href'),'https://github.com/example/project/settings/branches');assert.equal(await page.getByRole('link',{name:'Repository protection instructions',exact:true}).count(),1);
 await page.screenshot({path:'/tmp/forge-onboarding-blocked.png',fullPage:true});
+await page.getByRole('link',{name:'Manage accounts',exact:true}).click();await page.getByRole('heading',{name:'Coding harnesses',exact:true}).waitFor();assert.equal(await page.locator('#notice').textContent(),'');
+await page.goto('http://forge.test/onboarding');await page.getByRole('button',{name:'Check again',exact:true}).waitFor();
 await page.getByRole('button',{name:'Check again',exact:true}).click();state.error=null;
-state.operation=null;state.checks={github:'passed',provider:'passed',runner:'passed'};state.can_start=true;
+state.operation=null;state.activity=null;state.repository_check=null;state.checks={github:'passed',provider:'passed',runner:'passed'};state.can_start=true;
 await page.getByRole('heading',{name:'Ready to start Forge',exact:true}).waitFor();await page.screenshot({path:'/tmp/forge-onboarding-production-start.png',fullPage:true});
 assert(!(await page.getByRole('button',{name:'Start Forge',exact:true}).isDisabled()));
 state.can_start=false;await page.getByText('The previous verification has expired or setup changed.',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'Start Forge',exact:true}).count(),0);
@@ -75,6 +86,7 @@ await page.getByRole('heading',{name:'Forge has been reset'}).waitFor();await pa
 await page.getByRole('link',{name:'Set up Forge →'}).click();await page.getByRole('heading',{name:'Connect your GitHub workspace'}).waitFor();
 await page.screenshot({path:'/tmp/forge-onboarding-production-github.png',fullPage:true});
 await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/forge-onboarding-production-mobile.png',fullPage:true});
+await page.goto('http://forge.test/setup-help#github-repository-protection');await page.getByRole('heading',{name:'GitHub repository protection',exact:true}).waitFor();assert.equal(await page.locator('main > pre').count(),1);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/forge-setup-help-mobile.png',fullPage:true});
 assert.deepEqual(errors,[]);assert.equal(actions.filter(a=>a.action==='start').length,1);assert.equal(actions.filter(a=>a.action==='reset').length,1);
 console.log('Production onboarding browser checks passed: API actions, readiness gate, activation, reset failure/reload/completion, responsive layout.');
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});

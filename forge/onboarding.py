@@ -77,9 +77,30 @@ class Onboarding:
                 'selected': data.get('selected'), 'owner': data.get('owner', ''),
                 'provider_connected': bool(data.get('provider_revision')), 'checks': data['checks'],
                 'harnesses': self.harnesses(data),
+                'activity': self.activity(data),
+                'repository_check': data.get('repository_check'),
                 'can_start': data['phase'] == 'setup' and ready.get('revision') == revision
                              and 0 <= self.clock() - ready.get('at', 0) < 300 and not data.get('operation'),
                 'operation': data.get('operation'), 'error': data.get('error')}
+
+    @staticmethod
+    def activity(data):
+        operation = data.get('operation')
+        if not operation:
+            return None
+        action, step = operation['action'], operation.get('step')
+        if action in ('check', 'harness_check'):
+            if step == 'probe' and data.get('probe_jobs'):
+                job = data['probe_jobs'][-1]
+                if job['kind'] == 'provider':
+                    provider = job['runner_config']['provider']
+                    return {'target': 'provider', 'provider': provider, 'model_id': job.get('provider_id'),
+                            'label': ('Finishing ' if job['fenced'] else 'Checking ') + manifest(provider)['name']}
+                return {'target': 'runner', 'label': 'Checking worker ' + ('reuse' if job['kind'] == 'reuse' else 'cleanup')}
+            if step == 'prepare' and action == 'check':
+                return {'target': 'github', 'label': 'Checking repository access and protection'}
+            return {'target': 'setup', 'label': 'Preparing verification'}
+        return {'target': action, 'label': 'Starting Forge' if action == 'start' else 'Resetting Forge'}
 
     @staticmethod
     def editable(data):
@@ -184,7 +205,7 @@ class Onboarding:
             config = settings.load()
             config['repositories'] = [{'id': repo['id'], 'name': repo['name'], 'enabled': True}]
             settings.save(config, digest(settings.load()))
-            data.update(selected={'id': repo['id'], 'name': repo['name']}, checks={}, error=None)
+            data.update(selected={'id': repo['id'], 'name': repo['name']}, checks={}, repository_check=None, error=None)
             data.pop('readiness', None)
 
     def harnesses(self, data=None):

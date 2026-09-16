@@ -644,7 +644,8 @@ class H(BaseHTTPRequestHandler):
         elif u.path == '/setup-help':
             guide=(Path(WD)/'docs/onboarding.md')
             if not guide.is_file():guide=Path(__file__).resolve().parents[1]/'docs/onboarding.md'
-            self._send('<!doctype html><meta name="viewport" content="width=device-width"><title>Forge setup help</title><style>body{max-width:900px;margin:40px auto;padding:20px;background:#101416;color:#edf1ee;font:16px/1.6 system-ui}a{color:#abcfff}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><a href="/onboarding">← Setup</a><pre>'+html.escape(guide.read_text())+'</pre>','text/html; charset=utf-8')
+            from forge.setup_help import render
+            self._send(render(guide.read_text()), 'text/html; charset=utf-8')
         elif u.path == "/api/status":
             self._send(json.dumps(cached("status", 10, status)))
         elif u.path == "/api/workflow":

@@ -76,7 +76,7 @@ class SetupTests(unittest.TestCase):
                 resets.append(job['id']); engine.pop(job['id'], None)
         github = Mock()
         github.return_value.call.return_value = {'id':10,'default_branch':'main'}
-        github.return_value.protections.return_value = True
+        github.return_value.protection_report.return_value = {'branch':'main','available':True,'requirements':[]}
         service = Service(self.root, runner=Runner, github=github)
         service.setup = self.setup
         return service, engine, resets
@@ -91,13 +91,14 @@ class SetupTests(unittest.TestCase):
     def test_failed_repository_verification_stops_checking_without_starting_workers(self):
         self.connected()
         service, engine, resets = self.service()
-        service.github_class.return_value.protections.return_value = False
+        service.github_class.return_value.protection_report.return_value = {'branch':'main','available':True,'requirements':[{'id':'admins','label':'Apply protection to administrators','passed':False,'detail':'Enable administrator enforcement.'}]}
         self.setup.queue('check', self.setup.view()['revision'])
         for _ in range(4): service.tick()
         view = self.setup.view()
         self.assertIsNone(view['operation'])
         self.assertEqual(view['checks']['github'], 'failed')
-        self.assertIn('Protect the default branch', view['error'])
+        self.assertIn('Repository protection needs attention', view['error'])
+        self.assertEqual(view['repository_check']['requirements'][0]['id'], 'admins')
         self.assertFalse(view['can_start'])
         self.assertFalse(engine)
         self.assertFalse(resets)
@@ -176,7 +177,7 @@ class SetupTests(unittest.TestCase):
         self.assertTrue((self.root/'factory.json').exists())
         self.assertTrue((self.root/'state/factory-v2.enabled').exists())
         self.assertTrue(json.loads((self.root/'runtime.json').read_text())['merge_enabled'])
-        self.assertEqual(service.github_class.return_value.protections.call_count,2)
+        self.assertEqual(service.github_class.return_value.protection_report.call_count,2)
         self.assertEqual(self.setup.queue('start',revision),self.setup.read()['activation_request'])
 
     def test_start_rejects_stale_or_unverified_configuration(self):
