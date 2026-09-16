@@ -17,15 +17,25 @@ from .runner import ContainerRunner
 from .supervisor import Supervisor
 
 
+class ControllerBusy(StateError):
+    pass
+
+
 @contextmanager
-def controller_lock(root):
+def controller_lock(root, *, timeout=0):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     with open(root / 'state-supervisor.lock', 'a') as stream:
-        try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise StateError('Another supervisor owns this factory; drain it before cutover') from None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ControllerBusy('Another supervisor owns this factory; drain it before cutover') from None
+                time.sleep(min(0.2, remaining))
         yield
 
 

@@ -57,6 +57,12 @@ account login, and `--import-login /absolute/path` for an existing login file.
 Import copies it; Forge never writes back to the source. Reconnect through Forge
 after import so another application cannot rotate the same credential separately.
 
+Sign-in can run while the factory is active. Forge saves the new login privately,
+then waits up to two minutes for the current supervisor cycle before applying it.
+If the supervisor stays busy or the terminal closes during this handoff, rerun
+the same login command: Forge resumes the saved sign-in without opening another
+browser login. A factory reset discards pending sign-ins from the old setup.
+
 Repeat `--model <model-id>` on login to configure multiple models. Without it,
 the harness chooses its default model. Provider/model entries have equal weight
 in one durable round-robin sequence across all roles. Auth or quota failures

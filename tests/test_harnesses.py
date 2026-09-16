@@ -1,6 +1,8 @@
 import hashlib
 import io
 import json
+import subprocess
+import threading
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,7 +14,8 @@ from forge.factory.ledger import Ledger
 from forge.factory.providers import available
 from forge.harnesses.registry import manifests, adapter
 from forge.harnesses.claude.canary import check_repository_access
-from forge.host_setup import login
+from forge.host_setup import login, pending_login, main as setup_main
+from forge.factory.control import controller_lock, ControllerBusy
 from forge.onboarding import Onboarding
 from forge.settings import write_json
 from forge.state import StateError
@@ -79,6 +82,80 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(source.read_text(), '{"synthetic":"login"}')
         self.assertTrue(all(h['connected'] for h in setup.view()['harnesses']))
         self.assertNotIn('synthetic', json.dumps(setup.view()))
+
+    def test_login_waits_for_supervisor_and_resumes_saved_sign_in_after_timeout(self):
+        source = self.root / 'source.json'; source.write_text('{"synthetic":"login"}')
+        with patch('forge.host_setup.controller_lock', side_effect=ControllerBusy('busy')) as lock:
+            with patch('sys.stdout', new=io.StringIO()), self.assertRaisesRegex(ValueError, 'Sign-in is saved'):
+                login(self.root, 'claude', import_login=source, models=['sonnet'])
+            lock.assert_called_once_with(self.root, timeout=120)
+        setup = Onboarding(self.root)
+        pending = self.root / 'credentials/pending-login-claude.json'
+        self.assertEqual(pending.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(setup.runtime()['provider_pool'])
+        self.assertNotIn('synthetic', json.dumps(setup.view()))
+        # A second invocation uses the private saved login without Docker/OAuth.
+        with patch('forge.host_setup.command') as command, patch('sys.stdout', new=io.StringIO()):
+            login(self.root, 'claude')
+            command.assert_not_called()
+        self.assertFalse(pending.exists())
+        self.assertEqual(setup.runtime()['provider_pool'][0]['model'], 'sonnet')
+        self.assertEqual(Path(setup.credentials.environment()['FORGE_SETUP_CLAUDE_AUTH']).read_text(), source.read_text())
+
+    def test_interactive_login_is_saved_before_container_cleanup_failure(self):
+        setup = Onboarding(self.root)
+        config = setup.runtime(); config['image'] = 'sha256:' + 'a' * 64
+        write_json(self.root / 'setup/runtime.json', config)
+        def command(args, **kwargs):
+            if args[1] == 'create':
+                mount = args[args.index('--mount') + 1]
+                home = Path(mount.split('source=', 1)[1].split(',', 1)[0])
+                (home / '.claude').mkdir()
+                (home / '.claude/.credentials.json').write_text('{"synthetic":"interactive"}')
+                return Mock(stdout='container-id')
+            if args[1] == 'rm':
+                raise subprocess.CalledProcessError(1, args)
+            return Mock(returncode=0)
+        from forge.harnesses.accounts import owner
+        name = 'forge-login-' + owner(self.root) + '-claude'
+        with patch('forge.host_setup.subprocess.run', side_effect=[Mock(returncode=1), Mock(returncode=0, stdout=name)]), patch('forge.host_setup.command', side_effect=command):
+            with self.assertRaises(subprocess.CalledProcessError): login(self.root, 'claude')
+        record = pending_login(setup, 'claude', setup.read()['generation'])
+        self.assertEqual(record['value'], '{"synthetic":"interactive"}')
+        with patch('forge.host_setup.subprocess.run', return_value=Mock(returncode=0, stdout=name)), patch('forge.host_setup.command') as command, patch('sys.stdout', new=io.StringIO()):
+            login(self.root, 'claude')
+            self.assertEqual(command.call_args.args[0], ['docker', 'rm', '--force', name])
+        self.assertFalse((self.root / 'credentials/pending-login-claude.json').exists())
+
+    def test_saved_login_from_before_reset_is_never_imported(self):
+        setup = Onboarding(self.root); generation = setup.read()['generation']
+        pending_login(setup, 'claude', generation, {'secret': None, 'value': '{"old":"login"}', 'models': None})
+        with setup.store.transaction() as data: data['generation'] = 'new-generation'
+        self.assertIsNone(pending_login(setup, 'claude', 'new-generation'))
+        self.assertFalse((self.root / 'credentials/pending-login-claude.json').exists())
+        with self.assertRaisesRegex(ValueError, 'reset during login'):
+            pending_login(setup, 'claude', generation, {'secret': None, 'value': '{}', 'models': None})
+
+    def test_controller_lock_remains_exclusive_and_can_wait_for_release(self):
+        with controller_lock(self.root):
+            with self.assertRaises(ControllerBusy):
+                with controller_lock(self.root): pass
+            with self.assertRaises(ControllerBusy):
+                with controller_lock(self.root, timeout=0.01): pass
+            entered = threading.Event()
+            def contender():
+                with controller_lock(self.root, timeout=2): entered.set()
+            thread = threading.Thread(target=contender); thread.start()
+            self.assertFalse(entered.wait(0.05))
+        thread.join(timeout=3)
+        self.assertTrue(entered.is_set())
+
+    def test_terminal_explains_state_errors_without_generic_host_failure(self):
+        stderr = io.StringIO()
+        with patch('sys.argv', ['forge setup', 'login', 'claude', '--root', str(self.root)]), patch('forge.host_setup.login', side_effect=StateError('Supervisor is busy')), patch('sys.stderr', new=stderr):
+            self.assertEqual(setup_main(), 1)
+        self.assertIn('Supervisor is busy', stderr.getvalue())
+        self.assertNotIn('Host command failed', stderr.getvalue())
 
     def test_invalid_models_do_not_persist_credentials_or_partial_configuration(self):
         setup = Onboarding(self.root)

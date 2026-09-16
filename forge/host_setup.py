@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ from contextlib import contextmanager
 from .onboarding import Onboarding
 from .settings import read_json, write_json
 from .setup_service import Service
-from .factory.control import controller_lock
+from .factory.control import controller_lock, ControllerBusy
 from .harnesses.registry import manifests, manifest
 from .harnesses.accounts import owner as login_owner
 from .state import StateError
@@ -138,6 +139,41 @@ def login(root, provider, **kwargs):
         return connect_login(root, provider, **kwargs)
 
 
+def pending_login(setup, provider, generation, record=None):
+    """Keep successful sign-ins private and recoverable until their handoff commits."""
+    setup.credentials._private()
+    path = setup.credentials.root / ('pending-login-' + provider + '.json')
+    if record is not None:
+        # Reset owns credential removal; never resurrect an older generation's login.
+        with setup.store.transaction() as data:
+            if data['generation'] != generation or data['phase'] not in ('setup', 'active'):
+                raise ValueError('Forge was reset during login; reconnect from the current setup')
+            write_json(path, {'generation': generation, **record})
+        return record
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 262144:
+            raise ValueError('Saved sign-in must be a private, bounded file owned by the Forge account')
+        record = json.load(stream)
+    if record.get('generation') != generation:
+        path.unlink()
+        return None
+    return record
+
+
+def cleanup_login(name):
+    owned = subprocess.run(['docker', 'inspect', '--format', '{{index .Config.Labels "forge.login"}}', name],
+                           capture_output=True, text=True)
+    if owned.returncode == 0:
+        if owned.stdout.strip() != name:
+            raise ValueError('A login container has unexpected ownership; inspect it before retrying')
+        command(['docker', 'rm', '--force', name], stdout=subprocess.DEVNULL)
+
+
 def connect_login(root, provider, *, api_key=False, import_login=None, models=None):
     item = manifest(provider)
     setup = Onboarding(root)
@@ -145,7 +181,14 @@ def connect_login(root, provider, *, api_key=False, import_login=None, models=No
     if initial['phase'] not in ('setup', 'active') or initial.get('operation'):
         raise ValueError('Finish the current setup operation before signing in')
     generation = initial['generation']
-    if api_key:
+    saved = pending_login(setup, provider, generation) if not api_key and not import_login else None
+    if saved:
+        print('Finishing the saved ' + item['name'] + ' sign-in; no browser login is needed.', flush=True)
+        secret, value = saved['secret'], saved['value']
+        models = models if models is not None else saved['models']
+        if saved.get('interactive'):
+            cleanup_login('forge-login-' + login_owner(root) + '-' + provider)
+    elif api_key:
         secret = getpass.getpass(item['name'] + ' API key: ')
         value = None
     elif import_login:
@@ -195,21 +238,27 @@ def connect_login(root, provider, *, api_key=False, import_login=None, models=No
                 if not path.is_file() or path.stat().st_size > 65536:
                     raise ValueError('The harness did not save a usable login; retry or use --api-key')
                 value, secret = path.read_text(), None
+                # Persist before deleting the temporary login container/home.
+                saved = pending_login(setup, provider, generation, {'secret': secret, 'value': value, 'models': models, 'interactive': True})
             finally:
                 # Check ownership before cleanup, including interrupted login.
-                owned = subprocess.run(['docker', 'inspect', '--format', '{{index .Config.Labels "forge.login"}}', name],
-                                       capture_output=True, text=True)
-                if owned.returncode == 0 and owned.stdout.strip() == name:
-                    command(['docker', 'rm', '--force', name], stdout=subprocess.DEVNULL)
-    with controller_lock(root):
-        if setup.read()['generation'] != generation:
-            raise ValueError('Forge was reset during login; reconnect from the current setup')
-        setup.connect(provider, api_key=secret, auth_value=value, models=models)
-        ledger = root / 'state/factory/factory-ledger.json'
-        if ledger.exists():
-            from .factory.ledger import Ledger
-            with Ledger(ledger.parent).transaction() as data:
-                data.get('provider_cooldowns', {}).pop(provider, None)
+                cleanup_login(name)
+    if not saved:
+        pending_login(setup, provider, generation, {'secret': secret, 'value': value, 'models': models})
+    print('Sign-in saved locally. Waiting for the current supervisor cycle to finish…', flush=True)
+    try:
+        with controller_lock(root, timeout=120):
+            if setup.read()['generation'] != generation:
+                raise ValueError('Forge was reset during login; reconnect from the current setup')
+            setup.connect(provider, api_key=secret, auth_value=value, models=models)
+            ledger = root / 'state/factory/factory-ledger.json'
+            if ledger.exists():
+                from .factory.ledger import Ledger
+                with Ledger(ledger.parent).transaction() as data:
+                    data.get('provider_cooldowns', {}).pop(provider, None)
+            (setup.credentials.root / ('pending-login-' + provider + '.json')).unlink(missing_ok=True)
+    except ControllerBusy:
+        raise ValueError('Sign-in is saved, but the supervisor is still busy. Rerun the same login command to finish; you will not need to sign in again.') from None
     print(item['name'] + ' connected. Run setup check to verify the runner.')
 
 
@@ -286,7 +335,7 @@ def main():
             print('For a remote VM, forward port 8787 over SSH to reach the loopback dashboard.')
         return 0
     except (OSError, ValueError, StateError, subprocess.SubprocessError) as error:
-        print('Setup did not finish: ' + (str(error) if isinstance(error, ValueError) else 'Host command failed; correct it and rerun setup.'), file=sys.stderr)
+        print('Setup did not finish: ' + (str(error) if isinstance(error, (ValueError, StateError)) else 'Host command failed; correct it and rerun setup.'), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print('\nSetup interrupted. Saved connections are retained; rerun setup to continue.', file=sys.stderr)
