@@ -11,6 +11,7 @@ from forge.factory.config import validate
 from forge.factory.ledger import Ledger
 from forge.factory.providers import available
 from forge.harnesses.registry import manifests, adapter
+from forge.harnesses.claude.canary import check_repository_access
 from forge.host_setup import login
 from forge.onboarding import Onboarding
 from forge.settings import write_json
@@ -55,6 +56,19 @@ class HarnessTests(unittest.TestCase):
         self.assertFalse(store.refresh(ref, digest, original))
         self.assertEqual(Path(store.environment()[ref]).read_text(), newer)
         self.assertFalse(store.refresh('EXTERNAL_AUTH', digest, original))
+
+    def test_repository_access_probe_rejects_missing_token_and_network_failure(self):
+        with patch.dict('os.environ', {}, clear=True), patch('urllib.request.urlopen') as request:
+            with self.assertRaisesRegex(SystemExit, 'token was removed'):
+                check_repository_access()
+            request.assert_not_called()
+        with patch.dict('os.environ', {'GH_TOKEN': 'forge-synthetic-repository-token'}):
+            with patch('urllib.request.urlopen', side_effect=OSError('unreachable')):
+                with self.assertRaisesRegex(SystemExit, 'connectivity check failed'):
+                    check_repository_access()
+            with patch('urllib.request.urlopen') as request:
+                check_repository_access()
+                request.assert_called_once_with('https://api.github.com/meta', timeout=15)
 
     def test_terminal_import_preserves_source_and_connects_both_harnesses(self):
         source = self.root / 'source.json'; source.write_text('{"synthetic":"login"}')

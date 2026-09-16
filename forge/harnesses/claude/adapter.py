@@ -108,7 +108,8 @@ def probe(note, directory):
     command = '/usr/local/bin/python3 /opt/forge/harnesses/claude/canary.py ' + nonce
     prompt = ('This is a sandbox and authentication check. Use Bash to run exactly ' + command +
               '. Do not create or edit any files yourself. If it succeeds, return ready true.')
-    answer = invoke(note, directory, {**os.environ, 'FORGE_PROBE_SECRET': 'synthetic-private-env'}, schema, prompt, canary=(command, nonce))
+    answer = invoke(note, directory, {**os.environ, 'FORGE_PROBE_SECRET': 'synthetic-private-env',
+                                     'GH_TOKEN': 'forge-synthetic-repository-token'}, schema, prompt, canary=(command, nonce))
     proof = directory / 'claude-probe-proof'
     if answer != {'ready': True} or not proof.is_file() or proof.read_text() != nonce:
         raise RuntimeError('Claude authentication or native sandbox check failed')

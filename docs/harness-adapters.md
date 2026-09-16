@@ -49,6 +49,9 @@ Before enabling a new module, qualify:
 4. Timeout, crash, detached children, interrupted login, reset and clean reuse.
 5. Refresh persistence, reconnect races and no credentials in logs or source.
 6. Explicit model selection and deterministic rotation across controller restarts.
+7. Assigned GitHub credentials remain available to repository tools while provider
+   credentials stay isolated, and those tools can reach GitHub through the proxy.
+   Claude's setup probe verifies this using a synthetic token and a public endpoint.
 
 OpenCode and Grok Build are follow-up adapters, not enabled providers until this
 qualification succeeds.
