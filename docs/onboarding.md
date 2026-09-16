@@ -52,30 +52,32 @@ PAT or grant itself additional repository access.
 
 An administrator must configure the default branch before Start can pass. Forge's
 Controller has read-only Administration access and cannot configure its own gates.
-Use classic branch protection with these settings:
+Forge shares repositories with developers. The onboarding baseline is:
 
-Open the repository's Settings → Branches and edit the rule for its default
-branch. See [GitHub's branch protection guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule)
-for the location of each setting.
+- Require pull requests and at least two approving reviews.
+- Dismiss stale approvals when new commits are pushed.
 
-- Require pull requests and two approving reviews; dismiss stale approvals.
-- Require branches to be up to date before merging.
-- Require forge/review from the Reviewer App, forge/audit from the Auditor App,
-  and forge/merge-policy from the Controller App. Bind each check to its App ID.
-- Restrict pushes to the Controller App only, with no users or teams in that list.
-- Enforce protection for administrators, prohibit force pushes, and allow no
-  review bypass actors.
+Developers keep their existing branch, pull request and merge access. Repository
+owners choose CI checks, push restrictions, administrator enforcement and bypass
+permissions. Forge does not require exclusive Controller access, globally required
+Forge checks, or up-to-date branches as an installation prerequisite.
+
+Open Settings → Branches and edit the default-branch rule if either baseline
+setting is missing. See [GitHub's branch protection guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule).
+
+Forge still publishes its review, audit and merge-policy checks on its own PRs.
+Its supervisor requires current evidence from the assigned Reviewer and Auditor
+Apps before requesting a merge. GitHub applies the repository's configured rules
+at merge time. Stronger repository-wide enforcement is an owner choice; making
+Forge checks globally required also affects developers' PRs.
 
 When an auditor asks for human approval, the merge gate stays closed until the
 required human evidence for the current candidate exists. The repository's human
 CODEOWNERS protection must be configured for that gate; see factory-runtime.md.
 Changing code invalidates the earlier review and audit evidence.
 
-GitHub may require API configuration for expected App IDs before the named checks
-have run for the first time. A repository administrator can configure these using
-GitHub's branch-protection API. Forge does not post fake successful checks to
-populate GitHub's picker. Rulesets-only configurations are not supported in this
-first setup path.
+The current protection reader supports classic branch protection. Rulesets-only
+configurations still need a reader that verifies the equivalent review baseline.
 
 ## Host installation
 

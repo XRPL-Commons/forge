@@ -187,16 +187,22 @@ class Supervisor:
                 return
         else:
             current = self.github.pr(item, job['candidate']['pr'])
-            if (current['head']['sha'] != job['candidate']['head'] or current['base']['sha'] != job['candidate']['base']
+            if current.get('merged'):
+                return  # Reconciliation records external completion and cleans up.
+            if (current['head']['sha'] != job['candidate']['head']
                     or current['state'] != 'open' or current['draft']):
-                self.invalidate(item['key'], 'Candidate changed during the attempt')
+                self.pause_external_change(item, 'PR changed outside its build assignment; reconcile developer changes before resuming')
                 return
+            if current['base']['sha'] != job['candidate']['base']:
+                return  # Reconciliation creates a fresh candidate and reruns review.
             if report and report['outcome'] in ('pass', 'reject'):
                 check_id = self.github.verdict(job, report)
                 # Verify revision again after publication; stale results are only history.
                 verified = self.github.pr(item, job['candidate']['pr'])
-                if verified['head']['sha'] != current['head']['sha'] or verified['base']['sha'] != current['base']['sha']:
-                    self.invalidate(item['key'], 'Candidate changed during verdict publication')
+                if verified['head']['sha'] != current['head']['sha']:
+                    self.pause_external_change(item, 'PR changed during verdict publication; reconcile developer changes before resuming')
+                    return
+                if verified['base']['sha'] != current['base']['sha']:
                     return
                 if report['outcome'] == 'pass':
                     self.ledger.accept(job['id'], evidence={**report, 'check_id': check_id})
@@ -216,14 +222,17 @@ class Supervisor:
         reason = report['summary'] if report else ('Execution deadline exceeded' if capture.get('timed_out') else 'No verified publication or usable result')
         self.ledger.fail(job['id'], reason, evidence=[capture.get('logs', ''), *capture.get('missing', [])])
 
-    def invalidate(self, key, reason, *, candidate=None):
+    def invalidate(self, key, reason, *, candidate=None, hold=False):
         item = self.ledger.read()['issues'][key]
         old = item.get('candidate')
         if old:
             pr = self.github.pr(item, old['pr'])
             gate = candidate or {**old, 'head': pr['head']['sha']}
             self.github.check(item, 'controller', gate, gate['key'], None, reason)
-        self.ledger.invalidate(key, reason, candidate=candidate)
+        self.ledger.invalidate(key, reason, candidate=candidate, hold=hold)
+
+    def pause_external_change(self, item, reason):
+        self.invalidate(item['key'], reason, hold=True)
 
     def update_requirements(self, key, requirements):
         with self.ledger.transaction() as data:
@@ -275,7 +284,7 @@ class Supervisor:
                 fresh = candidate(pr, build, requirements, digest(policy(self.config)))
                 fresh['branch'] = pr['head']['ref']
             except (ValueError, KeyError, TypeError):
-                self.invalidate(item['key'], 'Candidate is no longer a verified submission')
+                self.pause_external_change(item, 'PR changed outside its build assignment; reconcile developer changes before resuming')
                 return
             if fresh['key'] != candidate_value['key']:
                 self.invalidate(item['key'], 'Head, base, requirements or policy changed', candidate=fresh)
@@ -302,7 +311,7 @@ class Supervisor:
         elif not self.github.gates(item):
             reason = 'Current review and audit checks must match the accepted evidence'
         elif not self.github.protections(item, item['candidate']):
-            reason = 'Required GitHub protections or expected App check producers are missing'
+            reason = 'The two-review and stale-approval protection baseline is missing'
         external = item['candidate']['key']
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
@@ -384,7 +393,7 @@ class Supervisor:
                 try:
                     target = self.github.target(item)
                     if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
-                        self.ledger.hold(item['key'], 'Configure the protected target and controller-only merge authority before dispatch')
+                        self.ledger.hold(item['key'], 'Configure two approving reviews and stale-approval dismissal before dispatch')
                         continue
                     job = self.ledger.reserve(item['key'], role, slot, publisher=self.github.publisher(role),
                         policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=self.config, target_branch=target)

@@ -213,7 +213,7 @@ class GitHub:
         return report['available'] and all(row['passed'] for row in report['requirements'])
 
     def protection_report(self, item, candidate_value):
-        """Explain the same classic branch gates used by the merge decision."""
+        """Check the shared review baseline without claiming exclusive repository control."""
         branch = candidate_value['base_ref']
         report = {'branch': branch, 'available': True, 'requirements': []}
         try:
@@ -227,34 +227,11 @@ class GitHub:
         rows = report['requirements']
         def requirement(key, label, passed, detail):
             rows.append({'id': key, 'label': label, 'passed': bool(passed), 'detail': detail})
-        restrictions = protection.get('restrictions') or {}
-        controller = self.connection('controller')['app_id']
-        requirement('pushes', 'Restrict pushes to the Controller App',
-                    {app.get('id') for app in restrictions.get('apps', [])} == {controller}
-                    and not restrictions.get('users') and not restrictions.get('teams'),
-                    f'In “Restrict who can push to matching branches”, allow only the Controller App (App ID {controller}); remove users, teams and other Apps.')
-        required = protection.get('required_status_checks') or {}
-        checks = {(c['context'], c.get('app_id')) for c in required.get('checks', [])}
-        expected = [('forge/' + role, self.connection(role)['app_id']) for role in ('review', 'audit')]
-        expected.append(('forge/merge-policy', controller))
-        missing = [(name, app) for name, app in expected if (name, app) not in checks]
-        requirement('checks', 'Require the Forge status checks from their assigned Apps', not missing,
-                    'Missing or bound to the wrong App: ' + ', '.join(f'{name} (App ID {app})' for name, app in missing)
-                    if missing else 'All three Forge checks are required from the expected Apps.')
-        requirement('strict', 'Require branches to be up to date before merging', required.get('strict'),
-                    'Enable “Require branches to be up to date before merging” under required status checks.')
         reviews = protection.get('required_pull_request_reviews') or {}
         requirement('reviews', 'Require at least two approving reviews', reviews.get('required_approving_review_count', 0) >= 2,
                     'Enable required pull request reviews and set the approval count to at least two.')
         requirement('stale', 'Dismiss approvals when code changes', reviews.get('dismiss_stale_reviews'),
                     'Enable “Dismiss stale pull request approvals when new commits are pushed”.')
-        requirement('admins', 'Apply protection to administrators', protection.get('enforce_admins', {}).get('enabled'),
-                    'Enable “Do not allow bypassing the above settings” so the protection also applies to administrators.')
-        bypass = reviews.get('bypass_pull_request_allowances') or {}
-        requirement('bypass', 'Remove pull request review bypass actors', not any(bypass.get(k) for k in ('users', 'teams', 'apps')),
-                    'Remove users, teams and Apps allowed to bypass required pull requests.')
-        requirement('force', 'Keep force pushes disabled', not protection.get('allow_force_pushes', {}).get('enabled'),
-                    'Turn off “Allow force pushes”.')
         return report
 
     def native_human_gate(self, item):

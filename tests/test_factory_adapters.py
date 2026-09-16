@@ -75,19 +75,32 @@ class AdapterTests(unittest.TestCase):
         github.pages.return_value = [review(1,'human','APPROVED'),review(2,'colleague','CHANGES_REQUESTED')]
         self.assertEqual(github.human({},pr),(False,True))
 
-    def test_check_protection_requires_expected_apps_and_stale_dismissal(self):
+    def test_shared_repository_allows_human_access_and_owner_chosen_checks(self):
         github, _, _ = self.github()
-        protection = {'required_status_checks': {'strict': True, 'checks': [
-            {'context':'forge/review','app_id':2},{'context':'forge/audit','app_id':3},{'context':'forge/merge-policy','app_id':4}]},
-            'required_pull_request_reviews': {'dismiss_stale_reviews':True, 'required_approving_review_count':2}, 'enforce_admins':{'enabled':True},
-            'restrictions': {'apps':[{'id':4}], 'users':[], 'teams':[]}}
+        protection = {'required_pull_request_reviews': {'dismiss_stale_reviews':True,
+            'required_approving_review_count':2, 'bypass_pull_request_allowances':{'users':[{'login':'maintainer'}]}},
+            'enforce_admins':{'enabled':False}, 'restrictions': {'apps':[{'id':4},{'id':9}], 'users':[{'login':'developer'}], 'teams':[{'id':12}]},
+            'required_status_checks':{'strict':False,'checks':[{'context':'project-ci','app_id':99}]}}
         github.call = Mock(return_value=protection)
         self.assertTrue(github.protections({}, {'base_ref':'main'}))
-        protection['required_status_checks']['checks'][0]['app_id'] = 999
+        protection['required_pull_request_reviews']['dismiss_stale_reviews'] = False
         self.assertFalse(github.protections({}, {'base_ref':'main'}))
-        protection['required_status_checks']['checks'][0]['app_id'] = 2
-        protection['required_pull_request_reviews']['bypass_pull_request_allowances'] = {'apps':[{'id':4}]}
+        protection['required_pull_request_reviews']['dismiss_stale_reviews'] = True
+        protection['required_pull_request_reviews']['required_approving_review_count'] = 1
         self.assertFalse(github.protections({}, {'base_ref':'main'}))
+
+    def test_forge_still_requires_its_own_current_review_and_audit_evidence(self):
+        github, _, _ = self.github()
+        item={'candidate':{'head':'a'*40},'evidence':{'review':{'check_id':21},'audit':{'check_id':22}}}
+        runs=[{'name':'forge/review','id':21,'app':{'id':2},'status':'completed','conclusion':'success'},
+              {'name':'forge/audit','id':22,'app':{'id':3},'status':'completed','conclusion':'success'}]
+        github.pages=Mock(return_value=runs)
+        self.assertTrue(github.gates(item))
+        runs[0]['app']['id']=999
+        self.assertFalse(github.gates(item))
+        runs[0]['app']['id']=2
+        runs[1]['conclusion']='failure'
+        self.assertFalse(github.gates(item))
 
     def test_hung_graceful_stop_still_forces_exact_container_removal(self):
         runner = ContainerRunner(validate({}), run=Mock())

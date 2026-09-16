@@ -23,8 +23,9 @@ class FeedbackTests(unittest.TestCase):
         protection={'required_pull_request_reviews':{'required_approving_review_count':2,'dismiss_stale_reviews':True},'allow_force_pushes':{'enabled':False}}
         github.call=Mock(return_value=protection)
         report=github.protection_report({}, {'base_ref':'main'})
-        self.assertEqual({r['id'] for r in report['requirements'] if not r['passed']},{'pushes','checks','strict','admins'})
-        self.assertFalse(github.protections({}, {'base_ref':'main'}))
+        self.assertEqual({r['id'] for r in report['requirements']},{'reviews','stale'})
+        self.assertTrue(all(r['passed'] for r in report['requirements']))
+        self.assertTrue(github.protections({}, {'base_ref':'main'}))
         github.call.side_effect=GitHubUnavailable('unreadable',status=403)
         report=github.protection_report({}, {'base_ref':'main'})
         self.assertFalse(report['available'])

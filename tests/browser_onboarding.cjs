@@ -64,7 +64,7 @@ assert.equal(await page.locator('.row').filter({has:page.getByText('Codex',{exac
 await page.screenshot({path:'/tmp/forge-onboarding-account-progress.png',fullPage:true});
 await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('.spinner:visible').first().evaluate(e=>getComputedStyle(e).animationName),'none');await page.emulateMedia({reducedMotion:'no-preference'});
 state.operation=null;state.activity=null;state.checks={github:'failed'};state.error='Default branch protection needs required checks.';
-state.repository_check={branch:'main',available:true,requirements:[{id:'admins',label:'Apply protection to administrators',passed:false,detail:'Enable administrator enforcement.'},{id:'reviews',label:'Two approving reviews',passed:true,detail:''}]};
+state.repository_check={branch:'main',available:true,requirements:[{id:'stale',label:'Dismiss stale approvals',passed:false,detail:'Enable stale-approval dismissal.'},{id:'reviews',label:'Two approving reviews',passed:true,detail:''}]};
 await page.getByRole('heading',{name:'Setup needs attention',exact:true}).waitFor();
 await page.getByRole('heading',{name:'1 repository setting needs attention'}).waitFor();assert.equal(await page.getByRole('link',{name:'Open branch protection ↗'}).getAttribute('href'),'https://github.com/example/project/settings/branches');assert.equal(await page.getByRole('link',{name:'Repository protection instructions',exact:true}).count(),1);
 await page.screenshot({path:'/tmp/forge-onboarding-blocked.png',fullPage:true});

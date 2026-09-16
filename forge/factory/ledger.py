@@ -262,7 +262,7 @@ class Ledger:
             self.event(data, issue, 'availability_wait', attempt=identifier, reason=reason,
                        provider=job.get('provider'), model=job.get('model'), retry_after=until)
 
-    def invalidate(self, key, reason, *, candidate=None):
+    def invalidate(self, key, reason, *, candidate=None, hold=False):
         with self.transaction() as data:
             issue = data['issues'][key]
             if issue['active']:
@@ -271,9 +271,11 @@ class Ledger:
                 issue['active'] = None
             if candidate:
                 candidate = {**candidate, 'accepted_at': self.clock()}
-            issue.update(state='built' if candidate else 'ready', candidate=candidate or issue['candidate'],
+            issue.update(state='hold' if hold else 'built' if candidate else 'ready', candidate=candidate or issue['candidate'],
                          evidence={}, reason=reason)
             self.event(data, issue, 'candidate_invalidated', reason=reason)
+            if hold:
+                self.event(data, issue, 'held', reason=reason)
 
     def hold(self, key, reason, *, fence_active=False):
         with self.transaction() as data:

@@ -36,7 +36,7 @@ in Recovery → Audit → Review → Build order. Triage runs only when a builde
 is free, discovering open issues with `ready`, respecting holds, access and existing
 ownership. Eligible issues use stable oldest-discovered/repository/issue ordering.
 
-Verify protected-target rules and controller-only merge authority before dispatch.
+Verify the shared two-review and stale-approval baseline before dispatch.
 Persist the assignment and reserve capacity before launching. One issue cannot
 receive replacement work while its old execution has unverified cleanup. A
 provider outage pauses dispatch without charging issues. The supervisor's GitHub
@@ -90,7 +90,10 @@ revision identity, publishes their verdict under the respective App, verifies th
 publication, and then accepts the milestone. Publications carry an attempt or
 candidate idempotency key and are reconciled before repeating uncertain writes.
 
-Require App-bound checks `forge/review`, `forge/audit`, `forge/merge-policy`.
+Publish App-bound checks `forge/review`, `forge/audit`, `forge/merge-policy` on
+Forge PRs and verify them inside the supervisor. They need not be globally required
+branch checks. Developers keep their normal repository access and merge paths;
+Forge reconciles their changes instead of claiming exclusive ownership.
 Two approval counts alone do not prove the two technical roles passed. The auditor
 may require additional human approval but may not waive repository policy.
 Human approval supplements a passing technical audit; it never overrides failure.

@@ -144,6 +144,50 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.state(), 'merged')
         self.assertEqual(self.ledger.failure_count(self.ledger.read()['issues'][self.key]), 1)
 
+    def test_developer_edit_pauses_assignment_without_overwriting_or_failure(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle()
+        self.github.pull['head']['sha'] = 'd'*40
+        self.cycle(); self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['state'], 'hold')
+        self.assertFalse(item['evidence'])
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertEqual(self.github.pull['head']['sha'], 'd'*40)
+        self.assertEqual(self.ledger.failure_count(item), 0)
+        self.assertEqual(len(self.ledger.read()['jobs']), 3)
+
+    def test_developer_edit_during_completed_audit_does_not_dispatch_rebuild(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit')
+        self.github.pull['head']['sha'] = 'd'*40
+        self.cycle()
+        self.assertEqual(self.state(), 'hold')
+        self.assertFalse(self.github.pull['merged'])
+        self.assertFalse(self.ledger.read()['slots'])
+
+    def test_developer_push_racing_verdict_publication_is_held(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        original = self.github.verdict
+        def verdict(job, report):
+            result = original(job, report)
+            self.github.pull['head']['sha'] = 'd'*40
+            return result
+        self.github.verdict = verdict
+        self.finish('review'); self.cycle()
+        self.assertEqual(self.state(), 'hold')
+        self.assertFalse(self.ledger.read()['issues'][self.key]['evidence'])
+        self.assertEqual(len(self.ledger.read()['jobs']), 2)
+
+    def test_human_merge_during_audit_is_observed_and_worker_is_cleaned_up(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle()
+        self.github.pull.update(merged=True, merge_commit_sha='c'*40)
+        self.cycle(); self.cycle()
+        self.assertEqual(self.state(), 'merged')
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertEqual(len(self.ledger.read()['jobs']), 3)
+
     def test_base_change_invalidates_evidence_without_failure(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()

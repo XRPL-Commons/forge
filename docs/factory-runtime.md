@@ -133,16 +133,24 @@ repository-scoped installation tokens. Review, Audit and Recovery jobs receive
 read-only tokens; the supervisor publishes reviews/checks using the corresponding
 role App after validating the result. No worker receives the controller's token.
 
-The protected target branch must require strict/up-to-date checks from these
-specific Apps: `forge/review`, `forge/audit`, `forge/merge-policy`. Enable stale
-approval dismissal and enforcement for administrators, remove review bypass
-allowances, and disable force pushes. Restrict pushes/merges to the Controller App
-only, with no additional users or teams in that restriction. This prevents a
-builder's repository-scoped Contents grant from becoming merge authority. The
-supervisor verifies the default target and these protections before dispatch as
-well as before merge. The first adapter validates classic protected
-branches. A rulesets-only or merge-queue setup is held until an adapter can verify
-its equivalent guarantees; it is not treated as unprotected permission to merge.
+Forge operates alongside developers. The default branch baseline requires two
+approving reviews and stale-approval dismissal. Repository owners choose all
+other protection settings, including required CI, administrator enforcement,
+bypass actors and push permissions. No exclusive Controller access, global
+Forge status-check requirement or strict/up-to-date setting is required.
+
+Forge publishes and independently verifies its own App-bound review/audit checks
+for each accepted candidate. Other contributors' approvals cannot stand in for
+those technical roles. The supervisor checks the shared review baseline before
+dispatch and merge. The current adapter reads classic branch protection;
+rulesets-only and merge-queue policy adapters remain future work.
+
+External merges are observed as completion and any active runner is cleaned up.
+Target-branch changes invalidate prior evidence and restart review. A PR changed
+outside its build assignment is paused for reconciliation, preserving the
+contributor's changes without charging a failed attempt or dispatching a builder
+over that work. Existing developer PRs require explicit adoption; Forge does not
+claim them by matching a title or a conversational link.
 
 For automatically merging **escalated** changes, configure native required
 code-owner reviews and a `.github/CODEOWNERS` file with one wildcard rule listing
@@ -243,6 +251,7 @@ References: [Docker seccomp](https://docs.docker.com/engine/security/seccomp/),
 
 GitHub App grants are repository-scoped, not per-issue or per-branch capabilities.
 The builder is instructed to write only its assigned branch/issue/PR; acceptance
-verifies those identities, and protected-target restrictions enforce controller-only
-merging. A future write broker could additionally enforce every individual builder
-API operation. Do not describe role prompts alone as that stronger boundary.
+verifies those identities. GitHub applies the repository owner’s permissions and
+protection rules to all actors. Forge’s supervisor gates govern the merges Forge
+requests, not merges by other authorized actors. A future write broker could
+enforce every individual builder API operation; role prompts are not that boundary.

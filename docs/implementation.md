@@ -17,7 +17,7 @@ for the exact configuration, host policy and cutover procedure.
 - Sequential Build, Review, Audit and merge routing; one three-failure issue budget,
   mandatory bounded investigations, repeat-pattern holds and explicit human retry.
 - Exact PR submission metadata, revision-bound verdicts, role App publication,
-  protected-target admission and controller-only merge authority.
+  shared repository admission and supervisor-owned gates for Forge merge requests.
 - Disposable container runners with native Codex policy, external reset, verified
   teardown, stale-execution fencing and bounded evidence capture.
 - GitHub App discovery and multiple installations per role, repository-scoped
