@@ -57,10 +57,10 @@ def render(guide):
             if items or code: flush()
             paragraph.append(line.strip())
     flush()
-    return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>Forge · Setup help</title><style>body{max-width:760px;margin:40px auto;padding:0 24px 48px;background:#101416;color:#edf1ee;font:16px/1.65 system-ui}'
-            'a{color:#abcfff}h1{font-size:32px}h2{margin-top:36px;font-size:22px}li{margin:10px 0}code{font-size:.9em;background:#192024;padding:2px 5px;border-radius:4px}'
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>Forge · Setup help</title><style>body{margin:0;background:#101416;color:#edf1ee;font:16px/1.65 system-ui}'
+            '.help-content{max-width:760px;margin:24px auto;padding:0 24px 48px}a{color:#abcfff}h1{font-size:32px}h2{margin-top:36px;font-size:22px}li{margin:10px 0}code{font-size:.9em;background:#192024;padding:2px 5px;border-radius:4px}'
             'pre{padding:16px;background:#192024;border:1px solid #303b40;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}p,li{overflow-wrap:anywhere}'
-            'nav{margin:24px 0;padding:16px;background:#192024;border-radius:8px}nav a{display:block}a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}</style>'
+            'nav{margin:24px 0;padding:16px;background:#192024;border-radius:8px}nav a{display:block}a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}</style></head><body><!--FORGE_NAVIGATION--><div class="help-content">'
             '<a href="/onboarding">← Back to setup</a><nav aria-label="Help topics"><a href="#github-repository-protection">Configure repository protection</a>'
-            '<a href="#maintain-github-access">Manage GitHub access</a><a href="#host-installation">Coding accounts and VM setup</a></nav><main>' + ''.join(blocks) + '</main></html>')
+            '<a href="#maintain-github-access">Manage GitHub access</a><a href="#host-installation">Coding accounts and VM setup</a></nav><main>' + ''.join(blocks) + '</main></div></body></html>')

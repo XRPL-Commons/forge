@@ -1,3 +1,4 @@
+const renderPage=require('./browser_page.cjs');
 const { chromium } = require(
   process.env.FORGE_PLAYWRIGHT_MODULE || "playwright",
 );
@@ -228,10 +229,7 @@ const fs = require("fs"),
       documentRequests++;
       return route.fulfill({
         contentType: "text/html",
-        body: fs.readFileSync(
-          require("path").join(__dirname, "../legacy/dashboard.html"),
-          "utf8",
-        ).replace("__FORGE_DASHBOARD_VERSION__",servedDashboardVersion),
+        body: renderPage('dashboard.html',url.pathname).replace("__FORGE_DASHBOARD_VERSION__",servedDashboardVersion),
       });
     }
     if (url.pathname === "/api/slots/action") {

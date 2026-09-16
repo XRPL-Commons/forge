@@ -1,3 +1,4 @@
+const renderPage=require('./browser_page.cjs');
 const {chromium}=require(process.env.FORGE_PLAYWRIGHT_MODULE||'playwright-core');
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const {execFileSync}=require('child_process');
@@ -33,9 +34,9 @@ if(action.action==='check'){state.activity={target:'github',label:'Checking repo
 if(action.action==='start'){assert(state.can_start);state.phase='active';state.operation={action:'start'};}
 if(action.action==='reset'){state.phase='resetting';state.operation={action:'reset',step:'stop_workers'};}
 return route.fulfill({json:{ok:true}});}
-if(url.pathname==='/setup-help')return route.fulfill({contentType:'text/html',body:execFileSync('python3',['-c',"from pathlib import Path;from forge.setup_help import render;print(render(Path('docs/onboarding.md').read_text()))"],{cwd:path.join(__dirname,'..'),encoding:'utf8'})});
+if(url.pathname==='/setup-help')return route.fulfill({contentType:'text/html',body:renderPage('help',url.pathname)});
 if(url.pathname==='/factory')return route.fulfill({contentType:'text/html',body:'<h1>Actual factory dashboard</h1>'});
-return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/onboarding.html'),'utf8')});});
+return route.fulfill({contentType:'text/html',body:renderPage('onboarding.html',url.pathname)});});
 await page.goto('http://forge.test/onboarding');await page.getByRole('heading',{name:'Connect your GitHub workspace'}).waitFor();
 await page.locator('#owner').fill('example');await page.getByRole('button',{name:'Connect Builder',exact:true}).click();await page.waitForURL(registration.action);assert(manifestSubmitted);
 registering=false;await page.goto('http://forge.test/onboarding');await page.getByRole('heading',{name:'Connect your GitHub workspace'}).waitFor();

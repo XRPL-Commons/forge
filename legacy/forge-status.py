@@ -464,6 +464,9 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _send(self, body, ctype="application/json", headers=None):
+        if ctype.startswith("text/html"):
+            from forge.navigation import render
+            body = render(body, urlparse(self.path).path)
         data = body.encode()
         self.send_response(200)
         self.send_header("Content-Type", ctype)

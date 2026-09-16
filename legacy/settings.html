@@ -20,8 +20,8 @@
     @media(max-width:650px){main{padding:18px}section{padding:16px}.connections{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.fields label:last-child{grid-column:auto}header{align-items:flex-start}}
   </style>
 </head>
-<body><main>
-  <header><div><a href="/">← Fleet</a><h1 id="page-title">Settings</h1><div class="toolbar"><a href="/settings/github" id="access-link">GitHub access</a><a href="/onboarding" id="setup-link" hidden>Continue setup</a><a href="/settings/advanced" id="advanced-link" hidden>Advanced settings</a><a href="/reset">Reset Forge</a></div><p class="muted" id="page-description">Connect GitHub, verify repository access, then enable automation.</p></div></header>
+<body><!--FORGE_NAVIGATION--><main>
+  <header><div><h1 id="page-title">Settings</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a><a href="/settings/advanced" id="advanced-link" hidden>Advanced settings</a><a href="/reset">Reset Forge</a></div><p class="muted" id="page-description">Connect GitHub, verify repository access, then enable automation.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
     <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" disabled>Refresh access</button></div>
@@ -67,7 +67,7 @@
   if(accessPage){
     document.title='Forge · GitHub access';$('page-title').textContent='GitHub access';
     $('page-description').textContent='See the four Forge Apps, their verified permissions, and repository access. Refresh after changing access on GitHub.';
-    for(const id of ['access-link','manual-setup','save-connections','config-title','runtime-title']){
+    for(const id of ['manual-setup','save-connections','config-title','runtime-title']){
       const el=$(id);(id.endsWith('-title')?el.closest('section'):el).hidden=true;
     }
   }

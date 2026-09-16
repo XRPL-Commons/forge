@@ -1,3 +1,4 @@
+const renderPage=require('./browser_page.cjs');
 const {chromium} = require(process.env.FORGE_PLAYWRIGHT_MODULE || 'playwright-core');
 const fs = require('fs'), assert = require('assert'), path = require('path');
 (async()=>{
@@ -15,7 +16,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
       repositories:synced?[{id:10,name:'example/project',enabled:config.repositories[0]?.enabled||false,access_ready:!failSync&&roles.every(r=>config.connections[r]),access:Object.fromEntries(roles.map(r=>[r,!config.connections[r]?'not_configured':failSync?'unknown':'ready']))}]:[]});
     await page.route('http://forge.test/**',async route=>{
       const req=route.request(),url=new URL(req.url());
-      if(['/settings','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../legacy/settings.html'),'utf8')});
+      if(['/settings','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:renderPage('settings.html',url.pathname)});
       if(url.pathname==='/api/onboarding'){
         if(req.method()==='POST'){assert.equal(req.headers()['x-forge-action'],'synthetic');assert.deepEqual(req.postDataJSON(),{action:'refresh'});setupRefreshes++;}
         return route.fulfill({json:setup});
