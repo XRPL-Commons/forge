@@ -1,6 +1,8 @@
 """Shared, server-rendered navigation for every Forge operator page."""
 
 STYLE = """<style>
+:root{--forge-header-height:84px;scroll-padding-top:calc(var(--forge-header-height) + 16px)}
+.forge-topbar{position:sticky;top:0;z-index:3;background:#101416;border-bottom:1px solid #303b40}
 .forge-header{box-sizing:border-box;max-width:1600px;margin:0 auto;padding:26px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#edf1ee}
 .forge-header .forge-brand{display:flex;align-items:center;gap:10px;color:#edf1ee;text-decoration:none;font-size:22px;line-height:1.3;letter-spacing:-.6px;font-weight:750;white-space:nowrap}
 .forge-header .forge-mark{box-sizing:border-box;display:grid;place-items:center;width:28px;height:28px;border:1px solid #bfe6cd;border-radius:5px;color:#bfe6cd;font-size:17px;transform:rotate(-6deg)}
@@ -25,8 +27,11 @@ def render(page, path):
                         ('/settings/harnesses', 'Coding accounts'), ('/settings', 'Settings')):
         active = ' aria-current="page"' if current == href else ''
         links.append(f'<a href="{href}"{active}>{label}</a>')
-    header = ('<header class="forge-header"><a class="forge-brand" href="/" aria-label="Forge home">'
+    header = ('<div class="forge-topbar"><header class="forge-header"><a class="forge-brand" href="/" aria-label="Forge home">'
               '<span class="forge-mark" aria-hidden="true">F</span>Forge</a>'
               '<div class="forge-header-end"><span id="saved"></span>'
-              '<nav class="forge-navigation" aria-label="Main navigation">' + ''.join(links) + '</nav></div></header>')
+              '<nav class="forge-navigation" aria-label="Main navigation">' + ''.join(links) + '</nav></div></header></div>'
+              '<script>(()=>{const bar=document.querySelector(".forge-topbar");'
+              'const measure=()=>document.documentElement.style.setProperty("--forge-header-height",bar.getBoundingClientRect().height+"px");'
+              'measure();new ResizeObserver(measure).observe(bar)})();</script>')
     return page.replace('</head>', STYLE + '</head>', 1).replace('<!--FORGE_NAVIGATION-->', header, 1)
