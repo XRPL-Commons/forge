@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+import runpy
 
 
 def main():
@@ -16,10 +17,14 @@ def main():
     credentials = json.loads(Path('/work/credentials.json').read_text())
     Path('/work/credentials.json').unlink()
     Path('/work/home').mkdir(mode=0o700, exist_ok=True)
-    auth = credentials.pop('FORGE_CODEX_AUTH', None)
+    auth = credentials.pop('FORGE_HARNESS_AUTH', None)
+    origin = credentials.pop('FORGE_AUTH_DIGEST', None)
     if auth is not None:
-        auth_dir = Path('/work/home/.codex'); auth_dir.mkdir(mode=0o700)
-        target = auth_dir / 'auth.json'; target.write_text(json.dumps(auth)); target.chmod(0o600)
+        registry = runpy.run_path('/opt/forge/harnesses/registry.py')
+        target = Path('/work/home') / registry['manifest'](note.get('provider', 'codex'))['auth_file']
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target.write_text(json.dumps(auth)); target.chmod(0o600)
+        Path('/work/home/.forge-auth-origin').write_text(origin)
     env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/work/home', 'LANG': 'C.UTF-8',
            'FORGE_ASSIGNMENT': '/work/assignment.json', 'FORGE_RESULT': '/work/result.json', **credentials}
     env.update(HTTPS_PROXY=note['proxy'], HTTP_PROXY=note['proxy'], https_proxy=note['proxy'], http_proxy=note['proxy'])

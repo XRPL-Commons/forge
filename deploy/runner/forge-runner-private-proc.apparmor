@@ -1,0 +1,27 @@
+# Only containers explicitly selecting this profile receive namespace permission.
+# Container UID, dropped capabilities, read-only root, private PID namespace and
+# internal network remain mandatory. Native Codex adds its filesystem policy.
+#include <tunables/global>
+profile forge-runner-private-proc flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  network,
+  capability,
+  file,
+  userns,
+  mount,
+  umount,
+  pivot_root,
+  signal (receive) peer=unconfined,
+  signal (send,receive) peer=forge-runner-private-proc,
+  ptrace (read,trace,readby,tracedby) peer=forge-runner-private-proc,
+  # Replace Docker's masked/readonly proc mounts with path mediation so a
+  # nested private PID namespace can mount its own procfs. Never use host PID.
+  deny /proc/{acpi,asound,scsi}/** rwklx,
+  deny /proc/{acpi,asound,scsi} rwklx,
+  deny /proc/{kcore,kmem,sysrq-trigger,keys,latency_stats,timer_list,timer_stats,sched_debug,interrupts} rwklx,
+  deny /proc/{bus,fs,irq}/** wklx,
+  deny /sys/{firmware,devices/virtual/powercap}/** rwklx,
+  deny /sys/{firmware,devices/virtual/powercap} rwklx,
+  deny /proc/sys/** wklx,
+  deny /sys/** wklx,
+}

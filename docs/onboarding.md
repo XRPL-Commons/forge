@@ -7,7 +7,7 @@ Open /onboarding on the trusted private dashboard address.
    repositories for every installation. Return to Forge after installation;
    Refresh access verifies connections without granting additional access.
 2. Choose one shared repository. This saves a draft, without starting work.
-3. Connect Codex using an existing server login or an OpenAI API key. Forge runs
+3. Connect Codex and/or Claude Code from `bin/forge setup` on the VM. Forge runs
    one small provider request, checks GitHub protection, and verifies isolated
    runner startup, forced termination, cleanup, and reuse. Provider usage charges
    may apply. Press Start Forge once the checks pass.
@@ -98,11 +98,13 @@ two Builder slots and one each for Review, Audit and Recovery. Increase concurre
 only after qualifying the host's available memory. Slot counts do not override
 the shared running limit. Setup probes use the same resource and isolation policy.
 
-For existing Codex login, set FORGE_CODEX_AUTH_FILE on the dashboard service, or
-sign in under its service account. Otherwise enter an API key in Connect Codex.
-Forge copies authentication privately; it never removes an external login file.
-Provider authentication refreshed inside a disposable runner is not synchronized
-back to the external file. Reconnect if a copied login expires.
+Connect or reconnect either harness from the VM terminal with
+`bin/forge setup login codex --root <runtime>` or
+`bin/forge setup login claude --root <runtime>`, then `bin/forge setup check` with
+the same root. The UI shows connection status and terminal instructions.
+Forge preserves refreshed installation-owned logins across runner cleanup; an
+older runner cannot overwrite a newer login. External imported files remain untouched.
+See [installation](installation.md) for API keys, model rotation and fresh VM setup.
 
 ## Reset and restart
 

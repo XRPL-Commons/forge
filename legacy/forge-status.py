@@ -595,7 +595,7 @@ class H(BaseHTTPRequestHandler):
             except (ValueError,OSError,RuntimeError):
                 self._redirect('/onboarding?connection_error=1')
             return
-        if u.path in ('/onboarding','/reset'):
+        if u.path in ('/onboarding','/reset','/settings/harnesses'):
             cookie=self._browser() or secrets.token_urlsafe(32)
             self._send(ONBOARDING_PAGE,'text/html; charset=utf-8',
                        {'Set-Cookie':'forge_setup='+cookie+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600'})

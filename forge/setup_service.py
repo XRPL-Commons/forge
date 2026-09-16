@@ -160,16 +160,32 @@ class Service:
             # Old probes are retained until verified absent, including interrupted checks.
             for job in data['probe_jobs']:
                 job['fenced'] = True
-            self.update(op, probe_jobs=data['probe_jobs'], checks={'github': 'checking'}, probe_error=None,
+            self.update(op, probe_jobs=data['probe_jobs'], checks={} if op['action'] == 'harness_check' else {'github': 'checking'}, probe_error=None,
                         operation={**op, 'step': 'prepare'})
             return
         if op['step'] == 'prepare':
             for job in data['probe_jobs']:
                 self.runner(job['runner_config']).reset(job)
-            config = self.access(data)
+            if data['phase'] == 'active' and op['action'] == 'harness_check':
+                # Drain normally before probing shared login credentials. The
+                # durable operation blocks new dispatch while cleanup continues.
+                config = load(self.root)
+                ledger = Ledger(self.root / 'state/factory')
+                with controller_lock(self.root):
+                    supervisor = Supervisor(ledger, self.runner(config), self.github_class(Settings(self.root), config), Settings(self.root), config)
+                    for job in ledger.read()['jobs'].values():
+                        if not job['cleanup'] and job['role'] != 'merge':
+                            supervisor.execution(job)
+                    if ledger.read()['slots']:
+                        return
+            config = self.setup.runtime() if op['action'] == 'harness_check' else self.access(data)
             self.runner(config).ready()
-            job = self.new_probe(config, 'provider')
-            self.update(op, probe_jobs=[job], checks={'github': 'passed', 'provider': 'checking', 'runner': 'checking'},
+            pool = config['provider_pool'] or [{'id': config['provider']}]
+            plan = [{**config, **{k: v for k, v in entry.items() if k != 'id'}} for entry in pool]
+            job = self.new_probe(plan[0], 'provider')
+            job['provider_id'] = pool[0]['id']
+            self.update(op, probe_jobs=[job], probe_plan=plan, probe_ids=[e['id'] for e in pool], provider_checks={},
+                        checks={**({} if op['action'] == 'harness_check' else {'github': 'passed'}), 'provider': 'checking', 'runner': 'checking'},
                         operation={**op, 'step': 'probe'})
             return
         job = data['probe_jobs'][-1]
@@ -177,19 +193,34 @@ class Service:
         if job['fenced']:
             runner.reset(job)
             job['cleanup'] = True
-            if data.get('probe_error'):
+            if data.get('probe_error') and job['kind'] != 'provider':
                 self.update(op, probe_jobs=data['probe_jobs'], operation=None, error=data['probe_error'],
-                            checks={**data['checks'], 'provider': 'failed'})
+                            checks={**data['checks'], 'provider': 'failed'}, provider_checks={**data.get('provider_checks', {}), job.get('provider_id', 'runner'): 'failed'})
                 return
             if job['kind'] == 'provider':
-                data['probe_jobs'].append(self.new_probe(self.setup.runtime(), 'termination'))
+                data.setdefault('provider_checks', {})[job['provider_id']] = 'failed' if data.get('probe_error') else 'passed'
+                data.setdefault('provider_errors', {})[job['provider_id']] = data.get('probe_error')
+                index = len([j for j in data['probe_jobs'] if j['kind'] == 'provider'])
+                if index < len(data['probe_plan']):
+                    next_job = self.new_probe(data['probe_plan'][index], 'provider')
+                    next_job['provider_id'] = data['probe_ids'][index]
+                    data['probe_jobs'].append(next_job)
+                else:
+                    data['probe_jobs'].append(self.new_probe(self.setup.runtime(), 'termination'))
             elif job['kind'] == 'termination':
                 data['probe_jobs'].append(self.new_probe(self.setup.runtime(), 'reuse'))
             else:
-                self.update(op, probe_jobs=data['probe_jobs'], checks={'github': 'passed', 'provider': 'passed', 'runner': 'passed'},
-                            readiness={'revision': op['revision'], 'at': time.time()}, operation=None, error=None)
+                config = load(self.root) if data['phase'] == 'active' else self.setup.runtime()
+                passed = [key for key, value in data.get('provider_checks', {}).items() if value == 'passed']
+                if config['provider_pool']:
+                    config['provider_ready'] = passed
+                    write_json(self.root / ('runtime.json' if data['phase'] == 'active' else 'setup/runtime.json'), config)
+                self.update(op, probe_jobs=data['probe_jobs'], checks={**data['checks'], 'provider': 'passed' if passed else 'failed', 'runner': 'passed'},
+                            readiness=None if op['action'] == 'harness_check' or not passed else {'revision': self.setup.revision(data), 'at': time.time()},
+                            operation=None, error=None if passed else 'No harness passed verification. Reconnect a coding account on the VM and check again.')
                 return
-            self.update(op, probe_jobs=data['probe_jobs'])
+            self.update(op, probe_jobs=data['probe_jobs'], provider_checks=data.get('provider_checks', {}),
+                        provider_errors=data.get('provider_errors', {}), probe_error=None)
             return
         current = runner.inspect(job)
         if current is None:
@@ -206,7 +237,7 @@ class Service:
         if job['kind'] == 'provider':
             capture = runner.capture(job)
             if current['running'] or current['exit_code'] != 0 or capture['result'] != {'ready': True, 'attempt': job['id']}:
-                error = ('The server login has expired. Sign in again on the server, or reconnect using an OpenAI API key'
+                error = ('The server login has expired. Run bin/forge setup login ' + job['runner_config']['provider'] + ' on the server'
                          if (capture.get('result') or {}).get('reason') == 'provider_login_expired' else
                          'Provider or native sandbox check failed. Check the server connection and runner installation, then retry')
         elif not current['running']:
@@ -265,6 +296,8 @@ class Service:
                             operation={**op, 'step': 'stop_workers', 'legacy': legacy, 'jobs': jobs})
                 return
             if op['step'] == 'stop_workers':
+                from .harnesses.accounts import reset_logins
+                reset_logins(self.root)
                 for job in [*op['jobs'], *data['probe_jobs']]:
                     self.runner(job['runner_config']).reset(job)
                 if not all([reset_legacy(record) for record in op['legacy']]):
@@ -303,7 +336,7 @@ class Service:
                 write_json(archive / 'receipt.json', {'operation': op['id'], 'generation': data['generation'],
                                                    'at': time.time(), 'resources_verified_absent': True})
                 self.update(op, generation=generation, phase='setup', operation=None, apps={}, checks={}, probe_jobs=[],
-                            selected=None, provider_revision=None, readiness=None, error=None, owner='', account_type=None,
+                            selected=None, provider_revision=None, provider_checks={}, provider_errors={}, probe_plan=[], probe_ids=[], readiness=None, error=None, owner='', account_type=None,
                             challenge=None, activation_request=None, activation_revision=None,
                             reset_receipt={'id': op['id'], 'generation': op['generation'], 'at': time.time()})
                 (self.root / 'state/factory-paused.json').unlink(missing_ok=True)
@@ -323,7 +356,7 @@ class Service:
                 # No provider output/credentials in errors. Reset stays pending until cleanup succeeds.
                 message = str(error) if isinstance(error, (ValueError, RunnerError, StateError)) else 'Operation failed; inspect the supervisor service and retry'
                 try:
-                    if op['action'] == 'check' and any(not j['cleanup'] for j in data['probe_jobs']):
+                    if op['action'] in ('check', 'harness_check') and any(not j['cleanup'] for j in data['probe_jobs']):
                         for job in data['probe_jobs']:
                             job['fenced'] = True
                         self.update(op, error=message, probe_error=message, probe_jobs=data['probe_jobs'])

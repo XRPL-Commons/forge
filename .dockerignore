@@ -8,4 +8,12 @@
 !deploy/runner/
 !deploy/runner/Dockerfile
 
-!deploy/runner/requirements.toml
+!forge/harnesses/
+!forge/harnesses/*/
+!forge/harnesses/*.py
+!forge/harnesses/*.cjs
+!forge/harnesses/*/manifest.json
+!forge/harnesses/*/adapter.py
+!forge/harnesses/*/canary.py
+!forge/harnesses/*/requirements.toml
+!forge/harnesses/*/managed-settings.json

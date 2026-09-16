@@ -1,6 +1,7 @@
 """Supervisor-only issue ledger and durable launch intents, independent of terminals."""
 from contextlib import contextmanager
 from copy import deepcopy
+from .providers import available as provider_available
 import time
 import json
 import uuid
@@ -85,10 +86,25 @@ class Ledger:
                     raise StateError('Investigation is already assigned')
             elif issue['active'] or NEXT_ROLE.get(issue['state']) != role:
                 raise StateError('Issue is not dispatchable for this role')
+            runner_config = deepcopy(runner_config)
+            pool = (runner_config or {}).get('provider_pool', [])
+            provider_id = None
+            if pool:
+                start = data.get('provider_cursor', 0) % len(pool)
+                selected = next(((start + offset) % len(pool) for offset in range(len(pool))
+                                 if ((runner_config.get('provider_ready') is None or pool[(start + offset) % len(pool)]['id'] in runner_config['provider_ready'])
+                                     and provider_available(pool[(start + offset) % len(pool)], data, self.clock()))), None)
+                if selected is None:
+                    raise StateError('All coding providers are temporarily unavailable')
+                entry = pool[selected]
+                data['provider_cursor'] = (selected + 1) % len(pool)
+                runner_config.update({k: v for k, v in entry.items() if k != 'id'})
+                provider, provider_id = entry['provider'], entry['id']
             identifier = str(uuid.uuid4())
             branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
             job = {'id': identifier, 'issue_key': key, 'repo_id': issue['repo_id'], 'repo': issue['repo'],
                    'issue_number': issue['number'], 'role': role, 'slot': slot, 'provider': provider,
+                   'provider_id': provider_id, 'model': (runner_config or {}).get('model'),
                    'publisher': publisher, 'branch': branch, 'target_branch': target_branch, 'runner_config': deepcopy(runner_config), 'candidate': deepcopy(issue['candidate']),
                    'policy': policy, 'requirements': issue['requirements'],
                    'created_at': self.clock(), 'deadline': self.clock() + timeout,
@@ -103,7 +119,8 @@ class Ledger:
                 issue['active'] = identifier
             data['jobs'][identifier] = job
             data['slots'][slot] = identifier
-            self.event(data, issue, 'assigned', attempt=identifier, role=role, slot=slot)
+            self.event(data, issue, 'assigned', attempt=identifier, role=role, slot=slot,
+                       provider=provider, model=job['model'], provider_id=provider_id)
             return deepcopy(job)
 
     def job_update(self, identifier, **fields):
@@ -221,14 +238,29 @@ class Ledger:
 
     def wait(self, identifier, reason, until):
         with self.transaction() as data:
-            job, issue = self._current(data, identifier)
+            job = data['jobs'][identifier]
+            issue = data['issues'][job['issue_key']]
+            pooled = bool(job.get('provider_id'))
+            if job['role'] != 'recovery':
+                job, issue = self._current(data, identifier)
             if job['outcome'] is not None:
                 return
             job['outcome'] = 'waiting'
-            issue.update(active=None, reason=reason, retry_after=until)
+            if job['role'] == 'recovery':
+                failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
+                if failure['investigation'] == identifier:
+                    failure['investigation'] = 'pending'
+            else:
+                issue.update(active=None, reason=reason, retry_after=self.clock() if pooled and reason in ('blocked_auth', 'blocked_quota') else until)
             if reason in ('blocked_auth', 'blocked_quota'):
-                data['provider_retry_after'] = max(data.get('provider_retry_after', 0), until)
-            self.event(data, issue, 'availability_wait', attempt=identifier, reason=reason)
+                if pooled:
+                    cooldowns = data.setdefault('provider_cooldowns', {})
+                    cooldowns[job['provider']] = {'until': max(cooldowns.get(job['provider'], {}).get('until', 0), until),
+                                                 'reason': reason, 'attempt': identifier}
+                else:
+                    data['provider_retry_after'] = max(data.get('provider_retry_after', 0), until)
+            self.event(data, issue, 'availability_wait', attempt=identifier, reason=reason,
+                       provider=job.get('provider'), model=job.get('model'), retry_after=until)
 
     def invalidate(self, key, reason, *, candidate=None):
         with self.transaction() as data:

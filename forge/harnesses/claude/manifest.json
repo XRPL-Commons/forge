@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "id": "claude",
+  "name": "Claude Code",
+  "version": "2.1.273",
+  "package": "@anthropic-ai/claude-code",
+  "binary": "bin/claude.exe",
+  "command": "claude",
+  "login": [
+    "auth",
+    "login"
+  ],
+  "auth_file": ".claude/.credentials.json",
+  "api_key_env": "ANTHROPIC_API_KEY",
+  "auth_reference": "FORGE_SETUP_CLAUDE_AUTH",
+  "private_proc": true,
+  "managed_files": {
+    "managed-settings.json": "/etc/claude-code/managed-settings.json"
+  }
+}

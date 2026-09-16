@@ -19,7 +19,7 @@ assert.deepEqual(submitted,registration.manifest);assert(submitted.url);assert(s
 manifestSubmitted=true;return route.fulfill({contentType:'text/html',body:'<h1>GitHub registration fixture</h1>'});});
 page.on('pageerror',e=>errors.push(e.message));
 const roleNames=['build','review','audit','controller'];
-let state={ok:true,phase:'setup',generation:'first',revision:'config-one',roles:Object.fromEntries(roleNames.map(r=>[r,{status:'not_configured',registered:false}])),repositories:[],selected:null,owner:'',provider_connected:false,checks:{},can_start:false,operation:null,error:null,controls_token:'synthetic-browser-token'};
+let state={ok:true,phase:'setup',generation:'first',revision:'config-one',roles:Object.fromEntries(roleNames.map(r=>[r,{status:'not_configured',registered:false}])),repositories:[],selected:null,owner:'',provider_connected:false,harnesses:['codex','claude'].map(id=>({id,name:id==='codex'?'Codex':'Claude Code',version:'1',connected:false,models:[],login_command:'bin/forge setup login '+id})),checks:{},can_start:false,operation:null,error:null,controls_token:'synthetic-browser-token'};
 await page.route('http://forge.test/**',async route=>{const request=route.request(),url=new URL(request.url());
 if(url.pathname==='/api/onboarding'&&request.method()==='GET')return route.fulfill({json:state});
 if(url.pathname==='/api/onboarding'){
@@ -40,7 +40,8 @@ await page.locator('#owner').fill('example');await page.getByRole('button',{name
 state.owner='example';state.roles=Object.fromEntries(roleNames.map(r=>[r,{status:'ok',registered:true}]));state.repositories=[{id:10,name:'example/project',access_ready:true}];
 await page.goto('http://forge.test/onboarding');await page.getByRole('heading',{name:'Where should Forge work?'}).waitFor();await page.getByRole('radio').check();await page.getByRole('button',{name:'Continue',exact:true}).click();
 await page.getByRole('heading',{name:'Ready to put Forge to work?'}).waitFor();assert(await page.getByRole('button',{name:'Start Forge',exact:true}).isDisabled());
-await page.getByRole('button',{name:'Connect',exact:true}).click();await page.getByRole('dialog').waitFor();await page.getByRole('button',{name:'Connect and check',exact:true}).click();
+await page.locator('[data-harness=claude]').click();await page.getByRole('dialog').waitFor();assert((await page.locator('#login-command').textContent()).includes('login claude'));await page.getByRole('button',{name:'Close',exact:true}).click();
+state.provider_connected=true;state.harnesses.forEach(h=>{h.connected=true;h.models=[{id:h.id,model:null,status:'passed'}]});await page.reload();await page.getByRole('button',{name:'Check setup',exact:true}).click();
 await page.getByText('Checking setup…',{exact:false}).waitFor();assert(await page.getByRole('button',{name:'Start Forge',exact:true}).isDisabled());
 state.operation=null;state.checks={github:'passed',provider:'passed',runner:'passed'};state.can_start=true;
 await page.getByText('Everything is ready.',{exact:true}).waitFor();await page.screenshot({path:'/tmp/forge-onboarding-production-start.png',fullPage:true});

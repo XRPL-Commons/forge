@@ -55,6 +55,11 @@ class FakeGitHub:
 
 class SchedulingTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        # CLI tests exercise scheduling against fixtures, never the service
+        # account's live onboarding/admission state on a provisioned VM.
+        admission = patch('forge.settings.Settings.admission', return_value={'allowed': True})
+        admission.start(); self.addCleanup(admission.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.state = self.temp.name

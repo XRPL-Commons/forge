@@ -9,6 +9,7 @@ import time
 
 from ..settings import Settings, digest, write_json, read_json
 from ..state import AtomicStore, StateError
+from ..credentials import Credentials
 from .config import load, validate
 from .github import GitHub
 from .ledger import Ledger
@@ -140,7 +141,6 @@ def main(argv=None):
                 config = load(root)
                 if args.command == 'run' and time.time() - last_sync >= settings.load()['sync_interval_seconds']:
                     settings.start_refresh(); last_sync = time.time()
-                from ..credentials import Credentials
                 runner = ContainerRunner(config, environ=Credentials(root).environment())
                 github = GitHub(settings, config)
                 supervisor = Supervisor(ledger, runner, github, settings, config)

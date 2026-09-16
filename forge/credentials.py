@@ -4,8 +4,12 @@ from pathlib import Path
 import re
 import stat
 import uuid
+import fcntl
+import hashlib
+from contextlib import contextmanager
 
 from .settings import read_json, write_json
+from .harnesses.registry import manifests
 
 
 class Credentials:
@@ -17,8 +21,26 @@ class Credentials:
         if self.root.is_symlink() or self.root.stat().st_mode & 0o077:
             raise ValueError('Forge credential directory must be private')
 
+    @contextmanager
+    def locked(self):
+        self._private()
+        fd = os.open(self.root / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            yield
+
+    @staticmethod
+    def valid_reference(reference):
+        return (isinstance(reference, str) and
+                (re.fullmatch(r'FORGE_SETUP_[A-Z_]+', reference)
+                 or reference in {m['api_key_env'] for m in manifests().values()} | {'CLAUDE_CODE_OAUTH_TOKEN'}))
+
     def put(self, reference, value, *, file=False):
-        if not re.fullmatch(r'(?:FORGE_SETUP_[A-Z_]+|OPENAI_API_KEY)', reference):
+        with self.locked():
+            self._put(reference, value, file=file)
+
+    def _put(self, reference, value, *, file=False):
+        if not self.valid_reference(reference):
             raise ValueError('Invalid credential reference')
         if not isinstance(value, str) or not 0 < len(value.encode()) <= 65536:
             raise ValueError('Invalid credential size')
@@ -31,14 +53,28 @@ class Credentials:
         index[reference] = {'name': name, 'file': file}
         write_json(self.root / 'index.json', index)
 
+    def refresh(self, reference, expected, value):
+        """CAS: an old runner cannot replace a newer login. Never update external files."""
+        with self.locked():
+            index = read_json(self.root / 'index.json') if (self.root / 'index.json').exists() else {}
+            record = index.get(reference)
+            if not record or not record['file']:
+                return False
+            path = Path(self.environment()[reference])
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                return False
+            self._put(reference, value, file=True)
+            return True
+
     def environment(self):
         env = dict(os.environ)
+        env['FORGE_CREDENTIAL_ROOT'] = str(self.root.parent.resolve())
         if not self.root.exists():
             return env
         self._private()
         index = read_json(self.root / 'index.json') if (self.root / 'index.json').exists() else {}
         for reference, record in index.items():
-            if (not re.fullmatch(r'(?:FORGE_SETUP_[A-Z_]+|OPENAI_API_KEY)', reference)
+            if (not self.valid_reference(reference)
                     or not re.fullmatch(r'[a-f0-9]{32}', record['name'])):
                 raise ValueError('Invalid stored credential reference')
             path = self.root / record['name']

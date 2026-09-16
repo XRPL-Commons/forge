@@ -2,11 +2,16 @@
   "version": 1,
   "image": "",
   "max_running": 1,
-  "slots": {"build": 2, "review": 1, "audit": 1, "recovery": 1},
+  "slots": {
+    "build": 2,
+    "review": 1,
+    "audit": 1,
+    "recovery": 1
+  },
   "memory": "4g",
   "cpus": 2,
   "network": "forge-workers",
   "proxy": "http://forge-egress:3128",
-  "apparmor_profile": "forge-runner-native",
+  "apparmor_profile": "forge-runner-private-proc",
   "seccomp_profile_env": "FORGE_RUNNER_SECCOMP"
 }

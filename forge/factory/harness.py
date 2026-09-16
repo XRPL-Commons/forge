@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import runpy
 
 
 def schema(note):
@@ -49,32 +50,8 @@ def main():
         git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
     if note['role'] == 'build':
         git('-C', str(directory), 'checkout', '-B', note['branch'])
-    path = Path('/work/result-schema.json')
-    path.write_text(json.dumps(schema(note)))
-    client = Path('/work/home/.codex'); client.mkdir(parents=True, exist_ok=True)
-    # Repository commands receive only their job's GitHub token and public proxy
-    # settings. Provider credentials stay in the parent harness, behind the
-    # image-owned deny-read policy, and never enter shell subprocess environments.
-    child_env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/work/repository/.home',
-                 'GH_TOKEN': env['GH_TOKEN'], 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
-                 'HTTP_PROXY': env.get('HTTP_PROXY', ''), 'HTTPS_PROXY': env.get('HTTPS_PROXY', '')}
-    Path(child_env['HOME']).mkdir(mode=0o700, exist_ok=True)
-    config = 'default_permissions = "forge_runner"\napproval_policy = "never"\nweb_search = "disabled"\n[shell_environment_policy]\ninherit = "none"\n[shell_environment_policy.set]\n'
-    config += '\n'.join(key + ' = ' + json.dumps(value) for key, value in child_env.items()) + '\n'
-    (client / 'config.toml').write_text(config)
-    # The native sandbox stays enabled. Image provisioning must prove it works;
-    # an unavailable sandbox fails the attempt instead of disabling protection.
-    args = ['codex', '-a', 'never', 'exec', '--json',
-            '--output-schema', str(path), '--output-last-message', '/work/final-result.json',
-            '--cd', str(directory), '-']
-    prompt = json.dumps(note) + '\nReturn your result as the final structured response. It will be validated by the supervisor.'
-    completed = subprocess.run(args, input=prompt, text=True, env=env, check=False)
-    output = Path('/work/final-result.json')
-    if output.is_file() and output.stat().st_size <= 65536:
-        # Atomic rename is the result handoff. Partial provider output is not a result.
-        json.loads(output.read_text())
-        output.replace('/work/result.json')
-    return completed.returncode
+    registry = runpy.run_path('/opt/forge/harnesses/registry.py')
+    return registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
 
 
 if __name__ == '__main__':

@@ -21,7 +21,7 @@
   "image": "",
   "engine": "/usr/bin/docker",
   "engine_socket": "/var/run/docker.sock",
-  "apparmor_profile": "forge-runner-native",
+  "apparmor_profile": "forge-runner-private-proc",
   "seccomp_profile_env": "FORGE_RUNNER_SECCOMP",
   "network": "forge-workers",
   "proxy": "http://forge-egress:3128",
@@ -45,5 +45,28 @@
     "hold",
     "blocked"
   ],
-  "merge_method": "squash"
+  "merge_method": "squash",
+  "provider": "codex",
+  "model": null,
+  "provider_ready": null,
+  "provider_pool": [
+    {
+      "id": "codex",
+      "provider": "codex",
+      "model": null,
+      "provider_environment": [
+        "OPENAI_API_KEY"
+      ],
+      "provider_auth_file_env": null
+    },
+    {
+      "id": "claude",
+      "provider": "claude",
+      "model": null,
+      "provider_environment": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "provider_auth_file_env": null
+    }
+  ]
 }

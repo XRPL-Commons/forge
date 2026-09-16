@@ -14,6 +14,7 @@ from .credentials import Credentials
 from .settings import Settings, digest, read_json, write_json
 from .state import AtomicStore
 from .factory.config import validate as runtime_config
+from .harnesses.registry import manifests, manifest
 
 ROLES = tuple(ROLE_PERMISSIONS)
 
@@ -45,7 +46,7 @@ class Onboarding:
             return deepcopy(data)
 
     def runtime(self):
-        path = self.root / 'setup/runtime.json'
+        path = self.root / ('runtime.json' if (self.root / 'state/factory-v2.enabled').exists() else 'setup/runtime.json')
         host = self.root / 'host-runtime.json'
         config = read_json(path) if path.exists() else read_json(host) if host.exists() else {}
         return runtime_config({'max_running': 1, 'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}, **config,
@@ -74,6 +75,7 @@ class Onboarding:
                 'repositories': [r for r in settings['repositories'] if r['access_ready']],
                 'selected': data.get('selected'), 'owner': data.get('owner', ''),
                 'provider_connected': bool(data.get('provider_revision')), 'checks': data['checks'],
+                'harnesses': self.harnesses(data),
                 'can_start': data['phase'] == 'setup' and ready.get('revision') == revision
                              and 0 <= self.clock() - ready.get('at', 0) < 300 and not data.get('operation'),
                 'operation': data.get('operation'), 'error': data.get('error')}
@@ -184,32 +186,81 @@ class Onboarding:
             data.update(selected={'id': repo['id'], 'name': repo['name']}, checks={}, error=None)
             data.pop('readiness', None)
 
-    def provider(self, api_key=None):
+    def harnesses(self, data=None):
+        data = data or self.read()
+        config = (runtime_config(read_json(self.root / 'runtime.json')) if data['phase'] == 'active' else self.runtime())
+        pool = config['provider_pool']
+        # Legacy single-provider setup remains readable during migration.
+        if not pool and data.get('provider_revision'):
+            pool = [{'id': config['provider'], **{k: config[k] for k in ('provider', 'model')}}]
+        health = {}
+        if data['phase'] == 'active':
+            from .factory.ledger import Ledger
+            health = Ledger(self.root / 'state/factory').read().get('provider_cooldowns', {})
+        def status(entry):
+            cooldown = health.get(entry['provider'], {})
+            if cooldown.get('until', 0) > self.clock():
+                return 'sign in again' if cooldown.get('reason') == 'blocked_auth' else 'usage limit; retry pending'
+            if data['phase'] == 'active' and config.get('provider_ready') is not None and entry['id'] not in config['provider_ready']:
+                return 'verification required'
+            return data.get('provider_checks', {}).get(entry['id'], 'connected')
+        return [{'id': key, 'name': item['name'], 'version': item['version'],
+                 'connected': any(e['provider'] == key for e in pool),
+                 'models': [{'id': e['id'], 'model': e['model'],
+                             'status': status(e)}
+                            for e in pool if e['provider'] == key],
+                 'login_command': 'bin/forge setup login ' + key + ' --root ' + __import__('shlex').quote(str(self.root))}
+                for key, item in manifests().items()]
+
+    def connect(self, provider, *, api_key=None, auth_value=None, models=None):
+        """Called by terminal setup. The caller serializes active runtime edits."""
+        item = manifest(provider)
+        models = models or [None]
         with self.store.transaction() as data:
-            self.initialize(data); self.editable(data)
-            config = self.runtime()
-            env = self.credentials.environment()
-            value = api_key or env.get('OPENAI_API_KEY')
-            if value:
-                if not isinstance(value, str) or any(c.isspace() for c in value) or len(value) < 16:
+            self.initialize(data)
+            if data['phase'] not in ('setup', 'active') or data.get('operation'):
+                raise ValueError('Finish the current setup operation before connecting a harness')
+            active = data['phase'] == 'active'
+            config = runtime_config(read_json(self.root / 'runtime.json')) if active else self.runtime()
+            pool = config['provider_pool']
+            if not pool and data.get('provider_revision'):
+                pool = [{'id': config['provider'], **{k: config[k] for k in
+                         ('provider', 'model', 'provider_environment', 'provider_auth_file_env')}}]
+            environment, reference = [], None
+            if api_key:
+                if not isinstance(api_key, str) or any(c.isspace() for c in api_key) or len(api_key) < 16:
                     raise ValueError('Enter a valid provider API key')
-                self.credentials.put('OPENAI_API_KEY', value)
-                config.update(provider_environment=['OPENAI_API_KEY'], provider_auth_file_env=None)
+                environment = [item['api_key_env']]
             else:
-                path = Path(env.get('FORGE_CODEX_AUTH_FILE') or Path.home() / '.codex/auth.json')
-                if not path.is_file() or path.stat().st_size > 65536:
-                    raise ValueError('No server connection found. Enter an OpenAI API key to connect')
-                value = path.read_text()
-                if not isinstance(json.loads(value), dict):
-                    raise ValueError('Provider connection is invalid; sign in again on the server')
-                self.credentials.put('FORGE_SETUP_PROVIDER_AUTH', value, file=True)
-                config.update(provider_environment=[], provider_auth_file_env='FORGE_SETUP_PROVIDER_AUTH')
-            write_json(self.root / 'setup/runtime.json', config)
-            data.update(provider_revision=str(uuid.uuid4()), checks={}, error=None)
+                if not isinstance(auth_value, str) or not isinstance(json.loads(auth_value), dict):
+                    raise ValueError('No valid harness login found; sign in again')
+                reference = item['auth_reference']
+            entries = [{'id': provider + ('-' + str(i + 1) if len(models) > 1 else ''), 'provider': provider,
+                        'model': model, 'provider_environment': environment, 'provider_auth_file_env': reference}
+                       for i, model in enumerate(models)]
+            config['provider_pool'] = [e for e in pool if e['provider'] != provider] + entries
+            if active or config.get('provider_ready') is not None:
+                ready = config.get('provider_ready')
+                config['provider_ready'] = [e['id'] for e in pool if e['provider'] != provider and (ready is None or e['id'] in ready)]
+            runtime_config(config)  # Validate BEFORE persisting credentials or configuration.
+            self.credentials.put(reference or item['api_key_env'], auth_value if reference else api_key, file=bool(reference))
+            write_json(self.root / ('runtime.json' if active else 'setup/runtime.json'), config)
+            data.update(provider_revision=str(uuid.uuid4()), checks={}, provider_checks={}, provider_errors={}, error=None)
             data.pop('readiness', None)
 
+    def provider(self, api_key=None):
+        # Backward-compatible server/API import. New installations use terminal login.
+        env = self.credentials.environment()
+        value = api_key or env.get('OPENAI_API_KEY')
+        if value:
+            return self.connect('codex', api_key=value)
+        path = Path(env.get('FORGE_CODEX_AUTH_FILE') or Path.home() / '.codex/auth.json')
+        if not path.is_file() or path.stat().st_size > 65536:
+            raise ValueError('No server connection found. Run bin/forge setup login codex on the server')
+        return self.connect('codex', auth_value=path.read_text())
+
     def queue(self, action, revision=None, generation=None):
-        if action not in ('check', 'start', 'reset'):
+        if action not in ('check', 'harness_check', 'start', 'reset'):
             raise ValueError('Unknown setup action')
         with self.store.transaction() as data:
             self.initialize(data)
@@ -224,10 +275,11 @@ class Onboarding:
             if operation and operation['action'] == action:
                 return operation['id']
             if action != 'reset':
-                self.editable(data)
+                if not (action == 'harness_check' and data['phase'] == 'active' and not data.get('operation')):
+                    self.editable(data)
                 if revision != self.revision(data):
                     raise ValueError('Setup changed; reload before continuing')
-                if not data.get('selected') or not data.get('provider_revision'):
+                if (action != 'harness_check' and not data.get('selected')) or not data.get('provider_revision'):
                     raise ValueError('Choose a repository and connect the coding provider first')
                 ready = data.get('readiness') or {}
                 if action == 'start' and (ready.get('revision') != revision or not 0 <= self.clock() - ready.get('at', 0) < 300):

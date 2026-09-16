@@ -3,6 +3,7 @@ set -euo pipefail
 FORGE_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="$FORGE_SOURCE"
 case "${1:-}" in
+  setup) shift; exec /usr/bin/python3 -m forge.host_setup "$@";;
   service) shift; exec /usr/bin/python3 -m forge.setup_service "$@";;
   factory) shift; exec /usr/bin/python3 -m forge.factory.control "$@";;
   settings) shift; exec /usr/bin/python3 -m forge.settings "$@";;

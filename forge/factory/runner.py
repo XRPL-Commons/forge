@@ -14,8 +14,11 @@ import tempfile
 import time
 import subprocess
 import tarfile
+import hashlib
 
 from .contracts import assignment_note, identifier, unique
+from ..harnesses.registry import manifest
+from ..credentials import Credentials
 
 
 class RunnerError(RuntimeError):
@@ -140,6 +143,10 @@ class ContainerRunner:
                 '--mount', 'type=volume,destination=/work', '--workdir', '/work',
                 '--env', 'HOME=/work/home', '--entrypoint', '/usr/local/bin/python3',
                 config['image'], '-I', '/opt/forge/job.py']
+        if manifest(config.get('provider', 'codex')).get('private_proc'):
+            if config.get('apparmor_profile') != 'forge-runner-private-proc':
+                raise RunnerError('This harness requires the Forge private-proc AppArmor policy')
+            args[1:1] = ['--security-opt', 'systempaths=unconfined']
         if config.get('apparmor_profile'):
             args[1:1] = ['--security-opt', 'apparmor=' + config['apparmor_profile']]
         if config.get('seccomp_profile_env'):
@@ -162,17 +169,21 @@ class ContainerRunner:
             raise RunnerUnavailable('Provider credentials unavailable')
         auth_ref = self.config.get('provider_auth_file_env')
         if auth_ref:
-            auth_path = Path(self.environ.get(auth_ref, ''))
+            env = (Credentials(self.environ['FORGE_CREDENTIAL_ROOT']).environment()
+                   if self.environ.get('FORGE_CREDENTIAL_ROOT') else self.environ)
+            auth_path = Path(env.get(auth_ref, ''))
             if not auth_path.is_absolute() or not auth_path.is_file() or auth_path.stat().st_size > 65536:
                 raise RunnerUnavailable('Provider authentication file is unavailable')
             try:
-                credentials['FORGE_CODEX_AUTH'] = json.loads(auth_path.read_text())
+                raw = auth_path.read_bytes()
+                credentials['FORGE_HARNESS_AUTH'] = json.loads(raw)
+                credentials['FORGE_AUTH_DIGEST'] = hashlib.sha256(raw).hexdigest()
             except (OSError, ValueError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded') from None
         credentials['GH_TOKEN'] = token
         note = assignment_note(job)
         note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
-                    proxy=self.config['proxy'])
+                    proxy=self.config['proxy'], provider=self.config.get('provider', 'codex'), model=self.config.get('model'))
         content = io.BytesIO()
         with tarfile.open(fileobj=content, mode='w') as archive:
             for name, value in [('assignment.json', note), ('credentials.json', credentials)]:
@@ -181,6 +192,30 @@ class ContainerRunner:
                 member.size, member.mode, member.uid, member.gid = len(raw), 0o600, 1000, 1000
                 archive.addfile(member, io.BytesIO(raw))
         self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
+
+    def refresh_auth(self, current):
+        ref, root = self.config.get('provider_auth_file_env'), self.environ.get('FORGE_CREDENTIAL_ROOT')
+        if not ref or not root:
+            return 'not_managed'
+        def read(path):
+            raw = self.call(['cp', current['id'] + ':' + path, '-'], max_output=131072).stdout
+            with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                entries = archive.getmembers()
+                if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 65536:
+                    raise ValueError('Invalid authentication artifact')
+                return archive.extractfile(entries[0]).read().decode()
+        try:
+            expected = read('/work/home/.forge-auth-origin')
+            value = read('/work/home/' + manifest(self.config.get('provider', 'codex'))['auth_file'])
+            if not re.fullmatch('[a-f0-9]{64}', expected) or not isinstance(json.loads(value), dict):
+                raise ValueError('Invalid refreshed authentication')
+            if hashlib.sha256(value.encode()).hexdigest() == expected:
+                return 'unchanged'
+            return 'saved' if Credentials(root).refresh(ref, expected, value) else 'superseded'
+        except (RunnerError, OSError, ValueError, tarfile.TarError, UnicodeError):
+            # Lost credentials must never block capacity cleanup. A later login
+            # failure is an availability wait and shown as a reconnect request.
+            return 'unavailable'
 
     def start(self, job):
         if job['fenced']:
@@ -233,6 +268,7 @@ class ContainerRunner:
         if not job['fenced']:
             raise RunnerError('Persist fencing before external reset')
         current = self.inspect(job)
+        auth_refresh = 'not_available'
         if current:
             if current['running']:
                 # An unsuccessful graceful stop still goes through forced teardown.
@@ -241,8 +277,12 @@ class ContainerRunner:
                               timeout=self.config['grace_seconds'] + 15, check=False)
                 except RunnerError:
                     pass  # Force removal still runs after a hung graceful stop.
+            if self.config.get('provider_auth_file_env') and self.environ.get('FORGE_CREDENTIAL_ROOT'):
+                stopped = self.inspect(job)
+                if stopped and not stopped['running']:
+                    auth_refresh = self.refresh_auth(stopped)
             self.call(['rm', '--force', '--volumes', current['id']], timeout=30)
         if self.inspect(job) is not None:
             raise RunnerError('Teardown remains unverified')
         self.call(['info', '--format', '{{.ServerVersion}}'])
-        return {'container_absent': True, 'capacity_ready': True}
+        return {'container_absent': True, 'capacity_ready': True, 'auth_refresh': auth_refresh}

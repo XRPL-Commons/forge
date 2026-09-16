@@ -28,18 +28,20 @@ cleanup never waits for an access refresh. Running output is sampled with a boun
 read and shown by Output; it cannot establish completion. Only a finished execution
 with independently verified results can advance an issue.
 
-The first adapter is Codex, pinned to 0.153.4 in the example image. The runner only
-knows `harness_argv`, assignment/result files, execution status and deadlines.
-Another adapter can implement the same contract without changing issue routing.
-The single configured provider has a shared availability pause; provider switching
-and automatic capacity tuning are not part of this version.
+Codex and Claude Code implement the [same adapter contract](harness-adapters.md).
+Their manifests pin the distribution and version, terminal login, and credential
+storage. New VMs start with [terminal setup](installation.md).
 
-For API authentication, set `OPENAI_API_KEY` privately on the controller. For a
-separately provisioned Codex login, set `provider_environment` to `[]`, set
-`provider_auth_file_env` to `FORGE_CODEX_AUTH_FILE`, and set that server variable to
-the absolute private `auth.json` path. Do not embed either credential in JSON or
-an image. Authentication copies are disposable; refreshed login material inside
-an execution is not synchronized back to the operator's original login file.
+`provider_pool` contains equally weighted provider/model entries. Selection rotates
+across all roles and survives controller restarts. Auth/quota failures cool down
+that provider and use another without consuming the issue failure budget. Empty
+pools preserve the legacy single-provider configuration. Explicit `provider_ready`
+entries fence unverified reconnects until qualification completes.
+
+Credentials stay in the private installation store. Refreshable OAuth credentials
+are serialized per reference and saved using compare-and-swap before teardown;
+API-key jobs retain full configured concurrency. Refreshed credentials never
+replace a newer manual login or mutate an external imported login file.
 
 ## Image and host policy
 
@@ -50,8 +52,8 @@ docker build -f deploy/runner/Dockerfile -t forge-runner:local .
 docker image inspect forge-runner:local --format '{{.Id}}'
 ```
 
-Put the returned immutable `sha256:...` image ID in `runtime.json`. The Dockerfile
-pins Codex; for a reproducible production build also pin `NODE_IMAGE` and
+Put the returned immutable `sha256:...` image ID in `runtime.json`. The adapter manifests
+pin both coding harnesses; for a reproducible production build also pin `NODE_IMAGE` and
 `PYTHON_IMAGE` by digest. `.dockerignore` admits only the runner source and image
 policy, so a build cannot accidentally send runtime credentials to the daemon.
 
@@ -82,8 +84,8 @@ python3 deploy/runner/seccomp_profile.py /tmp/docker-default-seccomp.json \
   --sha256 536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74 \
   --output /tmp/forge-runner-seccomp.json
 sudo install -D -m 0644 /tmp/forge-runner-seccomp.json /etc/forge/runner/seccomp.json
-sudo install -m 0644 deploy/runner/forge-runner-native.apparmor /etc/apparmor.d/forge-runner-native
-sudo apparmor_parser -a /etc/apparmor.d/forge-runner-native
+sudo install -m 0644 deploy/runner/forge-runner-private-proc.apparmor /etc/apparmor.d/forge-runner-private-proc
+sudo apparmor_parser -a /etc/apparmor.d/forge-runner-private-proc
 ```
 
 The checksum pins the upstream bytes reviewed for this implementation. The URL pins the upstream commit as well. To upgrade, review the new upstream version before
@@ -93,6 +95,18 @@ first installation, not a blanket reload of host profiles. Set the controller's
 `FORGE_RUNNER_SECCOMP=/etc/forge/runner/seccomp.json`. Hosts without AppArmor can set
 `apparmor_profile` to `null` after qualifying their own native sandbox boundary.
 The runtime refuses an unavailable seccomp file before assigning an issue.
+
+Claude Code additionally requires `forge-runner-private-proc`, installed by
+terminal setup. Its nested PID namespace must mount a fresh procfs. For this
+harness only, the runner replaces Docker's masked proc mounts with that dedicated
+AppArmor profile's equivalent sensitive-path denials. Container PID isolation,
+read-only root, dropped capabilities, no-new-privileges, seccomp and native
+sandboxing remain enforced. Other profiles cannot opt into this mode. Install
+the new profile separately; do not overwrite a policy used by running containers.
+
+The image keeps Claude's system Bubblewrap off Codex's PATH so Codex uses its
+own pinned sandbox helper. Each adapter must pass a real tool canary after image
+or host-policy changes; a model's success claim is insufficient evidence.
 
 ## Network boundary
 
@@ -104,7 +118,7 @@ docker compose -f deploy/runner/compose.yaml up -d egress
 ```
 
 The proxy permits configured domains on port 443 and rejects private, loopback and
-non-global DNS answers. Its default allowlist covers GitHub, OpenAI, npm and PyPI.
+non-global DNS answers. Its default allowlist covers GitHub, OpenAI, Anthropic, npm and PyPI.
 Edit `FORGE_EGRESS_DOMAINS` on the proxy for additional package registries. An
 unlisted dependency host is an execution finding, not permission to use a public
 worker network. The runner refuses a non-internal network. Pin the proxy image by

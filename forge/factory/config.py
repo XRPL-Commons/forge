@@ -5,6 +5,7 @@ import re
 
 from .contracts import ROLES
 from ..settings import read_json
+from ..harnesses.registry import manifests
 
 DEFAULT = {
     'version': 1, 'enabled': False, 'merge_enabled': False,
@@ -19,6 +20,7 @@ DEFAULT = {
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
+    'provider': 'codex', 'model': None, 'provider_pool': [], 'provider_ready': None,
     'ready_label': 'ready', 'hold_labels': ['hold', 'blocked'],
     'merge_method': 'squash',
 }
@@ -30,6 +32,27 @@ def validate(value):
     config = {**DEFAULT, **value}
     if type(config['version']) is not int or config['version'] != 1:
         raise ValueError('Expected runtime version 1')
+    if config['provider'] not in manifests():
+        raise ValueError('Provider must name an installed harness')
+    if config['model'] is not None and (not isinstance(config['model'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', config['model'])):
+        raise ValueError('Invalid provider model')
+    pool = config['provider_pool']
+    if not isinstance(pool, list) or len(pool) > 20:
+        raise ValueError('Configure at most twenty provider/model entries')
+    ids, models = set(), set()
+    for entry in pool:
+        if not isinstance(entry, dict) or set(entry) != {'id', 'provider', 'model', 'provider_environment', 'provider_auth_file_env'}:
+            raise ValueError('Each pool entry needs id, provider, model and credential references')
+        if not isinstance(entry['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', entry['id']) or entry['id'] in ids:
+            raise ValueError('Provider pool IDs must be unique')
+        validate({**{k: v for k, v in entry.items() if k != 'id'}, 'provider_pool': []})
+        identity = (entry['provider'], entry['model'])
+        if identity in models:
+            raise ValueError('Provider/model combinations must be unique; entries have equal weight')
+        ids.add(entry['id']); models.add(identity)
+    if config['provider_ready'] is not None and (not isinstance(config['provider_ready'], list)
+            or any(not isinstance(v, str) or v not in ids for v in config['provider_ready'])):
+        raise ValueError('Verified provider entries must belong to the configured pool')
     for key in ('enabled', 'merge_enabled', 'human_required'):
         if type(config[key]) is not bool:
             raise ValueError(key + ' must be boolean')

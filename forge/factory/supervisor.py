@@ -9,6 +9,7 @@ import json
 
 from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue
 from .config import policy
+from .providers import available as provider_available
 from .github import GitHubUnavailable
 from .runner import RunnerError, RunnerUnavailable, ContainerRunner
 from ..state import StateError
@@ -59,7 +60,7 @@ class Supervisor:
                 'issues': len(self.ledger.read()['issues'])}
 
     def execution(self, job):
-        runner = (ContainerRunner(job['runner_config']) if isinstance(self.runner, ContainerRunner)
+        runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ) if isinstance(self.runner, ContainerRunner)
                   and job.get('runner_config') else self.runner)
         if job['cleanup']:
             return
@@ -95,7 +96,7 @@ class Supervisor:
                     job = self.ledger.read()['jobs'][job['id']]
                 except (GitHubUnavailable, RunnerUnavailable) as unavailable:
                     # Missing provider/GitHub access before launch is an availability wait.
-                    if job['role'] == 'recovery':
+                    if job['role'] == 'recovery' and not (job.get('provider_id') and isinstance(unavailable, RunnerUnavailable)):
                         self.ledger.findings(job['id'], self.incomplete('Investigation credentials unavailable'))
                     else:
                         self.ledger.wait(job['id'], 'blocked_auth' if isinstance(unavailable, RunnerUnavailable) else 'Role credentials unavailable', self.clock() + self.config['availability_retry_seconds'])
@@ -126,8 +127,31 @@ class Supervisor:
         return {'summary': reason, 'pattern': '', 'evidence': [], 'uncertainty': reason,
                 'alternative': None, 'incomplete': True}
 
+    @staticmethod
+    def availability(capture):
+        if (capture.get('execution') or {}).get('exit_code', 0) == 0:
+            return None
+        from ..worker import classify_error
+        for line in capture.get('logs', '').splitlines():
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict) or event.get('type') not in ('error', 'turn.failed'):
+                    continue
+                error = event.get('error') or event
+                classification = classify_error(error.get('message', '') if isinstance(error, dict) else '')
+                if classification in ('blocked_auth', 'blocked_quota'):
+                    return classification
+            except (ValueError, TypeError):
+                continue
+        return None
+
     def outcome(self, job):
         capture = job['capture']
+        # A recovery job also needs to fall back rather than turning a provider
+        # outage into an incomplete investigation. Only adapter error events count.
+        if job['role'] == 'recovery' and job.get('provider_id') and self.availability(capture):
+            self.ledger.wait(job['id'], self.availability(capture), self.clock() + self.config['availability_retry_seconds'])
+            return
         try:
             report = result(capture.get('result'), job)
         except ValueError:
@@ -186,21 +210,9 @@ class Supervisor:
             if classification in ('blocked_auth', 'blocked_quota'):
                 self.ledger.wait(job['id'], classification, self.clock() + self.config['availability_retry_seconds'])
                 return
-        if report is None and (capture.get('execution') or {}).get('exit_code', 0) != 0:
-            from ..worker import classify_error
-            for line in capture.get('logs', '').splitlines():
-                try:
-                    event = json.loads(line)
-                    if not isinstance(event, dict) or event.get('type') not in ('error', 'turn.failed'):
-                        continue
-                    error = event.get('error') or event
-                    message = error.get('message', '') if isinstance(error, dict) else ''
-                    classification = classify_error(message)
-                    if classification in ('blocked_auth', 'blocked_quota'):
-                        self.ledger.wait(job['id'], classification, self.clock() + self.config['availability_retry_seconds'])
-                        return
-                except (ValueError, TypeError):
-                    continue
+        if report is None and self.availability(capture):
+            self.ledger.wait(job['id'], self.availability(capture), self.clock() + self.config['availability_retry_seconds'])
+            return
         reason = report['summary'] if report else ('Execution deadline exceeded' if capture.get('timed_out') else 'No verified publication or usable result')
         self.ledger.fail(job['id'], reason, evidence=[capture.get('logs', ''), *capture.get('missing', [])])
 
@@ -342,7 +354,7 @@ class Supervisor:
             return identifier
 
     def dispatch(self):
-        if self.ledger.read().get('provider_retry_after', 0) > self.clock():
+        if not self.config.get('provider_pool') and self.ledger.read().get('provider_retry_after', 0) > self.clock():
             return
         try:
             self.runner.ready()
@@ -355,6 +367,9 @@ class Supervisor:
                 if time.monotonic() >= self.github.deadline:
                     return
                 data = self.ledger.read()
+                pool = self.config.get('provider_pool', [])
+                if pool and not any((self.config.get('provider_ready') is None or entry['id'] in self.config['provider_ready']) and provider_available(entry, data, self.clock()) for entry in pool):
+                    return
                 if len(data['slots']) >= self.config['max_running']:
                     return
                 slot = f'{role}-{index + 1}'

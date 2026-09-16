@@ -155,6 +155,7 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(self.setup.view()['can_start'])
         self.assertEqual(len(set(resets)),3)
         self.assertFalse(engine)
+        revision = self.setup.view()['revision']
         self.setup.queue('start',revision)
         service.tick()
         self.assertEqual(self.setup.read()['phase'],'active')

@@ -3,7 +3,8 @@
 The durable factory implementation is available through `bin/forge factory` and
 `/factory`: resettable runners, supervisor-owned issue history, sequential review
 and audit, mandatory failure investigations, and a shared three-failure budget.
-Start with [guided onboarding](docs/onboarding.md) and [runtime setup](docs/factory-runtime.md) and the
+Start with [VM installation and terminal login](docs/installation.md),
+[guided onboarding](docs/onboarding.md), and the
 [workflow contract](docs/software-factory-spec.md). It uses an explicit cutover;
 installing this source does not take over the legacy fleet.
 

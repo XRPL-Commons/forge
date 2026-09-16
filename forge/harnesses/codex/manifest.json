@@ -1,0 +1,22 @@
+{
+  "contract_version": 1,
+  "id": "codex",
+  "name": "Codex",
+  "version": "0.153.4",
+  "package": "@openai/codex",
+  "binary": "bin/codex.js",
+  "command": "codex",
+  "login": [
+    "login",
+    "--device-auth"
+  ],
+  "auth_file": ".codex/auth.json",
+  "api_key_env": "OPENAI_API_KEY",
+  "auth_reference": "FORGE_SETUP_CODEX_AUTH",
+  "managed_files": {
+    "requirements.toml": "/etc/codex/requirements.toml"
+  },
+  "login_files": {
+    ".codex/config.toml": "cli_auth_credentials_store = \"file\"\n"
+  }
+}
