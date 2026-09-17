@@ -290,8 +290,29 @@ class Ledger:
                 if not job['cleanup']:
                     job.update(fenced=True, phase='stopping')
                 issue['active'] = None
+            issue.pop('prerequisite_hold', None)
             issue.update(state='hold', reason=reason)
             self.event(data, issue, 'held', reason=reason)
+
+    def pause_for_protection(self, key):
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            if issue['active'] or issue['state'] not in ('ready', 'built', 'reviewed'):
+                return
+            issue['prerequisite_hold'] = {'state': issue['state']}
+            issue.update(state='hold', reason='Repository review settings need attention')
+            self.event(data, issue, 'protection_paused')
+
+    def resume_protection(self, key):
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            held = issue.get('prerequisite_hold')
+            if (issue['state'] != 'hold' or issue['active'] or not held
+                    or issue.get('reason') != 'Repository review settings need attention'):
+                return
+            issue.update(state=held['state'], reason=None)
+            issue.pop('prerequisite_hold', None)
+            self.event(data, issue, 'protection_restored')
 
     def cancel(self, key, reason):
         with self.transaction() as data:

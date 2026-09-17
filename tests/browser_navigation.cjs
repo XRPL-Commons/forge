@@ -2,7 +2,7 @@ const renderPage=require('./browser_page.cjs');
 const {chromium}=require(process.env.FORGE_PLAYWRIGHT_MODULE||'playwright-core');
 const assert=require('assert');
 (async()=>{
- const browser=await chromium.launch({headless:true,executablePath:process.env.FORGE_BROWSER_PATH,args:['--no-sandbox']});
+ const browser=await chromium.launch({chromiumSandbox:true,headless:true,executablePath:process.env.FORGE_BROWSER_PATH});
  try{
   const page=await browser.newPage({viewport:{width:390,height:844}}),errors=[];
   page.on('pageerror',error=>errors.push(error.message));

@@ -22,6 +22,7 @@ class FeedbackTests(unittest.TestCase):
         github.connection=lambda role:{'app_id':{'review':2,'audit':3,'controller':4}[role]}
         protection={'required_pull_request_reviews':{'required_approving_review_count':2,'dismiss_stale_reviews':True},'allow_force_pushes':{'enabled':False}}
         github.call=Mock(return_value=protection)
+        github.pages=Mock(return_value=[])
         report=github.protection_report({}, {'base_ref':'main'})
         self.assertEqual({r['id'] for r in report['requirements']},{'reviews','stale'})
         self.assertTrue(all(r['passed'] for r in report['requirements']))

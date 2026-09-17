@@ -113,7 +113,8 @@ For human-escalated automatic merges, the first adapter additionally requires a
 native wildcard CODEOWNERS rule containing only configured humans and required
 code-owner reviews. This lets GitHub reject a merge when approval is dismissed
 during the controller's final read/request race. This native rule is repository-wide;
-more selective/team/ruleset/merge-queue variants need explicit verified adapters.
+Required code-owner reviews can come from classic protection or active rulesets.
+More selective CODEOWNERS/team and merge-queue variants need explicit verified adapters.
 Unsupported policy is held rather than assumed equivalent.
 
 ## Failure rule

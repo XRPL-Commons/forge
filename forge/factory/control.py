@@ -96,8 +96,13 @@ def view(root):
         observation = read_json(Path(root) / 'state' / 'factory' / 'supervisor.json')
     except (OSError, ValueError):
         observation = {}
-    return {'repositories': Settings(root).load()['repositories'], 'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': load(root),
-            'runtime_revision': digest(load(root)), 'active': (Path(root) / 'state' / 'factory-v2.enabled').exists()}
+    from .operator_status import overview
+    repositories = Settings(root).view()['repositories']
+    runtime = load(root)
+    active = (Path(root) / 'state' / 'factory-v2.enabled').exists()
+    operator = overview(data, repositories, runtime, observation, active, time.time())
+    return {'operator': operator, 'repositories': repositories, 'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': runtime,
+            'runtime_revision': digest(runtime), 'active': active}
 
 
 def save_runtime(root, config, revision):

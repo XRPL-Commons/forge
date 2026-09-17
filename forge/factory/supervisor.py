@@ -262,6 +262,14 @@ class Supervisor:
             self.ledger.cancel(item['key'], 'Issue closed externally')
             self.github.labels(self.ledger.read()['issues'][item['key']])
             return
+        if item['state'] == 'hold' and item.get('prerequisite_hold'):
+            labels = {label['name'] for label in issue.get('labels', [])}
+            if labels.intersection(self.config['hold_labels']):
+                self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
+                return
+            if self.settings.admission(item['repo'])['allowed'] and self.github.protections(item, {'base_ref': self.github.target(item)}):
+                self.ledger.resume_protection(item['key'])
+                item = self.ledger.read()['issues'][item['key']]
         if item['state'] in ('failed', 'cancelled', 'hold', 'investigating'):
             # A ready label cannot erase failures, but external closure/merge was
             # reconciled above so historical failures do not remain current alerts.
@@ -393,7 +401,7 @@ class Supervisor:
                 try:
                     target = self.github.target(item)
                     if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
-                        self.ledger.hold(item['key'], 'Configure two approving reviews and stale-approval dismissal before dispatch')
+                        self.ledger.pause_for_protection(item['key'])
                         continue
                     job = self.ledger.reserve(item['key'], role, slot, publisher=self.github.publisher(role),
                         policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=self.config, target_branch=target)
