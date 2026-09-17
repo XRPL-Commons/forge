@@ -36,7 +36,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
       }
       return route.fulfill({status:404,body:''});
     });
-    await page.goto('http://forge.test/settings');
+    await page.goto('http://forge.test/settings/github');
     await page.getByText('forge-build-example',{exact:true}).waitFor();
     assert.equal(await page.locator('#connections input, #config-editor, #runtime-editor').count(),0);
     assert.equal(await page.getByRole('button',{name:'Save connections',exact:true}).count(),0);
@@ -52,6 +52,9 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     failSync=true;
     await page.getByRole('button',{name:'Refresh access',exact:true}).click();
     await page.getByText('Paused · access needs attention').waitFor();assert.equal(config.repositories[0].enabled,true);
+    await page.goto('http://forge.test/settings');
+    await page.waitForFunction(()=>!document.getElementById('save-workers').disabled);
+    assert(await page.locator('#github-title').isHidden());assert(await page.locator('#reset-title').isVisible());
     await page.locator('#worker-total').fill('6');
     await page.getByRole('button',{name:'Save worker limits',exact:true}).click();
     await page.getByText('Worker limits saved.',{exact:false}).waitFor();
@@ -65,14 +68,26 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.getByRole('button',{name:'Reload values',exact:true}).click();
     await page.getByText('Worker limits reloaded.',{exact:true}).waitFor();
     assert.equal(await page.locator('#worker-total').inputValue(),'6');
-    failSync=false;await page.reload();await page.getByText('forge-build-example',{exact:true}).waitFor();
+    failSync=false;await page.goto('http://forge.test/settings/github');await page.getByText('forge-build-example',{exact:true}).waitFor();
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:'/tmp/forge-settings-operator-desktop.png',fullPage:true});
+    for(const width of [320,390,760]){
+      await page.setViewportSize({width,height:844});
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      assert(await page.locator('.table-wrap').evaluate(el=>el.scrollWidth<=el.clientWidth),'Repository actions must not require sideways scrolling');
+      const row=page.locator('#repositories tr').first();
+      await row.scrollIntoViewIfNeeded();
+      for(const cell of await row.locator('td').all()){
+        const box=await cell.boundingBox();assert(box.x>=0&&box.x+box.width<=width);
+      }
+      assert.equal(await row.locator('.mobile-label:visible').count(),4);
+      assert((await row.getByRole('button',{name:'Disable',exact:true}).boundingBox()).height>=44);
+    }
     await page.setViewportSize({width:390,height:844});
-    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:'/tmp/forge-settings-operator-mobile.png',fullPage:true});
     await page.goto('http://forge.test/settings/advanced');
-    await page.getByText('forge-build-example',{exact:true}).waitFor();
+    await page.getByRole('heading',{name:'General',exact:true}).waitFor();
     assert.equal(await page.locator('#connections input, #config-editor, #runtime-editor').count(),0);
     // The operator page is useful before any installation exists and must not
     // confuse saved registration or a draft selection with verified access.
@@ -96,7 +111,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     await page.screenshot({path:'/tmp/forge-github-access-mobile.png',fullPage:true});
     setup.phase='active';await page.reload();
-    await page.getByRole('link',{name:'Factory settings',exact:true}).waitFor();
+    await page.getByRole('navigation',{name:'Settings navigation'}).getByRole('link',{name:'General',exact:true}).waitFor();
     assert(await page.getByRole('button',{name:'Enable',exact:true}).isDisabled());
     assert.equal(saves,beforeOperatorSaves);
     await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'/tmp/forge-github-access-desktop.png',fullPage:true});

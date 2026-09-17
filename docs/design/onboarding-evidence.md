@@ -2,7 +2,8 @@
 
 Production pages, rendered with synthetic GitHub/service responses in Chrome on
 2026-09-16. These screenshots document interface checks, not a live deployment
-or a completed GitHub pilot. Run `npm run test:browser` with Playwright Core and
+or a completed GitHub pilot. Current main's Settings navigation and mobile
+layout at `2d676e7` are integrated. Run `npm run test:browser` with Playwright Core and
 `FORGE_BROWSER_PATH` pointing to a Chrome executable. Tests use temporary browser
 profiles with Chromium sandboxing enabled. The repository-flow test serves the
 real generated ruleset JSON from a temporary loopback HTTP server and checks the
@@ -20,13 +21,13 @@ downloaded bytes and filename.
 Checks cover primary actions within the laptop viewport, mobile overflow,
 640-pixel reflow for a 200% desktop viewport, keyboard focus during unchanged
 polling, reduced motion, conflicts, failed/stale observations, reloading, account
-progress, explicit Start, reset recovery and actionable factory states. The five
+progress, explicit Start, reset recovery and actionable factory states. The six
 browser suites pass. The new download never grants access or installs rules.
 
 ## Functional checks
 
-- The 95-test focused settings/onboarding/repository/factory-cycle set passes.
-- All 51 factory tests and the 3 setup-feedback tests pass.
+- The 98-test focused settings/onboarding/repository/factory-cycle/feedback set passes.
+- All 51 factory tests pass.
 - Full Python discovery: 988 tests, 50 failures, 46 errors, 4 skipped on this
   macOS sandbox. The untouched main checkout at `980e901` has exactly the same
   96 failing/error test names (953 tests total). The existing failures include

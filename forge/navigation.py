@@ -1,5 +1,7 @@
 """Shared, server-rendered navigation for every Forge operator page."""
 
+from .illustrations import SPRITE
+
 FAVICON = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <rect width="64" height="64" rx="12" fill="#101416"/>
 <g transform="rotate(-6 32 32)" fill="none" stroke="#bfe6cd" stroke-width="2.5">
@@ -9,6 +11,8 @@ FAVICON = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 
 STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1"><style>
 :root{--forge-header-height:84px;scroll-padding-top:calc(var(--forge-header-height) + 16px)}
+.settings-eyebrow{font:650 12px/1.5 system-ui,sans-serif;text-transform:uppercase;letter-spacing:1.4px;color:#bfe6cd;margin:0 0 10px}
+.role-illustration{flex:none}.role-illustration[data-role=build]{color:#94bfff}.role-illustration[data-role=review]{color:#c9a4f4}.role-illustration[data-role=audit]{color:#80d7bd}.role-illustration[data-role=controller]{color:#edbd77}
 .forge-topbar{position:sticky;top:0;z-index:3;background:#101416;border-bottom:1px solid #303b40}
 .forge-header{box-sizing:border-box;max-width:1600px;margin:0 auto;padding:26px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#edf1ee}
 .forge-header .forge-brand{display:flex;align-items:center;gap:10px;color:#edf1ee;text-decoration:none;font-size:22px;line-height:1.3;letter-spacing:-.6px;font-weight:750;white-space:nowrap}
@@ -19,8 +23,10 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 .forge-header .forge-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:5px}
 .forge-header a:focus-visible{outline:2px solid #abcfff;outline-offset:5px;border-radius:3px}
 .forge-header .forge-header-end{display:flex;align-items:center;gap:24px;flex-wrap:wrap;justify-content:flex-end}
+.forge-settings-navigation{box-sizing:border-box;max-width:1200px;margin:0 auto;padding:0 28px 12px;display:flex;gap:8px 24px;flex-wrap:wrap;font:14px/1.5 system-ui,sans-serif}.forge-settings-navigation a{display:inline-flex;align-items:center;min-height:36px;color:#acb7b9;text-decoration:none}.forge-settings-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:6px}.forge-settings-navigation a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}
+.forge-activity{display:inline-flex;align-items:center;gap:8px;color:#acb7b9;font-size:13px}.forge-activity::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}.forge-activity[data-state=working]{color:#bfe6cd}.forge-activity[data-state=working]::before{animation:forge-working 1.8s ease-in-out infinite}.forge-activity[data-state=unknown]{color:#f1c17d}.forge-activity[hidden]{display:none}@keyframes forge-working{50%{opacity:.35}}@media(prefers-reduced-motion:reduce){.forge-activity[data-state=working]::before{animation:none}}
 .forge-header #saved{font-size:12px;color:#acb7b9}.forge-header #saved:empty{display:none}
-@media(max-width:700px){.forge-header{padding:20px 18px;gap:16px}.forge-header .forge-header-end{width:100%;gap:8px;justify-content:flex-start}.forge-header .forge-navigation{justify-content:flex-start;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px}.forge-header #saved{display:none}}
+@media(max-width:700px){.forge-settings-navigation{padding:0 18px 10px;gap:4px 18px}.forge-settings-navigation a{min-height:44px;font-size:13px}.forge-header{padding:20px 18px;gap:16px}.forge-header .forge-header-end{flex:1;gap:8px;justify-content:flex-end}.forge-header .forge-navigation{justify-content:flex-end;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px;min-height:44px;display:inline-flex;align-items:center}.forge-header #saved{display:none}}
 </style>"""
 
 
@@ -31,16 +37,51 @@ def render(page, path):
         current = '/settings/github'
     if path == '/settings/advanced':
         current = '/settings'
-    links = []
-    for href, label in (('/', 'Factory'), ('/settings/github', 'GitHub access'),
-                        ('/settings/harnesses', 'Coding accounts'), ('/settings', 'Settings')):
-        active = ' aria-current="page"' if current == href else ''
-        links.append(f'<a href="{href}"{active}>{label}</a>')
+    settings_page = path.startswith('/settings')
+    href, label = ('/', '← Factory') if settings_page else ('/settings', 'Settings')
+    links = [f'<a href="{href}">{label}</a>', '<a href="/setup-help">Help</a>']
+    settings_nav = ''
+    if settings_page:
+        tabs = []
+        for href, label in (('/settings', 'General'), ('/settings/github', 'GitHub access'),
+                            ('/settings/harnesses', 'Coding accounts')):
+            active = ' aria-current="page"' if current == href else ''
+            tabs.append(f'<a href="{href}"{active}>{label}</a>')
+        settings_nav = '<nav class="forge-settings-navigation" aria-label="Settings navigation">' + ''.join(tabs) + '</nav>'
     header = ('<div class="forge-topbar"><header class="forge-header"><a class="forge-brand" href="/" aria-label="Forge home">'
               '<span class="forge-mark" aria-hidden="true">F</span>Forge</a>'
-              '<div class="forge-header-end"><span id="saved"></span>'
-              '<nav class="forge-navigation" aria-label="Main navigation">' + ''.join(links) + '</nav></div></header></div>'
+              '<div class="forge-header-end"><span id="forge-activity" class="forge-activity" role="status" aria-live="polite" hidden></span><span id="saved"></span>'
+              '<nav class="forge-navigation" aria-label="Main navigation">' + ''.join(links) + '</nav></div></header>' + settings_nav + '</div>'
               '<script>(()=>{const bar=document.querySelector(".forge-topbar");'
               'const measure=()=>document.documentElement.style.setProperty("--forge-header-height",bar.getBoundingClientRect().height+"px");'
               'measure();new ResizeObserver(measure).observe(bar)})();</script>')
-    return page.replace('</head>', STYLE + '</head>', 1).replace('<!--FORGE_NAVIGATION-->', header, 1)
+    return page.replace('</head>', STYLE + '</head>', 1).replace('<!--FORGE_NAVIGATION-->', SPRITE + header + ACTIVITY_SCRIPT, 1)
+
+
+ACTIVITY_SCRIPT = """<script>(()=>{
+  const indicator=document.getElementById('forge-activity');
+  let timer;
+  function show(label,state){indicator.hidden=false;indicator.textContent=label;indicator.dataset.state=state;}
+  async function refresh(){
+    if(document.hidden)return;
+    try{
+      const response=await fetch('/api/factory',{credentials:'same-origin',signal:AbortSignal.timeout(10000)});
+      if(!response.ok)throw Error('Unavailable');
+      const data=await response.json();if(!data.ok)throw Error('Unavailable');
+      if(!data.active){indicator.hidden=true;return;}
+      const now=Date.now()/1000,maxAge=Math.max(120,(Number(data.runtime?.cycle_seconds)||30)*3);
+      if(!data.observation?.at||now-data.observation.at>maxAge){show('Status delayed','unknown');return;}
+      const jobs=(data.jobs||[]).filter(job=>!job.cleanup&&!job.fenced&&!job.outcome);
+      const working=jobs.filter(job=>job.phase==='running'&&job.last_observed&&now-job.last_observed<=maxAge).length;
+      if(working)show(`${working} working`,'working');
+      else if(jobs.some(job=>job.phase==='running'))show('Status delayed','unknown');
+      else if(jobs.some(job=>['reserved','created','launching'].includes(job.phase)))show('Starting workers','idle');
+      else if((data.jobs||[]).some(job=>!job.cleanup))show('Cleaning up','idle');
+      else show(data.runtime?.enabled?'Idle':'Paused','idle');
+      indicator.title='Latest supervisor update: '+new Date(data.observation.at*1000).toLocaleTimeString()+(data.runtime?.enabled?'':' · New work paused');
+    }catch(error){indicator.title='Could not read current factory activity';show('Status unavailable','unknown');}
+    finally{clearTimeout(timer);timer=setTimeout(refresh,15000);}
+  }
+  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)refresh();});
+  refresh();
+})();</script>"""

@@ -2,7 +2,7 @@
   "name": "forge-dashboard-checks",
   "private": true,
   "scripts": {
-    "test:browser": "node tests/browser_dashboard.cjs && node tests/browser_settings.cjs && node tests/browser_factory.cjs && node tests/browser_onboarding.cjs && node tests/browser_repository_setup.cjs"
+    "test:browser": "node tests/browser_dashboard.cjs && node tests/browser_settings.cjs && node tests/browser_factory.cjs && node tests/browser_onboarding.cjs && node tests/browser_repository_setup.cjs && node tests/browser_navigation.cjs"
   },
   "devDependencies": {
     "playwright-core": "1.58.2"

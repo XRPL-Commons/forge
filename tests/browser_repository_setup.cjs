@@ -20,6 +20,7 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  let reject=false;
  await page.route(origin+'/**',async route=>{
   const request=route.request(),url=new URL(request.url());
+  if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,active:false}});
   if(url.pathname==='/settings/repository')return route.fulfill({contentType:'text/html',body:renderPage('repository-setup.html',url.pathname)});
   if(url.pathname==='/assets/repository-setup.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(path.join(__dirname,'../legacy/repository-setup.js'),'utf8')});
   if(url.pathname==='/api/repositories')return route.fulfill({json:state});

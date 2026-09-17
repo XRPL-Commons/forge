@@ -6,13 +6,13 @@ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],
 page.on('pageerror',e=>errors.push(e.message));
 const issue={key:'1:1',repo:'example/project',number:1,title:'Repair issue-to-PR publication',state:'ready',active:'11111111-1111-4111-8111-111111111111',failure_count:0,failures:[]};
 const failed={...issue,key:'1:2',number:2,title:'Stop repeated failures',state:'failed',active:null,failure_count:3,reason:'Three attempts failed',failures:[{cause:'<img src=x onerror="window.injected=1">',findings:{summary:'Repeated test failures',alternative:null}}]};
-const fixture={ok:true,controls_token:'synthetic',active:true,runtime:{enabled:true,slots:{build:4,review:2,audit:1}},slots:{'build-1':issue.active},issues:[issue,failed],jobs:[{id:issue.active,role:'build',slot:'build-1',phase:'running',cleanup:false}]};
+const fixture={ok:true,observation:{at:Date.now()/1000,errors:[]},controls_token:'synthetic',active:true,runtime:{enabled:true,slots:{build:4,review:2,audit:1}},slots:{'build-1':issue.active},issues:[issue,failed],jobs:[{id:issue.active,role:'build',slot:'build-1',phase:'running',cleanup:false}]};
 await page.route('http://forge.test/**',route=>{const url=new URL(route.request().url());if(url.pathname==='/factory')return route.fulfill({contentType:'text/html',body:renderPage('factory.html',url.pathname)});if(url.pathname==='/api/factory')return route.fulfill({json:fixture});if(url.pathname==='/api/factory/output')return route.fulfill({json:{ok:true,logs:'<script>window.injected=1</script>\nCaptured output'}});if(url.pathname==='/api/factory/action'){assert.equal(route.request().headers()['x-forge-action'],'synthetic');actions.push(route.request().postDataJSON());return route.fulfill({json:{ok:true,request:'one'}})}return route.fulfill({status:404})});
 await page.goto('http://forge.test/factory');await page.getByText('Repair issue-to-PR publication').waitFor();
 await page.getByRole('link',{name:'Forge home',exact:true}).waitFor();
 const navigation=page.getByRole('navigation',{name:'Main navigation'});
-assert.equal(await navigation.locator('[aria-current=page]').textContent(),'Factory');
-assert.equal(await navigation.getByRole('link').count(),4);
+assert.equal(await navigation.getByRole('link',{name:'Settings',exact:true}).getAttribute('href'),'/settings');
+assert.equal(await navigation.getByRole('link').count(),2);
 assert.equal(await page.getByRole('button',{name:'Stop',exact:true}).count(),1);
 assert.equal(await page.getByRole('button',{name:'Release',exact:true}).count(),0);
 await page.getByRole('button',{name:'Stop',exact:true}).click();await page.getByRole('dialog').waitFor();assert.equal(actions.length,0);
@@ -36,5 +36,5 @@ for(const [title,detail,url,label] of [
 fixture.issues=[{...issue,state:'merged',active:null,candidate:{pr:12}}];
 await page.reload();await page.getByText('Completed issues',{exact:true}).click();
 await page.locator('#completed').getByRole('link',{name:'PR #12 ↗',exact:true}).waitFor();
-await page.screenshot({path:'/tmp/forge-factory-desktop.png',fullPage:true});await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await page.screenshot({path:'/tmp/forge-factory-mobile.png',fullPage:true});assert.deepEqual(errors,[]);console.log('Factory browser checks passed: compact actions, confirmation, retry reason, escaped output, responsive layout.');
+await page.screenshot({path:'/tmp/forge-factory-desktop.png',fullPage:true});for(const width of [320,390]){await page.setViewportSize({width,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));}await page.screenshot({path:'/tmp/forge-factory-mobile.png',fullPage:true});assert.deepEqual(errors,[]);console.log('Factory browser checks passed: compact actions, confirmation, retry reason, escaped output, responsive layout.');
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});

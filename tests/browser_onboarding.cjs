@@ -22,6 +22,7 @@ page.on('pageerror',e=>errors.push(e.message));
 const roleNames=['build','review','audit','controller'];
 let state={ok:true,phase:'setup',generation:'first',revision:'config-one',roles:Object.fromEntries(roleNames.map(r=>[r,{status:'not_configured',registered:false}])),repositories:[],selected:null,owner:'',provider_connected:false,harnesses:['codex','claude'].map(id=>({id,name:id==='codex'?'Codex':'Claude Code',version:'1',connected:false,models:[],login_command:'/opt/forge/bin/forge setup login '+id+' --root /srv/forge',check_command:'/opt/forge/bin/forge setup check --root /srv/forge'})),checks:{},can_start:false,operation:null,error:null,controls_token:'synthetic-browser-token'};
 await page.route('http://forge.test/**',async route=>{const request=route.request(),url=new URL(request.url());
+if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,active:false}});
 if(url.pathname==='/api/onboarding'&&request.method()==='GET')return route.fulfill({json:state});
 if(url.pathname==='/api/onboarding'){
 assert.equal(request.headers()['x-forge-action'],'synthetic-browser-token');const action=request.postDataJSON();actions.push(action);
