@@ -12,7 +12,8 @@ class RepositorySetupTests(unittest.TestCase):
     def setUp(self):
         settings_tests.SettingsTests.setUp(self)
         self.settings.refresh()
-        settings_tests.SettingsTests.enable(self)
+        config=self.settings.load();config['repositories']=[{'id':10,'name':'example/project','enabled':True}]
+        write_json(self.settings.path,config)  # Existing enabled installation, before checks.
         self.github = Mock()
         self.github.return_value.target.return_value = 'release/v2'
         self.github.return_value.pages.return_value = []
@@ -81,7 +82,7 @@ class RepositorySetupTests(unittest.TestCase):
         write_json(self.settings.state/'access.json',observed)
         config=self.settings.load()
         config['repositories'].append({'id':11,'name':'example/second','enabled':True})
-        self.settings.save(config,digest(self.settings.load()))
+        write_json(self.settings.path,config)  # Simulate a second pre-existing enabled repository.
         self.github.return_value.target.side_effect=[ValueError('Unavailable'),'release/v2']
         self.service.check()
         rows=self.service.view()['repositories']
@@ -99,6 +100,56 @@ class RepositorySetupTests(unittest.TestCase):
         config['repositories'].append({'id':11,'name':'example/other','enabled':False})
         write_json(self.settings.path,config)
         self.assertTrue(self.service.view(10)['repositories'][0]['protection_ready'])
+
+    def test_enable_requires_fresh_setup_and_preserves_config_on_failure(self):
+        config=self.settings.load();config['repositories']=[];write_json(self.settings.path,config)
+        revision=digest(config)
+        with self.assertRaisesRegex(ValueError,'finish repository setup'):
+            self.service.enable(10,revision)
+        self.assertEqual(self.settings.load(),config)
+        self.service.check(10)
+        self.now+=301
+        with self.assertRaisesRegex(ValueError,'finish repository setup'):
+            self.service.enable(10,revision)
+        self.assertEqual(self.settings.load(),config)
+        self.now-=301
+        with self.assertRaisesRegex(ValueError,'changed'):
+            self.service.enable(10,'old')
+        self.service.enable(10,revision)
+        self.assertTrue(self.settings.view()['repositories'][0]['enabled'])
+
+    def test_unknown_missing_rules_and_access_cannot_enable(self):
+        config=self.settings.load();config['repositories']=[];write_json(self.settings.path,config)
+        revision=digest(config)
+        for available, passed in [(False,True),(True,False)]:
+            self.github.return_value.protection_report.return_value.update(available=available, requirements=[{'id':'reviews','passed':passed}])
+            self.service.check(10)
+            with self.assertRaises(ValueError):self.service.enable(10,revision)
+            self.assertEqual(self.settings.load(),config)
+        self.github.return_value.protection_report.return_value.update(available=True,requirements=[{'id':'reviews','passed':True}])
+        self.service.check(10)
+        observed=self.settings.observation();observed['roles']['audit']['repositories']=[]
+        write_json(self.settings.state/'access.json',observed)
+        with self.assertRaisesRegex(ValueError,'verify access'):self.service.enable(10,revision)
+        self.assertEqual(self.settings.load(),config)
+
+    def test_live_direct_settings_write_cannot_skip_preparation_but_disable_is_allowed(self):
+        config=self.settings.load();config['repositories'][0]['enabled']=False
+        self.settings.save(config,digest(self.settings.load()))
+        config['repositories'][0]['enabled']=True
+        with self.assertRaisesRegex(ValueError,'finish repository setup'):
+            self.settings.save(config,digest(self.settings.load()))
+        self.assertFalse(self.settings.load()['repositories'][0]['enabled'])
+
+    def test_view_exposes_app_actions_without_credentials(self):
+        write_json(self.settings.root/'state/onboarding/setup.json',{'apps':{'audit':{
+            'install_url':'https://github.com/apps/forge-audit/installations/new',
+            'connection':{'private_key':'never expose'}}}})
+        view=self.service.view(10)
+        self.assertEqual(view['connections']['audit']['install_url'],'https://github.com/apps/forge-audit/installations/new')
+        self.assertEqual(view['connections']['build']['installation_url'],'https://github.com/settings/installations/101')
+        self.assertNotIn('connection',view['connections']['audit'])
+        self.assertTrue(view['activation_available'])
 
     def test_generated_rules_pass_the_real_reader(self):
         from tests.test_repository_rules import RepositoryRuleTests
@@ -121,8 +172,9 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        h=self.handler('/api/repositories/check',{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
-        h.do_POST();h.send_error.assert_called_once_with(403)
+        for path in ['/api/repositories/check','/api/repositories/enable']:
+            h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
+            h.do_POST();h.send_error.assert_called_once_with(403)
 
     def test_download_is_attachment_and_does_not_start_a_check(self):
         with patch('forge.repository_setup.RepositorySetup') as cls:
@@ -131,6 +183,17 @@ class RepositoryHTTPTests(unittest.TestCase):
             cls.return_value.download.assert_called_once_with(10,'r')
             cls.return_value.start_check.assert_not_called()
             self.assertIn('attachment',h._send.call_args.args[2]['Content-Disposition'])
+
+    def test_enable_accepts_only_one_repository_and_current_revision(self):
+        with patch('forge.repository_setup.RepositorySetup') as cls:
+            cls.return_value.enable.return_value={'repositories':[{'id':10,'enabled':True}]}
+            h=self.handler('/api/repositories/enable',{'repo_id':10,'revision':'current'});h.do_POST()
+            cls.return_value.enable.assert_called_once_with(10,'current')
+            for value in ({'repo_id':None,'revision':'current'}, {'repo_id':True,'revision':'current'},
+                          {'repo_id':10,'revision':'current','skip_checks':True}):
+                cls.return_value.enable.reset_mock()
+                h=self.handler('/api/repositories/enable',value);h.do_POST()
+                cls.return_value.enable.assert_not_called()
 
 
 class ProtectionRecoveryTests(unittest.TestCase):

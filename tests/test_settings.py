@@ -35,6 +35,14 @@ class SettingsTests(unittest.TestCase):
                     'installation_url': 'https://github.com/settings/installations/101'}
         self.client.discover.side_effect = discover
 
+    def prepare(self, identifier=10, name='example/project'):
+        from forge.repository_setup import observation_key
+        row={'id':identifier,'name':name}
+        write_json(self.settings.state/'repositories.json', {'repositories':{str(identifier):{
+            'revision':observation_key(self.settings.load(),row),'name':name,'status':'ready',
+            'report':{'observed_at':self.now,'available':True,'branch':'main',
+                      'requirements':[{'id':'reviews','passed':True},{'id':'stale','passed':True}]}}}})
+
     def enable(self):
         config = copy.deepcopy(self.config)
         config['repositories'] = [{'id': 10, 'name': 'example/project', 'enabled': True}]
@@ -46,9 +54,11 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(row['access_ready']); self.assertFalse(row['enabled'])
         self.assertFalse(row['dispatch_allowed'])
         self.assertEqual(self.settings.load()['repositories'], [])
+        with self.assertRaisesRegex(ValueError, 'finish repository setup'):
+            self.enable()
+        self.prepare()
         row = self.enable()['repositories'][0]
-        self.assertTrue(row['access_ready'])
-        self.assertFalse(row['dispatch_allowed'])  # Access alone is not protection readiness.
+        self.assertTrue(row['dispatch_allowed'])
 
     def test_enable_requires_all_roles_and_permissions(self):
         self.settings.refresh()
@@ -60,7 +70,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(self.settings.view()['repositories'][0]['access']['audit'], 'missing_permissions')
 
     def test_failed_sync_keeps_history_and_intent_but_blocks_dispatch(self):
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         self.client.discover.side_effect = AccessError('GitHub could not be reached')
         self.settings.refresh()
         row = self.settings.view()['repositories'][0]
@@ -70,7 +80,7 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(self.settings.admission('example/project')['allowed'])
 
     def test_confirmed_removal_differs_from_unknown(self):
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         self.client.discover.side_effect = lambda c: {'repositories': [], 'permissions': ROLE_PERMISSIONS[ROLES[c['app_id']-1]]}
         self.settings.refresh()
         row = self.settings.view()['repositories'][0]
@@ -78,7 +88,7 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(row['enabled'])
 
     def test_archive_blocks_activation_and_existing_dispatch(self):
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         observed = self.settings.observation()
         observed['roles']['build']['repositories'][0]['archived'] = True
         write_json(self.settings.state/'access.json', observed)
@@ -86,14 +96,14 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(self.settings.admission('example/project')['allowed'])
 
     def test_expired_or_future_observation_cannot_authorize_dispatch(self):
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         for now in (3000, 999):
             self.now = now
             self.assertFalse(self.settings.admission('example/project')['allowed'])
             self.assertEqual(self.settings.view()['roles']['build']['status'], 'stale')
 
     def test_replacement_app_cannot_reuse_previous_inventory(self):
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         config = self.settings.load(); config['connections']['build']['app_id'] = 90
         self.settings.save(config, digest(self.settings.load()))
         self.assertEqual(self.settings.view()['roles']['build']['status'], 'unknown')
@@ -113,7 +123,7 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(self.settings.view()['repositories'][0]['access_ready'])
 
     def test_renamed_repository_requires_explicit_config_update(self):
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         observed = self.settings.observation()
         for row in observed['roles'].values(): row['repositories'][0]['name'] = 'example/renamed'
         write_json(self.settings.state / 'access.json', observed)
@@ -183,7 +193,7 @@ class SettingsTests(unittest.TestCase):
     def test_unknown_access_blocks_direct_triage_before_github(self):
         from forge.scheduling import main
         from contextlib import redirect_stdout
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         self.now = 3000
         directory = self.root/'repos.d'; directory.mkdir()
         # The process clock also needs to see the deliberately expired fixture.
@@ -196,7 +206,7 @@ class SettingsTests(unittest.TestCase):
     def test_unknown_access_blocks_direct_assignment_reservation(self):
         from forge.workflow_control import reserve
         from forge.workflow import Refused
-        self.settings.refresh(); self.enable()
+        self.settings.refresh(); self.prepare(); self.enable()
         directory = self.root/'repos.d'; directory.mkdir()
         with patch('forge.workflow_lifecycle.reconcile'), patch('forge.workflow_control.canonical_pr') as read:
             with self.assertRaisesRegex(Refused, 'github_access_unverified'):

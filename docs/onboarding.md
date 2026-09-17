@@ -35,27 +35,32 @@ reopening the GitHub registration URL alone does not resend the manifest form.
 ## Maintain GitHub access
 
 Open GitHub access from onboarding or settings (/settings/github). This operator
-view shows the four Forge role Apps, their identities, installation links, and a
-searchable repository-by-role access matrix. It is available before setup finishes.
-An App registration alone is not verified installation access. Use Install App or
-Manage access on GitHub, then Refresh access in Forge to verify the result.
+view shows the four Forge role Apps and a simple list of repositories. Each
+repository is Not enabled, Enabled, or Needs attention. Choose Enable to open its
+setup checklist, or Resolve to repair an enabled repository. Add repository opens
+the same wizard with a searchable repository picker.
 
-The matrix includes repositories discovered through at least one connected role
-or explicitly configured in Forge. Repositories invisible to every role are not
-discoverable here. Missing, stale, or unknown access never enables new work. During
-onboarding, complete setup before enabling automation; afterward the same page
-supports enabling or disabling repositories. Forge manages App identities and
-credentials through guided setup; the operator UI does not expose credential
-references, manual App identifiers, or JSON editors. Factory settings provides
-worker-capacity controls. Help appears in blue callouts, separate from status.
+The wizard keeps repository access, review rules, and final activation together.
+It shows which Apps already have access and provides Manage access or Install App
+links for the missing ones. After making changes on GitHub, refresh access in the
+wizard. Repositories invisible to all Apps appear after granting at least one App
+access and refreshing. App registration happens once in Forge's initial setup;
+new repositories reuse those Apps.
 
-Each repository also shows its review-settings status and a link to setup.
-Check enabled repositories runs read-only checks; one failed repository does not
-hide the others. Results expire after five minutes and are invalidated when the
-repository identity or configuration changes. Enablement records your intent;
-access and protection must still pass before work can start. After a rules repair,
+Only incomplete steps ask for action. When access and review rules are verified,
+Enable automation confirms activation. Checking, downloading rules, or leaving
+the page never enables a repository. The server rejects activation with missing,
+unknown, or expired checks, including direct settings writes. Initial onboarding
+can still store a repository selection as a non-live draft; its Start action has
+its own readiness checks.
+
+Check enabled repositories runs read-only checks. Results expire after five
+minutes or when the relevant App connections or repository identity change.
+Forge rechecks access and protection before starting work. After a rules repair,
 Forge releases only holds caused by missing review settings, preserving failure
-budgets, explicit holds and human approval waits.
+budgets, explicit holds and human approval waits. Setup details remain available
+inside the repository page. Forge manages credentials; operators do not need to
+edit identifiers, credential references, or JSON configuration.
 
 All four installations need access to the same selected repositories. GitHub also
 provides an API for adding individual repository grants, but that endpoint requires
@@ -77,7 +82,7 @@ owners choose CI checks, push restrictions, administrator enforcement and bypass
 permissions. Forge does not require exclusive Controller access, globally required
 Forge checks, or up-to-date branches as an installation prerequisite.
 
-Choose Set up repository from GitHub access, or Prepare repository during
+Choose Add repository or Enable from GitHub access, or Prepare repository during
 onboarding. The download targets the default branch observed by Forge. It adds
 only the two review requirements above, with no bypass actors. It affects every
 pull request targeting that branch, including developers' pull requests.

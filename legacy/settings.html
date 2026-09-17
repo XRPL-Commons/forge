@@ -11,6 +11,8 @@
     section{margin:28px 0;padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
     button,input,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px 12px}button{cursor:pointer}button:hover{border-color:var(--blue)}button:disabled{opacity:.5;cursor:default}
     :focus-visible{outline:2px solid var(--blue);outline-offset:3px}label{display:block;font-size:13px;margin-top:12px}input{width:100%;margin-top:5px;min-width:0}
+    .repo-link{color:inherit;text-decoration:none}.repo-link:hover{text-decoration:underline;text-underline-offset:3px}
+    .add-repository{color:var(--text);font-size:13px;border:1px solid var(--line);border-radius:6px;padding:8px 12px;text-decoration:none}.add-repository:hover{border-color:var(--blue)}
     .icon-button{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;flex:none;color:var(--muted);background:transparent}.icon-button:hover:not(:disabled){color:var(--text)}.icon-button svg{width:20px;height:20px;pointer-events:none}@media(max-width:760px){.icon-button{width:44px;height:44px}}
     .connections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;margin:20px 0}.connection{border:1px solid var(--line);border-radius:8px;padding:18px;min-width:0;overflow-wrap:anywhere}
     .app-identity{display:flex;align-items:center;gap:12px;min-width:0}.app-copy{min-width:0}.app-copy h3{font-size:15px;line-height:1.5}.app-copy .identity{font-weight:500;color:var(--muted)}.app-copy .connection-purpose{font-size:13px;margin:3px 0 0}.connection-meta{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;margin-top:12px;font-size:13px}.connection-meta p{margin:0}.connection-meta .connection-action{margin-left:auto}.app-illustration{width:72px;height:72px;flex:none;overflow:visible}
@@ -19,7 +21,7 @@
     .mobile-label{display:none}
     .table-wrap{overflow:auto;margin:16px 0}table{border-collapse:collapse;width:100%;text-align:left}th,td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted);font-size:12px}td:first-child{overflow-wrap:anywhere;min-width:180px}
     #notice{background:#242b30;border:1px solid var(--line);border-radius:8px;padding:12px;margin:16px 0}#notice:empty{display:none}.error{color:#ffaaa4}
-    .automation-state button{min-height:30px;padding:4px 9px;font-size:13px;line-height:20px}.automation-state{display:flex;align-items:center;gap:12px;white-space:nowrap}.repo-name{display:flex;align-items:center;gap:10px;min-width:0}.repo-state{display:inline-flex;flex:none;color:#78828a}.repo-state.enabled{color:var(--green)}.repo-state.paused{color:var(--amber)}.repo-state svg{width:22px;height:22px}.repo-name strong{min-width:0;overflow-wrap:anywhere}.quiet-action{background:transparent;border-color:transparent;color:var(--muted);padding:3px 0;font-size:13px;text-decoration:underline;text-underline-offset:3px}.quiet-action:hover{color:var(--text);border-color:transparent}.primary:not(:disabled),.enable-action:not(:disabled){color:#15251b;border-color:#bfe6cd;background:#bfe6cd;font-weight:650}.primary:not(:disabled):hover,.enable-action:not(:disabled):hover{background:#d0edda;border-color:#d0edda}.danger-zone{border-color:#66433f;margin-top:48px}.danger-label{color:#ffaaa4;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase}.danger-link{display:inline-block;color:#ffaaa4;border:1px solid #80514b;border-radius:6px;padding:9px 12px;text-decoration:none;margin-top:8px}.danger-link:hover{background:#342321}
+    .automation-state button,.automation-state .enable-action{min-height:30px;padding:4px 9px;font-size:13px;line-height:20px}.automation-state .enable-action{display:inline-block;text-decoration:none;border:1px solid #bfe6cd;border-radius:6px}.automation-state{display:flex;align-items:center;gap:12px;white-space:nowrap}.repo-name{display:flex;align-items:center;gap:10px;min-width:0}.repo-state{display:inline-flex;flex:none;color:#78828a}.repo-state.enabled{color:var(--green)}.repo-state.paused{color:var(--amber)}.repo-state svg{width:22px;height:22px}.repo-name strong{min-width:0;overflow-wrap:anywhere}.quiet-action{background:transparent;border-color:transparent;color:var(--muted);padding:3px 0;font-size:13px;text-decoration:underline;text-underline-offset:3px}.quiet-action:hover{color:var(--text);border-color:transparent}.primary:not(:disabled),.enable-action:not(:disabled){color:#15251b;border-color:#bfe6cd;background:#bfe6cd;font-weight:650}.primary:not(:disabled):hover,.enable-action:not(:disabled):hover{background:#d0edda;border-color:#d0edda}.danger-zone{border-color:#66433f;margin-top:48px}.danger-label{color:#ffaaa4;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase}.danger-link{display:inline-block;color:#ffaaa4;border:1px solid #80514b;border-radius:6px;padding:9px 12px;text-decoration:none;margin-top:8px}.danger-link:hover{background:#342321}
     details{margin:16px 0}summary{cursor:pointer}li{margin:7px 0}code{font-size:13px}textarea{width:100%;min-height:360px;font:13px/1.6 ui-monospace,monospace;margin:12px 0}.timing{display:flex;gap:20px;flex-wrap:wrap}.timing input{max-width:180px;display:block}
     dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:12px;max-width:440px;padding:24px}dialog::backdrop{background:#0009}[hidden]{display:none!important}
     @media(max-width:760px){
@@ -29,7 +31,7 @@
       #repositories td:first-child{grid-column:1/-1;order:0}#repositories td:last-child{grid-column:1/-1;order:1}
       .mobile-label{display:block;font-size:12px;color:var(--muted)}.automation-state{flex-direction:row;align-items:center;justify-content:flex-end;width:100%;gap:12px}
       .badge{max-width:100%;overflow-wrap:anywhere}.quiet-action{padding:10px 8px}.timing{display:grid;grid-template-columns:1fr;gap:0}.timing input{max-width:none}
-      input{font-size:16px}button,.danger-link,.automation-state button{min-height:44px}.connection p a{display:inline-flex;align-items:center;min-height:44px}dialog{max-width:calc(100% - 32px);max-height:calc(100dvh - 32px);overflow:auto}
+      input{font-size:16px}button,.danger-link,.automation-state button,.automation-state .enable-action{min-height:44px}.connection p a{display:inline-flex;align-items:center;min-height:44px}dialog{max-width:calc(100% - 32px);max-height:calc(100dvh - 32px);overflow:auto}
     }
     @media(max-width:650px){main{padding:18px}section{padding:16px}.connections{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.fields label:last-child{grid-column:auto}header{align-items:flex-start}}
   </style>
@@ -44,10 +46,10 @@
     <div class="connections" id="connections"></div>
   </section>
   <section aria-labelledby="repos-title">
-    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><button id="check-repositories" class="icon-button" aria-label="Check enabled repositories" title="Check enabled repositories"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></button></div>
-    <p class="muted">Enable a repository after all four roles have verified access. Newly discovered repositories start disabled.</p>
+    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><a class="button add-repository" href="/settings/repository">Add repository</a><button id="check-repositories" class="icon-button" aria-label="Check enabled repositories" title="Check enabled repositories"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></button></div>
+    <p class="muted">Choose Enable to check a repository and finish its setup. Automation starts only after you confirm.</p>
     <label for="repo-search">Find a repository<input id="repo-search" type="search" placeholder="Repository name" autocomplete="off"></label>
-    <div class="table-wrap"><table role="table" aria-label="Repository access and automation"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Repository</th><th scope="col" role="columnheader">Builder</th><th scope="col" role="columnheader">Reviewer</th><th scope="col" role="columnheader">Auditor</th><th scope="col" role="columnheader">Controller</th><th scope="col" role="columnheader">Automation</th></tr></thead><tbody id="repositories" role="rowgroup"></tbody></table></div>
+    <div class="table-wrap"><table role="table" aria-label="Repository automation"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Repository</th><th scope="col" role="columnheader">Automation</th></tr></thead><tbody id="repositories" role="rowgroup"></tbody></table></div>
     <p id="repo-empty" class="muted" hidden>Connect the Forge Apps through setup, then refresh access to discover repositories.</p>
     <p class="muted">Forge checks existing issues and pull requests before starting work. If access is lost, new work pauses and issue history is kept.</p>
   </section>
@@ -56,7 +58,6 @@
     <p class="muted">The overall limit is shared by all roles, including recovery workers.</p><p><button id="save-workers" class="primary" disabled>Save worker limits</button> <button type="button" id="reload-workers" title="Discard unsaved edits and load the worker limits saved on the server">Reload saved limits</button></p></form>
   </section>
   <section class="danger-zone" aria-labelledby="reset-title"><span class="danger-label">Destructive action</span><h2 id="reset-title">Reset Forge</h2><p>Stops all Forge workers, discards unfinished local work, and clears this factory’s setup and saved connections. You will need to set up Forge again.</p><p class="muted">Your GitHub issues, branches, pull requests and App registrations are preserved.</p><a class="danger-link" href="/reset">Review reset…</a></section>
-  <dialog id="enable-dialog" aria-labelledby="enable-title"><h2 id="enable-title">Enable repository?</h2><p id="enable-message"></p><p>Forge may pick up eligible issues once reconciliation and execution setup are complete.</p><div class="toolbar"><button id="cancel-enable">Cancel</button><button id="confirm-enable" class="primary">Enable automation</button></div></dialog>
 </main>
 <script>
   const $=id=>document.getElementById(id), roles=['build','review','audit','controller'];
@@ -64,7 +65,7 @@
   const purposes={build:'Writes code and opens pull requests.',review:'Reviews proposed changes.',audit:'Checks changes for security issues.',controller:'Coordinates issues and merges approved pull requests.'};
   const statusNames={ready:'Access verified',ok:'Connected',unknown:'Access unknown',not_configured:'Not connected',stale:'Refresh needed',missing_permissions:'Permissions missing',missing_access:'No access',name_changed:'Repository renamed',archived:'Archived or disabled'};
   const accessPage=location.pathname==='/settings/github';
-  let lastSignature='',current=null,onboarding=null,dirty=false,busy=false,pendingRepo=null;
+  let lastSignature='',current=null,onboarding=null,dirty=false,busy=false;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let noticeTimer;
   const message=(text,error=false)=>{clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').classList.toggle('error',error);if(!error)noticeTimer=setTimeout(()=>{$('notice').textContent=''},6000)};
@@ -78,8 +79,8 @@
     $('runtime-title').closest('section').hidden=true;
   }
   function repositoryState(repo){
-    const paused=repo.enabled&&(!repo.access_ready||!repo.protection_ready),label=paused?(repo.access_ready?'Enabled · review setup needed':'Paused · access needs attention'):repo.enabled?'Enabled':'Not enabled';
-    return `<span class="repo-state ${paused?'paused':repo.enabled?'enabled':''}" role="img" aria-label="${label}" title="${label}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/>${paused?'<path d="M9 8v8m6-8v8"/>':'<path d="m7.5 12 3 3 6-6"/>'}</svg></span>`;
+    const paused=repo.enabled&&(!repo.access_ready||!repo.protection_ready),label=paused?'Needs attention':repo.enabled?'Enabled':'Not enabled';
+    return `<span class="repo-state ${paused?'paused':repo.enabled?'enabled':''}" role="img" aria-label="${label}" title="${label}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/>${paused?'<path d="M9 8v8m6-8v8"/>':repo.enabled?'<path d="m7.5 12 3 3 6-6"/>':''}</svg></span>`;
   }
   function filterRepositories(){const query=$('repo-search').value.trim().toLowerCase();document.querySelectorAll('#repositories tr').forEach(row=>row.hidden=!row.dataset.name.includes(query));}
   $('repo-search').oninput=filterRepositories;
@@ -99,7 +100,13 @@
       const action=link||(!c.app_id&&install?`<a href="${esc(install[0])}" target="_blank" rel="noopener noreferrer">Install App ↗</a>`:!c.app_id?'<a href="/onboarding">Connect in setup →</a>':'');
       return `<article class="connection"><div class="app-identity"><svg class="app-illustration role-illustration" data-role="${role}" viewBox="0 0 80 80" aria-hidden="true" focusable="false"><use href="#forge-role-${role}"/><use href="#forge-github-badge"/></svg><div class="app-copy"><h3>${labels[role]} <span class="muted">–</span> <span class="identity">${esc(slug||'No App connected')}</span></h3><p class="connection-purpose">${purposes[role]}</p></div></div><div class="connection-meta">${badge(status)}<p class="muted">${esc(observation)}</p><p class="connection-action">${action}</p></div>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}</article>`;
     }).join('');
-    $('repositories').innerHTML=current.repositories.map(r=>`<tr role="row" data-name="${esc(r.name.toLowerCase())}"><td role="cell"><div class="repo-name">${repositoryState(r)}<strong>${esc(r.name)}</strong></div><p class="muted">${esc(({ready:'Review requirements verified',needs_setup:'Setup needed',checking:'Checking GitHub…',unknown:'Could not check',stale:'Verification expired',access_needed:'Access needed'})[r.protection_status]||'Review settings not checked')} · <a href="/settings/repository?repo_id=${r.id}">${r.protection_ready?'View setup':'Set up repository'}</a></p>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td role="cell"><span class="mobile-label" aria-hidden="true">${labels[role]}</span>${badge(r.access[role])}</td>`).join('')}<td role="cell">${settingUp?'<a href="/onboarding">Finish setup</a>':`<div class="automation-state">${r.enabled?`<button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<button class="enable-action" data-repo="${r.id}" ${!r.access_ready?'disabled title="Verify access for all four GitHub Apps before enabling"':''}>Enable</button>`}</div>`}</td></tr>`).join('');
+    $('repositories').innerHTML=current.repositories.map(r=>{
+      const needsAttention=r.enabled&&(!r.access_ready||!r.protection_ready);
+      const status=!r.enabled?'Not enabled':needsAttention?'Needs attention':'Enabled';
+      const setupUrl='/settings/repository?repo_id='+r.id;
+      const action=settingUp?'<a href="/onboarding">Continue setup →</a>':r.enabled?`${needsAttention?`<a href="${setupUrl}">Resolve →</a>`:''}<button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<a class="enable-action" href="${setupUrl}">Enable</a>`;
+      return `<tr role="row" data-name="${esc(r.name.toLowerCase())}"><td role="cell"><div class="repo-name">${repositoryState(r)}<strong><a class="repo-link" href="${setupUrl}">${esc(r.name)}</a></strong></div><p class="muted">${status}</p></td><td role="cell"><div class="automation-state">${action}</div></td></tr>`;
+    }).join('');
     filterRepositories();
     $('repo-count').textContent=`${settingUp?'Setup in progress':current.repositories.filter(r=>r.enabled).length+' enabled'} · ${current.repositories.length} discovered or configured`;
     $('repo-empty').hidden=!!current.repositories.length;
@@ -138,13 +145,10 @@
     const button=event.target.closest('[data-repo]');if(!button||button.disabled)return;
     if(dirty)throw Error('Save or reload your edits before changing repository activation.');
     const repo=current.repositories.find(r=>r.id===Number(button.dataset.repo));
-    if(repo.enabled){await setEnabled(repo,false);return;}
-    pendingRepo=repo;$('enable-message').textContent=repo.name;$('enable-dialog').showModal();
+    if(repo.enabled)await setEnabled(repo,false);
   });
   $('repositories').onclick=event=>{if(event.target.closest('button[data-repo]'))return changeRepository(event)};
   async function setEnabled(repo,enabled){const config=structuredClone(current.config),row=config.repositories.find(r=>r.id===repo.id);if(row)row.enabled=enabled;else config.repositories.push({id:repo.id,name:repo.name,enabled});await save(config)}
-  $('cancel-enable').onclick=()=>$('enable-dialog').close();
-  $('confirm-enable').onclick=guarded(async()=>{$('enable-dialog').close();await setEnabled(pendingRepo,true)});
   let runtimeRevision=null,runtime=null;
   function renderWorkers(){if(!runtime)return;$('worker-total').value=runtime.max_running;for(const role of ['build','review','audit'])$('worker-'+role).value=runtime.slots[role];$('save-workers').disabled=false;}
   async function loadRuntime(){const v=await request('/api/factory');runtimeRevision=v.runtime_revision;runtime=v.runtime;renderWorkers();}
@@ -159,5 +163,5 @@
   });
   $('check-repositories').onclick=guarded(async()=>{busy=true;$('check-repositories').disabled=true;try{await request('/api/repositories/check',{repo_id:null,revision:current.revision});message('Checking enabled repositories. Results appear beside each repository.');await load();}finally{busy=false;render();}});
   load().then(()=>{if(!accessPage)return loadRuntime()}).catch(error=>message(error.message,true));
-  setInterval(()=>{if(!busy&&!dirty&&!$('enable-dialog').open)load().catch(error=>message(error.message,true))},5000);
+  setInterval(()=>{if(!busy&&!dirty)load().catch(error=>message(error.message,true))},5000);
 </script></body></html>

@@ -17,7 +17,7 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  page.on('pageerror',e=>errors.push(e.message));
  const row={id:10,name:'example/project',enabled:true,access_ready:true,protection_ready:false,protection_status:'needs_setup',rules_url:'https://github.com/example/project/settings/rules',protection:{branch:'main',observed_at:1700000000,available:true,requirements:[{id:'reviews',label:'At least two approving reviews',passed:false,detail:'Require pull requests with at least two approving reviews.'},{id:'stale',label:'Fresh approvals when code changes',passed:true,detail:'Approvals are dismissed when new commits are pushed.'}],sources:[{name:'Organization review policy',kind:'ruleset',url:'https://github.com/example/project/rules/10'}],additional_rules:[]}};
  const state={ok:true,revision:'one',controls_token:'synthetic',repositories:[row]};
- let reject=false;
+ let reject=false,rejectEnable=false,enables=0,accessRefreshes=0;
  await page.route(origin+'/**',async route=>{
   const request=route.request(),url=new URL(request.url());
   if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,active:false}});
@@ -25,6 +25,16 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
   if(url.pathname==='/assets/repository-setup.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(path.join(__dirname,'../legacy/repository-setup.js'),'utf8')});
   if(url.pathname==='/api/repositories')return route.fulfill({json:state});
   if(url.pathname==='/api/repositories/ruleset')return route.continue();
+  if(url.pathname==='/api/settings/sync'){
+   assert.equal(request.headers()['x-forge-action'],'synthetic');accessRefreshes++;
+   row.access_ready=true;row.access={build:'ready',review:'ready',audit:'ready',controller:'ready'};row.protection_status='unchecked';
+   state.sync={status:'complete',finished_at:accessRefreshes};return route.fulfill({json:{ok:true}});
+  }
+  if(url.pathname==='/api/repositories/enable'){
+   assert.equal(request.headers()['x-forge-action'],'synthetic');assert.deepEqual(request.postDataJSON(),{repo_id:10,revision:'one'});
+   if(rejectEnable)return route.fulfill({json:{ok:false,reason:'Repository settings changed. Check again before enabling.'}});
+   assert.equal(row.protection_status,'ready');row.enabled=true;enables++;return route.fulfill({json:state});
+  }
   if(url.pathname==='/api/repositories/check'){
    assert.equal(request.headers()['x-forge-action'],'synthetic');actions.push(request.postDataJSON());
    if(reject)return route.fulfill({json:{ok:false,reason:'Repository settings changed. Reload and check again.'}});
@@ -49,10 +59,10 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  await page.getByRole('button',{name:'Checking GitHub…'}).waitFor();
  assert.equal(actions.length,1);
  row.protection_status='ready';row.protection_ready=true;row.protection.requirements.forEach(r=>r.passed=true);
- await page.getByText('Review requirements verified',{exact:true}).waitFor();
+ await page.getByText('Ready to continue',{exact:true}).waitFor();
  await page.getByRole('link',{name:'Continue to Forge →'}).waitFor();
  assert(await page.locator('#steps').isHidden());
- await page.getByText('What Forge can verify',{exact:true}).click();
+ await page.getByText('Setup details',{exact:true}).click();
  await page.getByText('Bypass permissions need your review.',{exact:true}).waitFor();
  await page.screenshot({path:'/private/tmp/forge-ruleset-ready.png',fullPage:true});
  row.protection_status='needs_setup';row.protection_ready=false;row.protection.requirements[0].passed=false;row.protection.edit_url='https://github.com/example/project/settings/rules/21';
@@ -63,12 +73,43 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  await page.screenshot({path:'/private/tmp/forge-ruleset-mobile.png',fullPage:true});
  await page.setViewportSize({width:640,height:400});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  row.protection_status='unknown';row.protection.available=false;row.protection.errors=[{detail:'GitHub is unavailable. Try again.'}];
- await page.reload();await page.getByText('Could not check',{exact:true}).waitFor();assert(await page.locator('#steps').isHidden());
+ await page.reload();await page.getByText('Check unavailable',{exact:true}).waitFor();assert(await page.locator('#steps').isHidden());
  reject=true;await page.getByRole('button',{name:'Check repository',exact:true}).click();
  await page.getByRole('alert').filter({hasText:'Repository settings changed'}).waitFor();
  await page.waitForTimeout(3200);assert((await page.getByRole('alert').textContent()).includes('Repository settings changed'));
- row.protection_status='stale';await page.reload();await page.getByText('Check again to confirm',{exact:true}).waitFor();
+ row.protection_status='stale';await page.reload();await page.getByText('Check setup again',{exact:true}).waitFor();
  assert(await page.locator('#continue').isHidden());
+ // Add repository starts the same resumable wizard, including partial App access.
+ reject=false;state.activation_available=true;row.enabled=false;row.access_ready=false;row.protection_status='access_needed';
+ row.access={build:'ready',review:'ready',audit:'missing_access',controller:'not_configured'};
+ state.connections={audit:{installation_url:'https://github.com/organizations/example/settings/installations/103'},controller:{install_url:'https://github.com/apps/forge-controller/installations/new'}};
+ await page.goto(origin+'/settings/repository');
+ await page.getByRole('heading',{name:'Choose your repository',exact:true}).waitFor();
+ await page.getByRole('searchbox',{name:'Find by name'}).fill('unlisted');await page.getByText('No matching repositories yet.',{exact:true}).waitFor();
+ await page.getByRole('searchbox',{name:'Find by name'}).fill('project');
+ await page.getByRole('link',{name:'example/project',exact:true}).click();
+ await page.getByText('App access needed',{exact:true}).waitFor();
+ assert.equal(await page.getByText('Connected ✓',{exact:true}).count(),2);
+ assert.equal(await page.getByRole('link',{name:'Manage access ↗',exact:true}).getAttribute('href'),state.connections.audit.installation_url);
+ assert.equal(await page.getByRole('link',{name:'Install App ↗',exact:true}).getAttribute('href'),state.connections.controller.install_url);
+ assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isHidden());
+ await page.screenshot({path:'/private/tmp/forge-repository-access-mobile.png',fullPage:true});
+ await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+ await page.getByRole('button',{name:'Checking GitHub…',exact:true}).waitFor();assert.equal(accessRefreshes,1);assert.equal(enables,0);
+ row.protection_status='needs_setup';row.protection.edit_url=null;row.protection.requirements[0].passed=false;
+ await page.getByRole('link',{name:'Download ruleset',exact:true}).waitFor();
+ assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isHidden());
+ await page.getByRole('button',{name:'Check setup',exact:true}).click();
+ await page.getByRole('button',{name:'Checking GitHub…',exact:true}).waitFor();
+ row.protection_status='ready';row.protection.requirements.forEach(r=>r.passed=true);
+ await page.getByText('Ready to enable',{exact:true}).waitFor();assert.equal(enables,0);
+ await page.setViewportSize({width:1280,height:900});await page.screenshot({path:'/private/tmp/forge-repository-enable-ready.png',fullPage:true});
+ rejectEnable=true;await page.getByRole('button',{name:'Enable automation',exact:true}).click();
+ await page.getByRole('alert').filter({hasText:'Check again before enabling'}).waitFor();assert.equal(enables,0);assert.equal(row.enabled,false);
+ rejectEnable=false;await page.getByRole('button',{name:'Enable automation',exact:true}).click();
+ await page.getByText('Enabled',{exact:true}).waitFor();assert.equal(enables,1);
+ assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isHidden());
+ assert.equal(await page.getByRole('link',{name:'Back to repositories →',exact:true}).getAttribute('href'),'/settings/github');
  assert.deepEqual(errors,[]);
  console.log('Repository setup browser checks passed: real generated download, import/edit links, verification, unknown/stale states, polling focus and mobile layout.');
 }finally{await browser.close();server.close();}})().catch(e=>{console.error(e);process.exit(1)});
