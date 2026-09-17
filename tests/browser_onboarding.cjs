@@ -70,7 +70,12 @@ state.repository_check={branch:'main',available:true,requirements:[{id:'stale',l
 await page.getByRole('heading',{name:'Setup needs attention',exact:true}).waitFor();
 await page.getByRole('heading',{name:'1 repository setting needs attention'}).waitFor();assert.equal(await page.getByRole('link',{name:'Prepare repository →'}).getAttribute('href'),'/settings/repository?repo_id=10');assert.equal(await page.getByRole('link',{name:'Repository protection instructions',exact:true}).count(),1);
 await page.screenshot({path:'/tmp/forge-onboarding-blocked.png',fullPage:true});
-await page.getByRole('link',{name:'Manage accounts',exact:true}).click();await page.getByRole('heading',{name:'Coding harnesses',exact:true}).waitFor();assert.equal(await page.locator('#notice').textContent(),'');
+await page.getByRole('link',{name:'Manage accounts',exact:true}).click();await page.getByRole('heading',{name:'Coding accounts',exact:true}).waitFor();
+const pageTitle=await page.locator('#screen-title').boundingBox();
+const tabLeft=await page.locator('.forge-settings-navigation').evaluate(el=>el.getBoundingClientRect().x+parseFloat(getComputedStyle(el).paddingLeft));
+assert(Math.abs(pageTitle.x-tabLeft)<1,'Settings title and tabs must share the same left edge');
+assert.equal(await page.locator('#saved').count(),0);
+await page.screenshot({path:'/tmp/forge-consistent-coding-accounts.png',fullPage:true});assert.equal(await page.locator('#notice').textContent(),'');
 await page.goto('http://forge.test/onboarding');await page.getByRole('button',{name:'Check again',exact:true}).waitFor();
 await page.getByRole('button',{name:'Check again',exact:true}).click();state.error=null;
 state.operation=null;state.activity=null;state.repository_check=null;state.checks={github:'passed',provider:'passed',runner:'passed'};state.can_start=true;

@@ -14,19 +14,29 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 .settings-eyebrow{font:650 12px/1.5 system-ui,sans-serif;text-transform:uppercase;letter-spacing:1.4px;color:#bfe6cd;margin:0 0 10px}
 .role-illustration{flex:none}.role-illustration[data-role=build]{color:#94bfff}.role-illustration[data-role=review]{color:#c9a4f4}.role-illustration[data-role=audit]{color:#80d7bd}.role-illustration[data-role=controller]{color:#edbd77}
 .forge-topbar{position:sticky;top:0;z-index:3;background:#101416;border-bottom:1px solid #303b40}
-.forge-header{box-sizing:border-box;max-width:1600px;margin:0 auto;padding:26px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#edf1ee}
+.forge-header{box-sizing:border-box;max-width:1600px;margin:0 auto;padding:16px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#edf1ee}
 .forge-header .forge-brand{display:flex;align-items:center;gap:10px;color:#edf1ee;text-decoration:none;font-size:22px;line-height:1.3;letter-spacing:-.6px;font-weight:750;white-space:nowrap}
 .forge-header .forge-mark{box-sizing:border-box;display:grid;place-items:center;width:28px;height:28px;border:1px solid #bfe6cd;border-radius:5px;color:#bfe6cd;font-size:17px;transform:rotate(-6deg)}
-.forge-header .forge-navigation{display:flex;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:10px 24px;margin:0;padding:0;border:0;background:none;border-radius:0}
+.forge-header .forge-navigation{display:flex;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:8px 20px;margin:0;padding:0;border:0;background:none;border-radius:0}
 .forge-header .forge-navigation a{display:inline-block;color:#acb7b9;text-decoration:none;padding:5px 0;white-space:nowrap;font-size:14px;font-weight:500}
 .forge-header .forge-navigation a:hover{color:#edf1ee;text-decoration:underline;text-underline-offset:5px}
 .forge-header .forge-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:5px}
 .forge-header a:focus-visible{outline:2px solid #abcfff;outline-offset:5px;border-radius:3px}
-.forge-header .forge-header-end{display:flex;align-items:center;gap:24px;flex-wrap:wrap;justify-content:flex-end}
-.forge-settings-navigation{box-sizing:border-box;max-width:1200px;margin:0 auto;padding:0 28px 12px;display:flex;gap:8px 24px;flex-wrap:wrap;font:14px/1.5 system-ui,sans-serif}.forge-settings-navigation a{display:inline-flex;align-items:center;min-height:36px;color:#acb7b9;text-decoration:none}.forge-settings-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:6px}.forge-settings-navigation a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}
-.forge-activity{display:inline-flex;align-items:center;gap:8px;color:#acb7b9;font-size:13px}.forge-activity::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}.forge-activity[data-state=working]{color:#bfe6cd}.forge-activity[data-state=working]::before{animation:forge-working 1.8s ease-in-out infinite}.forge-activity[data-state=unknown]{color:#f1c17d}.forge-activity[hidden]{display:none}@keyframes forge-working{50%{opacity:.35}}@media(prefers-reduced-motion:reduce){.forge-activity[data-state=working]::before{animation:none}}
-.forge-header #saved{font-size:12px;color:#acb7b9}.forge-header #saved:empty{display:none}
-@media(max-width:700px){.forge-settings-navigation{padding:0 18px 10px;gap:4px 18px}.forge-settings-navigation a{min-height:44px;font-size:13px}.forge-header{padding:20px 18px;gap:16px}.forge-header .forge-header-end{flex:1;gap:8px;justify-content:flex-end}.forge-header .forge-navigation{justify-content:flex-end;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px;min-height:44px;display:inline-flex;align-items:center}.forge-header #saved{display:none}}
+.forge-header .forge-header-end{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:flex-end}
+.forge-settings-navigation{box-sizing:border-box;max-width:1200px;margin:0 auto;padding:0 32px 10px;display:flex;gap:8px 24px;flex-wrap:wrap;font:14px/1.5 system-ui,sans-serif}.forge-settings-navigation a{display:inline-flex;align-items:center;min-height:36px;color:#acb7b9;text-decoration:none}.forge-settings-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:6px}.forge-settings-navigation a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}
+.forge-activity{display:inline-flex;align-items:center;gap:10px;font-size:12px;white-space:nowrap}.forge-activity[hidden]{display:none}
+.forge-activity a{display:inline-flex;align-items:center;gap:5px;color:#acb7b9;text-decoration:none;min-height:32px}.forge-activity a[data-role=build]{color:#94bfff}.forge-activity a[data-role=review]{color:#c9a4f4}.forge-activity a[data-role=audit]{color:#80d7bd}.forge-activity a[data-role=merge]{color:#edbd77}
+.forge-activity .worker-spinner{width:12px;height:12px;box-sizing:border-box;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:forge-working 1s linear infinite}
+@keyframes forge-working{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.forge-activity .worker-spinner{animation:none}}
+.forge-settings-page{background:#101416;color:#edf1ee;font:15px/1.55 system-ui,sans-serif}
+.forge-settings-page>main,.forge-settings-page>.layout.solo{box-sizing:border-box;max-width:1200px;margin:0 auto;padding:32px 32px 48px}
+.forge-settings-page h1{font-size:32px;font-weight:650;line-height:1.2;letter-spacing:-.7px;margin:0 0 16px;max-width:none}
+.forge-settings-page .settings-eyebrow,.forge-settings-page .eyebrow{display:block;font-size:12px;line-height:1.5;font-weight:650;letter-spacing:1.4px;color:#bfe6cd;text-transform:uppercase;margin:0 0 10px}
+.forge-settings-page #page-description,.forge-settings-page #screen-title+p{font-size:16px;line-height:1.55;margin:0;max-width:760px;color:#acb7b9}
+.forge-settings-page section,.forge-settings-page .panel{background:#192024;border-color:#303b40;margin-top:28px;margin-bottom:28px}
+.forge-settings-page .danger-zone{border-color:#66433f;margin-top:48px}
+.forge-settings-page #setup-footer{display:none}
+@media(max-width:700px){.forge-settings-page>main,.forge-settings-page>.layout.solo{padding:24px 18px 36px}.forge-settings-page h1{font-size:29px}.forge-settings-navigation{padding:0 18px 10px;gap:4px 18px}.forge-settings-navigation a{min-height:44px;font-size:13px}.forge-header{padding:12px 18px;gap:16px}.forge-activity a{min-height:44px}.forge-header .forge-header-end{flex:1;gap:8px;justify-content:flex-end}.forge-header .forge-navigation{justify-content:flex-end;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px;min-height:44px;display:inline-flex;align-items:center}}
 </style>"""
 
 
@@ -38,6 +48,8 @@ def render(page, path):
     if path == '/settings/advanced':
         current = '/settings'
     settings_page = path.startswith('/settings')
+    if settings_page:
+        page = page.replace('<body>', '<body class="forge-settings-page">', 1)
     href, label = ('/', '← Factory') if settings_page else ('/settings', 'Settings')
     links = [f'<a href="{href}">{label}</a>', '<a href="/setup-help">Help</a>']
     settings_nav = ''
@@ -50,7 +62,7 @@ def render(page, path):
         settings_nav = '<nav class="forge-settings-navigation" aria-label="Settings navigation">' + ''.join(tabs) + '</nav>'
     header = ('<div class="forge-topbar"><header class="forge-header"><a class="forge-brand" href="/" aria-label="Forge home">'
               '<span class="forge-mark" aria-hidden="true">F</span>Forge</a>'
-              '<div class="forge-header-end"><span id="forge-activity" class="forge-activity" role="status" aria-live="polite" hidden></span><span id="saved"></span>'
+              '<div class="forge-header-end"><span id="forge-activity" class="forge-activity" role="status" aria-live="polite" hidden></span>'
               '<nav class="forge-navigation" aria-label="Main navigation">' + ''.join(links) + '</nav></div></header>' + settings_nav + '</div>'
               '<script>(()=>{const bar=document.querySelector(".forge-topbar");'
               'const measure=()=>document.documentElement.style.setProperty("--forge-header-height",bar.getBoundingClientRect().height+"px");'
@@ -61,25 +73,31 @@ def render(page, path):
 ACTIVITY_SCRIPT = """<script>(()=>{
   const indicator=document.getElementById('forge-activity');
   let timer;
-  function show(label,state){indicator.hidden=false;indicator.textContent=label;indicator.dataset.state=state;}
+  function hide(){indicator.hidden=true;indicator.textContent='';indicator.removeAttribute('data-state');indicator.removeAttribute('title');}
   async function refresh(){
     if(document.hidden)return;
     try{
       const response=await fetch('/api/factory',{credentials:'same-origin',signal:AbortSignal.timeout(10000)});
       if(!response.ok)throw Error('Unavailable');
       const data=await response.json();if(!data.ok)throw Error('Unavailable');
-      if(!data.active){indicator.hidden=true;return;}
+      if(!data.active){hide();return;}
       const now=Date.now()/1000,maxAge=Math.max(120,(Number(data.runtime?.cycle_seconds)||30)*3);
-      if(!data.observation?.at||now-data.observation.at>maxAge){show('Status delayed','unknown');return;}
+      if(!data.observation?.at||now-data.observation.at>maxAge){hide();return;}
       const jobs=(data.jobs||[]).filter(job=>!job.cleanup&&!job.fenced&&!job.outcome);
-      const working=jobs.filter(job=>job.phase==='running'&&job.last_observed&&now-job.last_observed<=maxAge).length;
-      if(working)show(`${working} working`,'working');
-      else if(jobs.some(job=>job.phase==='running'))show('Status delayed','unknown');
-      else if(jobs.some(job=>['reserved','created','launching'].includes(job.phase)))show('Starting workers','idle');
-      else if((data.jobs||[]).some(job=>!job.cleanup))show('Cleaning up','idle');
-      else show(data.runtime?.enabled?'Idle':'Paused','idle');
-      indicator.title='Latest supervisor update: '+new Date(data.observation.at*1000).toLocaleTimeString()+(data.runtime?.enabled?'':' · New work paused');
-    }catch(error){indicator.title='Could not read current factory activity';show('Status unavailable','unknown');}
+      const working=jobs.filter(job=>job.phase==='running'&&job.last_observed&&now-job.last_observed<=maxAge);
+      const roles={build:['builder','builders','stage-build'],review:['reviewer','reviewers','stage-review'],audit:['auditor','auditors','stage-audit'],merge:['merge worker','merge workers','runners'],recovery:['recovery worker','recovery workers','runners']};
+      const fragment=document.createDocumentFragment();
+      for(const [role,[singular,plural,target]] of Object.entries(roles)){
+        const count=working.filter(job=>job.role===role).length;if(!count)continue;
+        const link=document.createElement('a');link.href='/factory#'+target;link.dataset.role=role;
+        const label=`${count} ${count===1?singular:plural} working`;link.title=label;link.setAttribute('aria-label',label);
+        const spinner=document.createElement('span');spinner.className='worker-spinner';spinner.setAttribute('aria-hidden','true');
+        link.append(spinner,document.createTextNode(String(count)));fragment.append(link);
+      }
+      const queued=(data.issues||[]).filter(issue=>!issue.active&&['ready','built','reviewed'].includes(issue.state)&&(!Array.isArray(data.repositories)||data.repositories.some(repo=>repo.enabled&&repo.name===issue.repo))).length;
+      if(queued){const link=document.createElement('a');link.href='/factory#columns';link.textContent=`${queued} queued`;link.title='Tracked issues waiting for Build, Review or Audit';link.setAttribute('aria-label',`${queued} queued ${queued===1?'issue':'issues'}`);fragment.append(link);}
+      indicator.replaceChildren(fragment);indicator.hidden=!indicator.childElementCount;
+    }catch(error){hide();}
     finally{clearTimeout(timer);timer=setTimeout(refresh,15000);}
   }
   document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)refresh();});

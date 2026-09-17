@@ -61,17 +61,17 @@ def render(guide):
     flush()
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Forge · Setup help</title><style>body{margin:0;background:#101416;color:#edf1ee;font:16px/1.65 system-ui}'
-            '.help-layout{box-sizing:border-box;max-width:1200px;margin:36px auto;padding:0 28px 48px;display:grid;grid-template-columns:240px minmax(0,760px);gap:64px;align-items:start}'
+            '.help-layout{box-sizing:border-box;max-width:1200px;margin:32px auto;padding:0 32px 48px;display:grid;grid-template-columns:240px minmax(0,760px);gap:64px;align-items:start}'
             '.help-sidebar{position:sticky;top:calc(var(--forge-header-height,84px) + 24px);max-height:calc(100dvh - var(--forge-header-height,84px) - 48px);overflow:auto;font-size:14px}'
-            '.help-sidebar>p{color:#acb7b9;font-size:12px;font-weight:650;letter-spacing:1px;text-transform:uppercase;margin:28px 12px 10px}'
+            '.help-sidebar>p{color:#acb7b9;font-size:12px;font-weight:650;letter-spacing:1px;text-transform:uppercase;margin:0 12px 16px}'
             '.help-sidebar>a{display:inline-block;margin:0 12px}.help-sidebar nav{display:grid;gap:4px}'
             '.help-sidebar nav a{display:block;padding:9px 12px;border-radius:6px;color:#acb7b9;text-decoration:none;overflow-wrap:anywhere}'
             '.help-sidebar nav a:hover,.help-sidebar nav a:focus-visible{background:#192024;color:#edf1ee}'
-            '.help-layout main{min-width:0}.help-layout main>h1:first-child{margin-top:0}'
+            '.help-layout main{min-width:0}.help-layout main>h1{font-size:32px;font-weight:650;line-height:1.2;letter-spacing:-.7px;margin:0 0 28px}'
             'a{color:#abcfff}h1{font-size:32px}h2{margin-top:36px;font-size:22px}li{margin:10px 0}code{font-size:.9em;background:#192024;padding:2px 5px;border-radius:4px}'
             'pre{padding:16px;background:#192024;border:1px solid #303b40;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}p,li{overflow-wrap:anywhere}'
             'a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}'
             '@media(max-width:800px){.help-layout{grid-template-columns:minmax(0,1fr);gap:28px;margin-top:24px;padding:0 18px 36px}.help-sidebar{position:static;max-height:none}.help-sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.help-sidebar>p{margin-top:18px}h1{font-size:29px}}'
             '</style></head><body><!--FORGE_NAVIGATION--><div class="help-layout"><aside class="help-sidebar">'
-            '<a href="/onboarding">← Back to setup</a><p>On this page</p><nav aria-label="Help topics">' + ''.join(topics) +
-            '</nav></aside><main>' + ''.join(blocks) + '</main></div></body></html>')
+            '<p>On this page</p><nav aria-label="Help topics">' + ''.join(topics) +
+            '</nav></aside><main><p class="settings-eyebrow">Help</p>' + ''.join(blocks) + '</main></div></body></html>')

@@ -41,6 +41,10 @@ an operator wants the factory to do.
   from covering focused controls or anchor targets. Do not hide functionality on
   mobile; simplify the layout instead.
 
-- Header activity reflects recent runner observations. Stop animation and show an
-  unavailable or delayed state when evidence is missing or stale; dispatch being
-  enabled alone is not proof that workers are running.
+- Header activity uses compact role-colored spinners with running worker counts,
+  plus a count of tracked issues queued for enabled repositories. Hide zero
+  counts and stale or unavailable observations; keep diagnostics on the Factory
+  page. Never animate a queue count. Do not duplicate factory status or
+  saved-draft messages in the header.
+- Settings tabs share one content width, left edge, top spacing and title style.
+  Help uses the same outer spacing with a reading column and topic sidebar.
