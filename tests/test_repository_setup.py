@@ -36,6 +36,28 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertEqual(self.settings.load()['repositories'][0]['enabled'], True)
         self.github.return_value.call.assert_not_called()
 
+    def test_refresh_retains_evidence_without_authorizing_from_previous_result(self):
+        self.service.check(10)
+        original = self.service.view(10)['repositories'][0]['protection']
+        def during_check(item):
+            row = self.service.view(10)['repositories'][0]
+            self.assertEqual(row['protection_status'], 'checking')
+            self.assertEqual(row['protection_previous_status'], 'ready')
+            self.assertEqual(row['protection'], original)
+            self.assertFalse(row['protection_ready'])
+            with self.assertRaises(ValueError):
+                self.service.download(10, digest(self.settings.load()))
+            raise ValueError('Unavailable')
+        self.github.return_value.target.side_effect = during_check
+        self.service.check(10)
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['protection_status'], 'unknown')
+        self.assertEqual(row['protection_last_known'], original)
+        self.assertFalse(row['protection_ready'])
+        config = self.settings.load();config['connections']['build']['app_id'] = 99
+        write_json(self.settings.path, config)
+        self.assertIsNone(self.service.view(10)['repositories'][0]['protection_last_known'])
+
     def test_stale_wrong_identity_and_config_changes_cannot_download(self):
         revision=digest(self.settings.load())
         self.service.check(10, revision)

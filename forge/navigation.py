@@ -1,6 +1,7 @@
 """Shared, server-rendered navigation for every Forge operator page."""
 
 from .illustrations import SPRITE
+from .polling import SCRIPT as REFRESH_SCRIPT, STYLE as REFRESH_STYLE
 
 FAVICON = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <rect width="64" height="64" rx="12" fill="#101416"/>
@@ -68,7 +69,7 @@ def render(page, path):
               '<script>(()=>{const bar=document.querySelector(".forge-topbar");'
               'const measure=()=>document.documentElement.style.setProperty("--forge-header-height",bar.getBoundingClientRect().height+"px");'
               'measure();new ResizeObserver(measure).observe(bar)})();</script>')
-    return page.replace('</head>', STYLE + '</head>', 1).replace('<!--FORGE_NAVIGATION-->', SPRITE + header + ACTIVITY_SCRIPT, 1)
+    return page.replace('</head>', STYLE + REFRESH_STYLE + '</head>', 1).replace('<!--FORGE_NAVIGATION-->', SPRITE + header + REFRESH_SCRIPT + ACTIVITY_SCRIPT, 1)
 
 
 ACTIVITY_SCRIPT = """<script>(()=>{
