@@ -34,7 +34,8 @@ function renderPicker(){
  if(!rows.length)$('app-access').hidden=false;
 }
 function renderProgress(row){
- const stage=!row?0:!row.access_ready?1:row.protection_status!=='ready'?2:3;
+ const stage=!row?0:!row.access_ready?1:row.protection_status!=='ready'?2:row.enabled&&snapshot.activation_available?4:3;
+ $('progress-enable').textContent=snapshot.activation_available?'Enable':'Finish setup';
  ['repo','access','rules','enable'].forEach((name,index)=>{const element=$('progress-'+name);element.className=index<stage?'done':'';if(index===stage)element.setAttribute('aria-current','step');else element.removeAttribute('aria-current')});
 }
 function render(){

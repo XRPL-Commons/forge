@@ -144,12 +144,15 @@ class RepositorySetupTests(unittest.TestCase):
     def test_view_exposes_app_actions_without_credentials(self):
         write_json(self.settings.root/'state/onboarding/setup.json',{'apps':{'audit':{
             'install_url':'https://github.com/apps/forge-audit/installations/new',
-            'connection':{'private_key':'never expose'}}}})
+            'connection':{'app_id':3,'private_key':'never expose'}}}})
         view=self.service.view(10)
         self.assertEqual(view['connections']['audit']['install_url'],'https://github.com/apps/forge-audit/installations/new')
         self.assertEqual(view['connections']['build']['installation_url'],'https://github.com/settings/installations/101')
         self.assertNotIn('connection',view['connections']['audit'])
         self.assertTrue(view['activation_available'])
+        config=self.settings.load();config['connections']['audit']['app_id']=90
+        write_json(self.settings.path,config)
+        self.assertIsNone(self.service.view(10)['connections']['audit']['install_url'])
 
     def test_generated_rules_pass_the_real_reader(self):
         from tests.test_repository_rules import RepositoryRuleTests

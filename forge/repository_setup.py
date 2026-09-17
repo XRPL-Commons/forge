@@ -64,7 +64,9 @@ class RepositorySetup:
         connections = {}
         for role, access in settings['roles'].items():
             app = registration.get('apps', {}).get(role, {})
-            connections[role] = {**access, 'install_url': app.get('install_url')}
+            configured = settings['config']['connections'].get(role)
+            same_app = not configured or configured.get('app_id') == app.get('connection', {}).get('app_id')
+            connections[role] = {**access, 'install_url': app.get('install_url') if same_app else None}
         rows = settings['repositories']
         if repo_id is not None:
             rows = [r for r in rows if r['id'] == repo_id]
