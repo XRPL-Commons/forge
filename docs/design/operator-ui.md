@@ -3,6 +3,10 @@
 Forge owns its implementation details. The UI presents decisions about the work
 an operator wants the factory to do.
 
+- Keep the Forge logo as the home link. Offer one destination link in the top
+  bar: Settings from the factory, and Factory from settings, alongside Help. Group General,
+  GitHub access and Coding accounts under the Settings tabs. Use the green
+  SETTINGS eyebrow above each settings page title; avoid duplicate navigation.
 - Show useful choices: managed repositories, worker capacity, model preferences,
   and effort levels supported by the selected coding harness.
 - Do not expose credential references, App or installation IDs, file paths,
@@ -13,6 +17,8 @@ an operator wants the factory to do.
 - Distinguish observed state from instructions. Status shows what happened and
   what is running. Blue callouts labeled Help explain how to act; they must not
   look like failures or health indicators. Do not rely on color alone.
+- Use solid color with contrasting text for primary actions. Keep secondary
+  actions visually quieter, and disabled controls visibly muted.
 - Give each visible setting a plain name and a clear effect. Offer model or effort
   controls only when the harness contract supports and validates those choices.
 - Preserve existing settings and unrelated configuration when saving a focused
@@ -34,3 +40,7 @@ an operator wants the factory to do.
 - Keep navigation reachable, dialogs inside the viewport, and sticky elements
   from covering focused controls or anchor targets. Do not hide functionality on
   mobile; simplify the layout instead.
+
+- Header activity reflects recent runner observations. Stop animation and show an
+  unavailable or delayed state when evidence is missing or stale; dispatch being
+  enabled alone is not proof that workers are running.

@@ -18,7 +18,7 @@
     .mobile-label{display:none}
     .table-wrap{overflow:auto;margin:16px 0}table{border-collapse:collapse;width:100%;text-align:left}th,td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px}td:first-child{overflow-wrap:anywhere;min-width:180px}
     #notice{background:#242b30;border:1px solid var(--line);border-radius:8px;padding:12px;margin:16px 0}#notice:empty{display:none}.error{color:#ffaaa4}
-    .automation-state{display:flex;align-items:center;gap:12px;white-space:nowrap}.enabled-state{color:var(--green);font-weight:600;white-space:nowrap}.paused-state{color:var(--amber);font-weight:600}.quiet-action{background:transparent;border-color:transparent;color:var(--muted);padding:3px 0;font-size:13px;text-decoration:underline;text-underline-offset:3px}.quiet-action:hover{color:var(--text);border-color:transparent}.enable-action:not(:disabled){color:var(--green);border-color:#476353;background:#1c2b23}.danger-zone{border-color:#66433f;margin-top:48px}.danger-label{color:#ffaaa4;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase}.danger-link{display:inline-block;color:#ffaaa4;border:1px solid #80514b;border-radius:6px;padding:9px 12px;text-decoration:none;margin-top:8px}.danger-link:hover{background:#342321}
+    .automation-state{display:flex;align-items:center;gap:12px;white-space:nowrap}.repo-name{display:flex;align-items:center;gap:10px;min-width:0}.repo-state{display:inline-flex;flex:none;color:#78828a}.repo-state.enabled{color:var(--green)}.repo-state.paused{color:var(--amber)}.repo-state svg{width:22px;height:22px}.repo-name strong{min-width:0;overflow-wrap:anywhere}.quiet-action{background:transparent;border-color:transparent;color:var(--muted);padding:3px 0;font-size:13px;text-decoration:underline;text-underline-offset:3px}.quiet-action:hover{color:var(--text);border-color:transparent}.enable-action:not(:disabled){color:#15251b;border-color:#bfe6cd;background:#bfe6cd;font-weight:650}.enable-action:not(:disabled):hover{background:#d0edda;border-color:#d0edda}.danger-zone{border-color:#66433f;margin-top:48px}.danger-label{color:#ffaaa4;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase}.danger-link{display:inline-block;color:#ffaaa4;border:1px solid #80514b;border-radius:6px;padding:9px 12px;text-decoration:none;margin-top:8px}.danger-link:hover{background:#342321}
     details{margin:16px 0}summary{cursor:pointer}li{margin:7px 0}code{font-size:13px}textarea{width:100%;min-height:360px;font:13px/1.6 ui-monospace,monospace;margin:12px 0}.timing{display:flex;gap:20px;flex-wrap:wrap}.timing input{max-width:180px;display:block}
     dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:12px;max-width:440px;padding:24px}dialog::backdrop{background:#0009}[hidden]{display:none!important}
     @media(max-width:760px){
@@ -26,7 +26,7 @@
       #repositories tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:16px 0;border-bottom:1px solid var(--line)}
       #repositories td{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;padding:0;border:0;order:2}
       #repositories td:first-child{grid-column:1/-1;order:0}#repositories td:last-child{grid-column:1/-1;order:1}
-      .mobile-label{display:block;font-size:12px;color:var(--muted)}.automation-state{flex-direction:row;align-items:center;justify-content:space-between;width:100%;gap:12px}
+      .mobile-label{display:block;font-size:12px;color:var(--muted)}.automation-state{flex-direction:row;align-items:center;justify-content:flex-end;width:100%;gap:12px}
       .badge{max-width:100%;overflow-wrap:anywhere}.quiet-action{padding:10px 8px}.timing{display:grid;grid-template-columns:1fr;gap:0}.timing input{max-width:none}
       input{font-size:16px}button,.danger-link{min-height:44px}.connection p a{display:inline-flex;align-items:center;min-height:44px}dialog{max-width:calc(100% - 32px);max-height:calc(100dvh - 32px);overflow:auto}
     }
@@ -34,7 +34,7 @@
   </style>
 </head>
 <body><!--FORGE_NAVIGATION--><main>
-  <header><div><h1 id="page-title">Settings</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a><a href="/settings" id="advanced-link" hidden>Factory settings</a></div><p class="muted" id="page-description">Manage repositories and worker capacity.</p></div></header>
+  <header><div><p class="settings-eyebrow">Settings</p><h1 id="page-title">General</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a></div><p class="muted" id="page-description">Manage worker capacity and factory setup.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
     <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" disabled>Refresh access</button></div>
@@ -62,17 +62,6 @@
   const $=id=>document.getElementById(id), roles=['build','review','audit','controller'];
   const labels={build:'Builder',review:'Reviewer',audit:'Auditor',controller:'Controller'};
   const purposes={build:'Writes code and opens pull requests.',review:'Reviews proposed changes.',audit:'Checks changes for security issues.',controller:'Coordinates issues and merges approved pull requests.'};
-  // Decorative App portraits share a GitHub badge and have distinct role symbols.
-  function appIllustration(role){
-    const colors={build:'#94bfff',review:'#c9a4f4',audit:'#80d7bd',controller:'#edbd77'};
-    const marks={
-      build:'<rect x="19" y="37" width="17" height="17" rx="3" fill="currentColor" fill-opacity=".25"/><rect x="39" y="37" width="17" height="17" rx="3"/><rect x="29" y="16" width="17" height="17" rx="3" transform="rotate(-9 37 24)" fill="currentColor" fill-opacity=".4"/>',
-      review:'<rect x="21" y="17" width="30" height="38" rx="4" transform="rotate(-7 36 36)" fill="currentColor" fill-opacity=".13"/><path d="M29 27h14m-14 7h8"/><circle cx="46" cy="44" r="10" fill="#20232a"/><path d="m53 51 7 7m-18-14 3 3 5-6"/>',
-      audit:'<path d="M38 16c7 5 12 6 18 7v14c0 10-9 17-18 21-9-4-18-11-18-21V23c6-1 11-2 18-7Z" fill="currentColor" fill-opacity=".17"/><path d="m29 36 6 6 12-13m13-17v8m-4-4h8"/>',
-      controller:'<path d="m36 36-13-12m13 12 15-14M36 36l16 15M36 36 21 52"/><rect x="15" y="16" width="13" height="13" rx="4" transform="rotate(-10 21 22)" fill="#302a21"/><circle cx="54" cy="20" r="7" fill="currentColor" fill-opacity=".3"/><rect x="47" y="46" width="13" height="13" rx="4" transform="rotate(9 53 52)" fill="#302a21"/><circle cx="18" cy="55" r="6" fill="currentColor" fill-opacity=".3"/><circle cx="36" cy="36" r="9" fill="currentColor"/><path d="m33 36 2 2 4-4" stroke="#202328"/>'
-    };
-    return `<svg class="app-illustration" viewBox="0 0 80 80" aria-hidden="true" focusable="false" style="color:${colors[role]}"><rect x="5" y="5" width="65" height="65" rx="17" fill="currentColor" opacity=".07" transform="rotate(-5 38 38)"/><rect x="8" y="5" width="63" height="63" rx="16" fill="none" stroke="currentColor" stroke-opacity=".22"/><g fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${marks[role]}</g><circle cx="64" cy="64" r="15" fill="#252b30" stroke="#191c1f" stroke-width="4"/><svg x="54" y="54" width="20" height="20" viewBox="0 0 24 24" fill="#edf0f2"><path d="M12 .297C5.37.297 0 5.67 0 12.297c0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.043-1.61-4.043-1.61-.546-1.387-1.333-1.756-1.333-1.756-1.09-.745.083-.729.083-.729 1.205.084 1.838 1.237 1.838 1.237 1.07 1.835 2.809 1.305 3.495.998.108-.776.418-1.305.762-1.605-2.665-.305-5.466-1.334-5.466-5.93 0-1.31.469-2.381 1.236-3.221-.124-.303-.536-1.524.117-3.176 0 0 1.008-.322 3.301 1.23a11.52 11.52 0 0 1 3.003-.404c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.655 1.652.243 2.873.119 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.805 5.622-5.479 5.921.43.372.823 1.102.823 2.222 0 1.606-.015 2.898-.015 3.293 0 .322.216.694.825.576C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></svg>`;
-  }
   const statusNames={ready:'Access verified',ok:'Connected',unknown:'Access unknown',not_configured:'Not connected',stale:'Refresh needed',missing_permissions:'Permissions missing',missing_access:'No access',name_changed:'Repository renamed',archived:'Archived or disabled'};
   const accessPage=location.pathname==='/settings/github';
   let current=null,onboarding=null,dirty=false,busy=false,pendingRepo=null;
@@ -80,16 +69,23 @@
   let noticeTimer;
   const message=(text,error=false)=>{clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').classList.toggle('error',error);if(!error)noticeTimer=setTimeout(()=>{$('notice').textContent=''},6000)};
   function badge(status){return `<span class="badge ${['ok','ready'].includes(status)?'ready':''}">${esc(statusNames[status]||status)}</span>`}
+  $('github-title').closest('section').hidden=!accessPage;
+  $('repos-title').closest('section').hidden=!accessPage;
+  $('reset-title').closest('section').hidden=accessPage;
   if(accessPage){
     document.title='Forge · GitHub access';$('page-title').textContent='GitHub access';
     $('page-description').textContent='See the four Forge Apps, their verified permissions, and repository access. Refresh after changing access on GitHub.';
     $('runtime-title').closest('section').hidden=true;
   }
+  function repositoryState(repo){
+    const paused=repo.enabled&&!repo.access_ready,label=paused?'Paused · access needs attention':repo.enabled?'Enabled':'Not enabled';
+    return `<span class="repo-state ${paused?'paused':repo.enabled?'enabled':''}" role="img" aria-label="${label}" title="${label}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/>${paused?'<path d="M9 8v8m6-8v8"/>':'<path d="m7.5 12 3 3 6-6"/>'}</svg></span>`;
+  }
   function filterRepositories(){const query=$('repo-search').value.trim().toLowerCase();document.querySelectorAll('#repositories tr').forEach(row=>row.hidden=!row.dataset.name.includes(query));}
   $('repo-search').oninput=filterRepositories;
   function render(){
     const settingUp=onboarding?.phase!=='active';
-    $('setup-link').hidden=!settingUp;$('advanced-link').hidden=!accessPage||settingUp;
+    $('setup-link').hidden=!settingUp;
     $('connections').innerHTML=roles.map(role=>{
       const c=current.config.connections[role]||{},r=current.roles[role];
       const registration=onboarding?.roles?.[role];
@@ -101,9 +97,9 @@
       // Only server-generated, canonical GitHub links are actionable.
       const link=r.installation_url&&/^https:\/\/github\.com\/(?:organizations\/[A-Za-z0-9_.-]+\/)?settings\/installations\/[0-9]+$/.test(r.installation_url)?`<a href="${esc(r.installation_url)}" target="_blank" rel="noopener noreferrer">Manage access ↗</a>`:'';
       const action=link||(!c.app_id&&install?`<a href="${esc(install[0])}" target="_blank" rel="noopener noreferrer">Install App ↗</a>`:!c.app_id?'<a href="/onboarding">Connect in setup →</a>':'');
-      return `<article class="connection"><div class="heading"><div class="app-identity">${appIllustration(role)}<div><h3>${labels[role]}</h3><span class="app-kind">GitHub App</span></div></div>${badge(status)}</div><p class="connection-purpose">${purposes[role]}</p><p class="identity">${esc(slug||'No App connected')}</p><p class="muted">${esc(observation)}</p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<p>${action}</p></article>`;
+      return `<article class="connection"><div class="heading"><div class="app-identity"><svg class="app-illustration role-illustration" data-role="${role}" viewBox="0 0 80 80" aria-hidden="true" focusable="false"><use href="#forge-role-${role}"/><use href="#forge-github-badge"/></svg><div><h3>${labels[role]}</h3><span class="app-kind">GitHub App</span></div></div>${badge(status)}</div><p class="connection-purpose">${purposes[role]}</p><p class="identity">${esc(slug||'No App connected')}</p><p class="muted">${esc(observation)}</p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<p>${action}</p></article>`;
     }).join('');
-    $('repositories').innerHTML=current.repositories.map(r=>`<tr role="row" data-name="${esc(r.name.toLowerCase())}"><td role="cell"><strong>${esc(r.name)}</strong>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td role="cell"><span class="mobile-label" aria-hidden="true">${labels[role]}</span>${badge(r.access[role])}</td>`).join('')}<td role="cell">${settingUp?'<a href="/onboarding">Finish setup</a>':`<div class="automation-state">${r.enabled?`<span class="${r.access_ready?'enabled-state':'paused-state'}">${r.access_ready?'<span aria-hidden="true">✓</span> Enabled':'Paused'}</span><button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<button class="enable-action" data-repo="${r.id}" ${!r.access_ready?'disabled title="Verify access for all four GitHub Apps before enabling"':''}>Enable</button>`}</div>`}</td></tr>`).join('');
+    $('repositories').innerHTML=current.repositories.map(r=>`<tr role="row" data-name="${esc(r.name.toLowerCase())}"><td role="cell"><div class="repo-name">${repositoryState(r)}<strong>${esc(r.name)}</strong></div>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td role="cell"><span class="mobile-label" aria-hidden="true">${labels[role]}</span>${badge(r.access[role])}</td>`).join('')}<td role="cell">${settingUp?'<a href="/onboarding">Finish setup</a>':`<div class="automation-state">${r.enabled?`<button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<button class="enable-action" data-repo="${r.id}" ${!r.access_ready?'disabled title="Verify access for all four GitHub Apps before enabling"':''}>Enable</button>`}</div>`}</td></tr>`).join('');
     filterRepositories();
     $('repo-count').textContent=`${settingUp?'Setup in progress':current.repositories.filter(r=>r.enabled).length+' enabled'} · ${current.repositories.length} discovered or configured`;
     $('repo-empty').hidden=!!current.repositories.length;

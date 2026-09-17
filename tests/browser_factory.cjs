@@ -11,8 +11,8 @@ await page.route('http://forge.test/**',route=>{const url=new URL(route.request(
 await page.goto('http://forge.test/factory');await page.getByText('Repair issue-to-PR publication').waitFor();
 await page.getByRole('link',{name:'Forge home',exact:true}).waitFor();
 const navigation=page.getByRole('navigation',{name:'Main navigation'});
-assert.equal(await navigation.locator('[aria-current=page]').textContent(),'Factory');
-assert.equal(await navigation.getByRole('link').count(),4);
+assert.equal(await navigation.getByRole('link',{name:'Settings',exact:true}).getAttribute('href'),'/settings');
+assert.equal(await navigation.getByRole('link').count(),2);
 assert.equal(await page.getByRole('button',{name:'Stop',exact:true}).count(),1);
 assert.equal(await page.getByRole('button',{name:'Release',exact:true}).count(),0);
 await page.getByRole('button',{name:'Stop',exact:true}).click();await page.getByRole('dialog').waitFor();assert.equal(actions.length,0);
