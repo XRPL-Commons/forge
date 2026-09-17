@@ -68,8 +68,20 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     failSync=false;await page.reload();await page.getByText('forge-build-example',{exact:true}).waitFor();
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:'/tmp/forge-settings-operator-desktop.png',fullPage:true});
+    for(const width of [320,390,760]){
+      await page.setViewportSize({width,height:844});
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      assert(await page.locator('.table-wrap').evaluate(el=>el.scrollWidth<=el.clientWidth),'Repository actions must not require sideways scrolling');
+      const row=page.locator('#repositories tr').first();
+      await row.scrollIntoViewIfNeeded();
+      for(const cell of await row.locator('td').all()){
+        const box=await cell.boundingBox();assert(box.x>=0&&box.x+box.width<=width);
+      }
+      assert.equal(await row.locator('.mobile-label:visible').count(),4);
+      assert((await row.getByRole('button',{name:'Disable',exact:true}).boundingBox()).height>=44);
+    }
     await page.setViewportSize({width:390,height:844});
-    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:'/tmp/forge-settings-operator-mobile.png',fullPage:true});
     await page.goto('http://forge.test/settings/advanced');
     await page.getByText('forge-build-example',{exact:true}).waitFor();

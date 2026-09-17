@@ -20,7 +20,7 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 .forge-header a:focus-visible{outline:2px solid #abcfff;outline-offset:5px;border-radius:3px}
 .forge-header .forge-header-end{display:flex;align-items:center;gap:24px;flex-wrap:wrap;justify-content:flex-end}
 .forge-header #saved{font-size:12px;color:#acb7b9}.forge-header #saved:empty{display:none}
-@media(max-width:700px){.forge-header{padding:20px 18px;gap:16px}.forge-header .forge-header-end{width:100%;gap:8px;justify-content:flex-start}.forge-header .forge-navigation{justify-content:flex-start;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px}.forge-header #saved{display:none}}
+@media(max-width:700px){.forge-header{padding:20px 18px;gap:16px}.forge-header .forge-header-end{width:100%;gap:8px;justify-content:flex-start}.forge-header .forge-navigation{justify-content:flex-start;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px;min-height:44px;display:inline-flex;align-items:center}.forge-header #saved{display:none}}
 </style>"""
 
 
