@@ -11,6 +11,7 @@
     section{margin:28px 0;padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
     button,input,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px 12px}button{cursor:pointer}button:hover{border-color:var(--blue)}button:disabled{opacity:.5;cursor:default}
     :focus-visible{outline:2px solid var(--blue);outline-offset:3px}label{display:block;font-size:13px;margin-top:12px}input{width:100%;margin-top:5px;min-width:0}
+    .icon-button{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;flex:none;color:var(--muted);background:transparent}.icon-button:hover:not(:disabled){color:var(--text)}.icon-button svg{width:20px;height:20px;pointer-events:none}@media(max-width:760px){.icon-button{width:44px;height:44px}}
     .connections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;margin:20px 0}.connection{border:1px solid var(--line);border-radius:8px;padding:18px;min-width:0;overflow-wrap:anywhere}
     .app-identity{display:flex;align-items:center;gap:12px;min-width:0}.app-copy{min-width:0}.app-copy h3{font-size:15px;line-height:1.5}.app-copy .identity{font-weight:500;color:var(--muted)}.app-copy .connection-purpose{font-size:13px;margin:3px 0 0}.connection-meta{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;margin-top:12px;font-size:13px}.connection-meta p{margin:0}.connection-meta .connection-action{margin-left:auto}.app-illustration{width:72px;height:72px;flex:none;overflow:visible}
     .help-callout{background:#152631;border:1px solid #304d61;border-left:3px solid #94c4ff;border-radius:8px;padding:14px 16px;color:#c4d9e8}.help-callout summary,.help-label{color:#acd5f5;font-weight:600}.help-label{display:block;font-size:12px;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px}.credential-help{font-size:13px;margin:14px 0}.connection details{margin-bottom:0}.connection .identity{font-weight:600}.connection .connection-purpose{color:var(--muted)}
@@ -37,13 +38,13 @@
   <header><div><p class="settings-eyebrow">Settings</p><h1 id="page-title">General</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a></div><p class="muted" id="page-description">Manage worker capacity and factory setup.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
-    <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" disabled>Refresh access</button></div>
+    <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" class="icon-button" aria-label="Refresh access" title="Refresh access" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg></button></div>
     <p class="muted" id="sync-status">Loading settings…</p>
     <aside class="help-callout"><span class="help-label">Help · repository access</span>To add repositories, use <strong>Manage access</strong> for each App on GitHub, then <strong>Refresh access</strong> here. Forge manages the App credentials.</aside>
     <div class="connections" id="connections"></div>
   </section>
   <section aria-labelledby="repos-title">
-    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><button id="check-repositories">Check enabled repositories</button></div>
+    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><button id="check-repositories" class="icon-button" aria-label="Check enabled repositories" title="Check enabled repositories"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></button></div>
     <p class="muted">Enable a repository after all four roles have verified access. Newly discovered repositories start disabled.</p>
     <label for="repo-search">Find a repository<input id="repo-search" type="search" placeholder="Repository name" autocomplete="off"></label>
     <div class="table-wrap"><table role="table" aria-label="Repository access and automation"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Repository</th><th scope="col" role="columnheader">Builder</th><th scope="col" role="columnheader">Reviewer</th><th scope="col" role="columnheader">Auditor</th><th scope="col" role="columnheader">Controller</th><th scope="col" role="columnheader">Automation</th></tr></thead><tbody id="repositories" role="rowgroup"></tbody></table></div>
@@ -133,13 +134,14 @@
       finally{busy=false;$('refresh').disabled=false;}
     }else{await request('/api/settings/sync',{});message('Access refresh requested.');setTimeout(()=>{if(!dirty)load().catch(e=>message(e.message,true))},500)}
   });
-  $('repositories').onclick=guarded(async event=>{
+  const changeRepository=guarded(async event=>{
     const button=event.target.closest('[data-repo]');if(!button||button.disabled)return;
     if(dirty)throw Error('Save or reload your edits before changing repository activation.');
     const repo=current.repositories.find(r=>r.id===Number(button.dataset.repo));
     if(repo.enabled){await setEnabled(repo,false);return;}
     pendingRepo=repo;$('enable-message').textContent=repo.name;$('enable-dialog').showModal();
   });
+  $('repositories').onclick=event=>{if(event.target.closest('button[data-repo]'))return changeRepository(event)};
   async function setEnabled(repo,enabled){const config=structuredClone(current.config),row=config.repositories.find(r=>r.id===repo.id);if(row)row.enabled=enabled;else config.repositories.push({id:repo.id,name:repo.name,enabled});await save(config)}
   $('cancel-enable').onclick=()=>$('enable-dialog').close();
   $('confirm-enable').onclick=guarded(async()=>{$('enable-dialog').close();await setEnabled(pendingRepo,true)});
