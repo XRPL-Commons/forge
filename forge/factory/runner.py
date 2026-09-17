@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import hashlib
 
+from .capacity import observe as observe_capacity, memory_bytes, launch_lock
 from .contracts import assignment_note, identifier, unique
 from ..harnesses.registry import manifest
 from ..credentials import Credentials
@@ -23,6 +24,12 @@ from ..credentials import Credentials
 
 class RunnerError(RuntimeError):
     pass
+
+
+class RunnerCapacity(RunnerError):
+    def __init__(self, decision):
+        super().__init__('Waiting for available memory; Forge will retry automatically')
+        self.decision = decision
 
 
 class RunnerUnavailable(RunnerError):
@@ -129,6 +136,19 @@ class ContainerRunner:
         return True
 
     def create(self, job):
+        try:
+            with launch_lock(self.config['engine_socket']):
+                old = self.inspect(job)
+                if old:
+                    return old['id']
+                decision = self.capacity()
+                if not decision['allowed']:
+                    raise RunnerCapacity(decision)
+                return self._create(job)
+        except OSError:
+            raise RunnerCapacity({'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}) from None
+
+    def _create(self, job):
         old = self.inspect(job)
         if old:
             return old['id']
@@ -217,13 +237,41 @@ class ContainerRunner:
             # failure is an availability wait and shown as a reconnect request.
             return 'unavailable'
 
+    def capacity(self, job=None):
+        try:
+            ids = self.call(['container', 'ls', '-a', '--no-trunc', '--filter',
+                             'label=forge.execution', '--format', '{{.ID}}']).stdout.decode().splitlines()
+            if any(not re.fullmatch(r'[a-f0-9]{64}', value) for value in ids) or len(set(ids)) != len(ids):
+                raise ValueError('Invalid worker inventory')
+            containers = json.loads(self.call(['container', 'inspect', *ids]).stdout) if ids else []
+            if len(containers) != len(ids) or {c['Id'] for c in containers} != set(ids):
+                raise ValueError('Incomplete worker inventory')
+            requested = memory_bytes(self.config['memory'])
+            if job:
+                own = [c for c in containers if c['Name'] == '/' + self.name(job)]
+                if own:
+                    if len(own) != 1 or own[0]['Config']['Labels'].get('forge.execution') != job['id']:
+                        raise ValueError('Worker ownership changed')
+                    requested = own[0]['HostConfig']['Memory']
+                    containers.remove(own[0])
+            return observe_capacity(requested, containers)
+        except (RunnerError, OSError, ValueError, TypeError, KeyError, UnicodeError):
+            return {'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}
+
     def start(self, job):
         if job['fenced']:
             raise RunnerError('Execution authority was revoked')
-        current = self.inspect(job)
-        if not current or current['status'] != 'created':
-            raise RunnerError('Start requires the exact unstarted container')
-        self.call(['start', current['id']])
+        try:
+            with launch_lock(self.config['engine_socket']):
+                current = self.inspect(job)
+                if not current or current['status'] != 'created':
+                    raise RunnerError('Start requires the exact unstarted container')
+                decision = self.capacity(job)
+                if not decision['allowed']:
+                    raise RunnerCapacity(decision)
+                self.call(['start', current['id']])
+        except OSError:
+            raise RunnerCapacity({'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}) from None
 
     def observe(self, job, current=None):
         """Bounded running output is an observation, never a completion result."""

@@ -17,6 +17,11 @@ def overview(data, repositories, runtime, observation, active, now):
         error = observation['errors'][0]
         return result('Forge needs attention', error['reason'], '/settings', 'Review setup')
     current = [i for i in data['issues'].values() if i['state'] not in ('merged', 'cancelled')]
+    capacity = observation.get('capacity') or {}
+    if capacity.get('allowed') is False and capacity.get('reason') in ('memory_budget', 'memory_headroom', 'memory_pressure', 'telemetry_unavailable'):
+        unavailable = capacity['reason'] == 'telemetry_unavailable'
+        return result('Waiting for memory checks' if unavailable else 'Waiting for available memory',
+                      'Forge will retry automatically. Existing workers continue and queued issues keep their place.')
     working = next((i for i in current if i['active']), None)
     if working:
         job = data['jobs'][working['active']]
@@ -48,8 +53,6 @@ def overview(data, repositories, runtime, observation, active, now):
     if current and unavailable:
         return result('Waiting for a coding account', 'A coding account is temporarily unavailable. Forge will retry when it can.', '/settings/harnesses', 'Review coding accounts')
     if current:
-        if len(data['slots']) >= runtime['max_running']:
-            return result('Waiting for worker cleanup', 'All worker capacity is occupied. Capacity returns after cleanup is verified.')
         queued = next((i for i in current if NEXT_ROLE.get(i['state'])), None)
         if queued and runtime['slots'][NEXT_ROLE[queued['state']]] == 0:
             return result('Worker capacity is paused', 'The next stage has no worker slots enabled.', '/settings', 'Review worker capacity')

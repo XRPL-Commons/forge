@@ -11,7 +11,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     let synced=false, failSync=false, revision=1, saves=0;
     let setup={ok:true,phase:'active',roles:{build:{registered:true,app_id:1,install_url:'https://github.com/apps/forge-builder-example/installations/new'}}}, setupRefreshes=0;
     const originalConnections=structuredClone(config.connections);
-    let runtime={version:1,enabled:true,max_running:2,slots:{build:2,review:1,audit:1,recovery:1},provider_pool:[{id:'claude',provider:'claude',model:'default',provider_auth_file_env:'PRIVATE_REFERENCE'}],image:'unchanged-image'}, runtimeRevision=1;
+    let runtime={version:1,enabled:true,slots:{build:2,review:1,audit:1,recovery:1},provider_pool:[{id:'claude',provider:'claude',model:'default',provider_auth_file_env:'PRIVATE_REFERENCE'}],image:'unchanged-image'}, runtimeRevision=1;
     const view=()=>({ok:true,controls_token:'synthetic',revision:String(revision),config:structuredClone(config),
       roles:Object.fromEntries(roles.map(role=>[role,{status:!config.connections[role]?'not_configured':failSync?'unknown':synced?'ok':'unknown',required_permissions:{contents:role==='build'?'write':'read'},missing_permissions:[],reason:failSync?'Could not reach GitHub':null,app_slug:config.connections[role]?'forge-'+role+'-example':null,installation_url:config.connections[role]?'https://github.com/organizations/example/settings/installations/'+config.connections[role].installation_id:null}])),
       sync:synced?{status:'complete',finished_at:Date.now()/1000}:{status:'never'},
@@ -81,28 +81,28 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
     await page.getByText('Needs attention',{exact:true}).waitFor();assert.equal(config.repositories[0].enabled,true);
     await page.goto('http://forge.test/settings');
-    await page.waitForFunction(()=>document.getElementById('worker-total').value==='2');
+    await page.waitForFunction(()=>document.getElementById('worker-build').value==='2');
     assert(await page.locator('#worker-actions').isHidden());
-    await page.locator('#worker-total').fill('3');assert(await page.locator('#worker-actions').isVisible());
-    await page.locator('#worker-total').fill('2');assert(await page.locator('#worker-actions').isHidden());
+    await page.locator('#worker-build').fill('3');assert(await page.locator('#worker-actions').isVisible());
+    await page.locator('#worker-build').fill('2');assert(await page.locator('#worker-actions').isHidden());
     assert(await page.locator('#github-title').isHidden());assert(await page.locator('#reset-title').isVisible());
-    await page.locator('#worker-total').fill('6');
+    await page.locator('#worker-build').fill('6');
     await page.getByRole('button',{name:'Save worker limits',exact:true}).click();
     await page.getByText('Worker limits saved.',{exact:false}).waitFor();
     assert(await page.locator('#worker-actions').isHidden());
-    assert.equal(runtime.max_running,6);assert.equal(runtime.slots.recovery,1);
+    assert.equal(runtime.slots.build,6);assert.equal(runtime.slots.recovery,1);
     assert.equal(runtime.image,'unchanged-image');assert.equal(runtime.provider_pool[0].provider_auth_file_env,'PRIVATE_REFERENCE');
     assert.deepEqual(config.connections,originalConnections);
-    await page.locator('#worker-total').fill('8');runtimeRevision++;
+    await page.locator('#worker-build').fill('8');runtimeRevision++;
     await page.getByRole('button',{name:'Save worker limits',exact:true}).click();
     await page.getByText('Worker limits changed; reload before saving').waitFor();
-    assert.equal(await page.locator('#worker-total').inputValue(),'8');assert.equal(runtime.max_running,6);
+    assert.equal(await page.locator('#worker-build').inputValue(),'8');assert.equal(runtime.slots.build,6);
     await page.getByRole('button',{name:'Discard changes',exact:true}).click();
     await page.getByText('Changes discarded.',{exact:true}).waitFor();
-    assert.equal(await page.locator('#worker-total').inputValue(),'6');
+    assert.equal(await page.locator('#worker-build').inputValue(),'6');
     assert(await page.locator('#worker-actions').isHidden());
     for(const width of [320,390]){
-      await page.setViewportSize({width,height:844});await page.locator('#worker-total').fill('7');
+      await page.setViewportSize({width,height:844});await page.locator('#worker-build').fill('7');
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
       await page.getByRole('button',{name:'Discard changes',exact:true}).click();
       await page.waitForFunction(()=>document.getElementById('worker-actions').hidden);

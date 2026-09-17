@@ -71,3 +71,6 @@ an operator wants the factory to do.
   Enabled / Not enabled text; retain explanations for states needing attention.
 - Nested settings pages use the green SETTINGS breadcrumb above their title.
   Avoid duplicate back controls and reserve primary actions for substantive work.
+
+- Worker capacity is automatic from host memory; operators set only per-role maxima.
+  Describe memory waits as queued work that retries automatically, not an issue failure.

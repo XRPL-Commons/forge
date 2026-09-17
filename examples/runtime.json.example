@@ -8,7 +8,6 @@
     "audit": 1,
     "recovery": 1
   },
-  "max_running": 8,
   "cycle_seconds": 30,
   "timeout_seconds": {
     "build": 2700,

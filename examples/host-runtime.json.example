@@ -1,7 +1,6 @@
 {
   "version": 1,
   "image": "",
-  "max_running": 1,
   "slots": {
     "build": 2,
     "review": 1,

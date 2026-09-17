@@ -50,7 +50,7 @@ class Onboarding:
         path = self.root / ('runtime.json' if (self.root / 'state/factory-v2.enabled').exists() else 'setup/runtime.json')
         host = self.root / 'host-runtime.json'
         config = read_json(path) if path.exists() else read_json(host) if host.exists() else {}
-        return runtime_config({'max_running': 1, 'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}, **config,
+        return runtime_config({'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}, **config,
                                'enabled': False, 'merge_enabled': False})
 
     def revision(self, data):
@@ -111,6 +111,8 @@ class Onboarding:
         if action in ('check', 'harness_check'):
             if step == 'probe' and data.get('probe_jobs'):
                 job = data['probe_jobs'][-1]
+                if job.get('capacity_wait_since') is not None:
+                    return {'target': 'setup', 'label': 'Waiting for available memory; verification will resume automatically'}
                 if job['kind'] == 'provider':
                     provider = job['runner_config']['provider']
                     return {'target': 'provider', 'provider': provider, 'model_id': job.get('provider_id'),
