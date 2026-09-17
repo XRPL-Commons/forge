@@ -3,8 +3,8 @@
 Forge owns its implementation details. The UI presents decisions about the work
 an operator wants the factory to do.
 
-- Keep the Forge logo as the home link. Offer one destination link in the top
-  bar: Settings from the factory, and Factory from settings, alongside Help. Group General,
+- Keep the Forge logo as the home link. Keep Settings in the top bar alongside Help,
+  highlighted within settings; the logo returns to the factory. Group General,
   GitHub access and Coding accounts under the Settings tabs. Use the green
   SETTINGS eyebrow above each settings page title; avoid duplicate navigation.
 - Show useful choices: managed repositories, worker capacity, model preferences,
@@ -44,7 +44,7 @@ an operator wants the factory to do.
 - Header activity uses compact role-colored spinners with running worker counts,
   plus a count of tracked issues queued for enabled repositories. Hide zero
   counts and stale or unavailable observations; keep diagnostics on the Factory
-  page. Never animate a queue count. Do not duplicate factory status or
+  page. Exclude internal recovery workers from header activity. Never animate a queue count. Do not duplicate factory status or
   saved-draft messages in the header.
 - Settings tabs share one content width, left edge, top spacing and title style.
   Help uses the same outer spacing with a reading column and topic sidebar.
@@ -61,6 +61,13 @@ an operator wants the factory to do.
   checking. Use the shared ForgeRefresh poller and in-place renderer. Keep polling
   non-overlapping and pause it in hidden tabs. Show motion only in an explicit
   refresh control or while the server is checking, not on every background read.
-- Label manual rechecks Refresh. Keep previous results visible after network
-  failure, alongside a freshness warning. Historical evidence must never grant
+- Use circular-arrow icon buttons for manual rechecks, with contextual Refresh
+  accessible labels and tooltips. Animate the icon while the check is running.
+  Keep previous results visible after network failure, alongside a freshness warning. Historical evidence must never grant
   permission to dispatch, merge or download a newly verified configuration.
+
+- Show Save and Discard changes only when settings have unsaved edits. Avoid
+  a persistent reload control. Repository state icons and actions replace redundant
+  Enabled / Not enabled text; retain explanations for states needing attention.
+- Nested settings pages use the green SETTINGS breadcrumb above their title.
+  Avoid duplicate back controls and reserve primary actions for substantive work.

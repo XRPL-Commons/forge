@@ -71,7 +71,7 @@ function render(){
  $('github').textContent=existing?'Edit ruleset on GitHub ↗':'Open GitHub settings ↗';
  $('github').className='button '+(existing||downloaded?'primary':'');
  $('scope').textContent='Applies to every pull request targeting '+(report.branch||'the default branch')+'. Existing organization rules and stronger protections still apply.';
- $('check').className='button';
+ $('check').className='button icon-button';
  ForgeRefresh.button($('check'),checking||busy,status==='access_needed');
  $('hint').textContent=status==='access_needed'?'Finish connecting the Apps above to continue.':status==='stale'?'Check again to confirm the current GitHub settings before continuing.':status==='unknown'?((row.protection?.errors?.[0]?.detail||'GitHub could not be reached. Try checking again.')+(row.protection_last_known?' Showing the last checked requirements.':'')):checking?'This usually takes a few seconds. Automation stays unchanged.':'';
  $('repository-workspace').hidden=status==='access_needed';
@@ -79,9 +79,9 @@ function render(){
  $('enable').hidden=!canEnable||!displayReady;
  $('enable').disabled=busy||!ready;
  $('enable').textContent=enabling?'Enabling…':'Enable automation';
- $('continue').hidden=canEnable||!displayReady;
- $('continue').href=live?'/settings/github':snapshot.continue_url||'/onboarding';
- $('continue').textContent=live?'Back to repositories →':'Continue to Forge →';
+ $('continue').hidden=live||!displayReady;
+ $('continue').href=snapshot.continue_url||'/onboarding';
+ $('continue').textContent='Continue to Forge →';
  $('continue').setAttribute('aria-disabled',String(!ready||busy));if(!ready||busy)$('continue').removeAttribute('href');
  const canDownload=['ready','needs_setup'].includes(status)&&!busy;
  $('download').setAttribute('aria-disabled',String(!canDownload));if(!canDownload)$('download').removeAttribute('href');
@@ -116,7 +116,7 @@ async function enable(){
  try{
   const response=await fetch('/api/repositories/enable',{method:'POST',headers:{'Content-Type':'application/json','X-Forge-Action':snapshot.controls_token},signal:AbortSignal.timeout(30000),body:JSON.stringify({repo_id:repoId,revision:snapshot.revision})});
   const result=await response.json();if(!response.ok||!result.ok)throw Error(result.reason||'Could not enable this repository.');
-  snapshot=result;render();$('continue').focus();
+  snapshot=result;render();$('status').focus();
  }catch(error){$('error').textContent=error.message;busy=false;await load();}
  finally{busy=false;enabling=false;render()}
 }

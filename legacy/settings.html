@@ -40,13 +40,13 @@
   <header><div><p class="settings-eyebrow">Settings</p><h1 id="page-title">General</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a></div><p class="muted" id="page-description">Manage worker capacity and factory setup.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
-    <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" aria-label="Refresh GitHub access" disabled>Refresh</button></div>
+    <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" class="icon-button" aria-label="Refresh GitHub access" title="Refresh GitHub access" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg></button></div>
     <p class="muted" id="sync-status">Loading settings…</p>
     <aside class="help-callout"><span class="help-label">Help · repository access</span>To add repositories, use <strong>Manage access</strong> for each App on GitHub, then <strong>Refresh</strong> here. Forge manages the App credentials.</aside>
     <div class="connections" id="connections"></div>
   </section>
   <section aria-labelledby="repos-title">
-    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><a class="button add-repository" href="/settings/repository">Add repository</a><button id="check-repositories" aria-label="Refresh repositories">Refresh</button></div>
+    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><a class="button add-repository" href="/settings/repository">Add repository</a><button id="check-repositories" class="icon-button" aria-label="Refresh repositories" title="Refresh repositories"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg></button></div>
     <p class="muted">Choose Enable to check a repository and finish its setup. Automation starts only after you confirm.</p>
     <label for="repo-search">Find a repository<input id="repo-search" type="search" placeholder="Repository name" autocomplete="off"></label>
     <div class="table-wrap"><table role="table" aria-label="Repository automation"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Repository</th><th scope="col" role="columnheader">Automation</th></tr></thead><tbody id="repositories" role="rowgroup"></tbody></table></div>
@@ -54,8 +54,8 @@
     <p class="muted">Forge checks existing issues and pull requests before starting work. If access is lost, new work pauses and issue history is kept.</p>
   </section>
   <section aria-labelledby="runtime-title"><h2 id="runtime-title">Worker capacity</h2><p class="muted">Choose how many workers Forge can run at once. Changes apply as workers become available.</p>
-    <form id="workers-form"><div class="timing"><label>Maximum simultaneous workers<input id="worker-total" type="number" min="1" max="64" required></label><label>Builders<input id="worker-build" type="number" min="0" max="64" required></label><label>Reviewers<input id="worker-review" type="number" min="0" max="64" required></label><label>Security auditors<input id="worker-audit" type="number" min="0" max="64" required></label></div>
-    <p class="muted">The overall limit is shared by all roles, including recovery workers.</p><p><button id="save-workers" class="primary" disabled>Save worker limits</button> <button type="button" id="reload-workers" title="Discard unsaved edits and load the worker limits saved on the server">Reload saved limits</button></p></form>
+    <form id="workers-form"><div class="timing"><label>Total workers<input id="worker-total" type="number" min="1" max="64" required></label><label>Builders<input id="worker-build" type="number" min="0" max="64" required></label><label>Reviewers<input id="worker-review" type="number" min="0" max="64" required></label><label>Security auditors<input id="worker-audit" type="number" min="0" max="64" required></label></div>
+    <p class="muted">The total is shared across roles. For example, a total of 1 means only one builder, reviewer or auditor can work at a time, even if a role’s limit is higher.</p><p id="worker-actions" hidden><button id="save-workers" class="primary" disabled>Save worker limits</button> <button type="button" id="discard-workers" class="quiet-action">Discard changes</button></p></form>
   </section>
   <section class="danger-zone" aria-labelledby="reset-title"><span class="danger-label">Destructive action</span><h2 id="reset-title">Reset Forge</h2><p>Stops all Forge workers, discards unfinished local work, and clears this factory’s setup and saved connections. You will need to set up Forge again.</p><p class="muted">Your GitHub issues, branches, pull requests and App registrations are preserved.</p><a class="danger-link" href="/reset">Review reset…</a></section>
 </main>
@@ -104,10 +104,9 @@
     ForgeRefresh.html($('repositories'),current.repositories.map(r=>{
       const displayReady=r.protection_ready||(r.protection_status==='checking'&&r.protection_previous_status==='ready');
       const needsAttention=r.enabled&&(!r.access_ready||!displayReady);
-      const status=!r.enabled?'Not enabled':needsAttention?'Needs attention':'Enabled';
       const setupUrl='/settings/repository?repo_id='+r.id;
       const action=settingUp?'<a href="/onboarding">Continue setup →</a>':r.enabled?`${needsAttention?`<a href="${setupUrl}">Resolve →</a>`:''}<button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<a class="enable-action" href="${setupUrl}">Enable</a>`;
-      return `<tr role="row" data-key="${r.id}" data-name="${esc(r.name.toLowerCase())}"><td role="cell"><div class="repo-name">${repositoryState(r)}<strong><a class="repo-link" href="${setupUrl}">${esc(r.name)}</a></strong></div><p class="muted">${status}</p></td><td role="cell"><div class="automation-state">${action}</div></td></tr>`;
+      return `<tr role="row" data-key="${r.id}" data-name="${esc(r.name.toLowerCase())}"><td role="cell"><div class="repo-name">${repositoryState(r)}<strong><a class="repo-link" href="${setupUrl}">${esc(r.name)}</a></strong></div>${needsAttention?'<p class="muted">Needs attention</p>':''}</td><td role="cell"><div class="automation-state">${action}</div></td></tr>`;
     }).join(''));
     filterRepositories();
     $('repo-count').textContent=`${settingUp?'Setup in progress':current.repositories.filter(r=>r.enabled).length+' enabled'} · ${current.repositories.length} discovered or configured`;
@@ -139,32 +138,46 @@
     finally{busy=false;if(!dirty)render()}
   }
   function guarded(fn){return async event=>{event?.preventDefault();if(busy)return;try{await fn(event)}catch(error){message(error.message,true)}}}
-  document.querySelectorAll('form').forEach(el=>el.addEventListener('input',()=>{dirty=true}));
   $('refresh').onclick=guarded(async()=>{
-    if(dirty)throw Error('Save or reload your edits before refreshing access.');
+    if(dirty)throw Error('Save or discard your edits before refreshing access.');
     refreshingAccess=true;render();
     try{await request(onboarding?.phase==='setup'?'/api/onboarding':'/api/settings/sync',onboarding?.phase==='setup'?{action:'refresh'}:{});await load();if(onboarding?.phase==='setup')message('Access refreshed.');}
     finally{refreshingAccess=false;render();}
   });
   const changeRepository=guarded(async event=>{
     const button=event.target.closest('[data-repo]');if(!button||button.disabled)return;
-    if(dirty)throw Error('Save or reload your edits before changing repository activation.');
+    if(dirty)throw Error('Save or discard your edits before changing repository activation.');
     const repo=current.repositories.find(r=>r.id===Number(button.dataset.repo));
     if(repo.enabled)await setEnabled(repo,false);
   });
   $('repositories').onclick=event=>{if(event.target.closest('button[data-repo]'))return changeRepository(event)};
   async function setEnabled(repo,enabled){const config=structuredClone(current.config),row=config.repositories.find(r=>r.id===repo.id);if(row)row.enabled=enabled;else config.repositories.push({id:repo.id,name:repo.name,enabled});await save(config)}
   let runtimeRevision=null,runtime=null;
-  function renderWorkers(){if(!runtime)return;$('worker-total').value=runtime.max_running;for(const role of ['build','review','audit'])$('worker-'+role).value=runtime.slots[role];$('save-workers').disabled=false;}
+  const workerInputs=[$('worker-total'),...['build','review','audit'].map(role=>$('worker-'+role))];
+  function updateWorkerActions(){
+    const saved=runtime?[runtime.max_running,...['build','review','audit'].map(role=>runtime.slots[role])]:[];
+    dirty=!!runtime&&workerInputs.some((input,index)=>input.value===''||Number(input.value)!==saved[index]);
+    $('worker-actions').hidden=!dirty;
+    $('save-workers').disabled=busy||!dirty;
+    $('discard-workers').disabled=busy;
+    workerInputs.forEach(input=>{input.disabled=busy||!runtime});
+  }
+  function renderWorkers(){if(!runtime)return;$('worker-total').value=runtime.max_running;for(const role of ['build','review','audit'])$('worker-'+role).value=runtime.slots[role];updateWorkerActions();}
   async function loadRuntime(){const v=await request('/api/factory');runtimeRevision=v.runtime_revision;runtime=v.runtime;renderWorkers();}
-  $('reload-workers').onclick=guarded(async()=>{await loadRuntime();dirty=false;message('Worker limits reloaded.');});
+  $('workers-form').addEventListener('input',updateWorkerActions);
+  updateWorkerActions();
+  $('discard-workers').onclick=guarded(async()=>{
+    busy=true;updateWorkerActions();
+    try{await loadRuntime();message('Changes discarded.');}
+    finally{busy=false;updateWorkerActions();}
+  });
   $('workers-form').onsubmit=guarded(async()=>{
-    if(!runtime)return;
+    if(!runtime||!dirty)return;
     const config={...runtime,max_running:Number($('worker-total').value),slots:{...runtime.slots}};
     for(const role of ['build','review','audit'])config.slots[role]=Number($('worker-'+role).value);
-    busy=true;$('save-workers').disabled=true;
-    try{const v=await request('/api/runtime',{config,revision:runtimeRevision});runtimeRevision=v.runtime_revision;runtime=v.runtime;dirty=false;renderWorkers();message('Worker limits saved. They apply as workers become available.');}
-    finally{busy=false;$('save-workers').disabled=false;}
+    busy=true;updateWorkerActions();
+    try{const v=await request('/api/runtime',{config,revision:runtimeRevision});runtimeRevision=v.runtime_revision;runtime=v.runtime;renderWorkers();message('Worker limits saved. They apply as workers become available.');}
+    finally{busy=false;updateWorkerActions();}
   });
   $('check-repositories').onclick=guarded(async()=>{
     refreshingRepositories=true;render();

@@ -52,8 +52,8 @@ def render(page, path):
     settings_page = path.startswith('/settings')
     if settings_page:
         page = page.replace('<body>', '<body class="forge-settings-page">', 1)
-    href, label = ('/', '← Factory') if settings_page else ('/settings', 'Settings')
-    links = [f'<a href="{href}">{label}</a>', '<a class="forge-help" href="/setup-help" aria-label="Help" title="Help"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg></a>']
+    active = ' aria-current="page"' if settings_page else ''
+    links = [f'<a href="/settings"{active}>Settings</a>', '<a class="forge-help" href="/setup-help" aria-label="Help" title="Help"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg></a>']
     settings_nav = ''
     if settings_page:
         tabs = []
@@ -87,7 +87,7 @@ ACTIVITY_SCRIPT = """<script>(()=>{
       if(!data.observation?.at||now-data.observation.at>maxAge){hide();return;}
       const jobs=(data.jobs||[]).filter(job=>!job.cleanup&&!job.fenced&&!job.outcome);
       const working=jobs.filter(job=>job.phase==='running'&&job.last_observed&&now-job.last_observed<=maxAge);
-      const roles={build:['builder','builders','stage-build'],review:['reviewer','reviewers','stage-review'],audit:['auditor','auditors','stage-audit'],merge:['merge worker','merge workers','runners'],recovery:['recovery worker','recovery workers','runners']};
+      const roles={build:['builder','builders','stage-build'],review:['reviewer','reviewers','stage-review'],audit:['auditor','auditors','stage-audit'],merge:['merge worker','merge workers','runners']};
       const fragment=document.createDocumentFragment();
       for(const [role,[singular,plural,target]] of Object.entries(roles)){
         const count=working.filter(job=>job.role===role).length;if(!count)continue;
