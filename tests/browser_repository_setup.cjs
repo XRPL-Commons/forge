@@ -38,7 +38,7 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
   if(url.pathname==='/api/repositories/check'){
    assert.equal(request.headers()['x-forge-action'],'synthetic');actions.push(request.postDataJSON());
    if(reject)return route.fulfill({json:{ok:false,reason:'Repository settings changed. Reload and check again.'}});
-   row.protection_status='checking';return route.fulfill({json:{ok:true}});
+   row.protection_previous_status=row.protection_status;row.protection_status='checking';return route.fulfill({json:{ok:true}});
   }
   return route.fulfill({status:404});
  });
@@ -52,12 +52,13 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  assert.deepEqual(JSON.parse(fs.readFileSync(await download.path(),'utf8')),rules);
  assert.equal(actions.length,0,'Downloading must never install rules or enable automation');
  assert.equal(await page.getByRole('link',{name:'Open GitHub settings ↗'}).getAttribute('href'),row.rules_url);
- await page.getByRole('button',{name:'Check setup',exact:true}).focus();
- const handle=await page.getByRole('button',{name:'Check setup',exact:true}).elementHandle();
+ await page.getByRole('button',{name:'Refresh',exact:true}).focus();
+ const handle=await page.getByRole('button',{name:'Refresh',exact:true}).elementHandle();
  await page.waitForTimeout(3200);assert(await handle.evaluate(e=>e===document.activeElement),'Polling must preserve focus');
- await page.getByRole('button',{name:'Check setup',exact:true}).click();
- await page.getByRole('button',{name:'Checking GitHub…'}).waitFor();
- assert.equal(actions.length,1);
+ await page.getByRole('button',{name:'Refresh',exact:true}).click();
+ await page.getByRole('button',{name:'Refreshing…'}).waitFor();
+ assert.equal(actions.length,1);assert(await page.locator('#requirements').isVisible());assert(await page.locator('#steps').isVisible());assert.equal(await page.locator('#requirements li').count(),1);assert.equal(await page.locator('#download').getAttribute('href'),null);
+ await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('.forge-refresh-spinner:visible').evaluate(el=>getComputedStyle(el).animationName),'none');
  row.protection_status='ready';row.protection_ready=true;row.protection.requirements.forEach(r=>r.passed=true);
  await page.getByText('Ready to continue',{exact:true}).waitFor();
  await page.getByRole('link',{name:'Continue to Forge →'}).waitFor();
@@ -74,7 +75,7 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  await page.setViewportSize({width:640,height:400});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  row.protection_status='unknown';row.protection.available=false;row.protection.errors=[{detail:'GitHub is unavailable. Try again.'}];
  await page.reload();await page.getByText('Check unavailable',{exact:true}).waitFor();assert(await page.locator('#steps').isHidden());
- reject=true;await page.getByRole('button',{name:'Check repository',exact:true}).click();
+ reject=true;await page.getByRole('button',{name:'Refresh',exact:true}).click();
  await page.getByRole('alert').filter({hasText:'Repository settings changed'}).waitFor();
  await page.waitForTimeout(3200);assert((await page.getByRole('alert').textContent()).includes('Repository settings changed'));
  row.protection_status='stale';await page.reload();await page.getByText('Check setup again',{exact:true}).waitFor();
@@ -95,15 +96,19 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isHidden());
  await page.screenshot({path:'/private/tmp/forge-repository-access-mobile.png',fullPage:true});
  await page.getByRole('button',{name:'Refresh access',exact:true}).click();
- await page.getByRole('button',{name:'Checking GitHub…',exact:true}).waitFor();assert.equal(accessRefreshes,1);assert.equal(enables,0);
+ await page.getByRole('button',{name:'Refreshing…',exact:true}).waitFor();assert.equal(accessRefreshes,1);assert.equal(enables,0);
  row.protection_status='needs_setup';row.protection.edit_url=null;row.protection.requirements[0].passed=false;
  await page.getByRole('link',{name:'Download ruleset',exact:true}).waitFor();
  assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isHidden());
- await page.getByRole('button',{name:'Check setup',exact:true}).click();
- await page.getByRole('button',{name:'Checking GitHub…',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Refresh',exact:true}).click();
+ await page.getByRole('button',{name:'Refreshing…',exact:true}).waitFor();
  row.protection_status='ready';row.protection.requirements.forEach(r=>r.passed=true);
  await page.getByText('Ready to enable',{exact:true}).waitFor();assert.equal(enables,0);
  await page.setViewportSize({width:1280,height:900});await page.screenshot({path:'/private/tmp/forge-repository-enable-ready.png',fullPage:true});
+ await page.getByRole('button',{name:'Refresh',exact:true}).click();
+ await page.getByText('Ready to enable · Refreshing…',{exact:true}).waitFor();
+ assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isDisabled());
+ row.protection_status='ready';await page.getByText('Ready to enable',{exact:true}).waitFor();
  rejectEnable=true;await page.getByRole('button',{name:'Enable automation',exact:true}).click();
  await page.getByRole('alert').filter({hasText:'Check again before enabling'}).waitFor();assert.equal(enables,0);assert.equal(row.enabled,false);
  rejectEnable=false;await page.getByRole('button',{name:'Enable automation',exact:true}).click();

@@ -53,7 +53,8 @@ class RepositorySetup:
             if not row.get('access_ready'):
                 status = 'access_needed'
             result.append({**row, 'protection_status': status, 'protection_ready': status == 'ready',
-                           'protection': report, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
+                           'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
+                           'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
                            'setup_url': '/settings/repository?repo_id=' + str(row['id'])})
         return result
 
@@ -110,7 +111,11 @@ class RepositorySetup:
                 for row in rows:
                     if self.settings.paused() or digest(self.settings.load()) != current_revision:
                         return False
-                    data['repositories'][str(row['id'])] = {'revision': observation_key(config, row), 'name': row['name'],
+                    prior = data['repositories'].get(str(row['id']), {})
+                    same = prior.get('revision') == observation_key(config, row)
+                    known = (prior.get('report') if (prior.get('report') or {}).get('available') else prior.get('last_known')) if same else None
+                    data['repositories'][str(row['id'])] = {'report': known, 'last_known': known,
+                        'previous_status': ('ready' if known.get('requirements') and all(r['passed'] for r in known['requirements']) else 'needs_setup') if known else None, 'revision': observation_key(config, row), 'name': row['name'],
                         'status': 'checking', 'started_at': self.settings.clock()}
                     write_json(self.path, data)
                     report = {'repo_id': row['id'], 'branch': None, 'available': False,

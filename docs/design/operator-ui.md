@@ -56,3 +56,11 @@ an operator wants the factory to do.
 - Verified coding accounts show a green check and no reconnect action. Show a
   primary Connect or Verify connection action only when it is needed.
 - Use an accessible question-mark Help icon in the shared header.
+
+- Refresh is additive: preserve the last observation, search, focus and layout while
+  checking. Use the shared ForgeRefresh poller and in-place renderer. Keep polling
+  non-overlapping and pause it in hidden tabs. Show motion only in an explicit
+  refresh control or while the server is checking, not on every background read.
+- Label manual rechecks Refresh. Keep previous results visible after network
+  failure, alongside a freshness warning. Historical evidence must never grant
+  permission to dispatch, merge or download a newly verified configuration.
