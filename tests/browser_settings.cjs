@@ -19,6 +19,9 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.route('http://forge.test/**',async route=>{
       const req=route.request(),url=new URL(req.url());
       if(['/settings','/settings/advanced','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:renderPage('settings.html',url.pathname)});
+      if(url.pathname==='/settings/repository')return route.fulfill({contentType:'text/html',body:renderPage('repository-setup.html',url.pathname)});
+      if(url.pathname==='/assets/repository-setup.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(path.join(__dirname,'../legacy/repository-setup.js'),'utf8')});
+      if(url.pathname==='/api/repositories')return route.fulfill({json:{...view(),continue_url:'/factory'}});
       if(url.pathname==='/api/onboarding'){
         if(req.method()==='POST'){assert.equal(req.headers()['x-forge-action'],'synthetic');assert.deepEqual(req.postDataJSON(),{action:'refresh'});setupRefreshes++;}
         return route.fulfill({json:setup});
@@ -43,6 +46,19 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert.equal(await page.getByText('FORGE_BUILD_KEY_FILE',{exact:false}).count(),0);
     await page.getByRole('button',{name:'Refresh access',exact:true}).click();
     await page.getByRole('button',{name:'Enable',exact:true}).waitFor();
+    // Exercise navigation from the table: a delegated button handler must not
+    // cancel ordinary link clicks or keyboard activation.
+    const beforeNavigationSaves=saves;
+    for(const keyboard of [false,true]){
+      const link=page.getByRole('link',{name:'View setup',exact:true});
+      if(keyboard){await link.focus();await page.keyboard.press('Enter')}else await link.click();
+      await page.waitForURL('http://forge.test/settings/repository?repo_id=10',{timeout:5000});
+      await page.getByRole('heading',{name:'Prepare your repository',exact:true}).waitFor();
+      await page.getByText('Review requirements verified',{exact:true}).waitFor();
+      await page.getByRole('link',{name:'← GitHub access',exact:true}).click();
+      await page.getByRole('button',{name:'Enable',exact:true}).waitFor();
+    }
+    assert.equal(saves,beforeNavigationSaves,'Viewing setup must not change repository activation');
     const disabledRowHeight=(await page.locator('#repositories tr').boundingBox()).height;
     assert((await page.getByRole('button',{name:'Enable',exact:true}).boundingBox()).height<=32);
     await page.getByRole('button',{name:'Enable',exact:true}).click();
