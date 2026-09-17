@@ -10,7 +10,7 @@
 <p class="error" id="error" role="alert"></p>
 <section id="picker" class="panel"><h2>Choose your repository</h2><label for="repo-search" class="small">Find by name</label><input id="repo-search" type="search" placeholder="owner/repository" autocomplete="off"><ul id="repo-options"></ul><p id="no-repositories" class="small" hidden>No matching repositories yet.</p><details id="missing-repository"><summary>Repository missing?</summary><p>Give a Forge App access to the repository on GitHub using the links below, then refresh access. It will appear here once Forge can see it.</p></details></section>
 <div class="repository" id="repository-summary" hidden><div><div class="selection-label"><strong id="repository-name">Loading repository…</strong><a href="/settings/repository">Change</a></div><span class="small" id="branch"></span></div><span id="status" class="status" role="status">Loading…</span></div>
-<section id="app-access" class="panel" hidden><div class="panel-heading"><h2 id="app-access-title">Connect the Forge Apps</h2><button class="button" id="check-access">Refresh access</button></div><p id="app-access-description" class="small"></p><div id="app-connections"></div><p id="access-result" class="small" role="status"></p></section>
+<section id="app-access" class="panel" hidden><div class="panel-heading"><h2 id="app-access-title">Connect the Forge Apps</h2><button class="button" id="check-access" aria-label="Refresh GitHub access">Refresh access</button></div><p id="app-access-description" class="small"></p><div id="app-connections"></div><p id="access-result" class="small" role="status"></p></section>
 <div id="repository-workspace" hidden>
 
 <ul id="requirements" hidden></ul>

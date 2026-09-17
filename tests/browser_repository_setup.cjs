@@ -95,7 +95,7 @@ const browser=await chromium.launch({headless:true,chromiumSandbox:true,executab
  assert.equal(await page.getByRole('link',{name:'Install App ↗',exact:true}).getAttribute('href'),state.connections.controller.install_url);
  assert(await page.getByRole('button',{name:'Enable automation',exact:true}).isHidden());
  await page.screenshot({path:'/private/tmp/forge-repository-access-mobile.png',fullPage:true});
- await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+ await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
  await page.getByRole('button',{name:'Refreshing…',exact:true}).waitFor();assert.equal(accessRefreshes,1);assert.equal(enables,0);
  row.protection_status='needs_setup';row.protection.edit_url=null;row.protection.requirements[0].passed=false;
  await page.getByRole('link',{name:'Download ruleset',exact:true}).waitFor();

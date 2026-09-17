@@ -40,13 +40,13 @@
   <header><div><p class="settings-eyebrow">Settings</p><h1 id="page-title">General</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a></div><p class="muted" id="page-description">Manage worker capacity and factory setup.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
-    <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" class="icon-button" aria-label="Refresh access" title="Refresh access" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg></button></div>
+    <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" aria-label="Refresh GitHub access" disabled>Refresh</button></div>
     <p class="muted" id="sync-status">Loading settings…</p>
-    <aside class="help-callout"><span class="help-label">Help · repository access</span>To add repositories, use <strong>Manage access</strong> for each App on GitHub, then <strong>Refresh access</strong> here. Forge manages the App credentials.</aside>
+    <aside class="help-callout"><span class="help-label">Help · repository access</span>To add repositories, use <strong>Manage access</strong> for each App on GitHub, then <strong>Refresh</strong> here. Forge manages the App credentials.</aside>
     <div class="connections" id="connections"></div>
   </section>
   <section aria-labelledby="repos-title">
-    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><a class="button add-repository" href="/settings/repository">Add repository</a><button id="check-repositories" class="icon-button" aria-label="Check enabled repositories" title="Check enabled repositories"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></button></div>
+    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><a class="button add-repository" href="/settings/repository">Add repository</a><button id="check-repositories" aria-label="Refresh repositories">Refresh</button></div>
     <p class="muted">Choose Enable to check a repository and finish its setup. Automation starts only after you confirm.</p>
     <label for="repo-search">Find a repository<input id="repo-search" type="search" placeholder="Repository name" autocomplete="off"></label>
     <div class="table-wrap"><table role="table" aria-label="Repository automation"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Repository</th><th scope="col" role="columnheader">Automation</th></tr></thead><tbody id="repositories" role="rowgroup"></tbody></table></div>

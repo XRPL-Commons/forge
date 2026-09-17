@@ -45,7 +45,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert.equal(await page.locator('#connections input, #config-editor, #runtime-editor').count(),0);
     assert.equal(await page.getByRole('button',{name:'Save connections',exact:true}).count(),0);
     assert.equal(await page.getByText('FORGE_BUILD_KEY_FILE',{exact:false}).count(),0);
-    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
     await page.getByRole('link',{name:'Enable',exact:true}).waitFor();
     // Exercise navigation from the table: a delegated button handler must not
     // cancel ordinary link clicks or keyboard activation.
@@ -78,7 +78,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert(await accessNode.evaluate(el=>el===document.activeElement),'Polling must preserve link focus');
     assert.equal(await page.locator('#repo-search').inputValue(),'project');
     failSync=true;
-    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
     await page.getByText('Needs attention',{exact:true}).waitFor();assert.equal(config.repositories[0].enabled,true);
     await page.goto('http://forge.test/settings');
     await page.waitForFunction(()=>!document.getElementById('save-workers').disabled);
@@ -127,7 +127,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert.equal(await page.locator('#build-key').count(),0);
     assert.equal(await page.locator('#save-connections').count(),0);assert(await page.locator('#runtime-title').isHidden());
     const beforeOperatorSaves=saves;
-    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
     await page.getByText('Access refreshed.',{exact:true}).waitFor();assert.equal(setupRefreshes,1);
     config.connections={build:{app_id:1,installation_id:101,private_key_env:'FORGE_BUILD_KEY_FILE'}};synced=true;
     await page.reload();await page.getByText('example/project',{exact:true}).waitFor();

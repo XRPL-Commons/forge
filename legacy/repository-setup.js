@@ -23,8 +23,7 @@ function renderAccess(row){
   const ready=row?status==='ready':false;
   return `<div class="app-row" data-key="${role}"><div><strong>${name}</strong>${ready?'':`<p>${esc(accessLabels[status]||'Choose the repository in GitHub’s access settings.')}</p>`}</div>${ready?'<span class="good">Connected ✓</span>':appAction(connection)}</div>`;
  }).join(''));
- $('check-access').disabled=refreshing||snapshot.sync?.status==='running';
- $('check-access').textContent=$('check-access').disabled?'Refreshing…':'Refresh access';
+ ForgeRefresh.button($('check-access'),refreshing||snapshot.sync?.status==='running');
 }
 function renderPicker(){
  const query=$('repo-search').value.trim().toLowerCase();
@@ -34,7 +33,8 @@ function renderPicker(){
  if(!rows.length)$('app-access').hidden=false;
 }
 function renderProgress(row){
- const stage=!row?0:!row.access_ready?1:row.protection_status!=='ready'?2:row.enabled&&snapshot.activation_available?4:3;
+ const displayStatus=row?.protection_status==='checking'?(row.protection_previous_status||'checking'):row?.protection_status;
+ const stage=!row?0:!row.access_ready?1:displayStatus!=='ready'?2:row.enabled&&snapshot.activation_available?4:3;
  $('progress-enable').textContent=snapshot.activation_available?'Enable':'Finish setup';
  ['repo','access','rules','enable'].forEach((name,index)=>{const element=$('progress-'+name);element.className=index<stage?'done':'';if(index===stage)element.setAttribute('aria-current','step');else element.removeAttribute('aria-current')});
 }
@@ -107,14 +107,14 @@ const poller=ForgeRefresh.poll({interval:3000,allowed:()=>!busy,
 const load=()=>poller.refresh();
 async function check(){
  if(busy||!snapshot)return;busy=true;$('error').textContent='';render();
- try{const response=await fetch('/api/repositories/check',{method:'POST',headers:{'Content-Type':'application/json','X-Forge-Action':snapshot.controls_token},body:JSON.stringify({repo_id:repoId,revision:snapshot.revision})});const result=await response.json();if(!response.ok||!result.ok)throw Error(result.reason||'Could not start the check.');busy=false;await load();}
+ try{const response=await fetch('/api/repositories/check',{method:'POST',headers:{'Content-Type':'application/json','X-Forge-Action':snapshot.controls_token},signal:AbortSignal.timeout(30000),body:JSON.stringify({repo_id:repoId,revision:snapshot.revision})});const result=await response.json();if(!response.ok||!result.ok)throw Error(result.reason||'Could not start the check.');busy=false;await load();}
  catch(error){$('error').textContent=error.message;}finally{busy=false;render();}
 }
 async function enable(){
  if(busy||!snapshot||snapshot.repositories[0].protection_status!=='ready')return;
  busy=true;enabling=true;$('error').textContent='';render();
  try{
-  const response=await fetch('/api/repositories/enable',{method:'POST',headers:{'Content-Type':'application/json','X-Forge-Action':snapshot.controls_token},body:JSON.stringify({repo_id:repoId,revision:snapshot.revision})});
+  const response=await fetch('/api/repositories/enable',{method:'POST',headers:{'Content-Type':'application/json','X-Forge-Action':snapshot.controls_token},signal:AbortSignal.timeout(30000),body:JSON.stringify({repo_id:repoId,revision:snapshot.revision})});
   const result=await response.json();if(!response.ok||!result.ok)throw Error(result.reason||'Could not enable this repository.');
   snapshot=result;render();$('continue').focus();
  }catch(error){$('error').textContent=error.message;busy=false;await load();}
