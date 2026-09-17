@@ -5,10 +5,10 @@ const { chromium } = require(
 const fs = require("fs"),
   assert = require("assert");
 (async () => {
-  const browser = await chromium.launch({
+  const browser = await chromium.launch({chromiumSandbox:true,
     headless: true,
     executablePath: process.env.FORGE_BROWSER_PATH,
-    args: ["--no-sandbox"],
+    args: [],
   });
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },

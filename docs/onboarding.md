@@ -7,14 +7,19 @@ Open /onboarding on the trusted private dashboard address.
    repositories for every installation. Return to Forge after installation;
    Refresh access verifies connections without granting additional access.
 2. Choose one shared repository. This saves a draft, without starting work.
-3. Connect Codex and/or Claude Code from `bin/forge setup` on the VM. Terminal
-   verification checks the connected accounts and isolated worker lifecycle.
-4. On the Start page, press Verify repository. Forge checks GitHub protection,
-   coding accounts and worker cleanup. If protection fails, the page lists the
-   specific unmet requirements and links to the repository settings. A check
-   marked “Not run in this attempt” was skipped because an earlier check failed;
-   it does not invalidate an account verified previously. Small model requests
-   may incur provider charges. Press Start Forge once verification passes.
+3. Prepare the repository. Forge checks its default branch using read-only GitHub
+   access. If a review setting is missing, download the ruleset, import it on
+   GitHub using your own account, then return and press Check setup. Repositories
+   that already meet the requirements skip the import step.
+4. Connect Codex and/or Claude Code from `bin/forge setup` on the VM. The Coding
+   accounts screen provides copyable terminal commands. Verification checks the
+   connected accounts and isolated worker lifecycle; small model requests may
+   incur provider charges.
+5. On the Start page, press Verify repository. Recent account and worker evidence
+   can be reused for fifteen minutes if credentials and runtime settings have not
+   changed. Repository-only rechecks do not repeat those model probes. Press
+   Start Forge once verification passes. This explicitly authorizes eligible
+   issue processing and policy-gated merges.
 
 You own the Apps. Forge does not request a personal administrator token. GitHub
 requires a human to approve each App registration and installation. App private
@@ -44,6 +49,14 @@ credentials through guided setup; the operator UI does not expose credential
 references, manual App identifiers, or JSON editors. Factory settings provides
 worker-capacity controls. Help appears in blue callouts, separate from status.
 
+Each repository also shows its review-settings status and a link to setup.
+Check enabled repositories runs read-only checks; one failed repository does not
+hide the others. Results expire after five minutes and are invalidated when the
+repository identity or configuration changes. Enablement records your intent;
+access and protection must still pass before work can start. After a rules repair,
+Forge releases only holds caused by missing review settings, preserving failure
+budgets, explicit holds and human approval waits.
+
 All four installations need access to the same selected repositories. GitHub also
 provides an API for adding individual repository grants, but that endpoint requires
 a classic personal access token with repo scope and repository admin access; App
@@ -64,8 +77,23 @@ owners choose CI checks, push restrictions, administrator enforcement and bypass
 permissions. Forge does not require exclusive Controller access, globally required
 Forge checks, or up-to-date branches as an installation prerequisite.
 
-Open Settings → Branches and edit the default-branch rule if either baseline
-setting is missing. See [GitHub's branch protection guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule).
+Choose Set up repository from GitHub access, or Prepare repository during
+onboarding. The download targets the default branch observed by Forge. It adds
+only the two review requirements above, with no bypass actors. It affects every
+pull request targeting that branch, including developers' pull requests.
+
+On GitHub, open the repository's Settings → Rules → Rulesets and choose New
+ruleset → Import a ruleset. Select the downloaded JSON, review it and save. If
+GitHub's navigation differs, follow [GitHub's import guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository#importing-prebuilt-rulesets).
+If Forge finds an existing “Forge review baseline” ruleset, it links to editing
+that ruleset instead. Existing classic branch protection can also satisfy the
+baseline without importing anything. If import is unavailable for your plan or
+role, a repository administrator can configure the same review requirements.
+
+Return to Forge and press Check setup. Downloading the file or opening GitHub
+never counts as a successful check. Review requirements verified confirms only
+the observed baseline; review the bypass list yourself on GitHub. Organization
+rules and stronger protections remain in effect, with source links in the details.
 
 Forge still publishes its review, audit and merge-policy checks on its own PRs.
 Its supervisor requires current evidence from the assigned Reviewer and Auditor
@@ -120,6 +148,18 @@ the same root. The UI shows connection status and terminal instructions.
 Forge preserves refreshed installation-owned logins across runner cleanup; an
 older runner cannot overwrite a newer login. External imported files remain untouched.
 See [installation](installation.md) for API keys, model rotation and fresh VM setup.
+
+## First work
+
+After Start, the factory shows current supervisor activity and the next action.
+A missing heartbeat is Waiting for the Forge service, not an empty queue. When
+checks pass and no issues are queued, open the linked repository and add the
+configured ready label to an issue you want Forge to handle. Forge does not
+create a demonstration issue automatically.
+
+The live issue links lead to GitHub, and a human approval wait links to the actual
+pull request. Completed issues use GitHub's confirmed merge result. Worker exit
+alone never counts as completion. Histories and logs stay available in details.
 
 ## Reset and restart
 
