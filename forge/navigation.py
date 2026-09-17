@@ -1,6 +1,13 @@
 """Shared, server-rendered navigation for every Forge operator page."""
 
-STYLE = """<style>
+FAVICON = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="12" fill="#101416"/>
+<g transform="rotate(-6 32 32)" fill="none" stroke="#bfe6cd" stroke-width="2.5">
+<rect x="9" y="9" width="46" height="46" rx="8"/>
+<path d="M23 18h23v6H30v8h13v6H30v10h-7z" fill="#bfe6cd" stroke="none"/>
+</g></svg>'''
+
+STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1"><style>
 :root{--forge-header-height:84px;scroll-padding-top:calc(var(--forge-header-height) + 16px)}
 .forge-topbar{position:sticky;top:0;z-index:3;background:#101416;border-bottom:1px solid #303b40}
 .forge-header{box-sizing:border-box;max-width:1600px;margin:0 auto;padding:26px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#edf1ee}

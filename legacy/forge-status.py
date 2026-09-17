@@ -587,6 +587,10 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path.startswith('/api/') and u.path!='/api/onboarding' and (Path(WD)/'state/factory-paused.json').exists():
             self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
+        if u.path == '/favicon.svg':
+            from forge.navigation import FAVICON
+            self._send(FAVICON, 'image/svg+xml')
+            return
         if u.path == '/onboarding/github/callback':
             from forge.onboarding import Onboarding
             try:
