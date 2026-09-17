@@ -16,14 +16,15 @@
     .help-callout{background:#152631;border:1px solid #304d61;border-left:3px solid #94c4ff;border-radius:8px;padding:14px 16px;color:#c4d9e8}.help-callout summary,.help-label{color:#acd5f5;font-weight:600}.help-label{display:block;font-size:12px;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px}.credential-help{font-size:13px;margin:14px 0}.connection details{margin-bottom:0}.connection .identity{font-weight:600}.connection .connection-purpose{color:var(--muted)}
     .fields{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.fields label:last-child{grid-column:1/-1}.badge{font-size:12px;border-radius:20px;padding:4px 9px;background:#252b30;display:inline-block;color:var(--amber)}.badge.ready{color:var(--green)}
     .table-wrap{overflow:auto;margin:16px 0}table{border-collapse:collapse;width:100%;text-align:left}th,td{padding:12px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:12px}td:first-child{overflow-wrap:anywhere;min-width:180px}
-    #notice{position:sticky;top:calc(var(--forge-header-height,84px) + 12px);z-index:2;background:#242b30;border:1px solid var(--line);border-radius:8px;padding:12px;margin:16px 0}#notice:empty{display:none}.error{color:#ffaaa4}
+    #notice{background:#242b30;border:1px solid var(--line);border-radius:8px;padding:12px;margin:16px 0}#notice:empty{display:none}.error{color:#ffaaa4}
+    .automation-state{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:100px}.enabled-state{color:var(--green);font-weight:600;white-space:nowrap}.paused-state{color:var(--amber);font-weight:600}.quiet-action{background:transparent;border-color:transparent;color:var(--muted);padding:3px 0;font-size:13px;text-decoration:underline;text-underline-offset:3px}.quiet-action:hover{color:var(--text);border-color:transparent}.enable-action:not(:disabled){color:var(--green);border-color:#476353;background:#1c2b23}.danger-zone{border-color:#66433f;margin-top:48px}.danger-label{color:#ffaaa4;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase}.danger-link{display:inline-block;color:#ffaaa4;border:1px solid #80514b;border-radius:6px;padding:9px 12px;text-decoration:none;margin-top:8px}.danger-link:hover{background:#342321}
     details{margin:16px 0}summary{cursor:pointer}li{margin:7px 0}code{font-size:13px}textarea{width:100%;min-height:360px;font:13px/1.6 ui-monospace,monospace;margin:12px 0}.timing{display:flex;gap:20px;flex-wrap:wrap}.timing input{max-width:180px;display:block}
     dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:12px;max-width:440px;padding:24px}dialog::backdrop{background:#0009}[hidden]{display:none!important}
     @media(max-width:650px){main{padding:18px}section{padding:16px}.connections{grid-template-columns:1fr}.fields{grid-template-columns:1fr}.fields label:last-child{grid-column:auto}header{align-items:flex-start}}
   </style>
 </head>
 <body><!--FORGE_NAVIGATION--><main>
-  <header><div><h1 id="page-title">Settings</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a><a href="/settings" id="advanced-link" hidden>Factory settings</a><a href="/reset">Reset Forge</a></div><p class="muted" id="page-description">Manage repositories and worker capacity.</p></div></header>
+  <header><div><h1 id="page-title">Settings</h1><div class="toolbar"><a href="/onboarding" id="setup-link" hidden>Continue setup</a><a href="/settings" id="advanced-link" hidden>Factory settings</a></div><p class="muted" id="page-description">Manage repositories and worker capacity.</p></div></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <section aria-labelledby="github-title">
     <div class="heading"><h2 id="github-title">GitHub connections</h2><button id="refresh" disabled>Refresh access</button></div>
@@ -44,6 +45,7 @@
     <p class="muted">The overall limit is shared by all roles, including recovery workers.</p><p><button id="save-workers" disabled>Save worker limits</button> <button type="button" id="reload-workers">Reload values</button></p></form>
     <p><a href="/settings/harnesses">Coding accounts and models →</a></p>
   </section>
+  <section class="danger-zone" aria-labelledby="reset-title"><span class="danger-label">Destructive action</span><h2 id="reset-title">Reset Forge</h2><p>Stops all Forge workers, discards unfinished local work, and clears this factory’s setup and saved connections. You will need to set up Forge again.</p><p class="muted">Your GitHub issues, branches, pull requests and App registrations are preserved.</p><a class="danger-link" href="/reset">Review reset…</a></section>
   <dialog id="enable-dialog" aria-labelledby="enable-title"><h2 id="enable-title">Enable repository?</h2><p id="enable-message"></p><p>Forge may pick up eligible issues once reconciliation and execution setup are complete.</p><div class="toolbar"><button id="cancel-enable">Cancel</button><button id="confirm-enable">Enable automation</button></div></dialog>
 </main>
 <script>
@@ -65,7 +67,8 @@
   const accessPage=location.pathname==='/settings/github';
   let current=null,onboarding=null,dirty=false,busy=false,pendingRepo=null;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const message=(text,error=false)=>{$('notice').textContent=text;$('notice').classList.toggle('error',error)};
+  let noticeTimer;
+  const message=(text,error=false)=>{clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').classList.toggle('error',error);if(!error)noticeTimer=setTimeout(()=>{$('notice').textContent=''},6000)};
   function badge(status){return `<span class="badge ${['ok','ready'].includes(status)?'ready':''}">${esc(statusNames[status]||status)}</span>`}
   if(accessPage){
     document.title='Forge · GitHub access';$('page-title').textContent='GitHub access';
@@ -90,7 +93,7 @@
       const action=link||(!c.app_id&&install?`<a href="${esc(install[0])}" target="_blank" rel="noopener noreferrer">Install App ↗</a>`:!c.app_id?'<a href="/onboarding">Connect in setup →</a>':'');
       return `<article class="connection"><div class="heading"><div class="app-identity">${appIllustration(role)}<div><h3>${labels[role]}</h3><span class="app-kind">GitHub App</span></div></div>${badge(status)}</div><p class="connection-purpose">${purposes[role]}</p><p class="identity">${esc(slug||'No App connected')}</p><p class="muted">${esc(observation)}</p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<p>${action}</p></article>`;
     }).join('');
-    $('repositories').innerHTML=current.repositories.map(r=>`<tr data-name="${esc(r.name.toLowerCase())}"><td><strong>${esc(r.name)}</strong>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td>${settingUp?'<a href="/onboarding">Finish setup</a>':`<button data-repo="${r.id}" ${!r.enabled&&!r.access_ready?'disabled':''}>${r.enabled?'Disable':'Enable'}</button>`}</td></tr>`).join('');
+    $('repositories').innerHTML=current.repositories.map(r=>`<tr data-name="${esc(r.name.toLowerCase())}"><td><strong>${esc(r.name)}</strong>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td>${settingUp?'<a href="/onboarding">Finish setup</a>':`<div class="automation-state">${r.enabled?`<span class="${r.access_ready?'enabled-state':'paused-state'}">${r.access_ready?'<span aria-hidden="true">✓</span> Enabled':'Paused'}</span><button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<span class="muted">${r.access_ready?'Not enabled':'Access needed'}</span><button class="enable-action" data-repo="${r.id}" ${!r.access_ready?'disabled':''}>Enable</button>`}</div>`}</td></tr>`).join('');
     filterRepositories();
     $('repo-count').textContent=`${settingUp?'Setup in progress':current.repositories.filter(r=>r.enabled).length+' enabled'} · ${current.repositories.length} discovered or configured`;
     $('repo-empty').hidden=!!current.repositories.length;
