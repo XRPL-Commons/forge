@@ -48,3 +48,11 @@ an operator wants the factory to do.
   saved-draft messages in the header.
 - Settings tabs share one content width, left edge, top spacing and title style.
   Help uses the same outer spacing with a reading column and topic sidebar.
+
+- App cards put the role and App name together beside the illustration, followed
+  by its purpose. Keep connection status, repository count and access action compact.
+- Normal repository rows keep the same height whether automation is enabled or
+  disabled. Use small primary Enable controls on desktop and retain mobile tap targets.
+- Verified coding accounts show a green check and no reconnect action. Show a
+  primary Connect or Verify connection action only when it is needed.
+- Use an accessible question-mark Help icon in the shared header.

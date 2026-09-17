@@ -21,6 +21,7 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 .forge-header .forge-navigation a{display:inline-block;color:#acb7b9;text-decoration:none;padding:5px 0;white-space:nowrap;font-size:14px;font-weight:500}
 .forge-header .forge-navigation a:hover{color:#edf1ee;text-decoration:underline;text-underline-offset:5px}
 .forge-header .forge-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:5px}
+.forge-header .forge-navigation .forge-help{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:0}.forge-help svg{display:block}
 .forge-header a:focus-visible{outline:2px solid #abcfff;outline-offset:5px;border-radius:3px}
 .forge-header .forge-header-end{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:flex-end}
 .forge-settings-navigation{box-sizing:border-box;max-width:1200px;margin:0 auto;padding:0 32px 10px;display:flex;gap:8px 24px;flex-wrap:wrap;font:14px/1.5 system-ui,sans-serif}.forge-settings-navigation a{display:inline-flex;align-items:center;min-height:36px;color:#acb7b9;text-decoration:none}.forge-settings-navigation a[aria-current=page]{color:#bfe6cd;text-decoration:underline;text-underline-offset:6px}.forge-settings-navigation a:focus-visible{outline:2px solid #abcfff;outline-offset:3px}
@@ -36,7 +37,7 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 .forge-settings-page section,.forge-settings-page .panel{background:#192024;border-color:#303b40;margin-top:28px;margin-bottom:28px}
 .forge-settings-page .danger-zone{border-color:#66433f;margin-top:48px}
 .forge-settings-page #setup-footer{display:none}
-@media(max-width:700px){.forge-settings-page>main,.forge-settings-page>.layout.solo{padding:24px 18px 36px}.forge-settings-page h1{font-size:29px}.forge-settings-navigation{padding:0 18px 10px;gap:4px 18px}.forge-settings-navigation a{min-height:44px;font-size:13px}.forge-header{padding:12px 18px;gap:16px}.forge-activity a{min-height:44px}.forge-header .forge-header-end{flex:1;gap:8px;justify-content:flex-end}.forge-header .forge-navigation{justify-content:flex-end;gap:6px 20px}.forge-header .forge-navigation a{font-size:13px;min-height:44px;display:inline-flex;align-items:center}}
+@media(max-width:700px){.forge-settings-page>main,.forge-settings-page>.layout.solo{padding:24px 18px 36px}.forge-settings-page h1{font-size:29px}.forge-settings-navigation{padding:0 18px 10px;gap:4px 18px}.forge-settings-navigation a{min-height:44px;font-size:13px}.forge-header{padding:12px 18px;gap:16px}.forge-activity a{min-height:44px}.forge-header .forge-header-end{flex:1;gap:8px;justify-content:flex-end}.forge-header .forge-navigation{justify-content:flex-end;gap:6px 20px}.forge-header .forge-navigation .forge-help{min-width:44px;min-height:44px}.forge-header .forge-navigation a{font-size:13px;min-height:44px;display:inline-flex;align-items:center}}
 </style>"""
 
 
@@ -51,7 +52,7 @@ def render(page, path):
     if settings_page:
         page = page.replace('<body>', '<body class="forge-settings-page">', 1)
     href, label = ('/', '← Factory') if settings_page else ('/settings', 'Settings')
-    links = [f'<a href="{href}">{label}</a>', '<a href="/setup-help">Help</a>']
+    links = [f'<a href="{href}">{label}</a>', '<a class="forge-help" href="/setup-help" aria-label="Help" title="Help"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg></a>']
     settings_nav = ''
     if settings_page:
         tabs = []

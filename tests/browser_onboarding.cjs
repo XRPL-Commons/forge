@@ -75,6 +75,14 @@ const pageTitle=await page.locator('#screen-title').boundingBox();
 const tabLeft=await page.locator('.forge-settings-navigation').evaluate(el=>el.getBoundingClientRect().x+parseFloat(getComputedStyle(el).paddingLeft));
 assert(Math.abs(pageTitle.x-tabLeft)<1,'Settings title and tabs must share the same left edge');
 assert.equal(await page.locator('#saved').count(),0);
+assert.equal(await page.locator('[data-harness]').count(),0,'Verified accounts need no action');
+assert.equal(await page.locator('#main .status.good').count(),2);
+state.harnesses[0].models[0].status='unknown';await page.reload();
+await page.getByRole('button',{name:'Verify connection',exact:true}).click();
+assert(await page.locator('#sign-in-instructions').isHidden());assert(await page.locator('#check-command').isVisible());
+await page.getByRole('button',{name:'Close',exact:true}).click();
+for(const width of [320,390]){await page.setViewportSize({width,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert((await page.getByRole('button',{name:'Verify connection',exact:true}).boundingBox()).height>=44);}
+state.harnesses[0].models[0].status='passed';await page.reload();await page.locator('#main .status.good').first().waitFor();await page.setViewportSize({width:1280,height:800});
 await page.screenshot({path:'/tmp/forge-consistent-coding-accounts.png',fullPage:true});assert.equal(await page.locator('#notice').textContent(),'');
 await page.goto('http://forge.test/onboarding');await page.getByRole('button',{name:'Check again',exact:true}).waitFor();
 await page.getByRole('button',{name:'Check again',exact:true}).click();state.error=null;
