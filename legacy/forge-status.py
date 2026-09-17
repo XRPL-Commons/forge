@@ -507,7 +507,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -564,6 +564,12 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected repository identity and current revision')
                 RepositorySetup(settings_service()).start_check(value['repo_id'],value['revision'])
                 self._send(json.dumps({'ok':True}));return
+            if self.path == '/api/repositories/enable':
+                from forge.repository_setup import RepositorySetup
+                if not isinstance(value,dict) or set(value)!={'repo_id','revision'} or type(value['repo_id']) is not int:
+                    raise ValueError('Expected repository identity and current revision')
+                result=RepositorySetup(settings_service()).enable(value['repo_id'],value['revision'])
+                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
             if self.path == '/api/settings/sync':
                 if value != {}:raise ValueError('Expected an empty sync request')
                 settings_service().start_refresh()

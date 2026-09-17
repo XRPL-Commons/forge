@@ -21,7 +21,8 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
       if(['/settings','/settings/advanced','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:renderPage('settings.html',url.pathname)});
       if(url.pathname==='/settings/repository')return route.fulfill({contentType:'text/html',body:renderPage('repository-setup.html',url.pathname)});
       if(url.pathname==='/assets/repository-setup.js')return route.fulfill({contentType:'text/javascript',body:fs.readFileSync(path.join(__dirname,'../legacy/repository-setup.js'),'utf8')});
-      if(url.pathname==='/api/repositories')return route.fulfill({json:{...view(),continue_url:'/factory'}});
+      if(url.pathname==='/api/repositories')return route.fulfill({json:{...view(),activation_available:true,continue_url:'/factory'}});
+      if(url.pathname==='/api/repositories/enable'){assert.deepEqual(req.postDataJSON(),{repo_id:10,revision:String(revision)});config.repositories=[{id:10,name:'example/project',enabled:true}];revision++;saves++;return route.fulfill({json:{...view(),activation_available:true}});}
       if(url.pathname==='/api/onboarding'){
         if(req.method()==='POST'){assert.equal(req.headers()['x-forge-action'],'synthetic');assert.deepEqual(req.postDataJSON(),{action:'refresh'});setupRefreshes++;}
         return route.fulfill({json:setup});
@@ -44,28 +45,29 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert.equal(await page.locator('#connections input, #config-editor, #runtime-editor').count(),0);
     assert.equal(await page.getByRole('button',{name:'Save connections',exact:true}).count(),0);
     assert.equal(await page.getByText('FORGE_BUILD_KEY_FILE',{exact:false}).count(),0);
-    await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
-    await page.getByRole('button',{name:'Enable',exact:true}).waitFor();
+    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByRole('link',{name:'Enable',exact:true}).waitFor();
     // Exercise navigation from the table: a delegated button handler must not
     // cancel ordinary link clicks or keyboard activation.
     const beforeNavigationSaves=saves;
     for(const keyboard of [false,true]){
-      const link=page.getByRole('link',{name:'View setup',exact:true});
+      const link=page.getByRole('link',{name:'Enable',exact:true});
       if(keyboard){await link.focus();await page.keyboard.press('Enter')}else await link.click();
       await page.waitForURL('http://forge.test/settings/repository?repo_id=10',{timeout:5000});
-      await page.getByRole('heading',{name:'Prepare your repository',exact:true}).waitFor();
-      await page.getByText('Review requirements verified',{exact:true}).waitFor();
+      await page.getByRole('heading',{name:'Enable repository',exact:true}).waitFor();
+      await page.getByText('Ready to enable',{exact:true}).waitFor();
       await page.getByRole('link',{name:'← GitHub access',exact:true}).click();
-      await page.getByRole('button',{name:'Enable',exact:true}).waitFor();
+      await page.getByRole('link',{name:'Enable',exact:true}).waitFor();
     }
     assert.equal(saves,beforeNavigationSaves,'Viewing setup must not change repository activation');
     const disabledRowHeight=(await page.locator('#repositories tr').boundingBox()).height;
-    assert((await page.getByRole('button',{name:'Enable',exact:true}).boundingBox()).height<=32);
-    await page.getByRole('button',{name:'Enable',exact:true}).click();
-    await page.getByRole('dialog').waitFor();assert.equal(config.repositories.length,0);
-    await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(config.repositories.length,0);
-    await page.getByRole('button',{name:'Enable',exact:true}).click();
+    assert((await page.getByRole('link',{name:'Enable',exact:true}).boundingBox()).height<=32);
+    await page.getByRole('link',{name:'Enable',exact:true}).click();
+    await page.getByRole('button',{name:'Enable automation',exact:true}).waitFor();assert.equal(config.repositories.length,0);
+    await page.getByRole('link',{name:'← GitHub access',exact:true}).click();assert.equal(config.repositories.length,0);
+    await page.getByRole('link',{name:'Enable',exact:true}).click();
     await page.getByRole('button',{name:'Enable automation',exact:true}).click();
+    await page.getByRole('link',{name:'Back to repositories →',exact:true}).click();
     await page.getByRole('button',{name:'Disable',exact:true}).waitFor();assert.equal(config.repositories[0].enabled,true);
     assert.equal((await page.locator('#repositories tr').boundingBox()).height,disabledRowHeight,'Activation must not change normal row height');
     const repositoryNode=await page.locator('#repositories tr').elementHandle();
@@ -76,8 +78,8 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert(await accessNode.evaluate(el=>el===document.activeElement),'Polling must preserve link focus');
     assert.equal(await page.locator('#repo-search').inputValue(),'project');
     failSync=true;
-    await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
-    await page.getByText('Paused · access needs attention').waitFor();assert.equal(config.repositories[0].enabled,true);
+    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByText('Needs attention',{exact:true}).waitFor();assert.equal(config.repositories[0].enabled,true);
     await page.goto('http://forge.test/settings');
     await page.waitForFunction(()=>!document.getElementById('save-workers').disabled);
     assert(await page.locator('#github-title').isHidden());assert(await page.locator('#reset-title').isVisible());
@@ -106,7 +108,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
       for(const cell of await row.locator('td').all()){
         const box=await cell.boundingBox();assert(box.x>=0&&box.x+box.width<=width);
       }
-      assert.equal(await row.locator('.mobile-label:visible').count(),4);
+      assert.equal(await row.locator('td').count(),2);
       assert((await row.getByRole('button',{name:'Disable',exact:true}).boundingBox()).height>=44);
     }
     await page.setViewportSize({width:390,height:844});
@@ -125,11 +127,11 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert.equal(await page.locator('#build-key').count(),0);
     assert.equal(await page.locator('#save-connections').count(),0);assert(await page.locator('#runtime-title').isHidden());
     const beforeOperatorSaves=saves;
-    await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
-    await page.waitForFunction(()=>document.getElementById('refresh').getAttribute('aria-busy')==='false');assert.equal(setupRefreshes,1);
+    await page.getByRole('button',{name:'Refresh access',exact:true}).click();
+    await page.getByText('Access refreshed.',{exact:true}).waitFor();assert.equal(setupRefreshes,1);
     config.connections={build:{app_id:1,installation_id:101,private_key_env:'FORGE_BUILD_KEY_FILE'}};synced=true;
     await page.reload();await page.getByText('example/project',{exact:true}).waitFor();
-    assert.equal(await page.locator('#repositories').getByText('Not connected',{exact:true}).count(),3);
+    assert.equal(await page.getByRole('link',{name:'Continue setup →',exact:true}).count(),1);
     assert.equal(await page.locator('#repositories button').count(),0);
     assert.equal(await page.getByRole('link',{name:'Manage access ↗'}).getAttribute('href'),'https://github.com/organizations/example/settings/installations/101');
     await page.locator('#repo-search').fill('missing');assert(await page.locator('#repositories tr').isHidden());
@@ -138,7 +140,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.screenshot({path:'/tmp/forge-github-access-mobile.png',fullPage:true});
     setup.phase='active';await page.reload();
     await page.getByRole('navigation',{name:'Settings navigation'}).getByRole('link',{name:'General',exact:true}).waitFor();
-    assert(await page.getByRole('button',{name:'Enable',exact:true}).isDisabled());
+    assert(await page.getByRole('link',{name:'Enable',exact:true}).isVisible());
     assert.equal(saves,beforeOperatorSaves);
     await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'/tmp/forge-github-access-desktop.png',fullPage:true});
     assert.deepEqual(errors,[]);

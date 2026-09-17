@@ -60,13 +60,38 @@ class RepositorySetup:
 
     def view(self, repo_id=None):
         settings = self.settings.view()
+        root = self.settings.root.parent if self.settings.root.name == 'setup' else self.settings.root
+        registration = read_json(root / 'state/onboarding/setup.json') if (root / 'state/onboarding/setup.json').exists() else {}
+        connections = {}
+        for role, access in settings['roles'].items():
+            app = registration.get('apps', {}).get(role, {})
+            configured = settings['config']['connections'].get(role)
+            same_app = not configured or configured.get('app_id') == app.get('connection', {}).get('app_id')
+            connections[role] = {**access, 'install_url': app.get('install_url') if same_app else None}
         rows = settings['repositories']
         if repo_id is not None:
             rows = [r for r in rows if r['id'] == repo_id]
             if not rows:
                 raise ValueError('Refresh GitHub access to find this repository')
         return {'revision': settings['revision'], 'repositories': rows,
+                'connections': connections, 'sync': settings['sync'],
+                'activation_available': self.settings.root.name != 'setup',
                 'continue_url': '/onboarding' if self.settings.root.name == 'setup' else '/factory'}
+
+    def enable(self, repo_id, revision):
+        if self.settings.root.name == 'setup':
+            raise ValueError('Finish initial Forge setup before enabling automation')
+        config = self.settings.load()
+        if revision != digest(config):
+            raise ValueError('Repository settings changed. Check again before enabling.')
+        row = self.view(repo_id)['repositories'][0]
+        configured = next((r for r in config['repositories'] if r['id'] == repo_id), None)
+        if configured is None:
+            config['repositories'].append({'id': row['id'], 'name': row['name'], 'enabled': True})
+        else:
+            configured['enabled'] = True
+        self.settings.save(config, revision)
+        return self.view(repo_id)
 
     def check(self, repo_id=None, revision=None):
         try:

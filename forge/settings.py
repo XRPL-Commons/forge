@@ -144,6 +144,10 @@ class Settings:
                 newly_enabled = row['enabled'] and (not previous.get('enabled') or previous.get('name') != row['name'])
                 if newly_enabled and not rows[row['id']]['access_ready']:
                     raise ValueError(row['name'] + ': verify access for every role before enabling')
+                # Initial onboarding stores a selection in its non-live setup
+                # directory; its activation step has its own readiness gate.
+                if newly_enabled and self.root.name != 'setup' and not rows[row['id']]['protection_ready']:
+                    raise ValueError(row['name'] + ': finish repository setup and check again before enabling')
             write_json(self.path, config)
         return self.view()
 

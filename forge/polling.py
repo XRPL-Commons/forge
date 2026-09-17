@@ -42,6 +42,9 @@ window.ForgeRefresh = (() => {
     children(parent,template.content);
   }
   function button(element,working,disabled=false){
+    if(element.classList.contains('icon-button')){
+      element.classList.toggle('forge-refresh-active',working);element.disabled=working||disabled;element.setAttribute('aria-busy',String(working));return;
+    }
     element.classList.add('forge-refresh-control');
     element.innerHTML='<span class="forge-refresh-spinner" aria-hidden="true"'+(working?'':' hidden')+'></span><span>'+(working?'Refreshing…':'Refresh')+'</span>';
     element.disabled=working||disabled;element.setAttribute('aria-busy',String(working));
@@ -51,6 +54,7 @@ window.ForgeRefresh = (() => {
 </script>'''
 STYLE = '''<style>
 .forge-refresh-control{min-width:120px}.forge-refresh-spinner{display:inline-block;width:12px;height:12px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:forge-refresh-turn .8s linear infinite;vertical-align:middle;margin-right:7px}.forge-refresh-spinner[hidden]{display:none}
+.forge-refresh-active svg{animation:forge-refresh-turn .8s linear infinite}
 @keyframes forge-refresh-turn{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.forge-refresh-spinner{animation:none}}
+@media(prefers-reduced-motion:reduce){.forge-refresh-spinner,.forge-refresh-active svg{animation:none}}
 </style>'''
