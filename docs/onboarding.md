@@ -78,8 +78,11 @@ required human evidence for the current candidate exists. The repository's human
 CODEOWNERS protection must be configured for that gate; see factory-runtime.md.
 Changing code invalidates the earlier review and audit evidence.
 
-The current protection reader supports classic branch protection. Rulesets-only
-configurations still need a reader that verifies the equivalent review baseline.
+Forge reads classic branch protection and active rulesets, including inherited
+organization rules. The same review baseline is checked during setup, dispatch
+and merge. Unavailable observations never count as passing. GitHub may hide
+bypass permissions: review those on GitHub yourself. A baseline pass does not
+certify bypass permissions or waive additional repository rules.
 
 ## Host installation
 

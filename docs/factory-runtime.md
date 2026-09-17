@@ -142,8 +142,10 @@ Forge status-check requirement or strict/up-to-date setting is required.
 Forge publishes and independently verifies its own App-bound review/audit checks
 for each accepted candidate. Other contributors' approvals cannot stand in for
 those technical roles. The supervisor checks the shared review baseline before
-dispatch and merge. The current adapter reads classic branch protection;
-rulesets-only and merge-queue policy adapters remain future work.
+dispatch and merge. The reader combines classic branch protection and active rulesets, including
+inherited organization rules. GitHub may hide bypass actors; their review remains
+an operator responsibility. Other repository constraints still apply; a review
+baseline pass does not certify all merge requirements or merge-queue support.
 
 External merges are observed as completion and any active runner is cleaned up.
 Target-branch changes invalidate prior evidence and restart review. A PR changed

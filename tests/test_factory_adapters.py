@@ -82,6 +82,7 @@ class AdapterTests(unittest.TestCase):
             'enforce_admins':{'enabled':False}, 'restrictions': {'apps':[{'id':4},{'id':9}], 'users':[{'login':'developer'}], 'teams':[{'id':12}]},
             'required_status_checks':{'strict':False,'checks':[{'context':'project-ci','app_id':99}]}}
         github.call = Mock(return_value=protection)
+        github.pages = Mock(return_value=[])
         self.assertTrue(github.protections({}, {'base_ref':'main'}))
         protection['required_pull_request_reviews']['dismiss_stale_reviews'] = False
         self.assertFalse(github.protections({}, {'base_ref':'main'}))
@@ -146,6 +147,7 @@ class AdapterTests(unittest.TestCase):
         import base64
         github, _, _ = self.github(); github.runtime['human_reviewers'] = ['human']
         protection = {'required_pull_request_reviews':{'require_code_owner_reviews':True}}
+        github.pages = Mock(return_value=[])
         def evaluate(body):
             github.call = Mock(side_effect=[protection, {'content':base64.b64encode(body.encode()).decode()}])
             return github.native_human_gate({'candidate':{'base_ref':'main','base':'a'*40}})

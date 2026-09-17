@@ -213,25 +213,76 @@ class GitHub:
         return report['available'] and all(row['passed'] for row in report['requirements'])
 
     def protection_report(self, item, candidate_value):
-        """Check the shared review baseline without claiming exclusive repository control."""
+        """Read effective GitHub rules; never confuse the baseline with a bypass audit."""
         branch = candidate_value['base_ref']
-        report = {'branch': branch, 'available': True, 'requirements': []}
+        repo = item.get('repo', '')
+        report = {'repo_id': item.get('repo_id'), 'branch': branch, 'observed_at': self.clock(),
+                  'available': True, 'requirements': [], 'sources': [], 'errors': [],
+                  'additional_rules': [], 'code_owner_reviews': False,
+                  'bypass': {'status': 'operator_review', 'detail':
+                      'GitHub may hide bypass permissions. Review who can bypass these rules on GitHub.'}}
+        reviews = []
         try:
             protection = self.call('controller', item, 'GET', '/branches/' + quote(branch, safe='') + '/protection')
+            if not isinstance(protection, dict):
+                raise GitHubUnavailable('Malformed branch protection')
+            review = protection.get('required_pull_request_reviews')
+            if review is not None and not isinstance(review, dict):
+                raise GitHubUnavailable('Malformed review protection')
+            source = {'kind': 'classic', 'name': 'Branch protection',
+                      'url': f'https://github.com/{repo}/settings/branches'}
+            report['sources'].append(source)
+            if review:
+                reviews.append((review, source))
         except GitHubUnavailable as error:
-            if error.status not in (403, 404):
-                raise
-            return {**report, 'available': False, 'requirements': [{
-                'id': 'readable', 'passed': False, 'label': 'Read classic branch protection',
-                'detail': 'Forge could not read a classic protection rule for this branch. Check that a rule exists and the Controller App has Administration read access. Rulesets-only setups are not supported yet.'}]}
-        rows = report['requirements']
-        def requirement(key, label, passed, detail):
-            rows.append({'id': key, 'label': label, 'passed': bool(passed), 'detail': detail})
-        reviews = protection.get('required_pull_request_reviews') or {}
-        requirement('reviews', 'Require at least two approving reviews', reviews.get('required_approving_review_count', 0) >= 2,
-                    'Enable required pull request reviews and set the approval count to at least two.')
-        requirement('stale', 'Dismiss approvals when code changes', reviews.get('dismiss_stale_reviews'),
-                    'Enable “Dismiss stale pull request approvals when new commits are pushed”.')
+            if error.status != 404:
+                report['errors'].append({'source': 'classic', 'detail':
+                    'Branch protection could not be read. Check Controller access and try again.'})
+        try:
+            rules = self.pages('controller', item, '/rules/branches/' + quote(branch, safe=''))
+            for rule in rules:
+                if not isinstance(rule, dict) or not isinstance(rule.get('type'), str):
+                    raise GitHubUnavailable('Malformed ruleset observation')
+                identifier = rule.get('ruleset_id')
+                source = {'kind': 'ruleset', 'name': rule.get('ruleset_source') or 'Repository rules',
+                          'id': identifier, 'source_type': rule.get('ruleset_source_type'),
+                          'url': f'https://github.com/{repo}/rules/{identifier}' if type(identifier) is int
+                                 else f'https://github.com/{repo}/rules'}
+                if source not in report['sources']:
+                    report['sources'].append(source)
+                if rule['type'] == 'pull_request':
+                    parameters = rule.get('parameters')
+                    if not isinstance(parameters, dict):
+                        raise GitHubUnavailable('Malformed pull request rule')
+                    reviews.append((parameters, source))
+                else:
+                    report['additional_rules'].append({'type': rule['type'], 'source': source})
+        except GitHubUnavailable:
+            report['errors'].append({'source': 'rulesets', 'detail':
+                'Repository rules could not be checked. Check GitHub access and try again.'})
+        valid = all(type(r.get('required_approving_review_count', 0)) is int
+                    and 0 <= r.get('required_approving_review_count', 0) <= 100
+                    and type(r.get('dismiss_stale_reviews', r.get('dismiss_stale_reviews_on_push', False))) is bool
+                    and type(r.get('require_code_owner_reviews', False)) is bool for r, _ in reviews)
+        if not valid:
+            report['errors'].append({'source': 'reviews', 'detail': 'GitHub returned incomplete review settings. Check again.'})
+        report['available'] = not report['errors']
+        if not report['available']:
+            report['requirements'] = [{'id': 'readable', 'passed': False,
+                'label': 'Check repository review rules', 'detail': report['errors'][0]['detail'], 'sources': []}]
+            return report
+        count = max((r.get('required_approving_review_count', 0) for r, _ in reviews), default=0)
+        stale = [(r, s) for r, s in reviews if r.get('dismiss_stale_reviews', r.get('dismiss_stale_reviews_on_push', False))]
+        report['code_owner_reviews'] = any(r.get('require_code_owner_reviews', False) for r, _ in reviews)
+        report['required_approvals'] = count
+        report['requirements'] = [
+            {'id': 'reviews', 'label': 'At least two approving reviews', 'passed': count >= 2,
+             'detail': f'{count} approvals required.' if count >= 2 else 'Require pull requests with at least two approving reviews.',
+             'sources': [s for r, s in reviews if r.get('required_approving_review_count', 0) >= 2]},
+            {'id': 'stale', 'label': 'Fresh approvals when code changes', 'passed': bool(stale),
+             'detail': 'Approvals are dismissed when new commits are pushed.' if stale else
+                       'Dismiss stale pull request approvals when new commits are pushed.',
+             'sources': [s for _, s in stale]}]
         return report
 
     def native_human_gate(self, item):
@@ -242,8 +293,8 @@ class GitHub:
         only configured humans, plus native required code-owner reviews.
         """
         candidate_value = item['candidate']
-        protection = self.call('controller', item, 'GET', '/branches/' + quote(candidate_value['base_ref'], safe='') + '/protection')
-        if not (protection.get('required_pull_request_reviews') or {}).get('require_code_owner_reviews'):
+        report = self.protection_report(item, candidate_value)
+        if not report['available'] or not report['code_owner_reviews']:
             return False
         document = self.call('controller', item, 'GET', '/contents/.github/CODEOWNERS?ref=' + candidate_value['base'])
         try:
