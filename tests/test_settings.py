@@ -46,7 +46,9 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(row['access_ready']); self.assertFalse(row['enabled'])
         self.assertFalse(row['dispatch_allowed'])
         self.assertEqual(self.settings.load()['repositories'], [])
-        self.assertTrue(self.enable()['repositories'][0]['dispatch_allowed'])
+        row = self.enable()['repositories'][0]
+        self.assertTrue(row['access_ready'])
+        self.assertFalse(row['dispatch_allowed'])  # Access alone is not protection readiness.
 
     def test_enable_requires_all_roles_and_permissions(self):
         self.settings.refresh()

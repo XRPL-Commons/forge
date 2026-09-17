@@ -33,7 +33,7 @@
     <div class="connections" id="connections"></div>
   </section>
   <section aria-labelledby="repos-title">
-    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span></div>
+    <div class="heading"><h2 id="repos-title">Repositories</h2><span id="repo-count" class="muted"></span><button id="check-repositories">Check enabled repositories</button></div>
     <p class="muted">Enable a repository after all four roles have verified access. Newly discovered repositories start disabled.</p>
     <label for="repo-search">Find a repository<input id="repo-search" type="search" placeholder="Repository name" autocomplete="off"></label>
     <div class="table-wrap"><table><thead><tr><th>Repository</th><th>Builder</th><th>Reviewer</th><th>Auditor</th><th>Controller</th><th>Automation</th></tr></thead><tbody id="repositories"></tbody></table></div>
@@ -65,7 +65,7 @@
   }
   const statusNames={ready:'Access verified',ok:'Connected',unknown:'Access unknown',not_configured:'Not connected',stale:'Refresh needed',missing_permissions:'Permissions missing',missing_access:'No access',name_changed:'Repository renamed',archived:'Archived or disabled'};
   const accessPage=location.pathname==='/settings/github';
-  let current=null,onboarding=null,dirty=false,busy=false,pendingRepo=null;
+  let lastSignature='',current=null,onboarding=null,dirty=false,busy=false,pendingRepo=null;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let noticeTimer;
   const message=(text,error=false)=>{clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').classList.toggle('error',error);if(!error)noticeTimer=setTimeout(()=>{$('notice').textContent=''},6000)};
@@ -93,13 +93,15 @@
       const action=link||(!c.app_id&&install?`<a href="${esc(install[0])}" target="_blank" rel="noopener noreferrer">Install App ↗</a>`:!c.app_id?'<a href="/onboarding">Connect in setup →</a>':'');
       return `<article class="connection"><div class="heading"><div class="app-identity">${appIllustration(role)}<div><h3>${labels[role]}</h3><span class="app-kind">GitHub App</span></div></div>${badge(status)}</div><p class="connection-purpose">${purposes[role]}</p><p class="identity">${esc(slug||'No App connected')}</p><p class="muted">${esc(observation)}</p>${r.reason?`<p class="error">${esc(r.reason)}</p>`:''}${r.missing_permissions.length?`<p class="error">Missing ${esc(r.missing_permissions.join(', '))}</p>`:''}<p>${action}</p></article>`;
     }).join('');
-    $('repositories').innerHTML=current.repositories.map(r=>`<tr data-name="${esc(r.name.toLowerCase())}"><td><strong>${esc(r.name)}</strong>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td>${settingUp?'<a href="/onboarding">Finish setup</a>':`<div class="automation-state">${r.enabled?`<span class="${r.access_ready?'enabled-state':'paused-state'}">${r.access_ready?'<span aria-hidden="true">✓</span> Enabled':'Paused'}</span><button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<span class="muted">${r.access_ready?'Not enabled':'Access needed'}</span><button class="enable-action" data-repo="${r.id}" ${!r.access_ready?'disabled':''}>Enable</button>`}</div>`}</td></tr>`).join('');
+    $('repositories').innerHTML=current.repositories.map(r=>`<tr data-name="${esc(r.name.toLowerCase())}"><td><strong>${esc(r.name)}</strong><p class="muted">${esc(({ready:'Review requirements verified',needs_setup:'Setup needed',checking:'Checking GitHub…',unknown:'Could not check',stale:'Verification expired',access_needed:'Access needed'})[r.protection_status]||'Review settings not checked')} · <a href="/settings/repository?repo_id=${r.id}">${r.protection_ready?'View setup':'Set up repository'}</a></p>${!settingUp&&r.enabled&&!r.access_ready?'<p class="error">Paused · access needs attention</p>':''}</td>${roles.map(role=>`<td>${badge(r.access[role])}</td>`).join('')}<td>${settingUp?'<a href="/onboarding">Finish setup</a>':`<div class="automation-state">${r.enabled?`<span class="${r.access_ready&&r.protection_ready?'enabled-state':'paused-state'}">${r.access_ready&&r.protection_ready?'<span aria-hidden="true">✓</span> Enabled':'Enabled · waiting'}</span><button class="quiet-action" data-repo="${r.id}">Disable</button>`:`<span class="muted">${r.access_ready?'Not enabled':'Access needed'}</span><button class="enable-action" data-repo="${r.id}" ${!r.access_ready?'disabled':''}>Enable</button>`}</div>`}</td></tr>`).join('');
     filterRepositories();
     $('repo-count').textContent=`${settingUp?'Setup in progress':current.repositories.filter(r=>r.enabled).length+' enabled'} · ${current.repositories.length} discovered or configured`;
     $('repo-empty').hidden=!!current.repositories.length;
     const sync=current.sync;
     $('sync-status').textContent=sync.status==='running'?'Refreshing GitHub access…':sync.status==='complete'?`Last refresh ${new Date(sync.finished_at*1000).toLocaleString()}`:sync.status==='interrupted'?'Previous refresh was interrupted. Refresh again.':'Access has not been refreshed yet.';
     $('refresh').disabled=busy;
+    $('check-repositories').disabled=busy||!current.repositories.some(r=>r.enabled);
+    $('check-repositories').hidden=settingUp;
   }
   async function request(path,body){
     const options={credentials:'same-origin',signal:AbortSignal.timeout(30000)};
@@ -109,7 +111,8 @@
   }
   async function load(){
     const values=await Promise.all([request('/api/settings'),request('/api/onboarding')]);current=values[0];onboarding=values[1];
-    dirty=false;render();
+    const signature=JSON.stringify({current,phase:onboarding.phase});
+    dirty=false;if(signature!==lastSignature){lastSignature=signature;render();}
   }
   async function save(config){
     busy=true;
@@ -147,6 +150,7 @@
     try{const v=await request('/api/runtime',{config,revision:runtimeRevision});runtimeRevision=v.runtime_revision;runtime=v.runtime;dirty=false;renderWorkers();message('Worker limits saved. They apply as workers become available.');}
     finally{busy=false;$('save-workers').disabled=false;}
   });
+  $('check-repositories').onclick=guarded(async()=>{busy=true;$('check-repositories').disabled=true;try{await request('/api/repositories/check',{repo_id:null,revision:current.revision});message('Checking enabled repositories. Results appear beside each repository.');await load();}finally{busy=false;render();}});
   load().then(()=>{if(!accessPage)return loadRuntime()}).catch(error=>message(error.message,true));
   setInterval(()=>{if(!busy&&!dirty&&!$('enable-dialog').open)load().catch(error=>message(error.message,true))},5000);
 </script></body></html>

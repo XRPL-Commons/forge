@@ -507,7 +507,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -558,6 +558,12 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected config and revision')
                 result=save_runtime(WD, **value)
                 self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+            if self.path == '/api/repositories/check':
+                from forge.repository_setup import RepositorySetup
+                if not isinstance(value,dict) or set(value)!={'repo_id','revision'} or (value['repo_id'] is not None and type(value['repo_id']) is not int):
+                    raise ValueError('Expected repository identity and current revision')
+                RepositorySetup(settings_service()).start_check(value['repo_id'],value['revision'])
+                self._send(json.dumps({'ok':True}));return
             if self.path == '/api/settings/sync':
                 if value != {}:raise ValueError('Expected an empty sync request')
                 settings_service().start_refresh()
@@ -640,6 +646,25 @@ class H(BaseHTTPRequestHandler):
             self._redirect('/onboarding')
         elif u.path in ('/settings','/settings/advanced','/settings/github'):
             self._send(SETTINGS_PAGE, 'text/html; charset=utf-8')
+        elif u.path == '/assets/repository-setup.js':
+            self._send((Path(__file__).parent/'repository-setup.js').read_text(), 'text/javascript; charset=utf-8')
+        elif u.path == '/settings/repository':
+            self._send((Path(__file__).parent/'repository-setup.html').read_text(), 'text/html; charset=utf-8')
+        elif u.path in ('/api/repositories','/api/repositories/ruleset'):
+            from forge.repository_setup import RepositorySetup
+            try:
+                query=parse_qs(u.query)
+                allowed={'repo_id','revision'} if u.path.endswith('/ruleset') else {'repo_id'}
+                if set(query)-allowed or any(len(v)!=1 for v in query.values()):raise ValueError('Invalid repository request')
+                repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None
+                service=RepositorySetup(settings_service())
+                if u.path.endswith('/ruleset'):
+                    if repo_id is None or 'revision' not in query:raise ValueError('Select and check a repository first')
+                    rules,filename=service.download(repo_id,query['revision'][0])
+                    self._send(json.dumps(rules,indent=2)+'\n','application/json',{'Content-Disposition':'attachment; filename="'+filename+'"'})
+                else:self._send(json.dumps({'ok':True,**service.view(repo_id),'controls_token':CONTROLS_TOKEN}))
+            except (OSError,ValueError,TypeError,KeyError):
+                self._send(json.dumps({'ok':False,'reason':'Repository setup changed or is unavailable. Check again.'}))
         elif u.path == '/api/settings':
             try:
                 if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')

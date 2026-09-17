@@ -225,6 +225,10 @@ class Settings:
             repositories.append({'id': identifier, 'name': repo['name'], 'enabled': repo['enabled'],
                                  'configured': identifier in configured, 'access': access,
                                  'access_ready': ready, 'dispatch_allowed': repo['enabled'] and ready})
+        from .repository_setup import RepositorySetup
+        repositories = RepositorySetup(self).views(repositories, config)
+        for row in repositories:
+            row['dispatch_allowed'] = row['enabled'] and row['access_ready'] and row['protection_ready']
         try:
             sync = read_json(self.state / 'sync.json')
         except (OSError, ValueError):
@@ -251,20 +255,26 @@ class Settings:
             row = next((r for r in self.view()['repositories'] if r['name'].lower() == repo.lower()), None)
             if not row or not row['enabled']:
                 return {'allowed': False, 'reason': 'repository_not_enabled'}
-            return {'allowed': row['dispatch_allowed'], 'reason': 'access_verified' if row['dispatch_allowed'] else 'github_access_unverified',
+            # This is the access gate. The supervisor independently checks live protection.
+            return {'allowed': row['access_ready'], 'reason': 'access_verified' if row['access_ready'] else 'github_access_unverified',
                     'roles': row['access']}
         except (OSError, ValueError, TypeError, KeyError):
             return {'allowed': False, 'reason': 'settings_unavailable'}
 
     def start_refresh(self):
-        thread = threading.Thread(target=self.refresh, daemon=True)
+        thread = threading.Thread(target=self.refresh_all, daemon=True)
         thread.start()
+
+    def refresh_all(self):
+        from .repository_setup import RepositorySetup
+        if self.refresh():
+            RepositorySetup(self).check()
 
     def watch(self):
         while True:
             try:
                 if self.path.exists():
-                    self.refresh()
+                    self.refresh_all()
                 interval = self.load()['sync_interval_seconds']
             except (OSError, ValueError):
                 interval = 300

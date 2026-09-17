@@ -27,6 +27,8 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 def render(page, path):
     """Fill the navigation slot without depending on client-side initialization."""
     current = '/' if path == '/factory' else path
+    if path == '/settings/repository':
+        current = '/settings/github'
     if path == '/settings/advanced':
         current = '/settings'
     links = []

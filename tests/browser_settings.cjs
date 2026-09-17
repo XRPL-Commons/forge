@@ -2,7 +2,7 @@ const renderPage=require('./browser_page.cjs');
 const {chromium} = require(process.env.FORGE_PLAYWRIGHT_MODULE || 'playwright-core');
 const fs = require('fs'), assert = require('assert'), path = require('path');
 (async()=>{
-  const browser = await chromium.launch({headless:true,executablePath:process.env.FORGE_BROWSER_PATH,args:['--no-sandbox']});
+  const browser = await chromium.launch({chromiumSandbox:true,headless:true,executablePath:process.env.FORGE_BROWSER_PATH,args:[]});
   try {
     const page = await browser.newPage({viewport:{width:1440,height:1000}}), errors=[];
     page.on('pageerror',e=>errors.push(e.message));
@@ -15,7 +15,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     const view=()=>({ok:true,controls_token:'synthetic',revision:String(revision),config:structuredClone(config),
       roles:Object.fromEntries(roles.map(role=>[role,{status:!config.connections[role]?'not_configured':failSync?'unknown':synced?'ok':'unknown',required_permissions:{contents:role==='build'?'write':'read'},missing_permissions:[],reason:failSync?'Could not reach GitHub':null,app_slug:config.connections[role]?'forge-'+role+'-example':null,installation_url:config.connections[role]?'https://github.com/organizations/example/settings/installations/'+config.connections[role].installation_id:null}])),
       sync:synced?{status:'complete',finished_at:Date.now()/1000}:{status:'never'},
-      repositories:synced?[{id:10,name:'example/project',enabled:config.repositories[0]?.enabled||false,access_ready:!failSync&&roles.every(r=>config.connections[r]),access:Object.fromEntries(roles.map(r=>[r,!config.connections[r]?'not_configured':failSync?'unknown':'ready']))}]:[]});
+      repositories:synced?[{id:10,name:'example/project',enabled:config.repositories[0]?.enabled||false,protection_ready:true,protection_status:'ready',access_ready:!failSync&&roles.every(r=>config.connections[r]),access:Object.fromEntries(roles.map(r=>[r,!config.connections[r]?'not_configured':failSync?'unknown':'ready']))}]:[]});
     await page.route('http://forge.test/**',async route=>{
       const req=route.request(),url=new URL(req.url());
       if(['/settings','/settings/advanced','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:renderPage('settings.html',url.pathname)});

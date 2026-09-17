@@ -254,7 +254,8 @@ class GitHub:
                     parameters = rule.get('parameters')
                     if not isinstance(parameters, dict):
                         raise GitHubUnavailable('Malformed pull request rule')
-                    reviews.append((parameters, source))
+                    reviews.append(({**parameters, 'require_code_owner_reviews':
+                                     parameters.get('require_code_owner_review', False)}, source))
                 else:
                     report['additional_rules'].append({'type': rule['type'], 'source': source})
         except GitHubUnavailable:

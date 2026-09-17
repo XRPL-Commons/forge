@@ -10,11 +10,13 @@ def classic(count=2, stale=True, owners=False):
             'dismiss_stale_reviews': stale, 'require_code_owner_reviews': owners}}
 
 
+# Ruleset fields follow https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset
+# CODEOWNERS uses a singular field here; classic branch protection uses plural.
 def rule(count=2, stale=True, owners=False, identifier=12):
     return {'type': 'pull_request', 'ruleset_id': identifier, 'ruleset_source': 'example',
             'ruleset_source_type': 'Organization', 'parameters': {
                 'required_approving_review_count': count, 'dismiss_stale_reviews_on_push': stale,
-                'require_code_owner_reviews': owners}}
+                'require_code_owner_review': owners}}
 
 
 class RepositoryRuleTests(unittest.TestCase):
