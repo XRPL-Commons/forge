@@ -39,8 +39,10 @@ The matrix includes repositories discovered through at least one connected role
 or explicitly configured in Forge. Repositories invisible to every role are not
 discoverable here. Missing, stale, or unknown access never enables new work. During
 onboarding, complete setup before enabling automation; afterward the same page
-supports enabling or disabling repositories. Credential references and workflow
-configuration remain under Advanced settings.
+supports enabling or disabling repositories. Forge manages App identities and
+credentials through guided setup; the operator UI does not expose credential
+references, manual App identifiers, or JSON editors. Factory settings provides
+worker-capacity controls. Help appears in blue callouts, separate from status.
 
 All four installations need access to the same selected repositories. GitHub also
 provides an API for adding individual repository grants, but that endpoint requires
@@ -141,7 +143,8 @@ are preserved because they were not provisioned as disposable runner workspaces.
 
 setup/factory.json and setup/runtime.json are draft configuration. factory.json
 and runtime.json become active only when the supervisor applies Start. Settings
-remain editable through /settings/advanced and the corresponding JSON files.
+for repositories and worker capacity are available in /settings. Other runtime
+configuration remains in the corresponding JSON files.
 state/onboarding/ holds the setup and reset journal. Do not delete ownership
 records to bypass an unsuccessful cleanup.
 

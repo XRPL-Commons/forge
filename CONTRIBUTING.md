@@ -13,3 +13,5 @@ Run the Python suites and the browser checks relevant to your changes. Tests mus
 not rely on live GitHub mutations or send external notifications. Keep runtime
 state, configuration, logs, database files, and authentication outside version
 control. Describe the problem, resulting behavior, and validation in pull requests.
+
+For operator interfaces, follow [the operator UI rules](docs/design/operator-ui.md).

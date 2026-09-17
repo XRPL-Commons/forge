@@ -7,21 +7,24 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     const page = await browser.newPage({viewport:{width:1440,height:1000}}), errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     const roles=['build','review','audit','controller'];
-    let config={version:1,sync_interval_seconds:300,access_max_age_seconds:900,connections:{},repositories:[]};
+    let config={version:1,sync_interval_seconds:300,access_max_age_seconds:900,connections:Object.fromEntries(roles.map((role,i)=>[role,{app_id:i+1,installation_id:i+101,private_key_env:`FORGE_${role.toUpperCase()}_KEY_FILE`}])),repositories:[]};
     let synced=false, failSync=false, revision=1, saves=0;
-    let setup={ok:true,phase:'setup',roles:{build:{registered:true,app_id:1,install_url:'https://github.com/apps/forge-builder-example/installations/new'}}}, setupRefreshes=0;
+    let setup={ok:true,phase:'active',roles:{build:{registered:true,app_id:1,install_url:'https://github.com/apps/forge-builder-example/installations/new'}}}, setupRefreshes=0;
+    const originalConnections=structuredClone(config.connections);
+    let runtime={version:1,enabled:true,max_running:2,slots:{build:2,review:1,audit:1,recovery:1},provider_pool:[{id:'claude',provider:'claude',model:'default',provider_auth_file_env:'PRIVATE_REFERENCE'}],image:'unchanged-image'}, runtimeRevision=1;
     const view=()=>({ok:true,controls_token:'synthetic',revision:String(revision),config:structuredClone(config),
       roles:Object.fromEntries(roles.map(role=>[role,{status:!config.connections[role]?'not_configured':failSync?'unknown':synced?'ok':'unknown',required_permissions:{contents:role==='build'?'write':'read'},missing_permissions:[],reason:failSync?'Could not reach GitHub':null,app_slug:config.connections[role]?'forge-'+role+'-example':null,installation_url:config.connections[role]?'https://github.com/organizations/example/settings/installations/'+config.connections[role].installation_id:null}])),
       sync:synced?{status:'complete',finished_at:Date.now()/1000}:{status:'never'},
       repositories:synced?[{id:10,name:'example/project',enabled:config.repositories[0]?.enabled||false,access_ready:!failSync&&roles.every(r=>config.connections[r]),access:Object.fromEntries(roles.map(r=>[r,!config.connections[r]?'not_configured':failSync?'unknown':'ready']))}]:[]});
     await page.route('http://forge.test/**',async route=>{
       const req=route.request(),url=new URL(req.url());
-      if(['/settings','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:renderPage('settings.html',url.pathname)});
+      if(['/settings','/settings/advanced','/settings/github'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:renderPage('settings.html',url.pathname)});
       if(url.pathname==='/api/onboarding'){
         if(req.method()==='POST'){assert.equal(req.headers()['x-forge-action'],'synthetic');assert.deepEqual(req.postDataJSON(),{action:'refresh'});setupRefreshes++;}
         return route.fulfill({json:setup});
       }
-      if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,runtime:{version:1,enabled:false},runtime_revision:'runtime-one'}});
+      if(url.pathname==='/api/factory')return route.fulfill({json:{ok:true,runtime:structuredClone(runtime),runtime_revision:String(runtimeRevision)}});
+      if(url.pathname==='/api/runtime'){const body=req.postDataJSON();if(body.revision!==String(runtimeRevision))return route.fulfill({json:{ok:false,reason:'Worker limits changed; reload before saving'}});runtime=body.config;runtimeRevision++;return route.fulfill({json:{ok:true,runtime:structuredClone(runtime),runtime_revision:String(runtimeRevision)}});}
       if(url.pathname==='/api/settings/sync'){synced=true;return route.fulfill({json:{ok:true}})}
       if(url.pathname==='/api/settings'){
         if(req.method()==='POST'){
@@ -34,14 +37,10 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
       return route.fulfill({status:404,body:''});
     });
     await page.goto('http://forge.test/settings');
-    await page.getByText('Save your App connections, then refresh access to discover repositories.').waitFor();
-    for(const [i,role] of roles.entries()){
-      await page.locator(`#${role}-app`).fill(String(i+1));
-      await page.locator(`#${role}-installation`).fill(String(i+101));
-      await page.locator(`#${role}-key`).fill(`FORGE_${role.toUpperCase()}_KEY_FILE`);
-    }
-    await page.getByRole('button',{name:'Save connections',exact:true}).click();
-    await page.getByText('Settings saved.',{exact:true}).waitFor();assert.equal(saves,1);
+    await page.getByText('forge-build-example',{exact:true}).waitFor();
+    assert.equal(await page.locator('#connections input, #config-editor, #runtime-editor').count(),0);
+    assert.equal(await page.getByRole('button',{name:'Save connections',exact:true}).count(),0);
+    assert.equal(await page.getByText('FORGE_BUILD_KEY_FILE',{exact:false}).count(),0);
     await page.getByRole('button',{name:'Refresh access',exact:true}).click();
     await page.getByRole('button',{name:'Enable',exact:true}).waitFor();
     await page.getByRole('button',{name:'Enable',exact:true}).click();
@@ -53,23 +52,37 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     failSync=true;
     await page.getByRole('button',{name:'Refresh access',exact:true}).click();
     await page.getByText('Paused · access needs attention').waitFor();assert.equal(config.repositories[0].enabled,true);
-    await page.locator('#sync-interval').fill('600');revision++; // External agent edits the file.
-    await page.getByRole('button',{name:'Save sync settings',exact:true}).click();
-    await page.getByText('Settings changed; reload before saving').waitFor();
-    assert.equal(await page.locator('#sync-interval').inputValue(),'600');
-    await page.screenshot({path:process.env.FORGE_SETTINGS_SCREENSHOT||'/tmp/forge-settings-desktop.png',fullPage:true});
+    await page.locator('#worker-total').fill('6');
+    await page.getByRole('button',{name:'Save worker limits',exact:true}).click();
+    await page.getByText('Worker limits saved.',{exact:false}).waitFor();
+    assert.equal(runtime.max_running,6);assert.equal(runtime.slots.recovery,1);
+    assert.equal(runtime.image,'unchanged-image');assert.equal(runtime.provider_pool[0].provider_auth_file_env,'PRIVATE_REFERENCE');
+    assert.deepEqual(config.connections,originalConnections);
+    await page.locator('#worker-total').fill('8');runtimeRevision++;
+    await page.getByRole('button',{name:'Save worker limits',exact:true}).click();
+    await page.getByText('Worker limits changed; reload before saving').waitFor();
+    assert.equal(await page.locator('#worker-total').inputValue(),'8');assert.equal(runtime.max_running,6);
+    await page.getByRole('button',{name:'Reload values',exact:true}).click();
+    await page.getByText('Worker limits reloaded.',{exact:true}).waitFor();
+    assert.equal(await page.locator('#worker-total').inputValue(),'6');
+    failSync=false;await page.reload();await page.getByText('forge-build-example',{exact:true}).waitFor();
+    await page.evaluate(()=>scrollTo(0,0));
+    await page.screenshot({path:'/tmp/forge-settings-operator-desktop.png',fullPage:true});
     await page.setViewportSize({width:390,height:844});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
-    await page.screenshot({path:'/tmp/forge-settings-mobile.png',fullPage:true});
+    await page.screenshot({path:'/tmp/forge-settings-operator-mobile.png',fullPage:true});
+    await page.goto('http://forge.test/settings/advanced');
+    await page.getByText('forge-build-example',{exact:true}).waitFor();
+    assert.equal(await page.locator('#connections input, #config-editor, #runtime-editor').count(),0);
     // The operator page is useful before any installation exists and must not
     // confuse saved registration or a draft selection with verified access.
-    config.connections={};config.repositories=[];synced=false;failSync=false;
+    config.connections={};config.repositories=[];synced=false;failSync=false;setup.phase='setup';
     await page.goto('http://forge.test/settings/github');
     await page.getByRole('heading',{name:'GitHub access',exact:true}).waitFor();
     await page.getByText('Installation unverified',{exact:true}).waitFor();
     assert.equal(await page.getByRole('link',{name:'Install App ↗'}).getAttribute('href'),setup.roles.build.install_url);
     assert.equal(await page.locator('#build-key').count(),0);
-    assert(await page.locator('#save-connections').isHidden());assert(await page.locator('#runtime-title').isHidden());
+    assert.equal(await page.locator('#save-connections').count(),0);assert(await page.locator('#runtime-title').isHidden());
     const beforeOperatorSaves=saves;
     await page.getByRole('button',{name:'Refresh access',exact:true}).click();
     await page.getByText('Access refreshed.',{exact:true}).waitFor();assert.equal(setupRefreshes,1);
@@ -83,7 +96,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     await page.screenshot({path:'/tmp/forge-github-access-mobile.png',fullPage:true});
     setup.phase='active';await page.reload();
-    await page.getByRole('link',{name:'Advanced settings',exact:true}).waitFor();
+    await page.getByRole('link',{name:'Factory settings',exact:true}).waitFor();
     assert(await page.getByRole('button',{name:'Enable',exact:true}).isDisabled());
     assert.equal(saves,beforeOperatorSaves);
     await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'/tmp/forge-github-access-desktop.png',fullPage:true});
