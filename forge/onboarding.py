@@ -79,9 +79,28 @@ class Onboarding:
                 'harnesses': self.harnesses(data),
                 'activity': self.activity(data),
                 'repository_check': data.get('repository_check'),
+                'repository_setup': next((r for r in settings['repositories'] if r['id'] == (data.get('selected') or {}).get('id')), None),
+                'qualification_fresh': self.qualified(data),
+                'service': self.service_status(),
                 'can_start': data['phase'] == 'setup' and ready.get('revision') == revision
-                             and 0 <= self.clock() - ready.get('at', 0) < 300 and not data.get('operation'),
+                             and 0 <= self.clock() - ready.get('at', 0) < 300 and self.qualified(data)
+                             and data['checks'].get('github') == 'passed' and not data.get('operation'),
                 'operation': data.get('operation'), 'error': data.get('error')}
+
+    def service_status(self):
+        try:
+            last = read_json(self.root / 'state/setup-service.json').get('at', 0)
+        except (OSError, ValueError):
+            last = 0
+        return {'last_seen': last, 'available': bool(last and 0 <= self.clock() - last < 120)}
+
+    def qualification_key(self, data):
+        return digest({'runtime': self.runtime(), 'provider': data.get('provider_revision')})
+
+    def qualified(self, data):
+        value = data.get('qualification') or {}
+        return (value.get('key') == self.qualification_key(data)
+                and 0 <= self.clock() - value.get('at', 0) < 900)
 
     @staticmethod
     def activity(data):
@@ -313,6 +332,10 @@ class Onboarding:
                 # Fence persists even if the process crashes before its intent is saved.
                 write_json(self.root / 'state/factory-paused.json', {'generation': data['generation']})
                 data['phase'] = 'resetting'
+            if action == 'harness_check':
+                data.pop('qualification', None)
+            if action in ('check', 'harness_check'):
+                data.pop('readiness', None)
             op = {'id': str(uuid.uuid4()), 'action': action, 'generation': data['generation'],
                   'revision': revision, 'step': 'queued', 'at': self.clock()}
             data.update(operation=op, error=None)

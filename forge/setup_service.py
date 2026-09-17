@@ -184,6 +184,10 @@ class Service:
                         return
             config = self.setup.runtime() if op['action'] == 'harness_check' else self.access(data)
             self.runner(config).ready()
+            if op['action'] == 'check' and self.setup.qualified(data):
+                self.update(op, checks={'github': 'passed', 'provider': 'passed', 'runner': 'passed'},
+                            readiness={'revision': self.setup.revision(data), 'at': self.setup.clock()}, operation=None, error=None)
+                return
             pool = config['provider_pool'] or [{'id': config['provider']}]
             plan = [{**config, **{k: v for k, v in entry.items() if k != 'id'}} for entry in pool]
             job = self.new_probe(plan[0], 'provider')
@@ -220,6 +224,7 @@ class Service:
                     config['provider_ready'] = passed
                     write_json(self.root / ('runtime.json' if data['phase'] == 'active' else 'setup/runtime.json'), config)
                 self.update(op, probe_jobs=data['probe_jobs'], checks={**data['checks'], 'provider': 'passed' if passed else 'failed', 'runner': 'passed'},
+                            qualification={'key': self.setup.qualification_key(data), 'at': self.setup.clock()} if passed else None,
                             readiness=None if op['action'] == 'harness_check' or not passed else {'revision': self.setup.revision(data), 'at': time.time()},
                             operation=None, error=None if passed else 'No harness passed verification. Reconnect a coding account on the VM and check again.')
                 return
@@ -257,6 +262,8 @@ class Service:
         op = data['operation']
         if self.setup.revision(data) != op['revision']:
             raise ValueError('Setup changed; run readiness checks again')
+        if not self.setup.qualified(data):
+            raise ValueError('Coding account verification expired. Verify setup again before starting.')
         config = self.access(data)
         self.runner(config).ready()
         if (self.root / 'state/factory-paused.json').exists():
@@ -346,6 +353,7 @@ class Service:
                 (self.root / 'state/factory-paused.json').unlink(missing_ok=True)
 
     def tick(self):
+        write_json(self.root / 'state/setup-service.json', {'at': self.setup.clock()})
         data = self.setup.read()
         op = data.get('operation')
         if op:

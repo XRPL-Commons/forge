@@ -9,7 +9,7 @@ from forge.onboarding import Onboarding
 with tempfile.TemporaryDirectory() as root:
  print(json.dumps(Onboarding(root).begin('build','example','organization','http://forge.test','synthetic-browser-session')))
 `],{cwd:path.join(__dirname,'..'),encoding:'utf8'}));
-(async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.FORGE_BROWSER_PATH});try{
+(async()=>{const browser=await chromium.launch({chromiumSandbox:true,headless:true,executablePath:process.env.FORGE_BROWSER_PATH});try{
 const page=await browser.newPage({viewport:{width:1440,height:1080}}),errors=[],actions=[];
 let registering=true,manifestSubmitted=false,rejectVerification=false,checkGate=null;
 await page.route('https://github.com/**',async route=>{
@@ -67,7 +67,7 @@ await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locato
 state.operation=null;state.activity=null;state.checks={github:'failed'};state.error='Default branch protection needs required checks.';
 state.repository_check={branch:'main',available:true,requirements:[{id:'stale',label:'Dismiss stale approvals',passed:false,detail:'Enable stale-approval dismissal.'},{id:'reviews',label:'Two approving reviews',passed:true,detail:''}]};
 await page.getByRole('heading',{name:'Setup needs attention',exact:true}).waitFor();
-await page.getByRole('heading',{name:'1 repository setting needs attention'}).waitFor();assert.equal(await page.getByRole('link',{name:'Open branch protection ↗'}).getAttribute('href'),'https://github.com/example/project/settings/branches');assert.equal(await page.getByRole('link',{name:'Repository protection instructions',exact:true}).count(),1);
+await page.getByRole('heading',{name:'1 repository setting needs attention'}).waitFor();assert.equal(await page.getByRole('link',{name:'Prepare repository →'}).getAttribute('href'),'/settings/repository?repo_id=10');assert.equal(await page.getByRole('link',{name:'Repository protection instructions',exact:true}).count(),1);
 await page.screenshot({path:'/tmp/forge-onboarding-blocked.png',fullPage:true});
 await page.getByRole('link',{name:'Manage accounts',exact:true}).click();await page.getByRole('heading',{name:'Coding harnesses',exact:true}).waitFor();assert.equal(await page.locator('#notice').textContent(),'');
 await page.goto('http://forge.test/onboarding');await page.getByRole('button',{name:'Check again',exact:true}).waitFor();
@@ -77,6 +77,17 @@ await page.getByRole('heading',{name:'Ready to start Forge',exact:true}).waitFor
 assert(!(await page.getByRole('button',{name:'Start Forge',exact:true}).isDisabled()));
 state.can_start=false;await page.getByText('The previous verification has expired or setup changed.',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'Start Forge',exact:true}).count(),0);
 state.can_start=true;await page.getByRole('button',{name:'Start Forge',exact:true}).waitFor();
+state.can_start=false;state.repository_setup={protection_ready:false};
+await page.getByRole('heading',{name:'Prepare your repository',exact:true}).waitFor();
+assert((await page.getByRole('link',{name:'Prepare repository →',exact:true}).boundingBox()).y<800);
+await page.screenshot({path:'/tmp/forge-onboarding-prepare.png',fullPage:true});
+state.repository_setup={protection_ready:true};state.operation={action:'check',at:Date.now()/1000-30};state.service={available:false,last_seen:0};
+await page.getByRole('heading',{name:'Waiting for the Forge service',exact:true}).waitFor();
+await page.getByRole('link',{name:'Check service setup →',exact:true}).waitFor();
+assert.equal(await page.getByRole('button',{name:'Start Forge',exact:true}).count(),0);
+await page.screenshot({path:'/tmp/forge-onboarding-service-wait.png',fullPage:true});
+state.operation=null;state.service={available:true,last_seen:Date.now()/1000};state.can_start=true;
+await page.getByRole('button',{name:'Start Forge',exact:true}).waitFor();
 await page.getByRole('button',{name:'Start Forge',exact:true}).click();await page.waitForURL('**/factory');
 await page.goto('http://forge.test/reset');await page.getByRole('heading',{name:'Start fresh',exact:true}).waitFor();
 const prior=actions.length;await page.getByRole('link',{name:'Cancel',exact:true}).click();assert.equal(actions.length,prior);
