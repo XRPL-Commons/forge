@@ -16,6 +16,8 @@ import sqlite3
 import time
 import uuid
 
+from .state import PROVIDERS
+
 STAGES = {'queued', 'build', 'review', 'audit', 'done', 'cancelled', 'unknown'}
 DISPOSITIONS = {'pending', 'working', 'critical', 'stalled'}
 ROLES = {'build', 'review', 'audit'}
@@ -249,7 +251,7 @@ def reserve(state, repo, role, session, revision, issue_numbers, *, source_event
     repo=_repo(repo);_text(revision,'revision');_text(session,'session',120)
     if not re.fullmatch(r'[A-Za-z0-9_.-]+',session) or role not in ROLES:
         raise Refused('invalid_role_session')
-    if provider not in (None,'claude','codex'):raise Refused('invalid_provider')
+    if provider is not None and provider not in PROVIDERS:raise Refused('invalid_provider')
     if not isinstance(issue_numbers,list):raise Refused('invalid_issue_numbers')
     numbers=sorted({_number(n) for n in issue_numbers});pr=_pr(pr)
     if len(numbers)!=len(issue_numbers) or not numbers and pr is None:
@@ -306,7 +308,7 @@ def transition(state, assignment_id, action, *, source_event_id, generation=None
     if action not in {'bind','submitted','working','idle','uncertain','blocked','handoff','retired','migrate'}:raise Refused('invalid_action')
     if generation is not None:_generation(generation)
     elif action not in {'blocked','retired'}:raise Refused('invalid_generation')
-    if provider not in (None,'claude','codex'):raise Refused('invalid_provider')
+    if provider is not None and provider not in PROVIDERS:raise Refused('invalid_provider')
     if reason is not None:_text(reason,'reason')
     if execution is not None:
         if action not in {'working','idle'} or not isinstance(execution,dict) or set(execution)-{'run_id','thread_id','started_at'}:
@@ -413,7 +415,7 @@ def observe_slot(state, session, repo, role, generation, slot_state, *, source_e
     repo=_repo(repo);_text(session,'session',120)
     if not re.fullmatch(r'[A-Za-z0-9_.-]+',session) or role not in ROLES:raise Refused('invalid_role_session')
     if slot_state not in {'free','reserved','starting','working','retiring','blocked'}:raise Refused('invalid_slot_state')
-    if provider not in (None,'claude','codex'):raise Refused('invalid_provider')
+    if provider is not None and provider not in PROVIDERS:raise Refused('invalid_provider')
     if type(bootstrap) is not bool:raise Refused('invalid_bootstrap')
     if generation is not None:_generation(generation)
     if slot_state!='free' and generation is None:raise Refused('occupied_slot_requires_generation')

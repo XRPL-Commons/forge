@@ -43,9 +43,16 @@ class ExecutorTests(unittest.TestCase):
             SystemdExecutor().start(self.plan, apply=True)
 
     def test_commands_properties_and_provider_policy_paths_are_fixed(self):
-        for provider in ('codex', 'claude'):
+        for provider in ('codex', 'claude', 'grok'):
             plan = AttemptPlan(provider, ID)
             command = command_plan(plan, 'linger')
+            from forge.executor import POLICY_TARGETS
+            self.assertTrue(any(v.startswith('--property=BindReadOnlyPaths=') and f'/policy/{provider}:{POLICY_TARGETS[provider]} ' in v for v in command))
+            self.assertTrue(any('XAI_API_KEY' in v and 'GROK_DEPLOYMENT_KEY' in v for v in command if v.startswith('--property=UnsetEnvironment=')))
+            if provider == 'grok':
+                for value in ('GROK_HOME=/home/forge/client', 'GROK_DISABLE_AUTOUPDATER=1', 'GROK_TELEMETRY_ENABLED=0'):
+                    self.assertIn(value, command)
+                self.assertFalse(any('CLAUDE_CONFIG_DIR' in v or 'CODEX_HOME' in v for v in command))
             self.assertEqual(command[:3], ['/usr/bin/systemd-run', '--system', '--quiet'])
             for value in ['KillMode=control-group', 'RuntimeMaxSec=20s', 'TasksMax=32',
                           'MemoryMax=512M', 'MemorySwapMax=0', 'PrivateNetwork=yes',

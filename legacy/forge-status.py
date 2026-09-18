@@ -415,14 +415,16 @@ def status():
         out['slot_actions'] = []
         out['controls_token'] = None
     try:
-        from forge.routing import read_routing
+        from forge.routing import read_routing, readiness, PROVIDERS as ROUTED_PROVIDERS
         routing = read_routing(Path(WD)/'state')
         out['routing'] = {'status':'ok', 'last_provider':routing.get('last_provider'),
                           'next_provider':routing.get('next_provider'),
                           'providers':{provider:{key:value for key,value in details.items()
                                       if key in {'reason','last_failure','blocked_until','probe_until'}}
                                        for provider,details in routing.get('providers',{}).items()
-                                       if provider in {'claude','codex'} and isinstance(details,dict)}}
+                                       if provider in ROUTED_PROVIDERS and isinstance(details,dict)},
+                          # Connection/readiness plus reconnect instructions; executables resolve in this service's environment.
+                          'readiness':readiness(routing)}
     except (ImportError, OSError, ValueError, RuntimeError):
         out['routing'] = {'status':'unknown'}
     return out

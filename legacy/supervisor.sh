@@ -11,6 +11,8 @@ export PYTHONPATH="$DIR"
 # Configure a stable native executable; repository shell/fnm PATH may change.
 FORGE_CLAUDE_BIN="${FORGE_CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
 FORGE_CODEX_BIN="${FORGE_CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+# Grok Build is optional and explicit only: never discovered from PATH.
+FORGE_GROK_BIN="${FORGE_GROK_BIN:-}"
 # Fleet capacity: concurrent agent sessions host-wide and per role (build/review/audit).
 # Defaults reserve one slot per role. Validate capacity against your own host.
 MAX_SESSIONS="${MAX_SESSIONS:-3}"
@@ -322,7 +324,13 @@ launch(){ # sess dir role nudge — fresh bounded legacy context; no inferred co
   fi
   # Reserve a provider probe only after this worker has passed admission.
   provider=$(python3 -m forge.routing --state "$STATE" --config "$DIR/repos.d" select --session "$sess") || { if workflow_enabled; then workflow_call blocked "$sess" --reason provider_unavailable >/dev/null || true; fi; glog "[$sess] no provider available"; return; }
-  case "$provider" in claude) executable="$FORGE_CLAUDE_BIN" ;; codex) executable="$FORGE_CODEX_BIN" ;; *) return ;; esac
+  case "$provider" in
+    claude) executable="$FORGE_CLAUDE_BIN" ;;
+    codex) executable="$FORGE_CODEX_BIN" ;;
+    # Routing only selects qualified harnesses; refuse loudly rather than dispatch an unqualified one.
+    grok) glog "[$sess] Grok Build selected but its legacy runner is not qualified; shell not created"; return ;;
+    *) glog "[$sess] unknown provider '$provider' selected; shell not created"; return ;;
+  esac
   if ! provider_command=$(python3 -m forge.startup command --state "$STATE" --session "$sess" --executable "$executable"); then
     python3 -m forge.startup record-failure --state "$STATE" --session "$sess" >/dev/null 2>&1 || true
     health start_failed "$sess" >/dev/null || true

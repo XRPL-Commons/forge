@@ -7,6 +7,8 @@ import re
 import shlex
 import time
 
+from .state import PROVIDERS
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -70,7 +72,7 @@ def authorize_merge(candidate, receipts, role_keys, *, labels, owner_labels, exp
                 raise ValueError("age")
             if role in verified or evidence["outcome"] != "pass":
                 raise ValueError("duplicate or non-passing verdict")
-            if role != "checks" and evidence["provider"] not in {"codex", "claude"}:
+            if role != "checks" and evidence["provider"] not in PROVIDERS:
                 raise ValueError("provider")
             verified[role] = evidence
         except (KeyError, TypeError, ValueError):
@@ -79,8 +81,10 @@ def authorize_merge(candidate, receipts, role_keys, *, labels, owner_labels, exp
     if missing:
         blockers.append("Missing evidence: " + ", ".join(sorted(missing)))
     providers = {v["provider"] for k, v in verified.items() if k != "checks"}
-    if {"codex", "claude"} <= set(healthy_providers) and providers != {"codex", "claude"}:
-        blockers.append("Both healthy providers must contribute")
+    healthy = set(healthy_providers) & PROVIDERS
+    # No harness may self-certify while an independent healthy harness exists.
+    if len(providers & healthy) < min(2, len(healthy)):
+        blockers.append("At least two healthy providers must contribute")
     checks = verified.get("checks", {}).get("artifacts", {})
     if not isinstance(checks, dict) or not required_checks or any(checks.get(c) != "pass" for c in required_checks):
         blockers.append("Required trusted checks are missing or failing")

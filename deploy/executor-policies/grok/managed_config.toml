@@ -1,0 +1,16 @@
+# STAGED: managed defaults for the dummy executor identity; not a lock (see requirements.toml).
+disable_web_search = true
+
+[ui]
+permission_mode = "ask"
+
+[permission]
+deny = [
+  "Read(/home/forge/client/**)",
+  "Read(/var/lib/forge-clients/**)",
+  "Read(/etc/forge/**)",
+  "Bash(cat /home/forge/client/*)",
+  "WebFetch(*)",
+  "WebSearch(*)",
+  "Agent(*)",
+]

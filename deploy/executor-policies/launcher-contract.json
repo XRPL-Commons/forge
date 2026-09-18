@@ -53,6 +53,36 @@
         "stream-json",
         "--verbose"
       ]
+    },
+    "grok": {
+      "version": "1.0.34",
+      "sha256": "be5905e107d2b8b5f3c142d21ecfe4c8fd32a913d2fd551b788707930c4dc80d",
+      "executable": "/opt/forge/bin/grok",
+      "managed_directory": "/etc/grok",
+      "qualification": "pending; optional harness, no native isolation probe has run yet",
+      "environment": {
+        "GROK_HOME": "/home/forge/client",
+        "GROK_DISABLE_AUTOUPDATER": "1",
+        "GROK_TELEMETRY_ENABLED": "0",
+        "GROK_FEEDBACK_ENABLED": "0"
+      },
+      "arguments": [
+        "--prompt-file",
+        "/home/forge/workspace/.forge/prompt.txt",
+        "--cwd",
+        "/home/forge/workspace",
+        "--tools",
+        "run_terminal_cmd",
+        "--permission-mode",
+        "dontAsk",
+        "--sandbox",
+        "strict",
+        "--no-subagents",
+        "--disable-web-search",
+        "--no-auto-update",
+        "--output-format",
+        "streaming-messages-json"
+      ]
     }
   }
 }

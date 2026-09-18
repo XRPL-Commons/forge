@@ -76,7 +76,28 @@ ACTIVE = {"starting", "running", "waiting_build", "cancelling"}
 TERMINAL = {"completed", "cancelled", "blocked_auth", "blocked_quota",
             "blocked_permission", "failed_retryable", "failed_task", "failed_infrastructure"}
 ROLES = {"builder", "reviewer", "auditor"}
-PROVIDERS = {"codex", "claude"}
+# Equal round-robin rotation order. Grok Build is registered as an optional
+# harness; only QUALIFIED_PROVIDERS may be dispatched by the legacy tmux
+# supervisor until its real runner qualification passes (docs/provider-startup.md).
+PROVIDER_ORDER = ("claude", "codex", "grok")
+PROVIDERS = frozenset(PROVIDER_ORDER)
+QUALIFIED_PROVIDERS = frozenset({"claude", "codex"})
+
+
+def successor(provider: str | None, available=PROVIDERS) -> str | None:
+    """Next provider in rotation after ``provider`` among ``available``.
+
+    ``None`` or an unavailable provider starts the rotation. Returns ``None``
+    only when nothing is available; a sole available provider succeeds itself.
+    """
+    if provider is not None and provider not in PROVIDERS:
+        raise ValueError("unknown provider")
+    order = [name for name in PROVIDER_ORDER if name in available]
+    if not order:
+        return None
+    if provider not in order:
+        return order[0]
+    return order[(order.index(provider) + 1) % len(order)]
 
 
 @dataclass(frozen=True)

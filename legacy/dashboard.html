@@ -1941,9 +1941,10 @@
           else operatorWarnings.get(message).current = true;
         }
       }
+      const PROVIDER_LABELS = { codex: "Codex", claude: "Claude", grok: "Grok Build" };
       function providerName(r, role) {
         const provider = r?.[role]?.provider ?? fleet.activity?.sessions?.[r?.short + "-" + role]?.provider;
-        return provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : "";
+        return PROVIDER_LABELS[provider] || "";
       }
       function executionTiming(r, role) {
         const a = fleet.activity?.sessions?.[r.short + "-" + role] || {},
@@ -2303,10 +2304,14 @@
         const stateLine = Object.entries(counts).filter(([key,value])=>value || ["working","blocked","idle","unknown"].includes(key))
           .map(([key,value])=>`<span><b>${value}</b> ${key}</span>`).join("");
         const roleLine = roles.map(role=>`<span data-slot-role="${role}" data-slot-count="${roleCounts[role]}">${esc(role[0].toUpperCase()+role.slice(1))} <b>${roleCounts[role]}/${perRole}</b> occupied</span>`).join("");
-        const outages = Object.entries(fleet.routing?.providers || {}).filter(([provider,data])=>["claude","codex"].includes(provider) && data.blocked_until>Date.now()/1000)
-          .map(([provider,data])=>`${provider === "codex" ? "Codex" : "Claude"} unavailable · ${reasonText(data.reason)} · retry in ${Math.ceil((data.blocked_until-Date.now()/1000)/60)}m`);
+        const outages = Object.entries(fleet.routing?.providers || {}).filter(([provider,data])=>PROVIDER_LABELS[provider] && data.blocked_until>Date.now()/1000)
+          .map(([provider,data])=>`${PROVIDER_LABELS[provider]} unavailable · ${reasonText(data.reason)} · retry in ${Math.ceil((data.blocked_until-Date.now()/1000)/60)}m`);
+        // Optional harnesses that are configured but not yet qualified for dispatch; outages are listed above.
+        const readiness = Object.entries(fleet.routing?.readiness || {})
+          .filter(([provider,data])=>PROVIDER_LABELS[provider] && data?.configured && data.status === "unqualified")
+          .map(([provider,data])=>`<span title="${esc(data.note || "")}">${esc(PROVIDER_LABELS[provider])} · configured, awaiting qualification</span>`);
         const unavailable = !inventoryFresh && fleet.workflow?.status !== "ok";
-        const slotCard = `<div class="stat stat-slots"><div class="muted">Slots occupied</div><strong class="number">${unavailable ? "?" : occupied}<small> / ${cap}</small></strong><div class="slot-states">${stateLine}</div><div class="slot-roles">${roleLine}</div>${reservations.length ? `<div class="slot-context">${reservations.join("")}</div>` : ""}${outages.length ? `<div class="slot-roles provider-outages">${outages.map(text=>`<span>${esc(text)}</span>`).join("")}</div>` : ""}</div>`;
+        const slotCard = `<div class="stat stat-slots"><div class="muted">Slots occupied</div><strong class="number">${unavailable ? "?" : occupied}<small> / ${cap}</small></strong><div class="slot-states">${stateLine}</div><div class="slot-roles">${roleLine}</div>${reservations.length ? `<div class="slot-context">${reservations.join("")}</div>` : ""}${outages.length ? `<div class="slot-roles provider-outages">${outages.map(text=>`<span>${esc(text)}</span>`).join("")}</div>` : ""}${readiness.length ? `<div class="slot-roles provider-readiness">${readiness.join("")}</div>` : ""}</div>`;
         const ownershipNote = unowned.length ? legacy === unowned.length ? `${legacy} workers started before tracking` : `${unowned.length-legacy} assignment records need reconciliation` : "";
         const stats = [
           ["Issues working",flow.status === "ok" && fleet.workflow?.status === "ok" ? items.filter(issueWorking).length : "—",ownershipNote],

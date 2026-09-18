@@ -36,7 +36,8 @@ def probe(provider):
             checks[name] = False
         except OSError:
             checks[name] = True
-    policy = Path('/etc/codex/requirements.toml' if provider == 'codex' else '/etc/claude-code/managed-settings.json')
+    policy = Path({'codex': '/etc/codex/requirements.toml', 'grok': '/etc/grok/requirements.toml'}
+                  .get(provider, '/etc/claude-code/managed-settings.json'))
     checks['managed_policy_present'] = policy.is_file()
     try:
         policy_bytes = policy.read_bytes()
@@ -95,7 +96,7 @@ def linger():
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3 or sys.argv[1] not in {'probe', 'linger'} or sys.argv[2] not in {'codex', 'claude'}:
+    if len(sys.argv) != 3 or sys.argv[1] not in {'probe', 'linger'} or sys.argv[2] not in {'codex', 'claude', 'grok'}:
         raise SystemExit('fixed synthetic mode required')
     if sys.argv[1] == 'linger':
         linger()

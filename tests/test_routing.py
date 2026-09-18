@@ -24,11 +24,54 @@ class RoutingTransitionsTests(unittest.TestCase):
     def test_global_alternation_follows_successful_binding_across_all_roles(self):
         data = {}
         for index, session in enumerate(('one-build','two-audit','three-review','four-build')):
-            selected = routing.choose(data, set(routing.PROVIDERS), session, 200+index)
+            selected = routing.choose(data, {'claude','codex'}, session, 200+index)
             expected = 'claude' if index % 2 == 0 else 'codex'
             self.assertEqual(selected['provider'], expected)
             routing.bind(data, session, expected, identity(index+1), 200+index)
         self.assertEqual(data['last_provider'], 'codex')
+
+    def test_three_harnesses_rotate_equally_and_skip_blocked_or_unavailable(self):
+        self.assertEqual(routing.PROVIDERS, ('claude','codex','grok'))
+        data = {}
+        expected = ['claude','codex','grok','claude']
+        for index, session in enumerate(('one-build','two-audit','three-review','four-build')):
+            selected = routing.choose(data, set(routing.PROVIDERS), session, 200+index)
+            self.assertEqual(selected['provider'], expected[index])
+            self.assertEqual(selected['reason'], 'alternating_dispatch')
+            routing.bind(data, session, expected[index], identity(index+1), 200+index)
+        # Codex is next; a Grok outage then sends the following turn to Claude, not back to Codex.
+        self.assertEqual(routing.choose(data, set(routing.PROVIDERS), 'five-audit', 300)['provider'], 'codex')
+        routing.bind(data, 'five-audit', 'codex', identity(5, 300), 301)
+        self.assertTrue(routing.fail(data, 'three-review', 'grok', 'authentication', identity(3), 302))
+        selected = routing.choose(data, set(routing.PROVIDERS), 'six-build', 303)
+        self.assertEqual((selected['provider'], selected['reason'], selected['degraded']), ('claude', 'alternate_provider_available', True))
+        # An unconfigured optional harness is simply absent from the rotation.
+        routing.bind(data, 'six-build', 'claude', identity(6, 303), 304)
+        self.assertEqual(routing.choose(data, {'claude','codex'}, 'seven-review', 305)['provider'], 'codex')
+        # A requested but unavailable harness is skipped rather than forced.
+        data = {'next_provider': 'grok'}
+        self.assertEqual(routing.choose(data, {'claude','codex'}, 'one-build', 400)['provider'], 'claude')
+
+    def test_optional_harness_requires_explicit_executable_and_reports_readiness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary)/'grok'
+            binary.write_text('#!/bin/sh\nexit 0\n'); binary.chmod(0o755)
+            with patch.dict(os.environ, {'FORGE_GROK_BIN': '', 'FORGE_CLAUDE_BIN': '', 'FORGE_CODEX_BIN': ''}), \
+                    patch.object(routing.shutil, 'which', return_value=str(binary)):
+                self.assertIsNone(routing.executable('grok'))
+                self.assertEqual(routing.executable('claude'), str(binary))
+                view = routing.readiness({}, now=10)
+                self.assertEqual(view['grok']['status'], 'not_configured')
+                self.assertIn('grok login --device-code', view['grok']['reconnect'])
+                self.assertEqual(view['claude']['status'], 'ready')
+            with patch.dict(os.environ, {'FORGE_GROK_BIN': str(binary)}):
+                self.assertEqual(routing.executable('grok'), str(binary))
+                view = routing.readiness({'providers': {'claude': {'reason': 'blocked_auth', 'blocked_until': 500, 'last_failure': 1}}}, now=10)
+                self.assertEqual((view['grok']['status'], view['grok']['qualified'], view['grok']['dispatchable']), ('unqualified', False, False))
+                self.assertIn('qualification', view['grok']['note'])
+                self.assertEqual((view['claude']['status'], view['claude']['reason'], view['claude']['blocked_until']), ('unavailable', 'blocked_auth', 500))
+                self.assertIn('retry --provider claude', view['claude']['reconnect'])
+                self.assertEqual(routing.readiness({'providers': {'claude': {'blocked_until': 5}}}, now=10)['claude']['status'], 'ready')
 
     def test_requested_next_provider_waits_for_availability_and_binding(self):
         data={'next_provider':'codex'}
@@ -192,13 +235,13 @@ class RoutingCliTests(unittest.TestCase):
         (self.config/'one.repo').write_text('REPO=o/one\nOWNER_LABEL=auto:owned-by-fixture\n')
         self.state=self.root/'state';self.state.mkdir()
         binary=self.root/'bin';binary.mkdir()
-        for provider in ('claude','codex'):
+        for provider in ('claude','codex','grok'):
             path=binary/provider
             path.write_text('#!/bin/sh\nprintf paid > "'+str(self.root/'paid-probe')+'"\nexit 97\n');path.chmod(0o755)
         tmux=binary/'tmux'
         tmux.write_text('#!/usr/bin/python3\nimport os,sys\nprint(os.environ["TEST_GENERATION"])\nsys.exit(int(os.environ.get("TMUX_STATUS","0")))\n');tmux.chmod(0o755)
         self.env=dict(os.environ,PATH=str(binary),PYTHONPATH=str(ROOT),TEST_GENERATION='$1|100|%1|1001',
-                      FORGE_CLAUDE_BIN=str(binary/'claude'),FORGE_CODEX_BIN=str(binary/'codex'))
+                      FORGE_CLAUDE_BIN=str(binary/'claude'),FORGE_CODEX_BIN=str(binary/'codex'),FORGE_GROK_BIN=str(binary/'grok'))
 
     def cli(self,*args):
         result=subprocess.run([sys.executable,'-m','forge.routing','--state',str(self.state),'--config',str(self.config),*args],
@@ -212,6 +255,13 @@ class RoutingCliTests(unittest.TestCase):
         result=self.cli('bind','--session','one-build','--provider','claude','--generation',self.env['TEST_GENERATION'])
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(self.cli('select','--session','one-audit').stdout.strip(),'codex')
+        result=self.cli('bind','--session','one-audit','--provider','codex','--generation',self.env['TEST_GENERATION'])
+        self.assertEqual(result.returncode,0,result.stderr)
+        # A configured but unqualified Grok Build is never selected by the legacy supervisor path.
+        self.assertEqual(self.cli('select','--session','one-review').stdout.strip(),'claude')
+        readiness=json.loads(self.cli('readiness').stdout)
+        self.assertEqual((readiness['grok']['status'],readiness['grok']['executable']),('unqualified',str(self.root/'bin/grok')))
+        self.assertEqual(readiness['codex']['status'],'ready')
         self.assertEqual(self.cli('current','--session','one-build').stdout.strip(),'claude')
         self.env['TEST_GENERATION']='$2|100|%2|1002'
         self.assertNotEqual(self.cli('current','--session','one-build').returncode,0)

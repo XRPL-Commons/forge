@@ -20,10 +20,11 @@ import uuid
 
 ROOT = Path('/var/lib/forge-executor/attempts')
 CGROUP_ROOT = Path('/sys/fs/cgroup')
-PROVIDERS = {'codex', 'claude'}
-POLICY_TARGETS = {'codex': '/etc/codex', 'claude': '/etc/claude-code'}
+PROVIDERS = {'codex', 'claude', 'grok'}
+POLICY_TARGETS = {'codex': '/etc/codex', 'claude': '/etc/claude-code', 'grok': '/etc/grok'}
 POLICY_FILES = {'codex': {'requirements.toml', 'config.toml'},
-                'claude': {'managed-settings.json', 'managed-mcp.json'}}
+                'claude': {'managed-settings.json', 'managed-mcp.json'},
+                'grok': {'requirements.toml', 'managed_config.toml'}}
 SHOW_FIELDS = ('Id', 'LoadState', 'ActiveState', 'SubState', 'ControlGroup', 'InvocationID',
                'User', 'Group', 'ExecMainCode', 'ExecMainStatus')
 
@@ -100,6 +101,9 @@ def command_plan(plan, scenario='cli-plan'):
                    'PATH=/usr/bin:/bin', 'LANG=C.UTF-8']
     if plan.provider == 'codex':
         environment += ['CODEX_HOME=/home/forge/client']
+    elif plan.provider == 'grok':
+        environment += ['GROK_HOME=/home/forge/client', 'GROK_DISABLE_AUTOUPDATER=1',
+                        'GROK_TELEMETRY_ENABLED=0', 'GROK_FEEDBACK_ENABLED=0']
     else:
         environment += ['CLAUDE_CONFIG_DIR=/home/forge/client', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1',
                         'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1', 'DISABLE_AUTOUPDATER=1']
@@ -133,7 +137,9 @@ def command_plan(plan, scenario='cli-plan'):
         'UnsetEnvironment': ('SSH_AUTH_SOCK SSH_AGENT_PID DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS '
                              'XDG_RUNTIME_DIR NOTIFY_SOCKET LISTEN_FDS LISTEN_PID LISTEN_FDNAMES '
                              'ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN '
-                             'OPENAI_API_KEY CODEX_API_KEY GH_TOKEN GITHUB_TOKEN PYTHONPATH PYTHONHOME '
+                             'OPENAI_API_KEY CODEX_API_KEY XAI_API_KEY GROK_DEPLOYMENT_KEY '
+                             'GROK_AUTH_PROVIDER_COMMAND GROK_CONFIG GROK_CONFIG_PATH '
+                             'GH_TOKEN GITHUB_TOKEN PYTHONPATH PYTHONHOME '
                              'LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES'),
         'StandardInput': 'null', 'StandardOutput': 'journal', 'StandardError': 'journal',
     }

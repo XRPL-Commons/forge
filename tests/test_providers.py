@@ -42,6 +42,20 @@ class ProviderTests(unittest.TestCase):
         rotated = ProviderRouter(self.temp.name, accounts={"codex": "new", "claude": "default"})
         self.assertEqual(rotated.choose("builder", now=2).provider, "codex")
 
+    def test_optional_harness_joins_rotation_only_when_listed(self):
+        self.assertEqual(self.router.available, {"codex", "claude"})
+        router = ProviderRouter(self.temp.name, available={"claude", "codex", "grok"})
+        self.assertEqual(router.choose("builder").provider, "codex")
+        self.assertEqual(router.choose("reviewer", successful_builder="codex").provider, "grok")
+        self.assertEqual(router.choose("auditor", successful_reviewer="grok").provider, "claude")
+        self.assertEqual(router.choose("reviewer", successful_builder="grok").provider, "claude")
+        router.record_failure("grok", "blocked_auth", now=10)
+        route = router.choose("reviewer", successful_builder="codex", now=11)
+        self.assertEqual((route.provider, route.degraded), ("claude", True))
+        self.assertTrue(router.choose("builder", now=11).degraded)
+        with self.assertRaises(ValueError):
+            ProviderRouter(self.temp.name, available={"grok"}, accounts={"codex": "a", "claude": "b"})
+
     def test_missing_provider_and_transient_backoff(self):
         self.assertIsNone(ProviderRouter(self.temp.name, available=set()).choose("builder").provider)
         self.router.record_failure("codex", "failed_retryable", now=0)

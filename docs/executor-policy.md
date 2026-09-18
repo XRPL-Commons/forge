@@ -24,6 +24,10 @@ Only Bash is exposed by the immutable invocation. Built-in file tools, web tools
 
 `--bare` is chosen for dummy clients: it excludes ambient startup integration and accepts API-key authentication rather than the operator's OAuth store. Removing `--bare` to use subscription login would change the startup and configuration surface and requires a separate acceptance test. Nothing here transfers or rewrites existing logins.
 
+## Grok Build candidate (staged, unqualified)
+
+`deploy/executor-policies/grok` mirrors the Claude candidate for Grok Build 1.0.34: the invocation exposes only the shell tool (`--tools run_terminal_cmd`) under `--permission-mode dontAsk` with `--sandbox strict`, no subagents and no web tools, and reads its prompt from a file because headless Grok ignores stdin. `requirements.toml` is the requirements layer that user config, environment variables and remote managed settings cannot override; it pins the strict sandbox, locks always-approve off, disables auto-update, telemetry, remote managed-config fetch, web fetch and the file-write tool. `managed_config.toml` adds deny rules for the client home. Bind the directory read-only at `/etc/grok`; the unit sets `GROK_HOME=/home/forge/client` and unsets `XAI_API_KEY` and the deployment/auth-provider variables. The config reference shipped with the CLI (`~/.grok/docs/user-guide/26-config-reference.md`) documents which keys are pinnable. Nothing here has been exercised inside the service yet: `launcher-contract.json` records the qualification as pending, and no native isolation probe for Grok exists.
+
 ## Evidence and remaining tests
 
 `python3 -m unittest tests.test_executor_policy -q` passes six offline contract regressions. An isolated temporary Codex home with the candidate profile and feature table passed `codex features list` on 0.153.2; `state/executor-policy-parser.json` records the result. This validates ordinary-config syntax and recognized feature switches, **not managed source precedence**. The profile is defined only in requirements for deployment: copying it into both requirements and client config can cause duplicate-name rejection.

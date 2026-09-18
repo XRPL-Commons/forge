@@ -2,7 +2,11 @@
 
 Claude model_only removes all tools. Codex transport_smoke is deliberately opt-in
 and only for trusted synthetic inputs: read-only is not credential isolation.
-Live coding requires a separate, externally enforced executor not implemented here.
+Grok Build model_only uses the same Messages-API wire stream as Claude with an
+empty tool allowlist; its prompt is read from the attempt's private input file
+because headless Grok never reads stdin. Any observed tool use is a policy
+failure. Live coding requires a separate, externally enforced executor not
+implemented here.
 """
 from __future__ import annotations
 
@@ -97,6 +101,14 @@ def build_command(provider: str, task: WorkerTask, attempt_dir: Path,
     if provider not in PROVIDERS:
         raise ValueError("unknown provider")
     binary = executable or provider
+    if provider == "grok":
+        # Verified against Grok Build 1.0.34: flags parse; tool suppression is
+        # additionally enforced by rejecting any tool_use block in the stream.
+        command = [binary, "--prompt-file", str(attempt_dir / "input.txt"), "--tools", "",
+                   "--permission-mode", "dontAsk", "--no-subagents", "--disable-web-search",
+                   "--no-auto-update", "--output-format", "streaming-messages-json",
+                   "--json-schema", json.dumps(RESULT_SCHEMA, separators=(",", ":"))]
+        return command + (["--resume", task.session_id] if task.session_id else [])
     if provider == "codex":
         command = [binary, "exec"] + (["resume"] if task.session_id else [])
         command += ["--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
@@ -123,7 +135,7 @@ def classify_error(text: str) -> str:
     if any(s in lowered for s in ("insufficient_quota", "credit balance", "usage limit",
                                   "out of credits", "exhausted credits")):
         return "blocked_quota"
-    if any(s in lowered for s in ("authentication_error", "invalid_api_key", "not logged in",
+    if any(s in lowered for s in ("authentication_error", "invalid_api_key", "not logged in", "not signed in",
                                   "please login", "please log in", "token expired", "unauthorized")):
         return "blocked_auth"
     return "failed_retryable"
@@ -168,6 +180,7 @@ def parse_output(provider: str, stdout: str, stderr: str, exit_code: int,
             elif kind in {"error", "turn.failed"}:
                 errors.append(json.dumps(event))
         else:
+            # Claude stream-json and Grok Build streaming-messages-json share this shape.
             if isinstance(event.get("session_id"), str):
                 if session is not None and session != event["session_id"]:
                     malformed = True
@@ -293,8 +306,9 @@ class WorkerRunner:
         os.chmod(prompt_path, 0o600)
         # Explicit client auth context only. Repository execution is not admitted.
         names = {"PATH", "HOME", "LANG", "LC_ALL", "TERM"}
-        names |= ({"CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY"} if provider == "codex" else
-                  {"CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
+        names |= {"codex": {"CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY"},
+                  "claude": {"CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"},
+                  "grok": {"GROK_HOME", "XAI_API_KEY"}}[provider]
         env = {key: value for key, value in os.environ.items() if key in names}
         env.update(NO_COLOR="1", TERM="dumb")
         start = time.monotonic()

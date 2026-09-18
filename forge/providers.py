@@ -1,4 +1,4 @@
-"""Availability-aware stage alternation; policy/task failures never become outages."""
+"""Availability-aware stage rotation; policy/task failures never become outages."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +6,7 @@ from pathlib import Path
 import math
 import time
 
-from .state import AtomicStore, PROVIDERS, ROLES
+from .state import AtomicStore, PROVIDERS, PROVIDER_ORDER, QUALIFIED_PROVIDERS, ROLES, successor
 
 
 @dataclass(frozen=True)
@@ -17,12 +17,6 @@ class Routing:
     retry_after: float | None = None
 
 
-def opposite(provider: str) -> str:
-    if provider not in PROVIDERS:
-        raise ValueError("unknown provider")
-    return "claude" if provider == "codex" else "codex"
-
-
 class ProviderRouter:
     def __init__(self, state_root: str | Path, *, preferred_builder: str = "codex",
                  accounts: dict[str, str] | None = None,
@@ -31,12 +25,13 @@ class ProviderRouter:
         if preferred_builder not in PROVIDERS or cooldown <= 0 or transient_delay <= 0:
             raise ValueError("invalid provider configuration")
         self.preferred = preferred_builder
-        self.accounts = accounts or {p: "default" for p in PROVIDERS}
-        if set(self.accounts) != PROVIDERS or any(not a for a in self.accounts.values()):
-            raise ValueError("configure an account identity for each provider")
-        self.available = PROVIDERS if available is None else set(available)
+        # Optional harnesses (Grok Build) join the rotation only when listed explicitly.
+        self.available = set(QUALIFIED_PROVIDERS) if available is None else set(available)
         if not self.available <= PROVIDERS:
             raise ValueError("unknown available provider")
+        self.accounts = accounts or {p: "default" for p in PROVIDERS}
+        if not self.available <= set(self.accounts) or any(not a for a in self.accounts.values()):
+            raise ValueError("configure an account identity for each available provider")
         self.cooldown = cooldown
         self.transient_delay = transient_delay
         self.store = AtomicStore(state_root, "providers")
@@ -53,18 +48,21 @@ class ProviderRouter:
         now = time.time() if now is None else now
         preferred = self.preferred
         if role == "reviewer":
-            preferred = opposite(successful_builder or self.preferred)
+            preferred = successor(successful_builder or self.preferred, self.available)
         elif role == "auditor":
-            preferred = opposite(successful_reviewer or opposite(successful_builder or self.preferred))
+            preferred = successor(successful_reviewer
+                                  or successor(successful_builder or self.preferred, self.available), self.available)
         with self.store.transaction() as data:
             circuits = data.get("circuits", {})
-            healthy = [p for p in PROVIDERS if p in self.available
+            healthy = [p for p in PROVIDER_ORDER if p in self.available
                        and circuits.get(self._key(p), {}).get("retry_after", 0) <= now]
             if preferred in healthy:
-                return Routing(preferred, len(healthy) < 2, "preferred stage provider")
-            alternate = opposite(preferred)
-            if alternate in healthy:
-                return Routing(alternate, True, "preferred provider unavailable")
+                return Routing(preferred, len(healthy) < len(self.available), "preferred stage provider")
+            alternate = preferred
+            for _ in range(len(self.available)):
+                alternate = successor(alternate, self.available)
+                if alternate in healthy:
+                    return Routing(alternate, True, "preferred provider unavailable")
             retry = [circuits.get(self._key(p), {}).get("retry_after", 0)
                      for p in self.available]
             return Routing(None, True, "no provider available", min(retry) if retry else None)

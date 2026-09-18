@@ -65,6 +65,26 @@ class ExecutorPolicyTests(unittest.TestCase):
         self.assertEqual(self.claude['allowedMcpServers'], [])
         self.assertEqual(json.loads((ROOT/'claude/managed-mcp.json').read_text()), {'mcpServers':{}})
 
+    def test_grok_candidate_pins_sandbox_and_locks_always_approve(self):
+        requirements = tomllib.loads((ROOT/'grok/requirements.toml').read_text())
+        managed = tomllib.loads((ROOT/'grok/managed_config.toml').read_text())
+        self.assertEqual(requirements['sandbox']['profile'], 'strict')
+        self.assertIs(requirements['ui']['disable_bypass_permissions_mode'], True)
+        self.assertIs(requirements['cli']['auto_update'], False)
+        for key in ('telemetry', 'managed_config', 'web_fetch', 'write_file'):
+            self.assertIs(requirements['features'][key], False)
+        self.assertTrue(any(rule.startswith('Read(/home/forge/client') for rule in managed['permission']['deny']))
+        self.assertIn('Agent(*)', managed['permission']['deny'])
+        grok = self.contract['providers']['grok']
+        self.assertEqual(grok['managed_directory'], '/etc/grok')
+        self.assertEqual(grok['environment']['GROK_HOME'], '/home/forge/client')
+        args = grok['arguments']
+        self.assertEqual(args[args.index('--tools')+1], 'run_terminal_cmd')
+        self.assertEqual(args[args.index('--sandbox')+1], 'strict')
+        self.assertEqual(args[args.index('--permission-mode')+1], 'dontAsk')
+        self.assertFalse(any(a in ('--always-approve', '--yolo', 'bypassPermissions') for a in args))
+        self.assertIn('pending', grok['qualification'])
+
     def test_claude_client_denial_and_scrub_mandatory(self):
         s=self.claude['sandbox']
         self.assertIn('/home/forge/client',s['filesystem']['denyRead'])

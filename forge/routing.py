@@ -1,8 +1,10 @@
-"""Global harness alternation with sticky, hour-long provider outage records.
+"""Global harness round-robin with sticky, hour-long provider outage records.
 
 Selection reads local availability only. Expired outages permit a single leased
 attempt, rather than an account probe for every queued role. Task failures and
-security findings never open a provider outage.
+security findings never open a provider outage. Providers rotate in
+PROVIDER_ORDER; an unavailable or blocked provider is skipped, so with two
+harnesses this is plain alternation.
 """
 import argparse
 import json
@@ -15,9 +17,19 @@ import time
 
 from .config import load_repositories
 from .lifecycle import generation, observe_generation
-from .state import AtomicStore, StateError
+from .state import AtomicStore, StateError, PROVIDER_ORDER, QUALIFIED_PROVIDERS, successor
 
-PROVIDERS = ('claude', 'codex')
+PROVIDERS = PROVIDER_ORDER
+LABELS = {'claude': 'Claude', 'codex': 'Codex', 'grok': 'Grok Build'}
+RECONNECT = {
+    'claude': 'Run the pinned Claude executable interactively under the Forge account and complete /login, '
+              'then run `python3 -m forge.routing ... retry --provider claude`.',
+    'codex': 'Run `codex login` under the Forge account (CODEX_HOME must match the supervisor), '
+             'then run `python3 -m forge.routing ... retry --provider codex`.',
+    'grok': 'Run `grok login --device-code` with GROK_HOME set to the Forge Grok home, or export XAI_API_KEY '
+            'for the supervisor only; set FORGE_GROK_BIN to the pinned executable, '
+            'then run `python3 -m forge.routing ... retry --provider grok`.',
+}
 OUTAGES = {'blocked_model_usage', 'blocked_quota', 'blocked_auth'}
 NORMALIZED = {'usage_limit': 'blocked_model_usage', 'authentication': 'blocked_auth'}
 COOLDOWN = 3600
@@ -59,8 +71,13 @@ def validate(data):
 def choose(data, available, session, now, live_generation=None):
     validate(data)
     circuits = data.setdefault('providers', {})
-    preferred = data.get('next_provider') or ('codex' if data.get('last_provider') == 'claude' else 'claude')
-    ordered = (preferred, 'codex' if preferred == 'claude' else 'claude')
+    order = [p for p in PROVIDER_ORDER if p in available]
+    preferred = data.get('next_provider') or successor(data.get('last_provider'), available)
+    if preferred in order:
+        ordered = order[order.index(preferred):] + order[:order.index(preferred)]
+    else:
+        # A requested provider that is not available is skipped, never forced.
+        ordered = order
     for provider in ordered:
         if provider not in available:
             continue
@@ -177,11 +194,48 @@ def allowed(data, session, provider, identity, now):
 
 
 def executable(provider):
-    value = os.environ.get('FORGE_' + provider.upper() + '_BIN') or shutil.which(provider)
+    """Resolve the configured harness executable; optional harnesses need an explicit path.
+
+    Claude and Codex keep legacy PATH discovery. Grok Build is only configured
+    through FORGE_GROK_BIN so an operator's personal install is never dispatched.
+    """
+    value = os.environ.get('FORGE_' + provider.upper() + '_BIN')
+    if not value and provider in QUALIFIED_PROVIDERS:
+        value = shutil.which(provider)
     if not value:
         return None
     path = Path(value).resolve()
     return str(path) if path.is_file() and os.access(path, os.X_OK) else None
+
+
+def readiness(data, now=None):
+    """Operator-facing connection/readiness view; never a dispatch decision."""
+    now = time.time() if now is None else now
+    circuits = data.get('providers', {}) if isinstance(data, dict) else {}
+    result = {}
+    for provider in PROVIDER_ORDER:
+        path = executable(provider)
+        circuit = circuits.get(provider, {}) if isinstance(circuits.get(provider, {}), dict) else {}
+        blocked = circuit.get('blocked_until', 0) > now
+        qualified = provider in QUALIFIED_PROVIDERS
+        if not path:
+            status = 'not_configured'
+        elif blocked:
+            status = 'unavailable'
+        elif not qualified:
+            status = 'unqualified'
+        else:
+            status = 'ready'
+        result[provider] = {
+            'label': LABELS[provider], 'status': status, 'executable': path,
+            'configured': bool(path), 'qualified': qualified,
+            'dispatchable': status == 'ready',
+            'reason': circuit.get('reason') if blocked else None,
+            'blocked_until': circuit.get('blocked_until') if blocked else None,
+            'reconnect': RECONNECT[provider] if status in {'not_configured', 'unavailable'} else None,
+            'note': None if qualified else 'Registered as optional; legacy supervisor dispatch awaits runner qualification.',
+        }
+    return result
 
 
 def read_routing(state):
@@ -212,6 +266,7 @@ def main():
         if action == 'failure':
             command.add_argument('--reason', required=True)
     sub.add_parser('status')
+    sub.add_parser('readiness')
     for action in ('next', 'retry'):
         command = sub.add_parser(action)
         command.add_argument('--provider', choices=PROVIDERS, required=True)
@@ -224,6 +279,8 @@ def main():
         now = time.time()
         if args.action == 'status':
             print(json.dumps(read_routing(args.state), sort_keys=True)); return 0
+        if args.action == 'readiness':
+            print(json.dumps(readiness(read_routing(args.state), now), sort_keys=True)); return 0
         if args.action == 'current':
             identity = observe_generation(args.session)
             binding = read_routing(args.state).get('bindings', {}).get(args.session, {})
@@ -240,7 +297,8 @@ def main():
         with AtomicStore(args.state, 'routing').transaction() as data:
             validate(data)
             if args.action == 'select':
-                available = {p for p in PROVIDERS if executable(p)}
+                # Only qualified harnesses are dispatchable by the legacy supervisor.
+                available = {p for p in QUALIFIED_PROVIDERS if executable(p)}
                 value = choose(data, available, args.session, now, probe_identity)
                 if value['provider']:
                     print(value['provider']); return 0

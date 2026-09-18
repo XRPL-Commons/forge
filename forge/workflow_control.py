@@ -19,6 +19,7 @@ from . import workflow
 from .config import load_repositories
 from .control import atomic_json, snapshot_path
 from .lifecycle import observe_generation
+from .state import PROVIDERS
 
 
 def enabled(state):
@@ -287,7 +288,7 @@ def observe_slots(config,state,*,bootstrap=False,run=subprocess.run):
         observation=observations.get(session,{})
         slot,a=current(state,session);gen=observation.get('generation_id')
         phase=observation.get('state');provider=observation.get('provider')
-        provider=provider if provider in ('claude','codex') else None
+        provider=provider if provider in PROVIDERS else None
         if a:
             assigned_generation=a.get('generation')
             # A queue becoming empty must not strand an unstarted reservation.

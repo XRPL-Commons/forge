@@ -20,7 +20,9 @@ import tempfile
 BIN = Path('/opt/forge/bin')
 HOMES = Path('/var/lib/forge-clients')
 POLICY = Path('/etc/forge/isolation')
-PROVIDERS = ('codex', 'claude')
+PROVIDERS = ('codex', 'claude', 'grok')
+# Grok Build is an optional harness: it is provisioned only when a source is supplied.
+OPTIONAL = {'grok'}
 
 
 def run(*args):
@@ -132,16 +134,20 @@ def install_text(path, text):
 
 def make_plan(args):
     clients = []
+    skipped = {}
     for provider in PROVIDERS:
-        source = getattr(args, provider + '_source')
+        source = getattr(args, provider + '_source', None)
         if not source:
+            if provider in OPTIONAL:
+                skipped[provider] = f'not provisioned; pass --{provider}-source to add this optional harness'
+                continue
             raise ValueError(f'Provide --{provider}-source pointing to the installed native executable')
         path = Path(source).absolute()
         with path.open('rb') as stream:
             if stream.read(4) != b'\x7fELF':
                 raise ValueError(f'{provider} source must be its native ELF executable, not a shell/Node launcher')
         actual = digest(path)
-        supplied = getattr(args, provider + '_sha256')
+        supplied = getattr(args, provider + '_sha256', None)
         if args.apply and not supplied:
             raise ValueError(f'--apply requires the reviewed --{provider}-sha256')
         if supplied and (not re.fullmatch('[0-9a-f]{64}', supplied) or supplied != actual):
@@ -152,7 +158,7 @@ def make_plan(args):
                         'home': str(HOMES / provider), 'executable_mode': '0750 root:forge-' + provider,
                         'profile': '/etc/apparmor.d/forge-' + provider + '-client',
                         'profile_content': profile(provider)})
-    return {'mode': 'apply' if args.apply else 'dry-run', 'clients': clients,
+    return {'mode': 'apply' if args.apply else 'dry-run', 'clients': clients, 'skipped': skipped,
             'missing_packages': [p for p in ('bubblewrap', 'socat')
                                  if not shutil.which('bwrap' if p == 'bubblewrap' else p)],
             'auth_credentials': 'not copied', 'workers': 'not launched',

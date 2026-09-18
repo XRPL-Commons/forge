@@ -58,12 +58,59 @@ class WorkerTests(unittest.TestCase):
 
     def test_explicit_resume_and_no_bypass_commands(self):
         task = WorkerTask("task", "auditor", "sha", "test", "session-123")
-        for provider in ("codex", "claude"):
+        for provider in ("codex", "claude", "grok"):
             command = build_command(provider, task, self.root)
             self.assertIn("session-123", command)
-            self.assertFalse(any("dangerously" in c for c in command))
+            self.assertFalse(any("dangerously" in c or "always-approve" in c or "bypassPermissions" in c for c in command))
             self.assertNotIn("--continue", command)
         self.assertIn("--tools", build_command("claude", task, self.root))
+
+    def test_grok_transport_is_model_only_and_reads_private_prompt_file(self):
+        command = build_command("grok", self.task, self.root)
+        self.assertEqual(command[:3], ["grok", "--prompt-file", str(self.root / "input.txt")])
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(command[command.index("--output-format") + 1], "streaming-messages-json")
+        for flag in ("--no-subagents", "--disable-web-search", "--no-auto-update", "--json-schema"):
+            self.assertIn(flag, command)
+        self.assertNotIn("--resume", command)
+        # Verbatim unauthenticated output of Grok Build 1.0.34: an account outage, never a task failure.
+        stdout = '{"type":"system","subtype":"init","session_id":"","apiKeySource":"user","model":"unknown","cwd":"","permissionMode":"default","tools":[],"slash_commands":[],"mcp_servers":[],"skills":[],"uuid":"dc2d3aaf-867b-4cc6-b2d5-a4fb3f9577e6"}\\n{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":0,"duration_api_ms":0,"num_turns":0,"stop_reason":null,"total_cost_usd":0.0,"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"server_tool_use":{"web_search_requests":0}},"modelUsage":{},"errors":["Not signed in. To authenticate without a browser, run:\\\\n  grok login --device-code\\\\n\\\\nAlternatively, set the XAI_API_KEY environment variable or run `grok login` on a machine with a browser."],"session_id":"","uuid":"bd3b392b-5243-437a-a015-414cdc1520eb"}\\n'
+        status, session, output, _ = parse_output("grok", stdout, "Error: Not signed in.\n", 1, self.task)
+        self.assertEqual((status, output), ("blocked_auth", None))
+        success = [{"type": "system", "subtype": "init", "session_id": "grok-1"},
+                   {"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}, "session_id": "grok-1"},
+                   {"type": "result", "subtype": "success", "is_error": False, "session_id": "grok-1", "structured_output": self.output}]
+        status, session, output, _ = parse_output("grok", "\n".join(map(json.dumps, success)), "", 0, self.task)
+        self.assertEqual((status, session, output), ("completed", "grok-1", self.output))
+        tooled = success[:1] + [{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file", "input": {}}]}, "session_id": "grok-1"}] + success[2:]
+        self.assertEqual(parse_output("grok", "\n".join(map(json.dumps, tooled)), "", 0, self.task)[0], "blocked_permission")
+
+    def test_fake_grok_run_uses_prompt_file_and_scoped_environment(self):
+        event = {"type": "result", "subtype": "success", "is_error": False, "session_id": "g", "structured_output": self.output}
+        script = self.fake_cli(
+            "import json, os, sys\n"
+            "args = sys.argv[1:]\n"
+            "assert args[args.index('--tools') + 1] == ''\n"
+            "assert 'GH_TOKEN' not in os.environ and 'ANTHROPIC_API_KEY' not in os.environ\n"
+            "assert os.environ.get('GROK_HOME') == 'fixture-home'\n"
+            "prompt = open(args[args.index('--prompt-file') + 1]).read()\n"
+            "assert 'model-only Forge analysis worker' in prompt and 'owner/repo:11' in prompt\n"
+            "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 'g'}))\n"
+            "print(" + repr(json.dumps(event)) + ")\n")
+        previous = {key: os.environ.get(key) for key in ("GH_TOKEN", "ANTHROPIC_API_KEY", "GROK_HOME")}
+        os.environ.update(GH_TOKEN="fixture-secret", ANTHROPIC_API_KEY="fixture-secret", GROK_HOME="fixture-home")
+        try:
+            result = WorkerRunner().run(self.task, provider="grok", attempt_dir=self.root / "grok-run", executable=script)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertEqual((result.status, result.session_id, result.provider), ("completed", "g", "grok"))
+        self.assertTrue(result.process_group_stopped)
+        self.assertEqual(json.loads((self.root / "grok-run/command.json").read_text())[1], "--prompt-file")
 
     def test_fake_claude_success_records_receipt_without_inheriting_gh_token(self):
         event = {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "structured_output": self.output}
