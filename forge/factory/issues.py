@@ -51,6 +51,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     linked = [p for p in prs if references_issue(p.get('body'), repo['name'], issue['number'])]
     owned_pr = (item.get('candidate') or {}).get('pr')
     external = [p for p in linked if p['number'] != owned_pr]
+    if owned_pr and not any(p['number'] == owned_pr for p in linked):
+        linked.append({'number': owned_pr, 'title': 'Forge pull request'})
     state, detail, actions = 'backlog', 'Not queued for Forge.', []
     setup = bool(item.get('prerequisite_hold')) or item.get('reason') == LEGACY_SETUP_REASON
     cleanup = bool(item.get('cleanup_pending'))
@@ -93,6 +95,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         state, detail, actions = 'queued', 'Queued for Forge.', ['backlog', 'pause']
     else:
         actions = ['queue']
+    if state == 'queued' and not runtime['enabled']:
+        detail = 'Forge is paused. This issue stays queued.'
     if not fresh:
         actions = []
     if not repo.get('enabled') or not repo.get('access_ready'):
@@ -210,7 +214,9 @@ class IssueInventory:
                        **presentation(issue, item, repo, self.runtime, entry.get('pulls', []), fresh=ready),
                        'revision': revision(issue, item), 'setup_url': repo['setup_url'],
                        'history': [{k: e[k] for k in ('at', 'kind', 'reason') if k in e} for e in ledger['events'] if e['issue'] == issue_key][-15:],
-                       'active': item.get('active') if item else None}
+                       'active': item.get('active') if item else None,
+                       'reviews': [{'role': role, 'outcome': value.get('outcome'), 'summary': value.get('summary', '')[:1000]}
+                                   for role, value in (item or {}).get('evidence', {}).items() if role in ('review', 'audit')]}
                 if key is not None:
                     if key == issue_key:
                         return {'issue': row, 'repositories': scopes, 'actions': self.action_statuses()}
@@ -226,7 +232,7 @@ class IssueInventory:
             raise ValueError('This issue is not in a managed repository. Refresh the issue list.')
         order = {'attention': 0, 'working': 1, 'waiting': 2, 'queued': 3, 'backlog': 4, 'completed': 5}
         rows.sort(key=lambda r: (order[r['status']], r['repo'].lower(), r['number']))
-        return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history')} for r in rows[(page-1)*50:page*50]],
+        return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history', 'reviews')} for r in rows[(page-1)*50:page*50]],
                 'total': len(rows), 'page': page, 'pages': max(1, (len(rows)+49)//50), 'repositories': scopes,
                 'complete': all(r['complete'] and r['fresh'] for r in scopes if repo_id is None or r['id'] == repo_id), 'actions': self.action_statuses()}
 

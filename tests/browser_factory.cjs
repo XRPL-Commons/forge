@@ -37,5 +37,5 @@ for(const [title,detail,url,label] of [
 fixture.issues=[{...issue,state:'merged',active:null,candidate:{pr:12}}];
 await page.reload();await page.getByText('Completed issues',{exact:true}).click();
 await page.locator('#completed').getByRole('link',{name:'PR #12 ↗',exact:true}).waitFor();
-await page.screenshot({path:'/tmp/forge-factory-desktop.png',fullPage:true});for(const width of [320,390]){await page.setViewportSize({width,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));}await page.screenshot({path:'/tmp/forge-factory-mobile.png',fullPage:true});assert.deepEqual(errors,[]);console.log('Factory browser checks passed: compact actions, confirmation, retry reason, escaped output, responsive layout.');
+await page.screenshot({path:'/tmp/forge-factory-desktop.png',fullPage:true});for(const width of [320,390]){await page.setViewportSize({width,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));}await page.screenshot({path:'/tmp/forge-factory-mobile.png',fullPage:true});assert.deepEqual(errors,[]);console.log('Factory browser checks passed: compact actions, confirmation, issue detail links, escaped output, responsive layout.');
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});

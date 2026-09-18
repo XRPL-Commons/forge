@@ -246,3 +246,9 @@ class WorklistTests(unittest.TestCase):
         self.decision('recheck'); self.actions.process()
         self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'hold')
         self.assertNotIn('prerequisite_hold', self.ledger.read()['issues']['1:1'])
+
+    def test_old_retry_endpoint_cannot_bypass_issue_decisions(self):
+        from forge.factory.control import queue
+        self.tracked(hold='Deliberate hold')
+        with self.assertRaisesRegex(ValueError, 'Open the issue'):
+            queue(self.root, 'retry', '1:1', 'Wrong action for this hold')

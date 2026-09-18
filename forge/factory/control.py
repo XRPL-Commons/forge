@@ -40,7 +40,9 @@ def controller_lock(root, *, timeout=0):
 
 
 def queue(root, action, target, reason):
-    if action not in ('stop', 'reset', 'retry') or not isinstance(reason, str) or not reason.strip():
+    if action == 'retry':
+        raise ValueError('Open the issue in Issues to review and retry its failed attempt.')
+    if action not in ('stop', 'reset') or not isinstance(reason, str) or not reason.strip():
         raise ValueError('Action and reason are required')
     if not isinstance(target, str) or not target:
         raise ValueError('Target identity is required')
@@ -63,6 +65,8 @@ def requests(root, ledger):
                 if request['action'] == 'retry':
                     # The operator request ID makes interrupted processing repeat-safe.
                     if not any(e.get('request') == identifier for e in snapshot['events']):
+                        if snapshot['issues'][request['target']]['state'] != 'failed':
+                            raise ValueError('Retry is only for failed attempts.')
                         ledger.retry(request['target'], request['reason'], request_id=identifier)
                 else:
                     job = snapshot['jobs'][request['target']]
