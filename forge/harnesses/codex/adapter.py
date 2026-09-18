@@ -43,12 +43,18 @@ def probe(note, directory):
     home = Path('/work/home/.codex'); home.mkdir(parents=True, exist_ok=True)
     (home / 'config.toml').write_text('default_permissions = "forge_runner"\napproval_policy = "never"\nweb_search = "disabled"\n[shell_environment_policy]\ninherit = "none"\n')
     private = Path('/work/home/probe-private'); private.write_text('synthetic probe')
+    # An editable worktree is insufficient: Codex protects .git separately.
+    # Prove a real local commit succeeds before reporting the runner ready.
+    subprocess.run(['git', 'init', str(repo)], check=True, capture_output=True, timeout=10)
     command = ['codex', 'sandbox', '-P', 'forge_runner', '--include-managed-config', '-C', str(repo), '/usr/local/bin/python3', '-c',
                'from pathlib import Path; p=Path("/work/home/probe-private"); '
                '\ntry: p.read_text()\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(2)\n'
                'p=Path("/work/home/.codex/auth.json")\n'
                'try: p.read_text()\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(3)\n'
-               'Path("/work/repository/probe-write").write_text("ok")']
+               'Path("/work/repository/probe-write").write_text("ok")\n'
+               'import subprocess\n'
+               'subprocess.run(["git", "add", "probe-write"], check=True)\n'
+               'subprocess.run(["git", "-c", "user.name=Forge probe", "-c", "user.email=probe@example.invalid", "commit", "-m", "Readiness probe"], check=True)']
     checked = subprocess.run(command, cwd=repo, capture_output=True, timeout=30)
     if checked.returncode or not (repo / 'probe-write').is_file():
         raise RuntimeError('Native sandbox probe failed')

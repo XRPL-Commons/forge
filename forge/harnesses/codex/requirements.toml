@@ -16,6 +16,11 @@ deny_read = ["/work/credentials.json"]
 "/usr" = "read"
 "/opt/forge" = "read"
 "/work/repository" = "write"
+# This is a disposable clone. Builders must update its index, refs and objects
+# to commit their work; workspace write alone keeps .git read-only in Codex.
+"/work/repository/.git" = "write"
+"/work/repository/.codex" = "read"
+"/work/repository/.agents" = "read"
 "/work/assignment.json" = "read"
 "/work/askpass" = "read"
 "/work/home" = "deny"
