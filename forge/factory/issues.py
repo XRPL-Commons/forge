@@ -95,6 +95,10 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         state, detail, actions = 'queued', 'Queued for Forge.', ['backlog', 'pause']
     else:
         actions = ['queue']
+    if state == 'queued' and item.get('retry_after', 0) > time.time():
+        detail = ('Waiting for a coding account. Forge will retry automatically.'
+                  if item.get('reason') in ('blocked_auth', 'blocked_quota', 'Role credentials unavailable')
+                  else 'Waiting before another check. Forge will retry automatically.')
     if state == 'queued' and not runtime['enabled']:
         detail = 'Forge is paused. This issue stays queued.'
     if not fresh:
@@ -204,6 +208,11 @@ class IssueInventory:
                 issue_key = f"{repo['id']}:{issue['number']}"
                 item = deepcopy(ledger['issues'].get(issue_key))
                 if item:
+                    recovery = next((j for j in ledger['jobs'].values() if j['issue_key'] == issue_key
+                                     and j['role'] == 'recovery' and j.get('phase') == 'running'
+                                     and not j['cleanup'] and not j.get('outcome')), None)
+                    if recovery and not item['active']:
+                        item['active'] = recovery['id']
                     item['active_role'] = ledger['jobs'].get(item.get('active'), {}).get('role')
                     item['cleanup_pending'] = any(j['issue_key'] == issue_key and not j['cleanup'] for j in ledger['jobs'].values())
                 observed = (item or {}).get('github_observation')

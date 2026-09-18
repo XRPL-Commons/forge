@@ -261,3 +261,15 @@ class WorklistTests(unittest.TestCase):
         self.assertEqual(len(statuses),21)
         self.assertEqual(statuses[0]['status'],'pending')
         self.assertEqual(statuses[-1]['message'],'24')
+
+    def test_running_investigation_is_work_not_cleanup(self):
+        self.tracked(); self.refresh()
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['state']='investigating'
+            data['jobs']['recovery']={'id':'recovery','issue_key':'1:1','role':'recovery','phase':'running','cleanup':False,'slot':'recovery-1'}
+            data['slots']['recovery-1']='recovery'
+        row=self.inventory.view(key='1:1')['issue']
+        self.assertEqual(row['status'],'working')
+        self.assertEqual(row['active'],'recovery')
+        self.assertEqual(row['explanation'],'Investigating a failed attempt')
+        self.assertEqual(row['actions'],[])
