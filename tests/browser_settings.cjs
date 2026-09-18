@@ -46,26 +46,26 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     assert.equal(await page.getByRole('button',{name:'Save connections',exact:true}).count(),0);
     assert.equal(await page.getByText('FORGE_BUILD_KEY_FILE',{exact:false}).count(),0);
     await page.getByRole('button',{name:'Refresh GitHub access',exact:true}).click();
-    await page.getByRole('link',{name:'Enable',exact:true}).waitFor();
+    await page.getByRole('link',{name:'Set up',exact:true}).waitFor();
     // Exercise navigation from the table: a delegated button handler must not
     // cancel ordinary link clicks or keyboard activation.
     const beforeNavigationSaves=saves;
     for(const keyboard of [false,true]){
-      const link=page.getByRole('link',{name:'Enable',exact:true});
+      const link=page.getByRole('link',{name:'Set up',exact:true});
       if(keyboard){await link.focus();await page.keyboard.press('Enter')}else await link.click();
       await page.waitForURL('http://forge.test/settings/repository?repo_id=10',{timeout:5000});
       await page.getByRole('heading',{name:'Enable repository',exact:true}).waitFor();
       await page.getByText('Ready to enable',{exact:true}).waitFor();
       await page.getByRole('navigation',{name:'Settings navigation'}).getByRole('link',{name:'GitHub access',exact:true}).click();
-      await page.getByRole('link',{name:'Enable',exact:true}).waitFor();
+      await page.getByRole('link',{name:'Set up',exact:true}).waitFor();
     }
     assert.equal(saves,beforeNavigationSaves,'Viewing setup must not change repository activation');
     const disabledRowHeight=(await page.locator('#repositories tr').boundingBox()).height;
-    assert((await page.getByRole('link',{name:'Enable',exact:true}).boundingBox()).height<=32);
-    await page.getByRole('link',{name:'Enable',exact:true}).click();
+    assert((await page.getByRole('link',{name:'Set up',exact:true}).boundingBox()).height<=32);
+    await page.getByRole('link',{name:'Set up',exact:true}).click();
     await page.getByRole('button',{name:'Enable automation',exact:true}).waitFor();assert.equal(config.repositories.length,0);
     await page.getByRole('navigation',{name:'Settings navigation'}).getByRole('link',{name:'GitHub access',exact:true}).click();assert.equal(config.repositories.length,0);
-    await page.getByRole('link',{name:'Enable',exact:true}).click();
+    await page.getByRole('link',{name:'Set up',exact:true}).click();
     await page.getByRole('button',{name:'Enable automation',exact:true}).click();
     await page.getByRole('navigation',{name:'Settings navigation'}).getByRole('link',{name:'GitHub access',exact:true}).click();
     await page.getByRole('button',{name:'Disable',exact:true}).waitFor();assert.equal(config.repositories[0].enabled,true);
@@ -152,7 +152,7 @@ const fs = require('fs'), assert = require('assert'), path = require('path');
     await page.screenshot({path:'/tmp/forge-github-access-mobile.png',fullPage:true});
     setup.phase='active';await page.reload();
     await page.getByRole('navigation',{name:'Settings navigation'}).getByRole('link',{name:'General',exact:true}).waitFor();
-    assert(await page.getByRole('link',{name:'Enable',exact:true}).isVisible());
+    assert(await page.getByRole('link',{name:'Set up',exact:true}).isVisible());
     assert.equal(saves,beforeOperatorSaves);
     await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'/tmp/forge-github-access-desktop.png',fullPage:true});
     assert.deepEqual(errors,[]);

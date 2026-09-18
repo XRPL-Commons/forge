@@ -640,6 +640,8 @@ class H(BaseHTTPRequestHandler):
             self._send((Path(__file__).parent/'issues.html').read_text() if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
         elif u.path == '/issues':
             self._send((Path(__file__).parent/'issues.html').read_text(), 'text/html; charset=utf-8')
+        elif u.path in ('/assets/vendor/marked.umd.js', '/assets/vendor/purify.min.js', '/assets/markdown.js'):
+            self._send((Path(__file__).parent / u.path.removeprefix('/assets/')).read_text(), 'application/javascript; charset=utf-8')
         elif u.path == '/assets/issues.js':
             self._send((Path(__file__).parent/'issues.js').read_text(), 'text/javascript; charset=utf-8')
         elif u.path == '/api/issues':
