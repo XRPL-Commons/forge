@@ -42,6 +42,11 @@ STYLE = """<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?
 </style>"""
 
 
+# Titles, breadcrumbs, menus and activity indicators keep their established form.
+PILL_LINK = 'a[href^="/"]:not([href^="//"]):not(nav a):not(.forge-brand):not(.forge-activity a):not(.settings-eyebrow a):not(.eyebrow a):not(.issue-title):not(.repo-link):not([download])'
+STYLE += '<style>' + PILL_LINK + ',.forge-nav-pill,.secondary-pill{display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%;box-sizing:border-box;min-height:32px;padding:5px 12px;border:1px solid #354147;border-radius:999px;background:transparent;color:#c0cbcd;font-size:13px;font-weight:500;line-height:1.5;text-decoration:none;white-space:normal;overflow-wrap:anywhere;text-align:center}' + PILL_LINK + ':hover,.forge-nav-pill:hover,.secondary-pill:hover{background:#20292e;border-color:#526269;color:#edf1ee}' + '@media(max-width:700px){' + PILL_LINK + ',.forge-nav-pill,.secondary-pill{min-height:44px}}' + '</style>'
+
+
 def render(page, path):
     """Fill the navigation slot without depending on client-side initialization."""
     current = '/' if path == '/factory' else path

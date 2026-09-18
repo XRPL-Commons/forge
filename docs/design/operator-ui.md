@@ -17,6 +17,13 @@ an operator wants the factory to do.
 - Distinguish observed state from instructions. Status shows what happened and
   what is running. Blue callouts labeled Help explain how to act; they must not
   look like failures or health indicators. Do not rely on color alone.
+- Use quiet pill-shaped controls for internal navigation. Keep established
+  breadcrumbs, menus and linked record titles in their existing navigation style.
+  Do not style a link that opens a page or detail panel as a primary action.
+  Reserve primary emphasis for the main state-changing decision; Return to
+  backlog and Pause are secondary actions.
+- Render issue descriptions as sanitized Markdown, with readable headings, lists,
+  links, code and tables.
 - Use solid color with contrasting text for primary actions. Keep secondary
   actions visually quieter, and disabled controls visibly muted.
 - Give each visible setting a plain name and a clear effect. Offer model or effort
@@ -52,7 +59,7 @@ an operator wants the factory to do.
 - App cards put the role and App name together beside the illustration, followed
   by its purpose. Keep connection status, repository count and access action compact.
 - Normal repository rows keep the same height whether automation is enabled or
-  disabled. Use small primary Enable controls on desktop and retain mobile tap targets.
+  disabled. Use quiet Set up pills for navigation and retain mobile tap targets.
 - Verified coding accounts show a green check and no reconnect action. Show a
   primary Connect or Verify connection action only when it is needed.
 - Use an accessible question-mark Help icon in the shared header.
