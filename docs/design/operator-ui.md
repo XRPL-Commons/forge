@@ -103,3 +103,23 @@ and block dispatch until their outcome is confirmed. Do not imply priority affec
 execution while the scheduler uses creation order.
 - Worker capacity is automatic from host memory; operators set only per-role maxima.
   Describe memory waits as queued work that retries automatically, not an issue failure.
+
+## Live Factory dashboard
+
+- Keep the Factory heading, statistics and stage columns in stable positions.
+  Show queued issues, productive workers by role, attention count and tracked
+  merges. Investigations and cleanup remain separate from productive activity.
+- A running count requires fresh supervisor and worker observations. Measure work
+  duration from the container start time, never the issue's discovery time or a
+  browser refresh. Update timers locally between polls.
+- Running issue cards have restrained moving waves along their top and bottom
+  edges, in their role's color. Queued, blocked, starting and stale cards do not
+  animate. Reduced motion uses a static active border.
+- Preserve each card's DOM identity across polls and stage transitions, including
+  focused controls and open detail panels. Only actual stage changes animate;
+  resizing the viewport must cancel movement rather than displace cards.
+- Keep the last known counts and cards after a failed refresh. Label them as last
+  observed, stop motion and freeze elapsed times until fresh evidence returns.
+- Translate internal reasons into plain language and an available next action.
+  For example, blocked_auth identifies the account needing sign-in and links to
+  Coding accounts, while the issue remains queued for an available account.

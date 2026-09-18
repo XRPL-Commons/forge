@@ -15,6 +15,7 @@ import time
 import subprocess
 import tarfile
 import hashlib
+from datetime import datetime
 
 from .capacity import observe as observe_capacity, memory_bytes, launch_lock
 from .contracts import assignment_note, identifier, unique
@@ -115,8 +116,16 @@ class ContainerRunner:
                     or value['Config']['Labels'].get('forge.slot') != job['slot']
                     or (job.get('container_id') and value['Id'] != job['container_id'])):
                 raise ValueError()
+            started = value['State'].get('StartedAt')
+            started_at = None
+            if started and not started.startswith('0001-'):
+                try:
+                    started_at = datetime.fromisoformat(started.replace('Z', '+00:00')).timestamp()
+                except (ValueError, TypeError):
+                    pass
             return {'id': value['Id'], 'status': value['State']['Status'],
-                    'exit_code': value['State']['ExitCode'], 'running': value['State']['Running']}
+                    'exit_code': value['State']['ExitCode'], 'running': value['State']['Running'],
+                    'started_at': started_at}
         except (ValueError, KeyError, TypeError, IndexError):
             raise RunnerError('Container ownership or observation is unverified') from None
 

@@ -97,6 +97,10 @@ def view(root):
         issues.append(row)
     jobs = [{k: v for k, v in j.items() if k not in ('capture', 'observation', 'history', 'failure')}
             for j in data['jobs'].values() if not j['cleanup'] or j['outcome'] is None]
+    for job in jobs:
+        observed = data['jobs'][job['id']].get('observation') or {}
+        job['observed_at'] = observed.get('at')
+        job['started_at'] = (observed.get('execution') or {}).get('started_at')
     with AtomicStore(Path(root) / 'state' / 'factory', 'operator-requests').transaction() as requests_data:
         actions = [{'id': key, **value} for key, value in list(requests_data.items())[-10:]]
     try:

@@ -119,6 +119,23 @@ class AdapterTests(unittest.TestCase):
         runner = ContainerRunner(validate({}), run=Mock(return_value=Mock(returncode=1,stdout=b'')))
         with self.assertRaises(RunnerError): runner.inspect({'id':str(uuid.uuid4()),'slot':'build-1'})
 
+    def test_elapsed_time_uses_container_start_not_assignment_time(self):
+        runner = ContainerRunner(validate({}), run=Mock())
+        job = {'id':str(uuid.uuid4()), 'slot':'build-1', 'created_at':1}
+        name = runner.name(job)
+        value = {'Name':'/'+name, 'Id':'one',
+                 'Config':{'Labels':{'forge.execution':job['id'], 'forge.slot':job['slot']}},
+                 'State':{'Status':'running', 'ExitCode':0, 'Running':True,
+                          'StartedAt':'2026-09-18T00:00:00.123456789Z'}}
+        def inspect(start):
+            value['State']['StartedAt'] = start
+            runner.call = Mock(side_effect=[Mock(stdout=json.dumps({'Names':name,'ID':'one'}).encode()),
+                                           Mock(stdout=json.dumps([value]).encode())])
+            return runner.inspect(job)
+        self.assertAlmostEqual(inspect(value['State']['StartedAt'])['started_at'], 1789689600.123456, places=5)
+        self.assertIsNone(inspect('0001-01-01T00:00:00Z')['started_at'])
+        self.assertIsNone(inspect('unavailable')['started_at'])
+
     def test_forged_ownership_is_not_reset(self):
         job = {'id':str(uuid.uuid4()),'slot':'build-1','fenced':True}
         runner = ContainerRunner(validate({}), run=Mock())

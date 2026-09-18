@@ -95,7 +95,7 @@ ACTIVITY_SCRIPT = """<script>(()=>{
       const now=Date.now()/1000,maxAge=Math.max(120,(Number(data.runtime?.cycle_seconds)||30)*3);
       if(!data.observation?.at||now-data.observation.at>maxAge){hide();return;}
       const jobs=(data.jobs||[]).filter(job=>!job.cleanup&&!job.fenced&&!job.outcome);
-      const working=jobs.filter(job=>job.phase==='running'&&job.last_observed&&now-job.last_observed<=maxAge);
+      const working=jobs.filter(job=>job.phase==='running'&&(job.observed_at||job.last_observed)&&now-(job.observed_at||job.last_observed)<=maxAge);
       const roles={build:['builder','builders','stage-build'],review:['reviewer','reviewers','stage-review'],audit:['auditor','auditors','stage-audit'],merge:['merge worker','merge workers','runners']};
       const fragment=document.createDocumentFragment();
       for(const [role,[singular,plural,target]] of Object.entries(roles)){
