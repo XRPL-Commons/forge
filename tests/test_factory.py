@@ -34,6 +34,7 @@ class FactoryTest(unittest.TestCase):
         self.github.gates.return_value = True
         self.github.protections.return_value = True
         self.runner = Mock()
+        self.runner.capacity.return_value = {'allowed': True, 'reason': 'capacity_available'}
         self.runner.observe.return_value = {'logs': 'Running output says success', 'at': 1000}
         self.runner.inspect.return_value = {'status': 'running', 'running': True}
         self.runner.create.return_value = 'container'
@@ -270,6 +271,50 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(self.ledger.failure_count(self.item()), 0)
         self.assertFalse(self.ledger.read()['slots'])
         self.assertGreater(self.ledger.read()['provider_retry_after'], self.now)
+
+    def test_memory_wait_resumes_same_job_after_restart_without_timeout_or_failure(self):
+        job = self.job()
+        self.runner.inspect.return_value = None
+        self.runner.capacity.return_value = {'allowed': False, 'reason': 'memory_headroom'}
+        self.supervisor.execution(job)
+        waiting = self.ledger.read()['jobs'][job['id']]
+        self.assertEqual(waiting['capacity_wait_since'], self.now)
+        self.assertFalse(waiting['fenced'])
+        self.runner.create.assert_not_called()
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+        self.now += 600
+        resumed = Supervisor(self.ledger, self.runner, self.github, self.settings, self.config, clock=lambda: self.now)
+        self.runner.capacity.return_value = {'allowed': True}
+        self.runner.inspect.side_effect = [None, {'status': 'created', 'running': False}, {'status': 'running', 'running': True}]
+        resumed.execution(waiting)
+        current = self.ledger.read()['jobs'][job['id']]
+        self.assertEqual(current['phase'], 'running')
+        self.assertIsNone(current['capacity_wait_since'])
+        self.assertEqual(current['deadline'], job['deadline'] + 600)
+        self.runner.start.assert_called_once()
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+
+    def test_capacity_race_at_start_waits_without_provider_cooldown(self):
+        from forge.factory.runner import RunnerCapacity
+        job = self.job()
+        self.runner.inspect.return_value = {'status': 'created', 'running': False}
+        self.runner.start.side_effect = RunnerCapacity({'allowed': False, 'reason': 'memory_pressure'})
+        self.supervisor.execution(job)
+        current = self.ledger.read()['jobs'][job['id']]
+        self.assertEqual(current['phase'], 'launching')
+        self.assertIsNotNone(current['capacity_wait_since'])
+        self.assertEqual(self.ledger.failure_count(self.item()), 0)
+        self.assertFalse(self.ledger.read().get('provider_retry_after'))
+        self.runner.reset.assert_not_called()
+
+    def test_low_memory_leaves_new_work_queued_without_allocating_an_attempt(self):
+        self.github.deadline = float('inf')
+        self.runner.capacity.return_value = {'allowed': False, 'reason': 'memory_budget'}
+        self.supervisor.dispatch()
+        self.assertEqual(self.item()['state'], 'ready')
+        self.assertFalse(self.ledger.read()['jobs'])
+        self.assertFalse(self.ledger.read()['slots'])
+        self.assertFalse(self.supervisor.errors)
 
     def test_initialized_but_incomplete_json_never_resets_ownership(self):
         self.job()

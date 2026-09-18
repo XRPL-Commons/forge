@@ -18,9 +18,25 @@ copies, App keys, provider authentication, or `state/`.
 - Issue history, assignments, runner ownership and operator requests live under
   `state/factory/`, outside every disposable workspace. Back up that directory.
 
-Defaults are four Build, two Review, one Audit and one Recovery slot; eight jobs
-maximum, 4 GiB and two CPUs per job. Adapt the shared cap and memory limit to the
-host. Build times out after 45 minutes, Review/Audit after 20, Recovery after 10.
+Defaults are four Build, two Review, one Audit and one Recovery slot, with 4 GiB
+and two CPUs per job. Role slots are upper limits. Total concurrency is automatic:
+before reserving work and immediately before starting a container, Forge checks
+host MemAvailable, memory pressure and the full memory limits of existing Forge
+containers. It retains 2 GiB for the host, never treats swap as available RAM,
+and does not let aggregate worker budgets exceed physical RAM minus that reserve.
+Created, stopped and orphaned Forge containers keep their reservation until removed.
+Container starts are serialized per engine socket, including setup probes.
+Missing host or engine telemetry postpones new launches. Existing workers continue;
+waiting does not consume the issue failure budget or its execution timeout.
+
+An 8 GiB host with 4 GiB workers can normally admit only one worker. Increasing
+role limits cannot override available memory. Larger hosts can admit more workers.
+The legacy `max_running` value is accepted for compatibility but ignored and omitted
+from normalized runtime settings. Operators configure only the per-role limits.
+This is admission control, not a reservation against unrelated host processes:
+external processes may still grow after the check. Per-container hard limits remain.
+
+Build times out after 45 minutes, Review/Audit after 20, Recovery after 10.
 The graceful-stop limit is 10 seconds. The supervisor polls every 30 seconds and
 budgets GitHub reconciliation to 60 seconds plus the current bounded request.
 Outstanding observations rotate between cycles. Access sync runs asynchronously;

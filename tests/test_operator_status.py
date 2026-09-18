@@ -75,3 +75,13 @@ class OperatorStatusTests(unittest.TestCase):
         self.assertEqual(self.view()['title'],'Waiting before retrying')
         self.runtime['slots']['build']=0
         self.assertEqual(self.view()['title'],'Worker capacity is paused')
+
+    def test_memory_wait_is_not_an_issue_failure(self):
+        self.data['issues']['1:1']={'number':1,'repo':'example/project','state':'ready','active':None}
+        self.observation['capacity']={'allowed':False,'reason':'memory_headroom'}
+        self.assertEqual(self.view()['title'],'Waiting for available memory')
+        self.assertIn('retry automatically',self.view()['detail'])
+        self.observation['capacity']={'allowed':False,'reason':'telemetry_unavailable'}
+        self.assertEqual(self.view()['title'],'Waiting for memory checks')
+        self.observation['capacity']={'allowed':True}
+        self.assertEqual(self.view()['title'],'Work is queued')

@@ -15,6 +15,7 @@ class Engine:
     def __init__(self):
         self.jobs = {}
         self.reset_ids = []
+    def capacity(self, job=None): return {'allowed': True, 'reason': 'capacity_available'}
     def ready(self): return True
     def create(self, job):
         self.jobs[job['id']] = {'status': 'created', 'running': False, 'result': None}

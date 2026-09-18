@@ -94,3 +94,5 @@ existing work before admission-changing decisions. Preserve unrelated labels.
 Stale inventories cannot authorize an action. Keep interrupted decisions durable
 and block dispatch until their outcome is confirmed. Do not imply priority affects
 execution while the scheduler uses creation order.
+- Worker capacity is automatic from host memory; operators set only per-role maxima.
+  Describe memory waits as queued work that retries automatically, not an issue failure.

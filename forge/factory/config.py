@@ -10,7 +10,7 @@ from ..harnesses.registry import manifests
 DEFAULT = {
     'version': 1, 'enabled': False, 'merge_enabled': False,
     'slots': {'build': 4, 'review': 2, 'audit': 1, 'recovery': 1},
-    'max_running': 8, 'cycle_seconds': 30,
+    'cycle_seconds': 30,
     'timeout_seconds': {'build': 2700, 'review': 1200, 'audit': 1200, 'recovery': 600},
     'grace_seconds': 10, 'availability_retry_seconds': 300,
     'image': '', 'engine': '/usr/bin/docker', 'engine_socket': '/var/run/docker.sock',
@@ -27,9 +27,10 @@ DEFAULT = {
 
 
 def validate(value):
-    if not isinstance(value, dict) or set(value) - set(DEFAULT):
+    if not isinstance(value, dict) or set(value) - (set(DEFAULT) | {'max_running'}):
         raise ValueError('Unknown runtime settings')
-    config = {**DEFAULT, **value}
+    # Older installations carry a manual total. Memory admission replaces it.
+    config = {**DEFAULT, **{key: item for key, item in value.items() if key != 'max_running'}}
     if type(config['version']) is not int or config['version'] != 1:
         raise ValueError('Expected runtime version 1')
     if config['provider'] not in manifests():
@@ -56,7 +57,7 @@ def validate(value):
     for key in ('enabled', 'merge_enabled', 'human_required'):
         if type(config[key]) is not bool:
             raise ValueError(key + ' must be boolean')
-    for key, low, high in [('cycle_budget_seconds', 15, 300), ('max_running', 1, 64), ('cycle_seconds', 5, 3600), ('grace_seconds', 1, 60),
+    for key, low, high in [('cycle_budget_seconds', 15, 300), ('cycle_seconds', 5, 3600), ('grace_seconds', 1, 60),
                             ('availability_retry_seconds', 30, 86400), ('cpus', 1, 64), ('pids_limit', 16, 4096)]:
         if type(config[key]) is not int or not low <= config[key] <= high:
             raise ValueError('Invalid ' + key)

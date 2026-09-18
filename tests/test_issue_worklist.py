@@ -222,3 +222,27 @@ class WorklistTests(unittest.TestCase):
             self.ledger.event(data, item, 'operator_queue', request=identifier)
         self.actions.apply(identifier, decision)
         self.assertNotIn('operator_request', self.ledger.read()['issues']['1:1'])
+
+    def test_pending_pause_blocks_dispatch_even_before_github_can_be_read(self):
+        self.tracked(); self.github.value['labels'].append({'name': 'ready'})
+        identifier, decision = self.decision('pause')
+        self.github.available = False; self.actions.process()
+        item = self.ledger.read()['issues']['1:1']
+        self.assertEqual(item['operator_request'], identifier)
+        supervisor = Supervisor(self.ledger, Engine(), self.github, self.settings, self.actions.config)
+        self.assertEqual(supervisor.choose('build', self.ledger.read()), (None, None))
+        self.github.available = True; self.actions.process()
+        self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'hold')
+
+    def test_legacy_setup_recovers_once_without_retry(self):
+        self.tracked(); self.ledger.hold('1:1', LEGACY_SETUP_REASON)
+        supervisor = Supervisor(self.ledger, Engine(), self.github, self.settings, self.actions.config)
+        supervisor.reconcile(self.ledger.read()['issues']['1:1'])
+        self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'ready')
+        self.assertEqual([e['kind'] for e in self.ledger.read()['events']][-2:], ['protection_hold_migrated', 'protection_restored'])
+
+    def test_same_reason_after_human_history_cannot_use_setup_recheck(self):
+        self.tracked(); self.ledger.hold('1:1', 'Deliberate hold'); self.ledger.hold('1:1', LEGACY_SETUP_REASON)
+        self.decision('recheck'); self.actions.process()
+        self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'hold')
+        self.assertNotIn('prerequisite_hold', self.ledger.read()['issues']['1:1'])

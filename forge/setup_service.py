@@ -20,7 +20,7 @@ from .factory.config import load
 from .factory.control import controller_lock, requests
 from .factory.github import GitHub
 from .factory.ledger import Ledger
-from .factory.runner import ContainerRunner, RunnerError
+from .factory.runner import ContainerRunner, RunnerError, RunnerCapacity
 from .factory.supervisor import Supervisor
 
 
@@ -238,7 +238,15 @@ class Service:
             current = runner.inspect(job)
         if current['status'] == 'created':
             runner.prepare(job, 'synthetic-no-github-access')
-            runner.start(job)
+            try:
+                runner.start(job)
+            except RunnerCapacity:
+                job.setdefault('capacity_wait_since', time.time())
+                self.update(op, probe_jobs=data['probe_jobs'])
+                return
+            if job.get('capacity_wait_since') is not None:
+                job['deadline'] += max(0, time.time() - job.pop('capacity_wait_since'))
+                self.update(op, probe_jobs=data['probe_jobs'])
             return
         error = None
         if job['kind'] == 'provider' and current['running'] and time.time() < job['deadline']:
@@ -364,6 +372,10 @@ class Service:
                     self.start(data)
                 else:
                     self.check(data)
+            except RunnerCapacity:
+                if data.get('probe_jobs'):
+                    data['probe_jobs'][-1].setdefault('capacity_wait_since', time.time())
+                    self.update(op, probe_jobs=data['probe_jobs'])
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 # No provider output/credentials in errors. Reset stays pending until cleanup succeeds.
                 message = str(error) if isinstance(error, (ValueError, RunnerError, StateError)) else 'Operation failed; inspect the supervisor service and retry'

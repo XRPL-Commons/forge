@@ -180,6 +180,25 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(service.github_class.return_value.protection_report.call_count,2)
         self.assertEqual(self.setup.queue('start',revision),self.setup.read()['activation_request'])
 
+    def test_probe_waits_for_memory_then_resumes_without_invalidating_login(self):
+        from forge.factory.runner import RunnerCapacity
+        self.connected()
+        config = self.setup.runtime(); config['image'] = 'sha256:'+'a'*64
+        write_json(self.root/'setup/runtime.json', config)
+        service, engine, resets = self.service()
+        self.setup.queue('check', self.setup.view()['revision'])
+        service.tick(); service.tick()
+        with patch.object(service.runner_class, 'create', side_effect=RunnerCapacity({'allowed': False, 'reason': 'memory_headroom'})):
+            service.tick()
+        data = self.setup.read()
+        self.assertIsNotNone(data['operation'])
+        self.assertIsNone(data.get('error'))
+        self.assertFalse(data['probe_jobs'][-1]['fenced'])
+        self.assertIn('Waiting for available memory', self.setup.activity(data)['label'])
+        for _ in range(16): service.tick()
+        self.assertTrue(self.setup.view()['can_start'])
+        self.assertFalse(engine)
+
     def test_start_rejects_stale_or_unverified_configuration(self):
         self.connected()
         revision = self.setup.view()['revision']

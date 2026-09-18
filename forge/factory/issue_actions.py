@@ -57,6 +57,10 @@ class IssueActions:
                 self.apply(identifier, decision)
                 status, message = 'applied', 'Decision applied. Forge will recheck eligibility before starting work.'
             except GitHubUnavailable:
+                with self.ledger.transaction() as state:
+                    item = state['issues'].get(decision['key'])
+                    if item and not item['active']:
+                        item['operator_request'] = identifier
                 status, message = 'pending', 'GitHub is unavailable. Forge will confirm this decision before starting work.'
             except (ValueError, StateError, KeyError, OSError) as error:
                 status, message = 'rejected', str(error) if isinstance(error, ValueError) else 'Could not confirm the decision. Refresh and review the issue.'

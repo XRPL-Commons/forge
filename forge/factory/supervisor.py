@@ -11,7 +11,7 @@ from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_i
 from .config import policy
 from .providers import available as provider_available
 from .github import GitHubUnavailable
-from .runner import RunnerError, RunnerUnavailable, ContainerRunner
+from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
 from ..state import StateError
 
 
@@ -20,9 +20,11 @@ class Supervisor:
         self.ledger, self.runner, self.github = ledger, runner, github
         self.settings, self.config, self.clock = settings, config, clock
         self.errors = []
+        self.capacity = None
 
     def cycle(self):
         self.errors = []
+        self.capacity = None
         self.github.deadline = time.monotonic() + self.config['cycle_budget_seconds']
         # Even paused/disabled factories must finish teardown and reconciliation.
         for job in self.ledger.read()['jobs'].values():
@@ -56,7 +58,7 @@ class Supervisor:
                     data['issues'][item['key']]['last_observed'] = self.clock()
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
             self.dispatch()
-        return {'at': self.clock(), 'errors': self.errors,
+        return {'at': self.clock(), 'errors': self.errors, 'capacity': self.capacity,
                 'issues': len(self.ledger.read()['issues'])}
 
     def execution(self, job):
@@ -64,7 +66,7 @@ class Supervisor:
                   and job.get('runner_config') else self.runner)
         if job['cleanup']:
             return
-        if self.clock() >= job['deadline'] and job['phase'] in ('reserved', 'created', 'launching'):
+        if self.clock() >= job['deadline'] and job.get('capacity_wait_since') is None and job['phase'] in ('reserved', 'created', 'launching'):
             self.ledger.job_update(job['id'], fenced=True, phase='stopping')
             job = self.ledger.read()['jobs'][job['id']]
         if job['phase'] in ('reserved', 'created', 'launching') and not job['fenced']:
@@ -78,6 +80,15 @@ class Supervisor:
                 job = self.ledger.read()['jobs'][job['id']]
             else:
                 try:
+                    current = runner.inspect(job)
+                    if current is None or current['status'] == 'created':
+                        self.capacity = runner.capacity(job)
+                        if not self.capacity['allowed']:
+                            self.defer_capacity(job)
+                            return
+                        if job.get('capacity_wait_since') is not None:
+                            self.ledger.job_update(job['id'], deadline=job['deadline'] + max(0, self.clock() - job['capacity_wait_since']), capacity_wait_since=None)
+                            job = self.ledger.read()['jobs'][job['id']]
                     if job['phase'] == 'reserved':
                         if job.get('candidate') and job['role'] != 'recovery':
                             self.github.check(job, 'controller', job['candidate'], job['candidate']['key'], None, 'Candidate is being processed')
@@ -94,6 +105,10 @@ class Supervisor:
                         runner.start(job)
                     self.ledger.job_update(job['id'], phase='running')
                     job = self.ledger.read()['jobs'][job['id']]
+                except RunnerCapacity as unavailable:
+                    self.capacity = unavailable.decision
+                    self.defer_capacity(job)
+                    return
                 except (GitHubUnavailable, RunnerUnavailable) as unavailable:
                     # Missing provider/GitHub access before launch is an availability wait.
                     if job['role'] == 'recovery' and not (job.get('provider_id') and isinstance(unavailable, RunnerUnavailable)):
@@ -121,6 +136,10 @@ class Supervisor:
             verification = runner.reset(job)
             self.ledger.job_update(job['id'], teardown=verification)
             self.ledger.release(job['id'])
+
+    def defer_capacity(self, job):
+        if job.get('capacity_wait_since') is None:
+            self.ledger.job_update(job['id'], capacity_wait_since=self.clock())
 
     @staticmethod
     def incomplete(reason):
@@ -388,7 +407,7 @@ class Supervisor:
         except RunnerError as error:
             self.errors.append({'phase': 'capacity', 'reason': str(error)})
             return
-        # Recovery before Audit, Review, Build; all roles share the machine cap.
+        # Recovery before Audit, Review, Build; memory admission applies to all roles.
         for role in ROLES:
             for index in range(self.config['slots'][role]):
                 if time.monotonic() >= self.github.deadline:
@@ -396,8 +415,6 @@ class Supervisor:
                 data = self.ledger.read()
                 pool = self.config.get('provider_pool', [])
                 if pool and not any((self.config.get('provider_ready') is None or entry['id'] in self.config['provider_ready']) and provider_available(entry, data, self.clock()) for entry in pool):
-                    return
-                if len(data['slots']) >= self.config['max_running']:
                     return
                 slot = f'{role}-{index + 1}'
                 if data['slots'].get(slot):
@@ -408,6 +425,9 @@ class Supervisor:
                     item, failure = self.choose(role, self.ledger.read())
                 if item is None:
                     continue
+                self.capacity = self.runner.capacity()
+                if not self.capacity['allowed']:
+                    return
                 try:
                     target = self.github.target(item)
                     if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
