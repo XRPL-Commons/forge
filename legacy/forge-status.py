@@ -507,7 +507,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/issues/action', '/api/issues/refresh'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -546,6 +546,16 @@ class H(BaseHTTPRequestHandler):
             setup_state=Path(WD)/'state/onboarding/setup.json'
             if self.path in ('/api/settings','/api/runtime') and setup_state.is_file() and json.loads(setup_state.read_text()).get('phase')!='active':
                 raise ValueError('Use guided setup until the factory has started')
+            if self.path == '/api/issues/action':
+                from forge.factory.issue_actions import request
+                if not isinstance(value,dict) or set(value)!={'key','action','revision','reason'}:
+                    raise ValueError('Expected issue, action, current revision, and decision')
+                self._send(json.dumps({'ok':True,'request':request(WD,**value)}));return
+            if self.path == '/api/issues/refresh':
+                from forge.factory.issues import IssueInventory
+                if value!={}:raise ValueError('Expected an empty refresh request')
+                IssueInventory(WD).start_refresh(force=True)
+                self._send(json.dumps({'ok':True}));return
             if self.path == '/api/factory/action':
                 from forge.factory.control import queue
                 if not isinstance(value, dict) or set(value) != {'action', 'target', 'reason'}:
@@ -627,7 +637,25 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/" and not (Path(WD)/'state/factory-v2.enabled').exists() and ((Path(WD)/'state/factory-onboarding.enabled').exists() or not any((Path(WD)/'repos.d').glob('*.repo'))):
             self._redirect('/onboarding')
         elif u.path == "/":
-            self._send(FACTORY_PAGE if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
+            self._send((Path(__file__).parent/'issues.html').read_text() if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
+        elif u.path == '/issues':
+            self._send((Path(__file__).parent/'issues.html').read_text(), 'text/html; charset=utf-8')
+        elif u.path == '/assets/issues.js':
+            self._send((Path(__file__).parent/'issues.js').read_text(), 'text/javascript; charset=utf-8')
+        elif u.path == '/api/issues':
+            from forge.factory.issues import IssueInventory
+            try:
+                query=parse_qs(u.query)
+                if set(query)-{'repo_id','state','q','page','issue'} or any(len(v)!=1 for v in query.values()):
+                    raise ValueError('Invalid issue view')
+                service=IssueInventory(WD)
+                service.start_refresh()
+                result=service.view(repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None,
+                                    state=query.get('state',['open'])[0],query=query.get('q',[''])[0],
+                                    page=int(query.get('page',['1'])[0]),key=query.get('issue',[None])[0])
+                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}))
+            except (OSError,ValueError,KeyError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
         elif u.path == '/factory':
             self._send(FACTORY_PAGE, 'text/html; charset=utf-8')
         elif u.path == '/api/factory':

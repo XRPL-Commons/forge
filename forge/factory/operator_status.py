@@ -37,9 +37,7 @@ def overview(data, repositories, runtime, observation, active, now):
         if waiting.get('prerequisite_hold'):
             return result('Prepare the repository to continue', waiting['reason'],
                           '/settings/repository?repo_id=' + str(waiting['repo_id']), 'Check repository')
-        pr = (waiting.get('candidate') or {}).get('pr')
-        path = f"pull/{pr}" if pr else f"issues/{waiting['number']}"
-        return result('An issue needs your attention', waiting.get('reason') or 'Review the issue before continuing.', f"https://github.com/{waiting['repo']}/{path}", 'Review pull request' if pr else 'View issue')
+        return result('An issue needs your attention', waiting.get('reason') or 'Review the issue before continuing.', '/issues?issue=' + waiting.get('key', str(waiting.get('repo_id', '')) + ':' + str(waiting['number'])), 'Review issue')
     repos = [r for r in repositories if r['enabled']]
     if not repos:
         return result('Choose where Forge should work', 'No repositories are enabled.', '/settings/github', 'Choose a repository')
@@ -65,4 +63,4 @@ def overview(data, repositories, runtime, observation, active, now):
     if any(not data.get('discovery_observed', {}).get(str(r['id'])) for r in repos):
         return result('Looking for ready issues', 'Forge is checking the enabled repositories. No work has been confirmed yet.')
     repo = repos[0]
-    return result('Waiting for a ready issue', f"Add the {runtime['ready_label']} label to an issue in an enabled repository. Forge will pick it up on a following cycle.", f"https://github.com/{repo['name']}/issues", 'Open GitHub issues', empty=True)
+    return result('Waiting for a ready issue', 'Choose an issue to queue for Forge. It will check eligibility before starting.', '/issues', 'Choose an issue', empty=True)

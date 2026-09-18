@@ -303,6 +303,23 @@ class Ledger:
             issue.update(state='hold', reason='Repository review settings need attention')
             self.event(data, issue, 'protection_paused')
 
+    def migrate_protection_hold(self, key):
+        """Recognize only the old pre-first-build setup gate, never a human hold."""
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            reason = 'Configure two approving reviews and stale-approval dismissal before dispatch'
+            events = [e for e in data['events'] if e['issue'] == key]
+            if (issue['state'] != 'hold' or issue.get('reason') != reason
+                    or issue['active'] or issue['candidate'] or issue['failures']
+                    or any(j['issue_key'] == key for j in data['jobs'].values())
+                    or [e['kind'] for e in events] != ['discovered', 'held']
+                    or events[0].get('reason') is not None or events[1].get('reason') != reason):
+                return False
+            issue.update(prerequisite_hold={'state': 'ready', 'legacy': True},
+                         reason='Repository review settings need attention')
+            self.event(data, issue, 'protection_hold_migrated')
+            return True
+
     def resume_protection(self, key):
         with self.transaction() as data:
             issue = data['issues'][key]

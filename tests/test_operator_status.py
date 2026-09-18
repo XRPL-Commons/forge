@@ -31,8 +31,8 @@ class OperatorStatusTests(unittest.TestCase):
         self.assertNotIn('empty',self.view())
 
     def test_human_wait_has_actual_pr_and_reason(self):
-        self.data['issues']['1:1']={'number':1,'repo':'example/project','state':'approval_needed','active':None,'reason':'An authorized human must approve','candidate':{'pr':12}}
-        self.assertEqual(self.view()['action_url'],'https://github.com/example/project/pull/12')
+        self.data['issues']['1:1']={'key':'1:1','number':1,'repo':'example/project','state':'approval_needed','active':None,'reason':'An authorized human must approve','candidate':{'pr':12}}
+        self.assertEqual(self.view()['action_url'],'/issues?issue=1:1')
         self.assertIn('authorized human',self.view()['detail'])
 
     def test_active_role_is_evidence_not_completion(self):
