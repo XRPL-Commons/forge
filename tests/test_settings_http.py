@@ -23,7 +23,7 @@ class SettingsHTTPTests(unittest.TestCase):
         return handler
 
     def test_page_and_api_require_trusted_host(self):
-        for path in ('/settings','/settings/github','/api/settings','/factory','/api/factory','/api/factory/output?id=invalid','/onboarding','/reset','/api/onboarding','/onboarding/github/callback'):
+        for path in ('/issues','/api/issues','/settings','/settings/github','/api/settings','/factory','/api/factory','/api/factory/output?id=invalid','/onboarding','/reset','/api/onboarding','/onboarding/github/callback'):
             handler = self.handler(path, Host='attacker.example:8787')
             handler.do_GET(); handler.send_error.assert_called_once_with(403)
 
@@ -40,7 +40,7 @@ class SettingsHTTPTests(unittest.TestCase):
         service.start_refresh.assert_not_called(); service.refresh.assert_not_called()
 
     def test_settings_mutations_reject_cross_origin_and_bad_token(self):
-        for path in ('/api/settings','/api/settings/sync','/api/factory/action','/api/runtime','/api/onboarding'):
+        for path in ('/api/issues/action','/api/issues/refresh','/api/settings','/api/settings/sync','/api/factory/action','/api/runtime','/api/onboarding'):
             for headers in ({'Origin':'http://attacker.example'}, {'X-Forge-Action':'bad'}, {'Sec-Fetch-Site':'cross-site'}):
                 with patch.object(dashboard,'settings_service') as service:
                     handler = self.handler(path,{},**headers); handler.do_POST()
@@ -91,6 +91,17 @@ class SettingsHTTPTests(unittest.TestCase):
         self.assertIn('HttpOnly',headers['Set-Cookie'])
         self.assertIn('SameSite=Lax',headers['Set-Cookie'])
         self.assertNotIn('localStorage',handler._send.call_args.args[0])
+
+
+    def test_issue_decision_validates_schema_before_queueing(self):
+        with patch('forge.factory.issue_actions.request', return_value='intent') as request:
+            value={'key':'1:1','action':'queue','revision':'current','reason':'Operator decision'}
+            handler=self.handler('/api/issues/action', value); handler.do_POST()
+            request.assert_called_once_with(dashboard.WD, **value)
+            request.reset_mock()
+            handler=self.handler('/api/issues/action', {**value,'force':True}); handler.do_POST()
+            request.assert_not_called()
+            self.assertFalse(json.loads(handler._send.call_args.args[0])['ok'])
 
 
 if __name__ == '__main__': unittest.main()

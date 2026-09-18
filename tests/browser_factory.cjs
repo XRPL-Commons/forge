@@ -18,7 +18,8 @@ assert.equal(await page.getByRole('button',{name:'Release',exact:true}).count(),
 await page.getByRole('button',{name:'Stop',exact:true}).click();await page.getByRole('dialog').waitFor();assert.equal(actions.length,0);
 await page.getByRole('button',{name:'Close',exact:true}).click();assert.equal(actions.length,0);
 await page.getByRole('button',{name:'Output',exact:true}).click();await page.getByText('Captured output',{exact:false}).waitFor();assert.equal(await page.evaluate(()=>window.injected),undefined);await page.getByRole('button',{name:'Close',exact:true}).click();
-await page.getByRole('button',{name:'Retry',exact:true}).click();await page.locator('#reason').fill('Corrected the test environment');await page.getByRole('button',{name:'Retry issue',exact:true}).click();await page.getByText('Action queued for the supervisor.').waitFor();assert.equal(actions[0].action,'retry');assert.equal(actions[0].target,'1:2');
+assert.equal(await page.getByRole('button',{name:'Retry',exact:true}).count(),0);
+assert.equal(await page.locator('a[href="/issues?issue=1%3A2"]').count(),1);
 fixture.operator={title:'Building issue #1',detail:issue.title,action_url:'https://github.com/example/project/issues/1',action_label:'View issue'};
 await page.reload();await page.getByRole('heading',{name:'Building issue #1',exact:true}).waitFor();
 assert.equal(await page.locator('#next-action a').getAttribute('href'),'https://github.com/example/project/issues/1');

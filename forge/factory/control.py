@@ -76,6 +76,9 @@ def requests(root, ledger):
                 request['status'] = 'applied'
             except (StateError, ValueError, KeyError) as error:
                 request.update(status='rejected', error=str(error))
+    if (Path(root) / 'state/issues/actions.json').exists():
+        from .issue_actions import IssueActions
+        IssueActions(root, ledger).process()
 
 
 def view(root):

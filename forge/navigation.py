@@ -55,6 +55,10 @@ def render(page, path):
     active = ' aria-current="page"' if settings_page else ''
     links = [f'<a href="/settings"{active}>Settings</a>', '<a class="forge-help" href="/setup-help" aria-label="Help" title="Help"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01"/></svg></a>']
     settings_nav = ''
+    if path in ('/', '/issues', '/factory'):
+        settings_nav = '<nav class="forge-settings-navigation" aria-label="Work navigation">' + ''.join(
+            f'<a href="{href}"' + (' aria-current="page"' if (path in ('/', '/issues')) == (href == '/issues') else '') + f'>{label}</a>'
+            for href,label in (('/issues','Issues'),('/factory','Activity'))) + '</nav>'
     if settings_page:
         tabs = []
         for href, label in (('/settings', 'General'), ('/settings/github', 'GitHub access'),

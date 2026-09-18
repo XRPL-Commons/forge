@@ -239,7 +239,11 @@ class Supervisor:
             data['issues'][key]['requirements'] = requirements
 
     def reconcile(self, item):
+        if item.get('operator_request'):
+            return  # An interrupted decision must finish before observing new eligibility.
         issue, requirements = self.github.issue(item)
+        if self.ledger.migrate_protection_hold(item['key']):
+            item = self.ledger.read()['issues'][item['key']]
         candidate_value = item['candidate']
         if candidate_value:
             pr = self.github.pr(item, candidate_value['pr'])
@@ -267,6 +271,12 @@ class Supervisor:
             if labels.intersection(self.config['hold_labels']):
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
+            if item['prerequisite_hold'].get('legacy'):
+                if (issue.get('assignees') or 'wip' in labels
+                        or any(references_issue(p.get('body'), item['repo'], item['number'])
+                               for p in self.github.pulls(item))):
+                    self.ledger.hold(item['key'], 'Existing work needs review before Forge starts another attempt')
+                    return
             if self.settings.admission(item['repo'])['allowed'] and self.github.protections(item, {'base_ref': self.github.target(item)}):
                 self.ledger.resume_protection(item['key'])
                 item = self.ledger.read()['issues'][item['key']]
@@ -411,6 +421,8 @@ class Supervisor:
 
     def choose(self, role, data):
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
+            if item.get('operator_request'):
+                continue
             if not self.settings.admission(item['repo'])['allowed']:
                 continue
             if any(j['issue_key'] == item['key'] and not j['cleanup'] for j in data['jobs'].values()):

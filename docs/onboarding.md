@@ -162,9 +162,30 @@ checks pass and no issues are queued, open the linked repository and add the
 configured ready label to an issue you want Forge to handle. Forge does not
 create a demonstration issue automatically.
 
-The live issue links lead to GitHub, and a human approval wait links to the actual
-pull request. Completed issues use GitHub's confirmed merge result. Worker exit
-alone never counts as completion. Histories and logs stay available in details.
+The Issues page lists open work in enabled repositories, including issues that
+have never been queued for Forge. Search or filter by repository and state; use
+Completed to find closed work. Opening an issue shows its description, blocker,
+prerequisite issue links, pull requests and recent activity inside Forge.
+
+Choose Queue for Forge to request work. Return to backlog removes its ready label;
+Pause adds an explicit hold. Release hold requires an operator reason and checks
+current prerequisites before continuing. Setup holds lead to repository setup or
+Recheck setup once verification passes. These actions preserve the failure budget.
+Retry attempt is reserved for failed attempts and explicitly grants another budget.
+Stop attempt warns that unfinished workspace changes will be discarded; published
+pull requests remain. Active worker output stays available under Activity.
+
+Viewing issues never queues them. Forge verifies each decision against current
+GitHub state, access, rules, explicit local dependencies and existing work. Human
+assignees, work-in-progress labels and linked external pull requests require review
+before starting another attempt. Unavailable or incomplete observations are labeled;
+stale rows cannot authorize decisions. Inventory refresh uses the Controller App's
+existing access, without repository administration writes.
+
+Earlier pre-first-build review-settings holds are recognized only by their exact
+history, with no prior attempts or failures. They can recover after a fresh check;
+explicit holds and existing human work remain paused. Completed issues use GitHub's
+confirmed merge or closed state. Worker exit alone never counts as completion.
 
 ## Reset and restart
 

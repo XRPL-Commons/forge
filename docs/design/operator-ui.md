@@ -71,3 +71,26 @@ an operator wants the factory to do.
   Enabled / Not enabled text; retain explanations for states needing attention.
 - Nested settings pages use the green SETTINGS breadcrumb above their title.
   Avoid duplicate back controls and reserve primary actions for substantive work.
+
+
+## Issue decisions
+
+Issues is the worklist; Activity shows running workers and diagnostic output.
+Show open issues from enabled repositories, including work without a ready label.
+Reading or refreshing the inventory must never admit work. Search and repository
+and state filters preserve focus, with completed work available separately.
+
+Keep rows to issue identity, a plain-language state and reason, and one next step.
+Open details inside Forge for the description, prerequisite issue links, pull
+requests and recent decisions. Queue, Return to backlog, Pause, Release hold,
+Recheck setup, Retry attempt and Stop attempt appear only where relevant.
+Confirm effects before applying a decision. Require a reason for pauses, hold
+releases, retries and stops. Explain that stopping discards unfinished workspace
+changes. A setup recheck preserves history and the failure budget; Retry grants
+a new attempt budget and belongs only to a failed attempt.
+
+Recheck GitHub state, access, repository rules, explicit local dependencies and
+existing work before admission-changing decisions. Preserve unrelated labels.
+Stale inventories cannot authorize an action. Keep interrupted decisions durable
+and block dispatch until their outcome is confirmed. Do not imply priority affects
+execution while the scheduler uses creation order.
