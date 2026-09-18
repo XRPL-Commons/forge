@@ -252,3 +252,12 @@ class WorklistTests(unittest.TestCase):
         self.tracked(hold='Deliberate hold')
         with self.assertRaisesRegex(ValueError, 'Open the issue'):
             queue(self.root, 'retry', '1:1', 'Wrong action for this hold')
+
+    def test_decision_feedback_is_chronological_and_keeps_older_pending_requests(self):
+        with self.actions.store.transaction() as data:
+            for index in range(25):
+                data[str(100-index)] = {'key':'1:1','created_at':index,'status':'pending' if index == 0 else 'applied','message':str(index)}
+        statuses=self.inventory.action_statuses()
+        self.assertEqual(len(statuses),21)
+        self.assertEqual(statuses[0]['status'],'pending')
+        self.assertEqual(statuses[-1]['message'],'24')

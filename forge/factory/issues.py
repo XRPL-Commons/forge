@@ -238,5 +238,7 @@ class IssueInventory:
 
     def action_statuses(self):
         with AtomicStore(self.root / 'state/issues', 'actions').transaction() as data:
+            ordered = sorted(data.items(), key=lambda pair: pair[1]['created_at'])
+            recent = {key for key, value in ordered[-20:]}
             return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message')}
-                    for key, value in list(data.items())[-20:]]
+                    for key, value in ordered if value['status'] == 'pending' or key in recent]
