@@ -64,6 +64,11 @@ await page.evaluate(()=>{Date.now=window.realNow;tick()});
 offline=false;await page.evaluate(()=>poller.refresh());assert.equal(await page.locator('.issue-card.is-working').count(),1);
 fixture.observation.at=Date.now()/1000-600;await page.evaluate(()=>poller.refresh());assert.equal(await page.locator('.issue-card.is-working').count(),0);
 fixture.observation.at=Date.now()/1000;fixture.jobs[0].observed_at=Date.now()/1000;
+// An admitted fallback replaces the previous authentication-wait message.
+fixture.issues[0].reason='blocked_auth';fixture.jobs[0].provider='codex';
+await page.evaluate(()=>poller.refresh());
+assert.equal(await page.locator('[data-key="1:1"] .card-reason').textContent(),'');
+assert.equal(await page.locator('[data-key="1:1"] a[href="/settings/harnesses"]').count(),0);
 const auth={...failed,key:'1:3',number:3,state:'ready',title:'Queued authentication check',failure_count:0,reason:'blocked_auth',history:[{kind:'availability_wait',provider:'claude'}]};fixture.issues.push(auth);
 await page.evaluate(()=>poller.refresh());await page.getByText('Claude needs sign-in.',{exact:false}).waitFor();
 assert.equal(await page.locator('[data-key="1:3"].is-working').count(),0);
