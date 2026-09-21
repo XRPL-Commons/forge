@@ -18,6 +18,21 @@ def error_message(text):
     return 'Claude Code did not return a usable result'
 
 
+FAILURE_REASONS = {'Provider authentication_error; reconnect the account': 'provider_login_expired',
+                   'Provider usage limit reached': 'provider_usage_limit'}
+
+
+def probe_failure_reason(answer, failure, proof, nonce):
+    """Map a probe outcome to a fixed reason label, or None when the probe passed."""
+    if answer is None:
+        if failure == 'canary':
+            return 'native_sandbox_failed'
+        return FAILURE_REASONS.get(failure, 'provider_connection_failed')
+    if answer != {'ready': True} or proof != nonce:
+        return 'native_sandbox_failed'
+    return None
+
+
 def collect(args, prompt, directory, env):
     """Drain output with a hard bound; the outer runner owns the deadline."""
     with tempfile.TemporaryFile(mode='w+', dir='/work/home') as source:
@@ -81,11 +96,12 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
             pass
     response = next((e for e in reversed(events) if e.get('type') == 'result'), {})
     if code or response.get('is_error') or not isinstance(response.get('structured_output'), dict):
-        print(json.dumps({'type': 'error', 'message': error_message(raw)}), flush=True)
-        return None
+        message = error_message(raw)
+        print(json.dumps({'type': 'error', 'message': message}), flush=True)
+        return None, message
     if canary and not canary_completed(events, *canary):
         raise RuntimeError('Native sandbox canary execution was not verified')
-    return response['structured_output']
+    return response['structured_output'], None
 
 
 def run(note, directory, env, result_schema):
@@ -97,7 +113,7 @@ def run(note, directory, env, result_schema):
         build['blocked'](note, 'Forge toolchain readiness failed before work started. Repair the runner image; the candidate PR was not changed.')
         return 125
     prompt = json.dumps(note) + '\nReturn your result as the final structured response. The supervisor publishes it; do not write /work/result.json.'
-    result = invoke(note, directory, env, result_schema, prompt)
+    result, _ = invoke(note, directory, env, result_schema, prompt)
     if result is None:
         return 1
     encoded = json.dumps(result)
@@ -117,9 +133,15 @@ def probe(note, directory):
     prompt = ('This is a sandbox and authentication check. Use Bash to run exactly ' + command +
               '. Do not create or edit any files yourself. If it succeeds, return ready true.')
     build_env = runpy.run_path('/opt/forge/build_environment.py')['environment'](directory)
-    answer = invoke(note, directory, {**os.environ, **build_env, 'FORGE_PROBE_SECRET': 'synthetic-private-env',
-                                     'GH_TOKEN': 'forge-synthetic-repository-token'}, schema, prompt, canary=(command, nonce))
+    try:
+        answer, failure = invoke(note, directory, {**os.environ, **build_env, 'FORGE_PROBE_SECRET': 'synthetic-private-env',
+                                                  'GH_TOKEN': 'forge-synthetic-repository-token'}, schema, prompt, canary=(command, nonce))
+    except RuntimeError as error:
+        answer, failure = None, 'canary' if 'canary' in str(error) else str(error)
     proof = directory / 'claude-probe-proof'
-    if answer != {'ready': True} or not proof.is_file() or proof.read_text() != nonce:
-        raise RuntimeError('Claude authentication or native sandbox check failed')
+    reason = probe_failure_reason(answer, failure, proof.read_text() if proof.is_file() else None, nonce)
+    if reason:
+        # Fixed labels only: the setup service turns them into operator guidance.
+        Path('/work/result.json').write_text(json.dumps({'ready': False, 'attempt': note['id'], 'reason': reason}))
+        raise RuntimeError(reason)
     Path('/work/result.json').write_text(json.dumps({'ready': True, 'attempt': note['id']}))

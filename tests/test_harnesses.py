@@ -48,6 +48,29 @@ class HarnessTests(unittest.TestCase):
         events[1]['message']['content'][0]['is_error'] = True
         self.assertFalse(completed(events, 'canary', 'nonce'))
 
+    def test_claude_probe_reports_fixed_failure_reasons(self):
+        reason = adapter('claude')['probe_failure_reason']
+        self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')
+        self.assertEqual(reason(None, 'Provider usage limit reached', None, 'n'), 'provider_usage_limit')
+        self.assertEqual(reason(None, 'Claude Code did not return a usable result', None, 'n'), 'provider_connection_failed')
+        self.assertEqual(reason(None, 'canary', None, 'n'), 'native_sandbox_failed')
+        self.assertEqual(reason({'ready': True}, None, 'other', 'n'), 'native_sandbox_failed')
+        self.assertEqual(reason({'ready': True}, None, None, 'n'), 'native_sandbox_failed')
+        self.assertIsNone(reason({'ready': True}, None, 'n', 'n'))
+
+    def test_setup_probe_failure_messages_name_the_cause(self):
+        from forge.setup_service import probe_failure_message
+        self.assertIn('setup login claude', probe_failure_message({'result': {'reason': 'provider_login_expired'}}, 'claude'))
+        self.assertIn('usage limit', probe_failure_message({'result': {'reason': 'provider_usage_limit'}}, 'claude'))
+        self.assertIn('egress proxy', probe_failure_message({'result': {'reason': 'provider_connection_failed'}}, 'codex'))
+        self.assertIn('native tool sandbox', probe_failure_message({'result': {'reason': 'native_sandbox_failed'}}, 'claude'))
+        self.assertIn('deadline', probe_failure_message({'result': None, 'logs': ''}, 'claude', timed_out=True))
+        logs = '{"runner": "alive"}\n' + json.dumps({'type': 'error', 'message': 'Provider authentication_error; reconnect the account'}) + '\nTraceback\n'
+        self.assertIn('the harness reported: Provider authentication_error', probe_failure_message({'result': None, 'logs': logs}, 'claude'))
+        self.assertIn('(reason: odd_label)', probe_failure_message({'result': {'reason': 'odd_label'}}, 'claude'))
+        self.assertNotIn('\x1b', probe_failure_message({'result': None, 'logs': json.dumps({'type': 'error', 'message': 'x\x1b[31m y'})}, 'claude'))
+        self.assertTrue(probe_failure_message({'result': None, 'logs': 'garbage'}, 'claude').startswith('Provider or native sandbox check failed'))
+
     def test_credentials_refresh_cannot_overwrite_manual_reconnect(self):
         store = Credentials(self.root)
         ref = 'FORGE_SETUP_CODEX_AUTH'
