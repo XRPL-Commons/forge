@@ -11,7 +11,7 @@ import socket
 import socketserver
 import time
 
-DOMAINS = json.loads(os.environ.get('FORGE_EGRESS_DOMAINS', '["github.com","api.github.com","*.githubusercontent.com","api.openai.com","auth.openai.com","chatgpt.com","*.chatgpt.com","api.anthropic.com","platform.claude.com","claude.ai","registry.npmjs.org","pypi.org","files.pythonhosted.org"]'))
+DOMAINS = json.loads(os.environ.get('FORGE_EGRESS_DOMAINS', '["github.com","api.github.com","*.githubusercontent.com","api.openai.com","auth.openai.com","chatgpt.com","*.chatgpt.com","api.anthropic.com","platform.claude.com","claude.ai","cli-chat-proxy.grok.com","auth.x.ai","registry.npmjs.org","pypi.org","files.pythonhosted.org"]'))
 
 
 def allowed(host):

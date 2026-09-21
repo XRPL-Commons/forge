@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certi
     && mkdir -p /opt/forge/claude-tools && mv /usr/bin/bwrap /opt/forge/claude-tools/bwrap
 COPY --from=harnesses /usr/local/bin/node /usr/local/bin/node
 COPY --from=harnesses /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=harnesses /usr/local/lib/forge-harnesses /usr/local/lib/forge-harnesses
 COPY --from=harnesses /usr/local/include/node /usr/local/include/node
 COPY --from=harnesses /opt/forge/corepack /opt/forge/corepack
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
