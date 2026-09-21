@@ -20,7 +20,7 @@
     "@nuxt/test-utils": "^4.3.2",
     "@vitest/coverage-v8": "^4.1.11",
     "happy-dom": "^20.14.5",
-    "playwright-core": "^1.55.0",
+    "playwright-core": "1.55.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }

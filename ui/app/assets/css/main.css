@@ -15,5 +15,6 @@
 }
 
 :root { --ui-bg: var(--color-bg); --ui-bg-elevated: var(--color-panel); --ui-border: var(--color-line);
-        --ui-text: #edf1ee; --ui-text-muted: var(--color-muted); --ui-text-dimmed: var(--color-muted); }
+        --ui-text: #edf1ee; --ui-text-muted: var(--color-muted); --ui-text-dimmed: var(--color-muted);
+        --ui-primary: var(--color-mint-200); }
 body { background: var(--color-bg); color: #edf1ee; font: 15px/1.55 system-ui, -apple-system, sans-serif; }

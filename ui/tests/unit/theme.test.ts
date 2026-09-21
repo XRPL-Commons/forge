@@ -10,4 +10,11 @@ describe('theme', () => {
     const css = readFileSync(new URL(cssPath, base), 'utf8')
     for (const hex of ['#101416', '#192024', '#303b40', '#bfe6cd', '#abcfff', '#ecc486']) expect(css).toContain(hex)
   })
+
+  it('maps --ui-primary to the mint-200 token', () => {
+    const cssPath = '../../app/assets/css/main.css'
+    const base = import.meta.url
+    const css = readFileSync(new URL(cssPath, base), 'utf8')
+    expect(css).toContain('--ui-primary: var(--color-mint-200)')
+  })
 })
