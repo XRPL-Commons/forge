@@ -126,6 +126,13 @@ until `setup check` succeeds. Verification drains running jobs before probing.
 The `/settings/harnesses` page shows configured models, verification status, and
 the appropriate terminal reconnect command.
 
+`setup check` reports its current phase and elapsed time. On an active factory it
+waits for existing workers to finish before using shared account credentials;
+new dispatch pauses during verification. With the supervisor running, Ctrl+C
+only stops watching: the check continues on the server. Run the same command to
+reattach, or `setup status` to see what it is waiting for. The terminal stops
+watching after 15 minutes without cancelling the saved operation.
+
 Refreshable account logins have one active writer per credential reference. Forge
 saves refreshed credentials before removing the runner and refuses stale writes
 after a newer login. API-key jobs can use the full configured parallel capacity.

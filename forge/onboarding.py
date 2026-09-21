@@ -120,6 +120,8 @@ class Onboarding:
                 return {'target': 'runner', 'label': 'Checking worker ' + ('reuse' if job['kind'] == 'reuse' else 'cleanup')}
             if step == 'prepare' and action == 'check':
                 return {'target': 'github', 'label': 'Checking repository access and protection'}
+            if step == 'prepare' and action == 'harness_check' and data.get('phase') == 'active':
+                return {'target': 'runner', 'label': 'Waiting for active workers to finish before checking shared coding accounts; new work is paused'}
             return {'target': 'setup', 'label': 'Preparing verification'}
         return {'target': action, 'label': 'Starting Forge' if action == 'start' else 'Resetting Forge'}
 

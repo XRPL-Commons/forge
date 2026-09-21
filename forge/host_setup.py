@@ -274,9 +274,12 @@ def connect_login(root, provider, *, api_key=False, import_login=None, models=No
 
 def check(root):
     setup = Onboarding(root)
+    print('Checking coding accounts and worker isolation…', flush=True)
     operation = setup.queue('harness_check', setup.view()['revision'])
     service = Service(root)
-    deadline = time.monotonic() + 900
+    started = time.monotonic()
+    deadline = started + 900
+    last_label, last_report = None, started
     # If the service is running it owns progress. Otherwise this terminal drives
     # the same durable state machine, so closing it cannot lose runner ownership.
     with open(root / 'state-setup-service.lock', 'a') as lock:
@@ -285,23 +288,39 @@ def check(root):
             drive = True
         except BlockingIOError:
             drive = False
+        if not drive:
+            print('The Forge service owns this check. Ctrl+C stops watching; verification continues. Rerun this command to reattach.', flush=True)
         while time.monotonic() < deadline:
             data = setup.read()
             if not data.get('operation'):
                 if data.get('error'):
                     raise ValueError(data['error'])
-                print('Harness requests, isolation, termination and reuse verified.')
+                for key, value in data.get('provider_checks', {}).items():
+                    print(key + ': ' + value + ('. ' + data['provider_errors'][key] if data.get('provider_errors', {}).get(key) else ''), flush=True)
+                print('Worker isolation, termination and reuse verified. Only accounts that passed are available for work.', flush=True)
                 return
             if data['operation']['id'] != operation:
                 raise ValueError('Verification was superseded; inspect setup status')
+            label = (setup.activity(data) or {}).get('label', 'Preparing verification')
+            now = time.monotonic()
+            if label != last_label or now - last_report >= 30:
+                elapsed = int(now - started)
+                print(f'[{elapsed // 60}m {elapsed % 60:02d}s] {label}', flush=True)
+                last_label, last_report = label, now
             if drive:
                 service.tick()
             time.sleep(2)
-    raise ValueError('Verification is still pending. Check setup status; cleanup ownership is retained.')
+    raise ValueError('Stopped watching after 15 minutes; verification is still pending. ' +
+                     ('The Forge service continues it. Rerun setup check to reattach, or use setup status.' if not drive else
+                      'Rerun setup check to continue. Saved progress and runner cleanup ownership are retained.'))
 
 
 def status(root):
-    view = Onboarding(root).view()
+    setup = Onboarding(root)
+    view = setup.view()
+    activity = setup.activity(setup.read())
+    if activity:
+        print(activity['label'], flush=True)
     for item in view['harnesses']:
         state = ', '.join((m['model'] or 'default model') + ': ' + m['status'] for m in item['models']) or 'not connected'
         print(item['name'] + ' ' + item['version'] + ' — ' + state)
