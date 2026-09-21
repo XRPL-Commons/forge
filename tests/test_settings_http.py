@@ -27,6 +27,13 @@ class SettingsHTTPTests(unittest.TestCase):
             handler = self.handler(path, Host='attacker.example:8787')
             handler.do_GET(); handler.send_error.assert_called_once_with(403)
 
+    def test_active_home_opens_activity(self):
+        from pathlib import Path
+        marker=Path(dashboard.WD)/'state/factory-v2.enabled'
+        marker.parent.mkdir(parents=True,exist_ok=True);marker.touch()
+        handler=self.handler('/');handler.do_GET()
+        handler._send.assert_called_once_with(dashboard.FACTORY_PAGE,'text/html; charset=utf-8')
+
     def test_github_access_page_is_available_during_setup(self):
         handler=self.handler('/settings/github');handler.do_GET()
         handler._send.assert_called_once_with(dashboard.SETTINGS_PAGE,'text/html; charset=utf-8')

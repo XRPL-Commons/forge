@@ -13,6 +13,12 @@ const assert=require('assert');
    if(path==='/api/factory')return route.fulfill({json:status});
    return route.fulfill({contentType:'text/html',body:renderPage('help',path)});
   });
+  for(const route of ['/','/factory','/issues']){
+   await page.goto('http://forge.test'+route);
+   const tabs=page.getByRole('navigation',{name:'Work navigation'});
+   assert.deepEqual(await tabs.getByRole('link').allTextContents(),['Activity','Issues']);
+   assert.equal(await tabs.locator('[aria-current="page"]').textContent(),route==='/issues'?'Issues':'Activity');
+  }
   const activity=page.locator('#forge-activity');
   async function check(label){await page.goto('http://forge.test/setup-help',{waitUntil:'networkidle'});if(label)await page.getByRole('link',{name:label,exact:true}).waitFor();else assert(await activity.isHidden());assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));}
   await check('1 builder working');

@@ -62,8 +62,8 @@ def render(page, path):
     settings_nav = ''
     if path in ('/', '/issues', '/factory'):
         settings_nav = '<nav class="forge-settings-navigation" aria-label="Work navigation">' + ''.join(
-            f'<a href="{href}"' + (' aria-current="page"' if (path in ('/', '/issues')) == (href == '/issues') else '') + f'>{label}</a>'
-            for href,label in (('/issues','Issues'),('/factory','Activity'))) + '</nav>'
+            f'<a href="{href}"' + (' aria-current="page"' if (path in ('/', '/factory')) == (href == '/factory') else '') + f'>{label}</a>'
+            for href,label in (('/factory','Activity'),('/issues','Issues'))) + '</nav>'
     if settings_page:
         tabs = []
         for href, label in (('/settings', 'General'), ('/settings/github', 'GitHub access'),

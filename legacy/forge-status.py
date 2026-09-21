@@ -637,7 +637,7 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/" and not (Path(WD)/'state/factory-v2.enabled').exists() and ((Path(WD)/'state/factory-onboarding.enabled').exists() or not any((Path(WD)/'repos.d').glob('*.repo'))):
             self._redirect('/onboarding')
         elif u.path == "/":
-            self._send((Path(__file__).parent/'issues.html').read_text() if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
+            self._send(FACTORY_PAGE if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
         elif u.path == '/issues':
             self._send((Path(__file__).parent/'issues.html').read_text(), 'text/html; charset=utf-8')
         elif u.path in ('/assets/vendor/marked.umd.js', '/assets/vendor/purify.min.js', '/assets/markdown.js'):
