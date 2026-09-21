@@ -18,6 +18,18 @@ from forge.state import StateError
 
 
 class SetupTests(unittest.TestCase):
+    def test_relative_installation_root_supplies_absolute_app_key_path(self):
+        from forge.app_access import AppClient
+        store=Credentials(os.path.relpath(self.root, Path.cwd()))
+        store.put('FORGE_SETUP_CONTROLLER_KEY', 'synthetic-private-key', file=True)
+        env=store.environment()
+        self.assertTrue(Path(env['FORGE_SETUP_CONTROLLER_KEY']).is_absolute())
+        self.assertEqual(Path(env['FORGE_SETUP_CONTROLLER_KEY']).read_text(),'synthetic-private-key')
+        signer=Mock(return_value=Mock(returncode=0, stdout=b'synthetic-signature'))
+        token=AppClient(environ=env,run=signer).jwt({'app_id':1,'private_key_env':'FORGE_SETUP_CONTROLLER_KEY'})
+        self.assertEqual(len(token.split('.')),3)
+        signer.assert_called_once()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

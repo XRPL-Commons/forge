@@ -145,7 +145,8 @@ class IssueInventory:
                     identity = digest({'name': repo['name'], 'connections': self.settings.load()['connections']})
                     if old.get('identity') != identity:
                         old = {}
-                    if not force and old.get('complete') and 0 <= self.clock() - old.get('at', 0) < 60:
+                    if (not force and old.get('complete') and not old.get('error') and not old.get('scan')
+                            and 0 <= self.clock() - old.get('at', 0) < 60):
                         continue
                     entry = deepcopy(old)
                     entry.update(identity=identity, name=repo['name'], refreshing=True, error=None)

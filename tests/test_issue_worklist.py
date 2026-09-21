@@ -287,3 +287,11 @@ class WorklistTests(unittest.TestCase):
         self.assertEqual(row['active'],'recovery')
         self.assertEqual(row['explanation'],'Investigating a failed attempt')
         self.assertEqual(row['actions'],[])
+
+    def test_recent_failed_refresh_retries_on_next_poll(self):
+        self.refresh()
+        self.github.available=False; self.inventory.refresh(force=True)
+        self.assertFalse(self.inventory.view()['complete'])
+        self.github.available=True; self.inventory.refresh()
+        self.assertTrue(self.inventory.view()['complete'])
+        self.assertIsNone(self.inventory.view()['repositories'][0]['error'])

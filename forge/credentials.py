@@ -14,7 +14,7 @@ from .harnesses.registry import manifests
 
 class Credentials:
     def __init__(self, root):
-        self.root = Path(root) / 'credentials'
+        self.root = Path(root).absolute() / 'credentials'
 
     def _private(self):
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)

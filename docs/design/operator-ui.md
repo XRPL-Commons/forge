@@ -82,7 +82,8 @@ an operator wants the factory to do.
 
 ## Issue decisions
 
-Issues is the worklist; Activity shows running workers and diagnostic output.
+Activity is the default home page and first work tab. It shows running workers
+and diagnostic output. Issues is the worklist, available from the second tab.
 Show open issues from enabled repositories, including work without a ready label.
 Reading or refreshing the inventory must never admit work. Search and repository
 and state filters preserve focus, with completed work available separately.
