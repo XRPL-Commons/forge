@@ -1,5 +1,13 @@
+// @vitest-environment node
+//
+// This file runs under Node's environment, not the project-wide happy-dom
+// environment: happy-dom's `Headers` shim joins repeated `set-cookie` values
+// into one comma-separated string on iteration, unlike the spec-compliant
+// (and production-matching, since the Nitro middleware runs in real Node)
+// behavior of keeping each `set-cookie` as its own entry. The
+// `responseHeaders` test below depends on that real behavior.
 import { describe, it, expect } from 'vitest'
-import { guardAction, proxyPaths, upstreamHeaders } from '../../server/utils/proxy'
+import { guardAction, proxyPaths, upstreamHeaders, responseHeaders } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
   host: '100.111.151.38:8787', origin: 'http://100.111.151.38:8787', 'sec-fetch-site': 'same-origin',
@@ -37,5 +45,26 @@ describe('upstreamHeaders', () => {
   it('does not invent an origin on GET', () => {
     const out = upstreamHeaders({ host: 'x', cookie: 'forge_setup=abc' }, 'GET', '127.0.0.1:8788')
     expect(out.origin).toBeUndefined(); expect(out.cookie).toBe('forge_setup=abc')
+  })
+})
+
+describe('responseHeaders', () => {
+  it('passes through only the allowed headers, keeping both set-cookie values in order', () => {
+    const headers = new Headers()
+    headers.append('set-cookie', 'a=1')
+    headers.append('set-cookie', 'b=2')
+    headers.set('content-type', 'application/json')
+    headers.set('location', '/next')
+    headers.set('cache-control', 'no-store')
+    headers.set('x-secret', 'nope')
+    const out = responseHeaders(headers)
+    expect(out).toEqual([
+      ['cache-control', 'no-store'],
+      ['content-type', 'application/json'],
+      ['location', '/next'],
+      ['set-cookie', 'a=1'],
+      ['set-cookie', 'b=2'],
+    ])
+    expect(out.some(([name]) => name === 'x-secret')).toBe(false)
   })
 })
