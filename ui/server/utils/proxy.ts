@@ -35,3 +35,37 @@ export function responseHeaders(from: globalThis.Headers): [string, string][] {
   from.forEach((value, name) => { if (PASS_RESPONSE.includes(name.toLowerCase())) out.push([name, value]) })
   return out
 }
+
+// Reads the upstream body in chunks, bailing out (and aborting the upstream
+// request) as soon as the running total exceeds `limit`, so we never buffer
+// more than ~limit bytes for an oversized response. On any exit that isn't a
+// clean `done` — the too-large bail-out, or the reader rejecting — the reader
+// is cancelled and its lock released in `finally` so the stream is never left
+// dangling.
+export async function readCapped(response: Response, limit: number, controller: AbortController): Promise<Buffer | { tooLarge: true }> {
+  const body = response.body
+  if (!body) return Buffer.alloc(0)
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.length
+      if (total > limit) {
+        controller.abort()
+        reader.cancel().catch(() => {})
+        return { tooLarge: true }
+      }
+      chunks.push(value)
+    }
+    return Buffer.concat(chunks)
+  } catch (error) {
+    reader.cancel().catch(() => {})
+    throw error
+  } finally {
+    try { reader.releaseLock() } catch { /* already released or stream errored */ }
+  }
+}
