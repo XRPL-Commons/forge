@@ -77,7 +77,9 @@ def check():
     for argv in (["node", "-e", "const before=process.memoryUsage().rss; global.buffer=Buffer.alloc(64*1024*1024,7); if(process.memoryUsage().rss-before<32*1024*1024)process.exit(1)"],
                  ['npm', '--version'], ['pnpm', '--version'], ['git', '--version'],
                  ['cc', '--version'], ['chromium', '--version']):
-        subprocess.run(argv, check=True, timeout=30, stdout=subprocess.DEVNULL)
+        # From an image-owned directory: a sandbox may place placeholder files
+        # (an empty package.json) in the checkout that break Corepack shims.
+        subprocess.run(argv, check=True, timeout=30, stdout=subprocess.DEVNULL, cwd='/opt/forge')
     if safe_build(['node', '-e', 'console.log("bounded-build-ok")']):
         raise RuntimeError('Bounded build failed')
     subprocess.run(['node', '/opt/forge/browser-canary.cjs'], check=True, timeout=45)
