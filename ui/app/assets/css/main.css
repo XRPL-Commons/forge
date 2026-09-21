@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@theme static {
+  --color-bg: #101416;
+  --color-panel: #192024;
+  --color-line: #303b40;
+  --color-muted: #acb7b9;
+  --color-mint-50: #f1faf4; --color-mint-100: #dff3e6; --color-mint-200: #bfe6cd; --color-mint-300: #9fd9b5;
+  --color-mint-400: #7fcc9d; --color-mint-500: #5fbf85; --color-mint-600: #3f9f66; --color-mint-700: #2f7f50;
+  --color-mint-800: #205f3a; --color-mint-900: #143f26; --color-mint-950: #0a2013;
+  --color-sky-200: #abcfff;
+  --color-amber-200: #ecc486;
+  --color-rose-200: #f0a6a6;
+}
+
+:root { --ui-bg: var(--color-bg); --ui-bg-elevated: var(--color-panel); --ui-border: var(--color-line);
+        --ui-text: #edf1ee; --ui-text-muted: var(--color-muted); --ui-text-dimmed: var(--color-muted); }
+body { background: var(--color-bg); color: #edf1ee; font: 15px/1.55 system-ui, -apple-system, sans-serif; }
