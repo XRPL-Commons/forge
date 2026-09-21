@@ -2,7 +2,7 @@
   "name": "forge-dashboard-checks",
   "private": true,
   "scripts": {
-    "test:browser": "node tests/browser_dashboard.cjs && node tests/browser_settings.cjs && node tests/browser_factory.cjs && node tests/browser_onboarding.cjs && node tests/browser_repository_setup.cjs && node tests/browser_navigation.cjs && node tests/browser_refresh.cjs && node tests/browser_issues.cjs"
+    "test:browser": "node tests/browser_dashboard.cjs && node tests/browser_settings.cjs && node tests/browser_factory.cjs && node tests/browser_onboarding.cjs && node tests/browser_repository_setup.cjs && node tests/browser_navigation.cjs && node tests/browser_refresh.cjs && node tests/browser_issues.cjs && node tests/browser_select_menu.cjs"
   },
   "devDependencies": {
     "dompurify": "3.4.15",
