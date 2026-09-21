@@ -9,7 +9,8 @@ export function summarizeActivity(payload: any, now: number) {
     if (job.cleanup || job.fenced || job.outcome || job.phase !== 'running' || !seen || now - seen > maxAge) continue
     if (job.role in working) working[job.role as Role]++
   }
-  const enabled = new Set((payload?.repositories ?? []).filter((r: any) => r.enabled).map((r: any) => r.name))
-  const queued = (payload?.issues ?? []).filter((i: any) => !i.active && ['ready', 'built', 'reviewed'].includes(i.state) && (!payload.repositories || enabled.has(i.repo))).length
+  const repositories = Array.isArray(payload?.repositories) ? payload.repositories : []
+  const enabled = new Set(repositories.filter((r: any) => r.enabled).map((r: any) => r.name))
+  const queued = (payload?.issues ?? []).filter((i: any) => !i.active && ['ready', 'built', 'reviewed'].includes(i.state) && (!Array.isArray(payload?.repositories) || enabled.has(i.repo))).length
   return { working, queued, fresh }
 }

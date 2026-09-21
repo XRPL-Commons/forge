@@ -13,4 +13,7 @@ describe('summarizeActivity', () => {
   it('reports stale when the observation is older than three cycles', () => {
     expect(summarizeActivity({ ...payload, observation: { at: now - 200 } } as any, now).fresh).toBe(false)
   })
+  it('treats a non-array repositories as all repos enabled and counts all queued issues', () => {
+    expect(summarizeActivity({ ...payload, repositories: null } as any, now).queued).toBe(2)
+  })
 })
