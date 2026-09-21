@@ -13,6 +13,7 @@
   "auth_file": ".codex/auth.json",
   "api_key_env": "OPENAI_API_KEY",
   "auth_reference": "FORGE_SETUP_CODEX_AUTH",
+  "private_proc": true,
   "managed_files": {
     "requirements.toml": "/etc/codex/requirements.toml"
   },

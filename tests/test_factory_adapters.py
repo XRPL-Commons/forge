@@ -12,12 +12,20 @@ import uuid
 from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS
 from forge.factory.config import validate
 from forge.factory.github import GitHub, GitHubUnavailable
-from forge.factory.runner import ContainerRunner, RunnerError
+from forge.factory.runner import ContainerRunner, RunnerError, process_isolation
 from forge.settings import validate as validate_settings, digest
 from tests.test_settings import configured
 
 
 class AdapterTests(unittest.TestCase):
+    def test_native_process_telemetry_requires_the_dedicated_policy_for_both_harnesses(self):
+        for provider in ('codex', 'claude'):
+            with self.assertRaises(RunnerError):
+                process_isolation({'provider': provider, 'apparmor_profile': None})
+            args = process_isolation({'provider': provider, 'apparmor_profile': 'forge-runner-private-proc'})
+            self.assertIn('systempaths=unconfined', args)
+            self.assertIn('apparmor=forge-runner-private-proc', args)
+
     def test_ci_snapshot_is_commit_bound_and_uses_controller_read_evidence(self):
         github, _, _ = self.github()
         job = {'repo': 'example/project', 'repo_id': 1, 'candidate': {'head': 'a'*40, 'base': 'b'*40}}

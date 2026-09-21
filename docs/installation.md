@@ -1,7 +1,7 @@
 # Install a new Forge VM
 
-Use a Linux VM with Python 3.10+, Git, Docker Engine with the Compose plugin,
-and systemd. Run Forge as a dedicated non-root service account with Docker
+Use an AppArmor-enabled Linux VM (Ubuntu 24.04 is the tested host) with Python
+3.10+, Git, Docker Engine with the Compose plugin, and systemd. Run Forge as a dedicated non-root service account with Docker
 access. Follow [Docker's installation instructions](https://docs.docker.com/engine/install/)
 for your distribution. Docker access is administrative authority; never give it
 to a worker. Enable lingering for that account if its user services must survive
@@ -54,7 +54,8 @@ python3 deploy/test_build_environment.py --image <new-image-id> \
   --apparmor forge-runner-private-proc
 ```
 
-Omit `--apparmor` only on hosts without AppArmor. Keep dispatch paused while
+The same private-process AppArmor policy is mandatory for qualification and live
+workers; unsupported hosts fail installation explicitly. Keep dispatch paused while
 updating the image references in host/runtime and saved setup configuration, then
 run `bin/forge setup check --root <runtime-root>` before resuming. Never mutate an
 old image in place or copy a host dependency directory into a worker.

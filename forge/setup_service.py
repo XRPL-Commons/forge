@@ -226,7 +226,7 @@ class Service:
                 self.update(op, probe_jobs=data['probe_jobs'], checks={**data['checks'], 'provider': 'passed' if passed else 'failed', 'runner': 'passed'},
                             qualification={'key': self.setup.qualification_key(data), 'at': self.setup.clock()} if passed else None,
                             readiness=None if op['action'] == 'harness_check' or not passed else {'revision': self.setup.revision(data), 'at': time.time()},
-                            operation=None, error=None if passed else 'No harness passed verification. Reconnect a coding account on the VM and check again.')
+                            operation=None, error=None if passed else 'No coding account passed verification. Review the account and runner diagnostics before checking again.')
                 return
             self.update(op, probe_jobs=data['probe_jobs'], provider_checks=data.get('provider_checks', {}),
                         provider_errors=data.get('provider_errors', {}), probe_error=None)
@@ -256,6 +256,8 @@ class Service:
             if current['running'] or current['exit_code'] != 0 or capture['result'] != {'ready': True, 'attempt': job['id']}:
                 error = ('The server login has expired. Run bin/forge setup login ' + job['runner_config']['provider'] + ' on the server'
                          if (capture.get('result') or {}).get('reason') == 'provider_login_expired' else
+                         'The runner build environment failed verification. Qualify the installed image before checking again'
+                         if (capture.get('result') or {}).get('reason') == 'runner_environment_unavailable' else
                          'Provider or native sandbox check failed. Check the server connection and runner installation, then retry')
         elif not current['running']:
             error = 'The runner stopped before the termination check; check the runner installation'

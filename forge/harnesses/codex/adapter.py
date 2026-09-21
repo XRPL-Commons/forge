@@ -74,6 +74,7 @@ def probe(note, directory):
                'subprocess.run(["git", "-c", "user.name=Forge probe", "-c", "user.email=probe@example.invalid", "commit", "-m", "Readiness probe"], check=True)']
     checked = subprocess.run(command, cwd=repo, capture_output=True, timeout=30)
     if checked.returncode or not (repo / 'probe-write').is_file():
+        Path('/work/result.json').write_text(json.dumps({'ready': False, 'attempt': note['id'], 'reason': 'runner_environment_unavailable'}))
         raise RuntimeError('Native sandbox probe failed')
     build = runpy.run_path('/opt/forge/build_environment.py')
     checked = subprocess.run(command[:command.index('/usr/local/bin/python3')] +
@@ -81,6 +82,7 @@ def probe(note, directory):
                              env={**os.environ, **build['environment'](repo), 'HOME': str(repo / '.forge/home'),
                                   'CODEX_HOME': str(home)}, capture_output=True, timeout=120)
     if checked.returncode:
+        Path('/work/result.json').write_text(json.dumps({'ready': False, 'attempt': note['id'], 'reason': 'runner_environment_unavailable'}))
         raise RuntimeError('Native build environment probe failed')
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}

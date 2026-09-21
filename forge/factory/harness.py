@@ -10,6 +10,16 @@ class PreparationError(RuntimeError):
     pass
 
 
+def prepare_environment(directory):
+    # The entrypoint uses Python -I: sibling modules are deliberately not on
+    # sys.path. Load only this immutable, image-owned absolute path.
+    build = runpy.run_path('/opt/forge/build_environment.py')
+    env = build['environment'](directory)
+    with (directory / '.git/info/exclude').open('a') as stream:
+        stream.write('\n/.forge/\n/.home/\n')
+    return env
+
+
 def schema(note):
     props = {'version': {'type': 'integer', 'enum': [1]},
              'attempt': {'type': 'string', 'enum': [note['id']]},
@@ -58,11 +68,7 @@ def main():
         git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
     if note['role'] == 'build':
         git('-C', str(directory), 'checkout', '-B', note['branch'])
-    from build_environment import environment
-    env.update(environment(directory))
-    exclude = directory / '.git/info/exclude'
-    with exclude.open('a') as stream:
-        stream.write('\n/.forge/\n/.home/\n')
+    env.update(prepare_environment(directory))
     registry = runpy.run_path('/opt/forge/harnesses/registry.py')
     return registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
 
@@ -71,7 +77,6 @@ if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except (PreparationError, OSError) as error:
-        from build_environment import blocked
         note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
-        blocked(note, 'Forge could not prepare the disposable checkout before work started. Check repository access, revision availability and disk space.', 'dependency_access')
+        runpy.run_path('/opt/forge/build_environment.py')['blocked'](note, 'Forge could not prepare the disposable checkout before work started. Check repository access, revision availability and disk space.', 'dependency_access')
         raise SystemExit(125) from None

@@ -81,6 +81,7 @@ class BuildToolsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(host_setup.platform, 'system', return_value='Linux'), \
                 patch.object(host_setup.os, 'getuid', return_value=1000), \
+                patch.object(host_setup, 'apparmor_enabled', return_value=True), \
                 patch.object(host_setup.shutil, 'which', return_value='/bin/tool'), \
                 patch.object(host_setup, 'command', return_value=Mock(stdout='sha256:' + 'a'*64)), \
                 patch.object(host_setup.urllib.request, 'urlopen', return_value=io.BytesIO(b'policy')), \

@@ -3,7 +3,11 @@
 import argparse
 from pathlib import Path
 import subprocess
+import sys
 import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from forge.factory.runner import process_isolation
 
 
 SCRIPT = r'''
@@ -16,8 +20,8 @@ home = Path('/work/home/.codex'); home.mkdir(parents=True)
 (repo / '.codex').mkdir(); (repo / '.codex/config.toml').write_text('# protected')
 (repo / '.agents').mkdir(); (repo / '.agents/policy').write_text('protected')
 private = Path('/work/outside-repository'); private.write_text('private')
-env = {**{k:v for k,v in os.environ.items() if k != 'FORGE_PROBE_SECRET'}, 'HOME': str(repo / '.forge/home'), 'CODEX_HOME': str(home), **runpy.run_path('/opt/forge/build_environment.py')['environment'](repo)}
 subprocess.run(['git', 'init', str(repo)], check=True, capture_output=True)
+env = {**{k:v for k,v in os.environ.items() if k != 'FORGE_PROBE_SECRET'}, 'HOME': str(repo / '.forge/home'), 'CODEX_HOME': str(home), **runpy.run_path('/opt/forge/harness.py')['prepare_environment'](repo)}
 command = ['codex', 'sandbox', '-P', 'forge_runner', '--include-managed-config', '-C', str(repo),
            'python3', '/opt/forge/build_environment.py', '--check-environment']
 subprocess.run(command, cwd=repo, env=env, check=True, timeout=90)
@@ -58,14 +62,13 @@ def validate(image, seccomp, apparmor=None):
     argv = ['docker', 'run', '--rm', '--name', name, '-i', '--network', 'none',
             '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--pids-limit', '256',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-            '--security-opt', 'seccomp=' + str(seccomp), '--security-opt', 'systempaths=unconfined',
+            '--security-opt', 'seccomp=' + str(seccomp),
             '--read-only', '--user', '1000:1000', '--env', 'HOME=/work/home',
             '--env', 'FORGE_PROBE_SECRET=SYNTHETIC_PARENT_SECRET',
             '--tmpfs', '/work:uid=1000,gid=1000,size=512m', '--tmpfs', '/tmp:rw,nosuid,nodev,size=32m']
-    if apparmor:
-        argv += ['--security-opt', 'apparmor=' + apparmor]
+    argv += process_isolation({'provider': 'codex', 'apparmor_profile': apparmor})
     try:
-        result = subprocess.run(argv + [image, 'python3', '-'], input=SCRIPT, text=True,
+        result = subprocess.run(argv + [image, 'python3', '-I', '-'], input=SCRIPT, text=True,
                                 capture_output=True, timeout=120)
         print(result.stdout); print(result.stderr)
         if result.returncode or any(marker not in result.stdout for marker in

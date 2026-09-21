@@ -37,6 +37,18 @@ class RunnerUnavailable(RunnerError):
     pass
 
 
+def process_isolation(config):
+    """One launch policy shared by installation canaries and real workers."""
+    args = []
+    if manifest(config.get('provider', 'codex')).get('private_proc'):
+        if config.get('apparmor_profile') != 'forge-runner-private-proc':
+            raise RunnerError('This harness requires the Forge private-proc AppArmor policy')
+        args += ['--security-opt', 'systempaths=unconfined']
+    if config.get('apparmor_profile'):
+        args += ['--security-opt', 'apparmor=' + config['apparmor_profile']]
+    return args
+
+
 def scrub(text, secrets=()):
     for value in secrets:
         if value:
@@ -178,12 +190,7 @@ class ContainerRunner:
                 '--mount', 'type=volume,destination=/work', '--workdir', '/work',
                 '--env', 'HOME=/work/home', '--entrypoint', '/usr/local/bin/python3',
                 config['image'], '-I', '/opt/forge/job.py']
-        if manifest(config.get('provider', 'codex')).get('private_proc'):
-            if config.get('apparmor_profile') != 'forge-runner-private-proc':
-                raise RunnerError('This harness requires the Forge private-proc AppArmor policy')
-            args[1:1] = ['--security-opt', 'systempaths=unconfined']
-        if config.get('apparmor_profile'):
-            args[1:1] = ['--security-opt', 'apparmor=' + config['apparmor_profile']]
+        args[1:1] = process_isolation(config)
         if config.get('seccomp_profile_env'):
             seccomp = Path(self.environ.get(config['seccomp_profile_env'], ''))
             if not seccomp.is_absolute() or not seccomp.is_file():

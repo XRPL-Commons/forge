@@ -44,10 +44,17 @@ def private_root(root):
     return root
 
 
+def apparmor_enabled():
+    path = Path('/sys/module/apparmor/parameters/enabled')
+    return path.exists() and path.read_text().strip() == 'Y'
+
+
 def install(root, bind='127.0.0.1'):
     """Idempotent host preparation; never reset or start issue processing."""
     if platform.system() != 'Linux' or os.getuid() == 0:
         raise ValueError('Run setup on Linux as the non-root Forge service account')
+    if not apparmor_enabled():
+        raise ValueError('Forge runners require AppArmor for private process isolation. Use an AppArmor-enabled Linux host; see docs/installation.md')
     for binary in ('docker', 'systemctl', 'python3'):
         if not shutil.which(binary):
             raise ValueError('Install Docker Engine with Compose, Python 3, and systemd first; see docs/installation.md')
@@ -67,9 +74,8 @@ def install(root, bind='127.0.0.1'):
             source.write_bytes(response.read(1024 * 1024))
         generate = runpy.run_path(str(SOURCE / 'deploy/runner/seccomp_profile.py'))['generate']
         write_json(root / 'runner-seccomp.json', generate(source, SECCOMP_SHA))
-    apparmor = Path('/sys/module/apparmor/parameters/enabled')
     profile = None
-    if apparmor.exists() and apparmor.read_text().strip() == 'Y':
+    if apparmor_enabled():
         profile = 'forge-runner-private-proc'
         target = Path('/etc/apparmor.d/forge-runner-private-proc')
         source = SOURCE / 'deploy/runner/forge-runner-private-proc.apparmor'
