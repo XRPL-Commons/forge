@@ -75,6 +75,27 @@ class EnvironmentLifecycleTests(CycleTest):
 
 
 class BuildToolsTests(unittest.TestCase):
+    def test_native_tool_environment_is_explicit_and_excludes_provider_credentials(self):
+        import tomllib
+        from forge.harnesses.codex import adapter
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'repository/.forge/home').mkdir(parents=True)
+            def path(value):
+                return root / value.removeprefix('/work/')
+            with patch.object(adapter, 'Path', side_effect=path), \
+                    patch.object(adapter.runpy, 'run_path', return_value={'environment': lambda _: {'TMPDIR': str(root / 'tmp')}}):
+                env = adapter.prepare_tool_environment(root / 'repository', {
+                    'GH_TOKEN': 'job-scoped', 'OPENAI_API_KEY': 'private-provider-key',
+                    'FORGE_PROBE_SECRET': 'private-parent-secret'})
+            policy = tomllib.loads((root / 'home/.codex/config.toml').read_text())['shell_environment_policy']
+            self.assertEqual(policy['inherit'], 'none')
+            self.assertEqual(policy['set'], env)
+            self.assertIn('/usr/local/bin', env['PATH'])
+            self.assertEqual(env['GH_TOKEN'], 'job-scoped')
+            self.assertNotIn('OPENAI_API_KEY', env)
+            self.assertNotIn('FORGE_PROBE_SECRET', env)
+
     def test_failed_fresh_install_canary_never_installs_services_or_success_marker(self):
         import io
         from forge import host_setup

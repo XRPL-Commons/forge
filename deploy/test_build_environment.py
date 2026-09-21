@@ -15,13 +15,14 @@ import os, runpy, subprocess
 from pathlib import Path
 repo = Path('/work/repository'); repo.mkdir()
 home = Path('/work/home/.codex'); home.mkdir(parents=True)
-(home / 'config.toml').write_text('default_permissions = "forge_runner"\n')
 (home / 'auth.json').write_text('SYNTHETIC_PRIVATE_CANARY')
 (repo / '.codex').mkdir(); (repo / '.codex/config.toml').write_text('# protected')
 (repo / '.agents').mkdir(); (repo / '.agents/policy').write_text('protected')
 private = Path('/work/outside-repository'); private.write_text('private')
 subprocess.run(['git', 'init', str(repo)], check=True, capture_output=True)
-env = {**{k:v for k,v in os.environ.items() if k != 'FORGE_PROBE_SECRET'}, 'HOME': str(repo / '.forge/home'), 'CODEX_HOME': str(home), **runpy.run_path('/opt/forge/harness.py')['prepare_environment'](repo)}
+runpy.run_path('/opt/forge/harness.py')['prepare_environment'](repo)
+env = runpy.run_path('/opt/forge/harnesses/codex/adapter.py')['prepare_tool_environment'](repo, os.environ)
+env['CODEX_HOME'] = str(home)
 command = ['codex', 'sandbox', '-P', 'forge_runner', '--include-managed-config', '-C', str(repo),
            'python3', '/opt/forge/build_environment.py', '--check-environment']
 subprocess.run(command, cwd=repo, env=env, check=True, timeout=90)

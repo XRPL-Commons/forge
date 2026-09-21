@@ -7,16 +7,14 @@ import tempfile
 import runpy
 
 
-def run(note, directory, env, result_schema):
+def prepare_tool_environment(directory, env):
     askpass = Path("/work/askpass")
-    path = Path("/work/result-schema.json")
-    path.write_text(json.dumps(result_schema))
     client = Path('/work/home/.codex'); client.mkdir(parents=True, exist_ok=True)
     # Repository commands receive only their job's GitHub token and public proxy
     # settings. Provider credentials stay in the parent harness, behind the
     # image-owned deny-read policy, and never enter shell subprocess environments.
-    child_env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/work/repository/.home',
-                 'GH_TOKEN': env['GH_TOKEN'], 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
+    child_env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(directory / '.forge/home'),
+                 'GH_TOKEN': env.get('GH_TOKEN', ''), 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
                  'HTTP_PROXY': env.get('HTTP_PROXY', ''), 'HTTPS_PROXY': env.get('HTTPS_PROXY', '')}
     build = runpy.run_path('/opt/forge/build_environment.py')
     child_env.update(build['environment'](directory))
@@ -24,6 +22,15 @@ def run(note, directory, env, result_schema):
     config = 'default_permissions = "forge_runner"\napproval_policy = "never"\nweb_search = "disabled"\n[shell_environment_policy]\ninherit = "none"\n[shell_environment_policy.set]\n'
     config += '\n'.join(key + ' = ' + json.dumps(value) for key, value in child_env.items()) + '\n'
     (client / 'config.toml').write_text(config)
+    return child_env
+
+
+def run(note, directory, env, result_schema):
+    path = Path('/work/result-schema.json')
+    path.write_text(json.dumps(result_schema))
+    client = Path('/work/home/.codex')
+    child_env = prepare_tool_environment(directory, env)
+    build = runpy.run_path('/opt/forge/build_environment.py')
     # No model request and no PR mutation until the actual tool sandbox works.
     try:
         checked = subprocess.run(['codex', 'sandbox', '-P', 'forge_runner', '--include-managed-config',
@@ -58,7 +65,7 @@ def run(note, directory, env, result_schema):
 def probe(note, directory):
     repo = directory
     home = Path('/work/home/.codex'); home.mkdir(parents=True, exist_ok=True)
-    (home / 'config.toml').write_text('default_permissions = "forge_runner"\napproval_policy = "never"\nweb_search = "disabled"\n[shell_environment_policy]\ninherit = "none"\n')
+    child_env = prepare_tool_environment(repo, os.environ)
     private = Path('/work/home/probe-private'); private.write_text('synthetic probe')
     # An editable worktree is insufficient: Codex protects .git separately.
     # Prove a real local commit succeeds before reporting the runner ready.
@@ -76,11 +83,9 @@ def probe(note, directory):
     if checked.returncode or not (repo / 'probe-write').is_file():
         Path('/work/result.json').write_text(json.dumps({'ready': False, 'attempt': note['id'], 'reason': 'runner_environment_unavailable'}))
         raise RuntimeError('Native sandbox probe failed')
-    build = runpy.run_path('/opt/forge/build_environment.py')
     checked = subprocess.run(command[:command.index('/usr/local/bin/python3')] +
                              ['python3', '/opt/forge/build_environment.py', '--check-environment'], cwd=repo,
-                             env={**os.environ, **build['environment'](repo), 'HOME': str(repo / '.forge/home'),
-                                  'CODEX_HOME': str(home)}, capture_output=True, timeout=120)
+                             env={**child_env, 'CODEX_HOME': str(home)}, capture_output=True, timeout=120)
     if checked.returncode:
         Path('/work/result.json').write_text(json.dumps({'ready': False, 'attempt': note['id'], 'reason': 'runner_environment_unavailable'}))
         raise RuntimeError('Native build environment probe failed')
