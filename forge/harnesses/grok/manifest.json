@@ -1,0 +1,22 @@
+{
+  "contract_version": 1,
+  "id": "grok",
+  "name": "Grok Build",
+  "version": "1.0.34",
+  "distribution": "binary",
+  "url": "https://x.ai/cli/grok-1.0.34-linux-x86_64",
+  "sha256": "be5905e107d2b8b5f3c142d21ecfe4c8fd32a913d2fd551b788707930c4dc80d",
+  "command": "grok",
+  "login": [
+    "login",
+    "--device-auth"
+  ],
+  "auth_file": ".grok/auth.json",
+  "api_key_env": "XAI_API_KEY",
+  "auth_reference": "FORGE_SETUP_GROK_AUTH",
+  "private_proc": true,
+  "managed_files": {
+    "requirements.toml": "/etc/grok/requirements.toml",
+    "managed_config.toml": "/etc/grok/managed_config.toml"
+  }
+}

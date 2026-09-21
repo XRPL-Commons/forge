@@ -15,9 +15,11 @@ Each module contains:
 - Any adapter-specific canary or managed sandbox policy. Policies are image-owned
   and cannot be weakened by repository configuration.
 
-The current build installer supports pinned npm distributions. A harness requiring
-another distribution needs a reviewed installer extension with a fixed version
-and integrity verification; never run an unpinned remote installer in a worker.
+The build installer supports two pinned distributions: an npm package at an exact
+version (`package`, `binary`), or a single Linux binary (`distribution: "binary"`,
+`url`, `sha256`) downloaded at build time from `https://x.ai/cli/` and verified
+against its manifest checksum before it is placed in the image. Never run an
+unpinned remote installer in a worker.
 
 `run` receives a supervisor-owned assignment, the prepared checkout, and only that
 execution's credential environment. It invokes the harness with native isolation,
@@ -53,5 +55,9 @@ Before enabling a new module, qualify:
    credentials stay isolated, and those tools can reach GitHub through the proxy.
    Claude's setup probe verifies this using a synthetic token and a public endpoint.
 
-OpenCode and Grok Build are follow-up adapters, not enabled providers until this
-qualification succeeds.
+Grok Build (`forge/harnesses/grok`, pinned 1.0.34) ships with the image and appears
+in setup like Codex and Claude Code. Its terminal login is `grok login --device-auth`;
+the API-key path uses `XAI_API_KEY`. It is dispatched only once `setup check` passes
+its authenticated sandbox probe, which fails closed when the strict sandbox, the
+private-file denial or the structured result cannot be verified. OpenCode remains a
+follow-up adapter.

@@ -14,7 +14,7 @@ bin/forge setup
 ```
 
 Keep this checkout in place: the installed services run its reviewed source.
-Setup builds the pinned runner image containing Codex and Claude Code, installs
+Setup builds the pinned runner image containing Codex, Claude Code and Grok Build, installs
 the runner's isolation policy and private egress network, and starts the dashboard
 and supervisor. Installing the AppArmor profile may prompt for sudo. It does not
 start issue processing or alter GitHub permissions.
