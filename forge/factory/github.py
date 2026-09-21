@@ -137,6 +137,47 @@ class GitHub:
         except (ValueError, TypeError, KeyError):
             return None
 
+    def ci_evidence(self, job):
+        """Bounded check evidence fetched by the controller, not a worker token.
+
+        A snapshot is context, never an approval or a replacement for GitHub's
+        required-check gates. No Actions permission or log credential is needed.
+        """
+        selected = job.get('candidate')
+        if not selected:
+            return None
+        snapshots = {}
+        for revision in dict.fromkeys((selected['head'], selected['base'])):
+            rows = self.pages('controller', job, f'/commits/{revision}/check-runs?filter=latest', 'check_runs')
+            if len(rows) > 100:
+                raise GitHubUnavailable('CI snapshot exceeded its check limit')
+            checks = []
+            for row in rows:
+                if row.get('head_sha') != revision:
+                    raise GitHubUnavailable('CI check belongs to a different commit')
+                if row.get('name', '').startswith('forge/'):
+                    continue  # Do not treat our own pending verdict as project CI.
+                output = row.get('output') or {}
+                check = {key: row.get(key) for key in ('id', 'name', 'status', 'conclusion', 'details_url')}
+                check['app_id'] = (row.get('app') or {}).get('id')
+                check['summary'] = str(output.get('summary') or '')[:2000]
+                check['annotations'] = []
+                if row.get('conclusion') in ('failure', 'timed_out', 'action_required'):
+                    annotations = self.call('controller', job, 'GET', f"/check-runs/{int(row['id'])}/annotations?per_page=20")
+                    if not isinstance(annotations, list):
+                        raise GitHubUnavailable('CI annotations are malformed')
+                    check['annotations'] = [{key: str(a.get(key) or '')[:2000] for key in
+                                             ('path', 'start_line', 'annotation_level', 'title', 'message')}
+                                            for a in annotations[:20]]
+                    check['annotations_truncated'] = int(output.get('annotations_count') or 0) > 20
+                checks.append(check)
+            snapshots[revision] = checks
+        value = {'observed_at': self.clock(), 'head': selected['head'], 'base': selected['base'],
+                 'checks': snapshots, 'scope': 'GitHub check runs and bounded annotations; not Actions logs or legacy commit statuses'}
+        if len(json.dumps(value)) > 128000:
+            raise GitHubUnavailable('CI evidence exceeded its size limit')
+        return value
+
     def check(self, item, role, candidate_value, external_id, conclusion, summary):
         name = 'forge/merge-policy' if role == 'controller' else 'forge/' + role
         runs = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')

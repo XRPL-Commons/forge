@@ -19,6 +19,57 @@ the runner's isolation policy and private egress network, and starts the dashboa
 and supervisor. Installing the AppArmor profile may prompt for sudo. It does not
 start issue processing or alter GitHub permissions.
 
+The image also owns the build environment: Node 22, npm, Corepack (with pnpm
+10.23.0 preloaded), Python 3.12, a C/C++ compiler and Chromium. You do not install
+project tools on the host. Before declaring installation successful, setup runs
+an offline canary in the native tool sandbox: real Node memory readings, package
+manager execution, a bounded build, a browser page, a Git commit, and protection
+of private credentials and agent configuration. A failure stops installation
+before services or the success marker are written.
+
+Each checkout has disposable disk-backed temporary and package-cache directories.
+Workers install the repository's locked dependencies inside their native sandbox;
+Forge does not execute repository installation scripts in the credential-bearing
+parent process. Corepack honors a project's declared package-manager version;
+versions not preloaded require allowed registry access. Browser tests can use
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` or `CHROME_BIN` to select image Chromium.
+
+Inside a worker, `safe-build COMMAND` serializes builds, limits Node's heap to
+60% of the container's finite memory budget, and kills the process group after
+the deadline (20 minutes by default, at most 40). The container cgroup remains
+the hard resource limit; the host admission check reserves memory before launch.
+This is independent of the host's systemd-based `bin/safe-build` helper. Projects
+needing another runtime or more memory stop with an environment blocker; Forge
+does not bypass isolation or treat missing infrastructure as a code defect.
+
+## Qualify an updated runner
+
+Existing installations keep their pinned image when `setup install` is repeated.
+For an upgrade, build the reviewed checkout using the `NODE_IMAGE` and
+`PYTHON_IMAGE` digests in `forge/host_setup.py`, then run:
+
+```sh
+python3 deploy/test_build_environment.py --image <new-image-id> \
+  --seccomp <runtime-root>/runner-seccomp.json \
+  --apparmor forge-runner-private-proc
+```
+
+Omit `--apparmor` only on hosts without AppArmor. Keep dispatch paused while
+updating the image references in host/runtime and saved setup configuration, then
+run `bin/forge setup check --root <runtime-root>` before resuming. Never mutate an
+old image in place or copy a host dependency directory into a worker.
+
+An environment blocker preserves the published PR, stage and code-failure budget.
+Deploying a different image or resource configuration permits a new readiness
+check. After repairing access or connectivity without changing the image, use
+**Recheck readiness** on the affected issue. A repeated blocker in the same
+unchanged environment stays paused. Genuine test failures remain code failures.
+
+The controller supplies workers with bounded CI check summaries and annotations
+for the exact candidate head and base. Worker credentials remain narrowly scoped;
+they do not gain Actions-log or check-publication permissions. Missing CI evidence
+is explicit, and snapshots never replace GitHub's current merge requirements.
+
 The wizard offers each coding account in turn. Each login runs the installed
 harness's official login command in a temporary container, without any repository
 or GitHub credentials. Follow the link/code instructions in your terminal using

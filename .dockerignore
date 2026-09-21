@@ -17,3 +17,6 @@
 !forge/harnesses/*/canary.py
 !forge/harnesses/*/requirements.toml
 !forge/harnesses/*/managed-settings.json
+
+!forge/factory/build_environment.py
+!deploy/runner/browser-canary.cjs

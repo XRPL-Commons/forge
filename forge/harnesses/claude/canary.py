@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import urllib.error
 import urllib.request
+import runpy
 
 
 def check_repository_access():
@@ -24,6 +25,7 @@ def check_repository_access():
 def main():
     check_repository_access()
     check_isolation()
+    runpy.run_path('/opt/forge/build_environment.py')['check']()
     Path('/work/repository/claude-probe-proof').write_text(sys.argv[1])
     print('forge-canary:' + sys.argv[1])
 

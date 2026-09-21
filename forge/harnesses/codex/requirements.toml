@@ -15,6 +15,10 @@ deny_read = ["/work/credentials.json"]
 ":minimal" = "read"
 "/usr" = "read"
 "/opt/forge" = "read"
+# Read-only resource telemetry, never process environments or descriptors.
+"/proc/self/statm" = "read"
+"/proc/meminfo" = "read"
+"/sys/fs/cgroup" = "read"
 "/work/repository" = "write"
 # This is a disposable clone. Builders must update its index, refs and objects
 # to commit their work; workspace write alone keeps .git read-only in Codex.

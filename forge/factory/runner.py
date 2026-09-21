@@ -125,13 +125,19 @@ class ContainerRunner:
                     pass
             return {'id': value['Id'], 'status': value['State']['Status'],
                     'exit_code': value['State']['ExitCode'], 'running': value['State']['Running'],
+                    'oom_killed': value['State'].get('OOMKilled', False),
                     'started_at': started_at}
         except (ValueError, KeyError, TypeError, IndexError):
             raise RunnerError('Container ownership or observation is unverified') from None
 
     def ready(self):
         self.call(['info', '--format', '{{.ServerVersion}}'])
-        self.call(['image', 'inspect', self.config['image']])
+        try:
+            image = json.loads(self.call(['image', 'inspect', self.config['image']]).stdout)
+            if image[0]['Config'].get('Labels', {}).get('org.forge.build-environment') != '1':
+                raise ValueError()
+        except (ValueError, KeyError, TypeError, IndexError):
+            raise RunnerError('Runner image lacks the build-environment contract. Rebuild and qualify it using docs/installation.md.') from None
         if self.config.get('seccomp_profile_env'):
             path = Path(self.environ.get(self.config['seccomp_profile_env'], ''))
             if not path.is_absolute() or not path.is_file():

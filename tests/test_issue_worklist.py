@@ -80,6 +80,20 @@ class WorklistTests(unittest.TestCase):
     def tracked(self, hold=None):
         self.ledger.discover(self.settings.repos[0], 1, 'requirements', hold=hold)
 
+    def test_environment_recheck_preserves_stage_and_failure_budget(self):
+        self.tracked()
+        with self.ledger.transaction() as state:
+            state['issues']['1:1'].update(state='hold', reason='Forge environment needs attention',
+                environment_hold={'state': 'built', 'blocker': 'toolchain', 'detail': 'Missing compiler'})
+        identifier, _ = self.decision('recheck')
+        self.actions.process()
+        with self.actions.store.transaction() as requests:
+            self.assertEqual(requests[identifier]['status'], 'applied')
+        item = self.ledger.read()['issues']['1:1']
+        self.assertEqual(item['state'], 'built')
+        self.assertEqual(item['budget_start'], 0)
+        self.assertNotIn('environment_hold', item)
+
     def test_inventory_includes_backlog_and_closed_without_admitting_work(self):
         self.github.pages['/issues?state=closed&sort=created&direction=asc&per_page=100&page=1'] = [
             {**self.github.value, 'number': 2, 'state': 'closed'}, {**self.github.value, 'number': 3, 'pull_request': {}}]

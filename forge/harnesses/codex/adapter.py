@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import runpy
 
 
 def run(note, directory, env, result_schema):
@@ -17,10 +18,26 @@ def run(note, directory, env, result_schema):
     child_env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/work/repository/.home',
                  'GH_TOKEN': env['GH_TOKEN'], 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
                  'HTTP_PROXY': env.get('HTTP_PROXY', ''), 'HTTPS_PROXY': env.get('HTTPS_PROXY', '')}
+    build = runpy.run_path('/opt/forge/build_environment.py')
+    child_env.update(build['environment'](directory))
     Path(child_env['HOME']).mkdir(mode=0o700, exist_ok=True)
     config = 'default_permissions = "forge_runner"\napproval_policy = "never"\nweb_search = "disabled"\n[shell_environment_policy]\ninherit = "none"\n[shell_environment_policy.set]\n'
     config += '\n'.join(key + ' = ' + json.dumps(value) for key, value in child_env.items()) + '\n'
     (client / 'config.toml').write_text(config)
+    # No model request and no PR mutation until the actual tool sandbox works.
+    try:
+        checked = subprocess.run(['codex', 'sandbox', '-P', 'forge_runner', '--include-managed-config',
+                                  '-C', str(directory), 'python3', '/opt/forge/build_environment.py', '--check-environment'],
+                                 env={**child_env, 'CODEX_HOME': str(client)}, cwd=directory,
+                                 capture_output=True, text=True, timeout=120)
+        if checked.returncode:
+            raise RuntimeError('Native toolchain check failed')
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        # Raw diagnostics can include registry credentials from repository config.
+        # A fixed report is safe; installation's credential-free canary provides
+        # full diagnostics for repairing the image.
+        build['blocked'](note, 'Forge native toolchain readiness failed before work started. Run deploy/test_build_environment.py against the configured image; the candidate PR was not changed.')
+        return 125
     # The native sandbox stays enabled. Image provisioning must prove it works;
     # an unavailable sandbox fails the attempt instead of disabling protection.
     args = ['codex', '-a', 'never', 'exec', '--json',
@@ -58,6 +75,13 @@ def probe(note, directory):
     checked = subprocess.run(command, cwd=repo, capture_output=True, timeout=30)
     if checked.returncode or not (repo / 'probe-write').is_file():
         raise RuntimeError('Native sandbox probe failed')
+    build = runpy.run_path('/opt/forge/build_environment.py')
+    checked = subprocess.run(command[:command.index('/usr/local/bin/python3')] +
+                             ['python3', '/opt/forge/build_environment.py', '--check-environment'], cwd=repo,
+                             env={**os.environ, **build['environment'](repo), 'HOME': str(repo / '.forge/home'),
+                                  'CODEX_HOME': str(home)}, capture_output=True, timeout=120)
+    if checked.returncode:
+        raise RuntimeError('Native build environment probe failed')
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}
     Path('/work/probe-schema.json').write_text(json.dumps(schema))

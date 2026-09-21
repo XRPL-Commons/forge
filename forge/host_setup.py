@@ -85,6 +85,10 @@ def install(root, bind='127.0.0.1'):
             env={**os.environ, 'FORGE_EGRESS_IMAGE': PYTHON_IMAGE})
     config = Onboarding(root).runtime()
     config.update(image=image, apparmor_profile=profile)
+    # Image presence is not readiness. This runs without accounts or network,
+    # before any service or success marker is installed on a fresh host.
+    runpy.run_path(str(SOURCE / 'deploy/test_build_environment.py'))['validate'](
+        image, root / 'runner-seccomp.json', profile)
     # Save last: failed installation can be repeated without a false success marker.
     install_services(root, bind)
     write_json(root / 'host-runtime.json', config)

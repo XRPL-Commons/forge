@@ -18,6 +18,23 @@ from tests.test_settings import configured
 
 
 class AdapterTests(unittest.TestCase):
+    def test_ci_snapshot_is_commit_bound_and_uses_controller_read_evidence(self):
+        github, _, _ = self.github()
+        job = {'repo': 'example/project', 'repo_id': 1, 'candidate': {'head': 'a'*40, 'base': 'b'*40}}
+        def runs(role, item, path, key):
+            sha = 'a'*40 if 'a'*40 in path else 'b'*40
+            return [{'id': 10, 'name': 'ci', 'head_sha': sha, 'status': 'completed', 'conclusion': 'failure',
+                     'app': {'id': 99}, 'output': {'summary': 'Tests failed', 'annotations_count': 1}}]
+        github.pages = Mock(side_effect=runs)
+        github.call = Mock(return_value=[{'path': 'test.ts', 'start_line': 73, 'message': 'Expected [Circular]'}])
+        evidence = github.ci_evidence(job)
+        self.assertEqual(evidence['head'], 'a'*40)
+        self.assertEqual(evidence['checks']['a'*40][0]['annotations'][0]['message'], 'Expected [Circular]')
+        self.assertTrue(all(call.args[0] == 'controller' for call in github.call.call_args_list))
+        github.pages = Mock(return_value=[{'head_sha': 'c'*40}])
+        with self.assertRaises(GitHubUnavailable):
+            github.ci_evidence(job)
+
     def github(self):
         settings = Mock()
         settings.load.return_value = configured()
@@ -146,9 +163,15 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(runner.call.call_count,2)
 
     def test_public_network_is_rejected_before_admission(self):
-        runner = ContainerRunner(validate({'image':'sha256:'+'a'*64}), run=Mock())
-        runner.call = Mock(return_value=Mock(stdout=b'[{"Internal": false}]'))
-        with self.assertRaises(RunnerError): runner.ready()
+        runner = ContainerRunner(validate({'image':'sha256:'+'a'*64, 'seccomp_profile_env': None}), run=Mock())
+        runner.call = Mock(side_effect=[Mock(stdout=b'26'), Mock(stdout=b'[{"Config":{"Labels":{"org.forge.build-environment":"1"}}}]'),
+                                        Mock(stdout=b'[{"Internal": false}]')])
+        with self.assertRaisesRegex(RunnerError, 'network must be internal'): runner.ready()
+
+    def test_image_without_build_contract_cannot_dispatch(self):
+        runner = ContainerRunner(validate({'image':'sha256:'+'a'*64, 'seccomp_profile_env': None}), run=Mock())
+        runner.call = Mock(return_value=Mock(stdout=b'[{"Config":{"Labels":{}}}]'))
+        with self.assertRaisesRegex(RunnerError, 'build-environment contract'): runner.ready()
 
     def test_old_human_review_on_same_head_does_not_cover_new_policy(self):
         github, _, _ = self.github(); github.runtime['human_reviewers'] = ['human']

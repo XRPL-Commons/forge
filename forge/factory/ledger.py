@@ -236,6 +236,44 @@ class Ledger:
             self.event(data, issue, 'failure_corrected', attempt=identifier, candidate=candidate)
             return True
 
+    def block_environment(self, identifier, blocker, detail):
+        """Availability is not a code failure; retain the candidate and stage."""
+        from .contracts import ENVIRONMENT_BLOCKERS, environment_key
+        if blocker not in ENVIRONMENT_BLOCKERS:
+            raise ValueError('Unknown environment blocker')
+        with self.transaction() as data:
+            job = data['jobs'][identifier]
+            issue = data['issues'][job['issue_key']]
+            if job['outcome'] is not None:
+                return
+            if issue['state'] in ('merged', 'cancelled') or issue.get('operator_hold'):
+                job['outcome'] = 'superseded'
+                return
+            if job['role'] != 'recovery' and issue['active'] != identifier:
+                raise StateError('Obsolete attempt cannot block the environment')
+            if job['role'] == 'recovery':
+                failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
+                failure['investigation'] = 'pending'
+            issue['environment_hold'] = {'state': issue['state'], 'blocker': blocker,
+                                         'detail': detail[:8000], 'attempt': identifier,
+                                         'environment': environment_key(job.get('runner_config') or {})}
+            issue.update(state='hold', active=None, reason='Forge environment needs attention (' + blocker.replace('_', ' ') + ')')
+            job['outcome'] = 'blocked_environment'
+            self.event(data, issue, 'environment_blocked', attempt=identifier, blocker=blocker, detail=detail[:8000])
+
+    def resume_environment(self, key, reason):
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            held = issue.get('environment_hold')
+            if not held or issue['state'] != 'hold' or issue['active']:
+                return False
+            if any(j['issue_key'] == key and not j['cleanup'] for j in data['jobs'].values()):
+                return False
+            issue.update(state=held['state'], reason=None, retry_after=0)
+            issue.pop('environment_hold')
+            self.event(data, issue, 'environment_recheck', reason=reason)
+            return True
+
     def wait(self, identifier, reason, until):
         with self.transaction() as data:
             job = data['jobs'][identifier]
@@ -291,6 +329,7 @@ class Ledger:
                     job.update(fenced=True, phase='stopping')
                 issue['active'] = None
             issue.pop('prerequisite_hold', None)
+            issue.pop('environment_hold', None)
             issue.update(state='hold', reason=reason)
             self.event(data, issue, 'held', reason=reason)
 

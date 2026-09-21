@@ -34,6 +34,9 @@ def overview(data, repositories, runtime, observation, active, now):
                       f"https://github.com/{issue['repo']}/issues/{issue['number']}", 'View issue')
     waiting = next((i for i in current if i['state'] in ('approval_needed', 'hold', 'failed')), None)
     if waiting:
+        if waiting.get('environment_hold'):
+            return result('Forge’s build environment needs attention', 'The candidate pull request and code-retry budget are preserved.',
+                          '/issues?issue=' + waiting['key'], 'Review environment blocker')
         if waiting.get('prerequisite_hold'):
             return result('Prepare the repository to continue', waiting['reason'],
                           '/settings/repository?repo_id=' + str(waiting['repo_id']), 'Check repository')

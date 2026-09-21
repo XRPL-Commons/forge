@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import uuid
 import selectors
+import runpy
 
 
 def error_message(text):
@@ -88,6 +89,13 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
 
 
 def run(note, directory, env, result_schema):
+    build = runpy.run_path('/opt/forge/build_environment.py')
+    try:
+        subprocess.run(['python3', '/opt/forge/build_environment.py', '--check-environment'],
+                       cwd=directory, env=env, capture_output=True, check=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        build['blocked'](note, 'Forge toolchain readiness failed before work started. Repair the runner image; the candidate PR was not changed.')
+        return 125
     prompt = json.dumps(note) + '\nReturn your result as the final structured response. The supervisor publishes it; do not write /work/result.json.'
     result = invoke(note, directory, env, result_schema, prompt)
     if result is None:
@@ -108,7 +116,8 @@ def probe(note, directory):
     command = '/usr/local/bin/python3 /opt/forge/harnesses/claude/canary.py ' + nonce
     prompt = ('This is a sandbox and authentication check. Use Bash to run exactly ' + command +
               '. Do not create or edit any files yourself. If it succeeds, return ready true.')
-    answer = invoke(note, directory, {**os.environ, 'FORGE_PROBE_SECRET': 'synthetic-private-env',
+    build_env = runpy.run_path('/opt/forge/build_environment.py')['environment'](directory)
+    answer = invoke(note, directory, {**os.environ, **build_env, 'FORGE_PROBE_SECRET': 'synthetic-private-env',
                                      'GH_TOKEN': 'forge-synthetic-repository-token'}, schema, prompt, canary=(command, nonce))
     proof = directory / 'claude-probe-proof'
     if answer != {'ready': True} or not proof.is_file() or proof.read_text() != nonce:

@@ -56,7 +56,7 @@ await page.locator('#reason').fill('The migration is complete in every environme
 assert.equal(writes[1].body.action,'resume');await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.getByRole('button',{name:'Close issue'}).click();
 await page.getByText('Keep learners signed in',{exact:true}).click();await page.getByRole('button',{name:'Return to backlog',exact:true}).waitFor();assert(!await page.getByRole('button',{name:'Return to backlog',exact:true}).evaluate(e=>e.classList.contains('primary')));assert.equal(await page.getByRole('button',{name:'Return to backlog',exact:true}).evaluate(e=>getComputedStyle(e).borderRadius),'999px');await page.getByRole('button',{name:'Close issue'}).click();
 await page.screenshot({path:'/private/tmp/forge-issues-desktop.png',fullPage:true});
-await page.getByText('Redact credential values at the logging boundary',{exact:true}).click();await page.getByRole('button',{name:'Recheck setup',exact:true}).waitFor();
+await page.getByText('Redact credential values at the logging boundary',{exact:true}).click();await page.getByRole('button',{name:'Recheck readiness',exact:true}).waitFor();
 assert.equal(await page.getByRole('button',{name:'Retry attempt',exact:true}).count(),0);
 assert.equal(await page.getByRole('link',{name:'Repository setup →'}).getAttribute('href'),'/settings/repository?repo_id=1');
 await page.screenshot({path:'/private/tmp/forge-issues-detail.png',fullPage:true});

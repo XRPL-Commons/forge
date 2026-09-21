@@ -7,7 +7,7 @@ from copy import deepcopy
 import time
 import json
 
-from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue
+from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue, environment_key
 from .config import policy
 from .providers import available as provider_available
 from .github import GitHubUnavailable
@@ -90,6 +90,14 @@ class Supervisor:
                             self.ledger.job_update(job['id'], deadline=job['deadline'] + max(0, self.clock() - job['capacity_wait_since']), capacity_wait_since=None)
                             job = self.ledger.read()['jobs'][job['id']]
                     if job['phase'] == 'reserved':
+                        try:
+                            ci = self.github.ci_evidence(job)
+                        except GitHubUnavailable:
+                            self.ledger.block_environment(job['id'], 'ci_evidence', 'The controller could not obtain commit-bound CI checks. Check GitHub App access and connectivity before rechecking.')
+                            self.ledger.job_update(job['id'], fenced=True, phase='stopping', capture={'result': None, 'logs': '', 'missing': []})
+                            return
+                        self.ledger.job_update(job['id'], ci_evidence=ci, review_policy=policy(self.config))
+                        job = self.ledger.read()['jobs'][job['id']]
                         if job.get('candidate') and job['role'] != 'recovery':
                             self.github.check(job, 'controller', job['candidate'], job['candidate']['key'], None, 'Candidate is being processed')
                             if job['role'] in ('review', 'audit'):
@@ -166,6 +174,9 @@ class Supervisor:
 
     def outcome(self, job):
         capture = job['capture']
+        if (capture.get('execution') or {}).get('oom_killed'):
+            self.ledger.block_environment(job['id'], 'resources', 'The container exceeded its memory limit. The published candidate is retained; review worker capacity before rechecking.')
+            return
         # A recovery job also needs to fall back rather than turning a provider
         # outage into an incomplete investigation. Only adapter error events count.
         if job['role'] == 'recovery' and job.get('provider_id') and self.availability(capture):
@@ -176,6 +187,9 @@ class Supervisor:
         except ValueError:
             report = None
         item = self.ledger.read()['issues'][job['issue_key']]
+        if report and report['outcome'] == 'blocked_environment':
+            self.ledger.block_environment(job['id'], report['blocker'], report['summary'])
+            return
         if job['role'] == 'recovery':
             original = self.ledger.read()['jobs'][job['failure']['attempt']]
             if item['state'] in ('merged', 'cancelled'):
@@ -285,6 +299,15 @@ class Supervisor:
             self.ledger.cancel(item['key'], 'Issue closed externally')
             self.github.labels(self.ledger.read()['issues'][item['key']])
             return
+        if item.get('environment_hold') and item['state'] == 'hold':
+            labels = {label['name'] for label in issue.get('labels', [])}
+            if labels.intersection(self.config['hold_labels']):
+                self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
+                return
+            if (item['environment_hold']['environment'] != environment_key(self.config)
+                    and self.settings.admission(item['repo'])['allowed']):
+                self.ledger.resume_environment(item['key'], 'Runner environment changed; run readiness checks again')
+                item = self.ledger.read()['issues'][item['key']]
         if item['state'] == 'hold' and item.get('prerequisite_hold'):
             labels = {label['name'] for label in issue.get('labels', [])}
             if labels.intersection(self.config['hold_labels']):
@@ -441,7 +464,7 @@ class Supervisor:
 
     def choose(self, role, data):
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
-            if item.get('operator_request'):
+            if item.get('operator_request') or item.get('environment_hold'):
                 continue
             if not self.settings.admission(item['repo'])['allowed']:
                 continue

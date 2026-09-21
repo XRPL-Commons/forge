@@ -173,7 +173,7 @@ class IssueActions:
             return
         if decision['action'] == 'recheck':
             self.ledger.migrate_protection_hold(decision['key'])
-            if not self.ledger.read()['issues'][decision['key']].get('prerequisite_hold'):
+            if not any(self.ledger.read()['issues'][decision['key']].get(k) for k in ('prerequisite_hold', 'environment_hold')):
                 raise ValueError('This hold cannot be confirmed as a repository setup hold. Review it before releasing.')
         with self.ledger.transaction() as state:
             current = state['issues'][decision['key']]
@@ -183,11 +183,13 @@ class IssueActions:
                 current['operator_hold'] = {'kind': decision['action'], 'state': current['state'] if current['state'] in ('ready', 'built', 'reviewed', 'audited') else 'ready'}
                 current.update(state='hold', reason='Paused by an operator' if decision['action'] == 'pause' else 'Not queued for Forge')
                 current.pop('prerequisite_hold', None)
+                current.pop('environment_hold', None)
             else:
-                previous = current.get('operator_hold') or current.get('prerequisite_hold') or {}
+                previous = current.get('operator_hold') or current.get('environment_hold') or current.get('prerequisite_hold') or {}
                 current.update(state=previous.get('state', 'ready'), reason=None)
                 current.pop('operator_hold', None)
                 current.pop('prerequisite_hold', None)
+                current.pop('environment_hold', None)
             current.pop('operator_request', None)
             current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
             self.ledger.event(state, current, 'operator_' + decision['action'], reason=decision['reason'], request=identifier)
@@ -203,5 +205,5 @@ class IssueActions:
             raise ValueError('This hold needs its own release decision.')
         if action == 'resume' and ((state not in ('hold', 'cancelled') and item is not None) or not (held or (item or {}).get('operator_hold') or state == 'cancelled')):
             raise ValueError('There is no operator hold to release.')
-        if action == 'recheck' and not ((item or {}).get('prerequisite_hold') or (item or {}).get('reason') == LEGACY_SETUP_REASON):
+        if action == 'recheck' and not ((item or {}).get('prerequisite_hold') or (item or {}).get('environment_hold') or (item or {}).get('reason') == LEGACY_SETUP_REASON):
             raise ValueError('There is no repository setup hold to recheck.')

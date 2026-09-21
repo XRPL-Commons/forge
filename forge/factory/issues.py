@@ -32,7 +32,7 @@ def facts(issue):
 def revision(issue, item):
     public = {k: issue.get(k) for k in ('number', 'title', 'content_hash', 'state', 'assignees')}
     public['labels'] = sorted(l for l in labels(issue) if not l.startswith('forge:'))
-    tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold')}
+    tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold')}
     return digest({'github': public, 'ledger': tracked})
 
 
@@ -70,6 +70,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             actions = ['resume']
         else:
             detail += ' Resolve the dependency before releasing this hold.'
+    elif item.get('environment_hold'):
+        state, detail, actions = 'attention', 'Forge’s build environment needs attention. The pull request and code-retry budget are preserved. Repair the environment, then recheck.', ['recheck']
     elif setup:
         state = 'attention'
         detail = ('Repository setup now passes. Recheck to resume.' if repo.get('protection_ready') and repo.get('access_ready')
@@ -108,6 +110,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         if state not in ('completed', 'working'):
             state, detail = 'attention', 'Repository access or activation needs attention.'
     return {'status': state, 'explanation': detail, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
+            'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'pull_requests': [{'number': p['number'], 'title': p.get('title', '')} for p in linked],
             'dependencies': dependencies(issue.get('body')), 'fresh': fresh}
 

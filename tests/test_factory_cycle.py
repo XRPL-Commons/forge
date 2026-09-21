@@ -39,6 +39,7 @@ class GitHubFacts:
         self.available = True
         self.approved = False
         self.closed = False
+    def ci_evidence(self, job): return None
     def publisher(self, role): return role + '[bot]'
     def target(self, item): return 'main'
     def token(self, *args, **kwargs): return 'artificial-token'
