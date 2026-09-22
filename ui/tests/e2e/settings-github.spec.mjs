@@ -50,10 +50,15 @@ export default async function (page, { base, scenario, requests }) {
   // each row. Enabling never happens from this table.
   assert.equal((await page.locator('#repo-count').innerText()).trim(), '1 enabled · 2 discovered or configured')
   const enabled = page.locator('[data-key="1"]')
-  assert.equal(await enabled.getByRole('img', { name: 'Enabled' }).count(), 1)
+  assert.equal(await enabled.getByRole('switch', { name: 'Disable automation for XRPL-Commons/academy' }).getAttribute('aria-checked'), 'true')
   assert.equal(await enabled.getByRole('link', { name: 'XRPL-Commons/academy' }).getAttribute('href'), '/settings/repository?repo_id=1')
-  assert.equal(await page.locator('[data-key="2"]').getByRole('img', { name: 'Not enabled' }).count(), 1)
-  assert.equal(await page.getByRole('link', { name: 'Set up' }).getAttribute('href'), '/settings/repository?repo_id=2')
+  const offSwitch = page.locator('[data-key="2"]').getByRole('switch', { name: 'Enable automation for XRPL-Commons/hackathon' })
+  assert.equal(await offSwitch.getAttribute('aria-checked'), 'false')
+  // Turning a repository on opens its enable flow instead of flipping the switch.
+  await offSwitch.click()
+  await page.waitForURL(base + '/settings/repository?repo_id=2')
+  await page.goto(base + '/settings/github')
+  await waitForText(page, 'See the four Forge Apps')
   assert.equal(await page.getByRole('link', { name: 'Add repository' }).getAttribute('href'), '/settings/repository')
 
   // The search filters the rendered rows client-side.
@@ -69,8 +74,10 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(checks.length, 1)
   assert.deepEqual(checks[0].body, { repo_id: null, revision: 'settings-rev-1' })
 
-  // Disable writes the settings back with that repository switched off.
-  await page.getByRole('button', { name: 'Disable' }).click()
+  // Turning a repository off asks first, then writes the settings back with it switched off.
+  await page.locator('[data-key="1"]').getByRole('switch').click()
+  await waitForText(page, 'Disable automation for XRPL-Commons/academy?')
+  await page.getByRole('button', { name: 'Disable', exact: true }).click()
   const saves = await waitForRequests(requests, posted('/api/settings'))
   assert.equal(saves.length, 1)
   assert.equal(saves[0].body.revision, 'settings-rev-1')
@@ -133,7 +140,10 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.getByRole('link', { name: 'Connect in setup →' }).getAttribute('href'), '/onboarding')
   assert.equal((await page.locator('#repo-count').innerText()).trim(), 'Setup in progress · 2 discovered or configured')
   assert.equal(await page.getByRole('button', { name: 'Refresh repositories' }).count(), 0)
-  assert.equal(await page.getByRole('link', { name: 'Continue setup →' }).first().getAttribute('href'), '/onboarding')
+  await page.locator('[data-key="1"]').getByRole('switch', { name: /Continue setup for/ }).click()
+  await page.waitForURL(base + '/onboarding')
+  await page.goto(base + '/settings/github')
+  await waitForText(page, 'See the four Forge Apps')
 
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   const refreshes = await waitForRequests(requests, posted('/api/onboarding'))

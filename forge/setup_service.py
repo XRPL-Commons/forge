@@ -95,6 +95,42 @@ def reset_legacy(record):
     return not events.exists() or 'populated 0' in events.read_text()
 
 
+PROBE_FAILURE_MESSAGES = {
+    'provider_login_expired': 'The server login has expired. Run bin/forge setup login {provider} on the server',
+    'runner_environment_unavailable': 'The runner build environment failed verification. Qualify the installed image before checking again',
+    'provider_usage_limit': 'The {provider} account has reached its usage limit or has no credit left. Wait for the limit to reset or connect another account, then check again',
+    'provider_connection_failed': 'The runner did not get a valid response from the {provider} provider. Check the egress proxy and the provider status, then retry',
+    'native_sandbox_failed': 'The {provider} native tool sandbox failed verification inside the runner. Check the runner image and the host isolation policies',
+}
+
+
+def harness_error(logs):
+    """Last normalized harness error event in bounded runner output; adapters emit fixed labels only."""
+    for line in reversed(logs.splitlines()[-200:]):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'error' and isinstance(event.get('message'), str):
+            return ''.join(c for c in event['message'] if ' ' <= c <= '~')[:160]
+    return None
+
+
+def probe_failure_message(capture, provider, *, timed_out=False):
+    reason = (capture.get('result') or {}).get('reason')
+    if reason in PROBE_FAILURE_MESSAGES:
+        return PROBE_FAILURE_MESSAGES[reason].format(provider=provider)
+    if timed_out:
+        return 'The ' + provider + ' check did not finish before its deadline. Check the provider status and the egress proxy, then retry'
+    message = 'Provider or native sandbox check failed. Check the server connection and runner installation, then retry'
+    detail = harness_error(capture.get('logs') or '')
+    if isinstance(reason, str) and reason:
+        return message + ' (reason: ' + ''.join(c for c in reason if c.isalnum() or c in '_-')[:64] + ')'
+    if detail:
+        return message + ' (the harness reported: ' + detail + ')'
+    return message
+
+
 class Service:
     def __init__(self, root, *, runner=ContainerRunner, github=GitHub):
         self.root = Path(root)
@@ -254,11 +290,7 @@ class Service:
         if job['kind'] == 'provider':
             capture = runner.capture(job)
             if current['running'] or current['exit_code'] != 0 or capture['result'] != {'ready': True, 'attempt': job['id']}:
-                error = ('The server login has expired. Run bin/forge setup login ' + job['runner_config']['provider'] + ' on the server'
-                         if (capture.get('result') or {}).get('reason') == 'provider_login_expired' else
-                         'The runner build environment failed verification. Qualify the installed image before checking again'
-                         if (capture.get('result') or {}).get('reason') == 'runner_environment_unavailable' else
-                         'Provider or native sandbox check failed. Check the server connection and runner installation, then retry')
+                error = probe_failure_message(capture, job['runner_config']['provider'], timed_out=current['running'])
         elif not current['running']:
             error = 'The runner stopped before the termination check; check the runner installation'
         elif job['kind'] == 'reuse':

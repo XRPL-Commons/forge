@@ -48,6 +48,65 @@ class HarnessTests(unittest.TestCase):
         events[1]['message']['content'][0]['is_error'] = True
         self.assertFalse(completed(events, 'canary', 'nonce'))
 
+    def test_claude_probe_reports_fixed_failure_reasons(self):
+        reason = adapter('claude')['probe_failure_reason']
+        self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')
+        self.assertEqual(reason(None, 'Provider usage limit reached', None, 'n'), 'provider_usage_limit')
+        self.assertEqual(reason(None, 'Claude Code did not return a usable result', None, 'n'), 'provider_connection_failed')
+        self.assertEqual(reason(None, 'canary', None, 'n'), 'native_sandbox_failed')
+        self.assertEqual(reason({'ready': True}, None, 'other', 'n'), 'native_sandbox_failed')
+        self.assertEqual(reason({'ready': True}, None, None, 'n'), 'native_sandbox_failed')
+        self.assertIsNone(reason({'ready': True}, None, 'n', 'n'))
+
+    def test_claude_harness_environment_lets_oauth_refresh_reach_the_proxy(self):
+        env = adapter('claude')['harness_environment']({'HTTPS_PROXY': 'http://forge-egress:3128', 'CLAUDE_CODE_PROXY_RESOLVES_HOSTS': '1', 'GH_TOKEN': 'job'})
+        self.assertNotIn('CLAUDE_CODE_PROXY_RESOLVES_HOSTS', env)
+        self.assertEqual(env['HTTPS_PROXY'], 'http://forge-egress:3128')
+        self.assertEqual(env['CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'], '1')
+        self.assertEqual(env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'], '1')
+        self.assertTrue(env['PATH'].startswith('/opt/forge/claude-tools:'))
+
+    def test_grok_probe_reports_fixed_failure_reasons(self):
+        module = adapter('grok')
+        self.assertEqual(module['error_message']('Error: Not signed in. To authenticate without a browser, run: grok login --device-auth'),
+                         'Provider authentication_error; reconnect the account')
+        self.assertEqual(module['error_message']('{"type":"error","message":"insufficient_quota"}'), 'Provider usage limit reached')
+        self.assertEqual(module['error_message']('bwrap: setting up uid map: Permission denied'), 'Grok Build did not return a usable result')
+        reason = module['probe_failure_reason']
+        self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')
+        self.assertEqual(reason(None, 'Grok Build did not return a usable result', None, 'n'), 'provider_connection_failed')
+        self.assertEqual(reason(None, 'canary', None, 'n'), 'native_sandbox_failed')
+        self.assertEqual(reason({'ready': True}, None, 'other', 'n'), 'native_sandbox_failed')
+        self.assertIsNone(reason({'ready': True}, None, 'n', 'n'))
+        env = module['harness_environment']({'GH_TOKEN': 'job', 'XAI_API_KEY': 'synthetic'})
+        self.assertEqual(env['GROK_HOME'], '/work/home/.grok')
+        self.assertEqual(env['GROK_DISABLE_AUTOUPDATER'], '1')
+        self.assertNotIn('/work/repository', env['PATH'])
+
+    def test_binary_harness_manifest_is_pinned_and_verifiable(self):
+        item = manifests()['grok']
+        self.assertEqual(item['distribution'], 'binary')
+        self.assertRegex(item['url'], r'^https://x\.ai/cli/grok-' + item['version'].replace('.', r'\.') + r'-linux-x86_64$')
+        self.assertRegex(item['sha256'], r'^[a-f0-9]{64}$')
+        self.assertEqual(item['auth_file'], '.grok/auth.json')
+        self.assertEqual(item['login'], ['login', '--device-auth'])
+        self.assertEqual(set(item['managed_files'].values()), {'/etc/grok/requirements.toml', '/etc/grok/managed_config.toml'})
+        for name in item['managed_files']:
+            self.assertTrue((Path('forge/harnesses/grok') / name).is_file(), name)
+
+    def test_setup_probe_failure_messages_name_the_cause(self):
+        from forge.setup_service import probe_failure_message
+        self.assertIn('setup login claude', probe_failure_message({'result': {'reason': 'provider_login_expired'}}, 'claude'))
+        self.assertIn('usage limit', probe_failure_message({'result': {'reason': 'provider_usage_limit'}}, 'claude'))
+        self.assertIn('egress proxy', probe_failure_message({'result': {'reason': 'provider_connection_failed'}}, 'codex'))
+        self.assertIn('native tool sandbox', probe_failure_message({'result': {'reason': 'native_sandbox_failed'}}, 'claude'))
+        self.assertIn('deadline', probe_failure_message({'result': None, 'logs': ''}, 'claude', timed_out=True))
+        logs = '{"runner": "alive"}\n' + json.dumps({'type': 'error', 'message': 'Provider authentication_error; reconnect the account'}) + '\nTraceback\n'
+        self.assertIn('the harness reported: Provider authentication_error', probe_failure_message({'result': None, 'logs': logs}, 'claude'))
+        self.assertIn('(reason: odd_label)', probe_failure_message({'result': {'reason': 'odd_label'}}, 'claude'))
+        self.assertNotIn('\x1b', probe_failure_message({'result': None, 'logs': json.dumps({'type': 'error', 'message': 'x\x1b[31m y'})}, 'claude'))
+        self.assertTrue(probe_failure_message({'result': None, 'logs': 'garbage'}, 'claude').startswith('Provider or native sandbox check failed'))
+
     def test_credentials_refresh_cannot_overwrite_manual_reconnect(self):
         store = Credentials(self.root)
         ref = 'FORGE_SETUP_CODEX_AUTH'
@@ -78,7 +137,7 @@ class HarnessTests(unittest.TestCase):
         with patch('sys.stdout', new=io.StringIO()):
             for name in manifests(): login(self.root, name, import_login=source)
         setup = Onboarding(self.root)
-        self.assertEqual({e['provider'] for e in setup.runtime()['provider_pool']}, {'codex', 'claude'})
+        self.assertEqual({e['provider'] for e in setup.runtime()['provider_pool']}, set(manifests()))
         self.assertEqual(source.read_text(), '{"synthetic":"login"}')
         self.assertTrue(all(h['connected'] for h in setup.view()['harnesses']))
         self.assertNotIn('synthetic', json.dumps(setup.view()))

@@ -145,6 +145,23 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(autoChecks.length, 1, 'the auto-check must fire once per observation')
   page.off('request', onRequest)
 
+  // A refused check is retried: the page shows the reason, and once the server
+  // accepts checks again (same payload, no reload) the next tick asks again.
+  await page.goto('about:blank')
+  await scenario('check-rejected')
+  const retries = []
+  const onRetry = (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/repositories/check') retries.push(request.postDataJSON())
+  }
+  page.on('request', onRetry)
+  await page.goto(base + '/settings/repository?repo_id=2')
+  await waitForText(page, 'Could not start the check.')
+  assert.equal(retries.length, 1, 'the refused check was attempted once')
+  await scenario('stale')
+  for (const deadline = Date.now() + 10000; retries.length < 2 && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(retries.length, 2, 'the check is retried after a refusal')
+  page.off('request', onRetry)
+
   // On a phone-width viewport nothing scrolls sideways.
   await scenario('needs-setup')
   await page.setViewportSize({ width: 390, height: 844 })

@@ -1,0 +1,21 @@
+# Image-owned managed defaults for the runner identity. requirements.toml pins
+# the sandbox; this file scopes tools to the disposable checkout.
+disable_web_search = true
+
+[permission]
+allow = [
+  "Bash",
+  "Read(/work/repository/**)",
+  "Edit(/work/repository/**)",
+  "Grep",
+]
+deny = [
+  "Read(/work/home/**)",
+  "Read(/work/credentials.json)",
+  "Read(/proc/**)",
+  "Edit(/work/home/**)",
+  "Bash(cat /work/home/*)",
+  "WebFetch(*)",
+  "WebSearch(*)",
+  "Agent(*)",
+]

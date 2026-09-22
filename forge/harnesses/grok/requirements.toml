@@ -1,0 +1,20 @@
+# Image-owned pinned settings (highest precedence). Worker repositories, user
+# config, environment and remote settings cannot override these.
+[cli]
+auto_update = false
+
+[features]
+telemetry = false
+managed_config = false
+web_fetch = false
+
+[sandbox]
+profile = "strict"
+auto_allow_bash = true
+
+[ui]
+disable_bypass_permissions_mode = true
+permission_mode = "acceptEdits"
+
+[grok_com_config]
+disable_api_key_auth = false

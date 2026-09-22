@@ -24,6 +24,14 @@ export default async function (page, { base, scenario, requests }) {
   // mixes a >120-character title, a queued issue with no job and no reason, a
   // prerequisite hold, a failure count, a job with provider + model and a
   // recovery job with no issue row.
+  // Queued issues wait as one stack per column; only cards with a worker are
+  // expanded until the operator opens the stack.
+  assert.equal(await page.locator('#stage-build [data-key="1:611"]').count(), 0, 'a queued issue is folded into the stack')
+  const stacks = page.locator('.issue-stack')
+  assert.ok(await stacks.count() >= 1, 'expected at least one queued stack')
+  assert.match(await stacks.first().innerText(), /\d+ queued/)
+  for (const stack of await stacks.all()) await stack.click()
+  await page.locator('#stage-build [data-key="1:611"]').waitFor()
   const cards = page.locator('.issue-card:visible')
   const cardCount = await cards.count()
   assert.equal(cardCount, 11, `expected the 11 visible cards of the default fixture, saw ${cardCount}`)
@@ -91,6 +99,9 @@ export default async function (page, { base, scenario, requests }) {
 
   // A card that changes stage moves column and is announced.
   await scenario('moved')
+  // It arrives queued, so it lands in Review's stack; open the stack to see its card.
+  await page.locator('#stage-review .issue-stack').waitFor({ timeout: 10000 })
+  await page.locator('#stage-review .issue-stack').click()
   await page.waitForFunction(() => !!document.querySelector('#stage-review [data-key="1:601"]'), null, { timeout: 10000 })
   // The leaving node is animated out (420 ms), then gone from the old column.
   await page.locator('#stage-build [data-key="1:601"]').waitFor({ state: 'detached', timeout: 10000 })

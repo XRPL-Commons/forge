@@ -123,8 +123,14 @@ function observe(value: RepositoriesView) {
     if (value.sync.status === 'interrupted') finishRefresh(REFRESH_UNFINISHED)
     else if (value.sync.status === 'complete' && value.sync.finished_at !== refreshStarted) finishRefresh(REFRESH_DONE)
   }
-  // Reaching this page from "Check repository" must not sit on "Checking
-  // setup…" until the operator presses refresh: check once per observation.
+  maybeAutoCheck(value)
+}
+
+// Reaching this page from "Check repository" must not sit on "Checking
+// setup…" until the operator presses refresh: check once per observation.
+// Evaluated on every payload, not only on a changed one, so a check that was
+// refused (its key is reset below) is retried on the next tick.
+function maybeAutoCheck(value: RepositoriesView) {
   const current = repoId.value === null ? null : value.repositories.find(candidate => candidate.id === repoId.value)
   if (!current) return
   const key = [value.revision, current.protection_status, current.protection?.observed_at].join(':')
@@ -133,6 +139,8 @@ function observe(value: RepositoriesView) {
     void check()
   }
 }
+
+watch(() => poll.data.value, (value) => { if (value) maybeAutoCheck(value) })
 
 function finishRefresh(text: string) {
   refreshing.value = false
@@ -151,6 +159,8 @@ async function check() {
     await poll.refresh()
   } catch (failure: unknown) {
     error.value = actionMessage(failure, 'Could not start the check.')
+    // Let the next observation try again instead of remembering a refused check.
+    autoCheckKey.value = ''
   } finally {
     busy.value = false
   }
