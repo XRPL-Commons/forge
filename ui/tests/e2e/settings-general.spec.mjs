@@ -24,7 +24,7 @@ export default async function (page, { base, scenario, requests }) {
   const rows = page.locator('[data-status-row]')
   assert.equal(await rows.count(), 5, 'expected the five status rows')
   await waitForText(page, 'Enabled')
-  await waitForText(page, 'forge/worker:2026.09 · verification current')
+  await waitForText(page, 'forge/worker:2026.09 · verified')
   await waitForText(page, 'All coding accounts verified.')
   await waitForText(page, '4 of 4 Apps verified')
   await waitForText(page, 'Supervisor seen')

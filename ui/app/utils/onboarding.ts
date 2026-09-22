@@ -29,6 +29,9 @@ export interface SetupActivity {
 export interface SetupOperation {
   id: string; action: 'check' | 'harness_check' | 'start' | 'reset'
   generation: string; revision: string | null; step: string; at: number
+  // Terminal-only: a scoped `setup check <harness>` carries the pool entries it
+  // verifies; other accounts keep their verdict and keep dispatching.
+  harness?: string; providers?: string[]
   [key: string]: unknown
 }
 
@@ -65,6 +68,9 @@ export interface OnboardingView {
   repository_check?: ProtectionReport | null
   repository_setup?: RepositoryRow | null
   qualification_fresh?: boolean
+  // True while the running image is the one the last passing check covered;
+  // unlike qualification freshness it does not expire.
+  image_verified?: boolean
   service?: { last_seen: number; available: boolean }
   can_start: boolean
   operation: SetupOperation | null

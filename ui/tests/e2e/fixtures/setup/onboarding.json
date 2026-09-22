@@ -70,6 +70,7 @@
   "repository_check": null,
   "repository_setup": null,
   "qualification_fresh": false,
+  "image_verified": false,
   "service": {
     "last_seen": 1790000000,
     "available": true

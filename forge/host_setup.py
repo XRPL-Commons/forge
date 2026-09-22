@@ -272,10 +272,13 @@ def connect_login(root, provider, *, api_key=False, import_login=None, models=No
     print(item['name'] + ' connected. Run setup check to verify the runner.')
 
 
-def check(root):
+def check(root, provider=None):
     setup = Onboarding(root)
-    print('Checking coding accounts and worker isolation…', flush=True)
-    operation = setup.queue('harness_check', setup.view()['revision'])
+    item = manifest(provider) if provider else None
+    print(('Checking the ' + item['name'] + ' account…') if item else 'Checking coding accounts and worker isolation…', flush=True)
+    operation = setup.queue('harness_check', setup.view()['revision'], harness=provider)
+    # A scoped check reports its own accounts only; the others keep their verdict.
+    scope = (setup.read().get('operation') or {}).get('providers') if provider else None
     service = Service(root)
     started = time.monotonic()
     deadline = started + 900
@@ -296,8 +299,13 @@ def check(root):
                 if data.get('error'):
                     raise ValueError(data['error'])
                 for key, value in data.get('provider_checks', {}).items():
+                    if scope is not None and key not in scope:
+                        continue
                     print(key + ': ' + value + ('. ' + data['provider_errors'][key] if data.get('provider_errors', {}).get(key) else ''), flush=True)
-                print('Worker isolation, termination and reuse verified. Only accounts that passed are available for work.', flush=True)
+                if item and not any(job.get('kind') != 'provider' for job in data.get('probe_jobs', [])):
+                    print(item['name'] + ' verified. Other accounts unchanged.', flush=True)
+                else:
+                    print('Worker isolation, termination and reuse verified. Only accounts that passed are available for work.', flush=True)
                 return
             if data['operation']['id'] != operation:
                 raise ValueError('Verification was superseded; inspect setup status')
@@ -349,7 +357,7 @@ def main():
                 parser.error('login requires a harness name')
             login(root, args.provider, api_key=args.api_key, import_login=args.import_login, models=args.model)
         elif args.action == 'check':
-            check(root)
+            check(root, args.provider)
         elif args.action == 'status':
             status(root)
         elif args.action is None:

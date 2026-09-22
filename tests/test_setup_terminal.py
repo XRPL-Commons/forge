@@ -39,6 +39,52 @@ class TerminalCheckTests(unittest.TestCase):
         self.assertIn('claude: failed. Account unavailable', text)
         self.assertIn('codex: passed', text)
 
+    def test_scoped_check_reports_only_the_named_account_and_leaves_others_alone(self):
+        operation = {'id': 'scoped', 'action': 'harness_check', 'step': 'prepare',
+                     'harness': 'claude', 'providers': ['claude-1', 'claude-2']}
+        waiting = {'phase': 'active', 'operation': operation}
+        finished = {'operation': None, 'probe_jobs': [{'kind': 'provider'}],
+                    'provider_checks': {'codex': 'failed', 'claude-1': 'passed', 'claude-2': 'passed'},
+                    'provider_errors': {'codex': 'Checked last week'}}
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(host_setup, 'Onboarding') as setup, \
+                patch.object(host_setup, 'Service'), \
+                patch.object(host_setup.fcntl, 'flock', side_effect=BlockingIOError), \
+                patch.object(host_setup.time, 'monotonic', side_effect=lambda: 0), \
+                patch.object(host_setup.time, 'sleep', side_effect=lambda _: None), \
+                patch('sys.stdout', output):
+            setup.return_value.queue.return_value = 'scoped'
+            setup.return_value.read.side_effect = [waiting, waiting, finished]
+            setup.return_value.activity.side_effect = Onboarding.activity
+            host_setup.check(Path(directory), 'claude')
+            self.assertEqual(setup.return_value.queue.call_args.kwargs['harness'], 'claude')
+        text = output.getvalue()
+        self.assertIn('Waiting for workers using the Claude Code login to finish; other work continues', text)
+        self.assertIn('claude-1: passed', text)
+        self.assertNotIn('codex', text)
+        self.assertIn('Claude Code verified. Other accounts unchanged.', text)
+        self.assertNotIn('Worker isolation, termination and reuse verified', text)
+
+    def test_scoped_check_reports_runner_probes_when_they_ran(self):
+        operation = {'id': 'scoped', 'action': 'harness_check', 'step': 'prepare',
+                     'harness': 'claude', 'providers': ['claude']}
+        finished = {'operation': None, 'provider_checks': {'claude': 'passed'},
+                    'probe_jobs': [{'kind': 'provider'}, {'kind': 'termination'}, {'kind': 'reuse'}]}
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(host_setup, 'Onboarding') as setup, \
+                patch.object(host_setup, 'Service'), \
+                patch.object(host_setup.fcntl, 'flock', side_effect=BlockingIOError), \
+                patch.object(host_setup.time, 'monotonic', side_effect=lambda: 0), \
+                patch.object(host_setup.time, 'sleep', side_effect=lambda _: None), \
+                patch('sys.stdout', output):
+            setup.return_value.queue.return_value = 'scoped'
+            setup.return_value.read.side_effect = [{'phase': 'active', 'operation': operation}, finished]
+            setup.return_value.activity.side_effect = Onboarding.activity
+            host_setup.check(Path(directory), 'claude')
+        self.assertIn('Worker isolation, termination and reuse verified', output.getvalue())
+
     def test_status_exposes_pending_verification(self):
         data = {'phase': 'active', 'operation': {'action': 'harness_check', 'step': 'prepare'}}
         output = io.StringIO()

@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -26,6 +27,23 @@ from tests.test_onboarding import SetupTests
 def pool():
     return [{'id': 'codex', 'provider': 'codex', 'model': None, 'provider_environment': ['OPENAI_API_KEY'], 'provider_auth_file_env': None},
             {'id': 'claude', 'provider': 'claude', 'model': None, 'provider_environment': ['ANTHROPIC_API_KEY'], 'provider_auth_file_env': None}]
+
+
+class Facts:
+    """The GitHub surface a supervisor cycle touches while setup verification runs."""
+    deadline = 0
+    def issue(self, item): return {'state': 'open', 'labels': [], 'title': 'Implement behavior'}, item['requirements']
+    def issues(self, item): return []
+    def pulls(self, item): return []
+    def publisher(self, role): return role + '[bot]'
+    def target(self, item): return 'main'
+    def token(self, *args, **kwargs): return 'synthetic-worker-token'
+    def ci_evidence(self, job): return None
+    def protections(self, *args): return True
+    def publication(self, *args): return None
+    def pr(self, item, number): return None
+    def check(self, *args): return 1
+    def labels(self, item): pass
 
 
 class HarnessTests(unittest.TestCase):
@@ -299,6 +317,125 @@ class PoolSetupTests(SetupTests):
         self.assertFalse(engine)
         self.assertEqual(len(set(resets)), 5)
         service.github_class.assert_not_called()
+
+    # --- Scoped account verification (bin/forge setup check <harness>) -------
+
+    def active(self, *, ready=None, enabled=False, keys=False, image='sha256:' + 'a' * 64):
+        """Two connected harnesses on an active factory, with a usable GitHub fake.
+
+        API-key accounts have no single-writer login, so their workers run in
+        parallel; refreshable logins are the case a check has to wait for.
+        """
+        for name in ('codex', 'claude'):
+            if keys:
+                self.setup.connect(name, api_key='synthetic-' + name + '-api-key')
+            else:
+                self.setup.connect(name, auth_value='{"synthetic":"' + name + '"}')
+        config = self.setup.runtime()
+        config.update(enabled=enabled, merge_enabled=enabled, image=image, provider_ready=ready)
+        write_json(self.root / 'runtime.json', config)
+        write_json(self.root / 'state/factory-v2.enabled', {'version': 1, 'activated_at': 0})
+        with self.setup.store.transaction() as data:
+            data['phase'] = 'active'
+        service, engine, resets = self.service()
+        service.next_sync = time.monotonic() + 3600  # No background access refresh in tests.
+        service.github_class = lambda settings, config: Facts()
+        return service, engine, resets
+
+    def issue(self, number=7):
+        return Ledger(self.root / 'state/factory').discover({'id': 10, 'name': 'example/project'}, number, 'requirements')
+
+    def worker(self, engine, provider_id, *, slot='build-1', number=7):
+        """A live worker holding one harness login, as dispatch would leave it."""
+        from forge.factory.config import load
+        ledger = Ledger(self.root / 'state/factory')
+        key = self.issue(number)
+        job = ledger.reserve(key, 'build', slot, publisher='build[bot]', policy='policy', timeout=2700,
+                             runner_config={**load(self.root), 'provider_ready': [provider_id]})
+        ledger.job_update(job['id'], phase='running')
+        engine[job['id']] = {'id': job['id'], 'status': 'running', 'running': True, 'exit_code': 0}
+        return ledger.read()['jobs'][job['id']]
+
+    def test_scoped_check_verifies_one_harness_without_stopping_other_workers(self):
+        service, engine, resets = self.active(ready=['codex'])
+        with self.setup.store.transaction() as data:
+            data['provider_checks'] = {'codex': 'passed'}
+            data['provider_errors'] = {'codex': None}
+        job = self.worker(engine, 'codex')
+        self.setup.queue('harness_check', self.setup.view()['revision'], harness='claude')
+        for _ in range(30): service.tick()
+        data = self.setup.read()
+        self.assertIsNone(data['operation'])
+        self.assertIsNone(data['error'])
+        self.assertEqual(data['provider_checks'], {'codex': 'passed', 'claude': 'passed'})
+        live = Ledger(self.root / 'state/factory').read()['jobs'][job['id']]
+        self.assertFalse(live['cleanup'])
+        self.assertFalse(live['fenced'])
+        self.assertNotIn(job['id'], resets)
+        self.assertEqual(json.loads((self.root / 'runtime.json').read_text())['provider_ready'], ['codex', 'claude'])
+        self.assertEqual([j['provider_id'] for j in data['probe_jobs'] if j['kind'] == 'provider'], ['claude'])
+
+    def test_scoped_check_waits_for_workers_holding_the_same_login(self):
+        service, engine, resets = self.active(ready=['codex', 'claude'])
+        job = self.worker(engine, 'codex')
+        self.setup.queue('harness_check', self.setup.view()['revision'], harness='codex')
+        for _ in range(5): service.tick()
+        data = self.setup.read()
+        self.assertEqual(data['operation']['step'], 'prepare')
+        self.assertFalse(data['probe_jobs'])
+        self.assertEqual(self.setup.activity(data)['label'],
+                         'Waiting for workers using the Codex login to finish; other work continues')
+        engine.pop(job['id'])  # The worker exits; teardown is verified on the next drain.
+        for _ in range(30): service.tick()
+        data = self.setup.read()
+        self.assertIsNone(data['operation'])
+        self.assertTrue(Ledger(self.root / 'state/factory').read()['jobs'][job['id']]['cleanup'])
+        self.assertEqual([j['provider_id'] for j in data['probe_jobs'] if j['kind'] == 'provider'], ['codex'])
+
+    def test_scoped_check_reruns_runner_probes_only_for_a_new_image(self):
+        service, engine, resets = self.active()
+        self.setup.queue('harness_check', self.setup.view()['revision'], harness='claude')
+        for _ in range(30): service.tick()
+        data = self.setup.read()
+        self.assertEqual([j['kind'] for j in data['probe_jobs']], ['provider', 'termination', 'reuse'])
+        self.assertEqual(data['qualification']['image'], 'sha256:' + 'a' * 64)
+        self.setup.queue('harness_check', self.setup.view()['revision'], harness='claude')
+        for _ in range(30): service.tick()
+        data = self.setup.read()
+        self.assertEqual([j['kind'] for j in data['probe_jobs']], ['provider'])
+        self.assertEqual(self.setup.read()['provider_checks'], {'claude': 'passed'})
+        config = json.loads((self.root / 'runtime.json').read_text())
+        config['image'] = 'sha256:' + 'b' * 64
+        write_json(self.root / 'runtime.json', config)
+        self.setup.queue('harness_check', self.setup.view()['revision'], harness='claude')
+        for _ in range(30): service.tick()
+        self.assertEqual([j['kind'] for j in self.setup.read()['probe_jobs']], ['provider', 'termination', 'reuse'])
+
+    def test_scoped_check_keeps_dispatching_unscoped_harnesses(self):
+        service, engine, resets = self.active(ready=['codex', 'claude'], enabled=True, keys=True)
+        self.issue(7); self.issue(8)
+        self.setup.queue('harness_check', self.setup.view()['revision'], harness='claude')
+        service.tick(); service.tick()
+        jobs = [j for j in Ledger(self.root / 'state/factory').read()['jobs'].values() if not j['cleanup']]
+        # Both build slots keep working, and neither uses the account being checked.
+        self.assertEqual([j['provider_id'] for j in jobs], ['codex', 'codex'])
+        self.assertEqual(self.setup.read()['operation']['step'], 'probe')
+
+    def test_full_check_still_pauses_all_dispatch(self):
+        service, engine, resets = self.active(ready=['codex', 'claude'], enabled=True, keys=True)
+        self.issue()
+        self.setup.queue('harness_check', self.setup.view()['revision'])
+        service.tick(); service.tick()
+        self.assertFalse(Ledger(self.root / 'state/factory').read()['jobs'])
+        self.assertEqual(self.setup.read()['operation']['step'], 'probe')
+
+    def test_scope_names_a_connected_harness(self):
+        service, engine, resets = self.active()
+        with self.assertRaises(ValueError):
+            self.setup.queue('harness_check', self.setup.view()['revision'], harness='../../elsewhere')
+        with self.assertRaisesRegex(ValueError, 'Connect Grok'):
+            self.setup.queue('harness_check', self.setup.view()['revision'], harness='grok')
+        self.assertIsNone(self.setup.read()['operation'])
 
 
 if __name__ == '__main__': unittest.main()

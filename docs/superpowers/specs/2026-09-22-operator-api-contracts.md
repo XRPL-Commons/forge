@@ -330,9 +330,12 @@ type Harness = { id: string /* 'codex' | 'claude' */; name: string /* "Codex" | 
   login_command: string; check_command: string };   // e.g. "/opt/forge/bin/forge setup login claude --root /srv/forge"
 type SetupActivity = { target: 'setup' | 'github' | 'provider' | 'runner' | 'start' | 'reset'; label: string; provider?: string; model_id?: string | null };
 // labels: "Waiting for available memory; verification will resume automatically" | "Checking <harness name>" | "Finishing <harness name>" | "Checking worker reuse" | "Checking worker cleanup" |
-// "Checking repository access and protection" | "Waiting for active workers to finish before checking shared coding accounts; new work is paused" | "Preparing verification" | "Starting Forge" | "Resetting Forge"
+// "Checking repository access and protection" | "Waiting for active workers to finish before checking shared coding accounts; new work is paused" | "Preparing verification" | "Starting Forge" | "Resetting Forge" |
+// "Waiting for workers using the <harness name> login to finish; other work continues" (scoped check)
 type SetupOperation = { id: string; action: 'check' | 'harness_check' | 'start' | 'reset'; generation: string; revision: string | null;
-  step: 'queued' | 'prepare' | 'probe' | 'stop_workers' | 'clear_setup' | string; at: number; [k: string]: unknown };
+  step: 'queued' | 'prepare' | 'probe' | 'stop_workers' | 'clear_setup' | string; at: number;
+  harness?: string; providers?: string[]; image?: string | null;   // scoped `setup check <harness>` only
+  [k: string]: unknown };
 
 type OnboardingView = { ok: true; controls_token: string;
   phase: SetupPhase; generation: string; revision: string;
@@ -343,7 +346,7 @@ type OnboardingView = { ok: true; controls_token: string;
   checks: Partial<Record<'github' | 'provider' | 'runner', CheckStatus>>;
   harnesses?: Harness[]; activity?: SetupActivity | null; repository_check?: ProtectionReport | null;
   repository_setup?: RepositoryRow | null;      // the selected repo's row
-  qualification_fresh?: boolean; service?: { last_seen: number; available: boolean };
+  qualification_fresh?: boolean; image_verified?: boolean; service?: { last_seen: number; available: boolean };
   can_start: boolean; operation: SetupOperation | null; error: string | null };
 // phase 'resetting' returns the reduced shape: roles all {status:'not_configured', registered:false}, repositories [], selected null, owner '', provider_connected false, checks {}, can_start false, revision ''.
 ```
@@ -361,7 +364,9 @@ Body `{action, ...fields}`; the field set must match exactly per action ("Invali
 | `start` | `{revision}` | `{ok:true, request}`. Extra error "Run readiness checks again before starting". Idempotent for an already-active generation. |
 | `reset` | `{generation}` | `{ok:true, request}`. Writes `state/factory-paused.json`, phase → `resetting`. Error "This reset belongs to an earlier setup; reload before resetting the current factory". Returns the receipt id when the generation already reset. |
 
-`harness_check` exists in `queue()` but no page sends it (terminal `bin/forge setup check` does).
+`harness_check` exists in `queue()` but no page sends it (terminal `bin/forge setup check` does). The API always queues a full
+check: only the terminal's `bin/forge setup check <harness>` sets `harness`/`providers`, which verifies those pool entries, keeps the
+other accounts' `provider_checks`/`provider_ready`, and leaves every harness outside the scope dispatchable while it runs.
 
 ### GET /onboarding/github/callback?state=&code=
 Exactly those two params. On success **303** to `https://github.com/apps/<slug>/installations/new`; on any failure **303** to `/onboarding?connection_error=1` (page shows "GitHub connection was not verified. Reconnect from this page.").
