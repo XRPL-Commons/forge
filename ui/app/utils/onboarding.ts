@@ -15,10 +15,15 @@ export type CheckKey = 'github' | 'provider' | 'runner'
 
 export type HarnessStatus = 'connected' | 'passed' | 'failed' | 'unknown'
   | 'sign in again' | 'usage limit; retry pending' | 'verification required'
-export interface HarnessModel { id: string; model: string | null; status: HarnessStatus }
+// auth: how the account is held. A browser login rotates and runs one job at a
+// time; an API key or long-lived token is shared, so its jobs run in parallel.
+export type HarnessAuth = 'login' | 'api_key' | 'token'
+export interface HarnessModel { id: string; model: string | null; status: HarnessStatus; auth?: HarnessAuth }
 export interface Harness {
   id: string; name: string; version: string; connected: boolean
   models: HarnessModel[]; login_command: string; check_command: string
+  // Present when the harness offers a long-lived token (Claude Code's `claude setup-token`).
+  token_command?: string | null; token_login_command?: string | null
 }
 
 export interface SetupActivity {

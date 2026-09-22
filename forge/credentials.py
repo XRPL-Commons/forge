@@ -33,7 +33,8 @@ class Credentials:
     def valid_reference(reference):
         return (isinstance(reference, str) and
                 (re.fullmatch(r'FORGE_SETUP_[A-Z_]+', reference)
-                 or reference in {m['api_key_env'] for m in manifests().values()} | {'CLAUDE_CODE_OAUTH_TOKEN'}))
+                 or reference in {m['api_key_env'] for m in manifests().values()}
+                 | {m['token_env'] for m in manifests().values() if m.get('token_env')}))
 
     def put(self, reference, value, *, file=False):
         with self.locked():

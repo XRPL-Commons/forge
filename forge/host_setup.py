@@ -184,22 +184,29 @@ def cleanup_login(name):
         command(['docker', 'rm', '--force', name], stdout=subprocess.DEVNULL)
 
 
-def connect_login(root, provider, *, api_key=False, import_login=None, models=None):
+def connect_login(root, provider, *, api_key=False, token=False, import_login=None, models=None):
     item = manifest(provider)
+    if token and not item.get('token_env'):
+        raise ValueError(item['name'] + ' has no long-lived token login; use the browser login or --api-key')
     setup = Onboarding(root)
     initial = setup.read()
     if initial['phase'] not in ('setup', 'active') or initial.get('operation'):
         raise ValueError('Finish the current setup operation before signing in')
     generation = initial['generation']
-    saved = pending_login(setup, provider, generation) if not api_key and not import_login else None
+    saved = pending_login(setup, provider, generation) if not api_key and not token and not import_login else None
+    kind = 'token' if token else 'api_key'
     if saved:
         print('Finishing the saved ' + item['name'] + ' sign-in; no browser login is needed.', flush=True)
-        secret, value = saved['secret'], saved['value']
+        secret, value, kind = saved['secret'], saved['value'], saved.get('kind', 'api_key')
         models = models if models is not None else saved['models']
         if saved.get('interactive'):
             cleanup_login('forge-login-' + login_owner(root) + '-' + provider)
     elif api_key:
         secret = getpass.getpass(item['name'] + ' API key: ')
+        value = None
+    elif token:
+        # Workers share this token and never refresh it, so several can run at once.
+        secret = getpass.getpass(item['name'] + ' long-lived token (from `' + item['token_command'] + '`): ')
         value = None
     elif import_login:
         path = Path(import_login)
@@ -254,13 +261,14 @@ def connect_login(root, provider, *, api_key=False, import_login=None, models=No
                 # Check ownership before cleanup, including interrupted login.
                 cleanup_login(name)
     if not saved:
-        pending_login(setup, provider, generation, {'secret': secret, 'value': value, 'models': models})
+        pending_login(setup, provider, generation, {'secret': secret, 'value': value, 'models': models, 'kind': kind})
     print('Sign-in saved locally. Waiting for the current supervisor cycle to finish…', flush=True)
     try:
         with controller_lock(root, timeout=120):
             if setup.read()['generation'] != generation:
                 raise ValueError('Forge was reset during login; reconnect from the current setup')
-            setup.connect(provider, api_key=secret, auth_value=value, models=models)
+            setup.connect(provider, api_key=secret if kind == 'api_key' else None, token=secret if kind == 'token' else None,
+                          auth_value=value, models=models)
             ledger = root / 'state/factory/factory-ledger.json'
             if ledger.exists():
                 from .factory.ledger import Ledger
@@ -344,6 +352,8 @@ def main():
     parser.add_argument('--bind', default='127.0.0.1')
     auth = parser.add_mutually_exclusive_group()
     auth.add_argument('--api-key', action='store_true')
+    auth.add_argument('--token', action='store_true',
+                      help='Paste a long-lived token (Claude Code: `claude setup-token`); workers share it and run in parallel')
     auth.add_argument('--import-login')
     parser.add_argument('--model', action='append', help='Repeat to rotate equally between models of this harness')
     args = parser.parse_args()
@@ -355,7 +365,7 @@ def main():
         if args.action == 'login':
             if not args.provider:
                 parser.error('login requires a harness name')
-            login(root, args.provider, api_key=args.api_key, import_login=args.import_login, models=args.model)
+            login(root, args.provider, api_key=args.api_key, token=args.token, import_login=args.import_login, models=args.model)
         elif args.action == 'check':
             check(root, args.provider)
         elif args.action == 'status':

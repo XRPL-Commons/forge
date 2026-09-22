@@ -265,6 +265,61 @@ class HarnessTests(unittest.TestCase):
         self.assertIsNone(ledger.read()['jobs'][first]['model'])
 
 
+class TokenLoginTests(unittest.TestCase):
+    """A long-lived token is an environment credential: shared, never refreshed, parallel."""
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.setup = Onboarding(self.root)
+
+    def test_token_connects_claude_as_a_parallel_environment_credential(self):
+        self.setup.connect('claude', token='sk-ant-oat01-synthetic-token-value')
+        entry = self.setup.runtime()['provider_pool'][0]
+        self.assertEqual(entry['provider_environment'], ['CLAUDE_CODE_OAUTH_TOKEN'])
+        self.assertIsNone(entry['provider_auth_file_env'])
+        self.assertEqual(self.setup.credentials.environment()['CLAUDE_CODE_OAUTH_TOKEN'], 'sk-ant-oat01-synthetic-token-value')
+        view = next(h for h in self.setup.view()['harnesses'] if h['id'] == 'claude')
+        self.assertEqual(view['models'][0]['auth'], 'token')
+        self.assertIn('--token', view['token_login_command'])
+        self.assertNotIn('synthetic', json.dumps(self.setup.view()))
+        running = {'jobs': {'j1': {'cleanup': False, 'runner_config': {**entry, 'provider_auth_file_env': None}}}}
+        self.assertTrue(available(entry, running, 0), 'a second job may share the token')
+
+    def test_browser_login_stays_single_writer(self):
+        self.setup.connect('claude', auth_value='{"synthetic":"login"}')
+        entry = self.setup.runtime()['provider_pool'][0]
+        self.assertEqual(next(h for h in self.setup.view()['harnesses'] if h['id'] == 'claude')['models'][0]['auth'], 'login')
+        running = {'jobs': {'j1': {'cleanup': False, 'runner_config': entry}}}
+        self.assertFalse(available(entry, running, 0))
+
+    def test_token_login_is_refused_where_the_harness_offers_none(self):
+        with self.assertRaisesRegex(ValueError, 'no long-lived token login'):
+            self.setup.connect('codex', token='synthetic-token-value-1234')
+        with self.assertRaisesRegex(ValueError, 'valid long-lived token'):
+            self.setup.connect('claude', token='short')
+
+    def test_terminal_token_login_prompts_privately_and_resumes_after_busy_supervisor(self):
+        with patch('forge.host_setup.getpass.getpass', return_value='sk-ant-oat01-synthetic-token-value') as prompt, \
+                patch('forge.host_setup.controller_lock', side_effect=ControllerBusy('busy')), \
+                patch('sys.stdout', new=io.StringIO()), self.assertRaisesRegex(ValueError, 'Sign-in is saved'):
+            login(self.root, 'claude', token=True)
+        self.assertIn('setup-token', prompt.call_args.args[0])
+        self.assertFalse(self.setup.runtime()['provider_pool'])
+        with patch('forge.host_setup.command') as command, patch('sys.stdout', new=io.StringIO()):
+            login(self.root, 'claude')
+            command.assert_not_called()
+        entry = self.setup.runtime()['provider_pool'][0]
+        self.assertEqual(entry['provider_environment'], ['CLAUDE_CODE_OAUTH_TOKEN'])
+        self.assertFalse((self.root / 'credentials/pending-login-claude.json').exists())
+
+    def test_terminal_flag_is_wired(self):
+        with patch('sys.argv', ['forge setup', 'login', 'claude', '--token', '--root', str(self.root)]), \
+                patch('forge.host_setup.login') as call, patch('sys.stdout', new=io.StringIO()):
+            setup_main()
+        self.assertTrue(call.call_args.kwargs['token'])
+
+
 class PoolCycleTests(CycleTest):
     def setUp(self):
         super().setUp()

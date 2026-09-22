@@ -327,7 +327,8 @@ type SetupPhase = 'setup' | 'legacy' | 'active' | 'resetting';
 type CheckStatus = 'checking' | 'passed' | 'failed';
 type Harness = { id: string /* 'codex' | 'claude' */; name: string /* "Codex" | "Claude Code" */; version: string; connected: boolean;
   models: { id: string; model: string | null; status: 'connected' | 'passed' | 'failed' | 'unknown' | 'sign in again' | 'usage limit; retry pending' | 'verification required' }[];
-  login_command: string; check_command: string };   // e.g. "/opt/forge/bin/forge setup login claude --root /srv/forge"
+  login_command: string; check_command: string;     // e.g. "/opt/forge/bin/forge setup login claude --root /srv/forge"
+  token_command?: string | null; token_login_command?: string | null };  // long-lived token login where the harness offers one; models[].auth: 'login' | 'api_key' | 'token'
 type SetupActivity = { target: 'setup' | 'github' | 'provider' | 'runner' | 'start' | 'reset'; label: string; provider?: string; model_id?: string | null };
 // labels: "Waiting for available memory; verification will resume automatically" | "Checking <harness name>" | "Finishing <harness name>" | "Checking worker reuse" | "Checking worker cleanup" |
 // "Checking repository access and protection" | "Waiting for active workers to finish before checking shared coding accounts; new work is paused" | "Preparing verification" | "Starting Forge" | "Resetting Forge" |
