@@ -153,9 +153,34 @@ issue and a merged issue.
 
 ## decision-pending/
 
-- `issues.issue.json` — `default/issues.issue.json` plus `issue.actions:
-  [{"id": "a1", "key": "1:613", "status": "pending", "message": null}]`,
-  exercising the issue detail panel's pending-decision state.
+- `issues.issue.json` — `default/issues.issue.json` with a decision for
+  `1:610` waiting for the supervisor: the response-level `actions` carries
+  `[{"id": "a1", "key": "1:610", "status": "pending", "message": null}]`
+  (the shape contracts §2 gives `IssueListResponse`/`IssueDetailResponse`),
+  and the issue itself is `status:"waiting"`, `actions: []`, explanation
+  "Applying your decision. Forge will confirm it before continuing." — what
+  `presentation()` reports while an `operator_request` is pending. Reshaped
+  in Task 7: it previously put an `IssueActionStatus` array in
+  `issue.actions`, where the contract has the issue's own string actions,
+  and keyed it to an issue the fixture does not describe.
+- `issues.json` — `default/issues.json` with the same pending decision and
+  the `1:610` row moved to `waiting`, so the list's "Applying…" pill is
+  exercised against the same state as the detail. Added in Task 7.
+
+## decision-queue/ and decision-pause/
+
+The mock serves one `issues.issue.json` per scenario — the `issue=<key>`
+query selects the endpoint, not the payload — so a detail fixture can only
+offer the decisions of one issue state. These two carry the detail payloads
+of two rows already in `default/issues.json`, so Task 7's e2e spec can
+exercise a decision that needs no reason and one that does:
+
+- `decision-queue/issues.issue.json` — `1:609`, the backlog row
+  (`status:"backlog"`, `actions:["queue"]`, no active job): the only state
+  that offers `queue`.
+- `decision-pause/issues.issue.json` — `1:608`, the queued row
+  (`status:"queued"`, `actions:["backlog","pause"]`): the only state that
+  offers `pause`.
 
 ## down (not a fixture directory)
 

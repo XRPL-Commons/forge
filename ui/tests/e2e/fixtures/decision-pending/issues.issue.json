@@ -15,16 +15,9 @@
     "key": "1:610",
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
-    "status": "working",
-    "explanation": "Building",
-    "actions": [
-      {
-        "id": "a1",
-        "key": "1:613",
-        "status": "pending",
-        "message": null
-      }
-    ],
+    "status": "waiting",
+    "explanation": "Applying your decision. Forge will confirm it before continuing.",
+    "actions": [],
     "setup_needed": false,
     "environment_blocker": null,
     "pull_requests": [],
@@ -71,5 +64,12 @@
       "error": null
     }
   ],
-  "actions": []
+  "actions": [
+    {
+      "id": "a1",
+      "key": "1:610",
+      "status": "pending",
+      "message": null
+    }
+  ]
 }

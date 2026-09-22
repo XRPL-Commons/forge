@@ -1,0 +1,199 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "issues": [
+    {
+      "number": 613,
+      "title": "Redact credential values at the logging boundary",
+      "content_hash": "sha256:16130613",
+      "body_truncated": false,
+      "state": "open",
+      "updated_at": "2026-09-20T12:00:00Z",
+      "labels": [
+        "ready"
+      ],
+      "assignees": [],
+      "key": "1:613",
+      "repo": "XRPL-Commons/academy",
+      "repo_id": 1,
+      "status": "attention",
+      "explanation": "Repository setup now passes. Recheck to resume.",
+      "actions": [
+        "recheck"
+      ],
+      "setup_needed": true,
+      "environment_blocker": null,
+      "pull_requests": [],
+      "dependencies": [],
+      "fresh": true,
+      "revision": "current",
+      "setup_url": "/settings/repository?repo_id=1",
+      "active": null
+    },
+    {
+      "number": 585,
+      "title": "Finish the migration off legacy fields",
+      "content_hash": "sha256:25850585",
+      "body_truncated": false,
+      "state": "open",
+      "updated_at": "2026-09-20T12:00:00Z",
+      "labels": [
+        "hold"
+      ],
+      "assignees": [],
+      "key": "2:585",
+      "repo": "XRPL-Commons/hackathon",
+      "repo_id": 2,
+      "status": "attention",
+      "explanation": "Paused by hold on GitHub.",
+      "actions": [
+        "resume"
+      ],
+      "setup_needed": false,
+      "environment_blocker": null,
+      "pull_requests": [],
+      "dependencies": [
+        584
+      ],
+      "fresh": true,
+      "revision": "current",
+      "setup_url": "/settings/repository?repo_id=2",
+      "active": null
+    },
+    {
+      "number": 610,
+      "title": "Make course navigation easier",
+      "content_hash": "sha256:16100610",
+      "body_truncated": false,
+      "state": "open",
+      "updated_at": "2026-09-20T12:00:00Z",
+      "labels": [
+        "ready"
+      ],
+      "assignees": [],
+      "key": "1:610",
+      "repo": "XRPL-Commons/academy",
+      "repo_id": 1,
+      "status": "waiting",
+      "explanation": "Applying your decision. Forge will confirm it before continuing.",
+      "actions": [],
+      "setup_needed": false,
+      "environment_blocker": null,
+      "pull_requests": [],
+      "dependencies": [],
+      "fresh": true,
+      "revision": "current",
+      "setup_url": "/settings/repository?repo_id=1",
+      "active": "attempt"
+    },
+    {
+      "number": 609,
+      "title": "Improve the course completion email",
+      "content_hash": "sha256:16090609",
+      "body_truncated": false,
+      "state": "open",
+      "updated_at": "2026-09-20T12:00:00Z",
+      "labels": [],
+      "assignees": [],
+      "key": "1:609",
+      "repo": "XRPL-Commons/academy",
+      "repo_id": 1,
+      "status": "backlog",
+      "explanation": "Not queued for Forge.",
+      "actions": [
+        "queue"
+      ],
+      "setup_needed": false,
+      "environment_blocker": null,
+      "pull_requests": [],
+      "dependencies": [],
+      "fresh": true,
+      "revision": "current",
+      "setup_url": "/settings/repository?repo_id=1",
+      "active": null
+    },
+    {
+      "number": 608,
+      "title": "Keep learners signed in",
+      "content_hash": "sha256:16080608",
+      "body_truncated": false,
+      "state": "open",
+      "updated_at": "2026-09-20T12:00:00Z",
+      "labels": [
+        "ready"
+      ],
+      "assignees": [],
+      "key": "1:608",
+      "repo": "XRPL-Commons/academy",
+      "repo_id": 1,
+      "status": "queued",
+      "explanation": "Queued for Forge.",
+      "actions": [
+        "backlog",
+        "pause"
+      ],
+      "setup_needed": false,
+      "environment_blocker": null,
+      "pull_requests": [],
+      "dependencies": [],
+      "fresh": true,
+      "revision": "current",
+      "setup_url": "/settings/repository?repo_id=1",
+      "active": null
+    },
+    {
+      "number": 600,
+      "title": "Repair old links",
+      "content_hash": "sha256:26000600",
+      "body_truncated": false,
+      "state": "closed",
+      "updated_at": "2026-09-20T12:00:00Z",
+      "labels": [],
+      "assignees": [],
+      "key": "2:600",
+      "repo": "XRPL-Commons/hackathon",
+      "repo_id": 2,
+      "status": "completed",
+      "explanation": "Closed on GitHub.",
+      "actions": [],
+      "setup_needed": false,
+      "environment_blocker": null,
+      "pull_requests": [],
+      "dependencies": [],
+      "fresh": true,
+      "revision": "current",
+      "setup_url": "/settings/repository?repo_id=2",
+      "active": null
+    }
+  ],
+  "total": 6,
+  "page": 1,
+  "pages": 1,
+  "repositories": [
+    {
+      "id": 1,
+      "name": "XRPL-Commons/academy",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    },
+    {
+      "id": 2,
+      "name": "XRPL-Commons/hackathon",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    }
+  ],
+  "complete": true,
+  "actions": [
+    {
+      "id": "a1",
+      "key": "1:610",
+      "status": "pending",
+      "message": null
+    }
+  ]
+}
