@@ -104,12 +104,18 @@ export default async function (page, { base, scenario, requests }) {
     null, { timeout: 10000 },
   )
 
-  // A refused request is reported with the page's own sentence.
+  // A refused request is reported with the page's own sentence, in the error
+  // tone: it is a failure the operator has to act on, not a progress note.
   await scenario('sync-failed')
   await page.goto(base + '/settings/github')
   await waitForText(page, 'See the four Forge Apps')
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   await waitForText(page, 'Could not refresh access. Try again.')
+  const failure = page.locator('#notice')
+  assert.equal((await failure.innerText()).trim(), 'Could not refresh access. Try again.')
+  assert.equal(await failure.getAttribute('role'), 'alert')
+  assert.ok((await failure.getAttribute('class')).includes('text-rose-200'), await failure.getAttribute('class'))
+  assert.equal(await page.locator('#refresh-result').count(), 0)
 
   // While Forge is still being set up: the badges tell credentials from
   // registrations, each role offers exactly one action, and refresh goes to

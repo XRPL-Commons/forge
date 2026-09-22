@@ -159,8 +159,9 @@ async function enable() {
   try {
     const next = await api.act<RepositoriesView>('/api/repositories/enable', { repo_id: repoId.value, revision: current.revision })
     // The response is the new snapshot (contracts §2), so the page settles
-    // without waiting for the next poll.
-    if (Array.isArray(next?.repositories)) poll.data.value = next
+    // without waiting for the next poll; `replace` also discards the GET that
+    // may already be in flight and keeps the poll's signature in step.
+    if (Array.isArray(next?.repositories)) poll.replace(next)
     busy.value = false
     await nextTick()
     document.getElementById('status')?.focus()
@@ -201,7 +202,7 @@ async function refreshAccess() {
 
     <RepositoryStage class="mt-4" :stage="stage" :activation-available="live" />
 
-    <p v-if="error" id="error" role="status" class="mt-4 rounded-xl border border-rose-200/40 px-4 py-3 text-sm text-rose-200">{{ error }}</p>
+    <p v-if="error" id="error" role="alert" class="mt-4 rounded-xl border border-rose-200/40 px-4 py-3 text-sm text-rose-200">{{ error }}</p>
 
     <!-- Picker: no repository chosen yet. -->
     <section v-if="repoId === null" class="mt-4 rounded-xl border border-line bg-panel p-4">

@@ -116,7 +116,10 @@ async function refreshAccess() {
     await api.act(setup ? '/api/onboarding' : '/api/settings/sync', setup ? { action: 'refresh' } : {})
     await poll.refresh()
   } catch (error: unknown) {
-    finishRefresh(actionMessage(error, REFRESH_FAILED))
+    // A refused refresh is a failure, not a progress note: it belongs in the
+    // page's error notice, the same way repository setup reports it.
+    finishRefresh('')
+    say(actionMessage(error, REFRESH_FAILED), true)
   }
 }
 
@@ -173,7 +176,7 @@ async function disable(id: number) {
     <p
       v-if="notice"
       id="notice"
-      role="status"
+      :role="noticeError ? 'alert' : 'status'"
       class="mt-4 rounded-xl border px-4 py-3 text-sm"
       :class="noticeError ? 'border-rose-200/40 text-rose-200' : 'border-line bg-panel text-white'"
     >{{ notice }}</p>

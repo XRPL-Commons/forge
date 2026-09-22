@@ -123,14 +123,27 @@ export default async function (page, { base, scenario, requests }) {
 
   // A stale report is re-checked without operator action, exactly once per
   // observation.
+  // The previous page is parked first: switching the scenario under a live
+  // page would let that page observe the stale row as well, and this
+  // assertion is about one page's behaviour.
+  await page.goto('about:blank')
   await scenario('stale')
+  // Counted from the browser, not from the mock's shared request log, so the
+  // "exactly once" claim cannot be confused by anything else on the harness.
+  const autoChecks = []
+  const onRequest = (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/repositories/check') autoChecks.push(request.postDataJSON())
+  }
+  page.on('request', onRequest)
   await page.goto(base + '/settings/repository?repo_id=2')
   await waitForText(page, 'Check again to confirm the current GitHub settings before continuing.')
-  const auto = await waitForRequests(requests, posted('/api/repositories/check'))
-  assert.deepEqual(auto[0].body, { repo_id: 2, revision: 'settings-rev-1' })
+  for (const deadline = Date.now() + 10000; !autoChecks.length && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(autoChecks.length, 1, 'the page must check a stale report without operator action')
+  assert.deepEqual(autoChecks[0], { repo_id: 2, revision: 'settings-rev-1' })
   // A poll cycle later (this page polls every 3 s) it has not asked again.
   await page.waitForTimeout(3500)
-  assert.equal((await requests()).filter(posted('/api/repositories/check')).length, 1)
+  assert.equal(autoChecks.length, 1, 'the auto-check must fire once per observation')
+  page.off('request', onRequest)
 
   // On a phone-width viewport nothing scrolls sideways.
   await scenario('needs-setup')

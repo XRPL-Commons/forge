@@ -57,4 +57,42 @@ describe('usePoll', () => {
     expect(load).toHaveBeenCalledTimes(1)
     poll.stop()
   })
+
+  it('keeps a replaced value when a load that was already in flight resolves', async () => {
+    let settle: (value: { n: number }) => void = () => {}
+    const load = vi.fn(() => new Promise<{ n: number }>((resolve) => { settle = resolve }))
+    const poll = usePoll(load, { interval: 5000 })
+    poll.start(); await vi.advanceTimersByTimeAsync(0)
+    expect(load).toHaveBeenCalledTimes(1)
+    poll.replace({ n: 2 })
+    settle({ n: 1 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(poll.data.value).toEqual({ n: 2 })
+    // The superseded result is discarded, but polling carries on.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(load).toHaveBeenCalledTimes(2)
+    poll.stop()
+  })
+
+  it('does not announce a poll that matches the replaced value', async () => {
+    const onChange = vi.fn()
+    const load = vi.fn(async () => ({ n: 2 }))
+    const poll = usePoll(load, { onChange })
+    poll.replace({ n: 2 })
+    await poll.refresh()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(poll.data.value).toEqual({ n: 2 })
+  })
+
+  it('clears the failure state when a value is replaced', async () => {
+    let fail = false
+    const load = vi.fn(async () => { if (fail) throw new Error('down'); return { n: 1 } })
+    const poll = usePoll(load, { interval: 5000 })
+    await poll.refresh()
+    fail = true
+    await poll.refresh()
+    expect(poll.error.value).toBe('down'); expect(poll.stale.value).toBe(true)
+    poll.replace({ n: 9 })
+    expect(poll.data.value).toEqual({ n: 9 }); expect(poll.error.value).toBe(null); expect(poll.stale.value).toBe(false)
+  })
 })
