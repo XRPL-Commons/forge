@@ -1,0 +1,251 @@
+import { describe, it, expect } from 'vitest'
+import {
+  destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
+  metrics, phaseLabel, reasonText, toCard, warnings,
+} from '../../app/utils/factory'
+
+const now = 1_000_000
+
+// Fixture built from contracts §2 (observation.at = now - 10,
+// runtime.cycle_seconds = 30, slots {build:2, review:1, audit:1, recovery:1}).
+function issue(over: Record<string, unknown> = {}): any {
+  return {
+    key: '1:601', repo_id: 1, repo: 'XRPL-Commons/academy', number: 601,
+    title: 'Publish build logs without leaking install tokens',
+    state: 'ready', reason: null, requirements: null, candidate: null, active: null,
+    failures: [], budget_start: now - 5000, failure_count: 0, retry_plan: null,
+    evidence: {}, created_at: now - 5000, history: [], ...over,
+  }
+}
+
+function job(over: Record<string, unknown> = {}): any {
+  return {
+    id: '11111111-1111-4111-8111-111111111111', issue_key: '1:601', repo_id: 1,
+    repo: 'XRPL-Commons/academy', issue_number: 601, role: 'build', slot: 'build-1',
+    provider: 'claude', provider_id: null, model: 'claude-sonnet-4.5',
+    publisher: 'forge', branch: 'forge/601', target_branch: 'main',
+    runner_config: null, candidate: null, policy: null, requirements: null,
+    created_at: now - 200, deadline: now + 1600, phase: 'running', outcome: null,
+    cleanup: false, fenced: false, observed_at: now - 10, started_at: now - 180, ...over,
+  }
+}
+
+function view(over: Record<string, unknown> = {}): any {
+  return {
+    ok: true, controls_token: 'synthetic', active: true,
+    operator: { title: 'Building issue #601', detail: 'Publish build logs', action_url: null, action_label: null },
+    repositories: [
+      { id: 1, name: 'XRPL-Commons/academy', enabled: true },
+      { id: 2, name: 'XRPL-Commons/hackathon', enabled: true },
+    ],
+    observation: { at: now - 10, errors: [], capacity: null, issues: 0 },
+    actions: [], issues: [], jobs: [], slots: {},
+    runtime: { enabled: true, slots: { build: 2, review: 1, audit: 1, recovery: 1 }, cycle_seconds: 30 },
+    runtime_revision: 'rev', ...over,
+  }
+}
+
+describe('freshness helpers', () => {
+  it('derives maxAge, freshness, the active job and running state', () => {
+    expect(maxAge({ cycle_seconds: 30 })).toBe(120)
+    expect(maxAge({ cycle_seconds: 300 })).toBe(900)
+    expect(isFresh(view(), now)).toBe(true)
+    expect(isFresh(view({ observation: { at: now - 500, errors: [] } }), now)).toBe(false)
+    const running = job()
+    const v = view({ issues: [issue({ active: running.id })], jobs: [running] })
+    expect(jobFor(v, v.issues[0])!.id).toBe(running.id)
+    expect(isRunning(v, running, now)).toBe(true)
+  })
+})
+
+describe('phaseLabel', () => {
+  it('reports a running job as Working', () => {
+    const running = job()
+    const v = view({ issues: [issue({ active: running.id })], jobs: [running] })
+    expect(phaseLabel(v.issues[0], running, v, now)).toBe('Working')
+  })
+
+  it('reports a stale running job as Last seen working', () => {
+    const stale = job({ observed_at: now - 500, last_observed: now - 500 })
+    const v = view({ issues: [issue({ active: stale.id })], jobs: [stale] })
+    expect(phaseLabel(v.issues[0], stale, v, now)).toBe('Last seen working')
+  })
+
+  it('reports a capacity wait as Waiting for memory', () => {
+    const waiting = job({ capacity_wait_since: now - 30 })
+    const v = view({ issues: [issue({ active: waiting.id })], jobs: [waiting] })
+    expect(phaseLabel(v.issues[0], waiting, v, now)).toBe('Waiting for memory')
+  })
+
+  it('falls back to the issue state when there is no job', () => {
+    const v = view()
+    expect(phaseLabel(issue({ state: 'approval_needed' }), null, v, now)).toBe('Approval needed')
+    expect(phaseLabel(issue({ state: 'ready' }), null, v, now)).toBe('Queued')
+  })
+})
+
+describe('reasonText', () => {
+  const blocked = issue({ state: 'ready', reason: 'blocked_auth', history: [{ sequence: 1, at: now - 60, issue: '1:601', kind: 'availability_wait', provider: 'claude' }] })
+
+  it('names the coding account when the issue is waiting without a job', () => {
+    expect(reasonText(blocked, null)).toBe('Claude Code needs sign-in. Queued for another available coding account.')
+  })
+
+  it('stays empty once a job is running', () => {
+    expect(reasonText(blocked, job())).toBe('')
+    expect(reasonText(issue({ reason: 'blocked_rate_limit' }), job())).toBe('')
+  })
+})
+
+describe('groupIssues', () => {
+  const running = job()
+  const recovery = job({ id: '33333333-3333-4333-8333-333333333333', issue_key: '3:900', repo_id: 3, repo: 'XRPL-Commons/legacy-tools', issue_number: 900, role: 'recovery', slot: 'recovery-1', model: null })
+  const v = view({
+    issues: [
+      issue({ key: '1:601', number: 601, active: running.id }),
+      issue({ key: '1:602', number: 602, state: 'built' }),
+      issue({ key: '1:604', number: 604, state: 'failed', reason: 'Three attempts failed', failure_count: 3 }),
+      issue({ key: '2:605', number: 605, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'audited' }),
+      issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged' }),
+      issue({ key: '1:611', number: 611, state: 'ready' }),
+    ],
+    jobs: [running, recovery],
+  })
+  const groups = groupIssues(v, now)
+
+  it('places issues in one bucket each, in assignment order', () => {
+    expect(groups.columns.build.map(c => c.key)).toEqual(['1:601', '1:611'])
+    expect(groups.columns.review.map(c => c.key)).toEqual(['1:602'])
+    expect(groups.attention.map(c => c.key)).toEqual(['1:604'])
+    expect(groups.finishing.map(c => c.key)).toEqual(['2:605'])
+    expect(groups.completed.map(c => c.key)).toEqual(['2:606'])
+    const keys = [...groups.columns.build, ...groups.columns.review, ...groups.columns.audit,
+      ...groups.attention, ...groups.finishing, ...groups.investigating, ...groups.completed].map(c => c.key)
+    expect(keys.length).toBe(new Set(keys).size)
+  })
+
+  it('builds the card model of a working issue', () => {
+    const card = groups.columns.build[0]!
+    expect(card.id).toBe('issue-1-601')
+    expect(card.to).toBe('/issues/1%3A601')
+    expect(card.repo).toBe('XRPL-Commons/academy')
+    expect(card.number).toBe(601)
+    expect(card.phaseLabel).toBe('Working')
+    expect(card.providerLine).toBe('Claude Code · claude-sonnet-4.5')
+    expect(card.running).toBe(true)
+    expect(card.stoppable).toBe(true)
+    expect(card.jobId).toBe(running.id)
+    expect(card.footerLink).toBe(null)
+  })
+
+  it('adapts an internal job with no issue row through toCard', () => {
+    expect(groups.internalJobs.map(c => c.key)).toEqual(['3:900'])
+    const card = groups.internalJobs[0]!
+    expect(card).toEqual(toCard(recovery, v, now))
+    expect(card.number).toBe(null)
+    expect(card.title).toBe('3:900')
+    expect(card.to).toBe('/issues/3%3A900?job=' + recovery.id)
+    expect(card.jobId).toBe(recovery.id)
+    expect(card.stoppable).toBe(true)
+  })
+
+  it('emits at most one footer link per card', () => {
+    const held = groupIssues(view({ issues: [
+      issue({ key: '2:615', number: 615, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'ready', prerequisite_hold: { state: 'ready' } }),
+      issue({ key: '2:616', number: 616, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'failed', reason: 'Two attempts failed', failure_count: 2 }),
+      issue({ key: '1:617', number: 617, state: 'ready', reason: 'blocked_auth' }),
+    ] }), now)
+    expect(held.columns.build[0]!.footerLink).toEqual({ to: '/settings/repository?repo_id=2', label: 'Prepare repository →' })
+    expect(held.attention[0]!.footerLink).toEqual({ to: '', label: '2 / 3 attempts failed' })
+    expect(held.columns.build[1]!.footerLink).toEqual({ to: '/settings/harnesses', label: 'Coding accounts →' })
+  })
+})
+
+describe('metrics', () => {
+  const running = job()
+  const recovery = job({ id: 'rec-fresh', issue_key: '3:900', role: 'recovery', slot: 'recovery-1', model: null })
+  const staleRecovery = job({ id: 'rec-stale', issue_key: '3:901', role: 'recovery', slot: 'recovery-2', model: null, observed_at: now - 500, last_observed: now - 500 })
+  const v = view({
+    issues: [
+      issue({ key: '1:601', number: 601, active: running.id }),
+      issue({ key: '1:602', number: 602, state: 'built' }),
+      issue({ key: '1:604', number: 604, state: 'failed' }),
+      issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged' }),
+    ],
+    jobs: [running, recovery, staleRecovery],
+  })
+
+  it('returns seven tiles with counts, details and destinations', () => {
+    const tiles = metrics(v, now)
+    expect(tiles.map(t => t.id)).toEqual(['queued', 'build', 'review', 'audit', 'recovery', 'attention', 'merged'])
+    const byId = Object.fromEntries(tiles.map(t => [t.id, t]))
+    expect(byId.queued).toMatchObject({ label: 'Queued', value: 1, detail: 'Waiting for a worker', to: '#columns' })
+    expect(byId.build).toMatchObject({ label: 'Builders', value: 1, detail: '1 of 2 running', to: '#stage-build' })
+    expect(byId.review).toMatchObject({ label: 'Reviewers', value: 0, detail: '1 maximum', to: '#stage-review' })
+    expect(byId.audit).toMatchObject({ label: 'Auditors', value: 0, detail: '1 maximum', to: '#stage-audit' })
+    expect(byId.recovery).toMatchObject({ label: 'Investigations', value: 1, detail: '1 maximum', to: '#stage-recovery' })
+    expect(byId.attention).toMatchObject({ label: 'Needs attention', value: 1, detail: 'Awaiting a decision', to: '#needs-attention', tone: 'warn' })
+    expect(byId.merged).toMatchObject({ label: 'Merged', value: 1, detail: 'All tracked issues', to: '#completed' })
+  })
+
+  it('reports a paused dispatch on the queued tile', () => {
+    const paused = metrics(view({ ...v, runtime: { ...v.runtime, enabled: false } }), now)
+    expect(paused[0]).toMatchObject({ id: 'queued', detail: 'Dispatch paused', tone: 'muted' })
+  })
+})
+
+describe('warnings', () => {
+  const factory = (errors: any[], actions: any[] = []) => view({ observation: { at: now - 10, errors, capacity: null, issues: 0 }, actions })
+
+  it('maps each observation phase to its remediation destination', () => {
+    const errors = [
+      { issue: '1:824', phase: 'github', reason: 'GitHub observation or publication is unconfirmed' },
+      { phase: 'capacity', reason: 'Memory headroom is too low' },
+      { phase: 'runner', reason: 'The supervisor has not reported' },
+      { phase: 'reconciliation', reason: 'The ledger needs reconciling' },
+      { phase: 'sandbox', reason: 'Something else went wrong' },
+    ]
+    expect(warnings({ factory: factory(errors) }, now, '/')).toEqual([
+      { kind: 'github', text: 'GitHub observation or publication is unconfirmed', to: '/settings/github', label: 'Open GitHub access' },
+      { kind: 'capacity', text: 'Memory headroom is too low', to: '/settings', label: 'Open worker capacity' },
+      { kind: 'runner', text: 'The supervisor has not reported', to: '/setup-help#host-installation', label: 'Check service setup' },
+      { kind: 'reconciliation', text: 'The ledger needs reconciling', to: '/setup-help#configuration-and-recovery', label: 'Open help' },
+      { kind: 'other', text: 'Something else went wrong', to: '/setup-help', label: 'Open help' },
+    ])
+  })
+
+  it('never points a warning at the route it is displayed on', () => {
+    const out = warnings({ factory: factory([{ phase: 'capacity', reason: 'Memory headroom is too low' }]) }, now, '/settings')
+    expect(out[0]).toMatchObject({ to: '/settings#worker-capacity', label: 'Open worker capacity' })
+    expect(destination('other', '/setup-help')).toEqual({ to: '', label: '' })
+  })
+
+  it('dedupes identical reasons and surfaces rejected actions', () => {
+    const errors = [
+      { phase: 'github', reason: 'GitHub observation or publication is unconfirmed' },
+      { phase: 'github', reason: 'GitHub observation or publication is unconfirmed' },
+    ]
+    const actions = [
+      { id: 'r1', action: 'stop', target: 'job-1', reason: 'Stuck', status: 'rejected', error: 'Worker already stopped' },
+      { id: 'r2', action: 'stop', target: 'job-1', reason: 'Stuck', status: 'pending' },
+    ]
+    const out = warnings({ factory: factory(errors, actions) }, now, '/')
+    expect(out).toHaveLength(2)
+    expect(out[1]).toEqual({ kind: 'other', text: 'Action could not be applied: Worker already stopped', to: '/setup-help', label: 'Open help' })
+  })
+
+  it('surfaces a failed onboarding check as a runner warning', () => {
+    const out = warnings({ factory: null, onboarding: { error: 'Sandbox verification failed', checks: { runner: 'failed' } } as any }, now, '/')
+    expect(out).toEqual([{ kind: 'runner', text: 'Sandbox verification failed', to: '/settings/harnesses', label: 'Open coding accounts' }])
+  })
+})
+
+describe('elapsed', () => {
+  it('formats seconds, minutes and hours', () => {
+    expect(elapsed(0)).toBe('0 sec')
+    expect(elapsed(59)).toBe('59 sec')
+    expect(elapsed(60)).toBe('1 min')
+    expect(elapsed(3599)).toBe('59 min')
+    expect(elapsed(3660)).toBe('1h 1m')
+  })
+})
