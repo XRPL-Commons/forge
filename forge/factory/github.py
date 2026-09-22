@@ -367,11 +367,27 @@ class GitHub:
                 return False
         return True
 
+    MERGE_REFUSALS = {
+        405: 'branch rules still block it (approvals or checks required, and the Forge controller is not a bypass actor)',
+        409: 'the head moved since verification',
+        404: 'the controller cannot see the pull request',
+    }
+
     def merge(self, item):
         candidate_value = item['candidate']
         # The expected SHA makes a concurrent head push a refused merge.
-        value = self.call('controller', item, 'PUT', f"/pulls/{candidate_value['pr']}/merge",
-                          {'sha': candidate_value['head'], 'merge_method': self.runtime['merge_method']})
+        try:
+            value = self.call('controller', item, 'PUT', f"/pulls/{candidate_value['pr']}/merge",
+                              {'sha': candidate_value['head'], 'merge_method': self.runtime['merge_method']})
+        except GitHubUnavailable as error:
+            if error.status is None:
+                raise
+            # A refused merge is the one GitHub error an operator can act on, so
+            # it names the pull request and the likely rule instead of the
+            # generic observation message.
+            why = self.MERGE_REFUSALS.get(error.status, f'GitHub returned HTTP {error.status}')
+            raise GitHubUnavailable(f"GitHub refused to merge {item['repo']}#{candidate_value['pr']}: {why}",
+                                    status=error.status) from None
         return value.get('merged') is True
 
     def close_merged_issue(self, item, issue):
