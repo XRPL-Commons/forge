@@ -7,12 +7,17 @@
 import { formatAge } from './format'
 import { maxAge, type FactoryView, type OnboardingView } from './factory'
 
-export interface RoleAccess { status: 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions' | string }
-export interface SettingsView { roles?: Record<string, RoleAccess> }
+// Named `*Summary` (not `RoleAccess`/`SettingsView`) because those are the
+// contract-level names (operator-api-contracts.md §2's full `RoleAccess` and
+// `SettingsView` types) that another page will import in full; statusRows()
+// only ever reads `roles[*].status`, so it declares its own minimal local
+// shape rather than claim those names for itself.
+export interface RoleAccessSummary { status: 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions' | string }
+export interface SettingsSummary { roles?: Record<string, RoleAccessSummary> }
 
 export interface StatusSources {
   factory: FactoryView | null
-  settings: SettingsView | null
+  settings: SettingsSummary | null
   onboarding: OnboardingView | null
 }
 
@@ -80,7 +85,7 @@ function accountsRow(onboarding: OnboardingView | null): StatusRow {
   return { id: 'accounts', label: 'Accounts', value, tone, to: '/settings/harnesses', linkLabel: 'Coding accounts' }
 }
 
-function githubRow(settings: SettingsView | null): StatusRow {
+function githubRow(settings: SettingsSummary | null): StatusRow {
   if (!settings) return notAvailable('github', 'GitHub')
   const roles = Object.values(settings.roles ?? {})
   const total = roles.length || 4

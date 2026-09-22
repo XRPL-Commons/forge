@@ -31,8 +31,15 @@ function sameSlots(a: Slots, b: Slots) {
 // the operator is editing. Comparing draft to baseline (not directly to the
 // `runtime` prop) lets a successful save clear dirty immediately, without
 // waiting for the next poll to echo the same numbers back through props.
+// `revision` mirrors the same pattern: a save response's revision must win
+// immediately, so a second save fired right after the first — before the
+// next poll has had a chance to deliver the new `revision` prop — still
+// sends the current one instead of the stale one it loaded with (which the
+// server would reject with "Runtime settings changed; reload before
+// saving").
 const baseline = ref<Slots>(slotsOf(props.runtime))
 const draft = ref<Slots>(slotsOf(props.runtime))
+const revision = ref(props.revision)
 const saving = ref(false)
 const message = ref('')
 const error = ref('')
@@ -40,13 +47,15 @@ let messageTimer: ReturnType<typeof setTimeout> | undefined
 
 const dirty = computed(() => !sameSlots(draft.value, baseline.value))
 
-// The parent's poll only replaces `runtime` while this form is neither dirty
-// nor saving (see settings/index.vue's `allowed`), so it is always safe to
-// resync from it here whenever it moves and nothing is being edited.
-watch(() => [props.runtime?.slots?.build, props.runtime?.slots?.review, props.runtime?.slots?.audit], () => {
+// The parent's poll only replaces `runtime`/`revision` while this form is
+// neither dirty nor saving (see settings/index.vue's `allowed`), so it is
+// always safe to resync from them here whenever they move and nothing is
+// being edited.
+watch(() => [props.runtime?.slots?.build, props.runtime?.slots?.review, props.runtime?.slots?.audit, props.revision], () => {
   if (dirty.value) return
   baseline.value = slotsOf(props.runtime)
   draft.value = slotsOf(props.runtime)
+  revision.value = props.revision
 })
 
 defineExpose({ dirty, saving })
@@ -64,9 +73,10 @@ async function save() {
   error.value = ''
   try {
     const config = { ...props.runtime, slots: { ...props.runtime.slots, ...draft.value } }
-    const view = await api.act<FactoryView>('/api/runtime', { config, revision: props.revision })
+    const view = await api.act<FactoryView>('/api/runtime', { config, revision: revision.value })
     baseline.value = slotsOf(view.runtime)
     draft.value = slotsOf(view.runtime)
+    revision.value = view.runtime_revision
     flash('Worker limits saved. They apply as workers become available.')
     emit('saved', view)
   } catch (failure) {

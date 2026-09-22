@@ -1,21 +1,22 @@
 <script setup lang="ts">
+import CapacityForm from '~/components/CapacityForm.vue'
 import { summarizeActivity } from '~/utils/activity'
 import { warnings, type FactoryView, type OnboardingView } from '~/utils/factory'
-import { statusRows, type SettingsView } from '~/utils/status'
+import { statusRows, type SettingsSummary } from '~/utils/status'
 
-interface Payload { settings: SettingsView; onboarding: OnboardingView; factory: FactoryView }
+interface Payload { settings: SettingsSummary; onboarding: OnboardingView; factory: FactoryView }
 
 useHead({ title: 'Settings' })
 
 const api = useForgeApi()
 const route = useRoute()
 
-const capacityForm = ref<{ dirty: boolean; saving: boolean } | null>(null)
+const capacityForm = ref<InstanceType<typeof CapacityForm> | null>(null)
 
 // The poll only advances while nothing is being edited or saved, so a
 // mid-cycle refresh never overwrites the operator's unsaved numbers.
 const poll = usePoll<Payload>(() => Promise.all([
-  api.get<SettingsView>('/api/settings', { timeout: 30000 }),
+  api.get<SettingsSummary>('/api/settings', { timeout: 30000 }),
   api.get<OnboardingView>('/api/onboarding', { timeout: 30000 }),
   api.get<FactoryView>('/api/factory', { timeout: 30000 }),
 ]).then(([settings, onboarding, factory]) => ({ settings, onboarding, factory })), {
@@ -42,6 +43,15 @@ const activity = computed(() => summarizeActivity(factoryView.value, now.value))
 const continueSetup = computed(() => !!onboardingView.value && onboardingView.value.phase !== 'active')
 const locked = computed(() => onboardingView.value?.phase !== 'active')
 const LOCKED_REASON = 'Use guided setup until the factory has started'
+
+// A successful save already carries the fresh FactoryView; folding it
+// straight into the poll's payload updates the status rows and the
+// "· n working" suffix immediately, rather than waiting out the poll
+// interval (during which `allowed` was gating on this form anyway).
+function onSaved(view: FactoryView) {
+  if (!poll.data.value) return
+  poll.data.value = { ...poll.data.value, factory: view }
+}
 </script>
 
 <template>
@@ -80,6 +90,7 @@ const LOCKED_REASON = 'Use guided setup until the factory has started'
         :working="activity.working"
         :locked="locked"
         :locked-reason="LOCKED_REASON"
+        @saved="onSaved"
       />
       <p v-else class="mt-2 text-sm text-muted">Worker capacity is not available.</p>
     </section>

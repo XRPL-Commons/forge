@@ -73,6 +73,27 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(posted[0].body.config.image, 'forge/worker:2026.09')
   assert.equal(await builders.inputValue(), '3')
 
+  // A second save fired right after the first must use the revision from
+  // the first save's response (runtime.post.json's runtime_revision,
+  // 'runtime-rev-2'), not the one the page first loaded with — otherwise
+  // the server would reject it with "Runtime settings changed; reload
+  // before saving". The button going hidden is the save-succeeded signal:
+  // on a rejected save it would stay visible (still dirty) and this step
+  // would time out instead of silently passing.
+  const reviewers = page.locator('#capacity-review')
+  await reviewers.fill('2')
+  const saveAgain = page.getByRole('button', { name: 'Save worker limits' })
+  await saveAgain.click()
+  await saveAgain.waitFor({ state: 'hidden', timeout: 10000 })
+  await waitForText(page, 'Worker limits saved. They apply as workers become available.')
+  assert.equal(await occurrences(page, 'reload before saving'), 0)
+
+  const postedTwice = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/runtime')
+  assert.equal(postedTwice.length, 2)
+  assert.equal(postedTwice[1].body.revision, 'runtime-rev-2')
+  assert.equal(postedTwice[1].body.config.slots.build, 3)
+  assert.equal(postedTwice[1].body.config.slots.review, 2)
+
   // A setup phase short of 'active' locks the inputs and names the guard.
   await scenario('guided-setup')
   await page.reload()
