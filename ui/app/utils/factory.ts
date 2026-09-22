@@ -44,7 +44,27 @@ export interface FactoryView {
   runtime: { enabled: boolean; slots: Record<string, number>; cycle_seconds: number; [key: string]: unknown }
 }
 
-export interface OnboardingView { error?: string | null; checks?: Record<string, string> }
+export interface HarnessModel {
+  id: string; model: string | null
+  status: 'connected' | 'passed' | 'failed' | 'unknown' | 'sign in again' | 'usage limit; retry pending' | 'verification required'
+}
+export interface Harness {
+  id: string; name: string; version: string; connected: boolean
+  models: HarnessModel[]; login_command: string; check_command: string
+}
+
+// warnings() (Task 6) only reads error/checks; statusRows() (Task 8) also
+// reads phase/harnesses/qualification_fresh/service from the same payload —
+// one canonical shape for both, kept optional so either caller works from a
+// partial fixture.
+export interface OnboardingView {
+  error?: string | null
+  checks?: Record<string, string>
+  phase?: string
+  harnesses?: Harness[]
+  qualification_fresh?: boolean
+  service?: { last_seen: number; available: boolean }
+}
 
 export interface CardModel {
   key: string
