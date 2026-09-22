@@ -48,9 +48,11 @@ const LOCKED_REASON = 'Use guided setup until the factory has started'
 // straight into the poll's payload updates the status rows and the
 // "· n working" suffix immediately, rather than waiting out the poll
 // interval (during which `allowed` was gating on this form anyway).
+// Routed through poll.replace so an in-flight poll from before the save
+// can't clobber it and the change signature stays in sync.
 function onSaved(view: FactoryView) {
   if (!poll.data.value) return
-  poll.data.value = { ...poll.data.value, factory: view }
+  poll.replace({ ...poll.data.value, factory: view })
 }
 </script>
 

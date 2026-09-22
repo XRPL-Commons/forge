@@ -53,7 +53,7 @@ const poll = usePoll<Loaded>(load, {
 const mounted = ref(false)
 onMounted(() => {
   mounted.value = true
-  if (!poll.data.value && initial.value) poll.data.value = initial.value
+  if (!poll.data.value && initial.value) poll.replace(initial.value)
   poll.start()
 })
 
