@@ -1,7 +1,9 @@
 export const MAX_ACTION_BODY = 262144
 export const MAX_RESPONSE_BODY = 1024 * 1024
 export const UPSTREAM_TIMEOUT_MS = 30000
-const PASS_RESPONSE = ['content-type', 'set-cookie', 'location', 'cache-control']
+// `content-disposition` carries the ruleset download's filename
+// (`forge-review-rules-<id>.json`, contracts §2); dropping it renames the file.
+const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'location', 'cache-control']
 
 type Headers = Record<string, string | undefined>
 export interface GuardInput { method: string; headers: Headers; contentLength: number }

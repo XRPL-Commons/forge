@@ -54,12 +54,16 @@ describe('responseHeaders', () => {
     headers.append('set-cookie', 'a=1')
     headers.append('set-cookie', 'b=2')
     headers.set('content-type', 'application/json')
+    // The generated ruleset is a download: without this header the browser
+    // names the file after the route instead of forge-review-rules-<id>.json.
+    headers.set('content-disposition', 'attachment; filename="forge-review-rules-2.json"')
     headers.set('location', '/next')
     headers.set('cache-control', 'no-store')
     headers.set('x-secret', 'nope')
     const out = responseHeaders(headers)
     expect(out).toEqual([
       ['cache-control', 'no-store'],
+      ['content-disposition', 'attachment; filename="forge-review-rules-2.json"'],
       ['content-type', 'application/json'],
       ['location', '/next'],
       ['set-cookie', 'a=1'],

@@ -59,6 +59,11 @@ issue and a merged issue.
   rows.
 - `repositories.repo_id.json` — `GET /api/repositories?repo_id=2`, the
   single-row view for the not-yet-enabled hackathon repo, ready to enable.
+- `repositories-ruleset.json` — `GET /api/repositories/ruleset?repo_id=&revision=`,
+  the generated "Forge review baseline" ruleset from contracts §2. The mock
+  serves it with `Content-Disposition: attachment; filename="forge-review-rules-<repo_id>.json"`,
+  so the repository-setup spec can assert the download's filename end to end
+  (Task 9).
 - `runtime.post.json` — `POST /api/runtime` override: `factory.json` with
   `ok:true` and `runtime.slots.build` raised to `3`, so a runtime-slot save
   returns the full `FactoryView` the page needs instead of a bare `{ok:true}`
@@ -90,6 +95,47 @@ issue and a merged issue.
   when new commits are pushed."). No `edit_url` (no existing Forge ruleset),
   `rules_url` set. Exercises the "download ruleset / import on GitHub" steps
   on Settings · Repository setup.
+
+## needs-apps/
+
+- `settings.json`, `onboarding.json` — a factory still being set up, with one
+  App per connection state: `build` has stored credentials and a canonical
+  installation URL ("Manage access ↗"), `review` is registered on GitHub but
+  absent from `factory.json` ("Installation unverified" + "Install App ↗"),
+  `audit` has credentials but missing permissions, `controller` was never
+  connected ("Connect in setup →"). `sync:{"status":"never"}`, onboarding
+  phase `setup`. Exercises every badge and action link on Settings · GitHub
+  access, and its refresh going to `POST /api/onboarding {action:'refresh'}`
+  instead of `POST /api/settings/sync` (Task 9).
+
+## refreshed/
+
+- `settings.json` — `default/settings.json` with
+  `sync:{"status":"complete","finished_at":1790000600}`, a newer timestamp
+  than the default. Switching to it after an access refresh is what the page
+  observes as "Access refreshed." (Task 9).
+
+## interrupted/
+
+- `settings.json` — `default/settings.json` with
+  `sync:{"status":"interrupted","started_at":1790000600}`: the access refresh
+  the supervisor gave up on ("The access check did not finish. Refresh access
+  to try again." plus the status line's " · Refresh interrupted; the previous
+  data is shown.", Task 9).
+
+## sync-failed/
+
+- `settings-sync.post.json` — `POST /api/settings/sync` refused with a bare
+  `{"ok": false}` (no reason), so the page falls back to its own sentence
+  "Could not refresh access. Try again." (Task 9).
+
+## stale/
+
+- `repositories.repo_id.json` — `default/repositories.repo_id.json` with
+  `protection_status:"stale"`, `protection_ready:false`: a report older than
+  the access max age. Exercises Settings · Repository setup's automatic
+  re-check, which must fire exactly once per
+  `revision:protection_status:observed_at` observation (Task 9).
 
 ## setup/
 
