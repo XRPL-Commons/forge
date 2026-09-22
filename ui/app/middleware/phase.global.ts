@@ -1,0 +1,56 @@
+import type { OnboardingView } from '~/utils/onboarding'
+
+// Route redirects mirroring the Python 303s (contracts §2, "Pages/assets
+// served"): an operator who is mid-setup, or mid-reset, is always sent back
+// to the one page that can move them forward.
+const SETUP_PAGES = ['/onboarding', '/reset', '/setup-help']
+// Contracts §1, GET guard 2. /api/onboarding is exempt from the fence, but
+// letting the reason surface as a page error would be a dead end anyway.
+const RESET_FENCE = 'Factory reset is in progress'
+
+type Payload = OnboardingView | { ok: false; reason: string }
+
+export default defineNuxtRouteMiddleware(async (to) => {
+  if (SETUP_PAGES.includes(to.path)) return
+  // useRequestFetch so the SSR call carries the browser's Host and Cookie
+  // through the proxy to Python.
+  const request = useRequestFetch()
+
+  let payload: Payload
+  try {
+    payload = await request<Payload>('/api/onboarding', { headers: { accept: 'application/json' } })
+  } catch {
+    // Setup state is unreachable: the page renders its own connection error
+    // rather than being bounced somewhere that cannot load either.
+    return
+  }
+
+  const onboarding = () => navigateTo('/onboarding', { redirectCode: 303 })
+
+  if (!payload || payload.ok === false) {
+    return payload?.reason === RESET_FENCE ? onboarding() : undefined
+  }
+  if (payload.phase === 'resetting') return onboarding()
+
+  // Contracts §2 and legacy/forge-status.py:637 — `/` belongs to the started
+  // factory, so every phase short of `active` (legacy included: the pre-v2
+  // dashboard is a non-goal for this UI) is sent back to guided setup.
+  if (to.path === '/' && payload.phase !== 'active') return onboarding()
+
+  // forge-status.py:681 keys the /settings 303 on `state/factory-v2.enabled`,
+  // which GET /api/factory reports as `active` — not on the setup phase. A
+  // factory can already be running while a *new* guided setup is under way,
+  // and Settings then renders with its capacity form locked ("Use guided
+  // setup until the factory has started"). Only that case needs the second
+  // read, so an activated setup never pays for it.
+  if (to.path === '/settings' || to.path === '/settings/advanced') {
+    if (payload.phase === 'active') return
+    let factory: { ok?: boolean; active?: boolean }
+    try {
+      factory = await request<{ ok?: boolean; active?: boolean }>('/api/factory', { headers: { accept: 'application/json' } })
+    } catch {
+      return
+    }
+    if (factory?.ok === false || factory?.active !== true) return onboarding()
+  }
+})

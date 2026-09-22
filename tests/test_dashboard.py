@@ -283,14 +283,6 @@ class SlotActionHttpTests(unittest.TestCase):
         handler.do_GET()
         handler.send_error.assert_called_once_with(403);handler._send.assert_not_called()
 
-class DashboardBundleVersionTests(unittest.TestCase):
-    def test_served_page_and_status_use_same_immutable_bundle_version(self):
-        import hashlib
-        self.assertEqual(dashboard.PAGE_VERSION,hashlib.sha256(dashboard.PAGE_TEMPLATE.encode()).hexdigest())
-        self.assertIn('name="forge-dashboard-version" content="'+dashboard.PAGE_VERSION+'"',dashboard.PAGE)
-        self.assertNotIn('__FORGE_DASHBOARD_VERSION__',dashboard.PAGE)
-
-
 class ExecutionQuarantineViewTests(unittest.TestCase):
     def row(self):
         return {'id':'checkpoint','repo':'o/one','session':'one-build','role':'build','assignment_id':'assignment',

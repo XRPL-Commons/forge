@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "phase": "setup",
+  "generation": "gen-0",
+  "revision": "rev-0",
+  "account_type": null,
+  "reset_receipt": null,
+  "roles": {
+    "build": { "status": "not_configured", "registered": false, "app_id": null, "install_url": null },
+    "review": { "status": "not_configured", "registered": false, "app_id": null, "install_url": null },
+    "audit": { "status": "not_configured", "registered": false, "app_id": null, "install_url": null },
+    "controller": { "status": "not_configured", "registered": false, "app_id": null, "install_url": null }
+  },
+  "repositories": [],
+  "selected": null,
+  "owner": "",
+  "provider_connected": false,
+  "checks": {},
+  "harnesses": [
+    {
+      "id": "codex",
+      "name": "Codex",
+      "version": "1.4.0",
+      "connected": false,
+      "models": [],
+      "login_command": "/opt/forge/bin/forge setup login codex --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    }
+  ],
+  "activity": null,
+  "repository_check": null,
+  "repository_setup": null,
+  "qualification_fresh": false,
+  "service": { "last_seen": 1790000000, "available": true },
+  "can_start": false,
+  "operation": null,
+  "error": null
+}

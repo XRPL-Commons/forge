@@ -4,7 +4,7 @@
 Writes require a same-origin JSON request and a per-process capability token.
 The HTTP server queues intent; only the locked supervisor controls workers.
 """
-import json, re, subprocess, time, html, os, sqlite3, secrets, hmac, hashlib, threading, ipaddress
+import json, re, subprocess, time, html, os, sqlite3, secrets, hmac, threading, ipaddress
 from pathlib import Path
 from forge.config import load_repositories
 from forge.activity import observe_tmux
@@ -407,7 +407,6 @@ def status():
     out['workflow'] = dashboard_workflow(workflow,out['repos'],out['issue_flow'])
     out['execution_quarantines'] = execution_quarantine_view(Path(WD)/'state',out['session_blockers'])
     out['slots'] = slot_inventory()
-    out['dashboard_version'] = PAGE_VERSION
     out['controls_token'] = CONTROLS_TOKEN
     try:
         from forge.slot_actions import read_actions
@@ -443,16 +442,6 @@ def repository_detail(repo):
     return result
 
 
-# Stamp exactly the immutable HTML/JS bundle this process serves. Never hash a
-# newer file from status() while still serving an older in-memory PAGE.
-PAGE_TEMPLATE = Path(__file__).with_name("dashboard.html").read_text()
-PAGE_VERSION = hashlib.sha256(PAGE_TEMPLATE.encode()).hexdigest()
-PAGE = PAGE_TEMPLATE.replace("__FORGE_DASHBOARD_VERSION__", PAGE_VERSION)
-SETTINGS_PAGE = Path(__file__).with_name('settings.html').read_text()
-FACTORY_PAGE = Path(__file__).with_name('factory.html').read_text()
-ONBOARDING_PAGE = Path(__file__).with_name('onboarding.html').read_text()
-
-
 def settings_service():
     from forge.settings import Settings
     from forge.onboarding import Onboarding
@@ -464,9 +453,6 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _send(self, body, ctype="application/json", headers=None):
-        if ctype.startswith("text/html"):
-            from forge.navigation import render
-            body = render(body, urlparse(self.path).path)
         data = body.encode()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -609,10 +595,6 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path.startswith('/api/') and u.path!='/api/onboarding' and (Path(WD)/'state/factory-paused.json').exists():
             self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
-        if u.path == '/favicon.svg':
-            from forge.navigation import FAVICON
-            self._send(FAVICON, 'image/svg+xml')
-            return
         if u.path == '/onboarding/github/callback':
             from forge.onboarding import Onboarding
             try:
@@ -624,26 +606,12 @@ class H(BaseHTTPRequestHandler):
             except (ValueError,OSError,RuntimeError):
                 self._redirect('/onboarding?connection_error=1')
             return
-        if u.path in ('/onboarding','/reset','/settings/harnesses'):
-            cookie=self._browser() or secrets.token_urlsafe(32)
-            self._send(ONBOARDING_PAGE,'text/html; charset=utf-8',
-                       {'Set-Cookie':'forge_setup='+cookie+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600'})
-        elif u.path == '/api/onboarding':
+        if u.path == '/api/onboarding':
             from forge.onboarding import Onboarding
             try:
                 self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':CONTROLS_TOKEN}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Setup state is unavailable; inspect the supervisor service'}))
-        elif u.path == "/" and not (Path(WD)/'state/factory-v2.enabled').exists() and ((Path(WD)/'state/factory-onboarding.enabled').exists() or not any((Path(WD)/'repos.d').glob('*.repo'))):
-            self._redirect('/onboarding')
-        elif u.path == "/":
-            self._send(FACTORY_PAGE if (Path(WD)/"state"/"factory-v2.enabled").exists() else PAGE, "text/html; charset=utf-8")
-        elif u.path == '/issues':
-            self._send((Path(__file__).parent/'issues.html').read_text(), 'text/html; charset=utf-8')
-        elif u.path in ('/assets/vendor/marked.umd.js', '/assets/vendor/purify.min.js', '/assets/markdown.js'):
-            self._send((Path(__file__).parent / u.path.removeprefix('/assets/')).read_text(), 'application/javascript; charset=utf-8')
-        elif u.path == '/assets/issues.js':
-            self._send((Path(__file__).parent/'issues.js').read_text(), 'text/javascript; charset=utf-8')
         elif u.path == '/api/issues':
             from forge.factory.issues import IssueInventory
             try:
@@ -658,8 +626,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
-        elif u.path == '/factory':
-            self._send(FACTORY_PAGE, 'text/html; charset=utf-8')
         elif u.path == '/api/factory':
             try:
                 if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
@@ -678,14 +644,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,'logs':(job.get('capture') or job.get('observation') or {}).get('logs','')}))
             except (ValueError,KeyError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Execution output unavailable'}))
-        elif u.path == '/settings' and not (Path(WD)/'state/factory-v2.enabled').exists():
-            self._redirect('/onboarding')
-        elif u.path in ('/settings','/settings/advanced','/settings/github'):
-            self._send(SETTINGS_PAGE, 'text/html; charset=utf-8')
-        elif u.path == '/assets/repository-setup.js':
-            self._send((Path(__file__).parent/'repository-setup.js').read_text(), 'text/javascript; charset=utf-8')
-        elif u.path == '/settings/repository':
-            self._send((Path(__file__).parent/'repository-setup.html').read_text(), 'text/html; charset=utf-8')
         elif u.path in ('/api/repositories','/api/repositories/ruleset'):
             from forge.repository_setup import RepositorySetup
             try:
@@ -709,11 +667,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps(result))
             except (OSError,ValueError,TypeError,KeyError):
                 self._send(json.dumps({'ok':False,'reason':'Settings unavailable. Validate factory.json on the server.'}))
-        elif u.path == '/setup-help':
-            guide=(Path(WD)/'docs/onboarding.md')
-            if not guide.is_file():guide=Path(__file__).resolve().parents[1]/'docs/onboarding.md'
-            from forge.setup_help import render
-            self._send(render(guide.read_text()), 'text/html; charset=utf-8')
         elif u.path == "/api/status":
             self._send(json.dumps(cached("status", 10, status)))
         elif u.path == "/api/workflow":

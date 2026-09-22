@@ -1,0 +1,68 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "issue": {
+    "number": 610,
+    "title": "Make course navigation easier",
+    "content_hash": "sha256:16100610",
+    "body_truncated": false,
+    "state": "open",
+    "updated_at": "2026-09-20T12:00:00Z",
+    "labels": [
+      "ready"
+    ],
+    "assignees": [],
+    "key": "1:610",
+    "repo": "XRPL-Commons/academy",
+    "repo_id": 1,
+    "status": "working",
+    "explanation": "Building",
+    "actions": [],
+    "setup_needed": false,
+    "environment_blocker": null,
+    "pull_requests": [],
+    "dependencies": [],
+    "fresh": true,
+    "revision": "current",
+    "setup_url": "/settings/repository?repo_id=1",
+    "active": "attempt",
+    "body": "# Course navigation update\n\nRework the sidebar so nested lessons are easier to scan.\n\n- Simplify breadcrumb depth\n- Highlight the active module\n- See [the navigation spec](docs/x.md) for details\n\n<script>window.injected=1</script>\n\n- [x] Confirm mobile layout matches design\n",
+    "history": [
+      {
+        "at": 1789995000,
+        "kind": "discovered",
+        "reason": null
+      },
+      {
+        "at": 1789995200,
+        "kind": "assigned",
+        "reason": null
+      },
+      {
+        "at": 1789995400,
+        "kind": "operator_queue",
+        "reason": "Queued for Forge"
+      }
+    ],
+    "reviews": []
+  },
+  "repositories": [
+    {
+      "id": 1,
+      "name": "XRPL-Commons/academy",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    },
+    {
+      "id": 2,
+      "name": "XRPL-Commons/hackathon",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    }
+  ],
+  "actions": []
+}

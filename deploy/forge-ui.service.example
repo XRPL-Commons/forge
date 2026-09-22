@@ -1,0 +1,17 @@
+[Unit]
+Description=forge-ui — tailnet-only operator UI (Nuxt/Nitro front door)
+After=network-online.target forge-status.service
+Wants=forge-status.service
+[Service]
+Type=simple
+WorkingDirectory=%h/ops/forge-watchdog/ui
+ExecStart=/usr/bin/node %h/ops/forge-watchdog/ui/.output/server/index.mjs
+Environment=NODE_ENV=production
+Environment=HOST=100.111.151.38
+Environment=PORT=8787
+Environment=NITRO_FORGE_API=http://127.0.0.1:8788
+Environment=NITRO_HELP_DOC=%h/ops/forge-watchdog/docs/onboarding.md
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target

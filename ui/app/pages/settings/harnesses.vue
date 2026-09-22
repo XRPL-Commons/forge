@@ -1,0 +1,73 @@
+<script setup lang="ts">
+import type { Harness, OnboardingView } from '~/utils/onboarding'
+
+// Settings · Coding accounts (contracts §3.7). Sign-in happens in a terminal
+// on the Forge VM; this page shows what each harness reports and hands over
+// the two commands.
+useHead({ title: 'Coding accounts' })
+
+const api = useForgeApi()
+const state = ref<OnboardingView | null>(null)
+const selected = ref<Harness | null>(null)
+const open = ref(false)
+
+async function load() {
+  state.value = await api.get<OnboardingView>('/api/onboarding', { timeout: 30000 })
+  return state.value
+}
+
+// Contracts §4: the onboarding poll is 3 s. The e2e harness lowers the
+// shared knob to make poll-driven assertions fast; never poll slower than
+// the contract's 3 s.
+const interval = Math.min(3000, useRuntimeConfig().public.pollInterval)
+// A poll never lands while the dialog is open, so it cannot reset a copy
+// button under the operator's hands.
+const poll = usePoll(load, { interval, allowed: () => !open.value })
+
+onMounted(async () => {
+  // The cookie POST /api/onboarding {action:'github'} needs (contracts §1):
+  // a no-op when the server middleware already set one, and the only thing
+  // that sets it after a client-side route change into this page.
+  await $fetch('/_ui/setup-cookie').catch(() => {})
+  poll.start()
+})
+
+const harnesses = computed(() => state.value?.harnesses ?? [])
+// §3.7: the error notice belongs to the page, and only to these two checks.
+const notice = computed(() => {
+  const checks = state.value?.checks ?? {}
+  return checks.provider === 'failed' || checks.runner === 'failed' ? state.value?.error ?? '' : ''
+})
+
+function openDialog(harness: Harness) {
+  selected.value = harness
+  open.value = true
+}
+</script>
+
+<template>
+  <div class="mx-auto max-w-[780px]">
+    <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">Settings</p>
+    <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Coding accounts</h1>
+    <p class="mt-2 text-muted">Manage sign-in from the Forge VM terminal.</p>
+
+    <UAlert v-if="notice" class="mt-5" color="warning" variant="subtle" :description="notice" />
+
+    <p v-if="!state" class="mt-6 text-muted">{{ poll.error.value || 'Loading setup…' }}</p>
+
+    <template v-else>
+      <div class="mt-6 overflow-hidden rounded-xl border border-line bg-panel">
+        <HarnessCard
+          v-for="harness in harnesses"
+          :key="harness.id"
+          :harness="harness"
+          :activity="state.activity"
+          @open="openDialog"
+        />
+      </div>
+      <p class="mt-4 text-[13px] text-muted">Connected harnesses and models take turns across all roles. If one is unavailable, Forge uses another.</p>
+    </template>
+
+    <HarnessDialog :harness="selected" :open="open" @close="open = false" />
+  </div>
+</template>

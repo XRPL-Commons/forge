@@ -1,0 +1,40 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "phase": "resetting",
+  "generation": "g2",
+  "revision": "",
+  "roles": {
+    "build": {
+      "status": "not_configured",
+      "registered": false
+    },
+    "review": {
+      "status": "not_configured",
+      "registered": false
+    },
+    "audit": {
+      "status": "not_configured",
+      "registered": false
+    },
+    "controller": {
+      "status": "not_configured",
+      "registered": false
+    }
+  },
+  "repositories": [],
+  "selected": null,
+  "owner": "",
+  "provider_connected": false,
+  "checks": {},
+  "can_start": false,
+  "operation": {
+    "id": "op",
+    "action": "reset",
+    "generation": "g2",
+    "revision": null,
+    "step": "stop_workers",
+    "at": 1790000000
+  },
+  "error": null
+}

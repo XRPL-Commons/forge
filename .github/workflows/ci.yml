@@ -4,11 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      browser:
-        description: Run the optional Chromium dashboard checks
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -55,19 +50,22 @@ jobs:
       - name: Observer regression tests
         run: python3 -m unittest discover -s observer/tests -v
 
-  browser:
-    if: github.event_name == 'workflow_dispatch' && inputs.browser
+  ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    defaults: { run: { working-directory: ui } }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the pinned browser test dependency
-        run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
-      - name: Install Chromium and its system dependencies
-        run: node node_modules/playwright-core/cli.js install --with-deps chromium
-      - name: Dashboard regression tests
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24, cache: npm, cache-dependency-path: ui/package-lock.json }
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npx playwright-core install chromium --with-deps
+      - run: npm run test:e2e
         env:
-          FORGE_PLAYWRIGHT_MODULE: playwright-core
-        run: npm run test:browser
+          # GitHub's Ubuntu runners restrict unprivileged user namespaces; the runner VM is the sandbox.
+          FORGE_CHROMIUM_SANDBOX: '0'

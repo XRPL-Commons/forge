@@ -1,0 +1,80 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "phase": "setup",
+  "generation": "gen-1",
+  "revision": "rev-0",
+  "account_type": "organization",
+  "reset_receipt": null,
+  "roles": {
+    "build": {
+      "status": "ok",
+      "registered": true,
+      "app_id": 1,
+      "install_url": null
+    },
+    "review": {
+      "status": "ok",
+      "registered": true,
+      "app_id": 2,
+      "install_url": null
+    },
+    "audit": {
+      "status": "not_configured",
+      "registered": true,
+      "app_id": 3,
+      "install_url": "https://github.com/organizations/example/settings/apps/new?state=audit-token"
+    },
+    "controller": {
+      "status": "not_configured",
+      "registered": false,
+      "app_id": null,
+      "install_url": null
+    }
+  },
+  "repositories": [],
+  "selected": null,
+  "owner": "example",
+  "provider_connected": false,
+  "checks": {},
+  "harnesses": [
+    {
+      "id": "codex",
+      "name": "Codex",
+      "version": "1.4.0",
+      "connected": false,
+      "models": [],
+      "login_command": "/opt/forge/bin/forge setup login codex --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    },
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "version": "2.1.0",
+      "connected": false,
+      "models": [],
+      "login_command": "/opt/forge/bin/forge setup login claude --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "version": "0.9.0",
+      "connected": false,
+      "models": [],
+      "login_command": "/opt/forge/bin/forge setup login grok --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    }
+  ],
+  "activity": null,
+  "repository_check": null,
+  "repository_setup": null,
+  "qualification_fresh": false,
+  "service": {
+    "last_seen": 1790000000,
+    "available": true
+  },
+  "can_start": false,
+  "operation": null,
+  "error": null
+}

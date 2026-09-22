@@ -24,9 +24,10 @@ Audit evidence is a comment or review containing an explicit Criticality: NORMAL
 
 ## Dashboard deployment
 
-Install `legacy/forge-status.py` and `legacy/dashboard.html` together in
-`~/ops/forge-watchdog/`, and `forge/observability.py` in its `forge/`
-package. Install the two deployment units in the user systemd unit directory.
+Install `legacy/forge-status.py` — which serves the JSON API the operator UI
+reads — in `~/ops/forge-watchdog/`, and `forge/observability.py` in its
+`forge/` package. The UI itself is the `forge-ui` service; see
+[`docs/ui-deployment.md`](ui-deployment.md). Install the two deployment units in the user systemd unit directory.
 The supplied service uses `~/ops/forge-watchdog/state`, matching the live
 dashboard. Reload user units and restart `forge-status`; enable/start
 `forge-observability.timer` to collect every ten minutes after each run completes.

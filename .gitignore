@@ -32,3 +32,12 @@ credentials/
 archives/
 setup/
 runner-seccomp.json
+
+# The Task 5 e2e mock-API fixtures deliberately reuse filenames excluded
+# above (factory.json, setup/) because those are also real field names in
+# the live Forge API this UI proxies to; the fixture naming rule requires
+# matching them exactly. These are synthetic, checked-in test data (no
+# secrets), not the live/private state those rules exist to keep out.
+!/ui/tests/e2e/fixtures/**/factory.json
+!/ui/tests/e2e/fixtures/setup/
+!/ui/tests/e2e/fixtures/setup/**

@@ -3,9 +3,11 @@
 Production pages, rendered with synthetic GitHub/service responses in Chrome on
 2026-09-16. These screenshots document interface checks, not a live deployment
 or a completed GitHub pilot. Current main's Settings navigation and mobile
-layout at `101d66e` are integrated. Run `npm run test:browser` with Playwright Core and
-`FORGE_BROWSER_PATH` pointing to a Chrome executable. Tests use temporary browser
-profiles with Chromium sandboxing enabled. The repository-flow test serves the
+layout at `101d66e` are integrated. These pages are now served by the operator
+UI (`forge-ui`, see [`docs/ui-deployment.md`](../ui-deployment.md)); its
+equivalent checks are `cd ui && npm run test:e2e`, with `FORGE_BROWSER_PATH`
+pointing to a Chrome executable. Tests use temporary browser profiles with
+Chromium sandboxing enabled. The repository-flow test serves the
 real generated ruleset JSON from a temporary loopback HTTP server and checks the
 downloaded bytes and filename.
 

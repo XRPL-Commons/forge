@@ -89,6 +89,10 @@ forward the port with `ssh -L 8787:127.0.0.1:8787 <service-account>@<vm>`.
 The UI has no per-user authentication: bind only to loopback or your trusted
 tailnet (`--bind <tailnet-address>`).
 
+Port 8787 is served by the Nuxt/Nitro operator UI (`ui/`), which proxies the
+Python status API on loopback. To build and switch over that front door on
+an existing host, see [the UI deployment runbook](ui-deployment.md).
+
 ## Resume or reconnect
 
 The default private runtime is `~/.local/share/forge`. Use `--root` consistently
