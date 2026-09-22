@@ -17,6 +17,10 @@ describe('guardAction', () => {
   it('accepts a same-origin JSON action with the header', () => expect(guardAction(base)).toEqual({ ok: true }))
   it('lets GET through untouched', () => expect(guardAction({ ...base, method: 'GET', headers: {} })).toEqual({ ok: true }))
   it('rejects a foreign origin', () => expect(guardAction({ ...base, headers: { ...base.headers, origin: 'http://evil:8787' } })).toMatchObject({ ok: false, status: 403 }))
+  it('accepts a POST without fetch metadata (plain-http origins never send Sec-Fetch-*)', () => {
+    const { 'sec-fetch-site': _omit, ...headers } = base.headers
+    expect(guardAction({ ...base, headers })).toEqual({ ok: true })
+  })
   it('rejects cross-site fetch metadata', () => expect(guardAction({ ...base, headers: { ...base.headers, 'sec-fetch-site': 'cross-site' } })).toMatchObject({ ok: false, status: 403 }))
   it('rejects a missing action header', () => expect(guardAction({ ...base, headers: { ...base.headers, 'x-forge-action': '' } })).toMatchObject({ ok: false, status: 403 }))
   it('rejects non-JSON bodies', () => expect(guardAction({ ...base, headers: { ...base.headers, 'content-type': 'text/plain' } })).toMatchObject({ ok: false, status: 415 }))

@@ -66,7 +66,10 @@ export function guardAction({ method, headers, contentLength }: GuardInput): Gua
   if (method !== 'POST') return { ok: true }
   const host = headers.host ?? ''
   if (!host || headers.origin !== 'http://' + host) return { ok: false, status: 403, reason: 'Cross-origin action rejected' }
-  if (headers['sec-fetch-site'] !== 'same-origin') return { ok: false, status: 403, reason: 'Cross-site action rejected' }
+  // Browsers only send Sec-Fetch-* to trustworthy origins (https, localhost); the UI runs over plain
+  // http on the tailnet, so an absent header is accepted and only an explicit non-same-origin value rejected.
+  const site = headers['sec-fetch-site']
+  if (site !== undefined && site !== '' && site !== 'same-origin') return { ok: false, status: 403, reason: 'Cross-site action rejected' }
   if (!headers['x-forge-action']) return { ok: false, status: 403, reason: 'Action token missing' }
   if (!((headers['content-type'] ?? '').split(';')[0] ?? '').trim().startsWith('application/json')) return { ok: false, status: 415, reason: 'Actions are JSON' }
   if (!(contentLength > 0 && contentLength <= MAX_ACTION_BODY)) return { ok: false, status: 413, reason: 'Action body too large' }
