@@ -8,6 +8,8 @@ defineEmits<{ stop: [jobId: string] }>()
 const active = computed(() => props.cards.filter(card => card.jobId !== null))
 const queued = computed(() => props.cards.filter(card => card.jobId === null))
 const open = ref(false)
+const role = computed(() => props.id.replace(/^stage-/, '') as 'build' | 'review' | 'audit' | 'recovery')
+const deck = computed(() => Math.min(queued.value.length, 4))
 </script>
 
 <template>
@@ -17,26 +19,35 @@ const open = ref(false)
     </div>
     <p class="mt-0.5 text-xs text-muted">{{ summary }}</p>
     <TransitionGroup name="card" tag="div" class="relative mt-3 flex flex-col gap-2.5">
-      <IssueCard v-for="card in active" :key="card.key" :card="card" @stop="$emit('stop', $event)" />
+      <IssueCard v-for="card in active" :key="card.key" :card="card" :role="role" @stop="$emit('stop', $event)" />
     </TransitionGroup>
-    <div v-if="queued.length" class="mt-3 mb-2">
+    <div v-if="queued.length" class="mt-3 flex flex-col items-center">
+      <!-- Queued issues wait as a small deck; the count sits under it and the
+           next title is the tooltip. Opening the deck lists the cards. -->
       <button
         type="button"
-        class="issue-stack relative w-full min-w-0 max-w-full overflow-hidden rounded-lg border border-line bg-panel px-4 py-3 text-left transition-colors hover:bg-white/5"
+        class="issue-stack group flex flex-col items-center gap-1.5 rounded-lg px-4 py-2 text-center transition-colors hover:bg-white/5"
         :aria-expanded="open"
         :aria-controls="id + '-queued'"
+        :title="`Next: ${queued[0]!.repo} · #${queued[0]!.number} — ${queued[0]!.title}`"
         @click="open = !open"
       >
-        <span class="pointer-events-none absolute inset-x-2 -bottom-1 h-2 rounded-b-lg border-x border-b border-line bg-panel" aria-hidden="true" />
-        <span class="pointer-events-none absolute inset-x-4 -bottom-2 h-2 rounded-b-lg border-x border-b border-line bg-panel" aria-hidden="true" />
-        <span class="relative flex items-center justify-between gap-3">
-          <span class="text-sm font-semibold text-white">{{ queued.length }} queued</span>
-          <span class="text-xs text-muted">{{ open ? 'Collapse' : 'Expand' }}</span>
+        <span class="relative block h-11 w-16" aria-hidden="true">
+          <span
+            v-for="layer in deck"
+            :key="layer"
+            class="absolute flex h-8 flex-col gap-1 rounded-md border border-white/25 bg-panel px-1.5 pt-1.5 shadow-sm transition-transform group-hover:-translate-y-0.5"
+            :style="{ top: `${(layer - 1) * 4}px`, left: `${(deck - layer) * 4}px`, right: `${(deck - layer) * 4}px`, opacity: 1 - (deck - layer) * 0.2 }"
+          >
+            <span v-if="layer === deck" class="block h-1 w-7 rounded-full bg-white/30" />
+            <span v-if="layer === deck" class="block h-1 w-10 rounded-full bg-white/15" />
+          </span>
         </span>
-        <span class="relative mt-0.5 block truncate text-xs text-muted">Next: {{ queued[0]!.repo }} · #{{ queued[0]!.number }} — {{ queued[0]!.title }}</span>
+        <span class="text-xs font-semibold text-white">{{ queued.length }} queued</span>
+        <span class="text-[11px] text-muted">{{ open ? 'Collapse' : 'Expand' }}</span>
       </button>
-      <TransitionGroup v-if="open" :id="id + '-queued'" name="card" tag="div" class="relative mt-4 flex flex-col gap-2.5">
-        <IssueCard v-for="card in queued" :key="card.key" :card="card" @stop="$emit('stop', $event)" />
+      <TransitionGroup v-if="open" :id="id + '-queued'" name="card" tag="div" class="relative mt-3 flex w-full flex-col gap-2.5">
+        <IssueCard v-for="card in queued" :key="card.key" :card="card" :role="role" @stop="$emit('stop', $event)" />
       </TransitionGroup>
     </div>
     <p v-if="!cards.length" class="mt-3 text-xs text-muted">{{ empty ?? 'No issues at this stage.' }}</p>
