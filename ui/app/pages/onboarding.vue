@@ -219,10 +219,9 @@ function activityFor(target: string): string | null {
         <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">Fresh setup</p>
         <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Start with a clean factory</h1>
         <p class="mt-2 text-muted">Your existing factory is still running. Reset it before creating the new setup.</p>
-        <div class="mt-6 flex flex-wrap gap-3">
-          <UButton color="neutral" variant="outline" to="/reset">Reset existing factory</UButton>
-          <UButton color="neutral" variant="outline" to="/">Open dashboard</UButton>
-        </div>
+        <!-- No "Open dashboard": the pre-v2 dashboard does not exist in
+             this UI, and `/` redirects back here for every non-active phase. -->
+        <UButton class="mt-6" color="neutral" variant="outline" to="/reset">Reset existing factory</UButton>
       </template>
 
       <template v-else-if="phase === 'active'">

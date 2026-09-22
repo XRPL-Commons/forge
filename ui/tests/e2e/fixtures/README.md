@@ -177,6 +177,12 @@ issue and a merged issue.
   `POST /api/onboarding {action:'github'}` answers with the manifest and its
   `action` URL in this scenario too.
 
+## legacy/
+
+- `onboarding.json` — `default/onboarding.json` with `phase:"legacy"`: a
+  pre-v2 factory is still running, so guided setup offers a reset and
+  nothing else. `/` redirects here like every other non-active phase.
+
 ## resetting/
 
 - `onboarding.json` — phase `resetting` with an in-flight reset
