@@ -163,6 +163,8 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('decision-pause')
   await page.goto(base + '/issues/1%3A608')
   await waitForText(page, 'Keep learners signed in')
+  // The API cut this body short, and the issue says so beside it.
+  await waitForText(page, 'Description shortened. Open on GitHub to read the full issue.')
   await page.getByRole('button', { name: 'Pause' }).click()
   await waitForText(page, 'Pause?')
   const confirmPause = page.getByRole('dialog').getByRole('button', { name: 'Pause' })

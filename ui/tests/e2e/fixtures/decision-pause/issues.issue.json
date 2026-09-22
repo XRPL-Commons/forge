@@ -5,7 +5,7 @@
     "number": 608,
     "title": "Keep learners signed in",
     "content_hash": "sha256:16080608",
-    "body_truncated": false,
+    "body_truncated": true,
     "state": "open",
     "updated_at": "2026-09-20T12:00:00Z",
     "labels": [

@@ -220,7 +220,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       </div>
 
       <section class="mt-5 rounded-xl border border-line bg-panel p-4">
-        <MarkdownBody :html="html ?? ''" :truncated="detail.body_truncated" />
+        <MarkdownBody :html="html ?? ''" />
+        <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
       </section>
 
       <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">

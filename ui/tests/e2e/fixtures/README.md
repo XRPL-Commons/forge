@@ -180,7 +180,9 @@ exercise a decision that needs no reason and one that does:
   that offers `queue`.
 - `decision-pause/issues.issue.json` — `1:608`, the queued row
   (`status:"queued"`, `actions:["backlog","pause"]`): the only state that
-  offers `pause`.
+  offers `pause`. It is also the one detail fixture with
+  `body_truncated: true`, so the issue's "Description shortened…" note is
+  exercised.
 
 ## down (not a fixture directory)
 

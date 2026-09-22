@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // Presentational only: the HTML is rendered and sanitized on the server by
 // POST /_ui/markdown, so this component never fetches and never sanitizes.
-// `truncated` is the issue's `body_truncated` flag; the note it adds belongs
-// with the description rather than next to the links.
-const props = defineProps<{ html: string; truncated?: boolean }>()
+// It renders the description and nothing else — the `body_truncated` note is
+// the issue's, not the description's, so the detail route renders it.
+const props = defineProps<{ html: string }>()
 const empty = computed(() => !(props.html ?? '').trim())
 </script>
 
@@ -12,7 +12,6 @@ const empty = computed(() => !(props.html ?? '').trim())
     <p v-if="empty" class="text-sm text-muted">No description has been added yet.</p>
     <!-- eslint-disable-next-line vue/no-v-html -- sanitized server-side by server/utils/markdown.ts -->
     <div v-else class="forge-markdown text-sm text-white/90" v-html="html" />
-    <p v-if="truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
   </div>
 </template>
 
