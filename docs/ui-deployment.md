@@ -15,6 +15,11 @@ part of the watchdog copy of the repo).
 No runtime dependency on the Iconify API: `ui/app/**` uses no `UIcon`/`icon=`
 markup, so there is nothing to bundle offline for icons.
 
+Nitro answers a proxied request whose `Host` is neither `$HOST:$PORT` nor
+loopback with 403 `Untrusted host` (a DNS-rebinding defence); set
+`NITRO_ALLOWED_HOSTS` — comma-separated `host:port` values — when the UI is
+reached under any other name, such as a MagicDNS name or a reverse proxy.
+
 ## Switch-over steps
 
 1. `cd ~/forger-remote/ui && npm ci && npm run build`

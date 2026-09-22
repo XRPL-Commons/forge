@@ -7,7 +7,7 @@
 // behavior of keeping each `set-cookie` as its own entry. The
 // `responseHeaders` test below depends on that real behavior.
 import { describe, it, expect } from 'vitest'
-import { guardAction, proxyPaths, upstreamHeaders, responseHeaders, readCapped } from '../../server/utils/proxy'
+import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, responseHeaders, readCapped } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
   host: '100.111.151.38:8787', origin: 'http://100.111.151.38:8787', 'sec-fetch-site': 'same-origin',
@@ -30,6 +30,56 @@ describe('proxyPaths', () => {
     expect(proxyPaths('/onboarding/github/callback')).toBe(true)
     expect(proxyPaths('/issues')).toBe(false)
     expect(proxyPaths('/favicon.svg')).toBe(false)
+  })
+  // @nuxt/icon mounts the bundled Lucide collection under /api/_nuxt_icon/;
+  // forwarding it to Python would 404 every icon Nuxt UI draws itself.
+  it('leaves the bundled icon route to Nitro', () => {
+    expect(proxyPaths('/api/_nuxt_icon/lucide.json')).toBe(false)
+    expect(proxyPaths('/api/_nuxt_icon/lucide.json?icons=check,chevron-down')).toBe(false)
+    expect(proxyPaths('/api/_nuxt_icon')).toBe(false)
+  })
+})
+
+// The DNS-rebinding defence: reaching this process is not enough, the name
+// the browser used has to be one the app is served on.
+describe('guardHost', () => {
+  const allowed = allowedHosts({ HOST: '100.111.151.38', PORT: '8787' })
+  it('accepts the exact configured address', () => expect(guardHost('100.111.151.38:8787', allowed)).toBe(true))
+  it('rejects a rebound name on the same port', () => expect(guardHost('evil.example:8787', allowed)).toBe(false))
+  it('rejects a missing Host header', () => {
+    expect(guardHost(undefined, allowed)).toBe(false)
+    expect(guardHost('', allowed)).toBe(false)
+    expect(guardHost('   ', allowed)).toBe(false)
+  })
+  it('accepts loopback, so SSR-internal fetches and the e2e harness work', () => {
+    expect(guardHost('127.0.0.1:8787', allowed)).toBe(true)
+    expect(guardHost('localhost:8787', allowed)).toBe(true)
+    expect(guardHost('localhost', allowed)).toBe(true)
+    expect(guardHost('LOCALHOST:8787', allowed)).toBe(true)
+  })
+  it('rejects the right address on the wrong port', () => expect(guardHost('100.111.151.38:9999', allowed)).toBe(false))
+})
+
+describe('allowedHosts', () => {
+  it('uses the e2e harness bind', () => {
+    const set = allowedHosts({ HOST: '127.0.0.1', PORT: '3999' })
+    expect(guardHost('127.0.0.1:3999', set)).toBe(true)
+    expect(guardHost('evil.example:3999', set)).toBe(false)
+  })
+  it('falls back to the address Nitro reports when HOST/PORT are unset', () => {
+    const set = allowedHosts({}, { address: '::ffff:100.111.151.38', port: 8787 })
+    expect(guardHost('100.111.151.38:8787', set)).toBe(true)
+  })
+  it('never trusts a wildcard bind as a name', () => {
+    const set = allowedHosts({ HOST: '0.0.0.0', PORT: '8787' })
+    expect(guardHost('0.0.0.0:8787', set)).toBe(false)
+    expect(guardHost('127.0.0.1:8787', set)).toBe(true)
+  })
+  it('is replaced wholesale by NITRO_ALLOWED_HOSTS', () => {
+    const set = allowedHosts({ HOST: '100.111.151.38', PORT: '8787', NITRO_ALLOWED_HOSTS: 'forge.example:8787, forge.tail.ts.net' })
+    expect(set).toEqual(['forge.example:8787', 'forge.tail.ts.net'])
+    expect(guardHost('forge.tail.ts.net', set)).toBe(true)
+    expect(guardHost('100.111.151.38:8787', set)).toBe(false)
   })
 })
 
@@ -59,6 +109,9 @@ describe('responseHeaders', () => {
     headers.set('content-disposition', 'attachment; filename="forge-review-rules-2.json"')
     headers.set('location', '/next')
     headers.set('cache-control', 'no-store')
+    // The upstream's own hardening headers survive the proxy hop.
+    headers.set('referrer-policy', 'no-referrer')
+    headers.set('x-content-type-options', 'nosniff')
     headers.set('x-secret', 'nope')
     const out = responseHeaders(headers)
     expect(out).toEqual([
@@ -66,8 +119,10 @@ describe('responseHeaders', () => {
       ['content-disposition', 'attachment; filename="forge-review-rules-2.json"'],
       ['content-type', 'application/json'],
       ['location', '/next'],
+      ['referrer-policy', 'no-referrer'],
       ['set-cookie', 'a=1'],
       ['set-cookie', 'b=2'],
+      ['x-content-type-options', 'nosniff'],
     ])
     expect(out.some(([name]) => name === 'x-secret')).toBe(false)
   })

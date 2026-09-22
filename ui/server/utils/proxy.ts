@@ -3,7 +3,11 @@ export const MAX_RESPONSE_BODY = 1024 * 1024
 export const UPSTREAM_TIMEOUT_MS = 30000
 // `content-disposition` carries the ruleset download's filename
 // (`forge-review-rules-<id>.json`, contracts §2); dropping it renames the file.
-const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'location', 'cache-control']
+// `referrer-policy` and `x-content-type-options` are the upstream's own
+// hardening headers; dropping them would silently weaken every proxied
+// response relative to what the Python server sends directly.
+const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'location', 'cache-control',
+  'referrer-policy', 'x-content-type-options']
 
 type Headers = Record<string, string | undefined>
 export interface GuardInput { method: string; headers: Headers; contentLength: number }
@@ -11,7 +15,51 @@ export type GuardResult = { ok: true } | { ok: false; status: number; reason: st
 
 export function proxyPaths(path: string): boolean {
   const clean = path.split('?')[0] ?? ''
+  // @nuxt/icon serves the bundled Lucide collection under /api/_nuxt_icon/…;
+  // that is Nitro's own route, not the Forge status service's.
+  if (clean === '/api/_nuxt_icon' || clean.startsWith('/api/_nuxt_icon/')) return false
   return clean === '/api' || clean.startsWith('/api/') || clean === '/onboarding/github/callback'
+}
+
+// DNS-rebinding defence. A page on a name the attacker controls can be made
+// to resolve to this server's address; the browser then sends same-origin
+// requests whose `Host` is that name. Comparing `Host` against the addresses
+// this app is actually served on rejects them before the proxy forwards
+// anything to the Forge status service.
+export function guardHost(hostHeader: string | undefined, allowed: string[]): boolean {
+  const host = (hostHeader ?? '').trim().toLowerCase()
+  if (!host) return false
+  return allowed.some(entry => entry.trim().toLowerCase() === host)
+}
+
+// Node reports an IPv4 loopback socket as `::ffff:127.0.0.1` and an IPv6 one
+// as `::1`; the Host header never carries the first form and brackets the
+// second.
+function hostLabel(address: string): string {
+  const plain = address.startsWith('::ffff:') ? address.slice(7) : address
+  return plain.includes(':') ? `[${plain}]` : plain
+}
+
+export interface ListenAddress { address?: string | null; port?: number | null }
+
+// The allowed `Host` values: `NITRO_ALLOWED_HOSTS` verbatim when set
+// (comma-separated, for deployments reached under another name or port),
+// else the configured bind address and port plus loopback. Bare `localhost`
+// and `127.0.0.1` are included because Nitro's SSR-internal `$fetch` calls
+// the h3 app through `http://localhost/` with no port; a browser can only
+// send a port-less Host when the server is on port 80, which this app is not.
+export function allowedHosts(env: Record<string, string | undefined>, listening?: ListenAddress): string[] {
+  const override = (env.NITRO_ALLOWED_HOSTS ?? '').split(',').map(entry => entry.trim()).filter(Boolean)
+  if (override.length) return override
+  const port = String(env.PORT ?? env.NITRO_PORT ?? listening?.port ?? '3000').trim()
+  const hosts = new Set<string>(['localhost', '127.0.0.1', `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`])
+  const bind = (env.HOST ?? env.NITRO_HOST ?? '').trim()
+  const reported = (listening?.address ?? '').trim()
+  for (const candidate of [bind, reported]) {
+    if (!candidate || candidate === '0.0.0.0' || candidate === '::') continue
+    hosts.add(`${hostLabel(candidate)}:${port}`)
+  }
+  return [...hosts]
 }
 
 export function guardAction({ method, headers, contentLength }: GuardInput): GuardResult {

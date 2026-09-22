@@ -1,10 +1,19 @@
-import { guardAction, proxyPaths, upstreamHeaders, responseHeaders, readCapped, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
+import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, responseHeaders, readCapped, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
 
 export default defineEventHandler(async (event) => {
   const path = event.path
   if (!proxyPaths(path)) return
   const req = event.node.req
   const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : v]))
+  // DNS rebinding: the request reached this process, but the name the browser
+  // used has to be one this app is served on before anything is forwarded.
+  // `process.env` is the configured bind; the socket is what Nitro actually
+  // listened on, used only when HOST/PORT are not set.
+  const listening = { address: req.socket?.localAddress ?? null, port: req.socket?.localPort ?? null }
+  if (!guardHost(headers.host, allowedHosts(process.env, listening))) {
+    setResponseStatus(event, 403)
+    return { ok: false, reason: 'Untrusted host' }
+  }
   const guard = guardAction({ method: req.method ?? 'GET', headers, contentLength: Number(headers['content-length'] ?? 0) })
   if (!guard.ok) { setResponseStatus(event, guard.status); return { ok: false, reason: guard.reason } }
   const base = useRuntimeConfig().forgeApi.replace(/\/$/, '')
