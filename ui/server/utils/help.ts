@@ -4,8 +4,8 @@
 // This is a *restricted* Markdown subset (contracts §3.9), not a general
 // renderer: it is a faithful TypeScript port of the reference implementation
 // the removed `forge/setup_help.py` (`inline`/`render`), which the operator
-// API contracts §3.9 name as the
-// source of truth. Every character of source text is escaped as it is
+// API contracts §3.9 name as the source of truth. Every character of source
+// text is escaped as it is
 // emitted; the only tags this module ever writes are the literal `<h1-3>`,
 // `<p>`, `<ul>`/`<ol>`/`<li>`, `<code>`, `<pre>` and `<a>` strings below, so
 // nothing in the document — however it tries to smuggle a tag in — can ever
@@ -15,6 +15,7 @@
 // (`MARKDOWN_ALLOWLIST`) rather than redeclared here, minus `input` (a help
 // doc never has checkboxes), plus `id` on the heading tags so the anchors
 // this page's own sidebar and other pages' deep links rely on survive.
+import path from 'node:path'
 import sanitizeHtml from 'sanitize-html'
 import { MARKDOWN_ALLOWLIST } from './markdown'
 
@@ -173,6 +174,34 @@ export type HelpDocCandidates = {
 // because the installation copy at $FORGE_ROOT overrides the repo file only
 // when it actually exists. `isReadable` is injected so this stays pure and
 // unit-testable without touching a filesystem; the route passes a real check.
+// The runtimeConfig default for `helpDoc`, and — separately — the last-resort
+// candidate. `cwd` is `ui/` when Nitro runs (the e2e harness spawns the built
+// server with that as its cwd), which is what makes this relative path the
+// repo's own `docs/onboarding.md`.
+export const REPO_DEFAULT_HELP_DOC = '../docs/onboarding.md'
+
+// Turns the route's raw inputs into the three candidates above, so the wiring
+// is testable without a filesystem.
+//
+// `helpDoc` is the declared runtime config value; `NITRO_HELP_DOC` is only the
+// env override Nitro maps onto that key. It counts as an override — and so
+// outranks $FORGE_ROOT — only when it differs from the declared default.
+//
+// `repoDefault` is always the repo doc, never the override: an override
+// naming a file that is missing (a typo, a document not copied to the live
+// root yet) has to fall through to $FORGE_ROOT and then to the repo copy,
+// which it cannot do if it is also the last candidate.
+export function helpCandidates(
+  { helpDoc, forgeRoot, cwd }: { helpDoc?: string | null; forgeRoot?: string | null; cwd: string },
+): HelpDocCandidates {
+  const configured = String(helpDoc ?? '').trim() || REPO_DEFAULT_HELP_DOC
+  return {
+    nitroHelpDoc: configured === REPO_DEFAULT_HELP_DOC ? null : path.resolve(cwd, configured),
+    forgeRoot: String(forgeRoot ?? '').trim() || null,
+    repoDefault: path.resolve(cwd, REPO_DEFAULT_HELP_DOC),
+  }
+}
+
 export function resolveHelpDocPath(candidates: HelpDocCandidates, isReadable: (path: string) => boolean): string | null {
   const ordered = [
     candidates.nitroHelpDoc,

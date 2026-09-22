@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { renderHelp, resolveHelpDocPath } from '../../server/utils/help'
+import { REPO_DEFAULT_HELP_DOC, helpCandidates, renderHelp, resolveHelpDocPath } from '../../server/utils/help'
 
 const ONBOARDING_MD = fileURLToPath(new URL('../../../docs/onboarding.md', import.meta.url))
 
@@ -81,6 +81,53 @@ describe('renderHelp', () => {
     expect(html).toContain('id="github-repository-protection"')
     expect(toc.map((entry) => entry.id)).toContain('github-repository-protection')
     expect(toc.map((entry) => entry.id)).toContain('host-installation')
+  })
+})
+
+// The wiring between the route's raw inputs and resolveHelpDocPath's three
+// candidates — where an override once swallowed the repo default.
+describe('helpCandidates', () => {
+  const cwd = '/srv/app/ui'
+  const repo = '/srv/app/docs/onboarding.md'
+
+  it('keeps the repo doc as the last candidate even when helpDoc is overridden', () => {
+    const candidates = helpCandidates({ helpDoc: '/etc/custom.md', forgeRoot: null, cwd })
+    expect(candidates.nitroHelpDoc).toBe('/etc/custom.md')
+    // The point of the test: an override that names a file which is not there
+    // must still fall through to $FORGE_ROOT and then to the repo copy.
+    expect(candidates.repoDefault).toBe(repo)
+  })
+
+  it('resolves a relative override against cwd, repo default unchanged', () => {
+    const candidates = helpCandidates({ helpDoc: 'tests/e2e/fixtures/help.md', forgeRoot: null, cwd })
+    expect(candidates.nitroHelpDoc).toBe('/srv/app/ui/tests/e2e/fixtures/help.md')
+    expect(candidates.repoDefault).toBe(repo)
+  })
+
+  it('treats the declared default as no override at all, so $FORGE_ROOT still wins', () => {
+    const candidates = helpCandidates({ helpDoc: REPO_DEFAULT_HELP_DOC, forgeRoot: '/srv/forge', cwd })
+    expect(candidates.nitroHelpDoc).toBeNull()
+    expect(candidates.forgeRoot).toBe('/srv/forge')
+    expect(candidates.repoDefault).toBe(repo)
+  })
+
+  it('treats a missing, empty or blank helpDoc as the default', () => {
+    for (const helpDoc of [undefined, null, '', '   ']) {
+      expect(helpCandidates({ helpDoc, cwd }).nitroHelpDoc).toBeNull()
+      expect(helpCandidates({ helpDoc, cwd }).repoDefault).toBe(repo)
+    }
+  })
+
+  it('normalises a blank FORGE_ROOT to null', () => {
+    expect(helpCandidates({ forgeRoot: '  ', cwd }).forgeRoot).toBeNull()
+    expect(helpCandidates({ forgeRoot: ' /srv/forge ', cwd }).forgeRoot).toBe('/srv/forge')
+  })
+
+  // The regression, end to end through the pure pair: with the override
+  // unreadable, resolution must still reach the repo doc.
+  it('falls through an unreadable override to the repo default', () => {
+    const candidates = helpCandidates({ helpDoc: '/etc/custom.md', forgeRoot: null, cwd })
+    expect(resolveHelpDocPath(candidates, (path) => path === repo)).toBe(repo)
   })
 })
 
