@@ -25,7 +25,11 @@ class Supervisor:
     def cycle(self):
         self.errors = []
         self.capacity = None
-        self.github.deadline = time.monotonic() + self.config['cycle_budget_seconds']
+        budget = self.config['cycle_budget_seconds']
+        self.github.deadline = time.monotonic() + budget
+        # Observation stops at three quarters of the budget so dispatch always
+        # gets its turn; with many tracked issues it otherwise never runs.
+        observe_until = self.github.deadline - budget / 4
         # Even paused/disabled factories must finish teardown and reconciliation.
         for job in self.ledger.read()['jobs'].values():
             if job['role'] == 'merge':
@@ -35,7 +39,7 @@ class Supervisor:
             except (RunnerError, GitHubUnavailable, OSError, ValueError) as error:
                 self.errors.append({'attempt': job['id'], 'phase': 'runner', 'reason': str(error)})
         for job in sorted(self.ledger.read()['jobs'].values(), key=lambda j: j.get('last_observed', 0)):
-            if time.monotonic() >= self.github.deadline:
+            if time.monotonic() >= observe_until:
                 break
             if job.get('capture') is not None and job['outcome'] is None:
                 try:
@@ -47,7 +51,7 @@ class Supervisor:
                 finally:
                     self.ledger.job_update(job['id'], last_observed=self.clock())
         for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: i.get('last_observed', 0)):
-            if time.monotonic() >= self.github.deadline:
+            if time.monotonic() >= observe_until:
                 break
             try:
                 self.reconcile(item)

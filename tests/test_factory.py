@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from forge.factory.contracts import candidate, digest, result, submission, references_issue
 from forge.factory.config import validate, policy
@@ -81,6 +81,21 @@ class FactoryTest(unittest.TestCase):
         self.assertNotIn('capture', current)
         self.assertEqual(self.item()['active'], job['id'])
         self.assertEqual(self.item()['state'], 'ready')
+
+    def test_dispatch_keeps_a_share_of_the_cycle_budget(self):
+        # Two slow observations would eat the whole 60 s budget; the second is
+        # skipped so a builder is still reserved this cycle.
+        self.ledger.discover({'id': 1, 'name': 'example/project'}, 2, 'requirements')
+        self.github.target.return_value = 'main'
+        clock = {'now': 0.0}
+        fake = Mock()
+        fake.monotonic.side_effect = lambda: clock['now']
+        def slow(item):
+            clock['now'] += 50
+        with patch('forge.factory.supervisor.time', fake), patch.object(self.supervisor, 'reconcile', side_effect=slow) as reconcile:
+            self.supervisor.cycle()
+        self.assertEqual(reconcile.call_count, 1)
+        self.assertTrue(self.ledger.read()['slots'], 'dispatch must run after observation stops')
 
     def test_discovery_rotates_repositories_after_exhausted_api_budget(self):
         self.settings.view.return_value = {'repositories': [
