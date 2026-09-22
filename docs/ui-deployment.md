@@ -18,8 +18,8 @@ markup, so there is nothing to bundle offline for icons.
 ## Switch-over steps
 
 1. `cd ~/forger-remote/ui && npm ci && npm run build`
-2. `rsync -a --delete ui/.output/ ~/ops/forge-watchdog/ui/.output/` (copy
-   `ui/` except `node_modules`)
+2. `mkdir -p ~/ops/forge-watchdog/ui && rsync -a --delete ~/forger-remote/ui/.output/ ~/ops/forge-watchdog/ui/.output/ && cp ~/forger-remote/ui/package.json ~/ops/forge-watchdog/ui/`
+   (copy `ui/` except `node_modules`)
 3. `cp deploy/forge-ui.service.example ~/.config/systemd/user/forge-ui.service`;
    edit `HOST` to the box's Tailscale IPv4 (copy the value from
    `tailscale ip -4`)
