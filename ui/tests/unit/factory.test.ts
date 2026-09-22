@@ -149,6 +149,26 @@ describe('groupIssues', () => {
     expect(card.stoppable).toBe(true)
   })
 
+  it('keeps an issue in the column of its live job, and moves it once the job is done', () => {
+    const live = job({ role: 'build' })
+    const built = issue({ key: '1:601', number: 601, state: 'built', active: live.id })
+    expect(groupIssues(view({ issues: [built], jobs: [live] }), now).columns.build.map(c => c.key)).toEqual(['1:601'])
+    const done = { ...live, outcome: 'accepted', cleanup: true }
+    const moved = groupIssues(view({ issues: [{ ...built, active: null }], jobs: [done] }), now)
+    expect(moved.columns.build).toEqual([])
+    expect(moved.columns.review.map(c => c.key)).toEqual(['1:601'])
+  })
+
+  it('lists a recovery job its issue already owns once, as that issue\'s card', () => {
+    const investigation = job({ id: 'rec-1', issue_key: '1:604', issue_number: 604, role: 'recovery', slot: 'recovery-1', model: null })
+    const owned = groupIssues(view({
+      issues: [issue({ key: '1:604', number: 604, state: 'investigating', active: investigation.id })],
+      jobs: [investigation],
+    }), now)
+    expect(owned.investigating.map(c => c.key)).toEqual(['1:604'])
+    expect(owned.internalJobs).toEqual([])
+  })
+
   it('emits at most one footer link per card', () => {
     const held = groupIssues(view({ issues: [
       issue({ key: '2:615', number: 615, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'ready', prerequisite_hold: { state: 'ready' } }),

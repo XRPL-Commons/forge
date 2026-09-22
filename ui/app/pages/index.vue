@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { ForgeApiError } from '~/composables/useForgeApi'
 import {
   COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, metrics, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
+
+interface Fence { ok: false; reason: string }
 
 useHead({ title: 'Activity' })
 
@@ -13,7 +16,16 @@ const toast = useToast()
 // True while a confirmation dialog is open or a POST is in flight, so a poll
 // never re-renders the page under the operator's hands.
 const confirming = ref(false)
-const poll = usePoll<FactoryView>(() => api.get<FactoryView>('/api/factory', { timeout: 15000 }), {
+// A {ok:false, reason} answer is a state, not a failed request: it replaces
+// the payload, so the page shows the fence instead of a stale factory.
+const poll = usePoll<FactoryView | Fence>(async () => {
+  try {
+    return await api.get<FactoryView>('/api/factory', { timeout: 15000 })
+  } catch (error: unknown) {
+    if (error instanceof ForgeApiError && error.status === 200) return { ok: false as const, reason: error.message }
+    throw error
+  }
+}, {
   interval: useRuntimeConfig().public.pollInterval,
   allowed: () => !confirming.value,
 })
@@ -26,14 +38,15 @@ onMounted(() => {
 })
 onBeforeUnmount(() => clearInterval(ticker))
 
-const view = computed(() => poll.data.value)
+const fence = computed(() => { const payload = poll.data.value; return payload && payload.ok === false ? payload : null })
+const view = computed(() => { const payload = poll.data.value; return payload && payload.ok !== false ? payload : null })
 const connectionLost = computed(() => !!poll.error.value && !!view.value)
 const fresh = computed(() => isFresh(view.value, now.value))
 const observedAt = computed(() => (view.value?.observation as { at?: number } | undefined)?.at ?? null)
 
 const freshness = computed(() => {
-  if (poll.error.value) return 'Reconnecting · last known state'
   if (!view.value) return 'Connecting…'
+  if (poll.error.value) return 'Reconnecting · last known state'
   if (fresh.value && observedAt.value) return `Live · checked ${elapsed(now.value - observedAt.value)} ago`
   return 'Updates delayed · last known state'
 })
@@ -43,6 +56,7 @@ const freshness = computed(() => {
 // status line. A {ok:false, reason} payload leaves no state to show, so its
 // reason is the page's single banner.
 const banners = computed<Warning[]>(() => {
+  if (fence.value) return [{ kind: 'other', text: fence.value.reason, ...destination('other', route.path) }]
   if (!view.value) {
     const reason = poll.error.value
     return reason ? [{ kind: 'other', text: reason, ...destination('other', route.path) }] : []
@@ -58,12 +72,7 @@ const operator = computed(() => view.value?.operator ?? null)
 const absorbed = computed(() => {
   const detail = operator.value?.detail
   if (!detail) return null
-  const match = banners.value.find(warning => warning.text === detail)
-  if (!match) return null
-  if (match.to) return match
-  const url = operator.value?.action_url
-  if (url && url !== route.path && operator.value?.action_label) return { ...match, to: url, label: operator.value.action_label }
-  return match
+  return banners.value.find(warning => warning.text === detail) ?? null
 })
 const showStatusLine = computed(() => !!view.value && !connectionLost.value && !banners.value.length && !!operator.value?.title)
 
@@ -152,6 +161,7 @@ async function confirm(reason: string) {
         <h1 class="text-3xl font-semibold text-white">Factory</h1>
       </div>
       <p
+        v-if="!fence"
         id="freshness"
         role="status"
         class="text-xs"

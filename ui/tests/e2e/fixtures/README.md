@@ -146,7 +146,10 @@ issue and a merged issue.
 - `factory.json` — `default/factory.json` with issue `1:601` moved from
   `state:"ready"` to `state:"built"` (the same issue one column further
   right), for the Factory page's column-move animation and its
-  `aria-live` "Issue 601 moved to Review" announcement.
+  `aria-live` "Issue 601 moved to Review" announcement. Its build job
+  (`11111111-…`) is finished with it — `outcome:"accepted"`,
+  `cleanup:true`, and the issue's `active` cleared — because an issue with
+  a live job belongs to that job's column, not to its state's.
 
 ## decision-pending/
 

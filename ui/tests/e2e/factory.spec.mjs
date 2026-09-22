@@ -99,12 +99,27 @@ export default async function (page, { base, scenario, requests }) {
     null, { timeout: 10000 },
   )
 
-  // A reset fence leaves no state to show: one banner, no metrics, no cards.
+  // A reset fence replaces the last known state on the next poll alone: one
+  // banner, no metrics, no columns, no cards — and it lifts the same way.
   await scenario('paused')
-  await page.goto(base + '/')
   await waitForText(page, 'Factory reset is in progress')
+  assert.equal(await occurrences(page, 'Factory reset is in progress'), 1)
   assert.equal(await page.locator('.issue-card').count(), 0)
   assert.equal(await page.locator('#columns').count(), 0)
+  assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
+
+  await scenario('default')
+  await page.waitForFunction(() => document.querySelectorAll('.issue-card').length > 0, null, { timeout: 10000 })
+
+  // A first load that never answers stays on "Connecting…" — there is no
+  // last known state to reconnect to — and renders no metrics.
+  await scenario('down')
+  await page.goto(base + '/')
+  await waitForText(page, 'Forge status service is unavailable')
+  assert.equal((await page.locator('#freshness').innerText()).trim(), 'Connecting…')
+  assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
+  assert.equal(await page.locator('#columns').count(), 0)
+  assert.equal(await page.locator('.issue-card').count(), 0)
 
   // On a phone-width viewport the cards fill the width and nothing scrolls
   // sideways.

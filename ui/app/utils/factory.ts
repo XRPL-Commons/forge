@@ -48,6 +48,8 @@ export interface OnboardingView { error?: string | null; checks?: Record<string,
 
 export interface CardModel {
   key: string
+  // Anchor target and FLIP key: "issue-<repo_id>-<number>", or "job-<id>" for
+  // an internal row, whose issue key may already belong to a rendered issue.
   id: string
   to: string
   repo: string
@@ -236,18 +238,22 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
   for (const issue of view.issues ?? []) {
     const job = jobFor(view, issue)
     const card = issueCard(issue, job, view, now)
-    // The stage an issue is in is what it is waiting for next; a job whose
-    // role no longer matches the state (a retry, a merge) keeps its column.
-    const role = NEXT_ROLE[issue.state] ?? (job && COLUMN_ROLES.includes(job.role as ColumnRole) ? job.role as ColumnRole : null)
+    // An issue with a live job belongs to the column of that job's role;
+    // without one it waits in the column of the stage that comes next.
+    const role = job && COLUMN_ROLES.includes(job.role as ColumnRole)
+      ? job.role as ColumnRole
+      : NEXT_ROLE[issue.state] ?? null
     if (role) { groups.columns[role].push(card); continue }
     if (ATTENTION_STATES.includes(issue.state)) { groups.attention.push(card); continue }
     if (issue.state === 'audited' || job?.role === 'merge') { groups.finishing.push(card); continue }
     if (issue.state === 'investigating') { groups.investigating.push(card); continue }
     if (issue.state === 'merged' || issue.state === 'cancelled') groups.completed.push(card)
   }
+  // Internal rows are the jobs no issue points at — a recovery investigation
+  // an issue already owns is rendered once, as that issue's card.
   const active = new Set((view.issues ?? []).map(issue => issue.active).filter(Boolean))
   for (const job of view.jobs ?? []) {
-    if (job.role === 'recovery' || !active.has(job.id)) groups.internalJobs.push(toCard(job, view, now))
+    if (!active.has(job.id)) groups.internalJobs.push(toCard(job, view, now))
   }
   return groups
 }
