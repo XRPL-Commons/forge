@@ -255,6 +255,15 @@ class Onboarding:
         if data['phase'] == 'active':
             from .factory.ledger import Ledger
             health = Ledger(self.root / 'state/factory').read().get('provider_cooldowns', {})
+        def auth(entry):
+            # How the account is held decides whether its jobs may run in parallel.
+            names = manifest(entry['provider'])
+            if entry.get('provider_auth_file_env'):
+                return 'login'
+            if names.get('token_env') in (entry.get('provider_environment') or []):
+                return 'token'
+            return 'api_key'
+
         def status(entry):
             cooldown = health.get(entry['provider'], {})
             if cooldown.get('until', 0) > self.clock():
@@ -265,17 +274,27 @@ class Onboarding:
         return [{'id': key, 'name': item['name'], 'version': item['version'],
                  'connected': any(e['provider'] == key for e in pool),
                  'models': [{'id': e['id'], 'model': e['model'],
-                             'status': status(e)}
+                             'status': status(e), 'auth': auth(e)}
                             for e in pool if e['provider'] == key],
+                 'token_command': item.get('token_command'),
+                 'token_login_command': shlex.join([str(Path(__file__).resolve().parents[1] / 'bin/forge'),
+                                                    'setup', 'login', key, '--token', '--root', str(self.root)]) if item.get('token_env') else None,
                  'login_command': shlex.join([str(Path(__file__).resolve().parents[1] / 'bin/forge'),
                                               'setup', 'login', key, '--root', str(self.root)]),
                  'check_command': shlex.join([str(Path(__file__).resolve().parents[1] / 'bin/forge'),
                                               'setup', 'check', '--root', str(self.root)])}
                 for key, item in manifests().items()]
 
-    def connect(self, provider, *, api_key=None, auth_value=None, models=None):
-        """Called by terminal setup. The caller serializes active runtime edits."""
+    def connect(self, provider, *, api_key=None, token=None, auth_value=None, models=None):
+        """Called by terminal setup. The caller serializes active runtime edits.
+
+        A browser login is a rotating credential file with one writer, so its
+        jobs run one at a time. An API key or a long-lived token travels as an
+        environment variable that never rotates, so its jobs run in parallel.
+        """
         item = manifest(provider)
+        if token and not item.get('token_env'):
+            raise ValueError(item['name'] + ' has no long-lived token login; use the browser login or an API key')
         models = models or [None]
         with self.store.transaction() as data:
             self.initialize(data)
@@ -287,11 +306,11 @@ class Onboarding:
             if not pool and data.get('provider_revision'):
                 pool = [{'id': config['provider'], **{k: config[k] for k in
                          ('provider', 'model', 'provider_environment', 'provider_auth_file_env')}}]
-            environment, reference = [], None
-            if api_key:
-                if not isinstance(api_key, str) or any(c.isspace() for c in api_key) or len(api_key) < 16:
-                    raise ValueError('Enter a valid provider API key')
-                environment = [item['api_key_env']]
+            environment, reference, secret = [], None, api_key or token
+            if secret:
+                if not isinstance(secret, str) or any(c.isspace() for c in secret) or len(secret) < 16:
+                    raise ValueError('Enter a valid provider API key' if api_key else 'Enter a valid long-lived token')
+                environment = [item['api_key_env'] if api_key else item['token_env']]
             else:
                 if not isinstance(auth_value, str) or not isinstance(json.loads(auth_value), dict):
                     raise ValueError('No valid harness login found; sign in again')
@@ -304,7 +323,7 @@ class Onboarding:
                 ready = config.get('provider_ready')
                 config['provider_ready'] = [e['id'] for e in pool if e['provider'] != provider and (ready is None or e['id'] in ready)]
             runtime_config(config)  # Validate BEFORE persisting credentials or configuration.
-            self.credentials.put(reference or item['api_key_env'], auth_value if reference else api_key, file=bool(reference))
+            self.credentials.put(reference or environment[0], auth_value if reference else secret, file=bool(reference))
             write_json(self.root / ('runtime.json' if active else 'setup/runtime.json'), config)
             data.update(provider_revision=str(uuid.uuid4()), checks={}, provider_checks={}, provider_errors={}, error=None)
             data.pop('readiness', None)

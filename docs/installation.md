@@ -110,6 +110,11 @@ bin/forge setup status                  # No credential values printed
 
 Both login commands support `--api-key` to prompt privately instead of using an
 account login, and `--import-login /absolute/path` for an existing login file.
+Claude Code also supports `--token`: run `claude setup-token` on your own machine
+(one-year token on your subscription, model requests only) and paste it at the
+private prompt. A browser login is a rotating credential with a single writer,
+so its jobs run one at a time; a token or API key never rotates, so workers share
+it and as many run as the role's slots allow.
 Import copies it; Forge never writes back to the source. Reconnect through Forge
 after import so another application cannot rotate the same credential separately.
 

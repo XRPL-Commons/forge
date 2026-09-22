@@ -15,12 +15,15 @@ const FALLBACK = 'Select and copy the command above'
 
 const loginLabel = ref('Copy sign-in command')
 const checkLabel = ref('Copy verification command')
+const tokenLabel = ref('Copy token sign-in command')
 const loginCommand = useTemplateRef<HTMLElement>('loginCommand')
 const checkCommand = useTemplateRef<HTMLElement>('checkCommand')
+const tokenCommand = useTemplateRef<HTMLElement>('tokenCommand')
 
 watch(() => [props.open, props.harness?.id], () => {
   loginLabel.value = 'Copy sign-in command'
   checkLabel.value = 'Copy verification command'
+  tokenLabel.value = 'Copy token sign-in command'
 })
 
 function selectCommand(element: HTMLElement | null) {
@@ -34,10 +37,11 @@ function selectCommand(element: HTMLElement | null) {
 
 // Keyed rather than handed the ref: a ref passed through the template is
 // already unwrapped, so the label has to be resolved here.
-async function copy(kind: 'login' | 'check') {
-  const command = kind === 'login' ? props.harness?.login_command : props.harness?.check_command
-  const element = kind === 'login' ? loginCommand.value : checkCommand.value
-  const label = kind === 'login' ? loginLabel : checkLabel
+async function copy(kind: 'login' | 'check' | 'token') {
+  const command = kind === 'login' ? props.harness?.login_command
+    : kind === 'token' ? props.harness?.token_login_command : props.harness?.check_command
+  const element = kind === 'login' ? loginCommand.value : kind === 'token' ? tokenCommand.value : checkCommand.value
+  const label = kind === 'login' ? loginLabel : kind === 'token' ? tokenLabel : checkLabel
   try {
     await navigator.clipboard.writeText(command ?? '')
     label.value = COPIED
@@ -61,6 +65,14 @@ async function copy(kind: 'login' | 'check') {
           <p class="text-muted">Run this command in a terminal on the Forge VM, as the Forge service account. Follow the harness’s sign-in instructions.</p>
           <pre ref="loginCommand" class="rounded-lg border border-line bg-bg p-3 text-[13px] whitespace-pre-wrap break-words">{{ harness.login_command }}</pre>
           <UButton color="neutral" variant="outline" @click="copy('login')">{{ loginLabel }}</UButton>
+          <template v-if="harness.token_login_command">
+            <p class="text-muted">
+              Or share one long-lived token so several workers can use this account at once:
+              run <code class="text-white">{{ harness.token_command }}</code> on your own machine, then paste the token here:
+            </p>
+            <pre ref="tokenCommand" class="rounded-lg border border-line bg-bg p-3 text-[13px] whitespace-pre-wrap break-words">{{ harness.token_login_command }}</pre>
+            <UButton color="neutral" variant="outline" @click="copy('token')">{{ tokenLabel }}</UButton>
+          </template>
         </template>
         <p class="text-muted">
           {{ harness.connected
