@@ -346,7 +346,7 @@ type OnboardingView = { ok: true; controls_token: string;
   checks: Partial<Record<'github' | 'provider' | 'runner', CheckStatus>>;
   harnesses?: Harness[]; activity?: SetupActivity | null; repository_check?: ProtectionReport | null;
   repository_setup?: RepositoryRow | null;      // the selected repo's row
-  qualification_fresh?: boolean; service?: { last_seen: number; available: boolean };
+  qualification_fresh?: boolean; image_verified?: boolean; service?: { last_seen: number; available: boolean };
   can_start: boolean; operation: SetupOperation | null; error: string | null };
 // phase 'resetting' returns the reduced shape: roles all {status:'not_configured', registered:false}, repositories [], selected null, owner '', provider_connected false, checks {}, can_start false, revision ''.
 ```

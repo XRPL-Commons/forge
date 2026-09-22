@@ -58,12 +58,15 @@ function truncateImage(image: string): string {
 
 function imageRow(factory: FactoryView | null, onboarding: OnboardingView | null): StatusRow {
   if (!factory || !onboarding) return notAvailable('image', 'Image')
-  const fresh = !!onboarding.qualification_fresh
+  // The row reports whether this image passed a check, not whether the
+  // onboarding freshness window is still open: a running factory keeps its
+  // verdict until the image changes.
+  const verified = !!onboarding.image_verified
   const image = truncateImage(String(factory.runtime?.image ?? ''))
   return {
     id: 'image', label: 'Image',
-    value: `${image} · verification ${fresh ? 'current' : 'required'}`,
-    tone: fresh ? 'ok' : 'warn',
+    value: `${image} · ${verified ? 'verified' : 'verification required'}`,
+    tone: verified ? 'ok' : 'warn',
     to: '/settings/harnesses', linkLabel: 'Coding accounts',
   }
 }

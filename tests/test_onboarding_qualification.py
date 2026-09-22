@@ -36,3 +36,16 @@ class QualificationReuseTests(unittest.TestCase):
         self.setup.queue('harness_check',self.setup.view()['revision'])
         self.assertFalse(self.setup.view()['qualification_fresh'])
         self.assertFalse(self.setup.view()['can_start'])
+
+
+    def test_image_verified_survives_capacity_edits_until_the_image_changes(self):
+        self.connected();service,engine,resets=self.service()
+        self.assertFalse(self.setup.view()['image_verified'])
+        self.setup.queue('check',self.setup.view()['revision'])
+        for _ in range(20):service.tick()
+        self.assertTrue(self.setup.view()['image_verified'])
+        with self.setup.store.transaction() as data:data['qualification']['at']-=901
+        self.assertFalse(self.setup.view()['qualification_fresh'])
+        self.assertTrue(self.setup.view()['image_verified'])
+        with self.setup.store.transaction() as data:data['qualification']['image']='sha256:other'
+        self.assertFalse(self.setup.view()['image_verified'])

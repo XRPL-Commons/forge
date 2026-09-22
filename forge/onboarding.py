@@ -81,6 +81,7 @@ class Onboarding:
                 'repository_check': data.get('repository_check'),
                 'repository_setup': next((r for r in settings['repositories'] if r['id'] == (data.get('selected') or {}).get('id')), None),
                 'qualification_fresh': self.qualified(data),
+                'image_verified': self.image_verified(data),
                 'service': self.service_status(),
                 'can_start': data['phase'] == 'setup' and ready.get('revision') == revision
                              and 0 <= self.clock() - ready.get('at', 0) < 300 and self.qualified(data)
@@ -96,6 +97,14 @@ class Onboarding:
 
     def qualification_key(self, data):
         return digest({'runtime': self.runtime(), 'provider': data.get('provider_revision')})
+
+    def image_verified(self, data):
+        """The running image is the one the last passing check covered.
+
+        Unlike qualification freshness, this does not expire and ignores
+        capacity or pacing edits, so an active factory can report it."""
+        value = data.get('qualification') or {}
+        return 'image' in value and value['image'] == self.runtime().get('image')
 
     def qualified(self, data):
         value = data.get('qualification') or {}

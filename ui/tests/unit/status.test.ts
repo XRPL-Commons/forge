@@ -21,7 +21,7 @@ function factory(over: Record<string, unknown> = {}): any {
 function onboarding(over: Record<string, unknown> = {}): any {
   return {
     ok: true, controls_token: 'synthetic', phase: 'active', generation: 'gen-1', revision: 'rev-1',
-    harnesses: [], qualification_fresh: true, error: null, checks: {}, ...over,
+    harnesses: [], qualification_fresh: true, image_verified: true, error: null, checks: {}, ...over,
   }
 }
 
@@ -63,15 +63,15 @@ describe('statusRows · dispatch', () => {
 })
 
 describe('statusRows · image', () => {
-  it('appends verification current when qualification is fresh', () => {
-    const rows = statusRows({ factory: factory(), settings: null, onboarding: onboarding({ qualification_fresh: true }) }, now)
+  it('reports the image verified when the last check covered it', () => {
+    const rows = statusRows({ factory: factory(), settings: null, onboarding: onboarding({ image_verified: true }) }, now)
     const image = row(rows, 'image')
-    expect(image.value).toBe('forge/worker:2026.09 · verification current')
+    expect(image.value).toBe('forge/worker:2026.09 · verified')
     expect(image.tone).toBe('ok')
   })
 
   it('ends with verification required, tone warn, and keeps the whole repo:tag when not fresh', () => {
-    const rows = statusRows({ factory: factory(), settings: null, onboarding: onboarding({ qualification_fresh: false }) }, now)
+    const rows = statusRows({ factory: factory(), settings: null, onboarding: onboarding({ image_verified: false }) }, now)
     const image = row(rows, 'image')
     expect(image.value.endsWith(' · verification required')).toBe(true)
     expect(image.value.startsWith('forge/worker:2026.09')).toBe(true)
@@ -82,8 +82,8 @@ describe('statusRows · image', () => {
     const withDigest = factory({
       runtime: { enabled: true, slots: { build: 2, review: 1, audit: 1, recovery: 1 }, cycle_seconds: 30, image: 'forge/worker:2026.09@sha256:abcdef0123456789' },
     })
-    const rows = statusRows({ factory: withDigest, settings: null, onboarding: onboarding({ qualification_fresh: true }) }, now)
-    expect(row(rows, 'image').value).toBe('forge/worker:2026.09 · verification current')
+    const rows = statusRows({ factory: withDigest, settings: null, onboarding: onboarding({ image_verified: true }) }, now)
+    expect(row(rows, 'image').value).toBe('forge/worker:2026.09 · verified')
   })
 })
 

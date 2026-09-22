@@ -343,6 +343,7 @@
     "setup_url": "/settings/repository?repo_id=1"
   },
   "qualification_fresh": false,
+  "image_verified": false,
   "service": {
     "last_seen": 1790000000,
     "available": true

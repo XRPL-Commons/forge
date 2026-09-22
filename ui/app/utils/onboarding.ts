@@ -68,6 +68,9 @@ export interface OnboardingView {
   repository_check?: ProtectionReport | null
   repository_setup?: RepositoryRow | null
   qualification_fresh?: boolean
+  // True while the running image is the one the last passing check covered;
+  // unlike qualification freshness it does not expire.
+  image_verified?: boolean
   service?: { last_seen: number; available: boolean }
   can_start: boolean
   operation: SetupOperation | null

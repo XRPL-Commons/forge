@@ -41,3 +41,4 @@ runner-seccomp.json
 !/ui/tests/e2e/fixtures/**/factory.json
 !/ui/tests/e2e/fixtures/setup/
 !/ui/tests/e2e/fixtures/setup/**
+.superpowers/
