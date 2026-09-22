@@ -62,6 +62,7 @@ jobs:
         with: { node-version: 24, cache: npm, cache-dependency-path: ui/package-lock.json }
       - run: npm ci
       - run: npm test
+      - run: npm run typecheck
       - run: npm run build
       - run: npx playwright-core install chromium --with-deps
       - run: npm run test:e2e

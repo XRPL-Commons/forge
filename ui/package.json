@@ -8,6 +8,7 @@
     "build": "nuxt build",
     "preview": "node .output/server/index.mjs",
     "test": "vitest run",
+    "typecheck": "nuxt prepare && vue-tsc --noEmit -p .nuxt/tsconfig.json && vue-tsc --noEmit -p .nuxt/tsconfig.server.json",
     "test:e2e": "node tests/e2e/run.mjs"
   },
   "dependencies": {
@@ -25,7 +26,8 @@
     "@vitest/coverage-v8": "^4.1.11",
     "happy-dom": "^20.14.5",
     "playwright-core": "1.55.0",
-    "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11",
+    "vue-tsc": "2.2.12"
   }
 }

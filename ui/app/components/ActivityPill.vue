@@ -7,10 +7,14 @@ onMounted(poll.start)
 const summary = computed(() => poll.data.value?.active && poll.stale.value === false ? summarizeActivity(poll.data.value, Date.now() / 1000) : null)
 const ROLE_TARGET: Record<Role, string> = { build: '/#stage-build', review: '/#stage-review', audit: '/#stage-audit', merge: '/#runners', recovery: '/#runners' }
 const ROLE_COLOR: Record<Role, string> = { build: '#94bfff', review: '#c9a4f4', audit: '#80d7bd', merge: '#edbd77', recovery: '#c0cbcd' }
-const items = computed(() => {
+// The queue is the one entry that is not a worker role, so the item type
+// says so rather than smuggling it past the role type.
+type PillRole = Role | 'queued'
+interface Pill { role: PillRole; count: number; label: string; to: string }
+const items = computed<Pill[]>(() => {
   if (!summary.value || !summary.value.fresh) return []
-  const out = (Object.keys(ROLE_LABELS) as Role[]).filter(r => summary.value!.working[r]).map(r => ({ role: r, count: summary.value!.working[r], label: `${summary.value!.working[r]} ${ROLE_LABELS[r][summary.value!.working[r] === 1 ? 0 : 1]} working`, to: ROLE_TARGET[r] }))
-  if (summary.value.queued) out.push({ role: 'queued' as any, count: summary.value.queued, label: `${summary.value.queued} queued`, to: '/#columns' })
+  const out: Pill[] = (Object.keys(ROLE_LABELS) as Role[]).filter(r => summary.value!.working[r]).map(r => ({ role: r, count: summary.value!.working[r], label: `${summary.value!.working[r]} ${ROLE_LABELS[r][summary.value!.working[r] === 1 ? 0 : 1]} working`, to: ROLE_TARGET[r] }))
+  if (summary.value.queued) out.push({ role: 'queued', count: summary.value.queued, label: `${summary.value.queued} queued`, to: '/#columns' })
   return out
 })
 </script>

@@ -43,6 +43,8 @@ export interface FactoryView {
   jobs?: JobView[]
   slots?: Record<string, string>
   runtime: { enabled: boolean; slots: Record<string, number>; cycle_seconds: number; [key: string]: unknown }
+  // The digest CapacityForm sends back on POST /api/runtime (contracts §2).
+  runtime_revision: string
 }
 
 export interface CardModel {

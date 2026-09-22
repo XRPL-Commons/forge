@@ -125,8 +125,8 @@ export function renderHelp(markdown: string): HelpDoc {
       flush()
     } else if (headingMatch) {
       flush()
-      const level = headingMatch[1].length
-      const text = headingMatch[2]
+      const level = (headingMatch[1] ?? '').length
+      const text = headingMatch[2] ?? ''
       const id = slugify(text)
       blocks.push(`<h${level} id="${id}">${renderInline(text)}</h${level}>`)
       if (level <= 2) toc.push({ id, text, level: level as 1 | 2 })
@@ -134,7 +134,7 @@ export function renderHelp(markdown: string): HelpDoc {
       const kind: 'ul' | 'ol' = itemMatch[1] ? 'ul' : 'ol'
       if (paragraph.length || code.length || (listType && listType !== kind)) flush()
       listType = kind
-      items.push(itemMatch[2])
+      items.push(itemMatch[2] ?? '')
     } else if (items.length && line.startsWith(' ')) {
       // A wrapped continuation line of the current list item.
       items[items.length - 1] += ` ${line.trim()}`

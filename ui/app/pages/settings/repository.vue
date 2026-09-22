@@ -103,6 +103,9 @@ const failed = computed(() => requirements(report.value).filter(requirement => !
 const editUrl = computed(() => report.value?.edit_url ?? '')
 const canDownload = computed(() => ['ready', 'needs_setup'].includes(row.value?.protection_status ?? '') && !busy.value)
 const downloadHref = computed(() => row.value && view.value && canDownload.value ? rulesetHref(row.value, view.value.revision) : undefined)
+// A plain boolean would be typed as a real disabled state; this link is
+// never disabled, it only says so to assistive technology.
+const downloadAriaDisabled = computed<'true' | 'false'>(() => (canDownload.value ? 'false' : 'true'))
 const checking = computed(() => row.value?.protection_status === 'checking')
 const syncing = computed(() => refreshing.value || view.value?.sync.status === 'running')
 const hint = computed(() => row.value ? hintText(row.value) : '')
@@ -302,7 +305,7 @@ async function refreshAccess() {
               class="mt-2 inline-block rounded-full border border-mint-200 px-3 py-1 text-xs text-mint-200"
               :href="downloadHref"
               :download="rulesetFilename(row)"
-              :aria-disabled="String(!canDownload)"
+              :aria-disabled="downloadAriaDisabled"
               @click="downloaded = true"
             >{{ downloaded ? 'Download again' : 'Download ruleset' }}</a>
           </li>

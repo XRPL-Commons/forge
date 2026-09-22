@@ -27,7 +27,7 @@ const actionError = ref('')
 // is what the `allowed` predicate below is for.
 const owner = ref('')
 const accountType = ref<'organization' | 'personal'>('organization')
-const repoChoice = ref<string | null>(null)
+const repoChoice = ref<string | undefined>(undefined)
 // Open/closed state lives here, keyed by section, so a re-render cannot
 // collapse a panel the operator is reading.
 const showChecks = ref(false)
@@ -42,7 +42,7 @@ async function load() {
   if (initial) {
     initial = false
     step.value = initialStep(next)
-    repoChoice.value = next.selected ? String(next.selected.id) : null
+    repoChoice.value = next.selected ? String(next.selected.id) : undefined
   }
   // The factory came up under a start this page asked for.
   if (wasStarting && next.phase === 'active') await navigateTo('/')

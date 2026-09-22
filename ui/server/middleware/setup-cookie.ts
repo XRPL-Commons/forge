@@ -8,7 +8,7 @@ import { ensureSetupCookie } from '../utils/setup-cookie'
 // which runs first, so its Set-Cookie is never overwritten here).
 export default defineEventHandler((event) => {
   if ((event.node.req.method ?? 'GET') !== 'GET') return
-  const path = event.path.split('?')[0]
+  const path = event.path.split('?')[0] ?? ''
   if (path === '/api' || path.startsWith('/api/')) return
   ensureSetupCookie(event)
 })

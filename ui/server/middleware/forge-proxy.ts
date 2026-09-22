@@ -18,7 +18,9 @@ export default defineEventHandler(async (event) => {
   if (!guard.ok) { setResponseStatus(event, guard.status); return { ok: false, reason: guard.reason } }
   const base = useRuntimeConfig().forgeApi.replace(/\/$/, '')
   const upstreamHost = new URL(base).host
-  const body = req.method === 'POST' ? await readRawBody(event, false) : undefined
+  // A Node Buffer is a valid fetch body at runtime; the DOM `BodyInit` type
+  // just does not name it.
+  const body = (req.method === 'POST' ? await readRawBody(event, false) : undefined) as BodyInit | undefined
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
   try {
     const upstream = await fetch(base + path, { method: req.method, headers: upstreamHeaders(headers, req.method ?? 'GET', upstreamHost) as Record<string, string>,

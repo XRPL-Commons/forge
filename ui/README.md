@@ -29,6 +29,17 @@ npm test
 Runs `vitest` over `tests/unit/**` (composables, proxy guard, formatting
 utilities). No network or browser required.
 
+## Type check
+
+```
+npm run typecheck
+```
+
+`nuxt prepare` regenerates `.nuxt/`, then `vue-tsc` checks both generated
+projects: `.nuxt/tsconfig.json` (`app/**`, templates included) and
+`.nuxt/tsconfig.server.json` (`server/**`). CI runs it right after
+`npm test`. `vue-tsc` 2.x needs TypeScript 5.x, so both are pinned exactly.
+
 ## End-to-end tests
 
 ```
