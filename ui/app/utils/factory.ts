@@ -3,7 +3,7 @@
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
 import { clampTitle } from './format'
-import type { Harness } from './onboarding'
+import type { OnboardingView } from './onboarding'
 
 export type JobRole = 'build' | 'review' | 'audit' | 'recovery' | 'merge'
 export type ColumnRole = 'build' | 'review' | 'audit'
@@ -43,22 +43,6 @@ export interface FactoryView {
   jobs?: JobView[]
   slots?: Record<string, string>
   runtime: { enabled: boolean; slots: Record<string, number>; cycle_seconds: number; [key: string]: unknown }
-}
-
-// warnings() (Task 6) only reads error/checks; statusRows() (Task 8) also
-// reads phase/harnesses/qualification_fresh/service from the same payload —
-// one canonical shape for both, kept optional so either caller works from a
-// partial fixture. Named *Summary, not OnboardingView, because
-// utils/onboarding.ts owns the contract's full OnboardingView and Harness:
-// re-declaring those names here would shadow them in Nuxt's auto-import
-// registry.
-export interface OnboardingSummary {
-  error?: string | null
-  checks?: Record<string, string>
-  phase?: string
-  harnesses?: Harness[]
-  qualification_fresh?: boolean
-  service?: { last_seen: number; available: boolean }
 }
 
 export interface CardModel {
@@ -321,7 +305,11 @@ export function destination(kind: WarningKind, currentPath: string): { to: strin
 }
 
 export function warnings(
-  view: { factory: FactoryView | null; onboarding?: OnboardingSummary | null },
+  // warnings() reads error/checks, statusRows() (utils/status.ts) reads
+  // phase/harnesses/qualification_fresh/service: both take the one
+  // OnboardingView that utils/onboarding.ts owns, so no second name for the
+  // same payload shadows it in Nuxt's auto-import registry.
+  view: { factory: FactoryView | null; onboarding?: OnboardingView | null },
   now: number,
   currentPath: string,
 ): Warning[] {

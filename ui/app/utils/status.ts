@@ -5,7 +5,8 @@
 // §2 (GET /api/factory, GET/POST /api/settings, POST /api/runtime,
 // GET /api/onboarding) and §3.4 (Settings · General).
 import { formatAge } from './format'
-import { maxAge, type FactoryView, type OnboardingSummary } from './factory'
+import { maxAge, type FactoryView } from './factory'
+import type { OnboardingView } from './onboarding'
 
 // Named `*Summary` (not `RoleAccess`/`SettingsView`) because those are the
 // contract-level names (operator-api-contracts.md §2's full `RoleAccess` and
@@ -18,7 +19,7 @@ export interface SettingsSummary { roles?: Record<string, RoleAccessSummary> }
 export interface StatusSources {
   factory: FactoryView | null
   settings: SettingsSummary | null
-  onboarding: OnboardingSummary | null
+  onboarding: OnboardingView | null
 }
 
 export interface StatusRow {
@@ -53,7 +54,7 @@ function truncateImage(image: string): string {
   return at === -1 ? image : image.slice(0, at)
 }
 
-function imageRow(factory: FactoryView | null, onboarding: OnboardingSummary | null): StatusRow {
+function imageRow(factory: FactoryView | null, onboarding: OnboardingView | null): StatusRow {
   if (!factory || !onboarding) return notAvailable('image', 'Image')
   const fresh = !!onboarding.qualification_fresh
   const image = truncateImage(String(factory.runtime?.image ?? ''))
@@ -65,7 +66,7 @@ function imageRow(factory: FactoryView | null, onboarding: OnboardingSummary | n
   }
 }
 
-function accountsRow(onboarding: OnboardingSummary | null): StatusRow {
+function accountsRow(onboarding: OnboardingView | null): StatusRow {
   if (!onboarding) return notAvailable('accounts', 'Accounts')
   const entries: { name: string; status: string }[] = []
   for (const harness of onboarding.harnesses ?? []) {

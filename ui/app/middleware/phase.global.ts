@@ -32,15 +32,25 @@ export default defineNuxtRouteMiddleware(async (to) => {
   }
   if (payload.phase === 'resetting') return onboarding()
 
-  const activated = payload.phase === 'active'
-  // legacy/forge-status.py: `/` redirects when the factory is not activated
-  // and (guided setup is enabled or no repository is configured). Guided
-  // setup is the only way in for this UI, so the first half decides it. The
-  // payload's `repositories` are the access-ready ones, so reading "no
-  // repositories" from them would bounce a healthy factory whose GitHub
-  // access briefly degraded.
-  if (to.path === '/' && !activated) return onboarding()
-  // /settings/advanced is the same page; the other settings tabs stay
-  // reachable during setup, because step 3 links into them.
-  if ((to.path === '/settings' || to.path === '/settings/advanced') && !activated) return onboarding()
+  // Contracts §2 and legacy/forge-status.py:637 — `/` belongs to the started
+  // factory, so every phase short of `active` (legacy included: the pre-v2
+  // dashboard is a non-goal for this UI) is sent back to guided setup.
+  if (to.path === '/' && payload.phase !== 'active') return onboarding()
+
+  // forge-status.py:681 keys the /settings 303 on `state/factory-v2.enabled`,
+  // which GET /api/factory reports as `active` — not on the setup phase. A
+  // factory can already be running while a *new* guided setup is under way,
+  // and Settings then renders with its capacity form locked ("Use guided
+  // setup until the factory has started"). Only that case needs the second
+  // read, so an activated setup never pays for it.
+  if (to.path === '/settings' || to.path === '/settings/advanced') {
+    if (payload.phase === 'active') return
+    let factory: { ok?: boolean; active?: boolean }
+    try {
+      factory = await request<{ ok?: boolean; active?: boolean }>('/api/factory', { headers: { accept: 'application/json' } })
+    } catch {
+      return
+    }
+    if (factory?.ok === false || factory?.active !== true) return onboarding()
+  }
 })

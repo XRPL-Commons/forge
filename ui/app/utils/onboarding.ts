@@ -4,10 +4,11 @@
 // what step 3 says, what a harness row reads — is taken here so the pages
 // stay markup. Copy is verbatim from the operator API contracts §3.7–3.8.
 
-// The contracts' `Role` (GitHub App roles). Named AppRole so it does not
-// collide, in Nuxt's auto-import registry, with utils/activity.ts's job-role
-// `Role` ('merge' | 'recovery' | …), which is a different set.
-export type AppRole = 'build' | 'review' | 'audit' | 'controller'
+// The contracts' `Role` (GitHub App roles). Not exported, and not named
+// `Role`: utils/activity.ts exports a different job-role `Role` and
+// utils/repositories.ts exports this same union as `AppRole`, and two
+// exports of one name shadow each other in Nuxt's auto-import registry.
+type AppRole = 'build' | 'review' | 'audit' | 'controller'
 export type SetupPhase = 'setup' | 'legacy' | 'active' | 'resetting'
 export type CheckStatus = 'checking' | 'passed' | 'failed'
 export type CheckKey = 'github' | 'provider' | 'runner'
@@ -31,13 +32,16 @@ export interface SetupOperation {
   [key: string]: unknown
 }
 
-export interface ProtectionRequirement { id: string; label: string; passed: boolean; detail: string; sources?: unknown[] }
-export interface ProtectionReport {
+// Local, like AppRole: utils/repositories.ts (Settings · GitHub access and
+// Repository setup) exports the contract's fuller versions of these three
+// names, and this module only reads the few fields step 3 renders.
+interface ProtectionRequirement { id: string; label: string; passed: boolean; detail: string; sources?: unknown[] }
+interface ProtectionReport {
   repo_id: number; branch: string | null; observed_at: number; available: boolean
   requirements: ProtectionRequirement[]; [key: string]: unknown
 }
 
-export interface RepositoryRow {
+interface RepositoryRow {
   id: number; name: string; enabled?: boolean; access_ready?: boolean
   protection_status?: string; protection_ready: boolean
   protection?: ProtectionReport | null; rules_url?: string; setup_url?: string
