@@ -76,6 +76,11 @@ const absorbed = computed(() => {
 })
 const showStatusLine = computed(() => !!view.value && !connectionLost.value && !banners.value.length && !!operator.value?.title)
 
+// `operator.action_url` is sometimes off the box (a GitHub settings page,
+// the docs): an external destination opens in its own tab, and never hands
+// this page's window to whatever it opens.
+function isExternal(url: string): boolean { return url.startsWith('http') }
+
 const tiles = computed(() => metrics(view.value, now.value))
 const groups = computed(() => groupIssues(view.value, now.value))
 const slots = computed(() => view.value?.runtime?.slots ?? {})
@@ -184,6 +189,9 @@ async function confirm(reason: string) {
       <UButton
         v-if="operator!.action_url && operator!.action_label"
         :to="operator!.action_url"
+        :target="isExternal(operator!.action_url) ? '_blank' : undefined"
+        :rel="isExternal(operator!.action_url) ? 'noopener noreferrer' : undefined"
+        :external="isExternal(operator!.action_url) || undefined"
         size="xs"
         color="neutral"
         variant="outline"

@@ -43,7 +43,9 @@ function dispatchRow(factory: FactoryView | null): StatusRow {
   return {
     id: 'dispatch', label: 'Dispatch', value: enabled ? 'Enabled' : 'Paused', tone: enabled ? 'ok' : 'warn',
     ...(detail ? { detail } : {}),
-    to: '/settings', linkLabel: 'Worker capacity',
+    // The anchor is the point: /settings is a long page and the row's link
+    // says "Worker capacity", so it lands on that section.
+    to: '/settings#worker-capacity', linkLabel: 'Worker capacity',
   }
 }
 

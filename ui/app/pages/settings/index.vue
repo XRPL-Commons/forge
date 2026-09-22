@@ -68,7 +68,13 @@ function onSaved(view: FactoryView) {
       <NuxtLink v-if="continueSetup" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
     </div>
 
-    <p v-if="poll.stale.value" role="status" class="mt-4 rounded-xl border border-amber-200/30 bg-panel px-4 py-3 text-sm text-amber-200">
+    <!-- One message block, like the Factory page: what needs the operator's
+         attention outranks the fact that the last poll failed, and the two
+         are never stacked. -->
+    <div v-if="banners.length" class="mt-4 flex flex-col gap-2">
+      <WarningBanner v-for="warning in banners" :key="warning.kind + warning.text" :warning="warning" />
+    </div>
+    <p v-else-if="poll.stale.value" role="status" class="mt-4 rounded-xl border border-amber-200/30 bg-panel px-4 py-3 text-sm text-amber-200">
       Could not refresh. Showing the last received data. {{ poll.error.value }}
     </p>
 
@@ -78,10 +84,6 @@ function onSaved(view: FactoryView) {
         <StatusRow v-for="entry in rows" :key="entry.id" :row="entry" />
       </div>
     </section>
-
-    <div v-if="banners.length" class="mt-4 flex flex-col gap-2">
-      <WarningBanner v-for="warning in banners" :key="warning.kind + warning.text" :warning="warning" />
-    </div>
 
     <section id="worker-capacity" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-panel p-4">
       <h2 class="text-sm font-semibold text-white">Worker capacity</h2>

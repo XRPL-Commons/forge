@@ -46,7 +46,7 @@ describe('statusRows · dispatch', () => {
     const rows = statusRows({ factory: factory(), settings: null, onboarding: null }, now)
     expect(row(rows, 'dispatch').value).toBe('Enabled')
     expect(row(rows, 'dispatch').tone).toBe('ok')
-    expect(row(rows, 'dispatch').to).toBe('/settings')
+    expect(row(rows, 'dispatch').to).toBe('/settings#worker-capacity')
   })
 
   it('reports Paused with the operator detail and a warn tone', () => {

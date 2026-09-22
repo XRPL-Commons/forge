@@ -28,20 +28,23 @@ function isReadable(candidate: string): boolean {
   }
 }
 
-// The repo default candidate. `process.cwd()` is `ui/` when Nitro runs (the
-// e2e harness spawns the built server with that as its cwd), matching the
-// `../docs/onboarding.md` the runtimeConfig default documents.
-function repoDefaultPath(): string {
-  return path.resolve(process.cwd(), '../docs/onboarding.md')
-}
+// The runtimeConfig default for `helpDoc`, which is also the last candidate:
+// `process.cwd()` is `ui/` when Nitro runs (the e2e harness spawns the built
+// server with that as its cwd).
+const REPO_DEFAULT = '../docs/onboarding.md'
 
 export default defineEventHandler((event) => {
-  const nitroHelpDoc = process.env.NITRO_HELP_DOC
-    ? path.resolve(process.cwd(), process.env.NITRO_HELP_DOC)
-    : null
+  // The document is a declared runtime config key; `NITRO_HELP_DOC` is only
+  // the env override Nitro maps onto it, so reading the config keeps the
+  // default in one place and honours a value set any other way. Only a value
+  // that differs from the declared default counts as an override and
+  // outranks $FORGE_ROOT — the default is the repo doc, which is the last
+  // candidate regardless.
+  const helpDoc = String(useRuntimeConfig(event).helpDoc ?? '').trim() || REPO_DEFAULT
+  const nitroHelpDoc = helpDoc === REPO_DEFAULT ? null : path.resolve(process.cwd(), helpDoc)
   const forgeRoot = process.env.FORGE_ROOT?.trim() || null
 
-  const docPath = resolveHelpDocPath({ nitroHelpDoc, forgeRoot, repoDefault: repoDefaultPath() }, isReadable)
+  const docPath = resolveHelpDocPath({ nitroHelpDoc, forgeRoot, repoDefault: path.resolve(process.cwd(), helpDoc) }, isReadable)
   if (!docPath) {
     setResponseStatus(event, 404)
     return { html: '', toc: [] } satisfies HelpDoc

@@ -50,7 +50,10 @@ const poll = usePoll<RepositoriesView>(async () => {
   // sent back to GitHub access rather than shown an empty shell.
   if (!Array.isArray(view.repositories) || (id !== null && !view.repositories.length)) throw new ForgeApiError(200, UNAVAILABLE)
   return view
-}, { interval: 3000, allowed: () => !busy.value, onChange: observe })
+// Repository setup wants a faster tick than the rest of the app (an access
+// check lands within seconds), but never slower than the configured one —
+// which is how the e2e harness's 300ms reaches this page too.
+}, { interval: Math.min(3000, useRuntimeConfig().public.pollInterval), allowed: () => !busy.value, onChange: observe })
 
 onMounted(() => poll.start())
 onBeforeUnmount(() => clearTimeout(refreshTimer))
