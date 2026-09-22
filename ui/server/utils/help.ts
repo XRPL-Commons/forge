@@ -3,7 +3,8 @@
 //
 // This is a *restricted* Markdown subset (contracts §3.9), not a general
 // renderer: it is a faithful TypeScript port of the reference implementation
-// `forge/setup_help.py` (`inline`/`render`), which the contract names as the
+// the removed `forge/setup_help.py` (`inline`/`render`), which the operator
+// API contracts §3.9 name as the
 // source of truth. Every character of source text is escaped as it is
 // emitted; the only tags this module ever writes are the literal `<h1-3>`,
 // `<p>`, `<ul>`/`<ol>`/`<li>`, `<code>`, `<pre>` and `<a>` strings below, so
@@ -31,7 +32,8 @@ const ALLOWED_ATTRIBUTES: Record<string, string[]> = {
 }
 
 // Only a bare "name.md" — letters and hyphens, no path separators, matching
-// `forge/setup_help.py`'s `re.fullmatch(r'[a-z-]+\.md', url)` — is treated as
+// the removed `forge/setup_help.py`'s `re.fullmatch(r'[a-z-]+\.md', url)` — is
+// treated as
 // a sibling of docs/onboarding.md and rewritten to the GitHub blob URL. Any
 // other relative link (a path, a fragment, an extensionless slug) is not a
 // document this help page can resolve, so it renders as text instead of a
@@ -51,7 +53,7 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-// GitHub's own slugifier, as ported by setup_help.py: lowercase, collapse
+// GitHub's own slugifier, as the removed setup_help.py ported it: lowercase, collapse
 // every run of non-alphanumeric characters to one hyphen, trim the ends.
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -72,7 +74,7 @@ function resolveHref(url: string): string | null {
 }
 
 // Inline spans: backtick code and [label](url) links, in source order;
-// everything else is literal text. Matches setup_help.py's `inline()`.
+// everything else is literal text. Matches the removed setup_help.py's `inline()`.
 function renderInline(text: string): string {
   let out = ''
   let lastIndex = 0

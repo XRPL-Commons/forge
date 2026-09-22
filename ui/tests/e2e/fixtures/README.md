@@ -20,7 +20,7 @@ a running build job, a recovery job, a failed issue, an audited (finishing)
 issue and a merged issue.
 
 - `factory.json` — `GET /api/factory` for the Factory page (`/factory`,
-  `legacy/factory.html` / future Nuxt equivalent, see `tests/browser_factory.cjs`).
+  the Nuxt Factory page; ported from the removed `tests/browser_factory.cjs`).
   Contains repos `XRPL-Commons/academy` (id 1) and `XRPL-Commons/hackathon`
   (id 2); issues `1:601` (ready, running build job), `1:602` (built, queued
   for review), `2:603` (reviewed, queued for audit), `1:604` (failed,
@@ -40,7 +40,8 @@ issue and a merged issue.
   it into every non-`{ok:false}` object response regardless (see above), so
   this response does carry one when served through `mock-api.mjs`.
 - `issues.json` — `GET /api/issues` list response for the Issues page
-  (`/issues`, `tests/browser_issues.cjs`). Six rows spanning every status
+  (`/issues`; ported from the removed `tests/browser_issues.cjs`). Six rows
+  spanning every status
   (attention ×2, working, backlog, queued, completed) across both repo
   scopes; `body`/`history`/`reviews` stripped per the list contract.
 - `issues.issue.json` — `GET /api/issues?issue=1:610` detail response (the
@@ -49,13 +50,15 @@ issue and a merged issue.
   sanitization; `history` has 3 events (`discovered`, `assigned`,
   `operator_queue`).
 - `settings.json` — `GET /api/settings` for Settings · General /
-  GitHub access (`tests/browser_settings.cjs`). All four roles `ok`; one
+  GitHub access (ported from the removed `tests/browser_settings.cjs`). All
+  four roles `ok`; one
   enabled+ready repo (academy), one not-enabled repo (hackathon).
 - `onboarding.json` — `GET /api/onboarding`, phase `active` (post-setup
   steady state used by the header activity pill and `/settings/harnesses`).
   Codex and Claude connected with one passed model each; Grok not connected.
 - `repositories.json` — `GET /api/repositories` for Settings · Repository
-  setup (`/settings/repository`, `tests/browser_repository_setup.cjs`), both
+  setup (`/settings/repository`; ported from the removed
+  `tests/browser_repository_setup.cjs`), both
   rows.
 - `repositories.repo_id.json` — `GET /api/repositories?repo_id=2`, the
   single-row view for the not-yet-enabled hackathon repo, ready to enable.

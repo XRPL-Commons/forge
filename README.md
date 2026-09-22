@@ -59,13 +59,14 @@ repositories. Settings are editable in the UI or as a file; secrets remain outsi
 the source tree. The durable factory issues repository-scoped role credentials;
 the compatibility supervisor retains its existing authentication.
 
-The dashboard is implemented in `legacy/dashboard.html` and
-`legacy/forge-status.py`. It reads local state and refreshes automatically. Its
-repository drawer groups pull requests, reviews, and security audits beneath
-issue cards. The server exposes local worker output; keep it on a trusted private
-network. It has no per-user application authentication layer. Slot controls use
-a per-process capability token and require the exact bound address and same-origin
-JSON requests; only the supervisor executes them. See the
+The operator UI is the Nuxt app in `ui/` (service `forge-ui`); it reads local
+state through `legacy/forge-status.py`, which now serves only the JSON API on
+loopback. See [`docs/ui-deployment.md`](docs/ui-deployment.md) for how the two
+are deployed. The pages refresh automatically. The server exposes local worker
+output; keep it on a trusted private network. It has no per-user application
+authentication layer. Slot controls use a per-process capability token and
+require the exact bound address and same-origin JSON requests; only the
+supervisor executes them. See the
 [monitoring guide](docs/monitoring.md) for Stop, Resume, and Release behavior.
 
 See [observability](docs/observability.md), [activity](docs/activity.md),
@@ -82,18 +83,19 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s observer/tests -v
 ```
 
-Browser checks use the pinned Playwright dependency and Chromium:
+The operator UI has its own unit and end-to-end suites, in `ui/`:
 
 ```sh
-npm install --ignore-scripts --no-package-lock --no-audit --no-fund
-node node_modules/playwright-core/cli.js install --with-deps chromium
-FORGE_PLAYWRIGHT_MODULE=playwright-core npm run test:browser
+cd ui && npm ci && npm test && npm run test:e2e
 ```
 
-Installing Chromium's system dependencies may require administrator access.
-To use an existing browser instead, set `FORGE_BROWSER_PATH` to its executable.
-GitHub Actions runs both Python suites on pushes and pull requests. The optional
-browser job can be enabled when manually running the CI workflow.
+`npm run test:e2e` drives a real Chromium through `playwright-core`; install
+it first with `npx playwright-core install chromium`, or set
+`FORGE_BROWSER_PATH` to an existing executable. Installing Chromium's system
+dependencies may require administrator access. See
+[`ui/README.md`](ui/README.md) for the harness and its environment variables.
+GitHub Actions runs the Python suites and the `ui` job on pushes and pull
+requests.
 
 These checks use synthetic local fixtures and do not mutate GitHub or send
 notifications. Optional systemd integration tests are documented separately and
