@@ -11,7 +11,7 @@ const open = ref(false)
 </script>
 
 <template>
-  <div :id="id" class="scroll-mt-32 rounded-xl border border-line bg-bg p-3">
+  <div :id="id" class="min-w-0 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
     <div class="flex items-baseline justify-between gap-2">
       <h2 class="text-sm font-semibold text-white">{{ title }}</h2>
     </div>
@@ -22,7 +22,7 @@ const open = ref(false)
     <div v-if="queued.length" class="mt-3 mb-2">
       <button
         type="button"
-        class="issue-stack relative w-full rounded-lg border border-line bg-panel px-4 py-3 text-left transition-colors hover:bg-white/5"
+        class="issue-stack relative w-full min-w-0 max-w-full overflow-hidden rounded-lg border border-line bg-panel px-4 py-3 text-left transition-colors hover:bg-white/5"
         :aria-expanded="open"
         :aria-controls="id + '-queued'"
         @click="open = !open"
