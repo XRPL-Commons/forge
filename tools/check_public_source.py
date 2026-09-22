@@ -16,10 +16,14 @@ def main():
     forbidden_dirs = {'state', 'logs', 'local', 'backups', 'credentials', 'archives', 'setup', '.claude', '.codex', 'node_modules', '__pycache__'}
     forbidden_names = {'runtime.json', 'host-runtime.json', 'factory.json', 'github-credentials.env', '.env', 'config.env'}
     forbidden_suffixes = {'.pem', '.key', '.sqlite', '.sqlite3', '.db', '.pyc', '.tar', '.gz', '.zip'}
+    # Synthetic JSON served by the UI's mock API; file names mirror endpoint paths, never live state.
+    synthetic_fixtures = PurePosixPath('ui/tests/e2e/fixtures')
     for name in names:
         if not name:
             continue
         path = PurePosixPath(name)
+        if path.suffix == '.json' and path.parts[:len(synthetic_fixtures.parts)] == synthetic_fixtures.parts:
+            continue
         example = path.name.endswith('.example')
         if (set(path.parts[:-1]) & forbidden_dirs or path.name in forbidden_names
                 or path.suffix in forbidden_suffixes or path.suffix == '.repo'
