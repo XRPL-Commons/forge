@@ -58,6 +58,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(reason({'ready': True}, None, None, 'n'), 'native_sandbox_failed')
         self.assertIsNone(reason({'ready': True}, None, 'n', 'n'))
 
+    def test_claude_harness_environment_lets_oauth_refresh_reach_the_proxy(self):
+        env = adapter('claude')['harness_environment']({'HTTPS_PROXY': 'http://forge-egress:3128', 'CLAUDE_CODE_PROXY_RESOLVES_HOSTS': '1', 'GH_TOKEN': 'job'})
+        self.assertNotIn('CLAUDE_CODE_PROXY_RESOLVES_HOSTS', env)
+        self.assertEqual(env['HTTPS_PROXY'], 'http://forge-egress:3128')
+        self.assertEqual(env['CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'], '1')
+        self.assertEqual(env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'], '1')
+        self.assertTrue(env['PATH'].startswith('/opt/forge/claude-tools:'))
+
     def test_grok_probe_reports_fixed_failure_reasons(self):
         module = adapter('grok')
         self.assertEqual(module['error_message']('Error: Not signed in. To authenticate without a browser, run: grok login --device-auth'),

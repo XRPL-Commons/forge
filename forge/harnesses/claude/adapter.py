@@ -71,12 +71,21 @@ def canary_completed(events, command, nonce):
                for part in e.get('message', {}).get('content', []))
 
 
-def invoke(note, directory, env, result_schema, prompt, *, canary=None):
+def harness_environment(env):
     # Parent credentials never reach Bash/hook/MCP subprocesses. This switch
     # also requires a separate PID namespace for Bash on Linux.
-    env = {**env, 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB': '1', 'DISABLE_AUTOUPDATER': '1',
-           'PATH': '/opt/forge/claude-tools:/usr/local/bin:/usr/bin:/bin',
-           'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'CLAUDE_CODE_PROXY_RESOLVES_HOSTS': '1'}
+    # CLAUDE_CODE_PROXY_RESOLVES_HOSTS is deliberately absent: the OAuth token
+    # refresh client does not honour it and fails with "Invalid IP address:
+    # undefined", so every expired access token became a login failure. The
+    # API client reaches the egress proxy by CONNECT host name either way.
+    return {**{k: v for k, v in env.items() if k != 'CLAUDE_CODE_PROXY_RESOLVES_HOSTS'},
+            'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB': '1', 'DISABLE_AUTOUPDATER': '1',
+            'PATH': '/opt/forge/claude-tools:/usr/local/bin:/usr/bin:/bin',
+            'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
+
+
+def invoke(note, directory, env, result_schema, prompt, *, canary=None):
+    env = harness_environment(env)
     args = ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--json-schema', json.dumps(result_schema),
             '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
             '--tools', 'Bash,Read,Edit,Write,Glob,Grep', '--permission-mode', 'acceptEdits',
