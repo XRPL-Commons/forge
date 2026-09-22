@@ -25,27 +25,41 @@ reached under any other name, such as a MagicDNS name or a reverse proxy.
 ## Switch-over steps
 
 1. `cd ~/forger-remote/ui && npm ci && npm run build`
-2. `mkdir -p ~/ops/forge-watchdog/ui && rsync -a --delete ~/forger-remote/ui/.output/ ~/ops/forge-watchdog/ui/.output/ && cp ~/forger-remote/ui/package.json ~/ops/forge-watchdog/ui/`
+2. Back up the live bundle first — this is what rollback restores:
+   `rm -rf ~/ops/forge-watchdog/ui/.output.prev && [ -d ~/ops/forge-watchdog/ui/.output ] && cp -a ~/ops/forge-watchdog/ui/.output ~/ops/forge-watchdog/ui/.output.prev`
+3. `mkdir -p ~/ops/forge-watchdog/ui && rsync -a --delete ~/forger-remote/ui/.output/ ~/ops/forge-watchdog/ui/.output/ && cp ~/forger-remote/ui/package.json ~/ops/forge-watchdog/ui/`
    (copy `ui/` except `node_modules`)
-3. `cp deploy/forge-ui.service.example ~/.config/systemd/user/forge-ui.service`;
+4. `cp deploy/forge-ui.service.example ~/.config/systemd/user/forge-ui.service`;
    edit `HOST` to the box's Tailscale IPv4 (copy the value from
    `tailscale ip -4`)
-4. Add the two `Environment=` lines to
-   `~/.config/systemd/user/forge-status.service`
-   (`FORGE_BIND_ADDRESS=127.0.0.1`, `FORGE_PORT=8788`)
-5. `systemctl --user daemon-reload && systemctl --user restart forge-status && systemctl --user enable --now forge-ui`
-6. ```
+5. `~/.config/systemd/user/forge-status.service` needs
+   `FORGE_BIND_ADDRESS=127.0.0.1` and `FORGE_PORT=8788`. `FORGE_BIND_ADDRESS`
+   is usually already there, in which case only the `FORGE_PORT=8788` line is
+   new.
+6. `systemctl --user daemon-reload && systemctl --user restart forge-status && systemctl --user enable --now forge-ui`
+7. ```
    curl -s -o /dev/null -w '%{http_code}\n' http://<tailscale-ip>:8787/   → 200 (or 303 to /onboarding)
    curl -s http://<tailscale-ip>:8787/api/factory | head -c 80   → {"ok": true, …}
    ```
 
 ## Rollback
 
+To go back to the previous UI build:
+
 ```
-systemctl --user disable --now forge-ui
-# remove the two Environment= lines from forge-status.service
-systemctl --user restart forge-status
+systemctl --user stop forge-ui
+rm -rf ~/ops/forge-watchdog/ui/.output
+cp -a ~/ops/forge-watchdog/ui/.output.prev ~/ops/forge-watchdog/ui/.output
+systemctl --user start forge-ui
 ```
 
-This restores the Python server on port 8787 with the previous bind address
-and leaves `forge-ui` stopped and disabled.
+If the Python-served pages are needed instead — they were removed from the
+repo in the cleanup commit — check out `5762d8a`, the last commit that still
+has them, rebuild nothing, and put the Python server back on 8787:
+
+```
+systemctl --user disable --now forge-ui
+# remove FORGE_PORT=8788 (and FORGE_BIND_ADDRESS=127.0.0.1 if it was added
+# here) from forge-status.service
+systemctl --user daemon-reload && systemctl --user restart forge-status
+```
