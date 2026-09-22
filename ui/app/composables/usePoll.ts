@@ -1,5 +1,5 @@
 import { ref, onScopeDispose, getCurrentScope } from 'vue'
-export interface PollOptions<T> { interval?: number; onChange?: (value: T) => void }
+export interface PollOptions<T> { interval?: number; onChange?: (value: T) => void; allowed?: () => boolean }
 export function usePoll<T>(load: () => Promise<T>, options: PollOptions<T> = {}) {
   const interval = options.interval ?? 5000
   const data = ref<T | null>(null) as import('vue').Ref<T | null>
@@ -9,6 +9,7 @@ export function usePoll<T>(load: () => Promise<T>, options: PollOptions<T> = {})
   function schedule(delay = interval) { clearTimeout(timer); if (running && !hidden()) timer = setTimeout(() => { void refresh() }, delay) }
   function refresh(): Promise<T | null> {
     if (pending) return pending
+    if (options.allowed && !options.allowed()) { schedule(); return Promise.resolve(data.value) }
     pending = (async () => {
       try {
         const next = await load(); const key = JSON.stringify(next)

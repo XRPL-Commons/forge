@@ -73,4 +73,23 @@ describe('useForgeApi', () => {
     const api = useForgeApi()
     await expect(api.act('/api/deploy', {})).rejects.toMatchObject({ status: 0, message: 'Forge did not accept the action.' })
   })
+
+  it('get defaults to a 15 s abort signal', async () => {
+    fetchRaw.mockResolvedValue({ status: 200, ok: true, _data: { ok: true } })
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    const api = useForgeApi()
+    await api.get('/api/factory')
+    expect(spy).toHaveBeenCalledWith(15000)
+    expect((fetchRaw.mock.calls[0] as any)[1].signal).toBeInstanceOf(AbortSignal)
+    spy.mockRestore()
+  })
+
+  it('get honours an explicit timeout', async () => {
+    fetchRaw.mockResolvedValue({ status: 200, ok: true, _data: { ok: true } })
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    const api = useForgeApi()
+    await api.get('/api/issues?state=open', { timeout: 30000 })
+    expect(spy).toHaveBeenCalledWith(30000)
+    spy.mockRestore()
+  })
 })

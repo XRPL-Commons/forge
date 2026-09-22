@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { summarizeActivity, ROLE_LABELS, type Role } from '~/utils/activity'
 const api = useForgeApi()
-const poll = usePoll(() => api.get<any>('/api/factory'), { interval: 15000 })
+const pollInterval = useRuntimeConfig().public.pollInterval * 3
+const poll = usePoll(() => api.get<any>('/api/factory', { timeout: 10000 }), { interval: pollInterval })
 onMounted(poll.start)
 const summary = computed(() => poll.data.value?.active && poll.stale.value === false ? summarizeActivity(poll.data.value, Date.now() / 1000) : null)
 const ROLE_TARGET: Record<Role, string> = { build: '/#stage-build', review: '/#stage-review', audit: '/#stage-audit', merge: '/#runners', recovery: '/#runners' }

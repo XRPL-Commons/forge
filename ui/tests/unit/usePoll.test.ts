@@ -42,4 +42,19 @@ describe('usePoll', () => {
     const poll = usePoll(load, { onChange }); await poll.refresh(); await poll.refresh()
     expect(onChange).toHaveBeenCalledTimes(1)
   })
+
+  it('skips the load while allowed() is false and leaves data, error and stale untouched', async () => {
+    let allowed = false
+    const load = vi.fn(async () => ({ n: 1 }))
+    const poll = usePoll(load, { interval: 5000, allowed: () => allowed })
+    poll.start(); await vi.advanceTimersByTimeAsync(0)
+    expect(load).not.toHaveBeenCalled()
+    expect(poll.data.value).toBe(null); expect(poll.error.value).toBe(null); expect(poll.stale.value).toBe(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(load).not.toHaveBeenCalled()
+    allowed = true
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(load).toHaveBeenCalledTimes(1)
+    poll.stop()
+  })
 })

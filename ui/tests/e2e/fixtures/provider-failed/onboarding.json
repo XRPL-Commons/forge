@@ -1,0 +1,229 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "phase": "active",
+  "generation": "gen-1",
+  "revision": "rev-1",
+  "account_type": "organization",
+  "reset_receipt": null,
+  "roles": {
+    "build": {
+      "status": "ok",
+      "registered": true,
+      "app_id": 1,
+      "install_url": null
+    },
+    "review": {
+      "status": "ok",
+      "registered": true,
+      "app_id": 2,
+      "install_url": null
+    },
+    "audit": {
+      "status": "ok",
+      "registered": true,
+      "app_id": 3,
+      "install_url": null
+    },
+    "controller": {
+      "status": "ok",
+      "registered": true,
+      "app_id": 4,
+      "install_url": null
+    }
+  },
+  "repositories": [
+    {
+      "id": 1,
+      "name": "XRPL-Commons/academy",
+      "enabled": true,
+      "configured": true,
+      "access": {
+        "build": "ready",
+        "review": "ready",
+        "audit": "ready",
+        "controller": "ready"
+      },
+      "access_ready": true,
+      "dispatch_allowed": true,
+      "protection_status": "ready",
+      "protection_ready": true,
+      "protection": {
+        "repo_id": 1,
+        "branch": "main",
+        "observed_at": 1790000000,
+        "available": true,
+        "requirements": [
+          {
+            "id": "reviews",
+            "label": "At least two approving reviews",
+            "passed": true,
+            "detail": "2 approvals required.",
+            "sources": [
+              {
+                "kind": "ruleset",
+                "name": "Forge review baseline",
+                "url": "https://github.com/XRPL-Commons/academy/rules/10",
+                "id": 10,
+                "source_type": "ruleset"
+              }
+            ]
+          },
+          {
+            "id": "stale",
+            "label": "Fresh approvals when code changes",
+            "passed": true,
+            "detail": "Approvals are dismissed when new commits are pushed.",
+            "sources": [
+              {
+                "kind": "ruleset",
+                "name": "Forge review baseline",
+                "url": "https://github.com/XRPL-Commons/academy/rules/10",
+                "id": 10,
+                "source_type": "ruleset"
+              }
+            ]
+          }
+        ],
+        "sources": [
+          {
+            "kind": "ruleset",
+            "name": "Forge review baseline",
+            "url": "https://github.com/XRPL-Commons/academy/rules/10",
+            "id": 10,
+            "source_type": "ruleset"
+          }
+        ],
+        "errors": [],
+        "additional_rules": [],
+        "code_owner_reviews": false,
+        "bypass": {
+          "status": "operator_review",
+          "detail": "Bypass list must be reviewed manually on GitHub."
+        },
+        "required_approvals": 2
+      },
+      "protection_previous_status": null,
+      "protection_last_known": {
+        "repo_id": 1,
+        "branch": "main",
+        "observed_at": 1790000000,
+        "available": true,
+        "requirements": [
+          {
+            "id": "reviews",
+            "label": "At least two approving reviews",
+            "passed": true,
+            "detail": "2 approvals required.",
+            "sources": [
+              {
+                "kind": "ruleset",
+                "name": "Forge review baseline",
+                "url": "https://github.com/XRPL-Commons/academy/rules/10",
+                "id": 10,
+                "source_type": "ruleset"
+              }
+            ]
+          },
+          {
+            "id": "stale",
+            "label": "Fresh approvals when code changes",
+            "passed": true,
+            "detail": "Approvals are dismissed when new commits are pushed.",
+            "sources": [
+              {
+                "kind": "ruleset",
+                "name": "Forge review baseline",
+                "url": "https://github.com/XRPL-Commons/academy/rules/10",
+                "id": 10,
+                "source_type": "ruleset"
+              }
+            ]
+          }
+        ],
+        "sources": [
+          {
+            "kind": "ruleset",
+            "name": "Forge review baseline",
+            "url": "https://github.com/XRPL-Commons/academy/rules/10",
+            "id": 10,
+            "source_type": "ruleset"
+          }
+        ],
+        "errors": [],
+        "additional_rules": [],
+        "code_owner_reviews": false,
+        "bypass": {
+          "status": "operator_review",
+          "detail": "Bypass list must be reviewed manually on GitHub."
+        },
+        "required_approvals": 2
+      },
+      "rules_url": "https://github.com/XRPL-Commons/academy/settings/rules",
+      "setup_url": "/settings/repository?repo_id=1"
+    }
+  ],
+  "selected": {
+    "id": 1,
+    "name": "XRPL-Commons/academy"
+  },
+  "owner": "XRPL-Commons",
+  "provider_connected": true,
+  "checks": {
+    "github": "passed",
+    "provider": "failed",
+    "runner": "passed"
+  },
+  "harnesses": [
+    {
+      "id": "codex",
+      "name": "Codex",
+      "version": "1.4.0",
+      "connected": true,
+      "models": [
+        {
+          "id": "codex",
+          "model": "gpt-5-codex",
+          "status": "passed"
+        }
+      ],
+      "login_command": "/opt/forge/bin/forge setup login codex --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    },
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "version": "2.1.0",
+      "connected": true,
+      "models": [
+        {
+          "id": "claude",
+          "model": "claude-sonnet-4.5",
+          "status": "failed"
+        }
+      ],
+      "login_command": "/opt/forge/bin/forge setup login claude --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    },
+    {
+      "id": "grok",
+      "name": "Grok",
+      "version": "0.9.0",
+      "connected": false,
+      "models": [],
+      "login_command": "/opt/forge/bin/forge setup login grok --root /srv/forge",
+      "check_command": "/opt/forge/bin/forge setup check --root /srv/forge"
+    }
+  ],
+  "activity": null,
+  "repository_check": null,
+  "repository_setup": null,
+  "qualification_fresh": true,
+  "service": {
+    "last_seen": 1790000000,
+    "available": true
+  },
+  "can_start": false,
+  "operation": null,
+  "error": "The claude native tool sandbox failed verification inside the runner. Check the runner image and the host isolation policies"
+}

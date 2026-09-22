@@ -7,6 +7,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     forgeApi: 'http://127.0.0.1:8788',   // NITRO_FORGE_API overrides
     helpDoc: '../docs/onboarding.md',    // NITRO_HELP_DOC overrides
+    public: { pollInterval: 5000 },      // NUXT_PUBLIC_POLL_INTERVAL overrides
   },
   app: {
     head: {
