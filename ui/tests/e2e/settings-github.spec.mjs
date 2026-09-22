@@ -123,6 +123,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('needs-apps')
   await page.goto(base + '/settings/github')
   await waitForText(page, 'See the four Forge Apps')
+  await page.locator('#connections [data-badge]').nth(3).waitFor()
   const badges = await page.locator('#connections [data-badge]').allInnerTexts()
   assert.deepEqual(badges, ['Connected', 'Installation unverified', 'Permissions missing', 'Not connected'])
   assert.ok((await page.locator('#connections [data-key="audit"]').innerText()).includes('Missing contents: write'))
