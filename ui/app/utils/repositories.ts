@@ -92,7 +92,7 @@ export const ROLE_PURPOSES: Record<AppRole, string> = {
 
 // Badge text on GitHub access (§3.5). Keys cover both RoleAccess.status and
 // the per-repository access values, which share this vocabulary.
-export const STATUS_NAMES: Record<string, string> = {
+export const ACCESS_STATUS_NAMES: Record<string, string> = {
   ready: 'Access verified', ok: 'Connected', unknown: 'Access unknown', not_configured: 'Not connected',
   stale: 'Refresh needed', missing_permissions: 'Permissions missing', missing_access: 'No access',
   name_changed: 'Repository renamed', archived: 'Archived or disabled',
@@ -253,7 +253,7 @@ export function connectionCards(settings: SettingsView, onboarding: OnboardingSu
       label: ROLE_LABELS_APP[role],
       purpose: ROLE_PURPOSES[role],
       identity: slug || 'No App connected',
-      status: unverified ? UNVERIFIED_INSTALLATION : (STATUS_NAMES[roleAccess.status] ?? roleAccess.status),
+      status: unverified ? UNVERIFIED_INSTALLATION : (ACCESS_STATUS_NAMES[roleAccess.status] ?? roleAccess.status),
       ready: !unverified && ['ok', 'ready'].includes(roleAccess.status),
       observation,
       action: connectionAction(role, roleAccess, { ...registered, app_id: connection?.app_id ?? null }),

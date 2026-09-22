@@ -23,20 +23,9 @@ class SettingsHTTPTests(unittest.TestCase):
         return handler
 
     def test_page_and_api_require_trusted_host(self):
-        for path in ('/issues','/api/issues','/settings','/settings/github','/api/settings','/factory','/api/factory','/api/factory/output?id=invalid','/onboarding','/reset','/api/onboarding','/onboarding/github/callback'):
+        for path in ('/api/issues','/api/settings','/api/factory','/api/factory/output?id=invalid','/api/onboarding','/onboarding/github/callback'):
             handler = self.handler(path, Host='attacker.example:8787')
             handler.do_GET(); handler.send_error.assert_called_once_with(403)
-
-    def test_active_home_opens_activity(self):
-        from pathlib import Path
-        marker=Path(dashboard.WD)/'state/factory-v2.enabled'
-        marker.parent.mkdir(parents=True,exist_ok=True);marker.touch()
-        handler=self.handler('/');handler.do_GET()
-        handler._send.assert_called_once_with(dashboard.FACTORY_PAGE,'text/html; charset=utf-8')
-
-    def test_github_access_page_is_available_during_setup(self):
-        handler=self.handler('/settings/github');handler.do_GET()
-        handler._send.assert_called_once_with(dashboard.SETTINGS_PAGE,'text/html; charset=utf-8')
 
     def test_settings_get_is_local_only(self):
         service = Mock(); service.view.return_value = {'config':{},'revision':'abc'}
@@ -91,14 +80,6 @@ class SettingsHTTPTests(unittest.TestCase):
             handler._redirect=Mock();handler.do_GET()
             setup.return_value.callback.assert_not_called()
             handler._redirect.assert_called_once_with('/onboarding?connection_error=1')
-
-    def test_setup_page_issues_http_only_callback_cookie(self):
-        handler=self.handler('/onboarding');handler.do_GET()
-        headers=handler._send.call_args.args[2]
-        self.assertIn('HttpOnly',headers['Set-Cookie'])
-        self.assertIn('SameSite=Lax',headers['Set-Cookie'])
-        self.assertNotIn('localStorage',handler._send.call_args.args[0])
-
 
     def test_issue_decision_validates_schema_before_queueing(self):
         with patch('forge.factory.issue_actions.request', return_value='intent') as request:

@@ -1,8 +1,9 @@
 # Running the durable factory
 
 The new implementation lives in `forge/factory`. It is selected explicitly; installing
-this source does not take over the legacy fleet. Use `/factory` to inspect the new
-ledger before cutover. After cutover, `/` serves that view. Settings edits
+this source does not take over the legacy fleet. The operator UI is a separate
+`forge-ui` service on the tailnet address, and `forge-status` serves only the JSON
+API on localhost; see `docs/ui-deployment.md`. Settings edits
 `factory.json` and `runtime.json` with validation and conflict detection.
 
 ## Configuration

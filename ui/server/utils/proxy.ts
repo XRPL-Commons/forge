@@ -10,7 +10,7 @@ export interface GuardInput { method: string; headers: Headers; contentLength: n
 export type GuardResult = { ok: true } | { ok: false; status: number; reason: string }
 
 export function proxyPaths(path: string): boolean {
-  const clean = path.split('?')[0]
+  const clean = path.split('?')[0] ?? ''
   return clean === '/api' || clean.startsWith('/api/') || clean === '/onboarding/github/callback'
 }
 
@@ -20,7 +20,7 @@ export function guardAction({ method, headers, contentLength }: GuardInput): Gua
   if (!host || headers.origin !== 'http://' + host) return { ok: false, status: 403, reason: 'Cross-origin action rejected' }
   if (headers['sec-fetch-site'] !== 'same-origin') return { ok: false, status: 403, reason: 'Cross-site action rejected' }
   if (!headers['x-forge-action']) return { ok: false, status: 403, reason: 'Action token missing' }
-  if (!(headers['content-type'] ?? '').split(';')[0].trim().startsWith('application/json')) return { ok: false, status: 415, reason: 'Actions are JSON' }
+  if (!((headers['content-type'] ?? '').split(';')[0] ?? '').trim().startsWith('application/json')) return { ok: false, status: 415, reason: 'Actions are JSON' }
   if (!(contentLength > 0 && contentLength <= MAX_ACTION_BODY)) return { ok: false, status: 413, reason: 'Action body too large' }
   return { ok: true }
 }

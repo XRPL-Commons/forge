@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import Mock
 from forge.onboarding import Onboarding
-from forge.setup_help import render
 from forge.factory.github import GitHub, GitHubUnavailable
 
 
@@ -31,10 +30,3 @@ class FeedbackTests(unittest.TestCase):
         report=github.protection_report({}, {'base_ref':'main'})
         self.assertFalse(report['available'])
         self.assertEqual([r['id'] for r in report['requirements']],['readable'])
-
-    def test_help_renders_structure_links_and_escapes_content(self):
-        document=render('# Setup\n\n## Repository\n\n1. First\n   continued\n2. Second\n\n- Use `command`\n\n    example <command>\n\n[Install](installation.md) <script>bad()</script> [bad](javascript:alert)')
-        for fragment in ('<h1 id="setup">Setup</h1>', '<ol><li>First continued</li><li>Second</li></ol>', '<code>command</code>', '<pre><code>example &lt;command&gt;</code></pre>', 'https://github.com/XRPL-Commons/forge/blob/main/docs/installation.md'):
-            self.assertIn(fragment,document)
-        self.assertNotIn('<script>',document)
-        self.assertNotIn('href="javascript:',document)

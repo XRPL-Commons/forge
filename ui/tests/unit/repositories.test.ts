@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ACCESS_LABELS, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES, STATUS_NAMES,
+  ACCESS_LABELS, ACCESS_STATUS_NAMES, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES,
   actionMessage, checkedAtText, connectionAction, connectionCards, hintText,
   lastRefreshText, repoDescription, repoHeading, repoStage, repositoryRows, rowState,
   statusPillText,
@@ -30,8 +30,8 @@ describe('copy maps', () => {
   it('names the four Apps, their purposes and their badges', () => {
     expect(ROLE_LABELS_APP).toEqual({ build: 'Builder', review: 'Reviewer', audit: 'Auditor', controller: 'Controller' })
     expect(ROLE_PURPOSES.controller).toBe('Coordinates issues and merges approved pull requests.')
-    expect(STATUS_NAMES.ready).toBe('Access verified')
-    expect(STATUS_NAMES.missing_permissions).toBe('Permissions missing')
+    expect(ACCESS_STATUS_NAMES.ready).toBe('Access verified')
+    expect(ACCESS_STATUS_NAMES.missing_permissions).toBe('Permissions missing')
     expect(ACCESS_LABELS.missing_access).toBe('Needs repository access')
     expect(ACCESS_LABELS.stale).toBe('Refresh to check access')
     expect(PROTECTION_LABELS.needs_setup).toBe('Setup needed')
