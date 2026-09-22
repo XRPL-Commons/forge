@@ -249,7 +249,7 @@ async function confirm(reason: string) {
             <div v-if="runnerCards.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
               <IssueCard v-for="card in runnerCards" :key="card.id" :card="card">
                 <template #actions>
-                  <UButton v-if="card.jobId" size="xs" color="error" variant="ghost" @click="ask(RESET, card.jobId)">Reset</UButton>
+                  <UButton v-if="card.jobId" size="xs" color="error" variant="ghost" icon="i-lucide-rotate-ccw" aria-label="Reset" title="Reset" @click="ask(RESET, card.jobId)" />
                 </template>
               </IssueCard>
             </div>
