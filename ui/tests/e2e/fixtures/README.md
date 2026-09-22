@@ -293,3 +293,5 @@ Every file was validated with:
 ```
 node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" <file>
 ```
+
+- `check-rejected/` — `stale` row plus a refused `POST /api/repositories/check` (`{ok:false}`); repository-setup asserts the auto-check is retried once checks are accepted again.
