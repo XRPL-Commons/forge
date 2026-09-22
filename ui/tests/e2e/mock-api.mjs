@@ -14,6 +14,11 @@ const HOST = process.env.FORGE_MOCK_HOST || '127.0.0.1'
 const PORT = Number(process.env.FORGE_MOCK_PORT || 8788)
 const ORIGIN = `http://${HOST}:${PORT}`
 
+// Stands in for Python's secrets.token_urlsafe(32) on the GitHub callback:
+// 43 url-safe characters, inside the [A-Za-z0-9_-]{32,128} range the
+// contracts (§1, cookie forge_setup) call valid.
+const CALLBACK_COOKIE = 'synthetic-cookie-Kf3n0pQ7rLxW9sVbZt2yHdE'
+
 let scenario = 'default'
 let requests = []
 
@@ -148,7 +153,7 @@ const server = http.createServer(async (req, res) => {
   // Nitro proxy's cookie pass-through.
   if (req.method === 'GET' && pathname === '/onboarding/github/callback') {
     record(req, pathname, query, body)
-    res.writeHead(303, { location: '/onboarding', 'set-cookie': 'forge_setup=synthetic-cookie; Path=/; HttpOnly' })
+    res.writeHead(303, { location: '/onboarding', 'set-cookie': `forge_setup=${CALLBACK_COOKIE}; Path=/; HttpOnly` })
     return res.end()
   }
 

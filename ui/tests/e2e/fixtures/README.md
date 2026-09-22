@@ -143,11 +143,6 @@ issue and a merged issue.
   `ok`, audit registered but `not_configured`, controller unregistered,
   no repository selected, no provider connected. Exercises the Onboarding
   page's Step 1 GitHub-connection rows.
-- `onboarding-step3.json` — phase `setup`, all four roles `ok`, repository
-  `XRPL-Commons/academy` selected, provider connected, but `checks:{}` and
-  `can_start:false` (verification not yet run); includes the selected repo's
-  `repository_setup` row (protection ready). Exercises Onboarding Step 3
-  ("Verify your repository") default/expired branches.
 - `factory.json` — `{"ok": false, "reason": "Factory state is unavailable;
   reconcile the durable ledger."}`, the realistic pre-activation response.
   `/` runs both the redirect middleware and the header pill against
@@ -157,6 +152,30 @@ issue and a merged issue.
   "http://127.0.0.1:8788/__manifest", "manifest": {"name": "forge-build"}}`.
   The app is expected to submit the returned `manifest` to `action`
   (`mock-api.mjs`'s `POST /__manifest`), which redirects to `/onboarding`.
+
+## setup-step3/
+
+- `onboarding.json` — phase `setup`, all four roles `ok`, repository
+  `XRPL-Commons/academy` selected, provider connected, but `checks:{}` and
+  `can_start:false` (verification not yet run); includes the selected repo's
+  `repository_setup` row (protection ready). Exercises Onboarding Step 3
+  ("Verify your repository") default/expired branches, and Step 2's
+  repository radio rows. Written for Task 5 as `setup/onboarding-step3.json`
+  and moved here in Task 10: `mock-api.mjs` derives the fixture name from the
+  request path (`/api/onboarding` -> `onboarding`), so the only way to serve a
+  second onboarding payload is a second scenario directory.
+
+## setup-fresh/
+
+- `onboarding.json` — phase `setup` before anything exists: no owner, all four
+  roles unregistered and `not_configured`, no repositories, no provider. The
+  Onboarding Step 1 state that asks for the GitHub account name and account
+  type, and the only one whose primary button reaches the App-manifest
+  hand-off (a role that is already registered navigates to its `install_url`
+  instead).
+- `onboarding.post.json` — same payload as `setup/onboarding.post.json`, so
+  `POST /api/onboarding {action:'github'}` answers with the manifest and its
+  `action` URL in this scenario too.
 
 ## resetting/
 

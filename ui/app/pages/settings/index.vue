@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import CapacityForm from '~/components/CapacityForm.vue'
 import { summarizeActivity } from '~/utils/activity'
-import { warnings, type FactoryView, type OnboardingView } from '~/utils/factory'
+import { warnings, type FactoryView, type OnboardingSummary } from '~/utils/factory'
 import { statusRows, type SettingsSummary } from '~/utils/status'
 
-interface Payload { settings: SettingsSummary; onboarding: OnboardingView; factory: FactoryView }
+interface Payload { settings: SettingsSummary; onboarding: OnboardingSummary; factory: FactoryView }
 
 useHead({ title: 'Settings' })
 
@@ -17,7 +17,7 @@ const capacityForm = ref<InstanceType<typeof CapacityForm> | null>(null)
 // mid-cycle refresh never overwrites the operator's unsaved numbers.
 const poll = usePoll<Payload>(() => Promise.all([
   api.get<SettingsSummary>('/api/settings', { timeout: 30000 }),
-  api.get<OnboardingView>('/api/onboarding', { timeout: 30000 }),
+  api.get<OnboardingSummary>('/api/onboarding', { timeout: 30000 }),
   api.get<FactoryView>('/api/factory', { timeout: 30000 }),
 ]).then(([settings, onboarding, factory]) => ({ settings, onboarding, factory })), {
   interval: useRuntimeConfig().public.pollInterval,

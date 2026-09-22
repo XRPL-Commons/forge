@@ -57,7 +57,7 @@ export default async function (page, { base, scenario, requests }) {
   const cookies = await page.context().cookies(base)
   const setupCookie = cookies.find((c) => c.name === 'forge_setup')
   assert.ok(setupCookie, 'forge_setup cookie was not set')
-  assert.equal(setupCookie.value, 'synthetic-cookie')
+  assert.equal(setupCookie.value, 'synthetic-cookie-Kf3n0pQ7rLxW9sVbZt2yHdE')
   assert.equal(setupCookie.httpOnly, true)
   assert.equal(setupCookie.path, '/')
 }

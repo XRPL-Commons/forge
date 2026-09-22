@@ -5,6 +5,14 @@ Python API only through its own Nitro server, which proxies `/api/**` and
 `/onboarding/github/callback` to the upstream configured by `NITRO_FORGE_API`
 (see `server/middleware/forge-proxy.ts`).
 
+The Nitro server also mints the `forge_setup` cookie that Python reads back
+on `POST /api/onboarding {action:'github'}` and on the GitHub callback
+(contracts §1): `server/middleware/setup-cookie.ts` sets it on every GET
+outside `/api/**`, and `server/routes/_ui/setup-cookie.get.ts` exposes the
+same no-op-if-present logic at `GET /_ui/setup-cookie`, which Onboarding,
+Reset and Coding accounts call on mount — a client-side route change into
+those pages never reaches the middleware.
+
 ## Develop
 
 ```
@@ -116,8 +124,11 @@ An `http` server standing in for the real Python Forge API:
   any content type, skips the action guard, records the request and
   replies `303` with `Location: /onboarding`.
 - `GET /onboarding/github/callback` — always replies `303` with
-  `Location: /onboarding` and `Set-Cookie: forge_setup=synthetic-cookie;
-  Path=/; HttpOnly`, so the proxy's cookie pass-through can be exercised.
+  `Location: /onboarding` and `Set-Cookie: forge_setup=<43-character
+  token>; Path=/; HttpOnly`, so the proxy's cookie pass-through can be
+  exercised. The value stands in for Python's `secrets.token_urlsafe(32)`:
+  a shorter one would be replaced by `server/middleware/setup-cookie.ts` on
+  the `/onboarding` this redirect leads to, exactly as the contracts say.
 - Scenario `down` (switch to it with `ctx.scenario('down')`): every
   `GET /api/**` has its socket destroyed instead of answered, simulating
   the upstream being unreachable — the Nitro proxy's `fetch()` rejects and
