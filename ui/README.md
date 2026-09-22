@@ -154,3 +154,20 @@ override appends `.post`: `/api/runtime` → `runtime.post.json`,
 | `forgeApi`                   | `NITRO_FORGE_API`            | `http://127.0.0.1:8788`     |
 | `helpDoc`                    | `NITRO_HELP_DOC`             | `../docs/onboarding.md`     |
 | `public.pollInterval`        | `NUXT_PUBLIC_POLL_INTERVAL`  | `5000`                      |
+
+## Build and run in production
+
+```
+npm run build       # writes the self-contained Nitro bundle to .output/
+node .output/server/index.mjs
+```
+
+`.output/` bundles its own server code and dependencies; `node_modules` is
+not needed alongside it. Configure `HOST`, `PORT`, `NITRO_FORGE_API` and
+`NITRO_HELP_DOC` as environment variables (see the table above and
+`deploy/forge-ui.service.example`). No runtime dependency on the Iconify
+API: this app uses no `UIcon`/`icon=` markup, so there are no icons to fetch
+over the network.
+
+To switch a running host from the legacy Python dashboard to this UI, see
+[`docs/ui-deployment.md`](../docs/ui-deployment.md).

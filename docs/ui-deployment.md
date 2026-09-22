@@ -1,0 +1,44 @@
+# Deploy the operator UI (forge-ui)
+
+The Nuxt/Nitro app (`ui/`) becomes the tailnet-facing front door on port
+8787. The Python status server (`forge-status`) moves to loopback-only on
+port 8788, and Nitro proxies `/api/**` and `/onboarding/github/callback` to
+it (see `ui/README.md`).
+
+Only `ui/.output/` — the self-contained Nitro build — plus `ui/package.json`
+need to exist under the live root (`~/ops/forge-watchdog/ui`). `.output/`
+bundles its own server code and dependencies; `node_modules` is not needed
+there. `NITRO_HELP_DOC` points at `%h/ops/forge-watchdog/docs/onboarding.md`,
+so that file must also exist under the live root (it already does — it is
+part of the watchdog copy of the repo).
+
+No runtime dependency on the Iconify API: `ui/app/**` uses no `UIcon`/`icon=`
+markup, so there is nothing to bundle offline for icons.
+
+## Switch-over steps
+
+1. `cd ~/forger-remote/ui && npm ci && npm run build`
+2. `rsync -a --delete ui/.output/ ~/ops/forge-watchdog/ui/.output/` (copy
+   `ui/` except `node_modules`)
+3. `cp deploy/forge-ui.service.example ~/.config/systemd/user/forge-ui.service`;
+   edit `HOST` to the box's Tailscale IPv4 (copy the value from
+   `tailscale ip -4`)
+4. Add the two `Environment=` lines to
+   `~/.config/systemd/user/forge-status.service`
+   (`FORGE_BIND_ADDRESS=127.0.0.1`, `FORGE_PORT=8788`)
+5. `systemctl --user daemon-reload && systemctl --user restart forge-status && systemctl --user enable --now forge-ui`
+6. ```
+   curl -s -o /dev/null -w '%{http_code}\n' http://<tailscale-ip>:8787/   → 200 (or 303 to /onboarding)
+   curl -s http://<tailscale-ip>:8787/api/factory | head -c 80   → {"ok": true, …}
+   ```
+
+## Rollback
+
+```
+systemctl --user disable --now forge-ui
+# remove the two Environment= lines from forge-status.service
+systemctl --user restart forge-status
+```
+
+This restores the Python server on port 8787 with the previous bind address
+and leaves `forge-ui` stopped and disabled.
