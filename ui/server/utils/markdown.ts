@@ -13,11 +13,27 @@ import sanitizeHtml from 'sanitize-html'
 // this endpoint by another route cannot make the renderer do unbounded work.
 export const MAX_MARKDOWN_CHARS = 16000
 
-const ALLOWED_TAGS = [
-  'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 's', 'a',
-  'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
-  'details', 'summary', 'input',
-]
+// The tag/attribute allowlist of contracts §3.3, shared with anything else
+// that sanitizes restricted HTML server-side (server/utils/help.ts derives
+// the setup-guide allowlist from this one, minus `input`, since a help doc
+// never has checkboxes).
+export const MARKDOWN_ALLOWLIST: { tags: string[]; attributes: Record<string, string[]> } = {
+  tags: [
+    'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 's', 'a',
+    'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'details', 'summary', 'input',
+  ],
+  attributes: {
+    a: ['href', 'target', 'rel', 'title'],
+    ol: ['start'],
+    th: ['align'],
+    td: ['align'],
+    input: ['type', 'checked', 'disabled'],
+    details: ['open'],
+  },
+}
+
+const ALLOWED_TAGS = MARKDOWN_ALLOWLIST.tags
 
 const ALLOWED_SCHEMES = ['http:', 'https:', 'mailto:']
 
@@ -70,14 +86,7 @@ export function renderMarkdown(text: string, repo: string): string {
   const rendered = md.render(source)
   return sanitizeHtml(rendered, {
     allowedTags: ALLOWED_TAGS,
-    allowedAttributes: {
-      a: ['href', 'target', 'rel', 'title'],
-      ol: ['start'],
-      th: ['align'],
-      td: ['align'],
-      input: ['type', 'checked', 'disabled'],
-      details: ['open'],
-    },
+    allowedAttributes: MARKDOWN_ALLOWLIST.attributes,
     allowedSchemes: ['http', 'https', 'mailto'],
     disallowedTagsMode: 'discard',
     transformTags: {

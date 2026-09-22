@@ -9,14 +9,26 @@
 // `<p>`, `<ul>`/`<ol>`/`<li>`, `<code>`, `<pre>` and `<a>` strings below, so
 // nothing in the document — however it tries to smuggle a tag in — can ever
 // become live markup. `sanitizeHtml` is then run over the result anyway, as
-// the same defence-in-depth belt Task 7's `renderMarkdown` uses, with an
-// allowlist that is that one minus `input` (a help doc never has checkboxes).
+// the same defence-in-depth belt Task 7's `renderMarkdown` uses: the tag and
+// attribute allowlist is imported from `server/utils/markdown.ts`
+// (`MARKDOWN_ALLOWLIST`) rather than redeclared here, minus `input` (a help
+// doc never has checkboxes), plus `id` on the heading tags so the anchors
+// this page's own sidebar and other pages' deep links rely on survive.
 import sanitizeHtml from 'sanitize-html'
+import { MARKDOWN_ALLOWLIST } from './markdown'
 
 export type TocEntry = { id: string; text: string; level: 1 | 2 }
 export type HelpDoc = { html: string; toc: TocEntry[] }
 
-const ALLOWED_TAGS = ['h1', 'h2', 'h3', 'p', 'ul', 'ol', 'li', 'code', 'pre', 'a']
+// Task 7's allowlist minus `input` (renderHelp never emits a checkbox), plus
+// `id` on the heading tags — the one addition beyond Task 7's list, since an
+// issue body never needs a heading anchor but this page's sidebar and other
+// pages' deep links (#host-installation, #github-repository-protection) do.
+const ALLOWED_TAGS = MARKDOWN_ALLOWLIST.tags.filter((tag) => tag !== 'input')
+const ALLOWED_ATTRIBUTES: Record<string, string[]> = {
+  ...Object.fromEntries(Object.entries(MARKDOWN_ALLOWLIST.attributes).filter(([tag]) => tag !== 'input')),
+  h1: ['id'], h2: ['id'], h3: ['id'],
+}
 
 // Only a bare "name.md" — letters and hyphens, no path separators, matching
 // `forge/setup_help.py`'s `re.fullmatch(r'[a-z-]+\.md', url)` — is treated as
@@ -138,7 +150,7 @@ export function renderHelp(markdown: string): HelpDoc {
 
   const html = sanitizeHtml(blocks.join(''), {
     allowedTags: ALLOWED_TAGS,
-    allowedAttributes: { a: ['href'], h1: ['id'], h2: ['id'], h3: ['id'] },
+    allowedAttributes: ALLOWED_ATTRIBUTES,
     allowedSchemes: ['http', 'https'],
     disallowedTagsMode: 'discard',
   })

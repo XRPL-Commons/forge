@@ -11,7 +11,13 @@ import { renderHelp, resolveHelpDocPath, type HelpDoc } from '../../utils/help'
 
 const CACHE_TTL_MS = 60_000
 
-let cache: { at: number; doc: HelpDoc } | null = null
+// Keyed by the *resolved* document path (not just a timestamp): resolution
+// itself is cheap (a handful of fs.access checks), so it always runs, and
+// only the read+render is skipped when the winning candidate hasn't changed.
+// That way a changed NITRO_HELP_DOC/FORGE_ROOT — or the installation copy at
+// $FORGE_ROOT/docs/onboarding.md appearing or disappearing — is honoured on
+// the very next request instead of waiting out a stale 60s window.
+let cache: { path: string; at: number; doc: HelpDoc } | null = null
 
 function isReadable(candidate: string): boolean {
   try {
@@ -30,9 +36,6 @@ function repoDefaultPath(): string {
 }
 
 export default defineEventHandler((event) => {
-  const now = Date.now()
-  if (cache && now - cache.at < CACHE_TTL_MS) return cache.doc
-
   const nitroHelpDoc = process.env.NITRO_HELP_DOC
     ? path.resolve(process.cwd(), process.env.NITRO_HELP_DOC)
     : null
@@ -44,8 +47,11 @@ export default defineEventHandler((event) => {
     return { html: '', toc: [] } satisfies HelpDoc
   }
 
+  const now = Date.now()
+  if (cache && cache.path === docPath && now - cache.at < CACHE_TTL_MS) return cache.doc
+
   const source = readFileSync(docPath, 'utf8')
   const doc = renderHelp(source)
-  cache = { at: now, doc }
+  cache = { path: docPath, at: now, doc }
   return doc
 })
