@@ -33,6 +33,11 @@ async function waitForPost(requests, match, what) {
 // does. `marker` survives only if no navigation happened.
 async function clientNavigate(page, to) {
   await page.evaluate(() => { window.__clientNav = true })
+  // Hydration finishes after load; on slow runners the app instance is not attached yet.
+  await page.waitForFunction(() => {
+    const root = document.querySelector('#__nuxt') ?? document.body.firstElementChild
+    return !!(root && root.__vue_app__)
+  }, undefined, { timeout: 15000 })
   const pushed = await page.evaluate((target) => {
     const root = document.querySelector('#__nuxt') ?? document.body.firstElementChild
     const app = root && root.__vue_app__
