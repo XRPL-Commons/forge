@@ -141,6 +141,20 @@ async function refreshRepositories() {
   }
 }
 
+const disableTarget = ref<RepositoryRowModel | null>(null)
+
+function onToggle(row: RepositoryRowModel) {
+  if (row.action === 'continue') return navigateTo('/onboarding')
+  if (row.action === 'setup') return navigateTo(row.to)
+  disableTarget.value = row
+}
+
+async function confirmDisable() {
+  const target = disableTarget.value
+  disableTarget.value = null
+  if (target) await disable(target.id)
+}
+
 async function disable(id: number) {
   const current = settings.value
   if (!current || busy.value) return
@@ -240,10 +254,19 @@ async function disable(id: number) {
       <label for="repo-search" class="mt-3 block text-xs text-muted">Find a repository</label>
       <UInput id="repo-search" v-model="query" type="search" placeholder="Repository name" autocomplete="off" class="mt-1 w-full max-w-sm" />
 
-      <RepositoryTable v-if="rows.length" class="mt-3" :rows="visibleRows" :busy="busy" @disable="disable" />
+      <RepositoryTable v-if="rows.length" class="mt-3" :rows="visibleRows" :busy="busy" @toggle="onToggle" />
       <p v-else-if="settings" id="repo-empty" class="mt-3 text-xs text-muted">Connect the Forge Apps through setup, then refresh access to discover repositories.</p>
 
       <p class="mt-3 text-xs text-muted">Forge checks existing issues and pull requests before starting work. If access is lost, new work pauses and issue history is kept.</p>
     </section>
   </div>
+  <ConfirmDialog
+    :open="disableTarget !== null"
+    :title="disableTarget ? `Disable automation for ${disableTarget.name}?` : ''"
+    text="Forge stops picking up issues in this repository. Existing pull requests, branches and issue history are kept."
+    confirm-label="Disable"
+    :require-reason="false"
+    @confirm="confirmDisable"
+    @close="disableTarget = null"
+  />
 </template>
