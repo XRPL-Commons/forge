@@ -122,11 +122,20 @@ const jobs = computed<JobView[]>(() => (loaded.value?.factory?.jobs ?? [])
   .slice()
   .sort((left, right) => (right.started_at ?? right.created_at) - (left.started_at ?? left.created_at)))
 
-const selectedJob = computed<string | null>(() => {
+// `?job=<id>` is a link to one run — what the operator follows out of the
+// activity list or a shared message.
+const requestedJob = computed<string | null>(() => {
   const asked = route.query.job
   const job = Array.isArray(asked) ? asked[0] : asked
-  return (typeof job === 'string' && job) || detail.value?.active || null
+  return typeof job === 'string' && job ? job : null
 })
+const selectedJob = computed<string | null>(() => requestedJob.value ?? detail.value?.active ?? null)
+
+// That run's output stays reachable even when the issue behind it is not: a
+// repository that left the inventory (or a reset fence) fails the detail
+// request, and the log the operator came to read would go with it. The
+// alert above still says why the rest of the page is missing.
+const showOutput = computed(() => !!detail.value || !!requestedJob.value)
 
 function jobLine(job: JobView): string {
   const outcome = job.outcome ?? (job.cleanup ? 'cleanup' : job.phase)
@@ -242,33 +251,36 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           <NuxtLink :to="issuePath(`${detail.repo_id}:${number}`)" class="text-sky-200 hover:underline">#{{ number }}</NuxtLink>{{ index < detail.dependencies.length - 1 ? ', ' : '' }}
         </template>
       </p>
+    </template>
 
-      <section class="mt-5 rounded-xl border border-line bg-bg p-3">
-        <UCollapsible v-model:open="outputOpen">
-          <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
-            Worker output
-            <SelectChevron :class="outputOpen ? 'rotate-180' : ''" />
-          </UButton>
-          <template #content>
-            <pre
-              v-if="logs && logs.trim()"
-              class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel p-3 text-xs"
-            >{{ logs }}</pre>
-            <p v-else class="mt-2 text-xs text-muted">No captured output is available yet.</p>
-          </template>
-        </UCollapsible>
-        <ul v-if="jobs.length" id="issue-jobs" class="mt-3 flex flex-col gap-1 text-xs">
-          <li v-for="job in jobs" :key="job.id">
-            <NuxtLink
-              :to="{ query: { job: job.id } }"
-              :aria-current="job.id === selectedJob ? 'true' : undefined"
-              class="hover:underline"
-              :class="job.id === selectedJob ? 'text-mint-200' : 'text-muted'"
-            >{{ jobLine(job) }}<span v-if="job.started_at"> · <time :datetime="isoTime(job.started_at)">{{ localTime(job.started_at) }}</time></span></NuxtLink>
-          </li>
-        </ul>
-      </section>
+    <!-- Outside the detail block on purpose: see showOutput. -->
+    <section v-if="showOutput" class="mt-5 rounded-xl border border-line bg-bg p-3">
+      <UCollapsible v-model:open="outputOpen">
+        <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
+          Worker output
+          <SelectChevron :class="outputOpen ? 'rotate-180' : ''" />
+        </UButton>
+        <template #content>
+          <pre
+            v-if="logs && logs.trim()"
+            class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel p-3 text-xs"
+          >{{ logs }}</pre>
+          <p v-else class="mt-2 text-xs text-muted">No captured output is available yet.</p>
+        </template>
+      </UCollapsible>
+      <ul v-if="jobs.length" id="issue-jobs" class="mt-3 flex flex-col gap-1 text-xs">
+        <li v-for="job in jobs" :key="job.id">
+          <NuxtLink
+            :to="{ query: { job: job.id } }"
+            :aria-current="job.id === selectedJob ? 'true' : undefined"
+            class="hover:underline"
+            :class="job.id === selectedJob ? 'text-mint-200' : 'text-muted'"
+          >{{ jobLine(job) }}<span v-if="job.started_at"> · <time :datetime="isoTime(job.started_at)">{{ localTime(job.started_at) }}</time></span></NuxtLink>
+        </li>
+      </ul>
+    </section>
 
+    <template v-if="detail">
       <section class="mt-3 rounded-xl border border-line bg-bg p-3">
         <UCollapsible v-model:open="activityOpen">
           <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">

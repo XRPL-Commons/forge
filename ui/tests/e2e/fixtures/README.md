@@ -255,6 +255,18 @@ exercise a decision that needs no reason and one that does:
   `body_truncated: true`, so the issue's "Description shortened…" note is
   exercised.
 
+## orphan-job/
+
+The issue behind a `?job=<id>` link has left the inventory, but its worker
+output has not.
+
+- `issues.issue.json` — the bare `{ok:false, reason:"This issue is not in a
+  managed repository. Refresh the issue list."}` shape, served verbatim with
+  status 200, so the detail fails while the page still has a job id from the
+  query.
+- `factory-output.json` — the log that `?job=` points at, distinct from
+  `default/`'s so the spec can tell which scenario answered.
+
 ## down (not a fixture directory)
 
 `down` is a scenario name recognized directly by `mock-api.mjs`, not a

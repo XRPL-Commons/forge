@@ -142,6 +142,20 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(recoveryOutputs.length, 1)
   assert.equal(recoveryOutputs[0].query.id, RECOVERY_JOB, 'the ?job= id is what is fetched')
 
+  // …and when the issue itself is gone from the inventory, the ?job= link
+  // still reaches that job's output. The alert says why the rest is missing;
+  // losing the log with the issue would strand the operator.
+  await scenario('orphan-job')
+  await page.goto(`${base}/issues/9%3A999?job=${RECOVERY_JOB}`)
+  await waitForText(page, 'This issue is not in a managed repository. Refresh the issue list.')
+  assert.equal(await page.locator('#issue-title').count(), 0, 'there is no issue to show')
+  await page.getByRole('button', { name: 'Worker output' }).click()
+  await waitForText(page, 'orphan job line two')
+  assert.match(await page.locator('pre').innerText(), /orphan job line one\norphan job line two/)
+  const orphanOutputs = (await requests()).filter((entry) => entry.path === '/api/factory/output')
+  assert.equal(orphanOutputs.length, 1)
+  assert.equal(orphanOutputs[0].query.id, RECOVERY_JOB, 'the orphaned ?job= id is what is fetched')
+
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')
   await page.goto(base + '/issues/1%3A609')
