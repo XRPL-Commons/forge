@@ -225,3 +225,29 @@ class AdapterTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class MergeRefusalTests(unittest.TestCase):
+    def github(self):
+        settings = Mock()
+        settings.load.return_value = configured()
+        client = Mock()
+        client.jwt.return_value = 'synthetic-jwt'
+        return GitHub(settings, validate({}), client=client), client
+
+    def item(self):
+        return {'repo': 'XRPL-Commons/hackathon', 'repo_id': 71, 'candidate': {'pr': 825, 'head': 'a' * 40}}
+
+    def test_refused_merge_names_the_pull_request_and_the_rule(self):
+        github, client = self.github()
+        github.token = Mock(return_value='synthetic-token')
+        client.request.side_effect = AccessError('GitHub returned HTTP 405; check installation access', status=405)
+        with self.assertRaisesRegex(GitHubUnavailable, r'refused to merge XRPL-Commons/hackathon#825: branch rules still block it') as caught:
+            github.merge(self.item())
+        self.assertEqual(caught.exception.status, 405)
+
+    def test_budget_exhaustion_keeps_the_generic_message(self):
+        github, client = self.github()
+        github.deadline = 0
+        with self.assertRaisesRegex(GitHubUnavailable, 'budget reached'):
+            github.merge(self.item())
