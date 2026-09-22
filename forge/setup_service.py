@@ -194,6 +194,46 @@ class Service:
                 'branch': 'setup-probe', 'candidate': None, 'history': {}, 'deadline': time.time() + 180,
                 'fenced': False, 'runner_config': config, 'kind': kind, 'cleanup': False}
 
+    @staticmethod
+    def draining(scope, config, records):
+        """A rotating login has one writer, as in factory.providers.available.
+
+        An unscoped check waits for every worker; a scoped one waits only while a
+        worker still holds one of the checked logins. API-key accounts run in
+        parallel, so they are never waited for.
+        """
+        if not scope:
+            return bool(records['slots'])
+        references = {entry['provider_auth_file_env'] for entry in config['provider_pool']
+                      if entry['id'] in scope and entry.get('provider_auth_file_env')}
+        return any(not job['cleanup'] and (job.get('runner_config') or {}).get('provider_auth_file_env') in references
+                   for job in records['jobs'].values())
+
+    def runner_verified(self, op):
+        """Worker isolation is a property of the image the last qualification covered."""
+        return bool(op.get('providers')) and bool(op.get('image')) and op['image'] == self.setup.runtime()['image']
+
+    def complete(self, data, op):
+        config = load(self.root) if data['phase'] == 'active' else self.setup.runtime()
+        checks, scope = data.get('provider_checks', {}), op.get('providers')
+        identifiers = [entry['id'] for entry in config['provider_pool']]
+        passed = [key for key, value in checks.items() if value == 'passed']
+        verified = bool(passed)
+        if scope:
+            # Only the checked accounts change; the others keep their verdict.
+            ready = identifiers if config['provider_ready'] is None else [i for i in config['provider_ready'] if i in identifiers]
+            passed = [i for i in ready if i not in scope] + [i for i in identifiers if i in scope and checks.get(i) == 'passed']
+            verified = any(checks.get(i) == 'passed' for i in scope)
+        if config['provider_pool']:
+            config['provider_ready'] = passed
+            write_json(self.root / ('runtime.json' if data['phase'] == 'active' else 'setup/runtime.json'), config)
+        self.update(op, probe_jobs=data['probe_jobs'], provider_checks=checks, provider_errors=data.get('provider_errors', {}),
+                    probe_error=None, checks={**data['checks'], 'provider': 'passed' if verified else 'failed', 'runner': 'passed'},
+                    qualification={'key': self.setup.qualification_key(data), 'at': self.setup.clock(),
+                                   'image': self.setup.runtime()['image']} if verified else None,
+                    readiness=None if op['action'] == 'harness_check' or not verified else {'revision': self.setup.revision(data), 'at': time.time()},
+                    operation=None, error=None if verified else 'No coding account passed verification. Review the account and runner diagnostics before checking again.')
+
     def check(self, data):
         op = data['operation']
         if op['step'] == 'queued':
@@ -206,9 +246,12 @@ class Service:
         if op['step'] == 'prepare':
             for job in data['probe_jobs']:
                 self.runner(job['runner_config']).reset(job)
+            scope = op.get('providers')
             if data['phase'] == 'active' and op['action'] == 'harness_check':
-                # Drain normally before probing shared login credentials. The
-                # durable operation blocks new dispatch while cleanup continues.
+                # Drain normally before probing shared login credentials. A full
+                # check blocks new dispatch while cleanup continues; a scoped one
+                # waits only for the workers holding the checked login, and tick()
+                # keeps dispatching the harnesses outside the scope.
                 config = load(self.root)
                 ledger = Ledger(self.root / 'state/factory')
                 with controller_lock(self.root):
@@ -216,7 +259,7 @@ class Service:
                     for job in ledger.read()['jobs'].values():
                         if not job['cleanup'] and job['role'] != 'merge':
                             supervisor.execution(job)
-                    if ledger.read()['slots']:
+                    if self.draining(scope, config, ledger.read()):
                         return
             config = self.setup.runtime() if op['action'] == 'harness_check' else self.access(data)
             self.runner(config).ready()
@@ -225,10 +268,15 @@ class Service:
                             readiness={'revision': self.setup.revision(data), 'at': self.setup.clock()}, operation=None, error=None)
                 return
             pool = config['provider_pool'] or [{'id': config['provider']}]
+            if scope:
+                pool = [entry for entry in pool if entry['id'] in scope]
+                if not pool:
+                    raise ValueError('The checked coding account is no longer connected; check again')
             plan = [{**config, **{k: v for k, v in entry.items() if k != 'id'}} for entry in pool]
             job = self.new_probe(plan[0], 'provider')
             job['provider_id'] = pool[0]['id']
-            self.update(op, probe_jobs=[job], probe_plan=plan, probe_ids=[e['id'] for e in pool], provider_checks={},
+            self.update(op, probe_jobs=[job], probe_plan=plan, probe_ids=[e['id'] for e in pool],
+                        provider_checks={k: v for k, v in (data.get('provider_checks') or {}).items() if k not in scope} if scope else {},
                         checks={**({} if op['action'] == 'harness_check' else {'github': 'passed'}), 'provider': 'checking', 'runner': 'checking'},
                         operation={**op, 'step': 'probe'})
             return
@@ -249,20 +297,15 @@ class Service:
                     next_job = self.new_probe(data['probe_plan'][index], 'provider')
                     next_job['provider_id'] = data['probe_ids'][index]
                     data['probe_jobs'].append(next_job)
+                elif self.runner_verified(op):
+                    self.complete(data, op)
+                    return
                 else:
                     data['probe_jobs'].append(self.new_probe(self.setup.runtime(), 'termination'))
             elif job['kind'] == 'termination':
                 data['probe_jobs'].append(self.new_probe(self.setup.runtime(), 'reuse'))
             else:
-                config = load(self.root) if data['phase'] == 'active' else self.setup.runtime()
-                passed = [key for key, value in data.get('provider_checks', {}).items() if value == 'passed']
-                if config['provider_pool']:
-                    config['provider_ready'] = passed
-                    write_json(self.root / ('runtime.json' if data['phase'] == 'active' else 'setup/runtime.json'), config)
-                self.update(op, probe_jobs=data['probe_jobs'], checks={**data['checks'], 'provider': 'passed' if passed else 'failed', 'runner': 'passed'},
-                            qualification={'key': self.setup.qualification_key(data), 'at': self.setup.clock()} if passed else None,
-                            readiness=None if op['action'] == 'harness_check' or not passed else {'revision': self.setup.revision(data), 'at': time.time()},
-                            operation=None, error=None if passed else 'No coding account passed verification. Review the account and runner diagnostics before checking again.')
+                self.complete(data, op)
                 return
             self.update(op, probe_jobs=data['probe_jobs'], provider_checks=data.get('provider_checks', {}),
                         provider_errors=data.get('provider_errors', {}), probe_error=None)
@@ -398,6 +441,7 @@ class Service:
         write_json(self.root / 'state/setup-service.json', {'at': self.setup.clock()})
         data = self.setup.read()
         op = data.get('operation')
+        scoped = bool(op and op['action'] == 'harness_check' and op.get('providers') and data['phase'] == 'active')
         if op:
             try:
                 if op['action'] == 'reset':
@@ -426,7 +470,10 @@ class Service:
                         self.update(op, error=message, **finished)
                 except StateError:
                     pass  # Reset superseded this check/activation.
-            return
+            if not scoped:
+                return
+            # A scoped check only holds back its own accounts. Every other
+            # harness keeps dispatching while this login is verified.
         if (self.root / 'state/factory-paused.json').exists():
             marker = self.root / 'state/factory-onboarding.enabled'
             fence = read_json(self.root / 'state/factory-paused.json')
@@ -447,6 +494,10 @@ class Service:
             return
         with controller_lock(self.root):
             settings, config = Settings(self.root), load(self.root)
+            if scoped:
+                identifiers = [entry['id'] for entry in config['provider_pool']]
+                ready = identifiers if config['provider_ready'] is None else config['provider_ready']
+                config['provider_ready'] = [i for i in ready if i in identifiers and i not in op['providers']]
             if time.monotonic() >= self.next_sync:
                 settings.start_refresh()
                 self.next_sync = time.monotonic() + settings.load()['sync_interval_seconds']

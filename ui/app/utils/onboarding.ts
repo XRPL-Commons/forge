@@ -29,6 +29,9 @@ export interface SetupActivity {
 export interface SetupOperation {
   id: string; action: 'check' | 'harness_check' | 'start' | 'reset'
   generation: string; revision: string | null; step: string; at: number
+  // Terminal-only: a scoped `setup check <harness>` carries the pool entries it
+  // verifies; other accounts keep their verdict and keep dispatching.
+  harness?: string; providers?: string[]
   [key: string]: unknown
 }
 

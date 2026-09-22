@@ -76,13 +76,15 @@ class SetupTests(unittest.TestCase):
         class Runner:
             def __init__(self, config, **kw): self.config = config
             def ready(self): return True
+            def capacity(self, job=None): return {'allowed':True, 'reason':'capacity_available'}
+            def observe(self, job, current=None): return {'logs':'running output', 'at':0}
             def inspect(self, job): return engine.get(job['id'])
             def create(self, job):
                 engine[job['id']] = {'id':job['id'], 'status':'created', 'running':False, 'exit_code':0}
                 return job['id']
             def prepare(self, job, token): pass
-            def start(self, job): engine[job['id']].update(status='exited' if job['kind']=='provider' else 'running', running=job['kind']!='provider')
-            def capture(self, job): return {'result':{'ready':True,'attempt':job['id']}}
+            def start(self, job): engine[job['id']].update(status='exited' if job.get('kind')=='provider' else 'running', running=job.get('kind')!='provider')
+            def capture(self, job): return {'result':{'ready':True,'attempt':job['id']}, 'logs':'', 'missing':[]}
             def reset(self, job):
                 assert job['fenced']
                 resets.append(job['id']); engine.pop(job['id'], None)

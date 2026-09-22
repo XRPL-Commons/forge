@@ -121,6 +121,10 @@ class Onboarding:
             if step == 'prepare' and action == 'check':
                 return {'target': 'github', 'label': 'Checking repository access and protection'}
             if step == 'prepare' and action == 'harness_check' and data.get('phase') == 'active':
+                if operation.get('harness'):
+                    # A scoped check only waits for the workers holding that login.
+                    return {'target': 'runner', 'label': 'Waiting for workers using the ' + manifest(operation['harness'])['name']
+                            + ' login to finish; other work continues'}
                 return {'target': 'runner', 'label': 'Waiting for active workers to finish before checking shared coding accounts; new work is paused'}
             return {'target': 'setup', 'label': 'Preparing verification'}
         return {'target': action, 'label': 'Starting Forge' if action == 'start' else 'Resetting Forge'}
@@ -307,9 +311,19 @@ class Onboarding:
             raise ValueError('No server connection found. Run bin/forge setup login codex on the server')
         return self.connect('codex', auth_value=path.read_text())
 
-    def queue(self, action, revision=None, generation=None):
+    def scope(self, harness):
+        """Every pool entry of one harness; the rest keeps its recorded verdict."""
+        item = manifest(harness)
+        identifiers = [entry['id'] for entry in self.runtime()['provider_pool'] if entry['provider'] == harness]
+        if not identifiers:
+            raise ValueError('Connect ' + item['name'] + ' before checking it')
+        return identifiers
+
+    def queue(self, action, revision=None, generation=None, harness=None):
         if action not in ('check', 'harness_check', 'start', 'reset'):
             raise ValueError('Unknown setup action')
+        if harness is not None and action != 'harness_check':
+            raise ValueError('Only coding account verification can be limited to one harness')
         with self.store.transaction() as data:
             self.initialize(data)
             if action == 'reset' and generation != data['generation']:
@@ -320,7 +334,8 @@ class Onboarding:
             if action == 'start' and data['phase'] == 'active' and revision == data.get('activation_revision'):
                 return data['activation_request']
             operation = data.get('operation')
-            if operation and operation['action'] == action:
+            scope = self.scope(harness) if harness else None
+            if operation and operation['action'] == action and (operation.get('providers') or None) == scope:
                 return operation['id']
             if action != 'reset':
                 if not (action == 'harness_check' and data['phase'] == 'active' and not data.get('operation')):
@@ -336,11 +351,16 @@ class Onboarding:
                 # Fence persists even if the process crashes before its intent is saved.
                 write_json(self.root / 'state/factory-paused.json', {'generation': data['generation']})
                 data['phase'] = 'resetting'
+            image = None
             if action == 'harness_check':
+                # The runner probes are repeated only for an unverified image.
+                image = (data.get('qualification') or {}).get('image')
                 data.pop('qualification', None)
             if action in ('check', 'harness_check'):
                 data.pop('readiness', None)
             op = {'id': str(uuid.uuid4()), 'action': action, 'generation': data['generation'],
                   'revision': revision, 'step': 'queued', 'at': self.clock()}
+            if scope:
+                op.update(harness=harness, providers=scope, image=image)
             data.update(operation=op, error=None)
             return op['id']
