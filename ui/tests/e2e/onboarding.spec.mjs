@@ -65,12 +65,30 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.locator('[data-step="1"]').isDisabled(), true)
   assert.equal(await page.locator('[data-step="2"]').isDisabled(), true)
 
-  // Nuxt UI draws its own `i-lucide-*` icons, and @nuxt/icon serves them
-  // from the bundled collection over /api/_nuxt_icon/** — a route the proxy
-  // must leave to Nitro. If either were wrong the chevron would be an empty
-  // placeholder, so the trigger is asserted to actually hold an <svg>.
-  await page.locator('#account-type svg').first().waitFor({ timeout: 10000 })
-  assert.ok(await page.locator('#account-type svg').count() >= 1, 'the Account type trigger has no chevron')
+  // Nuxt UI draws its own `i-lucide-*` icons. @nuxt/icon renders them in CSS
+  // mode, so the select-menu trigger's chevron is an inline <svg> in a
+  // mask-image data URI rather than an <svg> element; an icon that did not
+  // resolve leaves no mask at all. It resolving offline is the point: the
+  // collection is bundled, and a Forge server has no route to the Iconify
+  // API.
+  const chevron = page.locator('#account-type [data-slot="trailingIcon"]')
+  await chevron.waitFor({ timeout: 10000 })
+  const chevronMask = await chevron.evaluate((el) => {
+    const style = getComputedStyle(el)
+    return style.maskImage || style.webkitMaskImage || ''
+  })
+  assert.match(chevronMask, /^url\("data:image\/svg\+xml,/, `the Account type chevron did not resolve: ${chevronMask}`)
+  assert.ok(chevronMask.includes('%3Csvg'), 'the chevron mask is not an inline SVG')
+
+  // …and the route those icons come from is Nitro's own: proxyPaths()
+  // excludes /api/_nuxt_icon, so it is answered from the bundle instead of
+  // being forwarded to the Forge status service, which knows nothing of it.
+  const iconRoute = await page.evaluate(async (url) => {
+    const response = await fetch(url)
+    return { status: response.status, body: await response.text() }
+  }, base + '/api/_nuxt_icon/lucide.json?icons=chevron-down')
+  assert.equal(iconRoute.status, 200, iconRoute.body.slice(0, 200))
+  assert.ok(iconRoute.body.includes('"chevron-down"'), iconRoute.body.slice(0, 200))
 
   await page.locator('#owner').fill('acme-labs')
   await page.locator('#account-type').click()
