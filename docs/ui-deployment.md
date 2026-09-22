@@ -12,8 +12,10 @@ there. `NITRO_HELP_DOC` points at `%h/ops/forge-watchdog/docs/onboarding.md`,
 so that file must also exist under the live root (it already does — it is
 part of the watchdog copy of the repo).
 
-No runtime dependency on the Iconify API: `ui/app/**` uses no `UIcon`/`icon=`
-markup, so there is nothing to bundle offline for icons.
+No runtime dependency on the Iconify API: Nuxt UI draws its own
+`i-lucide-*` icons, and `icon: { serverBundle: 'local' }` compiles
+`@iconify-json/lucide` into `.output/`, so `/api/_nuxt_icon/**` is served
+from disk and nothing is fetched over the network.
 
 Nitro answers a proxied request whose `Host` is neither `$HOST:$PORT` nor
 loopback with 403 `Untrusted host` (a DNS-rebinding defence); set

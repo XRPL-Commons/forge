@@ -17,5 +17,12 @@ export default defineNuxtConfig({
     },
   },
   colorMode: { preference: 'dark', fallback: 'dark', classSuffix: '' },
+  // Nuxt UI draws its own `i-lucide-*` icons (loading spinners, the
+  // USelectMenu chevron and check). @nuxt/icon serves those from
+  // /api/_nuxt_icon/**, and under the default `serverBundle: 'auto'` it
+  // fetches them from the Iconify API at runtime — which a Forge server has
+  // no route to. `local` compiles @iconify-json/lucide into the Nitro
+  // bundle, so the icons come off disk and nothing leaves the box.
+  icon: { serverBundle: 'local' },
   nitro: { compressPublicAssets: false },
 })

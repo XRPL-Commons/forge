@@ -65,6 +65,13 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.locator('[data-step="1"]').isDisabled(), true)
   assert.equal(await page.locator('[data-step="2"]').isDisabled(), true)
 
+  // Nuxt UI draws its own `i-lucide-*` icons, and @nuxt/icon serves them
+  // from the bundled collection over /api/_nuxt_icon/** — a route the proxy
+  // must leave to Nitro. If either were wrong the chevron would be an empty
+  // placeholder, so the trigger is asserted to actually hold an <svg>.
+  await page.locator('#account-type svg').first().waitFor({ timeout: 10000 })
+  assert.ok(await page.locator('#account-type svg').count() >= 1, 'the Account type trigger has no chevron')
+
   await page.locator('#owner').fill('acme-labs')
   await page.locator('#account-type').click()
   await page.getByRole('option', { name: 'Personal account' }).click()

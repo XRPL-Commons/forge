@@ -166,8 +166,10 @@ node .output/server/index.mjs
 not needed alongside it. Configure `HOST`, `PORT`, `NITRO_FORGE_API` and
 `NITRO_HELP_DOC` as environment variables (see the table above and
 `deploy/forge-ui.service.example`). No runtime dependency on the Iconify
-API: this app uses no `UIcon`/`icon=` markup, so there are no icons to fetch
-over the network.
+API: Nuxt UI's own `i-lucide-*` icons are bundled into `.output/` by
+`icon: { serverBundle: 'local' }` plus the pinned `@iconify-json/lucide`
+dev dependency, and `/api/_nuxt_icon/**` (excluded from `proxyPaths()`) is
+answered by Nitro from that bundle.
 
 To switch a running host from the legacy Python dashboard to this UI, see
 [`docs/ui-deployment.md`](../docs/ui-deployment.md).
