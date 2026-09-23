@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
-  decisionNeedsReason, emptyState, freshnessText, listParams, reviewRows, rowAction,
+  decisionNeedsReason, emptyState, freshnessText, listParams, preselectedReviewers,
+  reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -173,5 +174,42 @@ describe('reviewRows', () => {
   it('is empty when the issue has no reviews', () => {
     expect(reviewRows(undefined)).toEqual([])
     expect(reviewRows([])).toEqual([])
+  })
+})
+
+describe('reviewer control', () => {
+  const people = [
+    { login: 'maintainer', name: 'A Maintainer' },
+    { login: 'second-pair', name: '' },
+  ]
+
+  it('offers every collaborator, with the display name when there is one', () => {
+    expect(reviewerOptions(people)).toEqual([
+      { value: 'maintainer', label: 'maintainer · A Maintainer' },
+      { value: 'second-pair', label: 'second-pair' },
+    ])
+    expect(reviewerOptions(undefined)).toEqual([])
+  })
+
+  it('starts from the configured human reviewers this repository actually offers', () => {
+    expect(preselectedReviewers({ reviewers: people, default_reviewers: ['Maintainer', 'stranger'] })).toEqual(['Maintainer'])
+    expect(preselectedReviewers({ reviewers: [], default_reviewers: ['maintainer'] })).toEqual([])
+    expect(preselectedReviewers(null)).toEqual([])
+  })
+
+  it('sends the chosen logins as the decision, without duplicates or mentions', () => {
+    expect(reviewerReason([' @maintainer ', 'second-pair', 'maintainer', ''])).toBe('maintainer, second-pair')
+    expect(reviewerReason([])).toBe('')
+  })
+
+  it('says who was asked and how long ago', () => {
+    expect(reviewRequestText({ logins: ['a', 'b'], at: 1790000000 }, 1790000720))
+      .toBe('Review requested from @a, @b · 12 min ago')
+  })
+
+  it('drops the age when there is no clock yet, and says nothing when nobody was asked', () => {
+    expect(reviewRequestText({ logins: ['a'], at: 1790000000 }, 0)).toBe('Review requested from @a')
+    expect(reviewRequestText(null, 1790000000)).toBe('')
+    expect(reviewRequestText({ logins: [], at: 1790000000 }, 1790000000)).toBe('')
   })
 })

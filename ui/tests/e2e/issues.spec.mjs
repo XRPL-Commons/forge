@@ -224,6 +224,51 @@ export default async function (page, { base, scenario, requests }) {
     key: '1:608', action: 'pause', revision: 'current', reason: 'Waiting for the design review',
   })
 
+  // An issue waiting for a human approval offers the one decision that helps:
+  // asking named people for the review. The select starts from the configured
+  // human reviewers, and confirming sends the chosen logins as the decision.
+  await scenario('approval')
+  await page.goto(base + '/issues/1%3A614')
+  await waitForText(page, 'Rotate the release signing key')
+  await waitForText(page, 'The pull request needs a human review.')
+  const reviewerBar = page.locator('#issue-actions')
+  const reviewers = reviewerBar.getByRole('button', { name: 'Reviewers' })
+  assert.equal(await reviewers.count(), 1, 'an approval_needed issue offers the reviewer select')
+  assert.match(await reviewers.innerText(), /maintainer/, 'the configured human reviewers start selected')
+  await reviewers.click()
+  await page.getByRole('option', { name: 'second-pair' }).click()
+  await page.keyboard.press('Escape')
+  await reviewerBar.getByRole('button', { name: 'Assign reviewer' }).click()
+  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  const assigned = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
+  assert.equal(assigned.length, 1)
+  assert.deepEqual(assigned[0].body, {
+    key: '1:614', action: 'assign_reviewer', revision: 'current', reason: 'maintainer, second-pair',
+  })
+
+  // Once recorded, the issue says who was asked. A collaborator listing that
+  // failed leaves the free-text box, so an unlisted login is still possible.
+  await scenario('approval-requested')
+  await page.goto(base + '/issues/1%3A614')
+  await waitForText(page, 'Review requested from @maintainer')
+  assert.match((await page.locator('#review-requested').innerText()).trim(), /^Review requested from @maintainer( · .+ ago)?$/)
+  assert.equal(await page.locator('#issue-actions').getByRole('button', { name: 'Reviewers' }).count(), 0)
+  const typed = page.locator('#issue-actions').getByRole('textbox', { name: 'Reviewers' })
+  assert.equal(await typed.count(), 1, 'a failed listing falls back to a free-text login')
+  await typed.fill('@outside-collaborator')
+  await page.locator('#issue-actions').getByRole('button', { name: 'Assign reviewer' }).click()
+  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  const unlisted = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
+  assert.equal(unlisted.length, 1)
+  assert.equal(unlisted[0].body.reason, 'outside-collaborator')
+
+  // No other issue offers it: the decision belongs to a waiting pull request.
+  await scenario('decision-queue')
+  await page.goto(base + '/issues/1%3A609')
+  await waitForText(page, 'Improve the course completion email')
+  assert.equal(await page.locator('#issue-actions').getByRole('button', { name: 'Assign reviewer' }).count(), 0)
+  assert.equal(await page.locator('#review-requested').count(), 0)
+
   // Stopping an attempt targets the job, so it goes to the factory.
   await scenario('default')
   await page.goto(base + '/issues/1%3A610')
