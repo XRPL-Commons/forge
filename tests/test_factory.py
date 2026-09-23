@@ -114,6 +114,25 @@ class FactoryTest(unittest.TestCase):
             self.supervisor.cycle()
             self.assertEqual(self.github.issues.call_count, 2)
 
+    def test_interrupted_discovery_resumes_with_the_same_repository_next_cycle(self):
+        self.settings.view.return_value = {'repositories': [
+            {'id': 2, 'name': 'example/first', 'dispatch_allowed': True},
+            {'id': 3, 'name': 'example/second', 'dispatch_allowed': True}]}
+        self.github.deadline = float('inf')
+        self.github.pulls.return_value = []
+        calls = []
+        def issues(item):
+            calls.append(item['repo_id'])
+            if len(calls) == 1:
+                raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+            return []
+        self.github.issues.side_effect = issues
+        self.supervisor.discover()
+        self.assertNotIn('2', self.ledger.read().get('discovery_observed', {}), 'an interrupted repository is not stamped')
+        self.assertEqual(calls, [2], 'the cycle stops at the budget instead of moving to the next repository')
+        self.supervisor.discover()
+        self.assertEqual(calls, [2, 2, 3], 'the next cycle resumes with the interrupted repository first')
+
     def test_budget_exhaustion_is_not_reported_as_an_error(self):
         self.settings.view.return_value = {'repositories': [{'id': 2, 'name': 'example/first', 'dispatch_allowed': True}]}
         self.github.deadline = float('inf')
