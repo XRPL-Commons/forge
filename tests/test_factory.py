@@ -97,6 +97,23 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(reconcile.call_count, 1)
         self.assertTrue(self.ledger.read()['slots'], 'dispatch must run after observation stops')
 
+    def test_busy_factory_still_discovers_new_issues_on_a_cadence(self):
+        # A ready issue is always queued, so dispatch never discovers on its own.
+        self.settings.view.return_value = {'repositories': [{'id': 1, 'name': 'example/project', 'dispatch_allowed': True}]}
+        self.github.pulls.return_value = []
+        self.github.issues.return_value = []
+        self.github.target.return_value = 'main'
+        self.runner.capacity.return_value = {'allowed': False, 'reason': 'memory_budget'}
+        with patch('forge.factory.supervisor.time') as fake:
+            fake.monotonic.return_value = 0.0
+            self.supervisor.cycle()
+            self.assertEqual(self.github.issues.call_count, 1, 'first cycle reads the repository')
+            self.supervisor.cycle()
+            self.assertEqual(self.github.issues.call_count, 1, 'read again only after the interval')
+            self.now += Supervisor.DISCOVERY_INTERVAL
+            self.supervisor.cycle()
+            self.assertEqual(self.github.issues.call_count, 2)
+
     def test_discovery_rotates_repositories_after_exhausted_api_budget(self):
         self.settings.view.return_value = {'repositories': [
             {'id': 2, 'name': 'example/first', 'dispatch_allowed': True},
