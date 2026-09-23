@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.factory.contracts import candidate, digest, result, submission, references_issue
+from forge.factory.contracts import (HEADLINE_LIMIT, PLAIN_LIMIT, candidate, digest, result,
+                                     submission, summary, references_issue)
 from forge.factory.config import validate, policy
 from forge.factory.ledger import Ledger
 from forge.factory.supervisor import Supervisor
@@ -129,7 +130,8 @@ class FactoryTest(unittest.TestCase):
                 'policy': job['policy'], 'branch': job['branch']}
 
     def report(self, job, outcome='pass'):
-        value = {'version': 1, 'role': job['role'], 'attempt': job['id'], 'outcome': outcome, 'summary': 'Specific findings'}
+        value = {'version': 1, 'role': job['role'], 'attempt': job['id'], 'outcome': outcome, 'summary': 'Specific findings',
+                 'headline': 'The step finished', 'plain': 'The worker finished this step. Forge moves the issue on.'}
         if job['role'] in ('review', 'audit'):
             value['candidate'] = job['candidate']['key']
         if job['role'] == 'audit':
@@ -143,6 +145,64 @@ class FactoryTest(unittest.TestCase):
                                       'uncertainty': '', 'alternative': alternative, 'incomplete': incomplete})
         self.clean(job)
         return job
+
+    def test_plain_language_fields_are_required_and_shortened_rather_than_refused(self):
+        job = self.job()
+        report = self.report(job)
+        for missing in ('headline', 'plain'):
+            with self.assertRaises(ValueError):
+                result({k: v for k, v in report.items() if k != missing}, job)
+        for blank in ('', '   '):
+            with self.assertRaises(ValueError):
+                result({**report, 'headline': blank}, job)
+        long = result({**report, 'headline': 'w' * 400,
+                       'plain': 'One. Two. Three. Four that must not survive. ' + 'word ' * 200}, job)
+        self.assertEqual(len(long['headline']), HEADLINE_LIMIT)
+        self.assertTrue(long['headline'].endswith('…'))
+        self.assertLessEqual(len(long['plain']), PLAIN_LIMIT)
+        self.assertEqual(long['plain'], 'One. Two. Three.')
+        self.assertNotIn('Four', long['plain'])
+
+    def test_every_outcome_keeps_the_plain_language_card_with_the_issue(self):
+        card = {'headline': 'Built and waiting for review',
+                'plain': 'The change is written and its pull request is open. Review starts next.'}
+        build = self.job()
+        self.ledger.accept(build['id'], candidate=self.candidate(build), summary=summary(card, 'build', self.now))
+        self.assertEqual(self.item()['last_summary']['headline'], card['headline'])
+        self.assertEqual(self.item()['candidate']['summary']['role'], 'build')
+        self.clean(build)
+        review = self.job('review')
+        failed = summary({'headline': 'Stopped: the tests fail on the login page',
+                          'plain': 'Signing in no longer works. The attempt was stopped.'}, 'review', self.now)
+        self.ledger.fail(review['id'], 'Rejected', rejection=True, summary=failed)
+        self.assertEqual(self.item()['failures'][-1]['summary'], failed)
+        self.assertEqual(self.item()['last_summary'], failed)
+        self.clean(review)
+        investigation = self.job('recovery', self.item()['failures'][-1])
+        found = summary({'headline': 'The login test needs a fresh database',
+                         'plain': 'The failure comes from stale test data. Forge will try again.'}, 'recovery', self.now)
+        self.ledger.findings(investigation['id'], {'summary': 'Diagnosis', 'pattern': 'data', 'evidence': ['log'],
+                                                   'uncertainty': '', 'alternative': None}, summary=found)
+        self.assertEqual(self.item()['last_summary'], found)
+        self.clean(investigation)
+        blocked = self.job()
+        stopped = summary({'headline': 'Stopped: the worker ran out of memory',
+                           'plain': 'The worker used more memory than it is allowed.'}, 'build', self.now)
+        self.ledger.block_environment(blocked['id'], 'resources', 'Out of memory', summary=stopped)
+        self.assertEqual(self.item()['environment_hold']['summary'], stopped)
+        self.assertEqual(self.item()['last_summary'], stopped)
+
+    def test_a_result_without_a_card_leaves_the_previous_one_untouched(self):
+        build = self.job()
+        first = summary({'headline': 'Built and waiting for review', 'plain': 'Review starts next.'}, 'build', self.now)
+        self.ledger.accept(build['id'], candidate=self.candidate(build), summary=first)
+        self.clean(build)
+        review = self.job('review')
+        self.assertIsNone(summary({'summary': 'no plain language here'}, 'review', self.now))
+        self.ledger.fail(review['id'], 'Rejected', rejection=True, summary=None)
+        self.assertEqual(self.item()['last_summary'], first)
+        self.assertNotIn('summary', self.item()['failures'][-1])
+
 
     def test_durable_reservation_prevents_duplicate_issue_and_slot(self):
         job = self.job()

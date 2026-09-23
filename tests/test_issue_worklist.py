@@ -7,7 +7,9 @@ import time
 import unittest
 from unittest.mock import patch
 
-from forge.factory.issues import IssueInventory, facts, revision, presentation, dependencies, LEGACY_SETUP_REASON
+from forge.factory.issues import (IssueInventory, SUMMARIES, facts, revision, presentation,
+                                  dependencies, LEGACY_SETUP_REASON)
+from forge.factory.contracts import HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES
 from forge.factory.issue_actions import IssueActions, request
 from forge.factory.github import GitHubUnavailable
 from forge.factory.ledger import Ledger
@@ -61,6 +63,80 @@ class GitHub:
                 raise GitHubUnavailable('Connection lost after commit')
         if method == 'DELETE': self.value['labels'] = [l for l in self.value['labels'] if l['name'] != path.split('/')[-1]]
         return {}
+
+
+class PlainSummaryTests(unittest.TestCase):
+    """One headline sentence and at most three sentences, whatever the state."""
+
+    runtime = {'hold_labels': {'hold', 'blocked'}, 'ready_label': 'ready', 'enabled': True, 'human_reviewers': []}
+    repo = {'name': 'example/project', 'enabled': True, 'access_ready': True, 'protection_ready': True}
+
+    def card(self, item=None, issue=None, runtime=None):
+        base = {'number': 1, 'title': 'An issue', 'state': 'open', 'labels': [], 'assignees': [], 'body': ''}
+        return presentation({**base, **(issue or {})}, item or {}, self.repo, runtime or self.runtime)['summary']
+
+    def test_forge_writes_the_summary_for_every_state_a_worker_has_not_spoken_for(self):
+        cases = [
+            ({}, {'labels': [{'name': 'ready'}]}, 'Waiting for a builder'),
+            ({}, {}, 'Not queued for Forge'),
+            ({'active': 'job', 'active_role': 'build'}, {}, 'Writing the change'),
+            ({'state': 'built'}, {}, 'Built and waiting for review'),
+            ({'state': 'merged'}, {}, 'The work is merged'),
+            ({'operator_request': 'request'}, {}, 'Applying your decision'),
+            ({'operator_hold': {'kind': 'pause'}, 'reason': 'Waiting for the design review'}, {}, 'Paused by an operator'),
+            ({'prerequisite_hold': {'state': 'ready'}}, {}, 'Ready to start once you recheck'),
+            ({}, {'labels': [{'name': 'blocked'}]}, 'Paused by a label on GitHub'),
+        ]
+        for item, issue, headline in cases:
+            with self.subTest(headline=headline):
+                summary = self.card(item, issue)
+                self.assertEqual(summary['headline'], headline)
+                self.assertLessEqual(len(summary['headline']), HEADLINE_LIMIT)
+                self.assertLessEqual(len(summary['plain']), PLAIN_LIMIT)
+                self.assertLessEqual(len([s for s in summary['plain'].split('. ') if s]), PLAIN_SENTENCES)
+        self.assertEqual(self.card({}, {'labels': [{'name': 'ready'}]}, {**self.runtime, 'enabled': False})['headline'],
+                         'Forge is paused')
+
+    def test_every_copied_summary_is_one_headline_and_three_short_sentences(self):
+        for case, (headline, plain) in SUMMARIES.items():
+            with self.subTest(case=case):
+                self.assertLessEqual(len(headline), HEADLINE_LIMIT)
+                self.assertNotIn('.', headline)
+                self.assertLessEqual(len([s for s in plain.split('. ') if s]), PLAIN_SENTENCES)
+
+    def test_a_reader_never_has_to_open_details_to_learn_why(self):
+        reason = ('The documentation artifact itself is accurate and low-risk to merge, but its claims '
+                  'about the deployment were not verified end to end.')
+        waiting = self.card({'state': 'approval_needed', 'reason': reason, 'candidate': {'pr': 24}})
+        self.assertEqual(waiting['headline'], 'Waiting for a person to approve the pull request')
+        self.assertIn('accurate and low-risk to merge', waiting['plain'])
+        audited = self.card({'state': 'approval_needed', 'candidate': {'pr': 24},
+                             'evidence': {'audit': {'human_reason': 'A person must sign off on the key rotation.'}}})
+        self.assertIn('sign off on the key rotation', audited['plain'])
+        held = self.card({'state': 'hold', 'reason': 'Waiting for the migration to run in production'})
+        self.assertIn('Waiting for the migration to run in production.', held['plain'])
+
+    def test_the_worker_leads_where_the_worker_is_the_one_who_knows(self):
+        written = {'headline': 'Stopped: the tests fail on the login page', 'role': 'build', 'at': 10,
+                   'plain': 'Signing in no longer works after the change. Forge stopped the attempt.'}
+        failed = self.card({'state': 'failed', 'reason': 'Tests failed', 'last_summary': written})
+        self.assertEqual(failed['headline'], written['headline'])
+        self.assertEqual(failed['plain'], written['plain'])
+        blocked = self.card({'state': 'hold', 'last_summary': written,
+                             'environment_hold': {'state': 'built', 'blocker': 'resources', 'detail': 'Out of memory',
+                                                  'summary': {**written, 'headline': 'Stopped: the worker ran out of memory'}}})
+        self.assertEqual(blocked['headline'], 'Stopped: the worker ran out of memory')
+        # Without worker words Forge still says what happened and why.
+        plain = self.card({'state': 'failed', 'reason': 'No verified publication or usable result'})
+        self.assertEqual(plain['headline'], 'Stopped: the last attempt failed')
+        self.assertIn('No verified publication or usable result.', plain['plain'])
+
+    def test_a_long_worker_summary_is_shortened_not_shown_whole(self):
+        summary = self.card({'state': 'failed', 'last_summary': {
+            'headline': 'w' * 200,
+            'plain': 'One. Two. Three. Four must not reach the page. ' + 'path/to/file.ts ' * 100}})
+        self.assertEqual(len(summary['headline']), HEADLINE_LIMIT)
+        self.assertEqual(summary['plain'], 'One. Two. Three.')
 
 
 class WorklistTests(unittest.TestCase):

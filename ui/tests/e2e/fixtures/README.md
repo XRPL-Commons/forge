@@ -298,10 +298,23 @@ output has not.
 ## reviewed/
 
 - `issues.issue.json` — `default/issues.issue.json` (the working `1:610` row)
-  with a pull request (`#30`) and two reviews: a passed `review` whose summary
-  runs past its lead sentence, and a `changes_requested` `audit`. Exercises the
-  issue detail's action bar ("GitHub ↗", "PR #30 ↗") and its clamped review
-  rows with the "More" toggle.
+  with a pull request (`#30`), a Forge-authored `summary` (headline "Writing
+  the change") and two reviews carrying the worker contract's own outcomes: a
+  `pass` `review` whose summary runs past its lead sentence, and a `reject`
+  `audit`. Exercises the issue detail's action bar ("GitHub ↗", "PR #30 ↗")
+  and, inside "Details", its clamped review rows with the "More" toggle and
+  the per-verdict chips ("Passed" / "Rejected").
+
+## summarised/
+
+- `issues.issue.json` — a held issue (`1:620`, status `attention`, action
+  `retry`) whose worker wrote a long `explanation` full of paths, commands and
+  environment variables, plus the plain-language `summary` Forge leads with
+  (headline "Stopped: the release job fails before it publishes" and a
+  three-sentence `plain`). Its reviews are a `pass` `review` and an `unable`
+  `audit`, for the "Could not review" chip. Exercises Issue #47: the headline
+  and description above the action bar, and the worker's full text only after
+  "Details" is opened.
 
 ## down (not a fixture directory)
 

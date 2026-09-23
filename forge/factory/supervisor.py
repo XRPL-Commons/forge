@@ -7,7 +7,7 @@ from copy import deepcopy
 import time
 import json
 
-from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue, environment_key
+from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue, environment_key, summary as plain_summary
 from .config import policy
 from .providers import available as provider_available
 from .github import GitHubUnavailable
@@ -97,7 +97,10 @@ class Supervisor:
                         try:
                             ci = self.github.ci_evidence(job)
                         except GitHubUnavailable:
-                            self.ledger.block_environment(job['id'], 'ci_evidence', 'The controller could not obtain commit-bound CI checks. Check GitHub App access and connectivity before rechecking.')
+                            self.ledger.block_environment(job['id'], 'ci_evidence', 'The controller could not obtain commit-bound CI checks. Check GitHub App access and connectivity before rechecking.',
+                                                          summary=self.card({'headline': 'Stopped: Forge cannot read the automated checks',
+                                                                             'plain': 'Forge needs the results of the repository’s automated checks before it can judge the work. '
+                                                                                      'It could not read them from GitHub. Repair the connection, then recheck this issue.'}, job))
                             self.ledger.job_update(job['id'], fenced=True, phase='stopping', capture={'result': None, 'logs': '', 'missing': []})
                             return
                         self.ledger.job_update(job['id'], ci_evidence=ci, review_policy=policy(self.config))
@@ -153,10 +156,17 @@ class Supervisor:
         if job.get('capacity_wait_since') is None:
             self.ledger.job_update(job['id'], capacity_wait_since=self.clock())
 
+    def card(self, value, job):
+        """Plain-language card for an outcome, from the worker's words or Forge's own."""
+        return plain_summary(value, job['role'], self.clock())
+
     @staticmethod
     def incomplete(reason):
         return {'summary': reason, 'pattern': '', 'evidence': [], 'uncertainty': reason,
-                'alternative': None, 'incomplete': True}
+                'alternative': None, 'incomplete': True,
+                'headline': 'The investigation could not finish',
+                'plain': 'Forge could not look into the failed attempt. ' + reason.rstrip('.') +
+                         '. The issue stays where it is until someone decides what to try next.'}
 
     @staticmethod
     def availability(capture):
@@ -179,7 +189,10 @@ class Supervisor:
     def outcome(self, job):
         capture = job['capture']
         if (capture.get('execution') or {}).get('oom_killed'):
-            self.ledger.block_environment(job['id'], 'resources', 'The container exceeded its memory limit. The published candidate is retained; review worker capacity before rechecking.')
+            self.ledger.block_environment(job['id'], 'resources', 'The container exceeded its memory limit. The published candidate is retained; review worker capacity before rechecking.',
+                                          summary=self.card({'headline': 'Stopped: the worker ran out of memory',
+                                                             'plain': 'The worker used more memory than it is allowed and was stopped. Any pull request it had already opened is kept. '
+                                                                      'Give workers more memory, then recheck this issue.'}, job))
             return
         # A recovery job also needs to fall back rather than turning a provider
         # outage into an incomplete investigation. Only adapter error events count.
@@ -192,12 +205,13 @@ class Supervisor:
             report = None
         item = self.ledger.read()['issues'][job['issue_key']]
         if report and report['outcome'] == 'blocked_environment':
-            self.ledger.block_environment(job['id'], report['blocker'], report['summary'])
+            self.ledger.block_environment(job['id'], report['blocker'], report['summary'], summary=self.card(report, job))
             return
         if job['role'] == 'recovery':
             original = self.ledger.read()['jobs'][job['failure']['attempt']]
             if item['state'] in ('merged', 'cancelled'):
-                self.ledger.findings(job['id'], report if report and report['outcome'] == 'pass' else self.incomplete('Investigation ended after external issue completion'))
+                findings = report if report and report['outcome'] == 'pass' else self.incomplete('Investigation ended after external issue completion')
+                self.ledger.findings(job['id'], findings, summary=self.card(findings, job))
                 return
             current_issue, requirements = self.github.issue(item)
             if original['role'] == 'build' and original['requirements'] == requirements and current_issue['state'] == 'open':
@@ -205,7 +219,7 @@ class Supervisor:
                 if recovered:
                     self.ledger.recover_publication(original['id'], recovered)
             findings = (report if report and report['outcome'] == 'pass' else self.incomplete('Investigation did not return usable findings'))
-            self.ledger.findings(job['id'], findings)
+            self.ledger.findings(job['id'], findings, summary=self.card(findings, job))
             return
         if item['active'] != job['id']:
             return
@@ -220,7 +234,7 @@ class Supervisor:
         if job['role'] == 'build':
             published = self.github.publication(job, requirements, job['policy'])
             if published:
-                self.ledger.accept(job['id'], candidate=published)
+                self.ledger.accept(job['id'], candidate=published, summary=self.card(report, job))
                 return
         else:
             current = self.github.pr(item, job['candidate']['pr'])
@@ -242,10 +256,10 @@ class Supervisor:
                 if verified['base']['sha'] != current['base']['sha']:
                     return
                 if report['outcome'] == 'pass':
-                    self.ledger.accept(job['id'], evidence={**report, 'check_id': check_id})
+                    self.ledger.accept(job['id'], evidence={**report, 'check_id': check_id}, summary=self.card(report, job))
                 else:
                     self.ledger.fail(job['id'], report['summary'], rejection=True,
-                                     evidence=[f"PR #{current['number']}, check {check_id}"])
+                                     evidence=[f"PR #{current['number']}, check {check_id}"], summary=self.card(report, job))
                 return
         if report and report['outcome'] == 'wait':
             from ..worker import classify_error
@@ -257,7 +271,11 @@ class Supervisor:
             self.ledger.wait(job['id'], self.availability(capture), self.clock() + self.config['availability_retry_seconds'])
             return
         reason = report['summary'] if report else ('Execution deadline exceeded' if capture.get('timed_out') else 'No verified publication or usable result')
-        self.ledger.fail(job['id'], reason, evidence=[capture.get('logs', ''), *capture.get('missing', [])])
+        self.ledger.fail(job['id'], reason, evidence=[capture.get('logs', ''), *capture.get('missing', [])],
+                         summary=self.card(report, job) or self.card(
+                             {'headline': 'Stopped: the attempt did not finish',
+                              'plain': 'The worker stopped without a usable result. Nothing was merged. '
+                                       'Forge investigates the failure before trying again.'}, job))
 
     def invalidate(self, key, reason, *, candidate=None, hold=False):
         item = self.ledger.read()['issues'][key]

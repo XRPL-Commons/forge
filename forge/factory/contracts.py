@@ -15,6 +15,34 @@ SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?\Z')
 MARKER = re.compile(r'<!-- forge-submission\s+(.*?)\s+-->', re.S)
 MAX_FAILURES = 3
 ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence')
+# Plain-language limits, shared with harness.schema(). result() truncates, never rejects.
+HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES = 90, 360, 3
+SENTENCE = re.compile(r'[^.!?]*[.!?]+|[^.!?]+$')
+# One entry per role: a fifth role is one line here and one in harness.role_properties().
+ROLE_FIELDS = {'build': frozenset(),
+               'review': frozenset({'candidate'}),
+               'audit': frozenset({'candidate', 'human_required', 'human_reason'}),
+               'recovery': frozenset({'pattern', 'evidence', 'uncertainty', 'alternative'})}
+
+
+def clamp(text, limit):
+    text = ' '.join(str(text or '').split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + '…'
+
+
+def plain_text(text, limit=PLAIN_LIMIT, sentences=PLAIN_SENTENCES):
+    """At most three sentences: prose an operator scans, not prose they parse."""
+    collapsed = ' '.join(str(text or '').split())
+    kept = ''.join(SENTENCE.findall(collapsed)[:sentences]).strip()
+    return clamp(kept or collapsed, limit)
+
+
+def summary(value, role, at):
+    """The plain-language card kept with an outcome, for a reader who does not read code."""
+    headline = clamp((value or {}).get('headline'), HEADLINE_LIMIT) if isinstance(value, dict) else ''
+    if not headline:
+        return None
+    return {'headline': headline, 'plain': plain_text(value.get('plain')), 'role': role, 'at': at}
 
 
 def environment_key(config):
@@ -96,18 +124,18 @@ def candidate(pr, job, requirements, policy):
 def result(value, job):
     if not isinstance(value, dict) or len(json.dumps(value)) > 65536:
         raise ValueError('Invalid worker result')
-    common = {'version', 'attempt', 'role', 'outcome', 'summary'}
+    common = {'version', 'attempt', 'role', 'outcome', 'summary', 'headline', 'plain'}
     # Older image contracts remain readable during a rolling upgrade.
     if 'blocker' in value:
         common.add('blocker')
     role = job['role']
-    extra = {'candidate', 'human_required', 'human_reason'} if role == 'audit' else (
-        {'candidate'} if role == 'review' else {'pattern', 'evidence', 'uncertainty', 'alternative'} if role == 'recovery' else set())
-    if (set(value) != common | extra or type(value['version']) is not int or value['version'] != 1
+    if (set(value) != common | set(ROLE_FIELDS.get(role, ())) or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != role
             or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment'}
-            or not isinstance(value['summary'], str) or not value['summary'].strip()):
+            or any(not isinstance(value[k], str) or not value[k].strip() for k in ('summary', 'headline', 'plain'))):
         raise ValueError('Worker result does not satisfy its assignment')
+    # Prose over the limit is shortened, not refused: the outcome still counts.
+    value['headline'], value['plain'] = clamp(value['headline'], HEADLINE_LIMIT), plain_text(value['plain'])
     if ((value['outcome'] == 'blocked_environment' and value.get('blocker') not in ENVIRONMENT_BLOCKERS)
             or (value['outcome'] != 'blocked_environment' and value.get('blocker') is not None)):
         raise ValueError('Environment blockers require a supported reason code')
@@ -141,6 +169,19 @@ def assignment_note(job):
         'The supervisor alone changes pipeline labels and internal lifecycle state. '
         'Report a question or inability as a structured result; never launch another worker. '
         'Write the result contract atomically to /work/result.json. Never include credentials.')
+    base['instructions'] += (
+        ' headline and plain are for someone who does not read code: say what happened, what it means '
+        'for the issue, and what happens next. No file paths, commands, variable names or code in either. '
+        f'headline is one present-tense sentence of at most {HEADLINE_LIMIT} characters; plain is at most '
+        f'{PLAIN_SENTENCES} short sentences and {PLAIN_LIMIT} characters. No hedging, no "may", no lists, '
+        'no identifiers other than the issue and pull request numbers. Simplify rather than qualify; the '
+        'detail stays in summary. Examples. headline "Built and waiting for review", plain "The change is '
+        'written and the pull request is open. Review starts next. Nothing is needed from you yet." '
+        'headline "Stopped: the tests fail on the login page", plain "Signing in no longer works after the '
+        'change, so the tests stop the attempt. The issue cannot move on until that is fixed. Forge will '
+        'investigate the failure." headline "Waiting for you to confirm the database migration ran", plain '
+        '"The change needs the new database column before it is safe to merge. Someone with production '
+        'access has to run the migration. Forge waits until that is confirmed."')
     base['instructions'] += (
         ' Forge supplies Node, npm, Corepack/pnpm, a native compiler, Chromium and safe-build. '
         'Use the repository lockfile and declared package manager; install dependencies in the native tool sandbox. '

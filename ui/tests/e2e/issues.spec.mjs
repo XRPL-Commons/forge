@@ -173,10 +173,15 @@ export default async function (page, { base, scenario, requests }) {
   const bodyBox = await page.locator('.forge-markdown').boundingBox()
   assert.ok(barBox.y + barBox.height <= bodyBox.y, 'the action bar must sit above the description')
 
+  // The review rows live inside Details, and each chip is that reviewer's own
+  // verdict — a passed review reads "Passed" whatever the issue's status is.
+  assert.equal(await page.locator('#issue-reviews').count(), 0, 'the worker prose starts collapsed')
+  await page.getByRole('button', { name: 'Details' }).click()
+  await waitForText(page, 'The change is correct')
   const reviewRows = page.locator('#issue-reviews > div')
   assert.equal(await reviewRows.count(), 2)
   assert.match(await reviewRows.first().innerText(), /^Passed\s+Review/)
-  assert.match(await reviewRows.nth(1).innerText(), /^Needs attention\s+Security review/)
+  assert.match(await reviewRows.nth(1).innerText(), /^Rejected\s+Security review/)
   const summary = reviewRows.first().locator('p')
   assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), '2',
     'a review summary is clamped to two lines')
@@ -186,6 +191,32 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), 'none')
   await reviewRows.first().getByRole('button', { name: 'Less' }).click()
   assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), '2')
+
+  // An issue whose worker wrote pages of detail still opens with one headline
+  // sentence and a short description, above the decisions; the paths, commands
+  // and environment variables it wrote are only there once Details is opened.
+  await scenario('summarised')
+  await page.goto(base + '/issues/1%3A620')
+  await waitForText(page, 'Stop the release job leaking install tokens')
+  const headline = page.locator('#issue-headline')
+  assert.equal((await headline.innerText()).trim(), 'Stopped: the release job fails before it publishes')
+  const plain = (await page.locator('#issue-plain').innerText()).trim()
+  assert.equal(plain.split(/(?<=[.!?])\s+/).filter(Boolean).length, 3, 'at most three sentences of description')
+  assert.equal(plain.includes('/'), false, 'no paths in the description')
+  const body = await page.locator('body').innerText()
+  assert.equal(body.includes('ENEEDAUTH'), false, 'the worker’s full text stays behind Details')
+  assert.equal(body.includes('pipeline.ts'), false, 'the worker’s full text stays behind Details')
+
+  const summaryBox = await page.locator('#issue-plain').boundingBox()
+  const actionsBox = await page.locator('#issue-actions').boundingBox()
+  assert.ok(summaryBox.y + summaryBox.height <= actionsBox.y, 'the summary must sit above the action bar')
+
+  await page.getByRole('button', { name: 'Details' }).click()
+  await waitForText(page, 'ENEEDAUTH')
+  assert.match(await page.locator('#issue-explanation').innerText(), /pipeline\.ts/)
+  const verdicts = page.locator('#issue-reviews > div')
+  assert.match(await verdicts.first().innerText(), /^Passed\s+Review/)
+  assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
 
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')

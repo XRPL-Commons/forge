@@ -51,15 +51,21 @@
     "reviews": [
       {
         "role": "review",
-        "outcome": "passed",
+        "outcome": "pass",
         "summary": "The change is correct and scoped to the navigation module. It moves the breadcrumb state into the store, adds tests for the collapsed variant, and leaves the public component API untouched. One nit: the helper could be named after what it returns rather than after the page that calls it."
       },
       {
         "role": "audit",
-        "outcome": "changes_requested",
+        "outcome": "reject",
         "summary": "The install token is still written to the build log on a failed upload. The retry path logs the whole request, including the Authorization header, before it raises; redact the header at the logging boundary instead of at the call site."
       }
-    ]
+    ],
+    "summary": {
+      "headline": "Writing the change",
+      "plain": "A worker is writing the code for this issue. Forge opens a pull request and asks for a review when it is ready. Nothing is needed from you.",
+      "role": "build",
+      "at": 1789995400
+    }
   },
   "repositories": [
     {

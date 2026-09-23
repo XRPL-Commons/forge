@@ -18,7 +18,9 @@ class EnvironmentLifecycleTests(CycleTest):
         job = self.active()
         candidate = job['candidate']
         report = {'version': 1, 'attempt': job['id'], 'role': 'review', 'outcome': 'blocked_environment',
-                  'blocker': 'resources', 'summary': 'Dependency storage unavailable', 'candidate': candidate['key']}
+                  'blocker': 'resources', 'summary': 'Dependency storage unavailable', 'candidate': candidate['key'],
+                  'headline': 'Stopped: the worker could not reach its dependencies',
+                  'plain': 'The worker could not download what it needs. Nothing was changed.'}
         self.engine.finish(job, report)
         self.assertFalse(self.cycle()['errors'])
         for _ in range(3):
@@ -63,7 +65,8 @@ class EnvironmentLifecycleTests(CycleTest):
 
     def test_untyped_blocker_is_not_accepted(self):
         self.cycle(); job = self.active()
-        report = {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'blocked_environment', 'summary': 'Missing'}
+        report = {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'blocked_environment', 'summary': 'Missing',
+                  'headline': 'Stopped: a tool is missing', 'plain': 'The worker cannot run without it.'}
         with self.assertRaises(ValueError):
             result(report, job)
         report['blocker'] = 'test_failure'
