@@ -307,7 +307,16 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   const merging = issues.filter(issue => issue.state === 'audited').length
   const refused = (view.observation?.errors ?? []).filter(error => /refused to merge/.test(error.reason)).length
   const attention = issues.filter(issue => ATTENTION_STATES.includes(issue.state))
-  const merged = issues.filter(issue => issue.state === 'merged').length
+  // A merge count only means something over a time frame. Whether the merge
+  // reached production is not tracked here, so the row never claims it.
+  const mergedAt = (issue: LedgerIssueView): number => {
+    const events = (issue.history ?? []).filter(event => event.kind === 'merged')
+    return Number(events[events.length - 1]?.at ?? 0)
+  }
+  const mergedIssues = issues.filter(issue => issue.state === 'merged')
+  const mergedSince = (seconds: number) => mergedIssues.filter(issue => mergedAt(issue) >= now - seconds).length
+  const mergedDay = mergedSince(24 * 3600)
+  const mergedWeek = mergedSince(7 * 24 * 3600)
   return [
     { id: 'working', label: 'Working', value: working, meaning: workingMeaning, to: '#columns', tone: 'ok' },
     { id: 'queued', label: 'Queued', value: queued,
@@ -319,7 +328,8 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
     { id: 'attention', label: 'Needs a decision', value: attention.length,
       meaning: attention.length ? tally(attention.map(holdReason)) : 'Nothing needs you',
       to: '#needs-attention', tone: attention.length ? 'warn' : 'ok' },
-    { id: 'merged', label: 'Merged', value: merged, meaning: 'Since Forge started tracking these repositories', to: '#completed', tone: 'ok' },
+    { id: 'merged', label: 'Merged today', value: mergedDay,
+      meaning: `${mergedWeek} in the last 7 days · ${mergedIssues.length} tracked in all`, to: '#completed', tone: 'ok' },
   ]
 }
 
