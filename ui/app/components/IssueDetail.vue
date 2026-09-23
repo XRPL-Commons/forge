@@ -2,7 +2,7 @@
 import { ForgeApiError } from '~/composables/useForgeApi'
 import type { FactoryView, JobView } from '~/utils/factory'
 import {
-  ACTION_LABELS, STATUS_NAMES, eventLabel, issuePath, lastAction, pendingAction,
+  ACTION_LABELS, STATUS_NAMES, eventLabel, issuePath, lastAction, pendingAction, reviewRows,
   type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
 } from '~/utils/issues'
 
@@ -101,10 +101,14 @@ const explanation = computed(() => {
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
 function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
 
-function reviewLine(review: { role: string; outcome: string | null; summary: string }) {
-  const label = review.role === 'review' ? 'Review' : 'Security review'
-  const outcome = review.outcome === 'passed' ? 'passed' : 'needs attention'
-  return `${label}: ${outcome} · ${review.summary}`
+// Reviews are compact rows — outcome, role, the lead sentence — so the
+// decisions above them stay in view; "More" reveals the worker's full text.
+const reviews = computed(() => reviewRows(detail.value?.reviews))
+const expanded = ref(new Set<string>())
+function toggleReview(role: string) {
+  const next = new Set(expanded.value)
+  if (!next.delete(role)) next.add(role)
+  expanded.value = next
 }
 
 // Times are formatted only after mount: the server has no idea which time
@@ -205,9 +209,9 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <p class="mt-2 text-sm text-muted">{{ explanation }}</p>
       <p v-if="message" id="detail-message" role="status" class="mt-2 text-sm text-amber-200">{{ message }}</p>
 
-      <p v-for="review in detail.reviews" :key="review.role" class="mt-2 text-sm text-muted">{{ reviewLine(review) }}</p>
-
-      <div class="mt-4 flex flex-wrap items-center gap-2">
+      <!-- One action bar under the title: what the operator can decide, then
+           where the work lives on GitHub, then stopping the attempt. -->
+      <div id="issue-actions" class="mt-4 flex flex-wrap items-center gap-2">
         <UButton
           v-for="(action, index) in detail.actions"
           :key="action"
@@ -219,6 +223,31 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         >{{ ACTION_LABELS[action] }}</UButton>
         <UButton v-if="detail.setup_needed" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
         <UButton
+          :to="issueUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          external
+          size="sm"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-arrow-up-right"
+          trailing
+        >GitHub</UButton>
+        <UButton
+          v-for="pull in detail.pull_requests"
+          :key="pull.number"
+          :to="pullUrl(pull.number)"
+          :title="pull.title"
+          target="_blank"
+          rel="noopener noreferrer"
+          external
+          size="sm"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-arrow-up-right"
+          trailing
+        >PR #{{ pull.number }}</UButton>
+        <UButton
           v-if="detail.active && detail.status === 'working'"
           size="sm"
           color="error"
@@ -228,22 +257,30 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         >{{ ACTION_LABELS.stop }}</UButton>
       </div>
 
+      <div v-if="reviews.length" id="issue-reviews" class="mt-4 flex flex-col gap-2">
+        <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <UBadge :color="row.outcome === 'passed' ? 'success' : 'warning'" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>
+            <span class="text-sm font-semibold text-white">{{ row.label }}</span>
+            <UButton
+              v-if="row.more"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              class="ml-auto"
+              @click="toggleReview(row.role)"
+            >{{ expanded.has(row.role) ? 'Less' : 'More' }}</UButton>
+          </div>
+          <p class="mt-1 text-sm text-muted" :class="expanded.has(row.role) ? '' : 'line-clamp-2'">
+            {{ expanded.has(row.role) ? row.summary : row.lead }}
+          </p>
+        </div>
+      </div>
+
       <section class="mt-5 rounded-xl border border-line bg-panel p-4">
         <MarkdownBody :html="html ?? ''" />
         <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
       </section>
-
-      <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-        <a :href="issueUrl" target="_blank" rel="noopener noreferrer" class="text-sky-200 hover:underline">Open on GitHub ↗</a>
-        <a
-          v-for="pull in detail.pull_requests"
-          :key="pull.number"
-          :href="pullUrl(pull.number)"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="text-sky-200 hover:underline"
-        >Pull request #{{ pull.number }} ↗</a>
-      </div>
 
       <p v-if="detail.dependencies.length" class="mt-2 text-sm text-muted">
         Depends on

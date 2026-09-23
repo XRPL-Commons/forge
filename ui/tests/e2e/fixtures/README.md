@@ -270,6 +270,23 @@ output has not.
 - `factory-output.json` — the log that `?job=` points at, distinct from
   `default/`'s so the spec can tell which scenario answered.
 
+## stacked/
+
+- `factory.json` — one running build job (`1:601`) plus eleven queued build
+  issues, three `hold` issues and two `approval_needed` ones, and no recovery
+  job. Exercises the Factory board's compact shape after Issue #41: the Build
+  column shows one working card and one "11 queued" deck whose modal lists all
+  eleven, and Needs attention shows the two decisions as cards beside a
+  "3 on hold" stack while its header counts all five.
+
+## reviewed/
+
+- `issues.issue.json` — `default/issues.issue.json` (the working `1:610` row)
+  with a pull request (`#30`) and two reviews: a passed `review` whose summary
+  runs past its lead sentence, and a `changes_requested` `audit`. Exercises the
+  issue detail's action bar ("GitHub ↗", "PR #30 ↗") and its clamped review
+  rows with the "More" toggle.
+
 ## down (not a fixture directory)
 
 `down` is a scenario name recognized directly by `mock-api.mjs`, not a

@@ -217,19 +217,22 @@ function eligible(view: FactoryView, issue: LedgerIssueView): boolean {
 
 export interface IssueGroups {
   columns: Record<ColumnRole, CardModel[]>
+  // Waiting on the operator (approval needed, failed): every one of these is
+  // read. A deliberate hold is not, so it is kept apart and stacked.
   attention: CardModel[]
+  held: CardModel[]
   finishing: CardModel[]
   investigating: CardModel[]
   internalJobs: CardModel[]
   completed: CardModel[]
 }
 
-// Assignment order: columns -> attention -> finishing -> runners -> completed.
+// Assignment order: columns -> held -> attention -> finishing -> runners -> completed.
 // An issue appears exactly once. Internal jobs are listed separately, by job.
 export function groupIssues(view: FactoryView | null | undefined, now: number): IssueGroups {
   const groups: IssueGroups = {
     columns: { build: [], review: [], audit: [] },
-    attention: [], finishing: [], investigating: [], internalJobs: [], completed: [],
+    attention: [], held: [], finishing: [], investigating: [], internalJobs: [], completed: [],
   }
   if (!view) return groups
   for (const issue of view.issues ?? []) {
@@ -241,6 +244,9 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
       ? job.role as ColumnRole
       : NEXT_ROLE[issue.state] ?? null
     if (role) { groups.columns[role].push(card); continue }
+    // A held issue counts as needing attention (the breakdown row and the
+    // section header both count it) but waits as a stack, not as a card.
+    if (issue.state === 'hold') { groups.held.push(card); continue }
     if (ATTENTION_STATES.includes(issue.state)) { groups.attention.push(card); continue }
     if (issue.state === 'audited' || job?.role === 'merge') { groups.finishing.push(card); continue }
     if (issue.state === 'investigating') { groups.investigating.push(card); continue }
@@ -263,9 +269,12 @@ function runningJobs(view: FactoryView, now: number): JobView[] {
 // says what the count means right now, derived from the reasons the ledger
 // records. This replaces per-role tiles: the operator reads why work is not
 // moving, not how many slots exist.
+// `detail` is the fixed phrase printed under the number, so a box reads the
+// same from one poll to the next; `meaning` is the derived sentence, shown on
+// hover and to a screen reader through aria-describedby.
 export interface BreakdownRow {
   id: 'working' | 'queued' | 'merging' | 'attention' | 'merged'
-  label: string; value: number; meaning: string; to: string; tone: 'ok' | 'warn' | 'muted'
+  label: string; value: number; detail: string; meaning: string; to: string; tone: 'ok' | 'warn' | 'muted'
 }
 
 const HOLD_REASONS: [RegExp, string][] = [
@@ -317,18 +326,20 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   const mergedSince = (seconds: number) => mergedIssues.filter(issue => mergedAt(issue) >= now - seconds).length
   const mergedDay = mergedSince(24 * 3600)
   const mergedWeek = mergedSince(7 * 24 * 3600)
+  const workerSlots = (['build', 'review', 'audit'] as JobRole[]).reduce((total, role) => total + (slots[role] ?? 0), 0)
   return [
-    { id: 'working', label: 'Working', value: working, meaning: workingMeaning, to: '#columns', tone: 'ok' },
-    { id: 'queued', label: 'Queued', value: queued,
+    { id: 'working', label: 'Working', value: working, detail: `of ${workerSlots} slots`,
+      meaning: workingMeaning, to: '#columns', tone: 'ok' },
+    { id: 'queued', label: 'Queued', value: queued, detail: enabled ? 'waiting for a worker' : 'dispatch is paused',
       meaning: !enabled ? 'Dispatch is paused' : queued ? 'Waiting for a free worker' : 'Nothing waiting',
       to: '#columns', tone: enabled ? 'ok' : 'muted' },
-    { id: 'merging', label: 'Waiting to merge', value: merging,
+    { id: 'merging', label: 'Waiting to merge', value: merging, detail: 'approved, not merged',
       meaning: refused ? `${refused} refused by branch rules` : merging ? 'Checking merge requirements' : 'Nothing approved yet',
       to: '#finishing', tone: refused ? 'warn' : 'ok' },
-    { id: 'attention', label: 'Needs a decision', value: attention.length,
+    { id: 'attention', label: 'Needs a decision', value: attention.length, detail: 'awaiting you',
       meaning: attention.length ? tally(attention.map(holdReason)) : 'Nothing needs you',
       to: '#needs-attention', tone: attention.length ? 'warn' : 'ok' },
-    { id: 'merged', label: 'Merged today', value: mergedDay,
+    { id: 'merged', label: 'Merged today', value: mergedDay, detail: 'in the last 24 h',
       meaning: `${mergedWeek} in the last 7 days · ${mergedIssues.length} tracked in all`, to: '#completed', tone: 'ok' },
   ]
 }

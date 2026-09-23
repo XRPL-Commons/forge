@@ -120,7 +120,7 @@ describe('groupIssues', () => {
     expect(groups.finishing.map(c => c.key)).toEqual(['2:605'])
     expect(groups.completed.map(c => c.key)).toEqual(['2:606'])
     const keys = [...groups.columns.build, ...groups.columns.review, ...groups.columns.audit,
-      ...groups.attention, ...groups.finishing, ...groups.investigating, ...groups.completed].map(c => c.key)
+      ...groups.attention, ...groups.held, ...groups.finishing, ...groups.investigating, ...groups.completed].map(c => c.key)
     expect(keys.length).toBe(new Set(keys).size)
   })
 
@@ -169,6 +169,27 @@ describe('groupIssues', () => {
     expect(owned.internalJobs).toEqual([])
   })
 
+  it('stacks held issues apart from the ones waiting on a decision', () => {
+    const split = groupIssues(view({ issues: [
+      issue({ key: '1:620', number: 620, state: 'hold', reason: 'Paused by an operator' }),
+      issue({ key: '1:621', number: 621, state: 'hold', reason: 'Forge environment needs attention (resources)' }),
+      issue({ key: '1:622', number: 622, state: 'approval_needed' }),
+      issue({ key: '1:623', number: 623, state: 'failed', reason: 'Three attempts failed' }),
+    ] }), now)
+    expect(split.attention.map(c => c.key)).toEqual(['1:622', '1:623'])
+    expect(split.held.map(c => c.key)).toEqual(['1:620', '1:621'])
+    expect(split.held[0]!.phaseLabel).toBe('On hold')
+    // The breakdown row still counts every state that needs the operator.
+    expect(breakdown(view({ issues: [
+      issue({ key: '1:620', number: 620, state: 'hold', reason: 'Paused by an operator' }),
+      issue({ key: '1:622', number: 622, state: 'approval_needed' }),
+    ] }), now).find(row => row.id === 'attention')!.value).toBe(2)
+  })
+
+  it('leaves the held group empty when nothing is on hold', () => {
+    expect(groups.held).toEqual([])
+  })
+
   it('emits at most one footer link per card', () => {
     const held = groupIssues(view({ issues: [
       issue({ key: '2:615', number: 615, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'ready', prerequisite_hold: { state: 'ready' } }),
@@ -204,16 +225,23 @@ describe('breakdown', () => {
     const rows = breakdown(v, now)
     expect(rows.map(r => r.id)).toEqual(['working', 'queued', 'merging', 'attention', 'merged'])
     const byId = Object.fromEntries(rows.map(r => [r.id, r]))
-    expect(byId.working).toMatchObject({ value: 1, meaning: '1 of 2 building · 0 of 1 reviewing · 0 of 1 auditing · 1 investigating', to: '#columns' })
-    expect(byId.queued).toMatchObject({ value: 1, meaning: 'Waiting for a free worker' })
-    expect(byId.merging).toMatchObject({ value: 1, meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
-    expect(byId.attention).toMatchObject({ value: 3, meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
-    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, meaning: '2 in the last 7 days · 3 tracked in all', to: '#completed' })
+    expect(byId.working).toMatchObject({ value: 1, detail: 'of 4 slots', meaning: '1 of 2 building · 0 of 1 reviewing · 0 of 1 auditing · 1 investigating', to: '#columns' })
+    expect(byId.queued).toMatchObject({ value: 1, detail: 'waiting for a worker', meaning: 'Waiting for a free worker' })
+    expect(byId.merging).toMatchObject({ value: 1, detail: 'approved, not merged', meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
+    expect(byId.attention).toMatchObject({ value: 3, detail: 'awaiting you', meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
+    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, detail: 'in the last 24 h', meaning: '2 in the last 7 days · 3 tracked in all', to: '#completed' })
+  })
+
+  it('keeps the inline detail of every box a fixed phrase', () => {
+    const empty = breakdown(view(), now)
+    expect(empty.map(r => r.detail)).toEqual(
+      ['of 4 slots', 'waiting for a worker', 'approved, not merged', 'awaiting you', 'in the last 24 h'])
+    expect(empty.map(r => r.detail)).toEqual(breakdown(v, now).map(r => r.detail))
   })
 
   it('reports a paused dispatch on the queued row', () => {
     const paused = breakdown(view({ ...v, runtime: { ...v.runtime, enabled: false } }), now)
-    expect(paused[1]).toMatchObject({ id: 'queued', meaning: 'Dispatch is paused', tone: 'muted' })
+    expect(paused[1]).toMatchObject({ id: 'queued', detail: 'dispatch is paused', meaning: 'Dispatch is paused', tone: 'muted' })
   })
 })
 

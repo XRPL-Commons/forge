@@ -13,6 +13,26 @@ function waitForText(page, text) {
   return page.waitForFunction((needle) => document.body.innerText.includes(needle), text, { timeout: 10000 })
 }
 
+// Opens a stack and waits for its modal to hold still: the dialog animates in
+// with a scale, so a card measured too early is smaller than it renders.
+async function openStack(page, stack) {
+  await stack.click()
+  const dialog = page.getByRole('dialog')
+  await dialog.locator('.issue-card').first().waitFor({ timeout: 10000 })
+  await page.waitForFunction(() => {
+    const dialog = document.querySelector('[role="dialog"]')
+    if (!dialog || dialog.getAnimations().some((animation) => animation.playState === 'running')) return false
+    const card = dialog.querySelector('.issue-card')
+    return !!card && Math.abs(card.getBoundingClientRect().height - card.offsetHeight) < 0.05
+  }, null, { timeout: 10000 })
+  return dialog
+}
+
+async function closeStack(page, dialog) {
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden', timeout: 10000 })
+}
+
 // End-to-end behaviour of the Activity (Factory) page: one fixed card shape,
 // one detail route per card, a single message block above the metrics, the
 // stop confirmation round-trip, column moves and the reset fence.
@@ -25,26 +45,48 @@ export default async function (page, { base, scenario, requests }) {
   // prerequisite hold, a failure count, a job with provider + model and a
   // recovery job with no issue row.
   // Queued issues wait as one stack per column; only cards with a worker are
-  // expanded until the operator opens the stack.
+  // on the board until the operator opens the stack, which is a modal.
   assert.equal(await page.locator('#stage-build [data-key="1:611"]').count(), 0, 'a queued issue is folded into the stack')
   const stacks = page.locator('.issue-stack')
-  assert.ok(await stacks.count() >= 1, 'expected at least one queued stack')
+  assert.equal(await stacks.count(), 3, 'one stack per column that has queued work')
   assert.match(await stacks.first().innerText(), /\d+ queued/)
-  for (const stack of await stacks.all()) await stack.click()
-  await page.locator('#stage-build [data-key="1:611"]').waitFor()
-  const cards = page.locator('.issue-card:visible')
-  const cardCount = await cards.count()
-  assert.equal(cardCount, 11, `expected the 11 visible cards of the default fixture, saw ${cardCount}`)
+
+  // The heights of every card the fixture renders: the ones on the board,
+  // then the ones each stack opens.
   const heights = []
-  for (let index = 0; index < cardCount; index += 1) heights.push((await cards.nth(index).boundingBox()).height)
+  const boardCards = page.locator('.issue-card:visible')
+  const boardCount = await boardCards.count()
+  for (let index = 0; index < boardCount; index += 1) heights.push((await boardCards.nth(index).boundingBox()).height)
+  for (let index = 0; index < 3; index += 1) {
+    const dialog = await openStack(page, stacks.nth(index))
+    const stacked = dialog.locator('.issue-card')
+    const stackedCount = await stacked.count()
+    for (let card = 0; card < stackedCount; card += 1) heights.push((await stacked.nth(card).boundingBox()).height)
+    if (index === 0) {
+      assert.equal(await dialog.locator('[data-key="1:611"]').isVisible(), true, 'the Build stack opens its queued cards')
+      // Stop / open actions survive the move into the modal.
+      assert.equal(await dialog.locator('[data-key="1:611"]').getByRole('link', { name: 'Open' }).count(), 1)
+    }
+    if (index === 1) {
+      // The >120-character title is clamped inside its fixed-size card.
+      const titleBox = await dialog.locator('[data-key="1:612"] h3').evaluate((el) => ({
+        scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, text: el.textContent.trim(),
+      }))
+      assert.ok(titleBox.scrollHeight <= titleBox.clientHeight, `title overflows its box: ${JSON.stringify(titleBox)}`)
+      assert.ok(titleBox.text.endsWith('…'), `expected a clamped title, saw ${titleBox.text}`)
+    }
+    await closeStack(page, dialog)
+  }
+  assert.equal(heights.length, 11, `expected the 11 cards of the default fixture, saw ${heights.length}`)
   assert.equal(new Set(heights).size, 1, `cards differ in height: ${heights.join(', ')}`)
 
-  // The >120-character title is clamped inside its fixed-size card.
-  const titleBox = await page.locator('[data-key="1:612"] h3').evaluate((el) => ({
-    scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, text: el.textContent.trim(),
-  }))
-  assert.ok(titleBox.scrollHeight <= titleBox.clientHeight, `title overflows its box: ${JSON.stringify(titleBox)}`)
-  assert.ok(titleBox.text.endsWith('…'), `expected a clamped title, saw ${titleBox.text}`)
+  // Each breakdown row is a stat box that links to its section and carries
+  // the derived sentence as its tooltip, not as a line that reflows.
+  const attentionBox = page.locator('[data-breakdown="attention"]')
+  assert.equal(await attentionBox.getAttribute('href'), '#needs-attention')
+  assert.match(await attentionBox.innerText(), /Needs a decision/)
+  assert.match(await attentionBox.innerText(), /awaiting you/)
+  assert.equal(await attentionBox.getAttribute('title'), '2 failed')
 
   // The worker-output popover is gone; logs live in the detail view.
   assert.equal(await page.getByRole('button', { name: 'Output' }).count(), 0)
@@ -101,8 +143,9 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('moved')
   // It arrives queued, so it lands in Review's stack; open the stack to see its card.
   await page.locator('#stage-review .issue-stack').waitFor({ timeout: 10000 })
-  await page.locator('#stage-review .issue-stack').click()
-  await page.waitForFunction(() => !!document.querySelector('#stage-review [data-key="1:601"]'), null, { timeout: 10000 })
+  const movedDialog = await openStack(page, page.locator('#stage-review .issue-stack'))
+  await movedDialog.locator('[data-key="1:601"]').waitFor({ timeout: 10000 })
+  await closeStack(page, movedDialog)
   // The leaving node is animated out (420 ms), then gone from the old column.
   await page.locator('#stage-build [data-key="1:601"]').waitFor({ state: 'detached', timeout: 10000 })
   await page.waitForFunction(
@@ -131,6 +174,31 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
   assert.equal(await page.locator('#columns').count(), 0)
   assert.equal(await page.locator('.issue-card').count(), 0)
+
+  // Eleven queued issues stay one card and one deck: opening the deck lists
+  // all eleven in a modal, and the board itself does not grow.
+  await scenario('stacked')
+  await page.goto(base + '/')
+  await waitForText(page, '11 queued')
+  const compact = (await page.locator('#columns').boundingBox()).height
+  const queuedDialog = await openStack(page, page.locator('#stage-build .issue-stack'))
+  await waitForText(page, '11 queued · Build')
+  assert.equal(await queuedDialog.locator('.issue-card').count(), 11, 'the stack lists every queued issue')
+  assert.equal(await page.locator('#stage-build .issue-card').count(), 1, 'the column keeps only the working card')
+  assert.equal((await page.locator('#columns').boundingBox()).height, compact, 'opening a stack must not grow the board')
+  await closeStack(page, queuedDialog)
+
+  // Needs attention keeps the decisions expanded and stacks the holds, while
+  // its header counts both.
+  const attention = page.locator('#needs-attention')
+  assert.equal((await attention.locator('h2').innerText()).trim(), 'Needs attention · 5')
+  assert.equal(await attention.locator('.issue-card').count(), 2, 'only the decisions waiting on the operator are cards')
+  const holdStack = attention.locator('.issue-stack')
+  assert.match(await holdStack.innerText(), /3 on hold/)
+  const holdDialog = await openStack(page, holdStack)
+  assert.equal(await holdDialog.locator('.issue-card').count(), 3)
+  assert.match(await holdDialog.innerText(), /3 on hold/)
+  await closeStack(page, holdDialog)
 
   // On a phone-width viewport the cards fill the width and nothing scrolls
   // sideways.

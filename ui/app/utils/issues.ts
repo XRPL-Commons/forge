@@ -104,6 +104,46 @@ export function defaultReason(action: IssueAction): string {
   return `${ACTION_LABELS[action]} confirmed by operator`
 }
 
+// A review summary is worker prose: the detail page shows its lead sentence
+// clamped to two lines, and reveals the rest on demand. The row model is pure
+// so the copy the operator reads is decided here, not in the template.
+export interface ReviewRow {
+  role: IssueReview['role']
+  label: string
+  outcome: 'passed' | 'attention'
+  outcomeLabel: string
+  lead: string
+  summary: string
+  // True when the lead leaves something out, so the row offers "More".
+  more: boolean
+}
+
+const REVIEW_LABELS: Record<IssueReview['role'], string> = { review: 'Review', audit: 'Security review' }
+
+function leadSentence(text: string): string {
+  const end = text.search(/[.!?](\s|$)/)
+  return end === -1 ? text : text.slice(0, end + 1)
+}
+
+export function reviewRow(review: IssueReview): ReviewRow {
+  const summary = (review.summary ?? '').replace(/\s+/g, ' ').trim()
+  const lead = leadSentence(summary)
+  const passed = review.outcome === 'passed'
+  return {
+    role: review.role,
+    label: REVIEW_LABELS[review.role] ?? review.role,
+    outcome: passed ? 'passed' : 'attention',
+    outcomeLabel: passed ? 'Passed' : 'Needs attention',
+    lead,
+    summary,
+    more: summary !== lead,
+  }
+}
+
+export function reviewRows(reviews: IssueReview[] | null | undefined): ReviewRow[] {
+  return (reviews ?? []).map(reviewRow)
+}
+
 export function eventLabel(kind: string): string {
   return EVENT_LABELS[kind] ?? kind.replace(/_/g, ' ')
 }
