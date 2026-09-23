@@ -17,7 +17,7 @@ def memory_bytes(value):
     return int(value[:-1]) * (1024 ** (2 if value[-1] == 'm' else 3))
 
 
-def observe(requested, containers, *, read_text=None):
+def observe(requested, containers, *, reserve=HOST_RESERVE, read_text=None):
     """Reserve the full limit, including created/orphaned workers, not just usage.
 
     MemAvailable also accounts for non-Forge processes. The aggregate budget
@@ -40,10 +40,10 @@ def observe(requested, containers, *, read_text=None):
             reserved += limit
         decision.update(requested_bytes=requested, reserved_bytes=reserved,
                         available_bytes=memory['MemAvailable'], total_bytes=memory['MemTotal'],
-                        host_reserve_bytes=HOST_RESERVE)
-        if reserved + requested + HOST_RESERVE > memory['MemTotal']:
+                        host_reserve_bytes=reserve)
+        if reserved + requested + reserve > memory['MemTotal']:
             decision['reason'] = 'memory_budget'
-        elif memory['MemAvailable'] < requested + HOST_RESERVE:
+        elif memory['MemAvailable'] < requested + reserve:
             decision['reason'] = 'memory_headroom'
         elif any(pressure[kind][window] > threshold
                  for kind, threshold in (('some', 1.0), ('full', 0.1))

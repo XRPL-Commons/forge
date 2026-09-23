@@ -258,6 +258,22 @@ exercise a decision that needs no reason and one that does:
   `body_truncated: true`, so the issue's "Description shortened…" note is
   exercised.
 
+## approval/ and approval-requested/
+
+The two halves of the reviewer decision on an `approval_needed` issue
+(`1:614`, a row of its own, not in `default/issues.json`): `actions`
+carries `assign_reviewer` alone, and `pull_requests` the candidate `#31`.
+
+- `approval/issues.issue.json` — before anyone is asked: `reviewers` lists
+  two collaborators with push access, `default_reviewers:["maintainer"]` (the
+  runtime's `human_reviewers`, which the select starts from) and
+  `reviewers_requested: null`.
+- `approval-requested/issues.issue.json` — the same issue once GitHub has
+  been asked: `reviewers_requested:{logins:["maintainer"],at:1790000000}` and
+  `assignees:["maintainer"]`. Its `reviewers` is empty, which is what a
+  failed collaborator listing looks like, so the same fixture exercises the
+  free-text login box that replaces the select.
+
 ## orphan-job/
 
 The issue behind a `?job=<id>` link has left the inventory, but its worker
@@ -269,6 +285,36 @@ output has not.
   query.
 - `factory-output.json` — the log that `?job=` points at, distinct from
   `default/`'s so the spec can tell which scenario answered.
+
+## stacked/
+
+- `factory.json` — one running build job (`1:601`) plus eleven queued build
+  issues, three `hold` issues and two `approval_needed` ones, and no recovery
+  job. Exercises the Factory board's compact shape after Issue #41: the Build
+  column shows one working card and one "11 queued" deck whose modal lists all
+  eleven, and Needs attention shows the two decisions as cards beside a
+  "3 on hold" stack while its header counts all five.
+
+## reviewed/
+
+- `issues.issue.json` — `default/issues.issue.json` (the working `1:610` row)
+  with a pull request (`#30`), a Forge-authored `summary` (headline "Writing
+  the change") and two reviews carrying the worker contract's own outcomes: a
+  `pass` `review` whose summary runs past its lead sentence, and a `reject`
+  `audit`. Exercises the issue detail's action bar ("GitHub ↗", "PR #30 ↗")
+  and, inside "Details", its clamped review rows with the "More" toggle and
+  the per-verdict chips ("Passed" / "Rejected").
+
+## summarised/
+
+- `issues.issue.json` — a held issue (`1:620`, status `attention`, action
+  `retry`) whose worker wrote a long `explanation` full of paths, commands and
+  environment variables, plus the plain-language `summary` Forge leads with
+  (headline "Stopped: the release job fails before it publishes" and a
+  three-sentence `plain`). Its reviews are a `pass` `review` and an `unable`
+  `audit`, for the "Could not review" chip. Exercises Issue #47: the headline
+  and description above the action bar, and the worker's full text only after
+  "Details" is opened.
 
 ## down (not a fixture directory)
 

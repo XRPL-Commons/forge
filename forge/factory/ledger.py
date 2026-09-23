@@ -144,7 +144,15 @@ class Ledger:
             job.update(cleanup=True, phase='cleaned')
             self.event(data, data['issues'][job['issue_key']], 'runner_released', attempt=identifier)
 
-    def accept(self, identifier, *, candidate=None, evidence=None):
+    def remember(self, issue, summary, container=None):
+        """The plain-language card of the deciding result, kept with its outcome."""
+        if not summary:
+            return
+        issue['last_summary'] = summary
+        if container is not None:
+            container['summary'] = summary
+
+    def accept(self, identifier, *, candidate=None, evidence=None, summary=None):
         with self.transaction() as data:
             job, issue = self._current(data, identifier)
             if job['outcome'] is not None:
@@ -162,6 +170,9 @@ class Ledger:
             issue['active'] = None
             if evidence:
                 issue['evidence'][job['role']] = evidence
+            # The verdict's own report already carries headline and plain; the
+            # accepted candidate is the outcome record that otherwise has none.
+            self.remember(issue, summary, issue['candidate'] if candidate is not None else None)
             job['outcome'] = 'accepted'
             self.event(data, issue, 'accepted', attempt=identifier, role=job['role'], candidate=issue['candidate'])
             return True
@@ -174,7 +185,7 @@ class Ledger:
             raise StateError('Obsolete attempt cannot change the issue')
         return job, issue
 
-    def fail(self, identifier, cause, *, rejection=False, evidence=None):
+    def fail(self, identifier, cause, *, rejection=False, evidence=None, summary=None):
         with self.transaction() as data:
             job, issue = self._current(data, identifier)
             if job['outcome'] is not None:
@@ -185,6 +196,7 @@ class Ledger:
                        'retry_state': 'ready' if rejection else RETRY_STATE[job['role']],
                        'at': self.clock(), 'charged': True}
             issue['failures'].append(failure)
+            self.remember(issue, summary, failure)
             issue['active'] = None
             issue['state'] = 'failed' if self.failure_count(issue) >= MAX_FAILURES else 'investigating'
             issue['reason'] = cause
@@ -197,7 +209,7 @@ class Ledger:
     def failure_count(issue):
         return sum(f['charged'] for f in issue['failures'][issue['budget_start']:])
 
-    def findings(self, identifier, findings):
+    def findings(self, identifier, findings, summary=None):
         with self.transaction() as data:
             job = data['jobs'][identifier]
             if job['role'] != 'recovery' or job['outcome'] is not None:
@@ -205,6 +217,7 @@ class Ledger:
             issue = data['issues'][job['issue_key']]
             failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
             failure.update(investigation='complete', findings=findings)
+            self.remember(issue, summary)
             job['outcome'] = 'investigated'
             self.event(data, issue, 'investigated', attempt=failure['attempt'], findings=findings)
             if issue['state'] != 'investigating':
@@ -239,7 +252,7 @@ class Ledger:
             self.event(data, issue, 'failure_corrected', attempt=identifier, candidate=candidate)
             return True
 
-    def block_environment(self, identifier, blocker, detail):
+    def block_environment(self, identifier, blocker, detail, summary=None):
         """Availability is not a code failure; retain the candidate and stage."""
         from .contracts import ENVIRONMENT_BLOCKERS, environment_key
         if blocker not in ENVIRONMENT_BLOCKERS:
@@ -260,6 +273,7 @@ class Ledger:
             issue['environment_hold'] = {'state': issue['state'], 'blocker': blocker,
                                          'detail': detail[:8000], 'attempt': identifier,
                                          'environment': environment_key(job.get('runner_config') or {})}
+            self.remember(issue, summary, issue['environment_hold'])
             issue.update(state='hold', active=None, reason='Forge environment needs attention (' + blocker.replace('_', ' ') + ')')
             job['outcome'] = 'blocked_environment'
             self.event(data, issue, 'environment_blocked', attempt=identifier, blocker=blocker, detail=detail[:8000])

@@ -278,3 +278,35 @@ class MergeRefusalTests(unittest.TestCase):
         github.deadline = 0
         with self.assertRaisesRegex(GitHubUnavailable, 'budget reached'):
             github.merge(self.item())
+
+
+class WorkerContractTests(unittest.TestCase):
+    """Every role reports in plain language, and the image schema says so."""
+
+    def note(self, role):
+        return {'id': str(uuid.uuid4()), 'role': role, 'issue_number': 1, 'repo': 'example/project',
+                'repo_id': 1, 'branch': 'forge/issue-1', 'publisher': role + '[bot]', 'target_branch': 'main',
+                'candidate': {'key': 'candidate-key'} if role in ('review', 'audit') else None,
+                'deadline': 10, 'history': {}, 'failure': {'attempt': 'a'} if role == 'recovery' else None}
+
+    def test_every_role_must_report_a_headline_and_a_plain_description(self):
+        from forge.factory.contracts import HEADLINE_LIMIT, PLAIN_LIMIT, ROLE_FIELDS
+        from forge.factory.harness import schema
+        for role in ('build', 'review', 'audit', 'recovery'):
+            shape = schema(self.note(role))
+            self.assertIn('headline', shape['required'])
+            self.assertIn('plain', shape['required'])
+            # The image duplicates the limits contracts.result() truncates at.
+            self.assertEqual(shape['properties']['headline']['maxLength'], HEADLINE_LIMIT)
+            self.assertEqual(shape['properties']['plain']['maxLength'], PLAIN_LIMIT)
+            self.assertFalse(shape['additionalProperties'])
+            self.assertEqual(set(shape['properties']) - {'version', 'attempt', 'role', 'outcome', 'blocker',
+                                                         'summary', 'headline', 'plain'}, set(ROLE_FIELDS[role]))
+
+    def test_assignment_instructions_teach_the_tone_with_examples(self):
+        from forge.factory.contracts import assignment_note
+        instructions = assignment_note({**self.note('build'), 'review_policy': {}, 'ci_evidence': None})['instructions']
+        self.assertIn('someone who does not read code', instructions)
+        self.assertIn('No file paths, commands, variable names or code in either.', instructions)
+        self.assertIn('Built and waiting for review', instructions)
+        self.assertGreaterEqual(instructions.count('headline "'), 3)

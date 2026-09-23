@@ -16,7 +16,7 @@ DEFAULT = {
     'image': '', 'engine': '/usr/bin/docker', 'engine_socket': '/var/run/docker.sock',
     'apparmor_profile': 'forge-runner-native', 'seccomp_profile_env': 'FORGE_RUNNER_SECCOMP',
     'network': 'forge-workers', 'proxy': 'http://forge-egress:3128',
-    'memory': '4g', 'cpus': 2, 'pids_limit': 256,
+    'memory': '4g', 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 256,
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -79,6 +79,8 @@ def validate(value):
         raise ValueError('Use an internal HTTP CONNECT proxy name and port')
     if not re.fullmatch(r'[1-9][0-9]*[mg]', config['memory']):
         raise ValueError('memory must use m or g units')
+    if not re.fullmatch(r'[1-9][0-9]*[mg]', config['host_reserve']):
+        raise ValueError('host_reserve must use m or g units')
     for key in ('harness_argv', 'provider_environment', 'human_reviewers', 'hold_labels'):
         if not isinstance(config[key], list) or any(not isinstance(v, str) or not v or '\x00' in v for v in config[key]):
             raise ValueError('Invalid ' + key)

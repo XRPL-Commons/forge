@@ -156,6 +156,68 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(orphanOutputs.length, 1)
   assert.equal(orphanOutputs[0].query.id, RECOVERY_JOB, 'the orphaned ?job= id is what is fetched')
 
+  // The issue's one action bar sits under the title, above the description:
+  // the decisions, then where the work lives on GitHub, then Stop. The review
+  // summaries below it are clamped until "More" is pressed.
+  await scenario('reviewed')
+  await page.goto(base + '/issues/1%3A610')
+  await waitForText(page, DETAIL_TITLE)
+  const actionBar = page.locator('#issue-actions')
+  assert.equal(await actionBar.getByRole('link', { name: 'GitHub' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/issues/610')
+  assert.equal(await actionBar.getByRole('link', { name: 'PR #30' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/pull/30')
+  assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
+  assert.equal(await page.getByRole('link', { name: 'Open on GitHub ↗' }).count(), 0, 'the links row at the bottom is gone')
+  const barBox = await actionBar.boundingBox()
+  const bodyBox = await page.locator('.forge-markdown').boundingBox()
+  assert.ok(barBox.y + barBox.height <= bodyBox.y, 'the action bar must sit above the description')
+
+  // The review rows live inside Details, and each chip is that reviewer's own
+  // verdict — a passed review reads "Passed" whatever the issue's status is.
+  assert.equal(await page.locator('#issue-reviews').count(), 0, 'the worker prose starts collapsed')
+  await page.getByRole('button', { name: 'Details' }).click()
+  await waitForText(page, 'The change is correct')
+  const reviewRows = page.locator('#issue-reviews > div')
+  assert.equal(await reviewRows.count(), 2)
+  assert.match(await reviewRows.first().innerText(), /^Passed\s+Review/)
+  assert.match(await reviewRows.nth(1).innerText(), /^Rejected\s+Security review/)
+  const summary = reviewRows.first().locator('p')
+  assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), '2',
+    'a review summary is clamped to two lines')
+  assert.equal((await summary.innerText()).includes('One nit'), false, 'the worker prose is behind the toggle')
+  await reviewRows.first().getByRole('button', { name: 'More' }).click()
+  await waitForText(page, 'One nit')
+  assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), 'none')
+  await reviewRows.first().getByRole('button', { name: 'Less' }).click()
+  assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), '2')
+
+  // An issue whose worker wrote pages of detail still opens with one headline
+  // sentence and a short description, above the decisions; the paths, commands
+  // and environment variables it wrote are only there once Details is opened.
+  await scenario('summarised')
+  await page.goto(base + '/issues/1%3A620')
+  await waitForText(page, 'Stop the release job leaking install tokens')
+  const headline = page.locator('#issue-headline')
+  assert.equal((await headline.innerText()).trim(), 'Stopped: the release job fails before it publishes')
+  const plain = (await page.locator('#issue-plain').innerText()).trim()
+  assert.equal(plain.split(/(?<=[.!?])\s+/).filter(Boolean).length, 3, 'at most three sentences of description')
+  assert.equal(plain.includes('/'), false, 'no paths in the description')
+  const body = await page.locator('body').innerText()
+  assert.equal(body.includes('ENEEDAUTH'), false, 'the worker’s full text stays behind Details')
+  assert.equal(body.includes('pipeline.ts'), false, 'the worker’s full text stays behind Details')
+
+  const summaryBox = await page.locator('#issue-plain').boundingBox()
+  const actionsBox = await page.locator('#issue-actions').boundingBox()
+  assert.ok(summaryBox.y + summaryBox.height <= actionsBox.y, 'the summary must sit above the action bar')
+
+  await page.getByRole('button', { name: 'Details' }).click()
+  await waitForText(page, 'ENEEDAUTH')
+  assert.match(await page.locator('#issue-explanation').innerText(), /pipeline\.ts/)
+  const verdicts = page.locator('#issue-reviews > div')
+  assert.match(await verdicts.first().innerText(), /^Passed\s+Review/)
+  assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
+
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')
   await page.goto(base + '/issues/1%3A609')
@@ -192,6 +254,51 @@ export default async function (page, { base, scenario, requests }) {
   assert.deepEqual(paused[0].body, {
     key: '1:608', action: 'pause', revision: 'current', reason: 'Waiting for the design review',
   })
+
+  // An issue waiting for a human approval offers the one decision that helps:
+  // asking named people for the review. The select starts from the configured
+  // human reviewers, and confirming sends the chosen logins as the decision.
+  await scenario('approval')
+  await page.goto(base + '/issues/1%3A614')
+  await waitForText(page, 'Rotate the release signing key')
+  await waitForText(page, 'The pull request needs a human review.')
+  const reviewerBar = page.locator('#issue-actions')
+  const reviewers = reviewerBar.getByRole('button', { name: 'Reviewers' })
+  assert.equal(await reviewers.count(), 1, 'an approval_needed issue offers the reviewer select')
+  assert.match(await reviewers.innerText(), /maintainer/, 'the configured human reviewers start selected')
+  await reviewers.click()
+  await page.getByRole('option', { name: 'second-pair' }).click()
+  await page.keyboard.press('Escape')
+  await reviewerBar.getByRole('button', { name: 'Assign reviewer' }).click()
+  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  const assigned = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
+  assert.equal(assigned.length, 1)
+  assert.deepEqual(assigned[0].body, {
+    key: '1:614', action: 'assign_reviewer', revision: 'current', reason: 'maintainer, second-pair',
+  })
+
+  // Once recorded, the issue says who was asked. A collaborator listing that
+  // failed leaves the free-text box, so an unlisted login is still possible.
+  await scenario('approval-requested')
+  await page.goto(base + '/issues/1%3A614')
+  await waitForText(page, 'Review requested from @maintainer')
+  assert.match((await page.locator('#review-requested').innerText()).trim(), /^Review requested from @maintainer( · .+ ago)?$/)
+  assert.equal(await page.locator('#issue-actions').getByRole('button', { name: 'Reviewers' }).count(), 0)
+  const typed = page.locator('#issue-actions').getByRole('textbox', { name: 'Reviewers' })
+  assert.equal(await typed.count(), 1, 'a failed listing falls back to a free-text login')
+  await typed.fill('@outside-collaborator')
+  await page.locator('#issue-actions').getByRole('button', { name: 'Assign reviewer' }).click()
+  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  const unlisted = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
+  assert.equal(unlisted.length, 1)
+  assert.equal(unlisted[0].body.reason, 'outside-collaborator')
+
+  // No other issue offers it: the decision belongs to a waiting pull request.
+  await scenario('decision-queue')
+  await page.goto(base + '/issues/1%3A609')
+  await waitForText(page, 'Improve the course completion email')
+  assert.equal(await page.locator('#issue-actions').getByRole('button', { name: 'Assign reviewer' }).count(), 0)
+  assert.equal(await page.locator('#review-requested').count(), 0)
 
   // Stopping an attempt targets the job, so it goes to the factory.
   await scenario('default')

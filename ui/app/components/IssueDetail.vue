@@ -3,7 +3,8 @@ import { ForgeApiError } from '~/composables/useForgeApi'
 import type { FactoryView, JobView } from '~/utils/factory'
 import {
   ACTION_LABELS, STATUS_NAMES, eventLabel, issuePath, lastAction, pendingAction,
-  type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
+  preselectedReviewers, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, summaryBlock,
+  type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse, type ReviewOutcome,
 } from '~/utils/issues'
 
 // The one detail view: /issues/<key> owns the issue's decisions and its
@@ -92,19 +93,82 @@ const message = computed(() => {
   return submitted.value
 })
 
-const explanation = computed(() => {
-  const issue = detail.value
-  if (!issue) return ''
-  return [issue.explanation, issue.environment_blocker].filter(Boolean).join(' ')
-})
+// What the page leads with: one headline sentence, then at most three
+// sentences. Forge's own status line and the worker's prose move into Details,
+// so nobody has to open it to learn where this issue stands or why.
+const summary = computed(() => summaryBlock(detail.value))
+const detailsOpen = ref(false)
+const hasDetails = computed(() => !!summary.value?.details || reviews.value.length > 0)
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
 function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
 
-function reviewLine(review: { role: string; outcome: string | null; summary: string }) {
-  const label = review.role === 'review' ? 'Review' : 'Security review'
-  const outcome = review.outcome === 'passed' ? 'passed' : 'needs attention'
-  return `${label}: ${outcome} · ${review.summary}`
+// Assigning a human reviewer is the one decision with an argument, so its
+// control lives in the action bar rather than behind a confirmation dialog:
+// the operator picks the people, then confirms. A login the collaborator
+// listing does not know is still accepted — GitHub validates it — and a
+// listing that failed leaves the free-text box as the only input.
+const reviewerChoices = computed(() => reviewerOptions(detail.value?.reviewers))
+const canAssign = computed(() => !!detail.value?.actions.includes('assign_reviewer'))
+const decisions = computed(() => (detail.value?.actions ?? []).filter(action => action !== 'assign_reviewer'))
+const chosenReviewers = ref<string[]>([])
+const typedReviewers = ref('')
+const assignError = ref<string | null>(null)
+const preselected = ref<string | null>(null)
+
+watchEffect(() => {
+  const issue = detail.value
+  if (!issue || preselected.value === issue.key || !issue.actions.includes('assign_reviewer')) return
+  preselected.value = issue.key
+  chosenReviewers.value = preselectedReviewers(issue)
+})
+
+const reviewerLogins = computed(() => (reviewerChoices.value.length
+  ? chosenReviewers.value
+  : typedReviewers.value.split(/[\s,;]+/)).filter(Boolean))
+
+// "· 12 min ago" needs a clock the server does not have, so the age only
+// appears once mounted; the sentence itself renders either way.
+const now = ref(0)
+let ticker: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  now.value = Math.floor(Date.now() / 1000)
+  ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 30000)
+})
+onBeforeUnmount(() => clearInterval(ticker))
+const reviewRequested = computed(() => reviewRequestText(detail.value?.reviewers_requested, now.value))
+
+async function assignReviewer() {
+  const issue = detail.value
+  if (!issue || !reviewerLogins.value.length) return
+  assignError.value = null
+  submitting.value = true
+  try {
+    await api.act('/api/issues/action', {
+      key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason: reviewerReason(reviewerLogins.value),
+    })
+  } catch (error: unknown) {
+    assignError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
+    return
+  } finally {
+    submitting.value = false
+  }
+  submitted.value = 'Decision submitted. Waiting for confirmation.'
+  await poll.refresh()
+}
+
+// Reviews are compact rows — the verdict, the role, the lead sentence — inside
+// Details; "More" reveals the worker's full text. The chip is that reviewer's
+// verdict, never the issue's status, which the badge in the title line carries.
+const reviews = computed(() => reviewRows(detail.value?.reviews))
+const REVIEW_COLORS: Record<ReviewOutcome, 'success' | 'error' | 'warning' | 'neutral'> = {
+  passed: 'success', rejected: 'error', unable: 'warning', unknown: 'neutral',
+}
+const expanded = ref(new Set<string>())
+function toggleReview(role: string) {
+  const next = new Set(expanded.value)
+  if (!next.delete(role)) next.add(role)
+  expanded.value = next
 }
 
 // Times are formatted only after mount: the server has no idea which time
@@ -202,14 +266,16 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <h1 id="issue-title" class="text-2xl font-semibold text-white">{{ detail.title }}</h1>
         <UBadge color="neutral" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
       </div>
-      <p class="mt-2 text-sm text-muted">{{ explanation }}</p>
+      <p v-if="summary?.headline" id="issue-headline" class="mt-2 text-base font-semibold text-white">{{ summary.headline }}</p>
+      <p v-if="summary?.plain" id="issue-plain" class="mt-1 text-sm text-muted">{{ summary.plain }}</p>
+      <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="message" id="detail-message" role="status" class="mt-2 text-sm text-amber-200">{{ message }}</p>
 
-      <p v-for="review in detail.reviews" :key="review.role" class="mt-2 text-sm text-muted">{{ reviewLine(review) }}</p>
-
-      <div class="mt-4 flex flex-wrap items-center gap-2">
+      <!-- One action bar under the title: what the operator can decide, then
+           where the work lives on GitHub, then stopping the attempt. -->
+      <div id="issue-actions" class="mt-4 flex flex-wrap items-center gap-2">
         <UButton
-          v-for="(action, index) in detail.actions"
+          v-for="(action, index) in decisions"
           :key="action"
           :color="index === 0 && PRIMARY_ACTIONS.includes(action) ? 'primary' : 'neutral'"
           :variant="index === 0 && PRIMARY_ACTIONS.includes(action) ? 'solid' : 'outline'"
@@ -217,7 +283,63 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           :disabled="busy"
           @click="ask(action)"
         >{{ ACTION_LABELS[action] }}</UButton>
+        <template v-if="canAssign">
+          <USelectMenu
+            v-if="reviewerChoices.length"
+            v-model="chosenReviewers"
+            :items="reviewerChoices"
+            value-key="value"
+            multiple
+            size="sm"
+            aria-label="Reviewers"
+            placeholder="Choose reviewers"
+            class="min-w-[220px]"
+            :disabled="busy"
+          >
+            <template #trailing><SelectChevron /></template>
+          </USelectMenu>
+          <UInput
+            v-else
+            v-model="typedReviewers"
+            size="sm"
+            aria-label="Reviewers"
+            placeholder="GitHub login"
+            class="min-w-[180px]"
+            :disabled="busy"
+          />
+          <UButton
+            size="sm"
+            color="primary"
+            :disabled="busy || !reviewerLogins.length"
+            @click="assignReviewer"
+          >{{ ACTION_LABELS.assign_reviewer }}</UButton>
+        </template>
         <UButton v-if="detail.setup_needed" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
+        <UButton
+          :to="issueUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          external
+          size="sm"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-arrow-up-right"
+          trailing
+        >GitHub</UButton>
+        <UButton
+          v-for="pull in detail.pull_requests"
+          :key="pull.number"
+          :to="pullUrl(pull.number)"
+          :title="pull.title"
+          target="_blank"
+          rel="noopener noreferrer"
+          external
+          size="sm"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-arrow-up-right"
+          trailing
+        >PR #{{ pull.number }}</UButton>
         <UButton
           v-if="detail.active && detail.status === 'working'"
           size="sm"
@@ -228,22 +350,44 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         >{{ ACTION_LABELS.stop }}</UButton>
       </div>
 
+      <p v-if="assignError" role="alert" class="mt-2 text-sm text-rose-200">{{ assignError }}</p>
+
+      <!-- Everything the worker wrote stays available, one click away. -->
+      <section v-if="hasDetails" id="issue-details" class="mt-4 rounded-xl border border-line bg-bg p-3">
+        <UCollapsible v-model:open="detailsOpen">
+          <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
+            Details
+            <SelectChevron :class="detailsOpen ? 'rotate-180' : ''" />
+          </UButton>
+          <template #content>
+            <p v-if="summary?.details" id="issue-explanation" class="mt-2 text-sm text-muted">{{ summary.details }}</p>
+            <div v-if="reviews.length" id="issue-reviews" class="mt-3 flex flex-col gap-2">
+              <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <UBadge :color="REVIEW_COLORS[row.outcome]" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>
+                  <span class="text-sm font-semibold text-white">{{ row.label }}</span>
+                  <UButton
+                    v-if="row.more"
+                    size="xs"
+                    color="neutral"
+                    variant="ghost"
+                    class="ml-auto"
+                    @click="toggleReview(row.role)"
+                  >{{ expanded.has(row.role) ? 'Less' : 'More' }}</UButton>
+                </div>
+                <p class="mt-1 text-sm text-muted" :class="expanded.has(row.role) ? '' : 'line-clamp-2'">
+                  {{ expanded.has(row.role) ? row.summary : row.lead }}
+                </p>
+              </div>
+            </div>
+          </template>
+        </UCollapsible>
+      </section>
+
       <section class="mt-5 rounded-xl border border-line bg-panel p-4">
         <MarkdownBody :html="html ?? ''" />
         <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
       </section>
-
-      <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-        <a :href="issueUrl" target="_blank" rel="noopener noreferrer" class="text-sky-200 hover:underline">Open on GitHub ↗</a>
-        <a
-          v-for="pull in detail.pull_requests"
-          :key="pull.number"
-          :href="pullUrl(pull.number)"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="text-sky-200 hover:underline"
-        >Pull request #{{ pull.number }} ↗</a>
-      </div>
 
       <p v-if="detail.dependencies.length" class="mt-2 text-sm text-muted">
         Depends on

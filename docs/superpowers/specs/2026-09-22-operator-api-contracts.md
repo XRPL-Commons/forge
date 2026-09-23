@@ -197,13 +197,22 @@ type LedgerEvent = {
   kind: 'discovered' | 'assigned' | 'runner_released' | 'accepted' | 'failed_attempt' | 'investigated' | 'failure_corrected'
     | 'environment_blocked' | 'environment_recheck' | 'availability_wait' | 'candidate_invalidated' | 'held'
     | 'protection_paused' | 'protection_hold_migrated' | 'protection_restored' | 'cancelled' | 'human_retry'
-    | 'operator_queue' | 'operator_backlog' | 'operator_pause' | 'operator_resume' | 'operator_retry' | 'operator_recheck' | 'operator_conflict'
+    | 'operator_queue' | 'operator_backlog' | 'operator_pause' | 'operator_resume' | 'operator_retry' | 'operator_recheck' | 'operator_conflict' | 'reviewer_requested'
     | 'merged' /* (unverified) */ | 'reserved' /* (unverified; issues.js maps it) */ | string;
   reason?: string | null; attempt?: string; role?: JobRole; slot?: string; provider?: string; model?: string | null; provider_id?: string | null;
   candidate?: Candidate; cause?: string; count?: number; findings?: unknown; blocker?: string; detail?: string; retry_after?: number; request?: string;
 };
 
-type IssueFailure = { attempt: string; role: JobRole; cause: string; investigation: 'pending' | 'complete' | string /* job id */; findings: null | { summary: string; pattern?: string; evidence?: string[]; uncertainty?: string; alternative?: null | { change: string; reason: string; evidence: string }; incomplete?: boolean }; retry_state: IssueState; at: number; charged: boolean; correction?: string };  // 'evidence' key is stripped from the view
+// One headline sentence (<=90 chars) and at most 3 sentences / 360 characters,
+// written for a reader who does not read code. The schema handed to workers
+// requires `headline` and `plain` on every result; over-long values are
+// truncated, not rejected, and a result that carries neither (a worker still
+// running the previous image, mid-upgrade) has them derived from `summary` —
+// its first sentence and its first three. A field of the wrong type or blank is
+// malformed. The ledger keeps the deciding result's card with its outcome.
+type IssueSummary = { headline: string; plain: string; role: JobRole; at: number };
+
+type IssueFailure = { attempt: string; role: JobRole; cause: string; summary?: IssueSummary; investigation: 'pending' | 'complete' | string /* job id */; findings: null | { summary: string; pattern?: string; evidence?: string[]; uncertainty?: string; alternative?: null | { change: string; reason: string; evidence: string }; incomplete?: boolean }; retry_state: IssueState; at: number; charged: boolean; correction?: string };  // 'evidence' key is stripped from the view
 
 type LedgerIssueView = {
   key: string; repo_id: number; repo: string; number: number; title: string;
@@ -213,12 +222,13 @@ type LedgerIssueView = {
   active: string | null;                        // active job id
   failures: IssueFailure[]; budget_start: number; failure_count: number;   // failure_count = charged failures since budget_start
   retry_plan: string | null;
-  evidence: Partial<Record<'review' | 'audit', { outcome: string; summary: string; [k: string]: unknown }>>;
+  evidence: Partial<Record<'review' | 'audit', { outcome: string; summary: string; headline: string; plain: string; [k: string]: unknown }>>;  // the verdict's own result, which carries its card
   created_at: number; last_observed?: number; retry_after?: number;
+  last_summary: IssueSummary | null;             // the most recent outcome's plain-language card, whatever the state
   operator_hold?: { kind: 'pause' | 'backlog' | 'conflict'; state: IssueState };
   operator_request?: string;                    // pending issue-action id
   prerequisite_hold?: { state: IssueState; legacy?: true };
-  environment_hold?: { state: IssueState; blocker: 'toolchain' | 'sandbox' | 'dependency_access' | 'resources' | 'ci_evidence'; detail: string; attempt: string; environment: string };
+  environment_hold?: { state: IssueState; blocker: 'toolchain' | 'sandbox' | 'dependency_access' | 'resources' | 'ci_evidence'; detail: string; attempt: string; environment: string; summary?: IssueSummary };
   github_observation?: { at: number; issue: IssueFacts };
   history: LedgerEvent[];                       // last 50 events for this issue
 };
@@ -290,8 +300,9 @@ type IssueActionStatus = { id: string; key: string; status: 'pending' | 'applied
 type IssueRow = IssueFacts & {
   key: string; repo: string; repo_id: number;
   status: 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed';
-  explanation: string;                          // see presentation table
-  actions: ('queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck')[];
+  summary: { headline: string; plain: string }; // what the issue page leads with; see summary table
+  explanation: string;                          // see presentation table; the page keeps it under "Details"
+  actions: ('queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer')[];
   setup_needed: boolean; environment_blocker: string | null;
   pull_requests: { number: number; title: string }[];
   dependencies: number[];                       // "blocked by / depends on / dependency:" #refs in body
@@ -303,8 +314,11 @@ type IssueRow = IssueFacts & {
 type IssueDetail = IssueRow & {
   history: { at: number; kind: string; reason?: string | null }[];     // last 15 ledger events
   reviews: { role: 'review' | 'audit'; outcome: string | null; summary: string /* ≤1000 */ }[];
+  reviewers: { login: string; name: string }[];   // push-access collaborators, cached 10 min per repo; [] when the listing failed
+  default_reviewers: string[];                    // runtime.human_reviewers, what the select starts from
+  reviewers_requested: { logins: string[]; at: number } | null;        // last assign_reviewer decision
 };
-type IssueListResponse = { ok: true; controls_token: string; issues: Omit<IssueRow, 'body'>[] /* body, history, reviews stripped */; total: number; page: number; pages: number; repositories: IssueScope[]; complete: boolean; actions: IssueActionStatus[] };
+type IssueListResponse = { ok: true; controls_token: string; issues: Omit<IssueRow, 'body'>[] /* body, history, reviews, reviewers, default_reviewers, reviewers_requested stripped */; total: number; page: number; pages: number; repositories: IssueScope[]; complete: boolean; actions: IssueActionStatus[] };
 type IssueDetailResponse = { ok: true; controls_token: string; issue: IssueDetail; repositories: IssueScope[]; actions: IssueActionStatus[] };
 ```
 Detail error when key not found: "This issue is not in a managed repository. Refresh the issue list." List order: attention, working, waiting, queued, backlog, completed; then repo (lowercase), then number.
@@ -325,15 +339,17 @@ Detail error when key not found: "This issue is not in a managed repository. Ref
 | ledger failed | attention | issue.reason or "The last attempt failed." | ['retry'] |
 | `operator_hold` | backlog "Not queued for Forge." ['queue'] (kind backlog) / attention "Paused by an operator." ['resume'] | | |
 | ledger hold | attention | reason or "An operator decision is needed." | [] |
-| approval_needed | attention | "The pull request needs a human review." | [] |
+| approval_needed | attention | "The pull request needs a human review." | ['assign_reviewer'] when a candidate PR exists |
 | built/reviewed/audited/investigating | queued | "Waiting for review." / "Waiting for security review." / "Checking merge requirements." / "Waiting for a failure investigation." | ['pause'] except investigating |
 | ready label present | queued | "Queued for Forge." | ['backlog','pause'] |
 | else | backlog | "Not queued for Forge." | ['queue'] |
 
+`summary` (same first-match order as the table above). Forge writes it for every case except a failed issue or an environment hold, where the deciding worker's own `headline`/`plain` lead when it wrote them (`last_summary`, `environment_hold.summary`). Headlines: merged "The work is merged" / closed "The issue is closed on GitHub" / `operator_request` "Applying your decision" / active "Writing the change", "The change is being reviewed", "The change is being checked for security", "Merging the pull request", "Looking into the failed attempt", else "Forge is working on this issue" / cleanup "Finishing the previous attempt" / held labels "Paused by a label on GitHub" / `environment_hold` "Stopped: Forge’s working environment needs attention" / setup "Ready to start once you recheck" | "Waiting for the repository settings Forge needs" / external "Someone else is already working on this" / cancelled "The previous attempt was stopped" / failed "Stopped: the last attempt failed" / `operator_hold` "Paused by an operator" (backlog kind → "Not queued for Forge") / hold "Forge has stopped work on this issue" (approach hold → "Stopped: the same approach keeps failing") / approval_needed "Waiting for a person to approve the pull request" / built "Built and waiting for review" / reviewed "Reviewed and waiting for the security check" / audited "Checking that it can be merged" / investigating "Waiting for the failed attempt to be looked into" / ready label "Waiting for a builder" / else "Not queued for Forge"; overrides "Waiting for a coding account", "Waiting before the next check", "Forge is paused", "Waiting for repository access". The description carries the reason the issue is where it is — the audit's `human_reason` for `approval_needed`, the hold reason for a hold, the failure's `plain` for a failure — so nobody has to open Details to learn it.
+
 Overrides: queued + `retry_after > now` → "Waiting for a coding account. Forge will retry automatically." (reason ∈ blocked_auth/blocked_quota/"Role credentials unavailable") else "Waiting before another check. Forge will retry automatically."; queued + `!runtime.enabled` → "Forge is paused. This issue stays queued."; `!fresh` → actions []; repo disabled or access not ready → actions [] and (unless completed/working) attention "Repository access or activation needs attention.".
 
 ### POST /api/issues/action
-Body exactly `{key, action, revision, reason}` (all strings; `reason` non-blank, ≤ 2000) else "Expected issue, action, current revision, and decision" / "Choose an issue action and record the decision.". Server re-reads the issue: `revision` mismatch or action not in `row.actions` → "This issue changed or needs a fresh check. Review it again before continuing.". If a pending action for the same key exists with the same (action, revision) its id is returned; a different pending one → "Another decision for this issue is still being applied.". Response `{ok:true, request:<uuid>}`. Actions: `queue` (add ready label), `backlog` (remove ready label), `pause` (add `hold`), `resume` (add ready, remove `hold`), `retry` (new failure budget, back to Build), `recheck` (release prerequisite/environment hold). Applied by the supervisor; results appear in `actions[]` of subsequent GETs.
+Body exactly `{key, action, revision, reason}` (all strings; `reason` non-blank, ≤ 2000) else "Expected issue, action, current revision, and decision" / "Choose an issue action and record the decision.". Server re-reads the issue: `revision` mismatch or action not in `row.actions` → "This issue changed or needs a fresh check. Review it again before continuing.". If a pending action for the same key exists with the same (action, revision) its id is returned; a different pending one → "Another decision for this issue is still being applied.". Response `{ok:true, request:<uuid>}`. Actions: `queue` (add ready label), `backlog` (remove ready label), `pause` (add `hold`), `resume` (add ready, remove `hold`), `retry` (new failure budget, back to Build), `recheck` (release prerequisite/environment hold), `assign_reviewer` (`reason` = the chosen logins: POST `/pulls/<pr>/requested_reviewers` and `/issues/<n>/assignees`, no label and no state change). Applied by the supervisor; results appear in `actions[]` of subsequent GETs.
 
 ### POST /api/issues/refresh
 Body exactly `{}` ("Expected an empty refresh request"). Forces a GitHub inventory refresh in the background. Response `{ok:true}`.
@@ -481,7 +497,7 @@ Legacy dashboard only (`{action, session, generation}` strings → `forge.slot_a
 - Title `Forge · Issues`. Eyebrow "Your work", h1 "Issues", intro "Choose what Forge should work on. Review anything that needs a decision.". Refresh icon button aria-label "Refresh issues".
 - Filters: search "Find an issue" placeholder "Title, repository or issue number" (200 ms debounce, resets page to 1); select "Repository" ("All repositories" + scopes); select "Show" options: open "Open issues", attention "Needs attention", backlog "Backlog", queued "Queued", working "Working", waiting "Waiting", completed "Completed".
 - Poll: interval 5 s, `allowed: !busy && !decision`; each load fetches the list (`/api/issues?<params>`) and, when an issue is selected, `/api/issues?issue=<key>` in parallel; results are discarded if the params/selection changed meanwhile. Failure writes `error.message` to `#detail-message` (when a detail is open) or `#freshness`; recovery clears `#detail-message`.
-- Row: "<repo> · #<n>", title link (`/issues?issue=<key>`), "Pull request #<first pr>" when any; status dot with `names[status]` = backlog "Backlog", queued "Queued", working "Working", attention "Needs attention", completed "Completed", waiting "Waiting"; explanation; action pill `rowAction`: pending action → "Applying…", working → "View progress", attention → "Review", else "View issue". Status colors: attention amber `#ecc486`, working/completed green `#bfe6cd`, queued blue `#abcfff`.
+- Row: "<repo> · #<n>", title link (`/issues?issue=<key>`), "Pull request #<first pr>" when any; the note is `summary.headline` when present (truncated to 96 characters), else `explanation`; status dot with `names[status]` = backlog "Backlog", queued "Queued", working "Working", attention "Needs attention", completed "Completed", waiting "Waiting"; explanation; action pill `rowAction`: pending action → "Applying…", working → "View progress", attention → "Review", else "View issue". Status colors: attention amber `#ecc486`, working/completed green `#bfe6cd`, queued blue `#abcfff`.
 - Empty states: no repositories → "Choose where Forge should work" / "Add and enable a repository to see its issues here." + link "Add repository →" (`/settings/repository`); `!complete` → "Loading the issue list" / "Previously received issues remain visible while Forge checks GitHub."; else "No issues in this view" / "Try another filter.".
 - Freshness line: initial "Loading issues…"; a scope with `error` → that error (class `warning`); no repositories → ""; complete → "Up to date · Viewing issues never queues them for work."; else "Showing received issues. The GitHub inventory is still incomplete or needs refreshing.".
 - Count: "<total> issue|issues[ received] · Page <page> of <pages>"; "Previous"/"Next" buttons disabled at bounds.
@@ -489,12 +505,12 @@ Legacy dashboard only (`{action, session, generation}` strings → `forge.slot_a
 
 ### 3.3 Issue detail dialog (side panel `<dialog id="detail">`)
 - Opened by any `[data-open]` click; URL becomes `/issues?issue=<key>` via `history.replaceState`; loading title "Loading issue…"; close button aria-label "Close issue" ("×"); Escape closes and URL returns to `/issues`.
-- Renders: meta "<repo> · #<n>", title, status label + dot, explanation (+ " " + `environment_blocker`), reviews "Review: passed|needs attention · <summary>" / "Security review: …", description = `ForgeMarkdown.render(body || 'No description has been added yet.', repo)` plus "Description shortened. Open on GitHub to read the full issue." when `body_truncated`; links "Open on GitHub ↗" and "Pull request #<n> ↗"; dependencies "Depends on #a, #b" (each opens that issue `repo_id:n`).
+- Renders: meta "<repo> · #<n>", title, status label + dot, then `summary.headline` (bold) and `summary.plain`; the action bar; then a collapsed "Details" holding the explanation (+ " " + `environment_blocker`) and the review rows, whose chip is the review's own verdict — `pass` "Passed", `reject` "Rejected", `unable` "Could not review", anything else "No verdict" — description = `ForgeMarkdown.render(body || 'No description has been added yet.', repo)` plus "Description shortened. Open on GitHub to read the full issue." when `body_truncated`; links "Open on GitHub ↗" and "Pull request #<n> ↗"; dependencies "Depends on #a, #b" (each opens that issue `repo_id:n`).
 - Markdown rules (`legacy/markdown.js`): marked GFM → DOMPurify with allowed tags p br hr h1–h6 strong em del s a code pre blockquote ul ol li table thead tbody tr th td details summary input; attrs href title start align type checked disabled open; non-checkbox inputs removed, checkboxes disabled; links resolved against `https://github.com/<repo>/blob/HEAD/`, only http/https/mailto kept, `target=_blank rel=noopener noreferrer`.
-- Actions: buttons for `detail.actions` with `labels` = queue "Queue for Forge", backlog "Return to backlog", pause "Pause", resume "Release hold", retry "Retry attempt", recheck "Recheck readiness", stop "Stop attempt"; first button is `.primary` when it is queue/resume/retry/recheck, others `.secondary-pill`; disabled while busy or a pending action exists for the key. Extra: "Repository setup →" link to `setup_url` when `setup_needed`; "Stop attempt" when `active && status==='working'`.
+- Actions: buttons for `detail.actions` with `labels` = queue "Queue for Forge", backlog "Return to backlog", pause "Pause", resume "Release hold", retry "Retry attempt", recheck "Recheck readiness", assign_reviewer "Assign reviewer", stop "Stop attempt"; first button is `.primary` when it is queue/resume/retry/recheck, others `.secondary-pill`; disabled while busy or a pending action exists for the key. Extra: "Repository setup →" link to `setup_url` when `setup_needed`; "Stop attempt" when `active && status==='working'`; when `actions` carries `assign_reviewer`, a multi-select of `reviewers` (label "<login> · <name>") starting from `default_reviewers`, or a free-text login box when `reviewers` is empty, confirmed by an "Assign reviewer" button that posts `reason` = the chosen logins. Once `reviewers_requested` is set the page shows "Review requested from @a, @b · <age> ago" under the explanation, and the Activity card for that issue carries the same sentence as its footer note.
 - Decision panel: title `labels[action] + '?'`, effect text `effects`: queue "Forge will check repository setup, dependencies and existing work before starting when capacity is available."; backlog "This removes the issue from Forge’s queue. The GitHub issue stays open."; pause "Forge will leave this issue on hold until you choose to resume it."; resume "This releases the deliberate hold. Confirm that the prerequisite work is complete. Forge will check dependencies and existing work before continuing."; retry "This grants a new three-attempt budget and returns the issue to Build. Existing history is preserved."; recheck "Forge will recheck readiness and resume the held stage. The existing pull request and failure budget are preserved. Confirm that the reported blocker has been addressed."; stop "This stops the active attempt and discards its unfinished workspace changes. Published pull requests are preserved.". Reason textarea labelled "What changed?" is required for pause/resume/retry/stop; otherwise reason = `"<label> confirmed by operator"`. Buttons "Cancel" (reloads) and confirm labelled with the action label.
 - Submit: stop → `POST /api/factory/action {action:'stop', target: detail.active, reason}`; others → `POST /api/issues/action {key, action, revision, reason}`. Success message "Decision submitted. Waiting for confirmation."; errors replace `#detail-message`. Then `#detail-message` follows the last action for the key: pending → "Applying your decision…", else its `message`. Stale detail without action → "Showing the last received issue. Refresh before making a decision.".
-- "Recent activity" details list: `<time>` local string + event label from `events` map: discovered "Added to Forge", held "Put on hold", protection_paused "Repository setup paused work", protection_hold_migrated "Recognized an earlier setup hold", protection_restored "Repository setup verified", human_retry "Another attempt approved", operator_queue "Queued for Forge", operator_backlog "Returned to backlog", operator_pause "Paused by an operator", operator_resume "Hold released", operator_recheck "Repository setup checked", operator_conflict "Decision needs another review", reserved "Attempt prepared", merged "Pull request merged", cancelled "Attempt stopped"; other kinds shown with underscores replaced by spaces; reason shown beneath. Empty: "No Forge activity yet.".
+- "Recent activity" details list: `<time>` local string + event label from `events` map: discovered "Added to Forge", held "Put on hold", protection_paused "Repository setup paused work", protection_hold_migrated "Recognized an earlier setup hold", protection_restored "Repository setup verified", human_retry "Another attempt approved", operator_queue "Queued for Forge", operator_backlog "Returned to backlog", operator_pause "Paused by an operator", operator_resume "Hold released", operator_recheck "Repository setup checked", reviewer_requested "Review requested", operator_conflict "Decision needs another review", reserved "Attempt prepared", merged "Pull request merged", cancelled "Attempt stopped"; other kinds shown with underscores replaced by spaces; reason shown beneath. Empty: "No Forge activity yet.".
 
 ### 3.4 Settings · General (`/settings`, `/settings/advanced`; `legacy/settings.html`)
 - Title `Forge · Settings`; eyebrow "Settings", h1 "General", description "Manage worker capacity and factory setup.". "Continue setup" link (`/onboarding`) shown when `onboarding.phase !== 'active'`.

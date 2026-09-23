@@ -5,12 +5,13 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.factory.contracts import candidate, digest, result, submission, references_issue
+from forge.factory.contracts import (HEADLINE_LIMIT, PLAIN_LIMIT, candidate, digest, result,
+                                     submission, summary, references_issue)
 from forge.factory.config import validate, policy
 from forge.factory.ledger import Ledger
 from forge.factory.supervisor import Supervisor
 from forge.factory.runner import RunnerError
-from forge.factory.github import GitHubUnavailable
+from forge.factory.github import GitHubUnavailable, GitHubBudgetExhausted
 from forge.state import StateError
 
 
@@ -97,6 +98,52 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(reconcile.call_count, 1)
         self.assertTrue(self.ledger.read()['slots'], 'dispatch must run after observation stops')
 
+    def test_busy_factory_still_discovers_new_issues_on_a_cadence(self):
+        # A ready issue is always queued, so dispatch never discovers on its own.
+        self.settings.view.return_value = {'repositories': [{'id': 1, 'name': 'example/project', 'dispatch_allowed': True}]}
+        self.github.pulls.return_value = []
+        self.github.issues.return_value = []
+        self.github.target.return_value = 'main'
+        self.runner.capacity.return_value = {'allowed': False, 'reason': 'memory_budget'}
+        with patch('forge.factory.supervisor.time') as fake:
+            fake.monotonic.return_value = 0.0
+            self.supervisor.cycle()
+            self.assertEqual(self.github.issues.call_count, 1, 'first cycle reads the repository')
+            self.supervisor.cycle()
+            self.assertEqual(self.github.issues.call_count, 1, 'read again only after the interval')
+            self.now += Supervisor.DISCOVERY_INTERVAL
+            self.supervisor.cycle()
+            self.assertEqual(self.github.issues.call_count, 2)
+
+    def test_interrupted_discovery_resumes_with_the_same_repository_next_cycle(self):
+        self.settings.view.return_value = {'repositories': [
+            {'id': 2, 'name': 'example/first', 'dispatch_allowed': True},
+            {'id': 3, 'name': 'example/second', 'dispatch_allowed': True}]}
+        self.github.deadline = float('inf')
+        self.github.pulls.return_value = []
+        calls = []
+        def issues(item):
+            calls.append(item['repo_id'])
+            if len(calls) == 1:
+                raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+            return []
+        self.github.issues.side_effect = issues
+        self.supervisor.discover()
+        self.assertNotIn('2', self.ledger.read().get('discovery_observed', {}), 'an interrupted repository is not stamped')
+        self.assertEqual(calls, [2], 'the cycle stops at the budget instead of moving to the next repository')
+        self.supervisor.discover()
+        self.assertEqual(calls, [2, 2, 3], 'the next cycle resumes with the interrupted repository first')
+
+    def test_budget_exhaustion_is_not_reported_as_an_error(self):
+        self.settings.view.return_value = {'repositories': [{'id': 2, 'name': 'example/first', 'dispatch_allowed': True}]}
+        self.github.deadline = float('inf')
+        self.github.pulls.side_effect = GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        self.supervisor.discover()
+        self.github.issue.side_effect = GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        self.github.target.return_value = 'main'
+        self.supervisor.cycle()
+        self.assertEqual([e for e in self.supervisor.errors if e['phase'] in ('github', 'discovery', 'reconciliation')], [])
+
     def test_discovery_rotates_repositories_after_exhausted_api_budget(self):
         self.settings.view.return_value = {'repositories': [
             {'id': 2, 'name': 'example/first', 'dispatch_allowed': True},
@@ -129,7 +176,8 @@ class FactoryTest(unittest.TestCase):
                 'policy': job['policy'], 'branch': job['branch']}
 
     def report(self, job, outcome='pass'):
-        value = {'version': 1, 'role': job['role'], 'attempt': job['id'], 'outcome': outcome, 'summary': 'Specific findings'}
+        value = {'version': 1, 'role': job['role'], 'attempt': job['id'], 'outcome': outcome, 'summary': 'Specific findings',
+                 'headline': 'The step finished', 'plain': 'The worker finished this step. Forge moves the issue on.'}
         if job['role'] in ('review', 'audit'):
             value['candidate'] = job['candidate']['key']
         if job['role'] == 'audit':
@@ -143,6 +191,85 @@ class FactoryTest(unittest.TestCase):
                                       'uncertainty': '', 'alternative': alternative, 'incomplete': incomplete})
         self.clean(job)
         return job
+
+    def test_plain_language_is_shortened_rather_than_refused(self):
+        job = self.job()
+        report = self.report(job)
+        for blank in ('', '   '):
+            with self.assertRaises(ValueError):
+                result({**report, 'headline': blank}, job)
+        long = result({**report, 'headline': 'w' * 400,
+                       'plain': 'One. Two. Three. Four that must not survive. ' + 'word ' * 200}, job)
+        self.assertEqual(len(long['headline']), HEADLINE_LIMIT)
+        self.assertTrue(long['headline'].endswith('…'))
+        self.assertLessEqual(len(long['plain']), PLAIN_LIMIT)
+        self.assertEqual(long['plain'], 'One. Two. Three.')
+        self.assertNotIn('Four', long['plain'])
+
+    def test_a_worker_from_the_previous_image_still_reports_in_plain_language(self):
+        # During a rolling upgrade the old image writes neither field. Deriving
+        # them from summary is better than failing an attempt that did the work.
+        job = self.job()
+        report = self.report(job)
+        older = {k: v for k, v in report.items() if k not in ('headline', 'plain')}
+        older['summary'] = ('Rebuilt the navigation module and opened the pull request. '
+                            'Ran the unit tests in packages/web and they pass. '
+                            'Left the public component API untouched. '
+                            'This fourth sentence must not reach the page.')
+        derived = result(dict(older), job)
+        self.assertEqual(derived['headline'], 'Rebuilt the navigation module and opened the pull request.')
+        self.assertEqual(derived['plain'], 'Rebuilt the navigation module and opened the pull request. '
+                                           'Ran the unit tests in packages/web and they pass. '
+                                           'Left the public component API untouched.')
+        self.assertNotIn('fourth sentence', derived['plain'])
+        long = result({**older, 'summary': 'w' * 400}, job)
+        self.assertEqual(len(long['headline']), HEADLINE_LIMIT)
+        self.assertLessEqual(len(long['plain']), PLAIN_LIMIT)
+        # Only absence is forgiven: a field of the wrong type is still malformed.
+        for broken in ({**report, 'headline': 42}, {**report, 'plain': None}, {**older, 'summary': '  '}):
+            with self.assertRaises(ValueError):
+                result(broken, job)
+
+    def test_every_outcome_keeps_the_plain_language_card_with_the_issue(self):
+        card = {'headline': 'Built and waiting for review',
+                'plain': 'The change is written and its pull request is open. Review starts next.'}
+        build = self.job()
+        self.ledger.accept(build['id'], candidate=self.candidate(build), summary=summary(card, 'build', self.now))
+        self.assertEqual(self.item()['last_summary']['headline'], card['headline'])
+        self.assertEqual(self.item()['candidate']['summary']['role'], 'build')
+        self.clean(build)
+        review = self.job('review')
+        failed = summary({'headline': 'Stopped: the tests fail on the login page',
+                          'plain': 'Signing in no longer works. The attempt was stopped.'}, 'review', self.now)
+        self.ledger.fail(review['id'], 'Rejected', rejection=True, summary=failed)
+        self.assertEqual(self.item()['failures'][-1]['summary'], failed)
+        self.assertEqual(self.item()['last_summary'], failed)
+        self.clean(review)
+        investigation = self.job('recovery', self.item()['failures'][-1])
+        found = summary({'headline': 'The login test needs a fresh database',
+                         'plain': 'The failure comes from stale test data. Forge will try again.'}, 'recovery', self.now)
+        self.ledger.findings(investigation['id'], {'summary': 'Diagnosis', 'pattern': 'data', 'evidence': ['log'],
+                                                   'uncertainty': '', 'alternative': None}, summary=found)
+        self.assertEqual(self.item()['last_summary'], found)
+        self.clean(investigation)
+        blocked = self.job()
+        stopped = summary({'headline': 'Stopped: the worker ran out of memory',
+                           'plain': 'The worker used more memory than it is allowed.'}, 'build', self.now)
+        self.ledger.block_environment(blocked['id'], 'resources', 'Out of memory', summary=stopped)
+        self.assertEqual(self.item()['environment_hold']['summary'], stopped)
+        self.assertEqual(self.item()['last_summary'], stopped)
+
+    def test_a_result_without_a_card_leaves_the_previous_one_untouched(self):
+        build = self.job()
+        first = summary({'headline': 'Built and waiting for review', 'plain': 'Review starts next.'}, 'build', self.now)
+        self.ledger.accept(build['id'], candidate=self.candidate(build), summary=first)
+        self.clean(build)
+        review = self.job('review')
+        self.assertIsNone(summary({'summary': 'no plain language here'}, 'review', self.now))
+        self.ledger.fail(review['id'], 'Rejected', rejection=True, summary=None)
+        self.assertEqual(self.item()['last_summary'], first)
+        self.assertNotIn('summary', self.item()['failures'][-1])
+
 
     def test_durable_reservation_prevents_duplicate_issue_and_slot(self):
         job = self.job()

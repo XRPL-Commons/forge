@@ -88,7 +88,10 @@ def check():
 
 def blocked(note, detail, blocker='toolchain'):
     value = {'version': 1, 'attempt': note['id'], 'role': note['role'],
-             'outcome': 'blocked_environment', 'blocker': blocker, 'summary': detail}
+             'outcome': 'blocked_environment', 'blocker': blocker, 'summary': detail,
+             'headline': 'Stopped: Forge’s working environment is not ready',
+             'plain': ('The worker could not start because its environment is missing something it needs. '
+                       'No code was changed by this attempt. Forge waits for the environment to be repaired.')}
     if note['role'] in ('review', 'audit'):
         value['candidate'] = note['candidate']['key']
     if note['role'] == 'audit':

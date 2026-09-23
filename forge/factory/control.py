@@ -11,6 +11,7 @@ from ..settings import Settings, digest, write_json, read_json
 from ..state import AtomicStore, StateError
 from ..credentials import Credentials
 from .config import load, validate
+from .contracts import summary as plain_summary
 from .github import GitHub
 from .ledger import Ledger
 from .runner import ContainerRunner
@@ -73,7 +74,8 @@ def requests(root, ledger):
                     if not job['cleanup']:
                         if job['outcome'] is None:
                             if job['role'] == 'recovery':
-                                ledger.findings(job['id'], Supervisor.incomplete('Investigation stopped by operator'))
+                                stopped = Supervisor.incomplete('Investigation stopped by operator')
+                                ledger.findings(job['id'], stopped, summary=plain_summary(stopped, 'recovery', time.time()))
                             else:
                                 ledger.cancel(job['issue_key'], request['reason'])
                         ledger.job_update(job['id'], fenced=True, phase='stopping')
@@ -104,6 +106,7 @@ def view(root):
     issues = []
     for item in data['issues'].values():
         row = {**item, 'failure_count': ledger.failure_count(item)}
+        row.setdefault('last_summary', None)
         row['history'] = [e for e in data['events'] if e['issue'] == item['key']][-50:]
         row['failures'] = [{k: v for k, v in f.items() if k != 'evidence'} for f in item['failures']]
         row.setdefault('deployed', None)

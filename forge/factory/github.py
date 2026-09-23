@@ -18,6 +18,10 @@ class GitHubUnavailable(RuntimeError):
         self.status = status
 
 
+class GitHubBudgetExhausted(GitHubUnavailable):
+    """The cycle's observation budget is spent; the next cycle resumes. Not an error to report."""
+
+
 class GitHub:
     def __init__(self, settings, runtime, *, client=None, clock=time.time):
         self.settings, self.runtime = settings, runtime
@@ -66,7 +70,7 @@ class GitHub:
 
     def call(self, role, repo, method, suffix, payload=None, *, extra=None):
         if time.monotonic() >= getattr(self, 'deadline', float('inf')):
-            raise GitHubUnavailable('Cycle observation budget reached; resume next cycle')
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
         try:
             return self.client.request(method, f"/repos/{repo['repo']}" + suffix,
                                        self.token(role, repo['repo_id'], extra=extra), payload)
@@ -184,6 +188,12 @@ class GitHub:
 
     def pulls(self, item):
         return self.pages('controller', item, '/pulls?state=open')
+
+    def collaborators(self, item):
+        """People who can approve here: push access, offered as reviewer choices."""
+        rows = self.pages('controller', item, '/collaborators?permission=push')
+        return [{'login': row['login'], 'name': str(row.get('name') or '')[:120]}
+                for row in rows if isinstance(row, dict) and isinstance(row.get('login'), str)][:500]
 
     def pr(self, item, number):
         value = self.call('controller', item, 'GET', f'/pulls/{number}')

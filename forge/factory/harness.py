@@ -20,35 +20,54 @@ def prepare_environment(directory):
     return env
 
 
+# Kept in step with contracts.HEADLINE_LIMIT / PLAIN_LIMIT, which truncate what
+# arrives. The image loads no sibling module, so the numbers live on both sides.
+HEADLINE_LIMIT, PLAIN_LIMIT = 90, 360
+
+
+def role_properties(note):
+    """Role-specific result fields: a fifth role is one line here."""
+    candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
+    return {
+        'build': {},
+        'review': candidate,
+        'audit': {**candidate, 'human_required': {'type': 'string', 'enum': ['required', 'not_required', 'unknown']},
+                  'human_reason': {'type': 'string'}},
+        'recovery': {'pattern': {'type': 'string'}, 'evidence': {'type': 'array', 'items': {'type': 'string'}},
+                     'uncertainty': {'type': 'string'}, 'alternative': {'anyOf': [{'type': 'null'}, {
+                         'type': 'object', 'properties': {k: {'type': 'string'} for k in ('change', 'reason', 'evidence')},
+                         'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]}},
+        'strategist': strategist_properties(),
+    }.get(note['role'], {})
+
+
+def strategist_properties():
+    nullable = lambda t: {'type': [t, 'null']}
+    return {
+        'strategy': {'type': 'string', 'enum': ['github_deployments', 'health', 'header', 'unobservable']},
+        'deploy': {'type': 'object', 'properties': {'workflow': nullable('string'), 'environment': nullable('string'), 'trigger': nullable('string')},
+                   'required': ['workflow', 'environment', 'trigger'], 'additionalProperties': False},
+        'domain': {'type': 'object', 'properties': {'value': nullable('string'), 'source': {'type': 'string', 'enum': ['workflow', 'docs', 'config', 'none']},
+                   'confidence': {'type': 'string', 'enum': ['high', 'low', 'none']}}, 'required': ['value', 'source', 'confidence'], 'additionalProperties': False},
+        'exposure': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['health', 'header', 'none']}, 'path': nullable('string'),
+                     'field': nullable('string'), 'header': nullable('string')}, 'required': ['kind', 'path', 'field', 'header'], 'additionalProperties': False},
+        'commit_source': {'type': 'string'},
+        'proposal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {'title': {'type': 'string'}, 'body': {'type': 'string'}},
+                     'required': ['title', 'body'], 'additionalProperties': False}]},
+    }
+
+
 def schema(note):
     props = {'version': {'type': 'integer', 'enum': [1]},
              'attempt': {'type': 'string', 'enum': [note['id']]},
              'role': {'type': 'string', 'enum': [note['role']]},
              'outcome': {'type': 'string', 'enum': ['pass', 'reject', 'unable', 'wait', 'blocked_environment']},
              'blocker': {'type': ['string', 'null'], 'enum': [None, 'toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence']},
-             'summary': {'type': 'string'}}
-    if note['role'] in ('review', 'audit'):
-        props['candidate'] = {'type': 'string', 'enum': [note['candidate']['key']]}
-    if note['role'] == 'audit':
-        props.update(human_required={'type': 'string', 'enum': ['required', 'not_required', 'unknown']}, human_reason={'type': 'string'})
-    if note['role'] == 'recovery':
-        props.update(pattern={'type': 'string'}, evidence={'type': 'array', 'items': {'type': 'string'}},
-                     uncertainty={'type': 'string'}, alternative={'anyOf': [{'type': 'null'}, {
-                         'type': 'object', 'properties': {k: {'type': 'string'} for k in ('change', 'reason', 'evidence')},
-                         'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]})
-    if note['role'] == 'strategist':
-        nullable = lambda t: {'type': [t, 'null']}
-        props.update(
-            strategy={'type': 'string', 'enum': ['github_deployments', 'health', 'header', 'unobservable']},
-            deploy={'type': 'object', 'properties': {'workflow': nullable('string'), 'environment': nullable('string'), 'trigger': nullable('string')},
-                    'required': ['workflow', 'environment', 'trigger'], 'additionalProperties': False},
-            domain={'type': 'object', 'properties': {'value': nullable('string'), 'source': {'type': 'string', 'enum': ['workflow', 'docs', 'config', 'none']},
-                    'confidence': {'type': 'string', 'enum': ['high', 'low', 'none']}}, 'required': ['value', 'source', 'confidence'], 'additionalProperties': False},
-            exposure={'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['health', 'header', 'none']}, 'path': nullable('string'),
-                      'field': nullable('string'), 'header': nullable('string')}, 'required': ['kind', 'path', 'field', 'header'], 'additionalProperties': False},
-            commit_source={'type': 'string'},
-            proposal={'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {'title': {'type': 'string'}, 'body': {'type': 'string'}},
-                      'required': ['title', 'body'], 'additionalProperties': False}]})
+             'summary': {'type': 'string'},
+             # Plain language for a reader who does not read code, in every role.
+             'headline': {'type': 'string', 'maxLength': HEADLINE_LIMIT},
+             'plain': {'type': 'string', 'maxLength': PLAIN_LIMIT}}
+    props.update(role_properties(note))
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 

@@ -1,0 +1,77 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "issue": {
+    "number": 614,
+    "title": "Rotate the release signing key",
+    "content_hash": "sha256:16140614",
+    "body_truncated": false,
+    "state": "open",
+    "updated_at": "2026-09-21T09:00:00Z",
+    "labels": ["ready"],
+    "assignees": [],
+    "key": "1:614",
+    "repo": "XRPL-Commons/academy",
+    "repo_id": 1,
+    "status": "attention",
+    "explanation": "The pull request needs a human review.",
+    "actions": [
+      "assign_reviewer"
+    ],
+    "setup_needed": false,
+    "environment_blocker": null,
+    "pull_requests": [
+      {
+        "number": 31,
+        "title": "Rotate the release signing key"
+      }
+    ],
+    "dependencies": [],
+    "fresh": true,
+    "revision": "current",
+    "setup_url": "/settings/repository?repo_id=1",
+    "active": null,
+    "body": "Rotate the key and document the new fingerprint.\n",
+    "history": [
+      {
+        "at": 1789995000,
+        "kind": "discovered",
+        "reason": null
+      }
+    ],
+    "reviews": [],
+    "reviewers": [
+      {
+        "login": "maintainer",
+        "name": "A Maintainer"
+      },
+      {
+        "login": "second-pair",
+        "name": ""
+      }
+    ],
+    "default_reviewers": [
+      "maintainer"
+    ],
+    "reviewers_requested": null
+  },
+  "repositories": [
+    {
+      "id": 1,
+      "name": "XRPL-Commons/academy",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    },
+    {
+      "id": 2,
+      "name": "XRPL-Commons/hackathon",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    }
+  ],
+  "actions": []
+}

@@ -9,7 +9,7 @@ class StrategistContractTests(unittest.TestCase):
     def test_schema_lists_the_profile_fields(self):
         note = {'id': 'job-1', 'role': 'strategist', 'candidate': None}
         value = schema(note)
-        self.assertEqual(set(value['required']), {'version', 'attempt', 'role', 'outcome', 'blocker', 'summary',
+        self.assertEqual(set(value['required']), {'version', 'attempt', 'role', 'outcome', 'blocker', 'summary', 'headline', 'plain',
                                                   'strategy', 'deploy', 'domain', 'exposure', 'commit_source', 'proposal'})
         self.assertEqual(value['properties']['strategy']['enum'], ['github_deployments', 'health', 'header', 'unobservable'])
         self.assertEqual(value['properties']['exposure']['properties']['kind']['enum'], ['health', 'header', 'none'])

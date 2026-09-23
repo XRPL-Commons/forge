@@ -68,13 +68,28 @@ class MemoryAdmissionTests(unittest.TestCase):
         other = {**container(), 'Id': 'b'*64, 'Name': '/orphan'}
         runner.call = Mock(side_effect=[Mock(stdout=('a'*64+'\n'+'b'*64+'\n').encode()),
                                        Mock(stdout=json.dumps([own, other]).encode())])
-        with patch('forge.factory.runner.observe_capacity', wraps=lambda requested, containers: observe(requested, containers, read_text=telemetry().__getitem__)):
+        with patch('forge.factory.runner.observe_capacity', wraps=lambda requested, containers, **kw: observe(requested, containers, read_text=telemetry().__getitem__, **kw)):
             result = runner.capacity(job)
         self.assertTrue(result['allowed'])
+        self.assertEqual(result['host_reserve_bytes'], 2*GIB)
         self.assertEqual(result['requested_bytes'], 2*GIB)
         self.assertEqual(result['reserved_bytes'], 4*GIB)
         runner.call = Mock(side_effect=RunnerError('Engine unavailable'))
         self.assertFalse(runner.capacity()['allowed'])
+
+    def test_host_reserve_is_a_runtime_setting(self):
+        # 3 GiB free on the host: a 2 GiB worker is refused with the 2 GiB default and admitted at 1 GiB.
+        host = telemetry(8, 3)
+        workers = [container(2*GIB), container(2*GIB)]
+        self.assertEqual(observe(2*GIB, workers, read_text=host.__getitem__)['reason'], 'memory_headroom')
+        result = observe(2*GIB, workers, reserve=GIB, read_text=host.__getitem__)
+        self.assertTrue(result['allowed']); self.assertEqual(result['host_reserve_bytes'], GIB)
+        runner = ContainerRunner(validate({'host_reserve': '1536m'}))
+        runner.call = Mock(side_effect=[Mock(stdout=b''), Mock(stdout=b'[]')])
+        with patch('forge.factory.runner.observe_capacity', wraps=lambda requested, containers, **kw: observe(requested, containers, read_text=host.__getitem__, **kw)):
+            self.assertEqual(runner.capacity()['host_reserve_bytes'], int(1.5*GIB))
+        with self.assertRaises(ValueError):
+            validate({'host_reserve': 'lots'})
 
     def test_create_and_start_both_recheck_without_starting_on_denial(self):
         runner = ContainerRunner(validate({}))

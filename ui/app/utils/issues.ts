@@ -3,17 +3,24 @@
 // below, so the list, the detail and the decision dialog can never disagree.
 // Rules follow the operator API contracts §2 (GET /api/issues) and §3.2–3.3.
 
+import { elapsed } from './factory'
+import { clampTitle, reviewerMentions } from './format'
+
 export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed'
-export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'stop'
+export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop'
 
 export interface IssueScope { id: number; name: string; complete: boolean; fresh: boolean; at: number | null; error: string | null }
 export interface IssueActionStatus { id: string; key: string; status: 'pending' | 'applied' | 'rejected'; message: string | null }
+
+// The plain-language card Forge keeps for every issue: one headline sentence
+// and at most three sentences, written for a reader who does not read code.
+export interface IssueSummary { headline: string; plain: string; role?: string; at?: number }
 
 export interface IssueRow {
   key: string; repo: string; repo_id: number; number: number; title: string
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
   updated_at: string | null; labels: string[]; assignees: string[]
-  status: IssueStatus; explanation: string
+  status: IssueStatus; summary: IssueSummary | null; explanation: string
   // The server sends the decisions this issue accepts; 'stop' is never one of
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop'>[]
@@ -23,9 +30,18 @@ export interface IssueRow {
   fresh: boolean; revision: string; setup_url: string; active: string | null
 }
 
+// Who was asked for the human approval, and when. Set by the assign_reviewer
+// decision; the approval itself still has to come through GitHub.
+export interface ReviewRequest { logins: string[]; at: number }
+export interface Reviewer { login: string; name: string }
+
 export interface IssueHistoryEvent { at: number; kind: string; reason?: string | null }
 export interface IssueReview { role: 'review' | 'audit'; outcome: string | null; summary: string }
-export interface IssueDetail extends IssueRow { body: string; history: IssueHistoryEvent[]; reviews: IssueReview[] }
+export interface IssueDetail extends IssueRow {
+  body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
+  // Detail only: the list view carries neither the collaborators nor the request.
+  reviewers: Reviewer[]; default_reviewers: string[]; reviewers_requested: ReviewRequest | null
+}
 
 export interface IssueListResponse {
   ok: true; controls_token: string; issues: IssueRow[]; total: number; page: number; pages: number
@@ -51,6 +67,7 @@ export const ACTION_LABELS: Record<IssueAction, string> = {
   resume: 'Release hold',
   retry: 'Retry attempt',
   recheck: 'Recheck readiness',
+  assign_reviewer: 'Assign reviewer',
   stop: 'Stop attempt',
 }
 
@@ -61,6 +78,7 @@ export const ACTION_EFFECTS: Record<IssueAction, string> = {
   resume: 'This releases the deliberate hold. Confirm that the prerequisite work is complete. Forge will check dependencies and existing work before continuing.',
   retry: 'This grants a new three-attempt budget and returns the issue to Build. Existing history is preserved.',
   recheck: 'Forge will recheck readiness and resume the held stage. The existing pull request and failure budget are preserved. Confirm that the reported blocker has been addressed.',
+  assign_reviewer: 'Forge asks GitHub for a review from these people and assigns them to the issue. The approval still has to come from a reviewer with write access who did not write the code.',
   stop: 'This stops the active attempt and discards its unfinished workspace changes. Published pull requests are preserved.',
 }
 
@@ -76,6 +94,7 @@ export const EVENT_LABELS: Record<string, string> = {
   operator_pause: 'Paused by an operator',
   operator_resume: 'Hold released',
   operator_recheck: 'Repository setup checked',
+  reviewer_requested: 'Review requested',
   operator_conflict: 'Decision needs another review',
   reserved: 'Attempt prepared',
   merged: 'Pull request merged',
@@ -102,6 +121,115 @@ export function decisionNeedsReason(action: IssueAction): boolean {
 
 export function defaultReason(action: IssueAction): string {
   return `${ACTION_LABELS[action]} confirmed by operator`
+}
+
+// What the issue page leads with: the headline, then the description, then the
+// action bar. Everything the worker wrote stays available under "Details", so
+// the reader never has to open it to learn where the issue stands or why.
+export interface SummaryBlock { headline: string; plain: string; details: string }
+
+export function summaryBlock(
+  issue: Pick<IssueDetail, 'summary' | 'explanation' | 'environment_blocker'> | null | undefined,
+): SummaryBlock | null {
+  if (!issue) return null
+  const details = [issue.explanation, issue.environment_blocker].map(part => (part ?? '').trim()).filter(Boolean).join(' ')
+  const headline = (issue.summary?.headline ?? '').trim() || leadSentence(details)
+  const plain = (issue.summary?.plain ?? '').trim() || (headline === details ? '' : details)
+  if (!headline && !plain) return null
+  return { headline, plain, details }
+}
+
+// Cards and list rows carry the headline when Forge has one; the older
+// explanation line is the fallback, never both.
+export function rowNote(row: Pick<IssueRow, 'summary' | 'explanation'>, max = 96): string {
+  return clampTitle(((row.summary?.headline ?? '').trim() || (row.explanation ?? '').trim()), max)
+}
+
+// A review summary is worker prose: the detail page shows its lead sentence
+// clamped to two lines, and reveals the rest on demand. The row model is pure
+// so the copy the operator reads is decided here, not in the template.
+export type ReviewOutcome = 'passed' | 'rejected' | 'unable' | 'unknown'
+
+export interface ReviewRow {
+  role: IssueReview['role']
+  label: string
+  // The verdict this reviewer returned, never the issue's own status: a passed
+  // review on an issue that needs attention is still a passed review.
+  outcome: ReviewOutcome
+  outcomeLabel: string
+  lead: string
+  summary: string
+  // True when the lead leaves something out, so the row offers "More".
+  more: boolean
+}
+
+const REVIEW_LABELS: Record<IssueReview['role'], string> = { review: 'Review', audit: 'Security review' }
+// Worker verdicts ('pass'/'reject'/'unable'), plus the older published names.
+const REVIEW_OUTCOMES: Record<string, ReviewOutcome> = {
+  pass: 'passed', passed: 'passed', approved: 'passed',
+  reject: 'rejected', rejected: 'rejected', changes_requested: 'rejected',
+  unable: 'unable',
+}
+const REVIEW_OUTCOME_LABELS: Record<ReviewOutcome, string> = {
+  passed: 'Passed', rejected: 'Rejected', unable: 'Could not review', unknown: 'No verdict',
+}
+
+function leadSentence(text: string): string {
+  const end = text.search(/[.!?](\s|$)/)
+  return end === -1 ? text : text.slice(0, end + 1)
+}
+
+export function reviewRow(review: IssueReview): ReviewRow {
+  const summary = (review.summary ?? '').replace(/\s+/g, ' ').trim()
+  const lead = leadSentence(summary)
+  const outcome = REVIEW_OUTCOMES[(review.outcome ?? '').toLowerCase()] ?? 'unknown'
+  return {
+    role: review.role,
+    label: REVIEW_LABELS[review.role] ?? review.role,
+    outcome,
+    outcomeLabel: REVIEW_OUTCOME_LABELS[outcome],
+    lead,
+    summary,
+    more: summary !== lead,
+  }
+}
+
+export function reviewRows(reviews: IssueReview[] | null | undefined): ReviewRow[] {
+  return (reviews ?? []).map(reviewRow)
+}
+
+// The reviewer control on an approval_needed issue. Everything the operator
+// reads or sends is decided here: the select's options, what it starts with,
+// the decision text that becomes `reason`, and the line the page shows once
+// GitHub has been asked.
+export interface ReviewerOption { value: string; label: string }
+
+export function reviewerOptions(reviewers: Reviewer[] | null | undefined): ReviewerOption[] {
+  return (reviewers ?? [])
+    .filter(person => !!person?.login)
+    .map(person => ({ value: person.login, label: person.name ? `${person.login} · ${person.name}` : person.login }))
+}
+
+// Pre-selected: the people the runtime already trusts to approve, kept to the
+// ones this repository actually offers so the select never holds a stranger.
+export function preselectedReviewers(
+  detail: Pick<IssueDetail, 'reviewers' | 'default_reviewers'> | null | undefined,
+): string[] {
+  const known = new Set((detail?.reviewers ?? []).map(person => person.login.toLowerCase()))
+  return (detail?.default_reviewers ?? []).filter(login => known.has(login.toLowerCase()))
+}
+
+// A login the list does not know is still accepted: GitHub validates it.
+export function reviewerReason(logins: string[]): string {
+  const cleaned = logins.map(login => login.trim().replace(/^@+/, '')).filter(Boolean)
+  return [...new Set(cleaned)].join(', ')
+}
+
+export function reviewRequestText(request: ReviewRequest | null | undefined, now: number): string {
+  if (!request?.logins?.length) return ''
+  const line = `Review requested from ${reviewerMentions(request.logins)}`
+  const age = now - (request.at ?? 0)
+  return request.at && age >= 0 ? `${line} · ${elapsed(age)} ago` : line
 }
 
 export function eventLabel(kind: string): string {
