@@ -170,9 +170,12 @@ type LedgerEvent = {
 };
 
 // One headline sentence (<=90 chars) and at most 3 sentences / 360 characters,
-// written for a reader who does not read code. Every worker result carries
-// `headline` and `plain` (required; over-long values are truncated, not
-// rejected); the ledger keeps the deciding result's card with its outcome.
+// written for a reader who does not read code. The schema handed to workers
+// requires `headline` and `plain` on every result; over-long values are
+// truncated, not rejected, and a result that carries neither (a worker still
+// running the previous image, mid-upgrade) has them derived from `summary` —
+// its first sentence and its first three. A field of the wrong type or blank is
+// malformed. The ledger keeps the deciding result's card with its outcome.
 type IssueSummary = { headline: string; plain: string; role: JobRole; at: number };
 
 type IssueFailure = { attempt: string; role: JobRole; cause: string; summary?: IssueSummary; investigation: 'pending' | 'complete' | string /* job id */; findings: null | { summary: string; pattern?: string; evidence?: string[]; uncertainty?: string; alternative?: null | { change: string; reason: string; evidence: string }; incomplete?: boolean }; retry_state: IssueState; at: number; charged: boolean; correction?: string };  // 'evidence' key is stripped from the view

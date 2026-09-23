@@ -124,18 +124,23 @@ def candidate(pr, job, requirements, policy):
 def result(value, job):
     if not isinstance(value, dict) or len(json.dumps(value)) > 65536:
         raise ValueError('Invalid worker result')
-    common = {'version', 'attempt', 'role', 'outcome', 'summary', 'headline', 'plain'}
-    # Older image contracts remain readable during a rolling upgrade.
-    if 'blocker' in value:
-        common.add('blocker')
+    common = {'version', 'attempt', 'role', 'outcome', 'summary'}
+    # Older image contracts remain readable during a rolling upgrade: a worker
+    # launched from the previous image writes neither blocker nor plain language.
+    common |= {key for key in ('blocker', 'headline', 'plain') if key in value}
     role = job['role']
     if (set(value) != common | set(ROLE_FIELDS.get(role, ())) or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != role
             or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment'}
-            or any(not isinstance(value[k], str) or not value[k].strip() for k in ('summary', 'headline', 'plain'))):
+            or any(not isinstance(value[k], str) or not value[k].strip()
+                   for k in ('summary', 'headline', 'plain') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
     # Prose over the limit is shortened, not refused: the outcome still counts.
-    value['headline'], value['plain'] = clamp(value['headline'], HEADLINE_LIMIT), plain_text(value['plain'])
+    # Missing prose is derived from summary, so a mid-upgrade result still counts
+    # too; the schema workers are handed keeps both fields required.
+    value['headline'] = (clamp(value['headline'], HEADLINE_LIMIT) if 'headline' in value
+                         else plain_text(value['summary'], HEADLINE_LIMIT, 1))
+    value['plain'] = plain_text(value['plain'] if 'plain' in value else value['summary'])
     if ((value['outcome'] == 'blocked_environment' and value.get('blocker') not in ENVIRONMENT_BLOCKERS)
             or (value['outcome'] != 'blocked_environment' and value.get('blocker') is not None)):
         raise ValueError('Environment blockers require a supported reason code')

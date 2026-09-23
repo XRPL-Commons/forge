@@ -146,12 +146,9 @@ class FactoryTest(unittest.TestCase):
         self.clean(job)
         return job
 
-    def test_plain_language_fields_are_required_and_shortened_rather_than_refused(self):
+    def test_plain_language_is_shortened_rather_than_refused(self):
         job = self.job()
         report = self.report(job)
-        for missing in ('headline', 'plain'):
-            with self.assertRaises(ValueError):
-                result({k: v for k, v in report.items() if k != missing}, job)
         for blank in ('', '   '):
             with self.assertRaises(ValueError):
                 result({**report, 'headline': blank}, job)
@@ -162,6 +159,30 @@ class FactoryTest(unittest.TestCase):
         self.assertLessEqual(len(long['plain']), PLAIN_LIMIT)
         self.assertEqual(long['plain'], 'One. Two. Three.')
         self.assertNotIn('Four', long['plain'])
+
+    def test_a_worker_from_the_previous_image_still_reports_in_plain_language(self):
+        # During a rolling upgrade the old image writes neither field. Deriving
+        # them from summary is better than failing an attempt that did the work.
+        job = self.job()
+        report = self.report(job)
+        older = {k: v for k, v in report.items() if k not in ('headline', 'plain')}
+        older['summary'] = ('Rebuilt the navigation module and opened the pull request. '
+                            'Ran the unit tests in packages/web and they pass. '
+                            'Left the public component API untouched. '
+                            'This fourth sentence must not reach the page.')
+        derived = result(dict(older), job)
+        self.assertEqual(derived['headline'], 'Rebuilt the navigation module and opened the pull request.')
+        self.assertEqual(derived['plain'], 'Rebuilt the navigation module and opened the pull request. '
+                                           'Ran the unit tests in packages/web and they pass. '
+                                           'Left the public component API untouched.')
+        self.assertNotIn('fourth sentence', derived['plain'])
+        long = result({**older, 'summary': 'w' * 400}, job)
+        self.assertEqual(len(long['headline']), HEADLINE_LIMIT)
+        self.assertLessEqual(len(long['plain']), PLAIN_LIMIT)
+        # Only absence is forgiven: a field of the wrong type is still malformed.
+        for broken in ({**report, 'headline': 42}, {**report, 'plain': None}, {**older, 'summary': '  '}):
+            with self.assertRaises(ValueError):
+                result(broken, job)
 
     def test_every_outcome_keeps_the_plain_language_card_with_the_issue(self):
         card = {'headline': 'Built and waiting for review',
