@@ -201,6 +201,52 @@ const selectedJob = computed<string | null>(() => requestedJob.value ?? detail.v
 // alert above still says why the rest of the page is missing.
 const showOutput = computed(() => !!detail.value || !!requestedJob.value)
 
+// Investigations and cleanup have no decisions of their own: their one
+// control is Reset, which the board used to carry on the card. A job is
+// internal exactly when no issue claims it as its active attempt — the same
+// rule the board groups by — so an issue's own attempt is still stopped, not
+// reset.
+const internalJob = computed<JobView | null>(() => {
+  const id = requestedJob.value
+  if (!id) return null
+  const factory = loaded.value?.factory
+  const job = (factory?.jobs ?? []).find(row => row.id === id) ?? null
+  if (!job) return null
+  return (factory?.issues ?? []).some(issue => issue.active === id) ? null : job
+})
+
+const RESET = {
+  title: 'Reset runner?',
+  text: 'This terminates the old execution and discards its disposable workspace. Capacity is released only after teardown is verified.',
+  confirmLabel: 'Reset runner',
+}
+const resetting = ref(false)
+const resetError = ref<string | null>(null)
+
+function askReset() {
+  resetError.value = null
+  resetting.value = true
+  submitting.value = true
+}
+function closeReset() {
+  resetting.value = false
+  submitting.value = false
+}
+async function confirmReset(reason: string) {
+  const job = internalJob.value
+  if (!job) return
+  resetError.value = null
+  try {
+    await api.act('/api/factory/action', { action: 'reset', target: job.id, reason })
+  } catch (error: unknown) {
+    resetError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
+    return
+  }
+  closeReset()
+  submitted.value = 'Decision submitted. Waiting for confirmation.'
+  await poll.refresh()
+}
+
 function jobLine(job: JobView): string {
   const outcome = job.outcome ?? (job.cleanup ? 'cleanup' : job.phase)
   return `${job.role} · ${job.phase} · ${outcome}`
@@ -348,6 +394,14 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           :disabled="busy"
           @click="ask('stop')"
         >{{ ACTION_LABELS.stop }}</UButton>
+        <UButton
+          v-if="internalJob"
+          size="sm"
+          color="error"
+          variant="ghost"
+          :disabled="busy"
+          @click="askReset"
+        >Reset runner</UButton>
       </div>
 
       <p v-if="assignError" role="alert" class="mt-2 text-sm text-rose-200">{{ assignError }}</p>
@@ -397,6 +451,12 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       </p>
     </template>
 
+    <!-- An internal run whose issue is not in the inventory keeps its one
+         control: the bar above belongs to the issue, this one to the run. -->
+    <div v-if="internalJob && !detail" id="job-actions" class="mt-4 flex flex-wrap items-center gap-2">
+      <UButton size="sm" color="error" variant="ghost" :disabled="busy" @click="askReset">Reset runner</UButton>
+    </div>
+
     <!-- Outside the detail block on purpose: see showOutput. -->
     <section v-if="showOutput" class="mt-5 rounded-xl border border-line bg-bg p-3">
       <UCollapsible v-model:open="outputOpen">
@@ -415,7 +475,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <ul v-if="jobs.length" id="issue-jobs" class="mt-3 flex flex-col gap-1 text-xs">
         <li v-for="job in jobs" :key="job.id">
           <NuxtLink
-            :to="{ query: { job: job.id } }"
+            :to="{ query: { ...route.query, job: job.id } }"
             :aria-current="job.id === selectedJob ? 'true' : undefined"
             class="hover:underline"
             :class="job.id === selectedJob ? 'text-mint-200' : 'text-muted'"
@@ -454,5 +514,18 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         @close="closeDecision"
       />
     </template>
+
+    <!-- Reset targets the run, not the issue, so it lives outside the block
+         the issue's own decisions are rendered in. -->
+    <ConfirmDialog
+      v-if="resetting"
+      :open="resetting"
+      :title="RESET.title"
+      :text="RESET.text"
+      :confirm-label="RESET.confirmLabel"
+      :error="resetError"
+      @confirm="confirmReset"
+      @close="closeReset"
+    />
   </div>
 </template>
