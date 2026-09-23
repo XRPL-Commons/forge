@@ -110,6 +110,12 @@ class GitHub:
     def pulls(self, item):
         return self.pages('controller', item, '/pulls?state=open')
 
+    def collaborators(self, item):
+        """People who can approve here: push access, offered as reviewer choices."""
+        rows = self.pages('controller', item, '/collaborators?permission=push')
+        return [{'login': row['login'], 'name': str(row.get('name') or '')[:120]}
+                for row in rows if isinstance(row, dict) and isinstance(row.get('login'), str)][:500]
+
     def pr(self, item, number):
         value = self.call('controller', item, 'GET', f'/pulls/{number}')
         if value.get('number') != number or value.get('base', {}).get('repo', {}).get('id') != item['repo_id']:
