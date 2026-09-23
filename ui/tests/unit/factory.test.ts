@@ -95,6 +95,13 @@ describe('reasonText', () => {
     expect(reasonText(blocked, job())).toBe('')
     expect(reasonText(issue({ reason: 'blocked_rate_limit' }), job())).toBe('')
   })
+
+  it('names who was asked to approve instead of repeating that a review is needed', () => {
+    const waiting = issue({ state: 'approval_needed', reason: 'Waiting for a human review' })
+    expect(reasonText(waiting, null)).toBe('Waiting for a human review')
+    expect(reasonText({ ...waiting, reviewers_requested: { logins: ['maintainer'], at: now - 60 } }, null))
+      .toBe('Review requested from @maintainer')
+  })
 })
 
 describe('groupIssues', () => {

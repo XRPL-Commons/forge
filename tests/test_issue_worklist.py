@@ -33,6 +33,7 @@ class GitHub:
         self.value = {'number': 1, 'title': 'An unqueued issue', 'body': 'Useful requirements', 'state': 'open',
                       'labels': [{'name': 'customer'}], 'assignees': []}
         self.prs, self.calls, self.pages = [], [], {}
+        self.people, self.people_calls, self.fail_people = [{'login': 'maintainer', 'name': 'A Maintainer'}, {'login': 'second-pair', 'name': ''}], 0, False
         self.rules, self.available, self.lose_response = True, True, False
     def issue(self, item):
         if not self.available: raise GitHubUnavailable('Unavailable')
@@ -41,13 +42,20 @@ class GitHub:
     def protections(self, *args): return self.rules
     def pulls(self, item): return deepcopy(self.prs)
     def labels(self, item): pass
+    def collaborators(self, item):
+        self.people_calls += 1
+        if not self.available or self.fail_people: raise GitHubUnavailable('Unavailable')
+        return deepcopy(self.people)
     def call(self, role, item, method, path, body=None):
         if not self.available: raise GitHubUnavailable('Unavailable')
         self.calls.append((method, path, body))
         if '?' in path: return deepcopy(self.pages.get(path, []))
         if method == 'GET': return {'number': int(path.split('/')[-1]), 'state': 'open'}
         if method == 'POST':
-            self.value['labels'] += [{'name': n} for n in body['labels']]
+            if 'assignees' in body:
+                self.value['assignees'] = [{'login': n} for n in body['assignees']]
+            elif 'labels' in body:
+                self.value['labels'] += [{'name': n} for n in body['labels']]
             if self.lose_response:
                 self.lose_response = False
                 raise GitHubUnavailable('Connection lost after commit')
@@ -69,16 +77,23 @@ class WorklistTests(unittest.TestCase):
         self.github.pages['/issues?state=open&sort=created&direction=asc&per_page=100&page=1'] = [self.github.value]
         self.inventory.refresh(force=True)
 
-    def decision(self, action):
+    def decision(self, action, reason='Prerequisite checked by operator'):
         self.refresh()
         row = self.inventory.view(key='1:1')['issue']
         with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
-            identifier = request(self.root, key='1:1', action=action, revision=row['revision'], reason='Prerequisite checked by operator')
+            identifier = request(self.root, key='1:1', action=action, revision=row['revision'], reason=reason)
         with self.actions.store.transaction() as data: value = deepcopy(data[identifier])
         return identifier, value
 
     def tracked(self, hold=None):
         self.ledger.discover(self.settings.repos[0], 1, 'requirements', hold=hold)
+
+    def awaiting_approval(self, pr=30):
+        self.tracked()
+        with self.ledger.transaction() as data:
+            data['issues']['1:1'].update(state='approval_needed', reason='The pull request needs a human review',
+                                         candidate={'pr': pr, 'head': 'abc123', 'base': 'def456', 'base_ref': 'main'})
+        self.github.prs = [{'number': pr, 'title': 'Forge pull request', 'body': 'Closes #1'}]
 
     def test_environment_recheck_preserves_stage_and_failure_budget(self):
         self.tracked()
@@ -307,3 +322,72 @@ class WorklistTests(unittest.TestCase):
         self.github.available=True; self.inventory.refresh()
         self.assertTrue(self.inventory.view()['complete'])
         self.assertIsNone(self.inventory.view()['repositories'][0]['error'])
+
+    def test_assign_reviewer_requests_the_review_and_assigns_the_issue(self):
+        self.awaiting_approval()
+        identifier, decision = self.decision('assign_reviewer', reason='maintainer')
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual(row['actions'], ['assign_reviewer'])
+        self.assertEqual(row['reviewers'], [{'login': 'maintainer', 'name': 'A Maintainer'},
+                                            {'login': 'second-pair', 'name': ''}])
+        self.actions.process()
+        self.assertEqual([c for c in self.github.calls if c[0] == 'POST'],
+                         [('POST', '/pulls/30/requested_reviewers', {'reviewers': ['maintainer']}),
+                          ('POST', '/issues/1/assignees', {'assignees': ['maintainer']})])
+        item = self.ledger.read()['issues']['1:1']
+        self.assertEqual(item['state'], 'approval_needed')
+        self.assertEqual(item['reviewers_requested']['logins'], ['maintainer'])
+        self.assertEqual(item['reviewers_requested']['request'], identifier)
+        self.assertNotIn('operator_request', item)
+        self.assertEqual({l['name'] for l in self.github.value['labels']}, {'customer'})
+        self.assertEqual([e['kind'] for e in self.ledger.read()['events']][-1], 'reviewer_requested')
+        after = self.inventory.view(key='1:1')['issue']
+        self.assertEqual(after['status'], 'attention')
+        self.assertEqual(after['reviewers_requested']['logins'], ['maintainer'])
+
+    def test_assign_reviewer_applies_once_per_decision_and_can_be_repeated(self):
+        self.awaiting_approval()
+        identifier, decision = self.decision('assign_reviewer', reason='@maintainer, @second-pair')
+        self.actions.apply(identifier, decision)
+        self.actions.apply(identifier, decision)
+        posts = [c for c in self.github.calls if c[0] == 'POST']
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0][2], {'reviewers': ['maintainer', 'second-pair']})
+        self.assertEqual(posts[1][2], {'assignees': ['maintainer', 'second-pair']})
+        with self.actions.store.transaction() as data: data[identifier]['status'] = 'applied'
+        again, repeated = self.decision('assign_reviewer', reason='maintainer, second-pair')
+        self.assertNotEqual(again, identifier)
+        self.actions.apply(again, repeated)
+        self.assertEqual(len([c for c in self.github.calls if c[0] == 'POST']), 4)
+        item = self.ledger.read()['issues']['1:1']
+        self.assertEqual(item['reviewers_requested']['request'], again)
+        self.assertEqual(item['state'], 'approval_needed')
+
+    def test_assign_reviewer_needs_a_pull_request_waiting_for_approval(self):
+        self.tracked(); self.refresh()
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['actions'], ['queue'])
+        with self.assertRaises(ValueError): self.decision('assign_reviewer', reason='maintainer')
+        with self.assertRaisesRegex(ValueError, 'waits for approval'):
+            self.actions.validate_action('assign_reviewer', facts(self.github.value), self.ledger.read()['issues']['1:1'])
+        with self.ledger.transaction() as data: data['issues']['1:1'].update(state='approval_needed')
+        with self.assertRaisesRegex(ValueError, 'waits for approval'):
+            self.actions.validate_action('assign_reviewer', facts(self.github.value), self.ledger.read()['issues']['1:1'])
+        self.assertFalse(any(c[0] != 'GET' for c in self.github.calls))
+
+    def test_reviewer_decision_records_github_logins_only(self):
+        from forge.factory.issue_actions import reviewer_logins
+        self.assertEqual(reviewer_logins(' @Maintainer, second-pair  maintainer '), ['Maintainer', 'second-pair'])
+        for value in ('', '   ', '@@', 'not a login!', ',', 'a' * 40, ' '.join(str(n) for n in range(11))):
+            with self.subTest(value=value), self.assertRaises(ValueError): reviewer_logins(value)
+
+    def test_reviewer_choices_are_cached_and_a_failed_listing_leaves_none(self):
+        self.refresh(); self.refresh()
+        self.assertEqual(self.github.people_calls, 1)
+        self.assertEqual([r['login'] for r in self.inventory.view(key='1:1')['issue']['reviewers']],
+                         ['maintainer', 'second-pair'])
+        data = self.inventory.read(); data['repositories']['1']['collaborators']['at'] = 0
+        write_json(self.inventory.path, data)
+        self.github.fail_people = True
+        self.refresh()
+        self.assertEqual(self.github.people_calls, 2)
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['reviewers'], [])

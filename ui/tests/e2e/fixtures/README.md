@@ -258,6 +258,22 @@ exercise a decision that needs no reason and one that does:
   `body_truncated: true`, so the issue's "Description shortened…" note is
   exercised.
 
+## approval/ and approval-requested/
+
+The two halves of the reviewer decision on an `approval_needed` issue
+(`1:614`, a row of its own, not in `default/issues.json`): `actions`
+carries `assign_reviewer` alone, and `pull_requests` the candidate `#31`.
+
+- `approval/issues.issue.json` — before anyone is asked: `reviewers` lists
+  two collaborators with push access, `default_reviewers:["maintainer"]` (the
+  runtime's `human_reviewers`, which the select starts from) and
+  `reviewers_requested: null`.
+- `approval-requested/issues.issue.json` — the same issue once GitHub has
+  been asked: `reviewers_requested:{logins:["maintainer"],at:1790000000}` and
+  `assignees:["maintainer"]`. Its `reviewers` is empty, which is what a
+  failed collaborator listing looks like, so the same fixture exercises the
+  free-text login box that replaces the select.
+
 ## orphan-job/
 
 The issue behind a `?job=<id>` link has left the inventory, but its worker

@@ -1,6 +1,7 @@
 """Durable issue decisions. Executed only under the supervisor's controller lease."""
 from copy import deepcopy
 from pathlib import Path
+import re
 import time
 from urllib.parse import quote
 import uuid
@@ -13,12 +14,31 @@ from .github import GitHub, GitHubUnavailable
 from .issues import IssueInventory, facts, labels, revision, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD
 
-ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck'}
+ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer'}
+LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
+
+
+def reviewer_logins(reason):
+    """The decision for assign_reviewer is the chosen logins, nothing else."""
+    logins = []
+    for value in re.split(r'[\s,;]+', (reason or '').strip()):
+        name = value.lstrip('@')
+        if not name:
+            continue
+        if not LOGIN.fullmatch(name):
+            raise ValueError('Choose GitHub logins for the reviewers.')
+        if name.lower() not in [l.lower() for l in logins]:
+            logins.append(name)
+    if not 1 <= len(logins) <= 10:
+        raise ValueError('Choose between one and ten reviewers.')
+    return logins
 
 
 def request(root, *, key, action, revision: str, reason):
     if not isinstance(action, str) or action not in ACTIONS or not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
         raise ValueError('Choose an issue action and record the decision.')
+    if action == 'assign_reviewer':
+        reviewer_logins(reason)
     inventory = IssueInventory(root)
     row = inventory.view(key=key)['issue']
     if row['revision'] != revision or action not in row['actions']:
@@ -146,6 +166,10 @@ class IssueActions:
             touched = set(plan['add'] + plan['remove'])
             normalized['labels'] = sorted(labels(normalized) - touched)
             before['labels'] = sorted(labels(before) - touched)
+            if decision['action'] == 'assign_reviewer':
+                # The assignees this decision writes are its own effect, never
+                # a conflict when a restarted controller replays it.
+                normalized['assignees'] = before['assignees'] = []
             if revision(normalized, compare_item) != revision(before, compare_item) or revision(plan['before'], compare_item) != decision['revision']:
                 raise ValueError('Issue state changed while applying the earlier decision.')
             self.validate_action(decision['action'], plan['before'], compare_item)
@@ -161,6 +185,9 @@ class IssueActions:
         for name in plan['remove']:
             if name in labels(issue):
                 self.github.call('controller', decision, 'DELETE', f"/issues/{decision['number']}/labels/{quote(name, safe='')}")
+        if decision['action'] == 'assign_reviewer':
+            self.assign_reviewer(identifier, decision, item)
+            return
         confirmed, requirements = self.github.issue(decision)
         if revision(facts(confirmed), None if plan.get('new_item') else item) != plan['after_revision']:
             raise ValueError('GitHub changed during this decision. Review the current issue.')
@@ -195,6 +222,24 @@ class IssueActions:
             current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
             self.ledger.event(state, current, 'operator_' + decision['action'], reason=decision['reason'], request=identifier)
 
+    def assign_reviewer(self, identifier, decision, item):
+        """Hand the candidate to a human through GitHub's own review request.
+
+        No label and no state change: the issue keeps waiting for the approval
+        that GitHub.human() alone accepts.
+        """
+        logins = reviewer_logins(decision['reason'])
+        pull = (item.get('candidate') or {})['pr']
+        self.github.call('controller', decision, 'POST', f'/pulls/{pull}/requested_reviewers', {'reviewers': logins})
+        self.github.call('controller', decision, 'POST', f"/issues/{decision['number']}/assignees", {'assignees': logins})
+        confirmed, _ = self.github.issue(decision)
+        with self.ledger.transaction() as state:
+            current = state['issues'][decision['key']]
+            current['reviewers_requested'] = {'logins': logins, 'at': time.time(), 'request': identifier}
+            current.pop('operator_request', None)
+            current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
+            self.ledger.event(state, current, 'reviewer_requested', reason=', '.join(logins), request=identifier)
+
     def validate_action(self, action, issue, item):
         state = (item or {}).get('state')
         held = labels(issue).intersection(self.config['hold_labels'])
@@ -208,3 +253,5 @@ class IssueActions:
             raise ValueError('There is no operator hold to release.')
         if action == 'recheck' and not ((item or {}).get('prerequisite_hold') or (item or {}).get('environment_hold') or (item or {}).get('reason') == LEGACY_SETUP_REASON):
             raise ValueError('There is no repository setup hold to recheck.')
+        if action == 'assign_reviewer' and not (state == 'approval_needed' and ((item or {}).get('candidate') or {}).get('pr')):
+            raise ValueError('A reviewer can only be assigned while a pull request waits for approval.')

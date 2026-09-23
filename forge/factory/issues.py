@@ -14,6 +14,7 @@ from .ledger import Ledger
 from .ledger import APPROACH_HOLD
 
 MAX_AGE = 300
+COLLABORATOR_AGE = 600
 LEGACY_SETUP_REASON = 'Configure two approving reviews and stale-approval dismissal before dispatch'
 
 
@@ -94,6 +95,9 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             actions = ['retry']
     elif item.get('state') == 'approval_needed':
         state, detail = 'attention', 'The pull request needs a human review.'
+        # Asking a named human for that review is the only decision on offer;
+        # the approval itself still has to reach Forge through GitHub.
+        actions = ['assign_reviewer'] if owned_pr else []
     elif item.get('state') in ('built', 'reviewed', 'audited', 'investigating'):
         state, detail = 'queued', {'built': 'Waiting for review.', 'reviewed': 'Waiting for security review.', 'audited': 'Checking merge requirements.', 'investigating': 'Waiting for a failure investigation.'}[item['state']]
         actions = ['pause'] if item['state'] != 'investigating' else []
@@ -116,7 +120,9 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     return {'status': state, 'explanation': detail, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'pull_requests': [{'number': p['number'], 'title': p.get('title', '')} for p in linked],
-            'dependencies': dependencies(issue.get('body')), 'fresh': fresh}
+            'dependencies': dependencies(issue.get('body')), 'fresh': fresh,
+            'reviewers_requested': {k: v for k, v in (item.get('reviewers_requested') or {}).items()
+                                    if k in ('logins', 'at')} or None}
 
 
 class IssueInventory:
@@ -156,6 +162,14 @@ class IssueInventory:
                     entry.update(identity=identity, name=repo['name'], refreshing=True, error=None)
                     scan = entry.setdefault('scan', {'state': 'open', 'page': 1, 'issues': {}})
                     item = {'repo': repo['name'], 'repo_id': repo['id']}
+                    # Who may approve here changes far more slowly than the
+                    # issues do, and a failed listing only costs the select.
+                    if not 0 <= self.clock() - (entry.get('collaborators') or {}).get('at', 0) < COLLABORATOR_AGE:
+                        try:
+                            rows = self.github.collaborators(item)
+                        except (GitHubUnavailable, ValueError, KeyError, TypeError, OSError):
+                            rows = []
+                        entry['collaborators'] = {'at': self.clock(), 'rows': rows}
                     try:
                         while time.monotonic() < self.github.deadline:
                             if scan['page'] > 100:
@@ -233,7 +247,9 @@ class IssueInventory:
                        'history': [{k: e[k] for k in ('at', 'kind', 'reason') if k in e} for e in ledger['events'] if e['issue'] == issue_key][-15:],
                        'active': item.get('active') if item else None,
                        'reviews': [{'role': role, 'outcome': value.get('outcome'), 'summary': value.get('summary', '')[:1000]}
-                                   for role, value in (item or {}).get('evidence', {}).items() if role in ('review', 'audit')]}
+                                   for role, value in (item or {}).get('evidence', {}).items() if role in ('review', 'audit')],
+                       'reviewers': (entry.get('collaborators') or {}).get('rows', []),
+                       'default_reviewers': list(self.runtime['human_reviewers'])}
                 if key is not None:
                     if key == issue_key:
                         return {'issue': row, 'repositories': scopes, 'actions': self.action_statuses()}
@@ -249,7 +265,7 @@ class IssueInventory:
             raise ValueError('This issue is not in a managed repository. Refresh the issue list.')
         order = {'attention': 0, 'working': 1, 'waiting': 2, 'queued': 3, 'backlog': 4, 'completed': 5}
         rows.sort(key=lambda r: (order[r['status']], r['repo'].lower(), r['number']))
-        return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history', 'reviews')} for r in rows[(page-1)*50:page*50]],
+        return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history', 'reviews', 'reviewers', 'default_reviewers', 'reviewers_requested')} for r in rows[(page-1)*50:page*50]],
                 'total': len(rows), 'page': page, 'pages': max(1, (len(rows)+49)//50), 'repositories': scopes,
                 'complete': all(r['complete'] and r['fresh'] for r in scopes if repo_id is None or r['id'] == repo_id), 'actions': self.action_statuses()}
 

@@ -2,7 +2,7 @@
 // renders a CardModel, every banner is produced by warnings(), so no component
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
-import { clampTitle } from './format'
+import { clampTitle, reviewerMentions } from './format'
 import type { OnboardingView } from './onboarding'
 
 export type JobRole = 'build' | 'review' | 'audit' | 'recovery' | 'merge'
@@ -25,6 +25,7 @@ export interface LedgerIssueView {
   key: string; repo_id: number; repo: string; number: number; title: string
   state: IssueState; reason: string | null; active: string | null; failure_count: number
   candidate?: { pr?: number } | null
+  reviewers_requested?: { logins: string[]; at: number } | null
   prerequisite_hold?: { state: string } | true | null
   history?: LedgerEvent[]
 }
@@ -123,6 +124,11 @@ function latestProvider(issue: LedgerIssueView | null): string | null {
 
 export function reasonText(issue: LedgerIssueView | null, job: JobView | null): string {
   if (job?.capacity_wait_since) return 'Waiting for memory. Forge will start this worker automatically when space is available.'
+  // An approval the operator already asked for: the card says who has it,
+  // which is more use than repeating that a review is needed.
+  if (issue?.state === 'approval_needed' && issue.reviewers_requested?.logins?.length) {
+    return `Review requested from ${reviewerMentions(issue.reviewers_requested.logins)}`
+  }
   const reason = issue?.reason ?? ''
   if (job && (reason === 'blocked_auth' || reason === 'blocked_rate_limit')) return ''
   if (reason === 'blocked_auth') {

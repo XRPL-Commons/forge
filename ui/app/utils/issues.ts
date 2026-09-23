@@ -3,8 +3,11 @@
 // below, so the list, the detail and the decision dialog can never disagree.
 // Rules follow the operator API contracts §2 (GET /api/issues) and §3.2–3.3.
 
+import { elapsed } from './factory'
+import { reviewerMentions } from './format'
+
 export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed'
-export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'stop'
+export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop'
 
 export interface IssueScope { id: number; name: string; complete: boolean; fresh: boolean; at: number | null; error: string | null }
 export interface IssueActionStatus { id: string; key: string; status: 'pending' | 'applied' | 'rejected'; message: string | null }
@@ -23,9 +26,18 @@ export interface IssueRow {
   fresh: boolean; revision: string; setup_url: string; active: string | null
 }
 
+// Who was asked for the human approval, and when. Set by the assign_reviewer
+// decision; the approval itself still has to come through GitHub.
+export interface ReviewRequest { logins: string[]; at: number }
+export interface Reviewer { login: string; name: string }
+
 export interface IssueHistoryEvent { at: number; kind: string; reason?: string | null }
 export interface IssueReview { role: 'review' | 'audit'; outcome: string | null; summary: string }
-export interface IssueDetail extends IssueRow { body: string; history: IssueHistoryEvent[]; reviews: IssueReview[] }
+export interface IssueDetail extends IssueRow {
+  body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
+  // Detail only: the list view carries neither the collaborators nor the request.
+  reviewers: Reviewer[]; default_reviewers: string[]; reviewers_requested: ReviewRequest | null
+}
 
 export interface IssueListResponse {
   ok: true; controls_token: string; issues: IssueRow[]; total: number; page: number; pages: number
@@ -51,6 +63,7 @@ export const ACTION_LABELS: Record<IssueAction, string> = {
   resume: 'Release hold',
   retry: 'Retry attempt',
   recheck: 'Recheck readiness',
+  assign_reviewer: 'Assign reviewer',
   stop: 'Stop attempt',
 }
 
@@ -61,6 +74,7 @@ export const ACTION_EFFECTS: Record<IssueAction, string> = {
   resume: 'This releases the deliberate hold. Confirm that the prerequisite work is complete. Forge will check dependencies and existing work before continuing.',
   retry: 'This grants a new three-attempt budget and returns the issue to Build. Existing history is preserved.',
   recheck: 'Forge will recheck readiness and resume the held stage. The existing pull request and failure budget are preserved. Confirm that the reported blocker has been addressed.',
+  assign_reviewer: 'Forge asks GitHub for a review from these people and assigns them to the issue. The approval still has to come from a reviewer with write access who did not write the code.',
   stop: 'This stops the active attempt and discards its unfinished workspace changes. Published pull requests are preserved.',
 }
 
@@ -76,6 +90,7 @@ export const EVENT_LABELS: Record<string, string> = {
   operator_pause: 'Paused by an operator',
   operator_resume: 'Hold released',
   operator_recheck: 'Repository setup checked',
+  reviewer_requested: 'Review requested',
   operator_conflict: 'Decision needs another review',
   reserved: 'Attempt prepared',
   merged: 'Pull request merged',
@@ -142,6 +157,40 @@ export function reviewRow(review: IssueReview): ReviewRow {
 
 export function reviewRows(reviews: IssueReview[] | null | undefined): ReviewRow[] {
   return (reviews ?? []).map(reviewRow)
+}
+
+// The reviewer control on an approval_needed issue. Everything the operator
+// reads or sends is decided here: the select's options, what it starts with,
+// the decision text that becomes `reason`, and the line the page shows once
+// GitHub has been asked.
+export interface ReviewerOption { value: string; label: string }
+
+export function reviewerOptions(reviewers: Reviewer[] | null | undefined): ReviewerOption[] {
+  return (reviewers ?? [])
+    .filter(person => !!person?.login)
+    .map(person => ({ value: person.login, label: person.name ? `${person.login} · ${person.name}` : person.login }))
+}
+
+// Pre-selected: the people the runtime already trusts to approve, kept to the
+// ones this repository actually offers so the select never holds a stranger.
+export function preselectedReviewers(
+  detail: Pick<IssueDetail, 'reviewers' | 'default_reviewers'> | null | undefined,
+): string[] {
+  const known = new Set((detail?.reviewers ?? []).map(person => person.login.toLowerCase()))
+  return (detail?.default_reviewers ?? []).filter(login => known.has(login.toLowerCase()))
+}
+
+// A login the list does not know is still accepted: GitHub validates it.
+export function reviewerReason(logins: string[]): string {
+  const cleaned = logins.map(login => login.trim().replace(/^@+/, '')).filter(Boolean)
+  return [...new Set(cleaned)].join(', ')
+}
+
+export function reviewRequestText(request: ReviewRequest | null | undefined, now: number): string {
+  if (!request?.logins?.length) return ''
+  const line = `Review requested from ${reviewerMentions(request.logins)}`
+  const age = now - (request.at ?? 0)
+  return request.at && age >= 0 ? `${line} · ${elapsed(age)} ago` : line
 }
 
 export function eventLabel(kind: string): string {
