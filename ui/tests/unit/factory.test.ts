@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
-  metrics, phaseLabel, reasonText, toCard, warnings,
+  breakdown, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
 
 const now = 1_000_000
@@ -181,36 +181,37 @@ describe('groupIssues', () => {
   })
 })
 
-describe('metrics', () => {
+describe('breakdown', () => {
   const running = job()
   const recovery = job({ id: 'rec-fresh', issue_key: '3:900', role: 'recovery', slot: 'recovery-1', model: null })
-  const staleRecovery = job({ id: 'rec-stale', issue_key: '3:901', role: 'recovery', slot: 'recovery-2', model: null, observed_at: now - 500, last_observed: now - 500 })
   const v = view({
     issues: [
       issue({ key: '1:601', number: 601, active: running.id }),
       issue({ key: '1:602', number: 602, state: 'built' }),
       issue({ key: '1:604', number: 604, state: 'failed' }),
+      issue({ key: '1:605', number: 605, state: 'hold', reason: 'Forge environment needs attention (resources)' }),
+      issue({ key: '1:607', number: 607, state: 'hold', reason: 'Repeated failure requires a supported change of approach' }),
+      issue({ key: '1:608', number: 608, state: 'audited' }),
       issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged' }),
     ],
-    jobs: [running, recovery, staleRecovery],
+    jobs: [running, recovery],
+    observation: { at: now, errors: [{ phase: 'github', reason: 'GitHub refused to merge x/y#1: branch rules still block it' }] },
   })
 
-  it('returns seven tiles with counts, details and destinations', () => {
-    const tiles = metrics(v, now)
-    expect(tiles.map(t => t.id)).toEqual(['queued', 'build', 'review', 'audit', 'recovery', 'attention', 'merged'])
-    const byId = Object.fromEntries(tiles.map(t => [t.id, t]))
-    expect(byId.queued).toMatchObject({ label: 'Queued', value: 1, detail: 'Waiting for a worker', to: '#columns' })
-    expect(byId.build).toMatchObject({ label: 'Builders', value: 1, detail: '1 of 2 running', to: '#stage-build' })
-    expect(byId.review).toMatchObject({ label: 'Reviewers', value: 0, detail: '1 maximum', to: '#stage-review' })
-    expect(byId.audit).toMatchObject({ label: 'Auditors', value: 0, detail: '1 maximum', to: '#stage-audit' })
-    expect(byId.recovery).toMatchObject({ label: 'Investigations', value: 1, detail: '1 maximum', to: '#stage-recovery' })
-    expect(byId.attention).toMatchObject({ label: 'Needs attention', value: 1, detail: 'Awaiting a decision', to: '#needs-attention', tone: 'warn' })
-    expect(byId.merged).toMatchObject({ label: 'Merged', value: 1, detail: 'All tracked issues', to: '#completed' })
+  it('returns one row per state with a meaning derived from the ledger', () => {
+    const rows = breakdown(v, now)
+    expect(rows.map(r => r.id)).toEqual(['working', 'queued', 'merging', 'attention', 'merged'])
+    const byId = Object.fromEntries(rows.map(r => [r.id, r]))
+    expect(byId.working).toMatchObject({ value: 1, meaning: '1 of 2 building · 0 of 1 reviewing · 0 of 1 auditing · 1 investigating', to: '#columns' })
+    expect(byId.queued).toMatchObject({ value: 1, meaning: 'Waiting for a free worker' })
+    expect(byId.merging).toMatchObject({ value: 1, meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
+    expect(byId.attention).toMatchObject({ value: 3, meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
+    expect(byId.merged).toMatchObject({ value: 1, to: '#completed' })
   })
 
-  it('reports a paused dispatch on the queued tile', () => {
-    const paused = metrics(view({ ...v, runtime: { ...v.runtime, enabled: false } }), now)
-    expect(paused[0]).toMatchObject({ id: 'queued', detail: 'Dispatch paused', tone: 'muted' })
+  it('reports a paused dispatch on the queued row', () => {
+    const paused = breakdown(view({ ...v, runtime: { ...v.runtime, enabled: false } }), now)
+    expect(paused[1]).toMatchObject({ id: 'queued', meaning: 'Dispatch is paused', tone: 'muted' })
   })
 })
 

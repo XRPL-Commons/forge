@@ -67,10 +67,6 @@ export interface CardModel {
   footerLink: { to: string; label: string } | null
 }
 
-export interface Tile {
-  id: 'queued' | 'build' | 'review' | 'audit' | 'recovery' | 'attention' | 'merged'
-  label: string; value: number; detail: string; to: string; tone: 'ok' | 'warn' | 'muted'
-}
 
 export const NEXT_ROLE: Record<string, ColumnRole> = { ready: 'build', built: 'review', reviewed: 'audit' }
 export const COLUMN_ROLES: ColumnRole[] = ['build', 'review', 'audit']
@@ -263,28 +259,67 @@ function runningJobs(view: FactoryView, now: number): JobView[] {
   return (view.jobs ?? []).filter(job => isRunning(view, job, now))
 }
 
-export function metrics(view: FactoryView | null | undefined, now: number): Tile[] {
+// One row per state an issue can be in, with a count and a sentence that
+// says what the count means right now, derived from the reasons the ledger
+// records. This replaces per-role tiles: the operator reads why work is not
+// moving, not how many slots exist.
+export interface BreakdownRow {
+  id: 'working' | 'queued' | 'merging' | 'attention' | 'merged'
+  label: string; value: number; meaning: string; to: string; tone: 'ok' | 'warn' | 'muted'
+}
+
+const HOLD_REASONS: [RegExp, string][] = [
+  [/environment needs attention \(toolchain\)/, 'toolchain'],
+  [/environment needs attention \(resources\)/, 'memory'],
+  [/environment needs attention \(sandbox\)/, 'sandbox'],
+  [/environment needs attention/, 'environment'],
+  [/change of approach/, 'retry limit'],
+  [/hold or dependency label/, 'label'],
+  [/Paused by an operator|Not queued/, 'paused'],
+  [/approving reviews|protection|branch rules/, 'branch rules'],
+]
+
+function holdReason(issue: LedgerIssueView): string {
+  if (issue.state === 'approval_needed') return 'approval'
+  if (issue.state === 'failed') return 'failed'
+  const reason = issue.reason ?? ''
+  return HOLD_REASONS.find(([pattern]) => pattern.test(reason))?.[1] ?? 'decision'
+}
+
+function tally(items: string[]): string {
+  const counts = new Map<string, number>()
+  for (const item of items) counts.set(item, (counts.get(item) ?? 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${n} ${name}`).join(' · ')
+}
+
+export function breakdown(view: FactoryView | null | undefined, now: number): BreakdownRow[] {
   if (!view) return []
   const slots = view.runtime?.slots ?? {}
   const issues = view.issues ?? []
   const running = runningJobs(view, now)
   const count = (role: JobRole) => running.filter(job => job.role === role).length
-  const queued = issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue)).length
-  const attention = issues.filter(issue => ATTENTION_STATES.includes(issue.state)).length
-  const merged = issues.filter(issue => issue.state === 'merged').length
   const enabled = view.runtime?.enabled !== false
-  const stage = (id: ColumnRole, label: string): Tile => {
-    const value = count(id)
-    return { id, label, value, detail: value === 0 ? `${slots[id] ?? 0} maximum` : `${value} of ${slots[id] ?? 0} running`, to: `#stage-${id}`, tone: 'ok' }
-  }
+  const working = count('build') + count('review') + count('audit')
+  const verbs: [JobRole, string][] = [['build', 'building'], ['review', 'reviewing'], ['audit', 'auditing']]
+  const workingMeaning = verbs.map(([role, verb]) => `${count(role)} of ${slots[role] ?? 0} ${verb}`).join(' · ')
+    + (count('recovery') ? ` · ${count('recovery')} investigating` : '')
+  const queued = issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue)).length
+  const merging = issues.filter(issue => issue.state === 'audited').length
+  const refused = (view.observation?.errors ?? []).filter(error => /refused to merge/.test(error.reason)).length
+  const attention = issues.filter(issue => ATTENTION_STATES.includes(issue.state))
+  const merged = issues.filter(issue => issue.state === 'merged').length
   return [
-    { id: 'queued', label: 'Queued', value: queued, detail: enabled ? 'Waiting for a worker' : 'Dispatch paused', to: '#columns', tone: enabled ? 'ok' : 'muted' },
-    stage('build', 'Builders'),
-    stage('review', 'Reviewers'),
-    stage('audit', 'Auditors'),
-    { id: 'recovery', label: 'Investigations', value: count('recovery'), detail: `${slots.recovery ?? 0} maximum`, to: '#stage-recovery', tone: 'ok' },
-    { id: 'attention', label: 'Needs attention', value: attention, detail: 'Awaiting a decision', to: '#needs-attention', tone: attention > 0 ? 'warn' : 'ok' },
-    { id: 'merged', label: 'Merged', value: merged, detail: 'All tracked issues', to: '#completed', tone: 'ok' },
+    { id: 'working', label: 'Working', value: working, meaning: workingMeaning, to: '#columns', tone: 'ok' },
+    { id: 'queued', label: 'Queued', value: queued,
+      meaning: !enabled ? 'Dispatch is paused' : queued ? 'Waiting for a free worker' : 'Nothing waiting',
+      to: '#columns', tone: enabled ? 'ok' : 'muted' },
+    { id: 'merging', label: 'Waiting to merge', value: merging,
+      meaning: refused ? `${refused} refused by branch rules` : merging ? 'Checking merge requirements' : 'Nothing approved yet',
+      to: '#finishing', tone: refused ? 'warn' : 'ok' },
+    { id: 'attention', label: 'Needs a decision', value: attention.length,
+      meaning: attention.length ? tally(attention.map(holdReason)) : 'Nothing needs you',
+      to: '#needs-attention', tone: attention.length ? 'warn' : 'ok' },
+    { id: 'merged', label: 'Merged', value: merged, meaning: 'Since Forge started tracking these repositories', to: '#completed', tone: 'ok' },
   ]
 }
 
