@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
-  decisionNeedsReason, emptyState, freshnessText, listParams, rowAction,
+  decisionNeedsReason, emptyState, freshnessText, listParams, reviewRows, rowAction,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -132,5 +132,46 @@ describe('decisionNeedsReason', () => {
     expect(decisionNeedsReason('queue')).toBe(false)
     expect(decisionNeedsReason('backlog')).toBe(false)
     expect(decisionNeedsReason('recheck')).toBe(false)
+  })
+})
+
+describe('reviewRows', () => {
+  it('names the role, the outcome and the lead sentence of each review', () => {
+    const rows = reviewRows([
+      { role: 'review', outcome: 'passed', summary: 'The change is correct. It adds tests for the redaction helper and keeps the public API stable.' },
+      { role: 'audit', outcome: 'changes_requested', summary: 'The install token is still written to the build log.' },
+    ])
+    expect(rows).toEqual([
+      {
+        role: 'review', label: 'Review', outcome: 'passed', outcomeLabel: 'Passed',
+        lead: 'The change is correct.',
+        summary: 'The change is correct. It adds tests for the redaction helper and keeps the public API stable.',
+        more: true,
+      },
+      {
+        role: 'audit', label: 'Security review', outcome: 'attention', outcomeLabel: 'Needs attention',
+        lead: 'The install token is still written to the build log.',
+        summary: 'The install token is still written to the build log.',
+        more: false,
+      },
+    ])
+  })
+
+  it('treats any outcome that is not "passed" as needing attention', () => {
+    expect(reviewRows([{ role: 'review', outcome: null, summary: 'No verdict' }])[0]).toMatchObject({
+      outcome: 'attention', outcomeLabel: 'Needs attention', lead: 'No verdict', more: false,
+    })
+  })
+
+  it('collapses worker prose to one line, so a lead is never a paragraph fragment', () => {
+    const [row] = reviewRows([{ role: 'review', outcome: 'passed', summary: '  Looks good!\n\nOne nit:   the name.  ' }])
+    expect(row!.lead).toBe('Looks good!')
+    expect(row!.summary).toBe('Looks good! One nit: the name.')
+    expect(row!.more).toBe(true)
+  })
+
+  it('is empty when the issue has no reviews', () => {
+    expect(reviewRows(undefined)).toEqual([])
+    expect(reviewRows([])).toEqual([])
   })
 })

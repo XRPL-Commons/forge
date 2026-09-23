@@ -156,6 +156,37 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(orphanOutputs.length, 1)
   assert.equal(orphanOutputs[0].query.id, RECOVERY_JOB, 'the orphaned ?job= id is what is fetched')
 
+  // The issue's one action bar sits under the title, above the description:
+  // the decisions, then where the work lives on GitHub, then Stop. The review
+  // summaries below it are clamped until "More" is pressed.
+  await scenario('reviewed')
+  await page.goto(base + '/issues/1%3A610')
+  await waitForText(page, DETAIL_TITLE)
+  const actionBar = page.locator('#issue-actions')
+  assert.equal(await actionBar.getByRole('link', { name: 'GitHub' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/issues/610')
+  assert.equal(await actionBar.getByRole('link', { name: 'PR #30' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/pull/30')
+  assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
+  assert.equal(await page.getByRole('link', { name: 'Open on GitHub ↗' }).count(), 0, 'the links row at the bottom is gone')
+  const barBox = await actionBar.boundingBox()
+  const bodyBox = await page.locator('.forge-markdown').boundingBox()
+  assert.ok(barBox.y + barBox.height <= bodyBox.y, 'the action bar must sit above the description')
+
+  const reviewRows = page.locator('#issue-reviews > div')
+  assert.equal(await reviewRows.count(), 2)
+  assert.match(await reviewRows.first().innerText(), /^Passed\s+Review/)
+  assert.match(await reviewRows.nth(1).innerText(), /^Needs attention\s+Security review/)
+  const summary = reviewRows.first().locator('p')
+  assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), '2',
+    'a review summary is clamped to two lines')
+  assert.equal((await summary.innerText()).includes('One nit'), false, 'the worker prose is behind the toggle')
+  await reviewRows.first().getByRole('button', { name: 'More' }).click()
+  await waitForText(page, 'One nit')
+  assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), 'none')
+  await reviewRows.first().getByRole('button', { name: 'Less' }).click()
+  assert.equal(await summary.evaluate((el) => getComputedStyle(el).webkitLineClamp), '2')
+
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')
   await page.goto(base + '/issues/1%3A609')
