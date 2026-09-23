@@ -6,7 +6,7 @@ import time
 from urllib.parse import quote
 
 from ..app_access import AppClient, AccessError, ROLE_PERMISSIONS
-from .contracts import candidate, digest, submission
+from .contracts import SHA, candidate, digest, submission
 
 
 class GitHubUnavailable(RuntimeError):
@@ -93,6 +93,26 @@ class GitHub:
         if repository.get('id') != item['repo_id'] or not isinstance(repository.get('default_branch'), str):
             raise GitHubUnavailable('Repository identity or target branch is unverified')
         return repository['default_branch']
+
+    def workflows_digest(self, item):
+        """Identity of the deploy surface: the workflow files at the default branch head."""
+        repository = self.call('controller', item, 'GET', '')
+        branch = repository.get('default_branch')
+        if repository.get('id') != item['repo_id'] or not isinstance(branch, str) or not branch:
+            raise GitHubUnavailable('Repository identity or target branch is unverified')
+        head = (self.call('controller', item, 'GET', '/branches/' + quote(branch, safe='')).get('commit') or {}).get('sha')
+        if not isinstance(head, str) or not SHA.fullmatch(head):
+            raise GitHubUnavailable('Default branch head could not be verified')
+        try:
+            files = self.call('controller', item, 'GET', '/contents/.github/workflows?ref=' + quote(head, safe=''))
+        except GitHubUnavailable as error:
+            if error.status != 404:
+                raise
+            files = []  # A repository without workflows has a stable, empty digest.
+        if not isinstance(files, list) or any(not isinstance(f, dict) or not isinstance(f.get('path'), str)
+                                              or not isinstance(f.get('sha'), str) for f in files):
+            raise GitHubUnavailable('Workflow inventory is malformed')
+        return digest(sorted([f['path'], f['sha']] for f in files)), head
 
     def issues(self, repo):
         return [i for i in self.pages('controller', repo, '/issues?state=open&labels=' + quote(self.runtime['ready_label']))

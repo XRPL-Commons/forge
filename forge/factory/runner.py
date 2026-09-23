@@ -18,7 +18,7 @@ import hashlib
 from datetime import datetime
 
 from .capacity import observe as observe_capacity, memory_bytes, launch_lock
-from .contracts import assignment_note, identifier, unique
+from .contracts import assignment_note, identifier, strategist_note, unique
 from ..harnesses.registry import manifest
 from ..credentials import Credentials
 
@@ -223,7 +223,7 @@ class ContainerRunner:
             except (OSError, ValueError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded') from None
         credentials['GH_TOKEN'] = token
-        note = assignment_note(job)
+        note = strategist_note(job) if job['role'] == 'strategist' else assignment_note(job)
         note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
                     proxy=self.config['proxy'], provider=self.config.get('provider', 'codex'), model=self.config.get('model'))
         content = io.BytesIO()
