@@ -62,9 +62,27 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(client.request.call_count, 5)
         self.assertNotIn('administration', client.request.call_args.args[-1]['permissions'])
 
-    def test_controller_requires_read_only_protection_inspection(self):
+    def test_controller_requires_read_only_protection_and_deployment_inspection(self):
         github, client, _ = self.github(); github.token('controller', 71)
-        self.assertEqual(client.request.call_args.args[-1]['permissions']['administration'], 'read')
+        permissions = client.request.call_args.args[-1]['permissions']
+        self.assertEqual(permissions['administration'], 'read')
+        self.assertEqual(permissions['deployments'], 'read')
+        self.assertEqual({k for k, v in permissions.items() if v != 'read'},
+                         {'contents', 'issues', 'pull_requests', 'checks'})
+
+    def test_filing_a_deployment_issue_verifies_the_number_it_reports(self):
+        github, client, _ = self.github()
+        item = {'repo': 'example/project', 'repo_id': 71}
+        client.request.side_effect = [{'token': 'synthetic-installation-token'}, {'number': 41}]
+        self.assertEqual(github.file_issue(item, 'Expose the build commit', 'body', ['forge:deployment']), 41)
+        method, path, _, payload = client.request.call_args.args
+        self.assertEqual((method, path), ('POST', '/repos/example/project/issues'))
+        self.assertEqual(payload, {'title': 'Expose the build commit', 'body': 'body', 'labels': ['forge:deployment']})
+        for response in ({}, {'number': '41'}, None):
+            client.request.side_effect = [{'token': 'synthetic-installation-token'}, response]
+            github.tokens.clear()
+            with self.assertRaises(GitHubUnavailable):
+                github.file_issue(item, 'Expose the build commit', 'body', ['forge:deployment'])
 
     def test_multiple_installations_select_by_repository_id(self):
         github, client, settings = self.github()

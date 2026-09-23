@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS
+from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS, missing_permissions
 from forge.settings import Settings, DEFAULT, ROLES, digest, validate, write_json
 
 
@@ -218,6 +218,39 @@ class SettingsTests(unittest.TestCase):
         config = validate(json.loads(example.read_text()))
         self.assertEqual(config['repositories'], [])
         self.assertEqual(config['connections'], {})
+
+    def test_deployment_profile_is_optional_and_shape_checked(self):
+        profile = {'strategy': 'header', 'deploy': {'workflow': 'deploy.yaml', 'environment': 'production', 'trigger': 'push:main'},
+                   'domain': 'academy.example.org', 'exposure': {'kind': 'header', 'path': None, 'field': None, 'header': 'X-Build-Commit'},
+                   'workflows_digest': 'digest-one', 'confirmed_at': 1000, 'exposure_issue': 41}
+        config = copy.deepcopy(self.config)
+        config['repositories'] = [{'id': 10, 'name': 'example/project', 'enabled': True}]
+        self.assertEqual(validate(copy.deepcopy(config))['repositories'][0]['enabled'], True)
+        config['repositories'][0]['deployment'] = profile
+        self.assertIs(validate(copy.deepcopy(config))['repositories'][0]['deployment']['exposure_issue'], 41)
+        for override in ({'exposure_issue': None}, {'domain': None}, {'strategy': 'unobservable'},
+                         {'exposure': {'kind': 'none', 'path': None, 'field': None, 'header': None}},
+                         {'confirmed_at': 1000.5}):
+            config['repositories'][0]['deployment'] = {**profile, **override}
+            validate(copy.deepcopy(config))
+        for override in ({'strategy': 'guess'}, {'domain': 'https://academy.example.org/health'},
+                         {'domain': 'academy.example.org/health'}, {'domain': 12}, {'exposure_issue': 'forty-one'},
+                         {'exposure_issue': 0}, {'workflows_digest': None}, {'confirmed_at': 'now'},
+                         {'exposure': {'kind': 'invented', 'path': None, 'field': None, 'header': None}},
+                         {'deploy': {'workflow': 'deploy.yaml'}}, {'proposal': None}):
+            config['repositories'][0]['deployment'] = {**profile, **override}
+            with self.assertRaises(ValueError):
+                validate(copy.deepcopy(config))
+        config['repositories'][0]['deployment'] = profile
+        self.assertNotEqual(digest(validate(copy.deepcopy(config))),
+                            digest({**config, 'repositories': [{'id': 10, 'name': 'example/project', 'enabled': True}]}))
+
+    def test_controller_needs_deployment_reads_for_observation(self):
+        self.assertEqual(ROLE_PERMISSIONS['controller']['deployments'], 'read')
+        granted = {k: v for k, v in ROLE_PERMISSIONS['controller'].items() if k != 'deployments'}
+        self.assertEqual(missing_permissions('controller', granted), ['deployments: read'])
+        self.settings.refresh()
+        self.assertEqual(self.settings.view()['roles']['controller']['required_permissions']['deployments'], 'read')
 
     def test_repository_names_cannot_address_parent_checkout(self):
         for name in ('example/..', 'example/.', '../project', 'example/a/b'):

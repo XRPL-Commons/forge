@@ -100,6 +100,38 @@ type RepositoryRow = {
   protection_last_known: ProtectionReport | null;
   rules_url: string;                            // https://github.com/<name>/settings/rules
   setup_url: string;                            // /settings/repository?repo_id=<id>
+  deployment: DeploymentRow;                    // state/deployments.json merged with config.repositories[i].deployment
+};
+
+// forge/deployments.py store entry + forge/settings.py deployment profile
+type DeploymentProposal = {                     // the strategist's reading, never applied on its own
+  strategy: 'github_deployments' | 'health' | 'header' | 'unobservable';
+  deploy: { workflow: string | null; environment: string | null; trigger: string | null };
+  domain: { value: string | null; source: 'workflow' | 'docs' | 'config' | 'none'; confidence: 'high' | 'low' | 'none' };
+  exposure: { kind: 'health' | 'header' | 'none'; path: string | null; field: string | null; header: string | null };
+  commit_source: string;
+  proposal: { title: string; body: string } | null;   // non-null => an issue is filed on confirmation
+};
+
+type DeploymentProfile = {                      // factory.json repositories[i].deployment
+  strategy: DeploymentProposal['strategy'];
+  deploy: DeploymentProposal['deploy'];
+  domain: string | null;                        // a bare host, never a URL
+  exposure: DeploymentProposal['exposure'];
+  workflows_digest: string; confirmed_at: number;
+  exposure_issue: number | null;                // the filed issue; set once, never refiled
+};
+
+type DeploymentRow = {
+  status: 'idle' | 'running' | 'proposed' | 'confirmed' | 'rejected' | 'failed';
+  summary: string | null;                       // the strategist's sentence, or Forge's failure reason
+  proposal: DeploymentProposal | null;          // the pending reading (store)
+  profile: DeploymentProfile | null;            // the confirmed profile (settings)
+  observation: { at: number; logs: string; execution: object } | null;   // while status === 'running'
+  error: string | null;                         // per-repository read or issue-filing failure
+  reason: string | null;                        // the operator's rejection reason
+  exposure_issue: number | null;                // profile.exposure_issue, hoisted for the card
+  reread_requested: boolean;                    // a re-read is pending the next supervisor cycle
 };
 
 type SyncState = { status: 'never' } | { status: 'running'; started_at: number }
@@ -108,7 +140,7 @@ type SyncState = { status: 'never' } | { status: 'running'; started_at: number }
 type FactoryConfig = {                          // factory.json
   version: 1; sync_interval_seconds: number; access_max_age_seconds: number;   // 30..86400, max_age >= interval
   connections: Partial<Record<Role, { app_id: number; private_key_env: string } & ({ installation_id: number } | { installation_ids: number[] })>>;
-  repositories: { id: number; name: string; enabled: boolean }[];
+  repositories: { id: number; name: string; enabled: boolean; deployment?: DeploymentProfile }[];
 };
 
 type RuntimeConfig = {                          // runtime.json, forge/factory/config.py DEFAULT
@@ -398,6 +430,12 @@ Body exactly `{repo_id: number|null, revision}` (`null` = all enabled repos) els
 
 ### POST /api/repositories/enable
 Body exactly `{repo_id: number, revision}`. Errors: "Finish initial Forge setup before enabling automation", "Repository settings changed. Check again before enabling.", plus `Settings.save` errors. Response `RepositoriesView(repo_id) & {ok:true, controls_token}`.
+
+### POST /api/repositories/deployment
+Body exactly `{repo_id: number, revision, action}` plus `domain` for `confirm` and `reason` for `reject` (`reread` takes no extra field), else "Expected repository identity, current revision, and a deployment decision". Revision mismatch → "Repository settings changed. Reload and check again.".
+- `confirm` writes `config.repositories[i].deployment` through `Settings.save` (so the revision check and every settings guard apply) and, when the proposal carries an issue and `exposure_issue` is still null, files it on the repository with the single label `forge:deployment` — never the runtime `ready_label` — and records its number in the profile with a second save. A profile that already has an `exposure_issue` keeps it, so a re-read and a second confirmation never file twice. A refused settings write returns the proposal to `proposed` and changes nothing; a refused issue filing keeps the profile and reports `deployment.error`.
+- `reject` (needs a non-empty `reason`) and `reread` touch only `state/deployments.json`; settings are untouched.
+Other errors: "There is no deployment proposal to confirm/reject", "A rejected proposal needs a reason", "A deployment domain is a bare host name, without scheme, port or path", "Enable this repository before confirming its deployment profile.". Response `RepositoriesView(repo_id) & {ok:true, controls_token}`, so `revision` is the new one.
 
 ### POST /api/slots/action
 Legacy dashboard only (`{action, session, generation}` strings → `forge.slot_actions.request`). **Not used by any factory-era page**; omit from the Nuxt rebuild.

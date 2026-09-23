@@ -36,6 +36,27 @@ def read_json(path):
     return json.loads(Path(path).read_text(), object_pairs_hook=_object)
 
 
+def deployment(value):
+    """The confirmed deployment profile; only an operator confirmation writes it."""
+    from .deployments import STRATEGIES, host  # Deferred: the store pulls in the runner.
+    def texts(item, keys):
+        return (isinstance(item, dict) and set(item) == set(keys)
+                and all(item[key] is None or isinstance(item[key], str) for key in keys))
+    if (not isinstance(value, dict)
+            or set(value) != {'strategy', 'deploy', 'domain', 'exposure', 'workflows_digest', 'confirmed_at', 'exposure_issue'}
+            or value['strategy'] not in STRATEGIES
+            or not texts(value['deploy'], ('workflow', 'environment', 'trigger'))
+            or not texts(value['exposure'], ('kind', 'path', 'field', 'header'))
+            or value['exposure']['kind'] not in ('health', 'header', 'none')
+            or not isinstance(value['workflows_digest'], str) or not value['workflows_digest']
+            or type(value['confirmed_at']) not in (int, float)
+            or (value['exposure_issue'] is not None
+                and (type(value['exposure_issue']) is not int or value['exposure_issue'] <= 0))):
+        raise ValueError('A deployment profile needs a strategy, deploy workflow, exposure, and the digest it was read from')
+    host(value['domain'])
+    return value
+
+
 def validate(config):
     if not isinstance(config, dict) or set(config) != set(DEFAULT) or type(config.get('version')) is not int or config['version'] != 1:
         raise ValueError('Expected version 1 settings with connections, repositories, and sync limits')
@@ -63,11 +84,13 @@ def validate(config):
         raise ValueError('repositories must be a bounded list')
     ids, names = set(), set()
     for row in config['repositories']:
-        if (not isinstance(row, dict) or set(row) != {'id', 'name', 'enabled'}
+        if (not isinstance(row, dict) or set(row) - {'deployment'} != {'id', 'name', 'enabled'}
                 or type(row['id']) is not int or row['id'] <= 0
                 or type(row['enabled']) is not bool or not isinstance(row['name'], str)
                 or not REPO_PATTERN.fullmatch(row['name'])):
             raise ValueError('Each repository needs a GitHub numeric id, owner/name, and enabled boolean')
+        if 'deployment' in row:
+            deployment(row['deployment'])
         if row['id'] in ids or row['name'].lower() in names:
             raise ValueError('Duplicate repository configuration')
         ids.add(row['id']); names.add(row['name'].lower())

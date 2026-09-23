@@ -18,7 +18,8 @@ ROLE_PERMISSIONS = {
     'build': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write'},
     'review': {'contents': 'read', 'issues': 'read', 'pull_requests': 'write', 'checks': 'write'},
     'audit': {'contents': 'read', 'issues': 'read', 'pull_requests': 'write', 'checks': 'write'},
-    'controller': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write', 'checks': 'write', 'administration': 'read'},
+    'controller': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write', 'checks': 'write',
+                   'administration': 'read', 'deployments': 'read'},
 }
 REPO_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9_.-]+')
 

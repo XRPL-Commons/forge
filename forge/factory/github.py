@@ -114,6 +114,15 @@ class GitHub:
             raise GitHubUnavailable('Workflow inventory is malformed')
         return digest(sorted([f['path'], f['sha']] for f in files)), head
 
+    def file_issue(self, item, title, body, labels):
+        """One operator-confirmed proposal, never labelled ready: a human starts it."""
+        value = self.call('controller', item, 'POST', '/issues',
+                          {'title': title, 'body': body, 'labels': list(labels)})
+        number = (value or {}).get('number')
+        if type(number) is not int or number <= 0:
+            raise GitHubUnavailable('The filed deployment issue could not be verified')
+        return number
+
     def issues(self, repo):
         return [i for i in self.pages('controller', repo, '/issues?state=open&labels=' + quote(self.runtime['ready_label']))
                 if 'pull_request' not in i]

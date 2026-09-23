@@ -1,10 +1,14 @@
+import json
 import unittest
 from unittest.mock import Mock, patch
 
 from forge.repository_setup import RepositorySetup, ruleset, RULESET_NAME, observation_key
+from forge.factory.config import validate as runtime_config
+from forge.factory.github import GitHubUnavailable
 from forge.settings import digest, write_json
 from tests import test_settings as settings_tests
 from tests import test_settings_http as http_tests
+from tests.test_dashboard import dashboard
 from tests import test_factory_cycle as cycle_tests
 
 
@@ -176,6 +180,141 @@ class RepositorySetupTests(unittest.TestCase):
         write_json(self.settings.path,config)
         self.assertIsNone(self.service.view(10)['connections']['audit']['install_url'])
 
+    def proposal(self, **overrides):
+        value = {'strategy': 'header', 'deploy': {'workflow': 'deploy.yaml', 'environment': 'production', 'trigger': 'push:main'},
+                 'domain': {'value': 'academy.xrpl-commons.org', 'source': 'workflow', 'confidence': 'high'},
+                 'exposure': {'kind': 'none', 'path': None, 'field': None, 'header': None},
+                 'commit_source': 'image tag sha-<commit>',
+                 'proposal': {'title': 'Expose the build commit', 'body': 'Add the X-Build-Commit header.'}}
+        value.update(overrides)
+        return value
+
+    def store(self):
+        from forge.deployments import Deployments
+        return Deployments(self.settings.root, runner=None, github=None,
+                           settings=self.settings, clock=self.settings.clock)
+
+    def propose(self, repo_id=10, **overrides):
+        store = self.store()
+        store.save(repo_id, 'example/project', status='proposed', workflows_digest='digest-one',
+                   head='a' * 40, summary='deploy.yaml pushes to production',
+                   proposal=self.proposal(**overrides))
+        return store
+
+    def test_deployment_view_merges_the_store_with_the_confirmed_profile(self):
+        row = self.settings.view()['repositories'][0]
+        self.assertEqual(row['deployment'], {'status': 'idle', 'summary': None, 'proposal': None, 'profile': None,
+                                             'observation': None, 'error': None, 'reason': None,
+                                             'exposure_issue': None, 'reread_requested': False})
+        self.propose()
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['deployment']['status'], 'proposed')
+        self.assertEqual(row['deployment']['summary'], 'deploy.yaml pushes to production')
+        self.assertEqual(row['deployment']['proposal']['domain']['value'], 'academy.xrpl-commons.org')
+        self.assertIsNone(row['deployment']['profile'])
+        self.github.return_value.file_issue.return_value = 41
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['deployment']['status'], 'confirmed')
+        self.assertEqual(row['deployment']['profile']['domain'], 'academy.example.org')
+        self.assertEqual(row['deployment']['profile']['workflows_digest'], 'digest-one')
+        self.assertEqual(row['deployment']['exposure_issue'], 41)
+
+    def test_confirming_writes_the_profile_and_files_the_exposure_issue_once(self):
+        self.propose()
+        self.github.return_value.file_issue.return_value = 41
+        view = self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        profile = self.settings.load()['repositories'][0]['deployment']
+        self.assertEqual(profile['strategy'], 'header')
+        self.assertEqual(profile['deploy']['workflow'], 'deploy.yaml')
+        self.assertEqual(profile['domain'], 'academy.example.org')
+        self.assertEqual(profile['workflows_digest'], 'digest-one')
+        self.assertEqual(profile['exposure_issue'], 41)
+        self.assertEqual(view['revision'], digest(self.settings.load()))
+        item, title, body, labels = self.github.return_value.file_issue.call_args.args
+        self.assertEqual(item, {'repo': 'example/project', 'repo_id': 10})
+        self.assertEqual(title, 'Expose the build commit')
+        self.assertIn('X-Build-Commit', body)
+        self.assertEqual(labels, ['forge:deployment'])
+        self.assertNotIn(runtime_config({})['ready_label'], labels)
+        # A second read and confirmation must never file the issue again.
+        self.propose()
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='')
+        self.github.return_value.file_issue.assert_called_once()
+        profile = self.settings.load()['repositories'][0]['deployment']
+        self.assertEqual(profile['exposure_issue'], 41)
+        self.assertEqual(profile['domain'], 'academy.xrpl-commons.org')
+
+    def test_an_observable_repository_confirms_without_filing_an_issue(self):
+        self.propose(exposure={'kind': 'health', 'path': '/health', 'field': 'commit', 'header': None},
+                     proposal=None, strategy='health')
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='')
+        profile = self.settings.load()['repositories'][0]['deployment']
+        self.assertEqual(profile['exposure'], {'kind': 'health', 'path': '/health', 'field': 'commit', 'header': None})
+        self.assertIsNone(profile['exposure_issue'])
+        self.github.return_value.file_issue.assert_not_called()
+
+    def test_rejecting_and_re_reading_only_touch_the_deployment_store(self):
+        self.propose()
+        before = self.settings.load()
+        self.service.deployment(10, digest(before), 'reject', reason='The domain is wrong')
+        self.assertEqual(self.settings.load(), before)
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['deployment']['status'], 'rejected')
+        self.assertEqual(row['deployment']['reason'], 'The domain is wrong')
+        self.assertFalse(row['deployment']['reread_requested'])
+        self.service.deployment(10, digest(before), 'reread')
+        self.assertEqual(self.settings.load(), before)
+        self.assertTrue(self.service.view(10)['repositories'][0]['deployment']['reread_requested'])
+        self.github.return_value.file_issue.assert_not_called()
+
+    def test_a_stale_revision_or_an_absent_proposal_changes_nothing(self):
+        for action, extra in (('confirm', {'domain': ''}), ('reject', {'reason': 'no'}), ('reread', {})):
+            self.propose()
+            with self.assertRaisesRegex(ValueError, 'Repository settings changed'):
+                self.service.deployment(10, 'stale-revision', action, **extra)
+            self.assertEqual(self.service.view(10)['repositories'][0]['deployment']['status'], 'proposed')
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+        with self.assertRaisesRegex(ValueError, 'bare host name'):
+            self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='https://a.example.org/x')
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+        self.service.deployment(10, digest(self.settings.load()), 'reject', reason='The domain is wrong')
+        with self.assertRaisesRegex(ValueError, 'no deployment proposal'):
+            self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='a.example.org')
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+
+    def test_a_refused_settings_write_leaves_the_proposal_confirmable(self):
+        self.propose()
+        with patch.object(type(self.settings), 'save', side_effect=ValueError('Factory reset is in progress')):
+            with self.assertRaisesRegex(ValueError, 'Factory reset is in progress'):
+                self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+        self.assertEqual(self.service.view(10)['repositories'][0]['deployment']['status'], 'proposed')
+        self.github.return_value.file_issue.assert_not_called()
+        self.github.return_value.file_issue.return_value = 7
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        self.assertEqual(self.settings.load()['repositories'][0]['deployment']['exposure_issue'], 7)
+
+    def test_an_unfiled_issue_is_reported_without_losing_the_profile(self):
+        self.propose()
+        self.github.return_value.file_issue.side_effect = GitHubUnavailable('GitHub observation is unconfirmed')
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['deployment']['status'], 'confirmed')
+        self.assertIsNone(row['deployment']['exposure_issue'])
+        self.assertEqual(row['deployment']['error'], 'GitHub observation is unconfirmed')
+
+    def test_guided_setup_cannot_confirm_a_deployment_profile(self):
+        from forge.settings import Settings
+        setup = Settings(self.settings.root / 'setup', client=self.client, clock=self.settings.clock)
+        write_json(setup.path, self.settings.load())
+        self.propose()
+        with self.assertRaisesRegex(ValueError, 'Finish initial Forge setup'):
+            RepositorySetup(setup, github_class=self.github).deployment(
+                10, digest(setup.load()), 'confirm', domain='academy.example.org')
+        self.assertNotIn('deployment', setup.load()['repositories'][0])
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+
     def test_generated_rules_pass_the_real_reader(self):
         from tests.test_repository_rules import RepositoryRuleTests
         payload=ruleset('main')
@@ -197,7 +336,7 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        for path in ['/api/repositories/check','/api/repositories/enable']:
+        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/deployment']:
             h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
             h.do_POST();h.send_error.assert_called_once_with(403)
 
@@ -208,6 +347,30 @@ class RepositoryHTTPTests(unittest.TestCase):
             cls.return_value.download.assert_called_once_with(10,'r')
             cls.return_value.start_check.assert_not_called()
             self.assertIn('attachment',h._send.call_args.args[2]['Content-Disposition'])
+
+    def test_deployment_decisions_carry_one_action_and_the_current_revision(self):
+        with patch('forge.repository_setup.RepositorySetup') as cls:
+            cls.return_value.deployment.return_value={'revision':'new','repositories':[{'id':10}]}
+            for value in ({'repo_id':10,'revision':'r','action':'confirm','domain':'academy.example.org'},
+                          {'repo_id':10,'revision':'r','action':'reject','reason':'The domain is wrong'},
+                          {'repo_id':10,'revision':'r','action':'reread'}):
+                cls.return_value.deployment.reset_mock()
+                h=self.handler('/api/repositories/deployment',value);h.do_POST()
+                cls.return_value.deployment.assert_called_once_with(**value)
+                body=json.loads(h._send.call_args.args[0])
+                self.assertTrue(body['ok']);self.assertEqual(body['revision'],'new')
+                self.assertEqual(body['controls_token'],dashboard.CONTROLS_TOKEN)
+            for value in ({'repo_id':10,'revision':'r','action':'confirm'},
+                          {'repo_id':10,'revision':'r','action':'reject'},
+                          {'repo_id':10,'revision':'r','action':'reread','domain':'academy.example.org'},
+                          {'repo_id':10,'revision':'r','action':'confirm','domain':'a','reason':'b'},
+                          {'repo_id':None,'revision':'r','action':'reread'},
+                          {'repo_id':True,'revision':'r','action':'reread'},
+                          {'repo_id':10,'revision':'r','action':'enable'}):
+                cls.return_value.deployment.reset_mock()
+                h=self.handler('/api/repositories/deployment',value);h.do_POST()
+                cls.return_value.deployment.assert_not_called()
+                self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
 
     def test_enable_accepts_only_one_repository_and_current_revision(self):
         with patch('forge.repository_setup.RepositorySetup') as cls:
