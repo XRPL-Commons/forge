@@ -92,6 +92,8 @@ function summary(role: ColumnRole, cards: CardModel[]): string {
   return [`${working} working`, `${waiting} queued`, ...(between ? [`${between} starting / finishing`] : []), `${slots.value[role] ?? 0} maximum`].join(' · ')
 }
 
+const attentionCount = computed(() => groups.value.attention.length + groups.value.held.length)
+
 const runnerCards = computed(() => [...groups.value.investigating, ...groups.value.internalJobs])
 // Expanded whenever the section holds a job the supervisor last reported as
 // running, so an active investigation is never hidden behind a disclosure.
@@ -214,12 +216,15 @@ async function confirm(reason: string) {
         />
       </section>
 
+      <!-- Issues waiting on a decision stay expanded; a deliberate hold waits
+           as one stack, although the header counts both. -->
       <section id="needs-attention" class="mt-6 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
-        <h2 class="text-sm font-semibold text-white">Needs attention · {{ groups.attention.length }}</h2>
+        <h2 class="text-sm font-semibold text-white">Needs attention · {{ attentionCount }}</h2>
         <div v-if="groups.attention.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
           <IssueCard v-for="card in groups.attention" :key="card.key" :card="card" @stop="ask(STOP, $event)" />
         </div>
-        <p v-else class="mt-2 text-xs text-muted">No issues need your attention.</p>
+        <IssueStack v-if="groups.held.length" class="mt-3" :cards="groups.held" noun="on hold" @stop="ask(STOP, $event)" />
+        <p v-if="!attentionCount" class="mt-2 text-xs text-muted">No issues need your attention.</p>
       </section>
 
       <section id="finishing" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
