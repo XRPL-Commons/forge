@@ -276,7 +276,9 @@ class ContainerRunner:
                         raise ValueError('Worker ownership changed')
                     requested = own[0]['HostConfig']['Memory']
                     containers.remove(own[0])
-            return observe_capacity(requested, containers)
+            # The host reserve is what stays free for the OS, the engine and the
+            # controller; an 8 GB box with three 2 GB workers needs less than 2 GiB.
+            return observe_capacity(requested, containers, reserve=memory_bytes(self.config.get('host_reserve', '2g')))
         except (RunnerError, OSError, ValueError, TypeError, KeyError, UnicodeError):
             return {'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}
 
