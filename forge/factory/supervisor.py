@@ -525,9 +525,10 @@ class Supervisor:
                     _, requirements = self.github.issue({**item, 'number': issue['number']})
                     self.ledger.discover(repo, issue['number'], requirements, hold=hold, title=issue.get('title'))
             except GitHubBudgetExhausted:
-                pass  # Discovery rotates; the next cycle reads the repositories left.
+                # Interrupted mid-repository: leave it unstamped so it is the
+                # first repository read next cycle, resuming where it stopped.
+                break
             except (GitHubUnavailable, ValueError, KeyError) as error:
                 self.errors.append({'repo': repo['name'], 'phase': 'discovery', 'reason': str(error)})
-            finally:
-                with self.ledger.transaction() as data:
-                    data.setdefault('discovery_observed', {})[str(repo['id'])] = self.clock()
+            with self.ledger.transaction() as data:
+                data.setdefault('discovery_observed', {})[str(repo['id'])] = self.clock()
