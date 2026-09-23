@@ -61,6 +61,11 @@ class Supervisor:
                 with self.ledger.transaction() as data:
                     data['issues'][item['key']]['last_observed'] = self.clock()
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
+            # New issues must be found even while the queue is never empty:
+            # dispatch only discovers on an empty queue, so a busy factory
+            # would otherwise stop reading GitHub for new ready issues.
+            if self.discovery_due():
+                self.discover()
             self.dispatch()
         return {'at': self.clock(), 'errors': self.errors, 'capacity': self.capacity,
                 'issues': len(self.ledger.read()['issues'])}
@@ -482,6 +487,14 @@ class Supervisor:
                     and item.get('retry_after', 0) <= self.clock()):
                 return item, None
         return None, None
+
+    DISCOVERY_INTERVAL = 300
+
+    def discovery_due(self):
+        """True when any enabled repository has not been read for new issues in a while."""
+        observed = self.ledger.read().get('discovery_observed', {})
+        repositories = [r for r in self.settings.view()['repositories'] if r.get('dispatch_allowed')]
+        return any(self.clock() - observed.get(str(r['id']), 0) >= self.DISCOVERY_INTERVAL for r in repositories)
 
     def discover(self):
         observed = self.ledger.read().get('discovery_observed', {})
