@@ -20,22 +20,37 @@ def prepare_environment(directory):
     return env
 
 
+# Kept in step with contracts.HEADLINE_LIMIT / PLAIN_LIMIT, which truncate what
+# arrives. The image loads no sibling module, so the numbers live on both sides.
+HEADLINE_LIMIT, PLAIN_LIMIT = 90, 360
+
+
+def role_properties(note):
+    """Role-specific result fields: a fifth role is one line here."""
+    candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
+    return {
+        'build': {},
+        'review': candidate,
+        'audit': {**candidate, 'human_required': {'type': 'string', 'enum': ['required', 'not_required', 'unknown']},
+                  'human_reason': {'type': 'string'}},
+        'recovery': {'pattern': {'type': 'string'}, 'evidence': {'type': 'array', 'items': {'type': 'string'}},
+                     'uncertainty': {'type': 'string'}, 'alternative': {'anyOf': [{'type': 'null'}, {
+                         'type': 'object', 'properties': {k: {'type': 'string'} for k in ('change', 'reason', 'evidence')},
+                         'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]}},
+    }.get(note['role'], {})
+
+
 def schema(note):
     props = {'version': {'type': 'integer', 'enum': [1]},
              'attempt': {'type': 'string', 'enum': [note['id']]},
              'role': {'type': 'string', 'enum': [note['role']]},
              'outcome': {'type': 'string', 'enum': ['pass', 'reject', 'unable', 'wait', 'blocked_environment']},
              'blocker': {'type': ['string', 'null'], 'enum': [None, 'toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence']},
-             'summary': {'type': 'string'}}
-    if note['role'] in ('review', 'audit'):
-        props['candidate'] = {'type': 'string', 'enum': [note['candidate']['key']]}
-    if note['role'] == 'audit':
-        props.update(human_required={'type': 'string', 'enum': ['required', 'not_required', 'unknown']}, human_reason={'type': 'string'})
-    if note['role'] == 'recovery':
-        props.update(pattern={'type': 'string'}, evidence={'type': 'array', 'items': {'type': 'string'}},
-                     uncertainty={'type': 'string'}, alternative={'anyOf': [{'type': 'null'}, {
-                         'type': 'object', 'properties': {k: {'type': 'string'} for k in ('change', 'reason', 'evidence')},
-                         'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]})
+             'summary': {'type': 'string'},
+             # Plain language for a reader who does not read code, in every role.
+             'headline': {'type': 'string', 'maxLength': HEADLINE_LIMIT},
+             'plain': {'type': 'string', 'maxLength': PLAIN_LIMIT}}
+    props.update(role_properties(note))
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 

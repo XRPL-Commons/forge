@@ -96,6 +96,14 @@ describe('reasonText', () => {
     expect(reasonText(issue({ reason: 'blocked_rate_limit' }), job())).toBe('')
   })
 
+  it('uses the plain-language headline as the card note once the worker is done', () => {
+    const summary = { headline: 'Stopped: the tests fail on the login page', plain: 'Signing in broke.', role: 'build', at: now - 60 }
+    const failed = issue({ state: 'failed', reason: 'Assertion failed in tests/login.spec.ts:42', last_summary: summary })
+    expect(reasonText(failed, null)).toBe('Stopped: the tests fail on the login page')
+    // A running worker owns the card; the last outcome's headline is stale there.
+    expect(reasonText(issue({ last_summary: summary }), job())).toBe('')
+  })
+
   it('names who was asked to approve instead of repeating that a review is needed', () => {
     const waiting = issue({ state: 'approval_needed', reason: 'Waiting for a human review' })
     expect(reasonText(waiting, null)).toBe('Waiting for a human review')

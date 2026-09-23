@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { STATUS_NAMES, issuePath, rowAction, type IssueActionStatus, type IssueRow } from '~/utils/issues'
+import { STATUS_NAMES, issuePath, rowAction, rowNote, type IssueActionStatus, type IssueRow } from '~/utils/issues'
 
 // One row of the issues list. Every row is a link to the issue's own route —
 // there is no second detail view — and the pill on the right says what
@@ -8,6 +8,8 @@ const props = defineProps<{ row: IssueRow; pending?: IssueActionStatus | null }>
 
 const to = computed(() => issuePath(props.row.key))
 const action = computed(() => rowAction(props.row, props.pending))
+// The headline Forge wrote for this issue, or the older explanation line.
+const note = computed(() => rowNote(props.row))
 const tone = computed(() => {
   if (props.row.status === 'attention') return 'text-amber-200'
   if (props.row.status === 'working' || props.row.status === 'completed') return 'text-mint-200'
@@ -27,7 +29,7 @@ const tone = computed(() => {
         <span :class="tone" class="flex items-center gap-1.5">
           <span class="inline-block size-2 rounded-full bg-current" aria-hidden="true" />{{ STATUS_NAMES[row.status] }}
         </span>
-        <span class="text-muted">{{ row.explanation }}</span>
+        <span class="text-muted">{{ note }}</span>
       </p>
       <p v-if="row.pull_requests.length" class="mt-1 text-xs text-sky-200">Pull request #{{ row.pull_requests[0]!.number }}</p>
     </div>

@@ -95,7 +95,8 @@ class CycleTest(unittest.TestCase):
         return jobs[0]
     def finish(self, role, outcome='pass', human='not_required'):
         job = self.active(); self.assertEqual(job['role'], role)
-        report = {'version': 1, 'attempt': job['id'], 'role': role, 'outcome': outcome, 'summary': 'Verified findings'}
+        report = {'version': 1, 'attempt': job['id'], 'role': role, 'outcome': outcome, 'summary': 'Verified findings',
+                  'headline': 'The step finished', 'plain': 'The worker finished this step. Forge moves the issue on.'}
         if role in ('review', 'audit'): report['candidate'] = job['candidate']['key']
         if role == 'audit': report.update(human_required=human, human_reason='Policy reason')
         if role == 'recovery': report.update(pattern='logic', evidence=['check failure'], uncertainty='', alternative=None)

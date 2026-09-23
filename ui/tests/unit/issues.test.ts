@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
   decisionNeedsReason, emptyState, freshnessText, listParams, preselectedReviewers,
-  reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction,
+  reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -14,7 +14,7 @@ const list = (over: Partial<IssueListResponse> = {}): IssueListResponse => ({
 const row = (over: Partial<IssueRow> = {}): IssueRow => ({
   key: '1:610', repo: 'XRPL-Commons/academy', repo_id: 1, number: 610, title: 'Make course navigation easier',
   content_hash: 'h', body_truncated: false, state: 'open', updated_at: null, labels: [], assignees: [],
-  status: 'backlog', explanation: 'Not queued for Forge.', actions: ['queue'], setup_needed: false,
+  status: 'backlog', summary: null, explanation: 'Not queued for Forge.', actions: ['queue'], setup_needed: false,
   environment_blocker: null, pull_requests: [], dependencies: [], fresh: true, revision: 'current',
   setup_url: '/settings/repository?repo_id=1', active: null, ...over,
 })
@@ -139,8 +139,8 @@ describe('decisionNeedsReason', () => {
 describe('reviewRows', () => {
   it('names the role, the outcome and the lead sentence of each review', () => {
     const rows = reviewRows([
-      { role: 'review', outcome: 'passed', summary: 'The change is correct. It adds tests for the redaction helper and keeps the public API stable.' },
-      { role: 'audit', outcome: 'changes_requested', summary: 'The install token is still written to the build log.' },
+      { role: 'review', outcome: 'pass', summary: 'The change is correct. It adds tests for the redaction helper and keeps the public API stable.' },
+      { role: 'audit', outcome: 'reject', summary: 'The install token is still written to the build log.' },
     ])
     expect(rows).toEqual([
       {
@@ -150,7 +150,7 @@ describe('reviewRows', () => {
         more: true,
       },
       {
-        role: 'audit', label: 'Security review', outcome: 'attention', outcomeLabel: 'Needs attention',
+        role: 'audit', label: 'Security review', outcome: 'rejected', outcomeLabel: 'Rejected',
         lead: 'The install token is still written to the build log.',
         summary: 'The install token is still written to the build log.',
         more: false,
@@ -158,9 +158,13 @@ describe('reviewRows', () => {
     ])
   })
 
-  it('treats any outcome that is not "passed" as needing attention', () => {
+  it('names the reviewer’s own verdict, not the issue’s status', () => {
+    expect(reviewRows([{ role: 'review', outcome: 'unable', summary: 'The checkout would not build.' }])[0])
+      .toMatchObject({ outcome: 'unable', outcomeLabel: 'Could not review' })
+    expect(reviewRows([{ role: 'audit', outcome: 'changes_requested', summary: 'The token is logged.' }])[0])
+      .toMatchObject({ outcome: 'rejected', outcomeLabel: 'Rejected' })
     expect(reviewRows([{ role: 'review', outcome: null, summary: 'No verdict' }])[0]).toMatchObject({
-      outcome: 'attention', outcomeLabel: 'Needs attention', lead: 'No verdict', more: false,
+      outcome: 'unknown', outcomeLabel: 'No verdict', lead: 'No verdict', more: false,
     })
   })
 
@@ -211,5 +215,46 @@ describe('reviewer control', () => {
     expect(reviewRequestText({ logins: ['a'], at: 1790000000 }, 0)).toBe('Review requested from @a')
     expect(reviewRequestText(null, 1790000000)).toBe('')
     expect(reviewRequestText({ logins: [], at: 1790000000 }, 1790000000)).toBe('')
+  })
+})
+
+describe('summaryBlock', () => {
+  const detail = (over = {}) => ({
+    summary: { headline: 'Waiting for a person to approve the pull request', plain: 'The change is finished and needs a human approval before it can be merged. The audit says the deployment claims were not verified. Approve it on GitHub.' },
+    explanation: 'The pull request needs a human review.',
+    environment_blocker: null,
+    ...over,
+  })
+
+  it('leads with the headline and the plain description, and keeps the rest for Details', () => {
+    expect(summaryBlock(detail())).toEqual({
+      headline: 'Waiting for a person to approve the pull request',
+      plain: 'The change is finished and needs a human approval before it can be merged. The audit says the deployment claims were not verified. Approve it on GitHub.',
+      details: 'The pull request needs a human review.',
+    })
+  })
+
+  it('collects the environment blocker into Details, never into the description', () => {
+    const block = summaryBlock(detail({ environment_blocker: 'Container exceeded its memory limit at /work/repository.' }))
+    expect(block!.details).toBe('The pull request needs a human review. Container exceeded its memory limit at /work/repository.')
+    expect(block!.plain).not.toContain('/work/repository')
+  })
+
+  it('falls back to the status line when Forge sent no summary', () => {
+    expect(summaryBlock(detail({ summary: null }))).toEqual({
+      headline: 'The pull request needs a human review.',
+      plain: '',
+      details: 'The pull request needs a human review.',
+    })
+    expect(summaryBlock(null)).toBeNull()
+    expect(summaryBlock({ summary: null, explanation: '', environment_blocker: null })).toBeNull()
+  })
+})
+
+describe('rowNote', () => {
+  it('prefers the headline and falls back to the explanation', () => {
+    expect(rowNote(row({ summary: { headline: 'Built and waiting for review', plain: 'x' } }))).toBe('Built and waiting for review')
+    expect(rowNote(row())).toBe('Not queued for Forge.')
+    expect(rowNote(row({ summary: { headline: 'w'.repeat(200), plain: '' } })).length).toBeLessThanOrEqual(97)
   })
 })

@@ -4,6 +4,7 @@
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
 import { clampTitle, reviewerMentions } from './format'
 import type { OnboardingView } from './onboarding'
+import type { IssueSummary } from './issues'
 
 export type JobRole = 'build' | 'review' | 'audit' | 'recovery' | 'merge'
 export type ColumnRole = 'build' | 'review' | 'audit'
@@ -25,6 +26,8 @@ export interface LedgerIssueView {
   key: string; repo_id: number; repo: string; number: number; title: string
   state: IssueState; reason: string | null; active: string | null; failure_count: number
   candidate?: { pr?: number } | null
+  // The plain-language card of the last outcome (contracts §2, LedgerIssueView).
+  last_summary?: IssueSummary | null
   reviewers_requested?: { logins: string[]; at: number } | null
   prerequisite_hold?: { state: string } | true | null
   history?: LedgerEvent[]
@@ -136,6 +139,10 @@ export function reasonText(issue: LedgerIssueView | null, job: JobView | null): 
     return `${(provider && PROVIDER_LABELS[provider]) || 'A coding account'} needs sign-in. Queued for another available coding account.`
   }
   if (reason === 'blocked_rate_limit') return 'Coding account usage limit reached. Forge will retry automatically.'
+  // What Forge last decided, in the words the issue page leads with. While a
+  // worker is running that card belongs to the previous step, so it waits.
+  const headline = (issue?.last_summary?.headline ?? '').trim()
+  if (!job && headline) return clampTitle(headline)
   return reason
 }
 

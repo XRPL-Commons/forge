@@ -3,8 +3,8 @@ import { ForgeApiError } from '~/composables/useForgeApi'
 import type { FactoryView, JobView } from '~/utils/factory'
 import {
   ACTION_LABELS, STATUS_NAMES, eventLabel, issuePath, lastAction, pendingAction,
-  preselectedReviewers, reviewRequestText, reviewRows, reviewerOptions, reviewerReason,
-  type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
+  preselectedReviewers, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, summaryBlock,
+  type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse, type ReviewOutcome,
 } from '~/utils/issues'
 
 // The one detail view: /issues/<key> owns the issue's decisions and its
@@ -93,11 +93,12 @@ const message = computed(() => {
   return submitted.value
 })
 
-const explanation = computed(() => {
-  const issue = detail.value
-  if (!issue) return ''
-  return [issue.explanation, issue.environment_blocker].filter(Boolean).join(' ')
-})
+// What the page leads with: one headline sentence, then at most three
+// sentences. Forge's own status line and the worker's prose move into Details,
+// so nobody has to open it to learn where this issue stands or why.
+const summary = computed(() => summaryBlock(detail.value))
+const detailsOpen = ref(false)
+const hasDetails = computed(() => !!summary.value?.details || reviews.value.length > 0)
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
 function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
@@ -156,9 +157,13 @@ async function assignReviewer() {
   await poll.refresh()
 }
 
-// Reviews are compact rows — outcome, role, the lead sentence — so the
-// decisions above them stay in view; "More" reveals the worker's full text.
+// Reviews are compact rows — the verdict, the role, the lead sentence — inside
+// Details; "More" reveals the worker's full text. The chip is that reviewer's
+// verdict, never the issue's status, which the badge in the title line carries.
 const reviews = computed(() => reviewRows(detail.value?.reviews))
+const REVIEW_COLORS: Record<ReviewOutcome, 'success' | 'error' | 'warning' | 'neutral'> = {
+  passed: 'success', rejected: 'error', unable: 'warning', unknown: 'neutral',
+}
 const expanded = ref(new Set<string>())
 function toggleReview(role: string) {
   const next = new Set(expanded.value)
@@ -261,7 +266,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <h1 id="issue-title" class="text-2xl font-semibold text-white">{{ detail.title }}</h1>
         <UBadge color="neutral" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
       </div>
-      <p class="mt-2 text-sm text-muted">{{ explanation }}</p>
+      <p v-if="summary?.headline" id="issue-headline" class="mt-2 text-base font-semibold text-white">{{ summary.headline }}</p>
+      <p v-if="summary?.plain" id="issue-plain" class="mt-1 text-sm text-muted">{{ summary.plain }}</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="message" id="detail-message" role="status" class="mt-2 text-sm text-amber-200">{{ message }}</p>
 
@@ -346,25 +352,37 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
 
       <p v-if="assignError" role="alert" class="mt-2 text-sm text-rose-200">{{ assignError }}</p>
 
-      <div v-if="reviews.length" id="issue-reviews" class="mt-4 flex flex-col gap-2">
-        <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
-          <div class="flex flex-wrap items-center gap-2">
-            <UBadge :color="row.outcome === 'passed' ? 'success' : 'warning'" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>
-            <span class="text-sm font-semibold text-white">{{ row.label }}</span>
-            <UButton
-              v-if="row.more"
-              size="xs"
-              color="neutral"
-              variant="ghost"
-              class="ml-auto"
-              @click="toggleReview(row.role)"
-            >{{ expanded.has(row.role) ? 'Less' : 'More' }}</UButton>
-          </div>
-          <p class="mt-1 text-sm text-muted" :class="expanded.has(row.role) ? '' : 'line-clamp-2'">
-            {{ expanded.has(row.role) ? row.summary : row.lead }}
-          </p>
-        </div>
-      </div>
+      <!-- Everything the worker wrote stays available, one click away. -->
+      <section v-if="hasDetails" id="issue-details" class="mt-4 rounded-xl border border-line bg-bg p-3">
+        <UCollapsible v-model:open="detailsOpen">
+          <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
+            Details
+            <SelectChevron :class="detailsOpen ? 'rotate-180' : ''" />
+          </UButton>
+          <template #content>
+            <p v-if="summary?.details" id="issue-explanation" class="mt-2 text-sm text-muted">{{ summary.details }}</p>
+            <div v-if="reviews.length" id="issue-reviews" class="mt-3 flex flex-col gap-2">
+              <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <UBadge :color="REVIEW_COLORS[row.outcome]" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>
+                  <span class="text-sm font-semibold text-white">{{ row.label }}</span>
+                  <UButton
+                    v-if="row.more"
+                    size="xs"
+                    color="neutral"
+                    variant="ghost"
+                    class="ml-auto"
+                    @click="toggleReview(row.role)"
+                  >{{ expanded.has(row.role) ? 'Less' : 'More' }}</UButton>
+                </div>
+                <p class="mt-1 text-sm text-muted" :class="expanded.has(row.role) ? '' : 'line-clamp-2'">
+                  {{ expanded.has(row.role) ? row.summary : row.lead }}
+                </p>
+              </div>
+            </div>
+          </template>
+        </UCollapsible>
+      </section>
 
       <section class="mt-5 rounded-xl border border-line bg-panel p-4">
         <MarkdownBody :html="html ?? ''" />
