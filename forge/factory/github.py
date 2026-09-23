@@ -5,8 +5,11 @@ from datetime import datetime
 import time
 from urllib.parse import quote
 
-from ..app_access import AppClient, AccessError, ROLE_PERMISSIONS
+from ..app_access import AppClient, AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
 from .contracts import SHA, candidate, digest, submission
+
+# Ancestry between two recorded commits never changes; one process asks once.
+COMPARISONS = {}
 
 
 class GitHubUnavailable(RuntimeError):
@@ -61,12 +64,12 @@ class GitHub:
         self.tokens[key] = (token, self.clock() + 3000)
         return token
 
-    def call(self, role, repo, method, suffix, payload=None):
+    def call(self, role, repo, method, suffix, payload=None, *, extra=None):
         if time.monotonic() >= getattr(self, 'deadline', float('inf')):
             raise GitHubUnavailable('Cycle observation budget reached; resume next cycle')
         try:
             return self.client.request(method, f"/repos/{repo['repo']}" + suffix,
-                                       self.token(role, repo['repo_id']), payload)
+                                       self.token(role, repo['repo_id'], extra=extra), payload)
         except AccessError as error:
             raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
 
@@ -124,6 +127,43 @@ class GitHub:
         if type(number) is not int or number <= 0:
             raise GitHubUnavailable('The filed deployment issue could not be verified')
         return number
+
+    def deployments(self, item, environment, limit=5):
+        """Newest first, on the optional grant the caller has already verified."""
+        suffix = f'/deployments?per_page={int(limit)}'
+        if environment:
+            suffix += '&environment=' + quote(str(environment), safe='')
+        rows = self.call('controller', item, 'GET', suffix, extra=OPTIONAL_PERMISSIONS['controller'])
+        if not isinstance(rows, list):
+            raise GitHubUnavailable('GitHub deployment inventory is malformed')
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get('id')) is not int
+                    or not isinstance(row.get('sha'), str) or not SHA.fullmatch(row['sha'])):
+                raise GitHubUnavailable('GitHub deployment inventory is malformed')
+        return sorted(rows, key=lambda row: row['id'], reverse=True)
+
+    def deployment_statuses(self, item, deployment_id):
+        rows = self.call('controller', item, 'GET', f'/deployments/{int(deployment_id)}/statuses?per_page=5',
+                         extra=OPTIONAL_PERMISSIONS['controller'])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get('state'), str)
+                                             for row in rows):
+            raise GitHubUnavailable('GitHub deployment statuses are malformed')
+        return rows
+
+    def contains(self, item, ancestor, descendant):
+        """Is the merge in the history of the observed commit? Asked once per pair."""
+        key = (item['repo_id'], ancestor, descendant)
+        if key in COMPARISONS:
+            return COMPARISONS[key]
+        value = self.call('controller', item, 'GET',
+                          f"/compare/{quote(ancestor, safe='')}...{quote(descendant, safe='')}")
+        status = (value or {}).get('status')
+        if status not in ('ahead', 'behind', 'identical', 'diverged'):
+            raise GitHubUnavailable('GitHub commit comparison is malformed')
+        if len(COMPARISONS) > 4096:
+            COMPARISONS.clear()
+        COMPARISONS[key] = status in ('ahead', 'identical')
+        return COMPARISONS[key]
 
     def issues(self, repo):
         return [i for i in self.pages('controller', repo, '/issues?state=open&labels=' + quote(self.runtime['ready_label']))

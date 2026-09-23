@@ -85,6 +85,18 @@ def requests(root, ledger):
         IssueActions(root, ledger).process()
 
 
+def deployments(root):
+    """The last observation per repository; a corrupt store never fails the page."""
+    try:
+        rows = read_json(Path(root) / 'state/deployments.json')['repositories']
+        return {key: {'name': row.get('name'), **{field: row['observed'].get(field)
+                                                  for field in ('live', 'deploy', 'error')}}
+                for key, row in rows.items()
+                if isinstance(row, dict) and isinstance(row.get('observed'), dict)}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return {}
+
+
 def view(root):
     ledger = Ledger(Path(root) / 'state' / 'factory')
     data = ledger.read()
@@ -94,6 +106,8 @@ def view(root):
         row = {**item, 'failure_count': ledger.failure_count(item)}
         row['history'] = [e for e in data['events'] if e['issue'] == item['key']][-50:]
         row['failures'] = [{k: v for k, v in f.items() if k != 'evidence'} for f in item['failures']]
+        row.setdefault('deployed', None)
+        row.setdefault('deploy_failed', None)
         issues.append(row)
     jobs = [{k: v for k, v in j.items() if k not in ('capture', 'observation', 'history', 'failure')}
             for j in data['jobs'].values() if not j['cleanup'] or j['outcome'] is None]
@@ -113,6 +127,7 @@ def view(root):
     active = (Path(root) / 'state' / 'factory-v2.enabled').exists()
     operator = overview(data, repositories, runtime, observation, active, time.time())
     return {'operator': operator, 'repositories': repositories, 'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': runtime,
+            'deployments': deployments(root),
             'runtime_revision': digest(runtime), 'active': active}
 
 

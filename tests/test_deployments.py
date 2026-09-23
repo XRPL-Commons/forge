@@ -546,5 +546,306 @@ class ServiceHookTests(unittest.TestCase):
         self.assertEqual(data['version'], 1)
 
 
+PROFILE = {'strategy': 'health',
+           'deploy': {'workflow': 'deploy.yaml', 'environment': 'production', 'trigger': 'push:main'},
+           'domain': 'site.example',
+           'exposure': {'kind': 'health', 'path': '/health', 'field': 'commit', 'header': None},
+           'workflows_digest': 'digest-one', 'confirmed_at': 900, 'exposure_issue': None}
+MERGE = 'b' * 40
+LIVE = 'c' * 40
+
+
+def copy_profile():
+    from copy import deepcopy
+    return deepcopy(PROFILE)
+
+
+class ObservationGitHub:
+    """Only the four reads observation is allowed to make."""
+
+    def __init__(self):
+        self.rows, self.statuses, self.compared, self.tokens = [], {}, [], []
+        self.pulls, self.ancestors, self.token_error, self.error = {}, set(), None, None
+
+    def token(self, role, repo_id, *, worker=False, extra=None):
+        self.tokens.append((role, repo_id, worker, extra))
+        if self.token_error and extra:
+            raise self.token_error
+        return 'synthetic-observation-token-not-a-real-credential'
+
+    def deployments(self, item, environment, limit=5):
+        if self.error:
+            raise self.error
+        return [dict(row) for row in self.rows if row.get('environment', environment) == environment][:limit]
+
+    def deployment_statuses(self, item, deployment_id):
+        return [dict(row) for row in self.statuses.get(deployment_id, [])]
+
+    def contains(self, item, ancestor, descendant):
+        self.compared.append((item['repo_id'], ancestor, descendant))
+        return (ancestor, descendant) in self.ancestors
+
+    def pr(self, item, number):
+        return dict(self.pulls[number])
+
+
+class ObservationTests(unittest.TestCase):
+    """A verdict comes from a commit Forge read itself or from a deployment status."""
+
+    def setUp(self):
+        from forge.factory.ledger import Ledger
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.now = 1000.0
+        self.github = ObservationGitHub()
+        self.ledger = Ledger(self.root / 'state/factory', clock=lambda: self.now)
+        self.settings = FakeSettings([{'id': 7, 'name': 'example/site', 'enabled': True,
+                                       'access_ready': True, 'dispatch_allowed': True,
+                                       'deployment': {'status': 'confirmed', 'profile': copy_profile()}}])
+        self.live, self.live_error, self.reads = None, None, []
+
+    def reader(self, url, *, kind, field=None, header=None):
+        self.reads.append((url, kind, field, header))
+        if self.live_error:
+            raise self.live_error
+        return self.live
+
+    def deployments(self):
+        return Deployments(self.root, runner=None, github=self.github,
+                           settings=self.settings, clock=lambda: self.now)
+
+    def observe(self):
+        return self.deployments().observe(self.github, self.ledger, self.reader)
+
+    def profile(self, **fields):
+        self.settings.rows[0]['deployment']['profile'].update(fields)
+
+    def merged(self, number=3, *, merge=MERGE, pr=2):
+        key = self.ledger.discover({'id': 7, 'name': 'example/site'}, number, 'requirements')
+        with self.ledger.transaction() as data:
+            candidate = {'pr': pr, 'head': 'a' * 40}
+            if merge:
+                candidate['merge_commit'] = merge
+            data['issues'][key].update(state='merged', candidate=candidate)
+        return key
+
+    def issue(self, key):
+        return self.ledger.read()['issues'][key]
+
+    def entry(self, repo_id=7):
+        return self.deployments().read()['repositories'][str(repo_id)]
+
+    def deployment(self, sha, state, *, identifier=5, run_url='https://github.com/example/site/runs/1'):
+        self.github.rows = [{'id': identifier, 'sha': sha, 'environment': 'production', 'created_at': '2026-09-24T10:00:00Z'}]
+        self.github.statuses = {identifier: [{'state': state, 'created_at': '2026-09-24T10:05:00Z', 'log_url': run_url}]}
+
+    def test_a_live_commit_equal_to_the_merge_marks_the_issue_deployed(self):
+        key = self.merged()
+        self.live = MERGE
+        self.assertEqual(self.observe(), [])
+        self.assertEqual(self.issue(key)['deployed'], {'commit': MERGE, 'at': self.now, 'via': 'live'})
+        self.assertEqual(self.reads, [('https://site.example/health', 'health', 'commit', None)])
+        self.assertEqual(self.entry()['observed']['live'], {'commit': MERGE, 'at': self.now})
+        self.assertFalse(self.github.compared)
+        self.assertIn('deployed', [e['kind'] for e in self.ledger.read()['events']])
+        # A verdict is recorded once; a later cycle neither rewrites nor re-announces it.
+        self.now += 60
+        self.observe()
+        self.assertEqual(self.issue(key)['deployed']['at'], 1000.0)
+        self.assertEqual(sum(e['kind'] == 'deployed' for e in self.ledger.read()['events']), 1)
+
+    def test_a_short_live_commit_still_matches_its_merge(self):
+        key = self.merged()
+        self.live = MERGE[:7]
+        self.observe()
+        self.assertEqual(self.issue(key)['deployed']['via'], 'live')
+        self.assertFalse(self.github.compared)
+
+    def test_a_live_commit_ahead_of_the_merge_marks_the_issue_deployed(self):
+        key = self.merged()
+        self.live = LIVE
+        self.github.ancestors.add((MERGE, LIVE))
+        self.observe()
+        self.assertEqual(self.github.compared, [(7, MERGE, LIVE)])
+        self.assertEqual(self.issue(key)['deployed'], {'commit': LIVE, 'at': self.now, 'via': 'live'})
+
+    def test_a_live_commit_without_the_merge_leaves_the_issue_waiting(self):
+        key = self.merged()
+        self.live = LIVE
+        self.assertEqual(self.observe(), [])
+        self.assertIsNone(self.issue(key).get('deployed'))
+        self.assertIsNone(self.issue(key).get('deploy_failed'))
+
+    def test_a_successful_deployment_containing_the_merge_marks_it_deployed(self):
+        key = self.merged()
+        self.profile(exposure={'kind': 'none', 'path': None, 'field': None, 'header': None}, domain=None)
+        self.deployment(LIVE, 'success')
+        self.github.ancestors.add((MERGE, LIVE))
+        self.assertEqual(self.observe(), [])
+        self.assertFalse(self.reads)
+        self.assertEqual(self.issue(key)['deployed'], {'commit': LIVE, 'at': self.now, 'via': 'github'})
+        self.assertEqual(self.entry()['observed']['deploy'],
+                         {'sha': LIVE, 'state': 'success', 'at': '2026-09-24T10:05:00Z',
+                          'run_url': 'https://github.com/example/site/runs/1'})
+        from forge.app_access import OPTIONAL_PERMISSIONS
+        self.assertIn(('controller', 7, False, OPTIONAL_PERMISSIONS['controller']), self.github.tokens)
+
+    def test_a_pending_deployment_is_not_a_verdict(self):
+        key = self.merged()
+        self.deployment(LIVE, 'in_progress')
+        self.github.ancestors.add((MERGE, LIVE))
+        self.observe()
+        self.assertIsNone(self.issue(key).get('deployed'))
+        self.assertIsNone(self.issue(key).get('deploy_failed'))
+
+    def test_a_failed_deployment_is_recorded_until_a_later_success(self):
+        key = self.merged()
+        self.deployment(LIVE, 'failure')
+        self.github.ancestors.add((MERGE, LIVE))
+        self.observe()
+        self.assertEqual(self.issue(key)['deploy_failed'],
+                         {'sha': LIVE, 'at': self.now, 'run_url': 'https://github.com/example/site/runs/1'})
+        self.assertIsNone(self.issue(key).get('deployed'))
+        self.now += 60
+        self.deployment(LIVE, 'success', identifier=6)
+        self.observe()
+        self.assertEqual(self.issue(key)['deployed']['via'], 'github')
+        self.assertIsNone(self.issue(key)['deploy_failed'])
+
+    def test_a_deployment_that_predates_the_merge_says_nothing_about_it(self):
+        key = self.merged()
+        self.deployment('d' * 40, 'failure')
+        self.observe()
+        self.assertIsNone(self.issue(key).get('deploy_failed'))
+        self.assertEqual(self.github.compared, [(7, MERGE, 'd' * 40)])
+        self.github.rows = []
+        self.observe()
+        self.assertIsNone(self.entry()['observed']['deploy'])
+
+    def test_a_domain_failure_is_reported_and_retried_with_a_backoff(self):
+        from forge.factory.live import LiveUnavailable
+        key = self.merged()
+        self.live_error = LiveUnavailable('The deployment did not answer in time')
+        for _ in range(3):
+            self.assertEqual(self.observe(), [{'repo': 'example/site',
+                                               'reason': 'The deployment did not answer in time'}])
+            self.now += 60
+        self.assertEqual(len(self.reads), 3)
+        self.assertIsNone(self.issue(key).get('deployed'))
+        self.assertEqual(self.entry()['observed']['error'], 'The deployment did not answer in time')
+        # Three consecutive failures earn a ten-minute pause, not a read every cycle.
+        self.now += 60
+        self.observe()
+        self.assertEqual(len(self.reads), 3)
+        self.now += 600
+        self.live_error, self.live = None, MERGE
+        self.observe()
+        self.assertEqual(len(self.reads), 4)
+        self.assertEqual(self.issue(key)['deployed']['via'], 'live')
+        self.assertIsNone(self.entry()['observed']['error'])
+
+    def test_a_repository_without_a_confirmed_profile_is_never_observed(self):
+        key = self.merged()
+        self.settings.rows[0]['deployment'] = {'status': 'proposed', 'profile': None}
+        self.assertEqual(self.observe(), [])
+        self.assertFalse(self.reads)
+        self.assertFalse(self.github.tokens)
+        self.assertFalse(self.deployments().read()['repositories'])
+        self.assertIsNone(self.issue(key).get('deployed'))
+
+    def test_a_disabled_repository_is_never_observed(self):
+        self.merged()
+        self.settings.rows[0]['enabled'] = False
+        self.assertEqual(self.observe(), [])
+        self.assertFalse(self.reads)
+
+    def test_a_refused_deployments_token_never_stops_the_domain_read(self):
+        key = self.merged()
+        self.github.token_error = GitHubUnavailable('Role credential could not be issued for this repository')
+        self.live = MERGE
+        errors = self.observe()
+        self.assertEqual(errors, [{'repo': 'example/site',
+                                   'reason': 'GitHub deployments need the recommended permission'}])
+        self.assertTrue(self.reads)
+        self.assertEqual(self.issue(key)['deployed']['via'], 'live')
+
+    def test_an_unreadable_deployments_api_is_recorded_per_repository(self):
+        self.merged()
+        self.github.error = GitHubUnavailable('GitHub observation or publication is unconfirmed')
+        self.observe()
+        self.assertEqual(self.entry()['observed']['error'], 'GitHub observation or publication is unconfirmed')
+        self.assertTrue(self.reads)
+
+    def test_the_merge_commit_is_read_from_the_pull_request_once(self):
+        key = self.merged(merge=None)
+        self.github.pulls[2] = {'number': 2, 'merged': True, 'merge_commit_sha': MERGE}
+        self.live = MERGE
+        self.observe()
+        self.assertEqual(self.issue(key)['candidate']['merge_commit'], MERGE)
+        self.github.pulls.clear()  # A second cycle must not need the PR again.
+        self.now += 60
+        self.observe()
+        self.assertEqual(self.issue(key)['deployed']['via'], 'live')
+
+    def test_an_unmerged_pull_request_yields_no_verdict(self):
+        key = self.merged(merge=None)
+        self.github.pulls[2] = {'number': 2, 'merged': False, 'merge_commit_sha': None}
+        self.live = MERGE
+        self.observe()
+        self.assertIsNone(self.issue(key).get('deployed'))
+        self.assertIsNone(self.issue(key)['candidate'].get('merge_commit'))
+
+    def test_only_merged_issues_are_ever_marked_deployed(self):
+        key = self.ledger.discover({'id': 7, 'name': 'example/site'}, 4, 'requirements')
+        self.assertFalse(self.ledger.deployed(key, {'commit': MERGE, 'via': 'live'}))
+        self.assertFalse(self.ledger.deploy_failed(key, {'sha': MERGE, 'run_url': None}))
+        self.assertIsNone(self.issue(key).get('deployed'))
+
+    def test_another_repository_merge_is_never_judged_by_this_domain(self):
+        key = self.ledger.discover({'id': 8, 'name': 'example/api'}, 9, 'requirements')
+        with self.ledger.transaction() as data:
+            data['issues'][key].update(state='merged', candidate={'pr': 4, 'merge_commit': MERGE})
+        self.live = MERGE
+        self.observe()
+        self.assertIsNone(self.issue(key).get('deployed'))
+
+    def test_the_observation_stops_at_the_cycle_budget(self):
+        import time as clock
+        self.merged()
+        self.github.deadline = clock.monotonic() - 1
+        self.assertEqual(self.observe(), [])
+        self.assertFalse(self.reads)
+
+    def test_the_supervisor_records_deployment_errors_without_failing_its_cycle(self):
+        from forge.factory.config import validate
+        from forge.factory.ledger import Ledger
+        from forge.factory.live import LiveUnavailable
+        from forge.factory.supervisor import Supervisor
+        self.settings.root = self.root
+        self.settings.admission = lambda repo: {'allowed': True}
+        self.live_error = LiveUnavailable('The deployment did not answer in time')
+        config = validate({'enabled': False, 'image': 'sha256:' + 'a' * 64, 'harness_argv': ['/adapter']})
+        supervisor = Supervisor(Ledger(self.root / 'state/factory'), None, self.github,
+                                self.settings, config, clock=lambda: self.now)
+        with patch('forge.factory.live.read_commit', self.reader):
+            observation = supervisor.cycle()
+        self.assertEqual(observation['errors'], [{'repo': 'example/site', 'phase': 'deployment',
+                                                  'reason': 'The deployment did not answer in time'}])
+        self.assertTrue(self.reads)
+
+    def test_the_factory_view_carries_the_deployment_verdicts(self):
+        from forge.factory.control import deployments as view_deployments
+        key = self.merged()
+        self.live = MERGE
+        self.observe()
+        rows = view_deployments(self.root)
+        self.assertEqual(rows, {'7': {'name': 'example/site', 'live': {'commit': MERGE, 'at': self.now},
+                                      'deploy': None, 'error': None}})
+        (self.root / 'state/deployments.json').write_text('{"repositories": ["broken"]}')
+        self.assertEqual(view_deployments(self.root), {})
+        (self.root / 'state/deployments.json').write_text('not json')
+        self.assertEqual(view_deployments(self.root), {})
+
+
 if __name__ == '__main__':
     unittest.main()

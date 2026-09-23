@@ -11,8 +11,11 @@ import re
 import time
 import uuid
 
+from .app_access import OPTIONAL_PERMISSIONS
 from .state import AtomicStore, StateError
+from .factory.contracts import SHA
 from .factory.github import GitHubUnavailable
+from .factory.live import LiveUnavailable
 from .factory.runner import RunnerCapacity, RunnerError
 
 STATUSES = ('idle', 'running', 'proposed', 'confirmed', 'rejected', 'failed')
@@ -20,6 +23,7 @@ STRATEGIES = ('github_deployments', 'health', 'header', 'unobservable')
 OUTCOMES = ('pass', 'reject', 'unable', 'wait', 'blocked_environment')
 PROFILE = ('strategy', 'deploy', 'domain', 'exposure', 'commit_source', 'proposal')
 CAPACITY = 'Worker capacity was not available in time; re-read deployment to retry'
+PERMISSION = 'GitHub deployments need the recommended permission'
 # A domain is later fetched over the network: accept a bare host, never a URL.
 HOST = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
                   r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+')
@@ -74,6 +78,8 @@ class Deployments:
 
     TIMEOUT = 900
     DIGEST_INTERVAL = 1800
+    BACKOFF = 600
+    FAILURE_LIMIT = 3
 
     def __init__(self, root, *, runner, github, settings, clock=time.time):
         self.root = Path(root)
@@ -85,7 +91,7 @@ class Deployments:
         return {'name': name, 'status': 'idle', 'workflows_digest': None, 'head': None, 'job': None,
                 'proposal': None, 'summary': None, 'reason': None, 'error': None,
                 'observed_at': None, 'checked_at': 0, 'reread_requested': False, 'observation': None,
-                'exposure_issue': None}
+                'exposure_issue': None, 'observed': None}
 
     def read(self):
         """The supervisor reads this store every cycle; a read never writes it."""
@@ -207,6 +213,110 @@ class Deployments:
                       summary=None, reason=None, observation=None)
             self.drive(str(row['id']))
             return  # One strategist at a time; the next repository waits a cycle.
+
+    def observe(self, github, ledger, reader):
+        """One bounded read per confirmed profile, then a verdict per merged issue."""
+        errors = []
+        for row in self.settings.view()['repositories']:
+            profile = (row.get('deployment') or {}).get('profile')
+            if not profile or not row['enabled']:
+                continue
+            if time.monotonic() >= getattr(github, 'deadline', float('inf')):
+                break  # The cycle's observation budget is spent; resume next cycle.
+            entry = self.read()['repositories'].get(str(row['id'])) or {}
+            observed = self.read_live(github, reader, row, profile, entry.get('observed') or {})
+            self.save(row['id'], row['name'], observed=observed)
+            if observed['error']:
+                errors.append({'repo': row['name'], 'reason': observed['error']})
+            errors.extend(self.verdicts(github, ledger, row, observed))
+        return errors
+
+    def read_live(self, github, reader, row, profile, previous):
+        """Two reads at most: the deployments API, then the product's own domain."""
+        item = {'repo': row['name'], 'repo_id': row['id']}
+        observed = {'live': previous.get('live'), 'deploy': previous.get('deploy'), 'error': None,
+                    'failures': previous.get('failures', 0), 'retry_after': previous.get('retry_after', 0)}
+        reasons = []
+        environment = (profile.get('deploy') or {}).get('environment')
+        if environment:
+            try:
+                github.token('controller', row['id'], extra=OPTIONAL_PERMISSIONS['controller'])
+            except GitHubUnavailable:
+                reasons.append(PERMISSION)  # An ungranted recommendation is not an outage.
+            else:
+                try:
+                    observed['deploy'] = self.deployment(github, item, environment)
+                except (GitHubUnavailable, ValueError, KeyError, TypeError) as error:
+                    reasons.append(str(error))
+        exposure = profile.get('exposure') or {}
+        if (profile.get('domain') and exposure.get('kind') in ('health', 'header')
+                and self.clock() >= observed['retry_after']):
+            url = 'https://' + profile['domain'] + (exposure.get('path') or '/')
+            try:
+                commit = reader(url, kind=exposure['kind'], field=exposure.get('field'),
+                                header=exposure.get('header'))
+                observed.update(failures=0, retry_after=0)
+                if commit:
+                    observed['live'] = {'commit': commit, 'at': self.clock()}
+            except LiveUnavailable as error:
+                observed['failures'] += 1
+                if observed['failures'] >= self.FAILURE_LIMIT:
+                    observed['retry_after'] = self.clock() + self.BACKOFF
+                reasons.append(str(error))
+        observed['error'] = '; '.join(reasons)[:500] or None
+        return observed
+
+    @staticmethod
+    def deployment(github, item, environment):
+        rows = github.deployments(item, environment)
+        if not rows:
+            return None
+        newest = rows[0]
+        latest = next(iter(github.deployment_statuses(item, newest['id'])), None)
+        return {'sha': newest['sha'], 'state': latest['state'] if latest else 'pending',
+                'at': (latest or newest).get('created_at'),
+                'run_url': (latest or {}).get('log_url') or (latest or {}).get('target_url')}
+
+    def verdicts(self, github, ledger, row, observed):
+        """A merge is deployed only when Forge can see its commit in what is running."""
+        errors = []
+        live = (observed.get('live') or {}).get('commit')
+        deploy = observed.get('deploy') or {}
+        for issue in ledger.read()['issues'].values():
+            if issue['repo_id'] != row['id'] or issue['state'] != 'merged' or issue.get('deployed'):
+                continue
+            if time.monotonic() >= getattr(github, 'deadline', float('inf')):
+                break
+            try:
+                merge = self.merge_commit(github, ledger, issue)
+                if not merge:
+                    continue
+                if live and (merge.startswith(live) or github.contains(issue, merge, live)):
+                    ledger.deployed(issue['key'], {'commit': live, 'via': 'live'})
+                elif deploy.get('state') not in ('success', 'failure') or not deploy.get('sha'):
+                    continue  # No deployment carries a verdict for this merge yet.
+                elif not github.contains(issue, merge, deploy['sha']):
+                    continue  # The deployment predates this merge; it says nothing about it.
+                elif deploy['state'] == 'success':
+                    ledger.deployed(issue['key'], {'commit': deploy['sha'], 'via': 'github'})
+                else:
+                    ledger.deploy_failed(issue['key'], {'sha': deploy['sha'], 'run_url': deploy.get('run_url')})
+            except (GitHubUnavailable, StateError, ValueError, KeyError, TypeError) as error:
+                errors.append({'repo': row['name'], 'reason': str(error)})
+        return errors
+
+    @staticmethod
+    def merge_commit(github, ledger, issue):
+        candidate = issue['candidate'] or {}
+        if candidate.get('merge_commit'):
+            return candidate['merge_commit']
+        if not candidate.get('pr'):
+            return None
+        value = github.pr(issue, candidate['pr']).get('merge_commit_sha')
+        if not isinstance(value, str) or not SHA.fullmatch(value):
+            return None
+        ledger.merge_commit(issue['key'], value)
+        return value
 
     def drive(self, key):
         job = self.read()['repositories'][key]['job']
