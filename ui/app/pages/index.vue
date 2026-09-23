@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ForgeApiError } from '~/composables/useForgeApi'
 import {
-  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, metrics, warnings,
+  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, breakdown, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
 
@@ -81,7 +81,7 @@ const showStatusLine = computed(() => !!view.value && !connectionLost.value && !
 // this page's window to whatever it opens.
 function isExternal(url: string): boolean { return url.startsWith('http') }
 
-const tiles = computed(() => metrics(view.value, now.value))
+const rows = computed(() => breakdown(view.value, now.value))
 const groups = computed(() => groupIssues(view.value, now.value))
 const slots = computed(() => view.value?.runtime?.slots ?? {})
 
@@ -200,17 +200,7 @@ async function confirm(reason: string) {
     </div>
 
     <template v-if="view">
-      <div class="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-7">
-        <MetricTile
-          v-for="tile in tiles"
-          :key="tile.id"
-          :label="tile.label"
-          :value="tile.value"
-          :detail="tile.detail"
-          :to="tile.to"
-          :tone="tile.tone"
-        />
-      </div>
+      <PipelineBreakdown class="mt-5" :rows="rows" />
 
       <section id="columns" class="mt-6 grid scroll-mt-32 gap-3 lg:grid-cols-3">
         <StageColumn
