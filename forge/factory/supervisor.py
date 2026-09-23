@@ -10,7 +10,7 @@ import json
 from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue, environment_key
 from .config import policy
 from .providers import available as provider_available
-from .github import GitHubUnavailable
+from .github import GitHubUnavailable, GitHubBudgetExhausted
 from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
 from ..state import StateError
 
@@ -44,6 +44,8 @@ class Supervisor:
             if job.get('capture') is not None and job['outcome'] is None:
                 try:
                     self.outcome(job)
+                except GitHubBudgetExhausted:
+                    pass
                 except (GitHubUnavailable, ValueError, StateError) as error:
                     if job['role'] != 'recovery' and self.clock() > job.get('deadline', self.clock()) + 900:
                         self.ledger.hold(job['issue_key'], 'Outcome remains unknown; runner reset, GitHub reconciliation pending')
@@ -55,6 +57,8 @@ class Supervisor:
                 break
             try:
                 self.reconcile(item)
+            except GitHubBudgetExhausted:
+                pass  # The next cycle resumes with the least recently observed issue.
             except (GitHubUnavailable, ValueError, KeyError) as error:
                 self.errors.append({'issue': item['key'], 'phase': 'github', 'reason': str(error)})
             finally:
@@ -520,6 +524,8 @@ class Supervisor:
                         hold = 'Existing PR requires explicit assignment adoption before automation'
                     _, requirements = self.github.issue({**item, 'number': issue['number']})
                     self.ledger.discover(repo, issue['number'], requirements, hold=hold, title=issue.get('title'))
+            except GitHubBudgetExhausted:
+                pass  # Discovery rotates; the next cycle reads the repositories left.
             except (GitHubUnavailable, ValueError, KeyError) as error:
                 self.errors.append({'repo': repo['name'], 'phase': 'discovery', 'reason': str(error)})
             finally:
