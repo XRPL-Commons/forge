@@ -391,3 +391,11 @@ export function warnings(
     out.push({ kind: 'runner', text: view.onboarding.error, to: '/settings/harnesses', label: 'Open coding accounts' })
   return out
 }
+
+// The operator status line repeats the board when all it says is that a
+// worker is busy on an issue; the board already shows that card. Only
+// waits, attention and empty states are worth a line above the boxes.
+const PROGRESS_STATUS = /^(Building|Reviewing|Auditing|Merging|Investigating|Working on) issue #\d+$/
+export function isProgressStatus(title: string | null | undefined): boolean {
+  return PROGRESS_STATUS.test(title ?? '')
+}
