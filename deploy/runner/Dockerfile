@@ -1,5 +1,5 @@
 # Pin base images by digest for production builds. Never copy host authentication.
-ARG NODE_IMAGE=node:22-slim
+ARG NODE_IMAGE=node:24-slim
 ARG PYTHON_IMAGE=python:3.12-slim
 FROM ${NODE_IMAGE} AS harnesses
 COPY forge/harnesses /opt/forge/harnesses
