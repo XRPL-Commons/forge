@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ForgeApiError } from '~/composables/useForgeApi'
 import {
-  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, breakdown, warnings,
+  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, breakdown, isProgressStatus, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
 
@@ -74,7 +74,7 @@ const absorbed = computed(() => {
   if (!detail) return null
   return banners.value.find(warning => warning.text === detail) ?? null
 })
-const showStatusLine = computed(() => !!view.value && !connectionLost.value && !banners.value.length && !!operator.value?.title)
+const showStatusLine = computed(() => !!view.value && !connectionLost.value && !banners.value.length && !!operator.value?.title && !isProgressStatus(operator.value.title))
 
 // `operator.action_url` is sometimes off the box (a GitHub settings page,
 // the docs): an external destination opens in its own tab, and never hands

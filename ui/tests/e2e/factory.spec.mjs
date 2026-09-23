@@ -89,6 +89,10 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await attentionBox.getAttribute('title'), '2 failed')
 
   // The worker-output popover is gone; logs live in the detail view.
+  // A worker busy on an issue is shown by its card, never repeated as a
+  // status line above the boxes (the default operator status is "Building issue #601").
+  assert.equal(await page.getByRole('link', { name: 'View issue' }).count(), 0)
+  assert.equal(await occurrences(page, 'Building issue #601'), 0)
   assert.equal(await page.getByRole('button', { name: 'Output' }).count(), 0)
   assert.equal(await page.getByRole('link', { name: 'Output' }).count(), 0)
 

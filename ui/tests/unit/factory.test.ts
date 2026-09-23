@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
-  breakdown, phaseLabel, reasonText, toCard, warnings,
+  breakdown, isProgressStatus, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
 
 const now = 1_000_000
@@ -298,5 +298,16 @@ describe('elapsed', () => {
     expect(elapsed(60)).toBe('1 min')
     expect(elapsed(3599)).toBe('59 min')
     expect(elapsed(3660)).toBe('1h 1m')
+  })
+})
+
+describe('isProgressStatus', () => {
+  it('recognises the busy-on-an-issue titles and nothing else', () => {
+    for (const title of ['Building issue #20', 'Reviewing issue #7', 'Auditing issue #1', 'Merging issue #3', 'Investigating issue #9', 'Working on issue #2']) {
+      expect(isProgressStatus(title)).toBe(true)
+    }
+    for (const title of ['Waiting for available memory', 'An issue needs your attention', 'Waiting for a ready issue', null, undefined, '']) {
+      expect(isProgressStatus(title)).toBe(false)
+    }
   })
 })
