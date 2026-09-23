@@ -180,3 +180,23 @@ def assignment_note(job):
             'A fresh session or reworded prompt is not a different approach.')
         base['failure'] = job['failure']
     return base
+
+
+def strategist_note(job):
+    """Read-only assignment: identify how a repository deploys and exposes its running commit."""
+    base = {k: job.get(k) for k in ('id', 'repo', 'repo_id', 'publisher', 'target_branch', 'deadline')}
+    base['role'] = 'strategist'
+    base['candidate'] = None
+    base['head'] = job['head']
+    base['result_file'] = '/work/result.json'
+    base['instructions'] = (
+        'Read only: no edits, comments, labels, merges, or launches. Inspect the repository at the given head. '
+        'Identify the deploy workflow, its trigger, and the environment it deploys to. '
+        'Find where the running application is served (its domain) in workflows, docs, or config, and report '
+        'the source and your confidence. Find an existing health or status endpoint and, if present, name the '
+        'JSON field where the running commit should be reported. Otherwise propose exposing the commit as the '
+        'X-Build-Commit response header, set from a build-time variable the deploy workflow already has. '
+        'Never propose a new route. Produce a proposal issue text only when nothing exposes the commit and the '
+        'application has an HTTP surface. Write the result contract atomically to /work/result.json. '
+        'Never include credentials.')
+    return base
