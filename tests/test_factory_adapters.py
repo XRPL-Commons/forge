@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
-from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS
+from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERMISSIONS
 from forge.factory.config import validate
 from forge.factory.github import GitHub, GitHubUnavailable
 from forge.factory.runner import ContainerRunner, RunnerError, process_isolation
@@ -62,13 +62,22 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(client.request.call_count, 5)
         self.assertNotIn('administration', client.request.call_args.args[-1]['permissions'])
 
-    def test_controller_requires_read_only_protection_and_deployment_inspection(self):
+    def test_controller_asks_for_optional_permissions_only_when_a_caller_needs_them(self):
         github, client, _ = self.github(); github.token('controller', 71)
         permissions = client.request.call_args.args[-1]['permissions']
         self.assertEqual(permissions['administration'], 'read')
-        self.assertEqual(permissions['deployments'], 'read')
+        # A live installation without the new grant must keep minting controller tokens.
+        self.assertNotIn('deployments', permissions)
         self.assertEqual({k for k, v in permissions.items() if v != 'read'},
                          {'contents', 'issues', 'pull_requests', 'checks'})
+        github.token('controller', 71, extra=OPTIONAL_PERMISSIONS['controller'])
+        widened = client.request.call_args.args[-1]['permissions']
+        self.assertEqual(widened['deployments'], 'read')
+        self.assertEqual({k: v for k, v in widened.items() if k != 'deployments'}, permissions)
+        # A widened token is never served from the narrow token's cache, or the reverse.
+        self.assertEqual(client.request.call_count, 2)
+        github.token('controller', 71); github.token('controller', 71, extra=OPTIONAL_PERMISSIONS['controller'])
+        self.assertEqual(client.request.call_count, 2)
 
     def test_filing_a_deployment_issue_verifies_the_number_it_reports(self):
         github, client, _ = self.github()

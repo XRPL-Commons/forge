@@ -84,7 +84,8 @@ class Deployments:
     def blank(name):
         return {'name': name, 'status': 'idle', 'workflows_digest': None, 'head': None, 'job': None,
                 'proposal': None, 'summary': None, 'reason': None, 'error': None,
-                'observed_at': None, 'checked_at': 0, 'reread_requested': False, 'observation': None}
+                'observed_at': None, 'checked_at': 0, 'reread_requested': False, 'observation': None,
+                'exposure_issue': None}
 
     def read(self):
         """The supervisor reads this store every cycle; a read never writes it."""

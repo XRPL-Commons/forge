@@ -59,8 +59,10 @@ type Failure = { ok: false; reason: string };
 // forge/settings.py Settings.view()['roles'][role]
 type RoleAccess = {
   status: 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions';
-  missing_permissions: string[];                // e.g. "contents: write"
+  missing_permissions: string[];                // e.g. "contents: write"; drives status 'missing_permissions'
   required_permissions: Record<string, 'read' | 'write'>;
+  recommended_permissions: Record<string, 'read' | 'write'>;   // app_access.OPTIONAL_PERMISSIONS[role]; {} for most roles
+  missing_recommended: string[];                // e.g. "deployments: read" — a recommendation, never a block
   reason: string | null;                        // AccessError text or "Access sync failed; retry or inspect server configuration"
   observed_at: number | null;
   installation_url: string | null;              // https://github.com/(organizations/<org>/)?settings/installations/<id>
@@ -130,7 +132,7 @@ type DeploymentRow = {
   observation: { at: number; logs: string; execution: object } | null;   // while status === 'running'
   error: string | null;                         // per-repository read or issue-filing failure
   reason: string | null;                        // the operator's rejection reason
-  exposure_issue: number | null;                // profile.exposure_issue, hoisted for the card
+  exposure_issue: number | null;                // profile.exposure_issue, or the store's when settings could not record it
   reread_requested: boolean;                    // a re-read is pending the next supervisor cycle
 };
 
@@ -433,7 +435,7 @@ Body exactly `{repo_id: number, revision}`. Errors: "Finish initial Forge setup 
 
 ### POST /api/repositories/deployment
 Body exactly `{repo_id: number, revision, action}` plus `domain` for `confirm` and `reason` for `reject` (`reread` takes no extra field), else "Expected repository identity, current revision, and a deployment decision". Revision mismatch → "Repository settings changed. Reload and check again.".
-- `confirm` writes `config.repositories[i].deployment` through `Settings.save` (so the revision check and every settings guard apply) and, when the proposal carries an issue and `exposure_issue` is still null, files it on the repository with the single label `forge:deployment` — never the runtime `ready_label` — and records its number in the profile with a second save. A profile that already has an `exposure_issue` keeps it, so a re-read and a second confirmation never file twice. A refused settings write returns the proposal to `proposed` and changes nothing; a refused issue filing keeps the profile and reports `deployment.error`.
+- `confirm` writes `config.repositories[i].deployment` through `Settings.save` (so the revision check and every settings guard apply) and, when the proposal carries an issue and `exposure_issue` is still null, files it on the repository with the single label `forge:deployment` — never the runtime `ready_label` — and records its number in the profile with a second save. A profile that already has an `exposure_issue` keeps it, so a re-read and a second confirmation never file twice. A refused settings write returns the proposal to `proposed` and changes nothing; a refused issue filing keeps the profile and reports `deployment.error`. A filed number is written to the store entry first, so a settings write that fails afterwards still stops the next confirmation from refiling.
 - `reject` (needs a non-empty `reason`) and `reread` touch only `state/deployments.json`; settings are untouched.
 Other errors: "There is no deployment proposal to confirm/reject", "A rejected proposal needs a reason", "A deployment domain is a bare host name, without scheme, port or path", "Enable this repository before confirming its deployment profile.". Response `RepositoriesView(repo_id) & {ok:true, controls_token}`, so `revision` is the new one.
 

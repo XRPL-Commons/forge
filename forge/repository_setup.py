@@ -3,7 +3,6 @@ import threading
 import time
 
 from .settings import digest, read_json, write_json
-from .state import StateError
 from .factory.github import GitHub, GitHubUnavailable
 
 MAX_AGE = 300
@@ -40,10 +39,11 @@ class RepositorySetup:
                            settings=self.settings, clock=self.settings.clock)
 
     def proposals(self):
-        """The operator view of the store never fails closed; it shows what it has."""
+        """A read for the UI: it never fails the page and never creates factory state."""
         try:
-            return self.deployments().read()['repositories']
-        except (StateError, OSError, ValueError):
+            rows = read_json(self.root / 'state/deployments.json')['repositories']
+            return {key: row for key, row in rows.items() if isinstance(row, dict)}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
             return {}
 
     def read(self):
@@ -79,7 +79,7 @@ class RepositorySetup:
                                           'summary': entry.get('summary'), 'proposal': entry.get('proposal'),
                                           'profile': profile, 'observation': entry.get('observation'),
                                           'error': entry.get('error'), 'reason': entry.get('reason'),
-                                          'exposure_issue': (profile or {}).get('exposure_issue'),
+                                          'exposure_issue': (profile or {}).get('exposure_issue') or entry.get('exposure_issue'),
                                           'reread_requested': bool(entry.get('reread_requested'))}})
         return result
 
@@ -135,17 +135,22 @@ class RepositorySetup:
         if action != 'confirm':
             raise ValueError('A deployment decision is confirm, reject, or reread')
         configured = next((r for r in config['repositories'] if r['id'] == repo_id), None)
-        if configured is None:
+        if configured is None or not configured['enabled']:
             raise ValueError('Enable this repository before confirming its deployment profile.')
-        proposed = (store.read()['repositories'].get(str(repo_id)) or {}).get('proposal') or {}
+        entry = store.read()['repositories'].get(str(repo_id)) or {}
+        proposed = entry.get('proposal') or {}
         profile = store.confirm(repo_id, domain)
-        # A second read of the same repository must never file the issue twice.
-        profile['exposure_issue'] = (configured.get('deployment') or {}).get('exposure_issue')
+        # A second read of the same repository must never file the issue twice: the
+        # number survives in the store even when settings could not record it.
+        profile['exposure_issue'] = (configured.get('deployment') or {}).get('exposure_issue') or entry.get('exposure_issue')
         configured['deployment'] = profile
         try:
             self.settings.save(config, revision)
         except (ValueError, OSError):
-            store.save(repo_id, status='proposed')  # A decision never outlives its write.
+            try:
+                store.save(repo_id, status='proposed')  # A decision never outlives its write.
+            except Exception:
+                pass  # The operator needs the refusal, not the rollback's own failure.
             raise
         issue = proposed.get('proposal')
         if issue and profile['exposure_issue'] is None and profile['exposure']['kind'] == 'none':
@@ -159,12 +164,19 @@ class RepositorySetup:
                 store.save(repo_id, error=str(error) if isinstance(error, GitHubUnavailable) else
                            'The deployment issue could not be filed; re-read deployment to retry')
             else:
-                config = self.settings.load()
-                current = digest(config)
-                saved = next((r for r in config['repositories'] if r['id'] == repo_id), None)
-                if saved and saved.get('deployment'):
-                    saved['deployment']['exposure_issue'] = number
-                    self.settings.save(config, current)
+                # Record the number before anything else can fail: a lost number
+                # would let the next confirmation file the same issue again.
+                store.save(repo_id, exposure_issue=number)
+                try:
+                    config = self.settings.load()
+                    current = digest(config)
+                    saved = next((r for r in config['repositories'] if r['id'] == repo_id), None)
+                    if saved and saved.get('deployment'):
+                        saved['deployment']['exposure_issue'] = number
+                        self.settings.save(config, current)
+                except (ValueError, OSError) as error:
+                    store.save(repo_id, error='Deployment issue #' + str(number) +
+                               ' was filed but not recorded in settings: ' + str(error))
         return self.view(repo_id)
 
     def check(self, repo_id=None, revision=None):

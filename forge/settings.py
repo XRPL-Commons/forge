@@ -16,7 +16,8 @@ import tempfile
 import threading
 import time
 
-from .app_access import AppClient, AccessError, ROLE_PERMISSIONS, REPO_PATTERN, missing_permissions
+from .app_access import (AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERMISSIONS, REPO_PATTERN,
+                         missing_permissions, recommended_permissions)
 
 ROLES = tuple(ROLE_PERMISSIONS)
 DEFAULT = {'version': 1, 'sync_interval_seconds': 300, 'access_max_age_seconds': 900,
@@ -232,6 +233,8 @@ class Settings:
                 status = 'missing_permissions'
             role_views[role] = {'status': status, 'missing_permissions': missing,
                                 'required_permissions': ROLE_PERMISSIONS[role],
+                                'recommended_permissions': OPTIONAL_PERMISSIONS.get(role, {}),
+                                'missing_recommended': recommended_permissions(role, row.get('permissions', {})) if matches else [],
                                 'reason': row.get('reason') if matches else None,
                                 'observed_at': row.get('observed_at') if matches else None,
                                 'installation_url': row.get('installation_url') if matches else None,

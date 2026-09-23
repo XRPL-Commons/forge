@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch
 
 from forge.repository_setup import RepositorySetup, ruleset, RULESET_NAME, observation_key
 from forge.factory.config import validate as runtime_config
+from forge.deployments import Deployments
 from forge.factory.github import GitHubUnavailable
+from forge.state import StateError
 from forge.settings import digest, write_json
 from tests import test_settings as settings_tests
 from tests import test_settings_http as http_tests
@@ -295,6 +297,15 @@ class RepositorySetupTests(unittest.TestCase):
         self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
         self.assertEqual(self.settings.load()['repositories'][0]['deployment']['exposure_issue'], 7)
 
+    def test_a_failed_rollback_does_not_replace_the_refusal_the_operator_must_read(self):
+        self.propose()
+        with patch.object(type(self.settings), 'save', side_effect=ValueError('Factory reset is in progress')), \
+             patch.object(Deployments, 'save', side_effect=StateError('unreadable deployment state')):
+            with self.assertRaisesRegex(ValueError, 'Factory reset is in progress'):
+                self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+        self.github.return_value.file_issue.assert_not_called()
+
     def test_an_unfiled_issue_is_reported_without_losing_the_profile(self):
         self.propose()
         self.github.return_value.file_issue.side_effect = GitHubUnavailable('GitHub observation is unconfirmed')
@@ -303,6 +314,54 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertEqual(row['deployment']['status'], 'confirmed')
         self.assertIsNone(row['deployment']['exposure_issue'])
         self.assertEqual(row['deployment']['error'], 'GitHub observation is unconfirmed')
+
+    def test_a_filed_issue_is_never_refiled_when_its_number_cannot_be_saved(self):
+        self.propose()
+        self.github.return_value.file_issue.return_value = 41
+        original, saves = type(self.settings).save, []
+        def save(settings, config, revision):
+            saves.append(config)
+            if len(saves) > 1:
+                raise ValueError('Settings changed; reload before saving')
+            return original(settings, config, revision)
+        with patch.object(type(self.settings), 'save', save):
+            self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['deployment']['status'], 'confirmed')
+        self.assertIsNone(row['deployment']['profile']['exposure_issue'])
+        self.assertEqual(row['deployment']['exposure_issue'], 41)
+        # The next read and confirmation carries the filed number instead of filing again.
+        self.propose()
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='')
+        self.github.return_value.file_issue.assert_called_once()
+        self.assertEqual(self.settings.load()['repositories'][0]['deployment']['exposure_issue'], 41)
+
+    def test_a_malformed_deployment_store_does_not_take_down_the_settings_page(self):
+        path = self.settings.root / 'state' / 'deployments.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for text in ('{"repositories": []}', '[]', 'not json', '{"repositories": {"10": "broken"}}', '{}'):
+            path.write_text(text)
+            row = self.settings.view()['repositories'][0]
+            self.assertEqual(row['deployment']['status'], 'idle')
+            self.assertIsNone(row['deployment']['proposal'])
+            self.assertFalse(row['deployment']['reread_requested'])
+
+    def test_a_disabled_repository_cannot_confirm_a_deployment_profile(self):
+        self.propose()
+        config = self.settings.load(); config['repositories'][0]['enabled'] = False
+        self.settings.save(config, digest(self.settings.load()))
+        with self.assertRaisesRegex(ValueError, 'Enable this repository'):
+            self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.example.org')
+        self.assertNotIn('deployment', self.settings.load()['repositories'][0])
+        self.assertEqual(self.service.view(10)['repositories'][0]['deployment']['status'], 'proposed')
+        self.github.return_value.file_issue.assert_not_called()
+
+    def test_reading_proposals_never_creates_deployment_state(self):
+        from forge.settings import Settings
+        root = self.settings.root / 'fresh'
+        service = RepositorySetup(Settings(root, client=self.client, clock=self.settings.clock))
+        self.assertEqual(service.proposals(), {})
+        self.assertFalse((root / 'state').exists())
 
     def test_guided_setup_cannot_confirm_a_deployment_profile(self):
         from forge.settings import Settings

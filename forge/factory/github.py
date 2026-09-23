@@ -35,9 +35,9 @@ class GitHub:
                     'installation_id': matches[0]['installation_id']}
         return connection
 
-    def token(self, role, repo_id, *, worker=False):
+    def token(self, role, repo_id, *, worker=False, extra=None):
         connection = self.connection(role, repo_id)
-        key = (role, repo_id, worker, digest(connection))
+        key = (role, repo_id, worker, digest(connection), digest(extra or {}))
         cached = self.tokens.get(key)
         if not worker and cached and cached[1] > self.clock():
             return cached[0]
@@ -48,6 +48,8 @@ class GitHub:
             permissions = {'metadata': 'read', 'contents': 'read', 'issues': 'read', 'pull_requests': 'read'}
         if role == 'controller' and not worker:
             permissions['administration'] = 'read'
+        # Optional grants widen one call only; a role's baseline stays mintable.
+        permissions.update(extra or {})
         try:
             value = self.client.request('POST', f"/app/installations/{connection['installation_id']}/access_tokens",
                                         self.client.jwt(connection), {'repository_ids': [repo_id], 'permissions': permissions})

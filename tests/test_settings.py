@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS, missing_permissions
+from forge.app_access import (AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERMISSIONS,
+                              missing_permissions, recommended_permissions)
 from forge.settings import Settings, DEFAULT, ROLES, digest, validate, write_json
 
 
@@ -245,12 +246,23 @@ class SettingsTests(unittest.TestCase):
         self.assertNotEqual(digest(validate(copy.deepcopy(config))),
                             digest({**config, 'repositories': [{'id': 10, 'name': 'example/project', 'enabled': True}]}))
 
-    def test_controller_needs_deployment_reads_for_observation(self):
-        self.assertEqual(ROLE_PERMISSIONS['controller']['deployments'], 'read')
-        granted = {k: v for k, v in ROLE_PERMISSIONS['controller'].items() if k != 'deployments'}
-        self.assertEqual(missing_permissions('controller', granted), ['deployments: read'])
+    def test_deployment_reads_are_recommended_and_never_required(self):
+        # A live installation must keep minting controller tokens without the new grant.
+        self.assertNotIn('deployments', ROLE_PERMISSIONS['controller'])
+        self.assertEqual(OPTIONAL_PERMISSIONS['controller'], {'deployments': 'read'})
+        granted = dict(ROLE_PERMISSIONS['controller'])
+        self.assertEqual(missing_permissions('controller', granted), [])
+        self.assertEqual(recommended_permissions('controller', granted), ['deployments: read'])
+        self.assertEqual(recommended_permissions('controller', {**granted, 'deployments': 'read'}), [])
+        self.assertEqual(recommended_permissions('build', {}), [])
         self.settings.refresh()
-        self.assertEqual(self.settings.view()['roles']['controller']['required_permissions']['deployments'], 'read')
+        role = self.settings.view()['roles']['controller']
+        self.assertEqual(role['status'], 'ok')
+        self.assertEqual(role['missing_permissions'], [])
+        self.assertEqual(role['recommended_permissions'], {'deployments': 'read'})
+        self.assertEqual(role['missing_recommended'], ['deployments: read'])
+        self.assertEqual(self.settings.view()['roles']['build']['recommended_permissions'], {})
+        self.assertEqual(self.settings.view()['roles']['build']['missing_recommended'], [])
 
     def test_repository_names_cannot_address_parent_checkout(self):
         for name in ('example/..', 'example/.', '../project', 'example/a/b'):
