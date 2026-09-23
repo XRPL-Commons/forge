@@ -6,6 +6,7 @@ issues or any domain until an operator confirms the proposal.
 """
 from copy import deepcopy
 import json
+import math
 from pathlib import Path
 import re
 import time
@@ -24,6 +25,7 @@ OUTCOMES = ('pass', 'reject', 'unable', 'wait', 'blocked_environment')
 PROFILE = ('strategy', 'deploy', 'domain', 'exposure', 'commit_source', 'proposal')
 CAPACITY = 'Worker capacity was not available in time; re-read deployment to retry'
 PERMISSION = 'GitHub deployments need the recommended permission'
+UNREADABLE = 'The deployment domain could not be read'
 # A domain is later fetched over the network: accept a bare host, never a URL.
 HOST = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
                   r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+')
@@ -216,53 +218,69 @@ class Deployments:
 
     def observe(self, github, ledger, reader):
         """One bounded read per confirmed profile, then a verdict per merged issue."""
-        errors = []
-        for row in self.settings.view()['repositories']:
+        errors, view, merged = [], self.settings.view(), None
+        # Whether the optional grant is missing was decided by the access sync; a
+        # refused token is otherwise an outage, not a permission to ask for.
+        ungranted = any(item.split(':')[0].strip() == 'deployments' for item in
+                        ((view.get('roles') or {}).get('controller') or {}).get('missing_recommended') or [])
+        for row in view['repositories']:
             profile = (row.get('deployment') or {}).get('profile')
             if not profile or not row['enabled']:
                 continue
             if time.monotonic() >= getattr(github, 'deadline', float('inf')):
                 break  # The cycle's observation budget is spent; resume next cycle.
+            if merged is None:
+                merged = {}
+                for issue in ledger.read()['issues'].values():
+                    if issue['state'] == 'merged' and not issue.get('deployed'):
+                        merged.setdefault(issue['repo_id'], []).append(issue)
             entry = self.read()['repositories'].get(str(row['id'])) or {}
-            observed = self.read_live(github, reader, row, profile, entry.get('observed') or {})
+            observed = self.read_live(github, reader, row, profile, entry.get('observed') or {}, ungranted)
             self.save(row['id'], row['name'], observed=observed)
             if observed['error']:
                 errors.append({'repo': row['name'], 'reason': observed['error']})
-            errors.extend(self.verdicts(github, ledger, row, observed))
+            errors.extend(self.verdicts(github, ledger, row, observed, merged.get(row['id']) or []))
         return errors
 
-    def read_live(self, github, reader, row, profile, previous):
+    def read_live(self, github, reader, row, profile, previous, ungranted):
         """Two reads at most: the deployments API, then the product's own domain."""
         item = {'repo': row['name'], 'repo_id': row['id']}
         observed = {'live': previous.get('live'), 'deploy': previous.get('deploy'), 'error': None,
-                    'failures': previous.get('failures', 0), 'retry_after': previous.get('retry_after', 0)}
+                    'failures': previous.get('failures', 0), 'retry_after': previous.get('retry_after', 0),
+                    'live_error': previous.get('live_error')}
         reasons = []
         environment = (profile.get('deploy') or {}).get('environment')
         if environment:
             try:
                 github.token('controller', row['id'], extra=OPTIONAL_PERMISSIONS['controller'])
-            except GitHubUnavailable:
-                reasons.append(PERMISSION)  # An ungranted recommendation is not an outage.
+            except GitHubUnavailable as error:
+                reasons.append(PERMISSION if ungranted else str(error))
             else:
                 try:
                     observed['deploy'] = self.deployment(github, item, environment)
                 except (GitHubUnavailable, ValueError, KeyError, TypeError) as error:
                     reasons.append(str(error))
         exposure = profile.get('exposure') or {}
-        if (profile.get('domain') and exposure.get('kind') in ('health', 'header')
-                and self.clock() >= observed['retry_after']):
-            url = 'https://' + profile['domain'] + (exposure.get('path') or '/')
-            try:
-                commit = reader(url, kind=exposure['kind'], field=exposure.get('field'),
-                                header=exposure.get('header'))
-                observed.update(failures=0, retry_after=0)
-                if commit:
-                    observed['live'] = {'commit': commit, 'at': self.clock()}
-            except LiveUnavailable as error:
-                observed['failures'] += 1
-                if observed['failures'] >= self.FAILURE_LIMIT:
-                    observed['retry_after'] = self.clock() + self.BACKOFF
-                reasons.append(str(error))
+        if profile.get('domain') and exposure.get('kind') in ('health', 'header'):
+            paused = observed['retry_after'] - self.clock()
+            if paused > 0:
+                # A paused domain is still a failing domain; the card must keep saying so.
+                reasons.append('%s (retrying in %d min)' % (observed['live_error'] or UNREADABLE,
+                                                            math.ceil(paused / 60)))
+            else:
+                url = 'https://' + profile['domain'] + (exposure.get('path') or '/')
+                try:
+                    commit = reader(url, kind=exposure['kind'], field=exposure.get('field'),
+                                    header=exposure.get('header'))
+                    observed.update(failures=0, retry_after=0, live_error=None)
+                    if commit:
+                        observed['live'] = {'commit': commit, 'at': self.clock()}
+                except LiveUnavailable as error:
+                    observed['failures'] += 1
+                    if observed['failures'] >= self.FAILURE_LIMIT:
+                        observed['retry_after'] = self.clock() + self.BACKOFF
+                    observed['live_error'] = str(error)
+                    reasons.append(str(error))
         observed['error'] = '; '.join(reasons)[:500] or None
         return observed
 
@@ -277,14 +295,12 @@ class Deployments:
                 'at': (latest or newest).get('created_at'),
                 'run_url': (latest or {}).get('log_url') or (latest or {}).get('target_url')}
 
-    def verdicts(self, github, ledger, row, observed):
+    def verdicts(self, github, ledger, row, observed, issues):
         """A merge is deployed only when Forge can see its commit in what is running."""
         errors = []
         live = (observed.get('live') or {}).get('commit')
         deploy = observed.get('deploy') or {}
-        for issue in ledger.read()['issues'].values():
-            if issue['repo_id'] != row['id'] or issue['state'] != 'merged' or issue.get('deployed'):
-                continue
+        for issue in issues:
             if time.monotonic() >= getattr(github, 'deadline', float('inf')):
                 break
             try:

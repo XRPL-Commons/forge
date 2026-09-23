@@ -143,12 +143,16 @@ class GitHub:
         return sorted(rows, key=lambda row: row['id'], reverse=True)
 
     def deployment_statuses(self, item, deployment_id):
+        """Newest first by identifier: the latest status is never an ordering guess."""
         rows = self.call('controller', item, 'GET', f'/deployments/{int(deployment_id)}/statuses?per_page=5',
                          extra=OPTIONAL_PERMISSIONS['controller'])
-        if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get('state'), str)
-                                             for row in rows):
+        if not isinstance(rows, list):
             raise GitHubUnavailable('GitHub deployment statuses are malformed')
-        return rows
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get('id')) is not int
+                    or not isinstance(row.get('state'), str)):
+                raise GitHubUnavailable('GitHub deployment statuses are malformed')
+        return sorted(rows, key=lambda row: row['id'], reverse=True)
 
     def contains(self, item, ancestor, descendant):
         """Is the merge in the history of the observed commit? Asked once per pair."""

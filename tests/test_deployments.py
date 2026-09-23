@@ -41,11 +41,11 @@ class FakeGitHub:
 
 
 class FakeSettings:
-    def __init__(self, rows):
-        self.rows = rows
+    def __init__(self, rows, roles=None):
+        self.rows, self.roles = rows, roles or {}
 
     def view(self):
-        return {'repositories': [dict(row) for row in self.rows]}
+        return {'repositories': [dict(row) for row in self.rows], 'roles': self.roles}
 
 
 class DeploymentTests(unittest.TestCase):
@@ -428,6 +428,69 @@ class ContractTests(unittest.TestCase):
             github.workflows_digest({'repo': 'example/site', 'repo_id': 9})
 
 
+class ObservationContractTests(unittest.TestCase):
+    """The deployment reads verify identity and ordering rather than trusting them."""
+
+    def setUp(self):
+        from forge.factory.github import COMPARISONS
+        COMPARISONS.clear()
+        self.addCleanup(COMPARISONS.clear)
+        self.item = {'repo': 'example/site', 'repo_id': 7}
+
+    def observer(self, responses):
+        github = GitHub(Mock(), {}, client=Mock())
+        calls = []
+
+        def call(role, repo, method, suffix, payload=None, *, extra=None):
+            calls.append((role, method, suffix, extra))
+            value = responses[suffix]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        github.call = call
+        return github, calls
+
+    def test_deployments_are_read_newest_first_on_the_recommended_grant(self):
+        from forge.app_access import OPTIONAL_PERMISSIONS
+        rows = [{'id': 4, 'sha': 'a' * 40}, {'id': 9, 'sha': 'b' * 40}, {'id': 6, 'sha': 'c' * 40}]
+        github, calls = self.observer({'/deployments?per_page=5&environment=production': rows})
+        self.assertEqual([row['id'] for row in github.deployments(self.item, 'production')], [9, 6, 4])
+        self.assertEqual(calls, [('controller', 'GET', '/deployments?per_page=5&environment=production',
+                                  OPTIONAL_PERMISSIONS['controller'])])
+
+    def test_a_malformed_deployment_inventory_is_refused(self):
+        for rows in ({'id': 1}, [{'id': 1}], [{'id': '1', 'sha': 'a' * 40}], [{'id': 1, 'sha': 'nope'}],
+                     [{'id': True, 'sha': 'a' * 40}], ['deployment']):
+            github, _ = self.observer({'/deployments?per_page=5': rows})
+            with self.assertRaises(GitHubUnavailable):
+                github.deployments(self.item, None)
+
+    def test_the_latest_status_is_the_newest_identifier_not_the_first_row(self):
+        rows = [{'id': 2, 'state': 'failure'}, {'id': 7, 'state': 'success'}]
+        github, _ = self.observer({'/deployments/9/statuses?per_page=5': rows})
+        self.assertEqual([row['id'] for row in github.deployment_statuses(self.item, 9)], [7, 2])
+        for malformed in ([{'id': 1}], [{'state': 'success'}], [{'id': '1', 'state': 'success'}], {'state': 'success'}):
+            github, _ = self.observer({'/deployments/9/statuses?per_page=5': malformed})
+            with self.assertRaises(GitHubUnavailable):
+                github.deployment_statuses(self.item, 9)
+
+    def test_ancestry_is_asked_once_per_pair_and_only_trusts_known_answers(self):
+        suffix = '/compare/' + 'a' * 40 + '...' + 'b' * 40
+        for status, expected in (('ahead', True), ('identical', True), ('behind', False), ('diverged', False)):
+            from forge.factory.github import COMPARISONS
+            COMPARISONS.clear()
+            github, calls = self.observer({suffix: {'status': status}})
+            self.assertIs(github.contains(self.item, 'a' * 40, 'b' * 40), expected)
+            self.assertIs(github.contains(self.item, 'a' * 40, 'b' * 40), expected)
+            self.assertEqual(len(calls), 1)  # Ancestry between two commits never changes.
+            self.assertIsNone(calls[0][3])   # Comparison needs no optional grant.
+        COMPARISONS.clear()
+        github, _ = self.observer({suffix: {'status': 'unknown'}})
+        with self.assertRaises(GitHubUnavailable):
+            github.contains(self.item, 'a' * 40, 'b' * 40)
+
+
 class ServiceHookTests(unittest.TestCase):
     """The supervisor cycle drives deployments; it never fails because of them."""
 
@@ -733,10 +796,14 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(len(self.reads), 3)
         self.assertIsNone(self.issue(key).get('deployed'))
         self.assertEqual(self.entry()['observed']['error'], 'The deployment did not answer in time')
-        # Three consecutive failures earn a ten-minute pause, not a read every cycle.
+        # Three consecutive failures earn a ten-minute pause, not a read every cycle,
+        # and the pause never makes a failing domain look healthy.
         self.now += 60
-        self.observe()
+        self.assertEqual(self.observe(), [{'repo': 'example/site',
+                                           'reason': 'The deployment did not answer in time (retrying in 8 min)'}])
         self.assertEqual(len(self.reads), 3)
+        self.assertEqual(self.entry()['observed']['error'],
+                         'The deployment did not answer in time (retrying in 8 min)')
         self.now += 600
         self.live_error, self.live = None, MERGE
         self.observe()
@@ -761,6 +828,7 @@ class ObservationTests(unittest.TestCase):
 
     def test_a_refused_deployments_token_never_stops_the_domain_read(self):
         key = self.merged()
+        self.settings.roles = {'controller': {'missing_recommended': ['deployments: read']}}
         self.github.token_error = GitHubUnavailable('Role credential could not be issued for this repository')
         self.live = MERGE
         errors = self.observe()
@@ -768,6 +836,15 @@ class ObservationTests(unittest.TestCase):
                                    'reason': 'GitHub deployments need the recommended permission'}])
         self.assertTrue(self.reads)
         self.assertEqual(self.issue(key)['deployed']['via'], 'live')
+
+    def test_a_credential_failure_is_never_reported_as_a_missing_permission(self):
+        self.merged()
+        self.settings.roles = {'controller': {'missing_recommended': []}}
+        self.github.token_error = GitHubUnavailable('Installation mapping needs a fresh access sync')
+        self.assertEqual(self.observe(), [{'repo': 'example/site',
+                                           'reason': 'Installation mapping needs a fresh access sync'}])
+        self.settings.roles = {'controller': {'missing_recommended': ['checks: write']}}
+        self.assertEqual(self.observe()[0]['reason'], 'Installation mapping needs a fresh access sync')
 
     def test_an_unreadable_deployments_api_is_recorded_per_repository(self):
         self.merged()
