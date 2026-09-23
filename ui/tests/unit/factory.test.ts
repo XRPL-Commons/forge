@@ -192,7 +192,9 @@ describe('breakdown', () => {
       issue({ key: '1:605', number: 605, state: 'hold', reason: 'Forge environment needs attention (resources)' }),
       issue({ key: '1:607', number: 607, state: 'hold', reason: 'Repeated failure requires a supported change of approach' }),
       issue({ key: '1:608', number: 608, state: 'audited' }),
-      issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged' }),
+      issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 3600 }] }),
+      issue({ key: '2:609', number: 609, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 3 * 86400 }] }),
+      issue({ key: '2:610', number: 610, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 30 * 86400 }] }),
     ],
     jobs: [running, recovery],
     observation: { at: now, errors: [{ phase: 'github', reason: 'GitHub refused to merge x/y#1: branch rules still block it' }] },
@@ -206,7 +208,7 @@ describe('breakdown', () => {
     expect(byId.queued).toMatchObject({ value: 1, meaning: 'Waiting for a free worker' })
     expect(byId.merging).toMatchObject({ value: 1, meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
     expect(byId.attention).toMatchObject({ value: 3, meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
-    expect(byId.merged).toMatchObject({ value: 1, to: '#completed' })
+    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, meaning: '2 in the last 7 days · 3 tracked in all', to: '#completed' })
   })
 
   it('reports a paused dispatch on the queued row', () => {
