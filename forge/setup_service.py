@@ -507,17 +507,20 @@ class Service:
             observation = Supervisor(ledger, self.runner(config), self.github_class(settings, config), settings, config).cycle()
             write_json(self.root / 'state/factory/supervisor.json', observation)
             if not op:
-                # Deployment tracking is an observation; it never holds up a cycle.
-                deployments = Deployments(self.root, runner=self.runner,
-                                          github=self.github_class(settings, config), settings=settings)
+                # Deployment tracking is an observation; it never holds up a cycle,
+                # and it gets a quarter of the remaining observation budget.
+                deployments = None
                 try:
+                    github = self.github_class(settings, config)
+                    github.deadline = time.monotonic() + config['cycle_budget_seconds'] / 4
+                    deployments = Deployments(self.root, runner=self.runner, github=github, settings=settings)
                     deployments.tick(config)
-                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                except Exception as error:
                     message = str(error) if isinstance(error, (ValueError, RunnerError, StateError, GitHubUnavailable)) else \
-                        'Deployment tracking failed; it will be retried next cycle'
+                        'Deployment tracking failed (' + type(error).__name__ + '); it will be retried next cycle'
                     try:
-                        deployments.fail(message)
-                    except (OSError, ValueError, RuntimeError):
+                        (deployments or Deployments(self.root, runner=self.runner, github=None, settings=settings)).fail(message)
+                    except Exception:
                         pass
             self.next_cycle = time.monotonic() + config['cycle_seconds']
 

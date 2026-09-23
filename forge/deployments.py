@@ -11,7 +11,7 @@ import re
 import time
 import uuid
 
-from .state import AtomicStore
+from .state import AtomicStore, StateError
 from .factory.github import GitHubUnavailable
 from .factory.runner import RunnerCapacity, RunnerError
 
@@ -19,6 +19,7 @@ STATUSES = ('idle', 'running', 'proposed', 'confirmed', 'rejected', 'failed')
 STRATEGIES = ('github_deployments', 'health', 'header', 'unobservable')
 OUTCOMES = ('pass', 'reject', 'unable', 'wait', 'blocked_environment')
 PROFILE = ('strategy', 'deploy', 'domain', 'exposure', 'commit_source', 'proposal')
+CAPACITY = 'Worker capacity was not available in time; re-read deployment to retry'
 # A domain is later fetched over the network: accept a bare host, never a URL.
 HOST = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
                   r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+')
@@ -38,7 +39,7 @@ def profile(value, job):
         raise ValueError('The deployment read did not return a valid result')
     expected = {'version', 'attempt', 'role', 'outcome', 'summary', *PROFILE}
     if 'blocker' in value:
-        expected.add('blocker')  # Older image contracts remain readable.
+        expected.add('blocker')  # Optional: older image contracts omit the field.
     if (set(value) != expected or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != 'strategist'
             or value['outcome'] not in OUTCOMES
@@ -86,10 +87,16 @@ class Deployments:
                 'observed_at': None, 'checked_at': 0, 'reread_requested': False, 'observation': None}
 
     def read(self):
-        with self.store.transaction() as data:
-            data['version'] = 1
-            data.setdefault('repositories', {})
-            return deepcopy(data)
+        """The supervisor reads this store every cycle; a read never writes it."""
+        try:
+            data = json.loads(self.store.path.read_text()) if self.store.path.exists() else {}
+        except (OSError, ValueError) as error:
+            raise StateError('unreadable deployment state; reconcile before recovery') from error
+        if not isinstance(data, dict) or (not self.store.path.exists() and self.store.marker.exists()):
+            raise StateError('invalid or missing initialized deployment state')
+        data.setdefault('version', 1)
+        data.setdefault('repositories', {})
+        return data
 
     def entry(self, data, repo_id, name=None):
         entry = data.setdefault('repositories', {}).setdefault(str(repo_id), self.blank(name))
@@ -135,6 +142,16 @@ class Deployments:
                 raise ValueError('There is no deployment proposal to reject')
             entry.update(status='rejected', reason=reason.strip()[:2000], observed_at=self.clock())
 
+    def leased(self, config):
+        """A rotating OAuth credential has one writer; pipeline work holds it first."""
+        reference = config.get('provider_auth_file_env')
+        root = self.root / 'state/factory'
+        if not reference or not (root / 'factory-ledger.json').exists():
+            return False
+        from .factory.ledger import Ledger
+        return any(not job['cleanup'] and (job.get('runner_config') or {}).get('provider_auth_file_env') == reference
+                   for job in Ledger(root).read()['jobs'].values())
+
     def new_job(self, config, repo, head, deadline):
         """A probe-shaped internal job: no issue, no candidate, no publication."""
         return {'id': str(uuid.uuid4()), 'slot': 'deployment-strategist', 'role': 'strategist',
@@ -162,9 +179,13 @@ class Deployments:
         self.start(config, data)
 
     def start(self, config, data):
+        if self.leased(config):
+            return  # The coding account is held by a pipeline worker; retry next cycle.
         for row in self.settings.view()['repositories']:
             if not row['dispatch_allowed']:
                 continue
+            if time.monotonic() >= getattr(self.github, 'deadline', float('inf')):
+                return  # The cycle's observation budget is spent; resume next cycle.
             entry = data['repositories'].get(str(row['id']))
             reread = bool(entry and entry['reread_requested'])
             if entry and not reread and self.clock() - entry['checked_at'] < self.DIGEST_INTERVAL:
@@ -199,16 +220,24 @@ class Deployments:
                 if current is None:
                     raise RunnerError('The strategist container is not observable; reconcile before replacement')
                 if current['status'] == 'created':
-                    # Read-only worker credential; the note is the strategist assignment.
-                    runner.prepare(job, self.github.token('controller', job['repo_id'], worker=True))
+                    # The recovery role is the controller App's read-only worker credential.
+                    runner.prepare(job, self.github.token('recovery', job['repo_id'], worker=True))
                     runner.start(job)
                     if job.get('capacity_wait_since') is not None:
                         job['deadline'] += max(0, self.clock() - job.pop('capacity_wait_since'))
                     self.save(key, job=job)
                     return
             except RunnerCapacity:
-                job.setdefault('capacity_wait_since', self.clock())
+                if self.clock() < job['deadline']:
+                    job.setdefault('capacity_wait_since', self.clock())
+                    self.save(key, job=job)
+                    return
+                # Waiting for memory is not unbounded: give the slot back and report.
+                job.update(capture=runner.capture(job), fenced=True)
                 self.save(key, job=job)
+                runner.reset(job)
+                job['cleanup'] = True
+                self.finish(key, job, reason=CAPACITY)
                 return
             timed_out = self.clock() >= job['deadline']
             if current['running'] and not timed_out:
@@ -222,17 +251,18 @@ class Deployments:
         job['cleanup'] = True
         self.finish(key, job)
 
-    def finish(self, key, job):
-        capture, report, reason = job['capture'] or {}, None, None
-        if (capture.get('execution') or {}).get('oom_killed'):
-            reason = 'The deployment read exceeded its memory limit; review worker capacity before re-reading'
-        elif capture.get('timed_out'):
-            reason = 'The deployment read did not finish before its deadline'
-        else:
-            try:
-                report = profile(capture.get('result'), job)
-            except ValueError as error:
-                reason = str(error)
+    def finish(self, key, job, reason=None):
+        capture, report = job['capture'] or {}, None
+        if reason is None:
+            if (capture.get('execution') or {}).get('oom_killed'):
+                reason = 'The deployment read exceeded its memory limit; review worker capacity before re-reading'
+            elif capture.get('timed_out'):
+                reason = 'The deployment read did not finish before its deadline'
+            else:
+                try:
+                    report = profile(capture.get('result'), job)
+                except ValueError as error:
+                    reason = str(error)
         values = {'job': job, 'observation': None, 'error': None, 'observed_at': self.clock(),
                   'workflows_digest': job['workflows_digest'], 'head': job['head']}
         if report and report['outcome'] == 'pass':

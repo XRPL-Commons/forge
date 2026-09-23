@@ -2,6 +2,7 @@
 import json
 import subprocess
 import tarfile
+import time
 import tempfile
 import unittest
 from io import BytesIO
@@ -119,7 +120,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(entry['job']['runner_config']['harness_argv'], self.config['harness_argv'])
         self.assertEqual(self.prepared, [(entry['job']['id'], 'strategist',
                                           'synthetic-worker-token-not-a-real-credential')])
-        self.assertEqual(self.github.tokens, [('controller', 7, True)])
+        # The recovery role is the controller App's read-only worker credential.
+        self.assertEqual(self.github.tokens, [('recovery', 7, True)])
         job = self.finish()
         self.deployments().tick(self.config)
         entry = self.entry()
@@ -298,6 +300,65 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.entry()['status'], 'idle')
         self.assertFalse(self.engine)
 
+    def ledger_job(self, reference):
+        """A pipeline worker holding the rotating coding account."""
+        from forge.factory.ledger import Ledger
+        ledger = Ledger(self.root / 'state/factory')
+        ledger.discover({'id': 7, 'name': 'example/site'}, 3, 'requirements-digest')
+        job = ledger.reserve('7:3', 'build', 'build-1', publisher='forge-build[bot]', policy='policy-digest',
+                             timeout=600, runner_config={'provider_auth_file_env': reference})
+        return ledger, job
+
+    def test_a_rotating_coding_account_is_never_shared_with_a_pipeline_worker(self):
+        self.config['provider_auth_file_env'] = 'FORGE_HARNESS_AUTH_ONE'
+        ledger, job = self.ledger_job('FORGE_HARNESS_AUTH_ONE')
+        self.deployments().tick(self.config)
+        self.assertFalse(self.engine)
+        self.assertFalse(self.github.reads)
+        self.assertFalse(self.deployments().read()['repositories'])
+        # An API-key job holds no lease, and a released worker gives its own back.
+        ledger.job_update(job['id'], fenced=True)
+        ledger.release(job['id'])
+        self.deployments().tick(self.config)
+        self.assertEqual(self.entry()['status'], 'running')
+
+    def test_an_api_key_configuration_needs_no_lease(self):
+        self.config['provider_auth_file_env'] = None
+        self.ledger_job('FORGE_HARNESS_AUTH_ONE')
+        self.deployments().tick(self.config)
+        self.assertEqual(self.entry()['status'], 'running')
+
+    def test_the_digest_loop_stops_at_the_cycle_observation_budget(self):
+        import time as clock
+        self.second_repository()
+        self.github.deadline = clock.monotonic() - 1
+        self.deployments().tick(self.config)
+        self.assertFalse(self.github.reads)
+        self.assertFalse(self.engine)
+        self.github.deadline = clock.monotonic() + 30
+        self.deployments().tick(self.config)
+        self.assertEqual(len(self.github.reads), 1)
+
+    def test_a_capacity_wait_does_not_outlive_the_deadline(self):
+        self.capacity = RunnerCapacity({'allowed': False, 'reason': 'memory_headroom'})
+        self.deployments().tick(self.config)
+        self.assertEqual(self.entry()['status'], 'running')
+        self.now = self.entry()['job']['deadline'] + 1
+        self.deployments().tick(self.config)
+        entry = self.entry()
+        self.assertEqual(entry['status'], 'failed')
+        self.assertIn('capacity', entry['summary'])
+        self.assertTrue(entry['job']['cleanup'])
+        self.assertEqual(self.resets, [entry['job']['id']])
+        self.assertFalse(self.engine)
+
+    def test_reading_the_store_never_writes_it(self):
+        self.deployments().tick(self.config)
+        path = self.root / 'state/deployments.json'
+        before = (path.stat().st_mtime_ns, path.read_bytes())
+        for _ in range(3):
+            self.deployments().read()
+        self.assertEqual((path.stat().st_mtime_ns, path.read_bytes()), before)
 
 class ContractTests(unittest.TestCase):
     def test_prepare_writes_the_read_only_strategist_note(self):
@@ -448,6 +509,8 @@ class ServiceHookTests(unittest.TestCase):
         deployments.return_value.tick.assert_called_once()
         self.assertEqual(deployments.return_value.tick.call_args.args[0]['image'], 'sha256:' + 'a' * 64)
         self.assertEqual(deployments.call_args.args[0], self.root)
+        self.assertLess(deployments.call_args.kwargs['github'].deadline, time.monotonic() + 30)
+        self.assertGreater(deployments.call_args.kwargs['github'].deadline, time.monotonic())
 
     def test_a_deployment_failure_is_recorded_and_never_breaks_the_cycle(self):
         from forge.factory.runner import RunnerError
@@ -458,6 +521,12 @@ class ServiceHookTests(unittest.TestCase):
         deployments = self.cycle(service, **{'return_value.tick.side_effect': OSError('disk')})
         self.assertEqual(deployments.return_value.fail.call_count, 1)
         self.assertNotIn('disk', deployments.return_value.fail.call_args.args[0])
+        service.next_cycle = 0
+        deployments = self.cycle(service, **{'return_value.tick.side_effect': KeyError('repositories')})
+        self.assertIn('KeyError', deployments.return_value.fail.call_args.args[0])
+        service.next_cycle = 0
+        self.cycle(service, side_effect=TypeError('constructor'))  # A construction failure is swallowed too.
+        self.assertIsNone(self.setup.view()['error'])
 
     def test_tick_is_skipped_while_a_setup_operation_is_pending(self):
         import uuid
