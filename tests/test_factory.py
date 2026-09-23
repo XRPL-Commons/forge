@@ -10,7 +10,7 @@ from forge.factory.config import validate, policy
 from forge.factory.ledger import Ledger
 from forge.factory.supervisor import Supervisor
 from forge.factory.runner import RunnerError
-from forge.factory.github import GitHubUnavailable
+from forge.factory.github import GitHubUnavailable, GitHubBudgetExhausted
 from forge.state import StateError
 
 
@@ -113,6 +113,16 @@ class FactoryTest(unittest.TestCase):
             self.now += Supervisor.DISCOVERY_INTERVAL
             self.supervisor.cycle()
             self.assertEqual(self.github.issues.call_count, 2)
+
+    def test_budget_exhaustion_is_not_reported_as_an_error(self):
+        self.settings.view.return_value = {'repositories': [{'id': 2, 'name': 'example/first', 'dispatch_allowed': True}]}
+        self.github.deadline = float('inf')
+        self.github.pulls.side_effect = GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        self.supervisor.discover()
+        self.github.issue.side_effect = GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        self.github.target.return_value = 'main'
+        self.supervisor.cycle()
+        self.assertEqual([e for e in self.supervisor.errors if e['phase'] in ('github', 'discovery', 'reconciliation')], [])
 
     def test_discovery_rotates_repositories_after_exhausted_api_budget(self):
         self.settings.view.return_value = {'repositories': [

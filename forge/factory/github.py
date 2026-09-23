@@ -15,6 +15,10 @@ class GitHubUnavailable(RuntimeError):
         self.status = status
 
 
+class GitHubBudgetExhausted(GitHubUnavailable):
+    """The cycle's observation budget is spent; the next cycle resumes. Not an error to report."""
+
+
 class GitHub:
     def __init__(self, settings, runtime, *, client=None, clock=time.time):
         self.settings, self.runtime = settings, runtime
@@ -61,7 +65,7 @@ class GitHub:
 
     def call(self, role, repo, method, suffix, payload=None):
         if time.monotonic() >= getattr(self, 'deadline', float('inf')):
-            raise GitHubUnavailable('Cycle observation budget reached; resume next cycle')
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
         try:
             return self.client.request(method, f"/repos/{repo['repo']}" + suffix,
                                        self.token(role, repo['repo_id']), payload)
