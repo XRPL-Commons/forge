@@ -11,6 +11,7 @@ from .config import load
 from .contracts import digest, references_issue
 from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
+from .ledger import APPROACH_HOLD
 
 MAX_AGE = 300
 LEGACY_SETUP_REASON = 'Configure two approving reviews and stale-approval dismissal before dispatch'
@@ -88,6 +89,9 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         state, detail, actions = ('backlog', 'Not queued for Forge.', ['queue']) if backlog else ('attention', 'Paused by an operator.', ['resume'])
     elif item.get('state') == 'hold':
         state, detail = 'attention', item.get('reason') or 'An operator decision is needed.'
+        if item.get('reason') == APPROACH_HOLD:
+            detail += ' Describe the new approach on the issue, then retry with that decision.'
+            actions = ['retry']
     elif item.get('state') == 'approval_needed':
         state, detail = 'attention', 'The pull request needs a human review.'
     elif item.get('state') in ('built', 'reviewed', 'audited', 'investigating'):

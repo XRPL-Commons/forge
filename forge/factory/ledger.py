@@ -9,6 +9,9 @@ import uuid
 from ..state import AtomicStore, StateError
 from .contracts import MAX_FAILURES, NEXT_ROLE, PASS_STATE, RETRY_STATE, ROLES, STATES
 
+# A human records the new approach and retries; nothing else releases this hold.
+APPROACH_HOLD = 'Repeated failure requires a supported change of approach'
+
 
 class Ledger:
     def __init__(self, root, clock=time.time):
@@ -214,7 +217,7 @@ class Ledger:
             uncertain = len(related) >= 2 and (not pattern or findings.get('incomplete'))
             prior_changes = {str((f.get('findings') or {}).get('alternative')) for f in related[:-1]}
             if (repeated or uncertain) and (not alternative or not findings.get('evidence') or str(alternative) in prior_changes):
-                issue.update(state='hold', reason='Repeated failure requires a supported change of approach')
+                issue.update(state='hold', reason=APPROACH_HOLD)
             else:
                 issue.update(state=failure['retry_state'], retry_plan=alternative or findings['summary'])
 

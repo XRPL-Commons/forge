@@ -11,6 +11,7 @@ from .config import load
 from .contracts import references_issue
 from .github import GitHub, GitHubUnavailable
 from .issues import IssueInventory, facts, labels, revision, dependencies, LEGACY_SETUP_REASON
+from .ledger import APPROACH_HOLD
 
 ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck'}
 
@@ -197,8 +198,8 @@ class IssueActions:
     def validate_action(self, action, issue, item):
         state = (item or {}).get('state')
         held = labels(issue).intersection(self.config['hold_labels'])
-        if action == 'retry' and state != 'failed':
-            raise ValueError('Retry is only for failed attempts.')
+        if action == 'retry' and not (state == 'failed' or (state == 'hold' and (item or {}).get('reason') == APPROACH_HOLD)):
+            raise ValueError('Retry is only for failed attempts or a hold that waits for a new approach.')
         if action in ('queue', 'backlog', 'pause') and (held or state in ('failed', 'merged', 'approval_needed', 'investigating')):
             raise ValueError('Resolve the existing decision before changing the queue.')
         if action == 'queue' and state == 'hold' and not (item or {}).get('operator_hold', {}).get('kind') == 'backlog':
