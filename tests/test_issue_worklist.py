@@ -216,6 +216,18 @@ class WorklistTests(unittest.TestCase):
         Supervisor(self.ledger, Engine(), self.github, self.settings, self.actions.config).reconcile(self.ledger.read()['issues']['1:1'])
         self.assertIn('Existing work', self.ledger.read()['issues']['1:1']['reason'])
 
+    def test_retry_releases_only_the_approach_hold_with_a_recorded_decision(self):
+        from forge.factory.ledger import APPROACH_HOLD
+        self.tracked(hold=APPROACH_HOLD); self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual(row['actions'], ['retry'])
+        self.assertIn('new approach', row['explanation'])
+        identifier, decision = self.decision('retry')
+        self.actions.apply(identifier, decision)
+        issue = self.ledger.read()['issues']['1:1']
+        self.assertEqual(issue['state'], 'ready')
+        self.assertEqual(issue['retry_plan'], decision['reason'])
+
     def test_retry_never_releases_a_hold(self):
         self.tracked(hold='Wait for a decision'); self.refresh()
         with self.assertRaises(ValueError): self.decision('retry')
