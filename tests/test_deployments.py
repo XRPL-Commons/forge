@@ -108,6 +108,27 @@ class DeploymentTests(unittest.TestCase):
         self.engine[job].update(status='exited', running=False, exit_code=0)
         return job
 
+    def test_a_result_that_matches_the_worker_schema_is_accepted(self):
+        # Every role writes headline and plain; a strategist result that
+        # satisfies harness.schema() must not be rejected for carrying them.
+        self.deployments().tick(self.config)
+        self.finish(headline='Deploys with GitHub Actions',
+                    plain='The workflow pushes to production on every merge. Forge can read the commit from the site.')
+        self.deployments().tick(self.config)
+        entry = self.entry()
+        self.assertEqual(entry['status'], 'proposed')
+        self.assertEqual(entry['proposal']['strategy'], 'header')
+
+    def test_a_proposed_path_that_could_change_the_host_is_refused(self):
+        # 'https://' + domain + path: a path that does not start with a slash
+        # would append to the host, and the card never shows it for a header.
+        self.deployments().tick(self.config)
+        self.finish(exposure={'kind': 'header', 'path': '.attacker.example/', 'field': None, 'header': 'X-Build-Commit'})
+        self.deployments().tick(self.config)
+        entry = self.entry()
+        self.assertEqual(entry['status'], 'failed')
+        self.assertIn('where the running commit is exposed', entry['summary'])
+
     def test_first_tick_starts_one_strategist_per_repository_and_records_its_proposal(self):
         deployments = self.deployments()
         deployments.tick(self.config)

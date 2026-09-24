@@ -44,8 +44,9 @@ def profile(value, job):
     if not isinstance(value, dict) or len(json.dumps(value)) > 65536:
         raise ValueError('The deployment read did not return a valid result')
     expected = {'version', 'attempt', 'role', 'outcome', 'summary', *PROFILE}
-    if 'blocker' in value:
-        expected.add('blocker')  # Optional: older image contracts omit the field.
+    # Optional only because an older image's contract omits them; a current
+    # worker writes all three, as contracts.result() also allows.
+    expected |= {key for key in ('blocker', 'headline', 'plain') if key in value}
     if (set(value) != expected or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != 'strategist'
             or value['outcome'] not in OUTCOMES
@@ -64,6 +65,7 @@ def profile(value, job):
         raise ValueError('The deployment read must state where the domain came from')
     host(domain['value'])
     if (not texts(exposure, ('kind', 'path', 'field', 'header')) or exposure['kind'] not in ('health', 'header', 'none')
+            or (exposure['path'] is not None and not exposure['path'].startswith('/'))
             or (exposure['kind'] == 'health' and not str(exposure['path'] or '').startswith('/'))
             or (exposure['kind'] == 'header' and not exposure['header'])):
         raise ValueError('The deployment read must say where the running commit is exposed')

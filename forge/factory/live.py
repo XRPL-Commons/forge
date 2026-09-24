@@ -6,6 +6,7 @@ failure the operator reads, never a silent "not deployed".
 """
 import json
 import re
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
@@ -53,7 +54,25 @@ def field_value(document, field):
     return document
 
 
-def read_commit(url, *, kind, field=None, header=None, timeout=5, limit=65536, opener=None):
+def drain(response, limit, *, deadline, clock=time.monotonic):
+    """Read a bounded body under a wall clock.
+
+    The socket timeout bounds one read, not the whole response: a host that
+    answers a byte at a time would otherwise hold the cycle for hours, and
+    observation runs before dispatch.
+    """
+    body = bytearray()
+    while len(body) <= limit:
+        if clock() >= deadline:
+            raise LiveUnavailable('The deployment took too long to answer')
+        chunk = response.read(min(8192, limit + 1 - len(body)))
+        if not chunk:
+            break
+        body += chunk
+    return bytes(body)
+
+
+def read_commit(url, *, kind, field=None, header=None, timeout=5, limit=65536, opener=None, clock=time.monotonic):
     """Return the commit the domain reports, or None when it reports none."""
     parts = urlsplit(url)
     if parts.scheme != 'https' or not parts.hostname:
@@ -64,7 +83,7 @@ def read_commit(url, *, kind, field=None, header=None, timeout=5, limit=65536, o
         with (opener or build_opener(SameHost())).open(request, timeout=timeout) as response:
             if kind != 'health':
                 return commit(response.headers.get(header))
-            body = response.read(limit + 1)
+            body = drain(response, limit, deadline=clock() + timeout, clock=clock)
     except (HTTPError, URLError, OSError, ValueError) as error:
         raise LiveUnavailable(reason(error)) from None
     if len(body) > limit:

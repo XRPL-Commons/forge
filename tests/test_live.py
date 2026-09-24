@@ -11,16 +11,29 @@ from forge.factory.live import COMMIT, LiveUnavailable, SameHost, read_commit
 class Response:
     def __init__(self, body=b'', headers=None):
         self.body, self.headers, self.reads = body, headers or {}, []
+        self.offset = 0
 
     def read(self, size=None):
+        # A real response consumes what it hands out; the reader drains it.
         self.reads.append(size)
-        return self.body if size is None else self.body[:size]
+        end = len(self.body) if size is None else min(len(self.body), self.offset + size)
+        chunk = self.body[self.offset:end]
+        self.offset = end
+        return chunk
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exception):
         return False
+
+
+class Slow(Response):
+    """A host that answers, byte by byte, for ever."""
+
+    def read(self, size=None):
+        self.reads.append(size)
+        return b'a'
 
 
 class Opener:
@@ -55,6 +68,14 @@ class LiveTests(unittest.TestCase):
     def test_a_dotted_field_walks_the_health_document(self):
         value, _ = self.health({'build': {'commit': COMMIT_VALUE}}, field='build.commit')
         self.assertEqual(value, COMMIT_VALUE)
+
+    def test_a_slow_drip_response_ends_at_the_wall_clock(self):
+        # The socket timeout bounds one read, not the whole body; observation
+        # runs before dispatch, so a slow host must not hold the cycle.
+        ticks = iter([0, 1, 2, 3, 4, 5, 6])
+        with self.assertRaisesRegex(LiveUnavailable, 'too long to answer'):
+            read_commit('https://example.org/health', kind='health', field='commit',
+                        opener=Opener(Slow()), timeout=5, clock=lambda: next(ticks))
 
     def test_a_short_commit_is_accepted_and_returned_as_read(self):
         value, _ = self.health({'commit': 'abc1234'}, field='commit')
@@ -105,7 +126,9 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(opener.response.reads, [101])
         opener = Opener(Response(json.dumps({'commit': COMMIT_VALUE}).encode()))
         read_commit('https://site.example/health', kind='health', field='commit', opener=opener)
-        self.assertEqual(opener.response.reads, [65537])
+        # Drained in chunks, and never past the cap.
+        self.assertLessEqual(sum(opener.response.reads), 65537)
+        self.assertTrue(all(size <= 8192 for size in opener.response.reads))
 
     def test_an_unreadable_answer_is_a_credential_free_failure(self):
         for error, expected in ((HTTPError('https://site.example/health', 503, 'Down', {}, None), '503'),
