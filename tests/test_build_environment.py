@@ -47,6 +47,23 @@ class EnvironmentLifecycleTests(CycleTest):
         self.assertEqual(item['environment_hold']['blocker'], 'ci_evidence')
         self.assertEqual(item['failures'], [])
 
+    def test_environment_repair_preserves_build_branch_without_accepted_candidate(self):
+        self.cycle(); old = self.active()
+        report = {'version': 1, 'attempt': old['id'], 'role': 'build', 'outcome': 'blocked_environment',
+                  'blocker': 'sandbox', 'summary': 'Published work but package install was read-only',
+                  'headline': 'Install blocked', 'plain': 'Published the work before stopping.'}
+        self.engine.finish(old, report); self.cycle()
+        self.config['image'] = 'sha256:' + 'b' * 64
+        self.cycle()
+        job = self.active()
+        self.assertEqual(job['branch'], old['branch'])
+        self.assertEqual(job['resume_branch'], old['branch'])
+        self.ledger.wait(job['id'], 'Role credentials unavailable', 0)
+        self.ledger.job_update(job['id'], fenced=True, phase='stopping')
+        self.cycle()
+        self.assertEqual(self.active()['resume_branch'], old['branch'])
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
     def test_ci_budget_defers_same_launch_without_fencing_or_failure(self):
         self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
         self.assertFalse(self.cycle()['errors'])
