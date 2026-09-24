@@ -539,8 +539,12 @@ def main():
             while True:
                 try:
                     service.tick()
-                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-                    print('Supervisor enquiry failed; ownership retained for retry', flush=True)
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                    # The reason is the whole value of this line: a cycle that
+                    # cannot run repeats every two seconds, and an operator
+                    # reading the log has nothing else to go on.
+                    print('Supervisor enquiry failed; ownership retained for retry: '
+                          + type(error).__name__ + ': ' + str(error), flush=True)
                 time.sleep(2)
         except KeyboardInterrupt:
             pass
