@@ -20,6 +20,9 @@ ROLE_PERMISSIONS = {
     'audit': {'contents': 'read', 'issues': 'read', 'pull_requests': 'write', 'checks': 'write'},
     'controller': {'contents': 'write', 'issues': 'write', 'pull_requests': 'write', 'checks': 'write', 'administration': 'read'},
 }
+# Recommended, never required: a role must keep minting tokens on an installation
+# that predates the grant, so callers ask for these only when they need them.
+OPTIONAL_PERMISSIONS = {'controller': {'deployments': 'read'}}
 REPO_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9_.-]+')
 
 
@@ -35,10 +38,21 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+RANK = {'none': 0, 'read': 1, 'write': 2, 'admin': 3}
+
+
+def _missing(wanted, permissions):
+    return [f'{key}: {level}' for key, level in wanted.items()
+            if RANK.get(permissions.get(key), 0) < RANK[level]]
+
+
 def missing_permissions(role, permissions):
-    rank = {'none': 0, 'read': 1, 'write': 2, 'admin': 3}
-    return [f'{key}: {level}' for key, level in ROLE_PERMISSIONS[role].items()
-            if rank.get(permissions.get(key), 0) < rank[level]]
+    return _missing(ROLE_PERMISSIONS[role], permissions)
+
+
+def recommended_permissions(role, permissions):
+    """Missing optional grants: a recommendation on the access page, never a block."""
+    return _missing(OPTIONAL_PERMISSIONS.get(role, {}), permissions)
 
 
 class AppClient:

@@ -7,6 +7,7 @@ from .factory.github import GitHub, GitHubUnavailable
 
 MAX_AGE = 300
 RULESET_NAME = 'Forge review baseline'
+DEPLOYMENT_LABEL = 'forge:deployment'
 
 
 def ruleset(branch):
@@ -29,6 +30,21 @@ class RepositorySetup:
         self.settings = settings
         self.github_class = github_class
         self.path = settings.state / 'repositories.json'
+        # Deployment state belongs to the live factory, never to the setup copy.
+        self.root = settings.root.parent if settings.root.name == 'setup' else settings.root
+
+    def deployments(self):
+        from .deployments import Deployments
+        return Deployments(self.root, runner=None, github=None,
+                           settings=self.settings, clock=self.settings.clock)
+
+    def proposals(self):
+        """A read for the UI: it never fails the page and never creates factory state."""
+        try:
+            rows = read_json(self.root / 'state/deployments.json')['repositories']
+            return {key: row for key, row in rows.items() if isinstance(row, dict)}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return {}
 
     def read(self):
         try:
@@ -39,6 +55,8 @@ class RepositorySetup:
 
     def views(self, rows, config):
         data, now = self.read(), self.settings.clock()
+        profiles = {r['id']: r.get('deployment') for r in config['repositories']}
+        entries = self.proposals()
         result = []
         for row in rows:
             previous = data['repositories'].get(str(row['id']), {})
@@ -52,16 +70,22 @@ class RepositorySetup:
                 status = 'stale' if report else 'unchecked'
             if not row.get('access_ready'):
                 status = 'access_needed'
+            entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
             result.append({**row, 'protection_status': status, 'protection_ready': status == 'ready',
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
                            'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
-                           'setup_url': '/settings/repository?repo_id=' + str(row['id'])})
+                           'setup_url': '/settings/repository?repo_id=' + str(row['id']),
+                           'deployment': {'status': entry.get('status') or ('confirmed' if profile else 'idle'),
+                                          'summary': entry.get('summary'), 'proposal': entry.get('proposal'),
+                                          'profile': profile, 'observation': entry.get('observation'),
+                                          'error': entry.get('error'), 'reason': entry.get('reason'),
+                                          'exposure_issue': (profile or {}).get('exposure_issue') or entry.get('exposure_issue'),
+                                          'reread_requested': bool(entry.get('reread_requested'))}})
         return result
 
     def view(self, repo_id=None):
         settings = self.settings.view()
-        root = self.settings.root.parent if self.settings.root.name == 'setup' else self.settings.root
-        registration = read_json(root / 'state/onboarding/setup.json') if (root / 'state/onboarding/setup.json').exists() else {}
+        registration = read_json(self.root / 'state/onboarding/setup.json') if (self.root / 'state/onboarding/setup.json').exists() else {}
         connections = {}
         for role, access in settings['roles'].items():
             app = registration.get('apps', {}).get(role, {})
@@ -91,6 +115,68 @@ class RepositorySetup:
         else:
             configured['enabled'] = True
         self.settings.save(config, revision)
+        return self.view(repo_id)
+
+    def deployment(self, repo_id, revision, action, domain=None, reason=None):
+        """Confirming is the only moment settings change or an issue is filed."""
+        if self.settings.root.name == 'setup':
+            raise ValueError('Finish initial Forge setup before confirming a deployment profile')
+        config = self.settings.load()
+        if revision != digest(config):
+            raise ValueError('Repository settings changed. Reload and check again.')
+        row = self.view(repo_id)['repositories'][0]
+        store = self.deployments()
+        if action == 'reread':
+            store.request_reread(repo_id, row['name'])
+            return self.view(repo_id)
+        if action == 'reject':
+            store.reject(repo_id, reason)
+            return self.view(repo_id)
+        if action != 'confirm':
+            raise ValueError('A deployment decision is confirm, reject, or reread')
+        configured = next((r for r in config['repositories'] if r['id'] == repo_id), None)
+        if configured is None or not configured['enabled']:
+            raise ValueError('Enable this repository before confirming its deployment profile.')
+        entry = store.read()['repositories'].get(str(repo_id)) or {}
+        proposed = entry.get('proposal') or {}
+        profile = store.confirm(repo_id, domain)
+        # A second read of the same repository must never file the issue twice: the
+        # number survives in the store even when settings could not record it.
+        profile['exposure_issue'] = (configured.get('deployment') or {}).get('exposure_issue') or entry.get('exposure_issue')
+        configured['deployment'] = profile
+        try:
+            self.settings.save(config, revision)
+        except (ValueError, OSError):
+            try:
+                store.save(repo_id, status='proposed')  # A decision never outlives its write.
+            except Exception:
+                pass  # The operator needs the refusal, not the rollback's own failure.
+            raise
+        issue = proposed.get('proposal')
+        if issue and profile['exposure_issue'] is None and profile['exposure']['kind'] == 'none':
+            try:
+                github = self.github_class(self.settings, {}, clock=self.settings.clock)
+                github.deadline = time.monotonic() + 60
+                # The ready label is the operator's to add; Forge only labels the subject.
+                number = github.file_issue({'repo': row['name'], 'repo_id': repo_id},
+                                           issue['title'], issue['body'], [DEPLOYMENT_LABEL])
+            except (GitHubUnavailable, ValueError, OSError) as error:
+                store.save(repo_id, error=str(error) if isinstance(error, GitHubUnavailable) else
+                           'The deployment issue could not be filed; re-read deployment to retry')
+            else:
+                # Record the number before anything else can fail: a lost number
+                # would let the next confirmation file the same issue again.
+                store.save(repo_id, exposure_issue=number)
+                try:
+                    config = self.settings.load()
+                    current = digest(config)
+                    saved = next((r for r in config['repositories'] if r['id'] == repo_id), None)
+                    if saved and saved.get('deployment'):
+                        saved['deployment']['exposure_issue'] = number
+                        self.settings.save(config, current)
+                except (ValueError, OSError) as error:
+                    store.save(repo_id, error='Deployment issue #' + str(number) +
+                               ' was filed but not recorded in settings: ' + str(error))
         return self.view(repo_id)
 
     def check(self, repo_id=None, revision=None):

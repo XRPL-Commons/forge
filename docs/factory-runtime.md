@@ -208,6 +208,37 @@ requirements or policy changes invalidate earlier candidate evidence. GitHub's
 own protections make the final decision; the merge request includes the expected
 head SHA and never requests a bypass.
 
+## Deployment observation
+
+The strategist role reads an enabled repository once it has no deployment
+profile, and again whenever the digest of `.github/workflows/*` on the default
+branch differs from the one recorded for its profile — checked at most every
+30 minutes — or when the operator presses "Re-read deployment" on the
+Repository page. It runs under its own internal slot, `deployment-strategist`,
+one execution at a time across every repository: admission follows the same
+host memory check as any other job, and a job waits a cycle when the provider
+credential its runner config points at is already leased by pipeline work. A
+strategist job never has a candidate and never publishes; its checkout is the
+default branch at the observed head, and it uses the same reduced read-only
+token Recovery jobs get (`metadata`, `contents`, `issues`, `pull_requests` at
+`read`), not a fifth App.
+
+Each supervisor cycle, inside the existing GitHub budget, observation reads
+every confirmed profile: the deployments API for the profile's environment,
+and, when the profile's exposure and domain are set, one HTTPS request to the
+domain — 5 second timeout, response capped at 64 KiB, no redirect across
+hosts, no credentials sent. A domain that fails three cycles in a row is
+retried every 10 minutes instead of every cycle. Errors reading a domain or
+the deployments API are recorded per repository and surfaced as a warning,
+never as a false "not deployed".
+
+`deployments: read` on the Controller App is recommended, not required.
+`ROLE_PERMISSIONS` does not include it; observation asks for it as an optional
+extra on top of the controller's ordinary token, and an installation that has
+not granted it still gets domain reads — only the GitHub deployments half of
+observation is unavailable. The GitHub access page lists it among the
+controller's missing recommended permissions until granted.
+
 ## Qualification and cutover
 
 Run the regression suite and credential-free container reset canary first:

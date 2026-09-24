@@ -76,6 +76,30 @@ Changing these facts invalidates old evidence without itself consuming a failure
 A new head must satisfy submission before fresh Review/Audit. A changed base or
 policy on a still-valid submission starts fresh Review/Audit.
 
+## Deployment observation
+
+A deployment profile is a proposal until an operator confirms it. The
+strategist role reads a repository read-only and returns a candidate strategy,
+deploy workflow, domain and exposure; it never has a candidate, never
+publishes, and nothing it returns changes settings, files an issue or
+contacts a domain by itself. Confirming is the operator's decision alone, made
+on the Repository page, and it is the only thing that writes the profile into
+repository settings.
+
+Forge never deploys a repository and never changes how one deploys. The
+supervisor's observation loop reads GitHub deployment statuses for the
+confirmed profile's environment and, when a domain is set, one HTTPS request
+to it. A merged issue becomes `deployed` only from a commit Forge read
+itself — live or an ancestor of it, or carried by a successful GitHub
+deployment — never from elapsed time, execution success or the absence of
+contrary evidence; without that evidence it stays `waiting`.
+
+When confirming a profile also files a deployment issue, that issue carries
+the label `forge:deployment` and not the ready label. Filing it is not
+queuing it: Forge never dispatches a builder to it on its own, the same as
+any other issue without the ready label. The operator adds it when they want
+the work done.
+
 ## Verdict and approval contract
 
 Workers return one bounded JSON result file bound to the assignment. Common fields
