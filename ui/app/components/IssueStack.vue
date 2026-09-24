@@ -13,9 +13,15 @@ const props = defineProps<{
   section?: string
   role?: 'build' | 'review' | 'audit' | 'recovery' | 'merge'
 }>()
-defineEmits<{ stop: [jobId: string] }>()
+// A card opened from the deck replaces the deck: the detail panel is the one
+// overlay on screen, so the modal closes before the panel opens.
+const emit = defineEmits<{ open: [card: CardModel] }>()
 
 const open = ref(false)
+function openCard(card: CardModel) {
+  open.value = false
+  emit('open', card)
+}
 const deck = computed(() => Math.min(props.cards.length, 4))
 const label = computed(() => `${props.cards.length} ${props.noun}`)
 const title = computed(() => (props.section ? `${label.value} · ${props.section}` : label.value))
@@ -51,7 +57,7 @@ const next = computed(() => props.cards[0] ?? null)
     <UModal v-model:open="open" :title="title" :ui="{ content: 'max-w-[min(64rem,92vw)]' }">
       <template #body>
         <div class="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-          <IssueCard v-for="card in cards" :key="card.key" :card="card" :role="role" @stop="$emit('stop', $event)" />
+          <IssueCard v-for="card in cards" :key="card.key" :card="card" :role="role" @open="openCard(card)" />
         </div>
       </template>
     </UModal>

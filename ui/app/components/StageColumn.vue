@@ -2,7 +2,7 @@
 import type { CardModel } from '~/utils/factory'
 
 const props = defineProps<{ id: string; title: string; summary: string; cards: CardModel[]; empty?: string }>()
-defineEmits<{ stop: [jobId: string] }>()
+defineEmits<{ open: [card: CardModel] }>()
 
 // Only cards with a worker attached stay expanded; the rest wait as one stack.
 const active = computed(() => props.cards.filter(card => card.jobId !== null))
@@ -17,7 +17,7 @@ const role = computed(() => props.id.replace(/^stage-/, '') as 'build' | 'review
     </div>
     <p class="mt-0.5 text-xs text-muted">{{ summary }}</p>
     <TransitionGroup name="card" tag="div" class="relative mt-3 flex flex-col gap-2.5">
-      <IssueCard v-for="card in active" :key="card.key" :card="card" :role="role" @stop="$emit('stop', $event)" />
+      <IssueCard v-for="card in active" :key="card.key" :card="card" :role="role" @open="$emit('open', card)" />
     </TransitionGroup>
     <IssueStack
       v-if="queued.length"
@@ -26,7 +26,7 @@ const role = computed(() => props.id.replace(/^stage-/, '') as 'build' | 'review
       noun="queued"
       :section="title"
       :role="role"
-      @stop="$emit('stop', $event)"
+      @open="$emit('open', $event)"
     />
     <p v-if="!cards.length" class="mt-3 text-xs text-muted">{{ empty ?? 'No issues at this stage.' }}</p>
   </div>

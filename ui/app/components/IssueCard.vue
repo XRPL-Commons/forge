@@ -4,7 +4,11 @@ import { elapsed, type CardModel } from '~/utils/factory'
 const props = defineProps<{ card: CardModel; role?: 'build' | 'review' | 'audit' | 'recovery' | 'merge' }>()
 const ROLE_COLORS = { build: '#94bfff', review: '#c9a4f4', audit: '#80d7bd', recovery: '#c0cbcd', merge: '#edbd77' } as const
 const roleColor = computed(() => ROLE_COLORS[props.role ?? 'build'])
-defineEmits<{ stop: [jobId: string] }>()
+// The whole card is the control: clicking it (or Enter / Space on it) opens
+// the issue's detail panel. No card carries a button of its own any more —
+// every action lives in that panel.
+const emit = defineEmits<{ open: [] }>()
+const label = computed(() => `Open ${props.card.repo}${props.card.number === null ? '' : ` #${props.card.number}`}`)
 
 // Every card renders the same fixed set of rows — never a conditional tree —
 // so all cards are the same height whatever they carry. The header and the
@@ -26,9 +30,15 @@ const note = computed(() => props.card.deployment || props.card.footerLink?.labe
   <article
     :id="card.id"
     :data-key="card.key"
-    class="issue-card relative flex h-[104px] flex-col overflow-hidden rounded-xl border border-line bg-panel px-3 py-2"
+    role="link"
+    tabindex="0"
+    :aria-label="label"
+    class="issue-card relative flex h-[104px] cursor-pointer flex-col overflow-hidden rounded-xl border border-line bg-panel px-3 py-2 transition hover:-translate-y-0.5 hover:border-white/40 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-200"
     :class="card.running ? 'is-working' : ''"
     :style="{ '--role-color': roleColor }"
+    @click="emit('open')"
+    @keydown.enter.prevent="emit('open')"
+    @keydown.space.prevent="emit('open')"
   >
     <span class="work-wave top" aria-hidden="true" /><span class="work-wave bottom" aria-hidden="true" />
     <div class="flex items-baseline justify-between gap-2 text-xs text-muted">
@@ -47,15 +57,10 @@ const note = computed(() => props.card.deployment || props.card.footerLink?.labe
         <span v-if="card.running" class="inline-block size-2.5 shrink-0 rounded-full border border-current border-r-transparent text-mint-200 motion-safe:animate-spin" aria-hidden="true" />
         <span v-if="progress" class="truncate">{{ progress }}</span>
         <span v-if="progress && note" class="shrink-0">·</span>
-        <NuxtLink v-if="!card.deployment && card.footerLink && card.footerLink.to" :to="card.footerLink.to" class="truncate text-sky-200 hover:underline">{{ card.footerLink.label }}</NuxtLink>
+        <NuxtLink v-if="!card.deployment && card.footerLink && card.footerLink.to" :to="card.footerLink.to" class="truncate text-sky-200 hover:underline" @click.stop>{{ card.footerLink.label }}</NuxtLink>
         <span v-else-if="note" class="truncate" :class="card.footerLink && !card.deployment ? 'text-amber-200' : ''">{{ note }}</span>
       </p>
-      <span class="-mr-1.5 flex shrink-0 items-center">
-        <UButton :to="card.to" size="xs" color="neutral" variant="ghost" icon="i-lucide-arrow-up-right" aria-label="Open" title="Open" />
-        <slot name="actions">
-          <UButton v-if="card.stoppable && card.jobId" size="xs" color="error" variant="ghost" icon="i-lucide-square" aria-label="Stop" title="Stop" @click="$emit('stop', card.jobId)" />
-        </slot>
-      </span>
+      <UIcon name="i-lucide-arrow-up-right" class="shrink-0 text-muted" aria-hidden="true" />
     </div>
   </article>
 </template>

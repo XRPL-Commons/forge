@@ -4,6 +4,7 @@ import {
   COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, breakdown, isProgressStatus, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
+import { panelQuery, panelState, panelTarget } from '~/utils/panel'
 
 interface Fence { ok: false; reason: string }
 
@@ -11,11 +12,8 @@ useHead({ title: 'Activity' })
 
 const api = useForgeApi()
 const route = useRoute()
-const toast = useToast()
+const router = useRouter()
 
-// True while a confirmation dialog is open or a POST is in flight, so a poll
-// never re-renders the page under the operator's hands.
-const confirming = ref(false)
 // A {ok:false, reason} answer is a state, not a failed request: it replaces
 // the payload, so the page shows the fence instead of a stale factory.
 const poll = usePoll<FactoryView | Fence>(async () => {
@@ -27,7 +25,6 @@ const poll = usePoll<FactoryView | Fence>(async () => {
   }
 }, {
   interval: useRuntimeConfig().public.pollInterval,
-  allowed: () => !confirming.value,
 })
 
 const now = ref(Math.floor(Date.now() / 1000))
@@ -118,46 +115,32 @@ watch(groups, (next) => {
   if (moves.length) announcement.value = moves.join('. ')
 })
 
-const STOP = {
-  action: 'stop',
-  title: 'Stop this attempt?',
-  text: 'This cancels the issue’s active attempt, discards unfinished workspace edits, and resets its runner. Published PRs are preserved.',
-  confirmLabel: 'Stop attempt',
+// The board decides nothing itself: a card opens the issue's panel, and every
+// action — decisions, Stop, Reset — is taken there. The open panel lives in
+// the URL (`?issue=<key>`, plus `?job=<id>` for an internal run), so a reload
+// and the back button restore exactly what the operator was looking at.
+const panel = computed(() => panelState(route.query))
+const panelOpen = computed({
+  get: () => !!panel.value.key,
+  set: (value: boolean) => { if (!value) close() },
+})
+
+function open(card: CardModel) {
+  void router.replace({ query: panelQuery(route.query, panelTarget(card)) })
 }
-const RESET = {
-  action: 'reset',
-  title: 'Reset runner?',
-  text: 'This terminates the old execution and discards its disposable workspace. Capacity is released only after teardown is verified.',
-  confirmLabel: 'Reset runner',
+function close() {
+  void router.replace({ query: panelQuery(route.query, null) })
 }
 
-const dialog = ref<{ action: string; title: string; text: string; confirmLabel: string; target: string } | null>(null)
-const dialogError = ref<string | null>(null)
-
-function ask(kind: typeof STOP, target: string) {
-  dialogError.value = null
-  dialog.value = { ...kind, target }
-  confirming.value = true
-}
-function closeDialog() {
-  dialog.value = null
-  dialogError.value = null
-  confirming.value = false
-}
-async function confirm(reason: string) {
-  const open = dialog.value
-  if (!open) return
-  dialogError.value = null
-  try {
-    await api.act('/api/factory/action', { action: open.action, target: open.target, reason })
-  } catch (error: unknown) {
-    dialogError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
-    return
-  }
-  closeDialog()
-  toast.add({ title: 'Action queued for the supervisor.', color: 'success' })
-  await poll.refresh()
-}
+// Closing the panel hands focus back to the card that opened it, when that
+// card is still on the board (a card opened from inside a stack is not).
+watch(() => panel.value.key, (key, before) => {
+  if (key || !before) return
+  const opener = before
+  nextTick(() => requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>(`.issue-card[data-key="${CSS.escape(opener)}"]`)?.focus()
+  }))
+})
 </script>
 
 <template>
@@ -212,7 +195,7 @@ async function confirm(reason: string) {
           :title="COLUMN_TITLES[role]"
           :summary="summary(role, groups.columns[role])"
           :cards="groups.columns[role]"
-          @stop="ask(STOP, $event)"
+          @open="open"
         />
       </section>
 
@@ -221,9 +204,9 @@ async function confirm(reason: string) {
       <section id="needs-attention" class="mt-6 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
         <h2 class="text-sm font-semibold text-white">Needs attention · {{ attentionCount }}</h2>
         <div v-if="groups.attention.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-          <IssueCard v-for="card in groups.attention" :key="card.key" :card="card" @stop="ask(STOP, $event)" />
+          <IssueCard v-for="card in groups.attention" :key="card.key" :card="card" @open="open(card)" />
         </div>
-        <IssueStack v-if="groups.held.length" class="mt-3" :cards="groups.held" noun="on hold" @stop="ask(STOP, $event)" />
+        <IssueStack v-if="groups.held.length" class="mt-3" :cards="groups.held" noun="on hold" @open="open" />
         <p v-if="!attentionCount" class="mt-2 text-xs text-muted">No issues need your attention.</p>
       </section>
 
@@ -231,7 +214,7 @@ async function confirm(reason: string) {
         <h2 class="text-sm font-semibold text-white">Finishing</h2>
         <p class="mt-0.5 text-xs text-muted">Approved work waiting to merge, or being merged.</p>
         <div v-if="groups.finishing.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-          <IssueCard v-for="card in groups.finishing" :key="card.key" :card="card" @stop="ask(STOP, $event)" />
+          <IssueCard v-for="card in groups.finishing" :key="card.key" :card="card" @open="open(card)" />
         </div>
         <p v-else class="mt-2 text-xs text-muted">No issues waiting to merge.</p>
       </section>
@@ -242,11 +225,7 @@ async function confirm(reason: string) {
           <div id="stage-recovery" class="scroll-mt-32">
             <p class="mt-0.5 text-xs text-muted">Internal recovery is shown separately from productive workers.</p>
             <div v-if="runnerCards.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-              <IssueCard v-for="card in runnerCards" :key="card.id" :card="card">
-                <template #actions>
-                  <UButton v-if="card.jobId" size="xs" color="error" variant="ghost" icon="i-lucide-rotate-ccw" aria-label="Reset" title="Reset" @click="ask(RESET, card.jobId)" />
-                </template>
-              </IssueCard>
+              <IssueCard v-for="card in runnerCards" :key="card.id" :card="card" @open="open(card)" />
             </div>
             <p v-else class="mt-2 text-xs text-muted">No internal work is running.</p>
           </div>
@@ -257,7 +236,7 @@ async function confirm(reason: string) {
         <details :open="completedOpen" @toggle="event => completedOpen = (event.target as HTMLDetailsElement).open">
           <summary class="cursor-pointer text-sm font-semibold text-white">Completed issues · {{ groups.completed.length }}</summary>
           <div v-if="groups.completed.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-            <IssueCard v-for="card in groups.completed" :key="card.key" :card="card" />
+            <IssueCard v-for="card in groups.completed" :key="card.key" :card="card" @open="open(card)" />
           </div>
           <p v-else class="mt-2 text-xs text-muted">No completed issues yet.</p>
         </details>
@@ -266,15 +245,10 @@ async function confirm(reason: string) {
 
     <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
 
-    <ConfirmDialog
-      v-if="dialog"
-      :open="!!dialog"
-      :title="dialog.title"
-      :text="dialog.text"
-      :confirm-label="dialog.confirmLabel"
-      :error="dialogError"
-      @confirm="confirm"
-      @close="closeDialog"
-    />
+    <!-- The panel is an overlay teleported to the body: it belongs to the
+         browser, not to the first paint. -->
+    <ClientOnly>
+      <IssuePanel v-if="panel.key" v-model:open="panelOpen" :issue-key="panel.key" />
+    </ClientOnly>
   </div>
 </template>

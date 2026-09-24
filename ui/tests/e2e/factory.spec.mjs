@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict'
 
-const BUILD_JOB = '11111111-1111-4111-8111-111111111111'
 const ORPHAN_RECOVERY_JOB = '33333333-3333-4333-8333-333333333333'
 const GITHUB_WARNING = 'GitHub observation or publication is unconfirmed'
+// The detail panel is the slideover on the right; a stack deck and a
+// confirmation are ordinary modals, so the three never collide in a locator.
+const PANEL = '[role="dialog"][data-side="right"]'
+const MODAL = '[role="dialog"]:not([data-side="right"])'
+const CONFIRM = '[role="dialog"]:has(#confirm-reason)'
+// The issue the mock serves for every /api/issues?issue= request.
+const DETAIL_TITLE = 'Make course navigation easier'
 
 // Counts how many times a string appears in the rendered (visible) page text.
 function occurrences(page, text) {
@@ -17,15 +23,32 @@ function waitForText(page, text) {
 // with a scale, so a card measured too early is smaller than it renders.
 async function openStack(page, stack) {
   await stack.click()
-  const dialog = page.getByRole('dialog')
+  const dialog = page.locator(MODAL)
   await dialog.locator('.issue-card').first().waitFor({ timeout: 10000 })
-  await page.waitForFunction(() => {
-    const dialog = document.querySelector('[role="dialog"]')
+  await page.waitForFunction((selector) => {
+    const dialog = document.querySelector(selector)
     if (!dialog || dialog.getAnimations().some((animation) => animation.playState === 'running')) return false
     const card = dialog.querySelector('.issue-card')
     return !!card && Math.abs(card.getBoundingClientRect().height - card.offsetHeight) < 0.05
-  }, null, { timeout: 10000 })
+  }, MODAL, { timeout: 10000 })
   return dialog
+}
+
+// The panel's own open/close, used from every section below.
+async function openPanel(page, card) {
+  await card.click()
+  const panel = page.locator(PANEL)
+  await panel.waitFor({ timeout: 10000 })
+  return panel
+}
+
+async function closePanel(page) {
+  await page.keyboard.press('Escape')
+  await page.locator(PANEL).waitFor({ state: 'hidden', timeout: 10000 })
+}
+
+function query(page, name) {
+  return new URL(page.url()).searchParams.get(name)
 }
 
 async function closeStack(page, dialog) {
@@ -64,8 +87,11 @@ export default async function (page, { base, scenario, requests }) {
     for (let card = 0; card < stackedCount; card += 1) heights.push((await stacked.nth(card).boundingBox()).height)
     if (index === 0) {
       assert.equal(await dialog.locator('[data-key="1:611"]').isVisible(), true, 'the Build stack opens its queued cards')
-      // Stop / open actions survive the move into the modal.
-      assert.equal(await dialog.locator('[data-key="1:611"]').getByRole('link', { name: 'Open' }).count(), 1)
+      // The card itself is the control, in the modal as on the board.
+      const queued = dialog.locator('[data-key="1:611"]')
+      assert.equal(await queued.getAttribute('role'), 'link')
+      assert.equal(await queued.getAttribute('aria-label'), 'Open XRPL-Commons/academy #611')
+      assert.equal(await queued.locator('button').count(), 0, 'a card carries no button of its own')
     }
     if (index === 1) {
       // The >120-character title is clamped inside its fixed-size card.
@@ -96,19 +122,55 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.getByRole('button', { name: 'Output' }).count(), 0)
   assert.equal(await page.getByRole('link', { name: 'Output' }).count(), 0)
 
-  // One detail view per card: /issues/<key>, and ?job=<id> for a worker row.
-  const openIssue = page.locator('[data-key="1:601"]').getByRole('link', { name: 'Open' })
-  assert.equal(await openIssue.getAttribute('href'), '/issues/1%3A601')
-  await openIssue.click()
-  await page.waitForURL(base + '/issues/1%3A601')
+  // Nothing on the board is a button any more: the card is the control, and
+  // clicking it opens the issue's detail in a panel over the right.
+  assert.equal(await page.locator('.issue-card button').count(), 0, 'no card renders a button')
+  const card = page.locator('[data-key="1:601"]')
+  assert.equal(await card.getAttribute('role'), 'link')
+  assert.equal(await card.getAttribute('aria-label'), 'Open XRPL-Commons/academy #601')
+  let panel = await openPanel(page, card)
+  await waitForText(page, DETAIL_TITLE)
+  assert.equal(query(page, 'issue'), '1:601', 'the open panel is carried by the URL')
+  // Escape closes it and leaves the URL clean.
+  await closePanel(page)
+  assert.equal(new URL(page.url()).search, '', `the closed panel left the URL dirty: ${page.url()}`)
+  // …and focus is handed back to the card that opened it.
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute('data-key') === '1:601',
+    null, { timeout: 5000 },
+  )
 
-  await page.goBack()
+  // …so a reload of that URL opens the same panel, and the board keeps
+  // polling behind it.
+  await page.goto(base + '/?issue=1%3A601')
+  await page.locator(PANEL).waitFor({ timeout: 10000 })
+  await waitForText(page, DETAIL_TITLE)
+  await closePanel(page)
+
+  // The standalone page is unchanged: the same detail, no overlay.
+  await page.goto(base + '/issues/1%3A601')
+  await waitForText(page, DETAIL_TITLE)
+  assert.equal(await page.locator('[role="dialog"]').count(), 0, 'the standalone page renders no overlay')
+
+  // An internal run opens the same panel at its own job, and its Reset moved
+  // in with it: the board's confirmation, the board's payload.
+  await page.goto(base + '/')
   await waitForText(page, 'Investigations and cleanup')
-  const openJob = page.locator(`#stage-recovery [data-key="3:900"]`).getByRole('link', { name: 'Open' })
-  assert.equal(await openJob.getAttribute('href'), `/issues/3%3A900?job=${ORPHAN_RECOVERY_JOB}`)
-  await openJob.click()
-  await page.waitForURL(`${base}/issues/3%3A900?job=${ORPHAN_RECOVERY_JOB}`)
-  await page.goBack()
+  panel = await openPanel(page, page.locator('#stage-recovery [data-key="3:900"]'))
+  assert.equal(query(page, 'issue'), '3:900')
+  assert.equal(query(page, 'job'), ORPHAN_RECOVERY_JOB, 'an internal card opens at its own run')
+  await panel.getByRole('button', { name: 'Reset runner' }).click()
+  const resetDialog = page.locator(CONFIRM)
+  await resetDialog.waitFor({ timeout: 10000 })
+  const confirmReset = resetDialog.getByRole('button', { name: 'Reset runner' })
+  assert.equal(await confirmReset.isDisabled(), true, 'the confirm button must require a reason')
+  await resetDialog.getByRole('textbox', { name: 'Decision or reason' }).fill('Runner wedged')
+  await confirmReset.click()
+  await resetDialog.waitFor({ state: 'hidden', timeout: 10000 })
+  const reset = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/factory/action')
+  assert.equal(reset.length, 1)
+  assert.deepEqual(reset[0].body, { action: 'reset', target: ORPHAN_RECOVERY_JOB, reason: 'Runner wedged' })
+  await closePanel(page)
 
   // A supervisor observation error is one banner that absorbs the operator
   // status line: each sentence is rendered exactly once, and its button
@@ -121,22 +183,27 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await warningAction.count(), 1)
   assert.equal(await warningAction.getAttribute('href'), '/settings/github')
 
-  // Stop asks for a decision, then posts exactly {action, target, reason}.
+  // Stop lives in the panel's action bar now: it asks for a decision, then
+  // posts exactly {action, target, reason} against the issue's own attempt.
   await scenario('default')
   await page.goto(base + '/')
   await waitForText(page, 'Publish build logs without leaking install tokens')
-  await page.locator('[data-key="1:601"]').getByRole('button', { name: 'Stop' }).click()
-  await waitForText(page, 'Stop this attempt?')
-  const confirmStop = page.getByRole('button', { name: 'Stop attempt' })
+  panel = await openPanel(page, page.locator('[data-key="1:601"]'))
+  await panel.getByRole('button', { name: 'Stop attempt' }).click()
+  const stopDialog = page.locator(CONFIRM)
+  await stopDialog.waitFor({ timeout: 10000 })
+  await waitForText(page, 'Stop attempt?')
+  const confirmStop = stopDialog.getByRole('button', { name: 'Stop attempt' })
   assert.equal(await confirmStop.isDisabled(), true, 'the confirm button must require a reason')
-  await page.getByRole('textbox', { name: 'Decision or reason' }).fill('Stuck for an hour')
+  await stopDialog.getByRole('textbox', { name: 'What changed?' }).fill('Stuck for an hour')
   assert.equal(await confirmStop.isDisabled(), false)
   await confirmStop.click()
-  await waitForText(page, 'Action queued for the supervisor.')
+  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
 
   const posted = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/factory/action')
   assert.equal(posted.length, 1)
-  assert.deepEqual(posted[0].body, { action: 'stop', target: BUILD_JOB, reason: 'Stuck for an hour' })
+  assert.deepEqual(posted[0].body, { action: 'stop', target: 'attempt', reason: 'Stuck for an hour' })
+  await closePanel(page)
 
   // A rejected operator request comes back through the next poll as a banner.
   await scenario('stop-rejected')
@@ -190,7 +257,16 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await queuedDialog.locator('.issue-card').count(), 11, 'the stack lists every queued issue')
   assert.equal(await page.locator('#stage-build .issue-card').count(), 1, 'the column keeps only the working card')
   assert.equal((await page.locator('#columns').boundingBox()).height, compact, 'opening a stack must not grow the board')
-  await closeStack(page, queuedDialog)
+  // A card opened from inside the deck replaces it: the modal closes, the
+  // panel takes its place, and the URL carries the issue.
+  const stacked = queuedDialog.locator('.issue-card').first()
+  const stackedKey = await stacked.getAttribute('data-key')
+  await stacked.click()
+  await queuedDialog.waitFor({ state: 'hidden', timeout: 10000 })
+  await page.locator(PANEL).waitFor({ timeout: 10000 })
+  await waitForText(page, DETAIL_TITLE)
+  assert.equal(query(page, 'issue'), stackedKey)
+  await closePanel(page)
 
   // Needs attention keeps the decisions expanded and stacks the holds, while
   // its header counts both.
@@ -216,4 +292,18 @@ export default async function (page, { base, scenario, requests }) {
     scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
   }))
   assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
+
+  // …and the panel is the whole screen there, still without a sideways scroll.
+  panel = await openPanel(page, page.locator('[data-key="1:601"]'))
+  await waitForText(page, DETAIL_TITLE)
+  const panelBox = await panel.boundingBox()
+  assert.ok(panelBox.width >= 380, `the panel is ${panelBox.width}px wide at 390px viewport`)
+  const panelOverflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
+  }))
+  assert.ok(
+    panelOverflow.scrollWidth <= panelOverflow.innerWidth,
+    `the open panel scrolls the page sideways: ${JSON.stringify(panelOverflow)}`,
+  )
+  await closePanel(page)
 }
