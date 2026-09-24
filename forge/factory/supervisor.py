@@ -30,9 +30,10 @@ class Supervisor:
         self.capacity = None
         budget = self.config['cycle_budget_seconds']
         self.github.deadline = time.monotonic() + budget
-        # Observation stops at three quarters of the budget so dispatch always
-        # gets its turn; with many tracked issues it otherwise never runs.
-        observe_until = self.github.deadline - budget / 4
+        # Enforce the observation deadline at the API boundary, not just
+        # between issues: one slow reconciliation must not spend launch time.
+        cycle_deadline = self.github.deadline
+        observe_until = cycle_deadline - budget / 2
         # Even paused/disabled factories must finish teardown and reconciliation.
         for job in self.ledger.read()['jobs'].values():
             if job['role'] == 'merge':
@@ -43,6 +44,7 @@ class Supervisor:
                 pass
             except (RunnerError, GitHubUnavailable, OSError, ValueError) as error:
                 self.errors.append({'attempt': job['id'], 'phase': 'runner', 'reason': str(error)})
+        self.github.deadline = observe_until
         for job in sorted(self.ledger.read()['jobs'].values(), key=lambda j: j.get('last_observed', 0)):
             if time.monotonic() >= observe_until:
                 break
@@ -70,15 +72,16 @@ class Supervisor:
                 with self.ledger.transaction() as data:
                     data['issues'][item['key']]['last_observed'] = self.clock()
         self.observe_deployments(observe_until)
+        self.github.deadline = cycle_deadline
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
             # New issues must be found even while the queue is never empty:
             # dispatch only discovers on an empty queue, so a busy factory
             # would otherwise stop reading GitHub for new ready issues.
             if self.discovery_due():
                 deadline = self.github.deadline
-                # Discovery gets half the remaining budget; launch retains the
-                # other half even when a large repository needs several cycles.
-                self.github.deadline = time.monotonic() + max(0, deadline - time.monotonic()) / 2
+                # Discovery is bounded too. Leave enough time to verify rules
+                # and persist a launch even with a large dependency backlog.
+                self.github.deadline = time.monotonic() + min(budget / 8, max(0, deadline - time.monotonic()) / 3)
                 try:
                     self.discover()
                 finally:

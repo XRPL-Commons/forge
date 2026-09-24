@@ -98,6 +98,19 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(reconcile.call_count, 1)
         self.assertTrue(self.ledger.read()['slots'], 'dispatch must run after observation stops')
 
+    def test_slow_api_observation_cannot_spend_dispatch_deadline(self):
+        self.github.target.return_value = 'main'
+        now = [0.0]
+        def observe(item):
+            now[0] = self.github.deadline
+            raise GitHubBudgetExhausted('Observation allowance used')
+        with patch('forge.factory.supervisor.time.monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.supervisor, 'reconcile', side_effect=observe):
+            self.supervisor.cycle()
+        self.assertLessEqual(now[0], self.config['cycle_budget_seconds'] / 2)
+        self.assertEqual(self.github.deadline, self.config['cycle_budget_seconds'])
+        self.assertTrue(self.ledger.read()['slots'])
+
     def test_discovery_exhaustion_preserves_dispatch_budget(self):
         self.github.target.return_value = 'main'
         now = [0.0]
