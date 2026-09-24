@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 import json
 
-from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue, environment_key, summary as plain_summary
+from .contracts import NEXT_ROLE, ROLES, dependencies, candidate, digest, result, references_issue, environment_key, summary as plain_summary
 from .config import policy
 from .memory import allocation as memory_allocation, confirmed as memory_confirmed, pending as memory_pending
 from .capacity import memory_bytes
@@ -39,6 +39,8 @@ class Supervisor:
                 continue
             try:
                 self.execution(job)
+            except GitHubBudgetExhausted:
+                pass
             except (RunnerError, GitHubUnavailable, OSError, ValueError) as error:
                 self.errors.append({'attempt': job['id'], 'phase': 'runner', 'reason': str(error)})
         for job in sorted(self.ledger.read()['jobs'].values(), key=lambda j: j.get('last_observed', 0)):
@@ -73,8 +75,15 @@ class Supervisor:
             # dispatch only discovers on an empty queue, so a busy factory
             # would otherwise stop reading GitHub for new ready issues.
             if self.discovery_due():
-                self.discover()
-            self.dispatch()
+                deadline = self.github.deadline
+                # Discovery gets half the remaining budget; launch retains the
+                # other half even when a large repository needs several cycles.
+                self.github.deadline = time.monotonic() + max(0, deadline - time.monotonic()) / 2
+                try:
+                    self.discover()
+                finally:
+                    self.github.deadline = deadline
+            self.dispatch(discover_missing=False)
         return {'at': self.clock(), 'errors': self.errors, 'capacity': self.capacity,
                 'issues': len(self.ledger.read()['issues'])}
 
@@ -136,6 +145,8 @@ class Supervisor:
                     if job['phase'] == 'reserved':
                         try:
                             ci = self.github.ci_evidence(job)
+                        except GitHubBudgetExhausted:
+                            raise
                         except GitHubUnavailable:
                             self.ledger.block_environment(job['id'], 'ci_evidence', 'The controller could not obtain commit-bound CI checks. Check GitHub App access and connectivity before rechecking.',
                                                           summary=self.card({'headline': 'Stopped: Forge cannot read the automated checks',
@@ -164,6 +175,8 @@ class Supervisor:
                     self.capacity = unavailable.decision
                     self.defer_capacity(job)
                     return
+                except GitHubBudgetExhausted:
+                    raise  # Persist the launch intent unchanged for the next cycle.
                 except (GitHubUnavailable, RunnerUnavailable) as unavailable:
                     # Missing provider/GitHub access before launch is an availability wait.
                     if job['role'] == 'recovery' and not (job.get('provider_id') and isinstance(unavailable, RunnerUnavailable)):
@@ -341,6 +354,23 @@ class Supervisor:
         with self.ledger.transaction() as data:
             data['issues'][key]['requirements'] = requirements
 
+    def dependency_ready(self, item, issue):
+        blocked = []
+        for number in dependencies(issue.get('body')):
+            value = self.github.call('controller', item, 'GET', f'/issues/{number}')
+            if (not isinstance(value, dict) or value.get('number') != number
+                    or 'pull_request' in value or value.get('state') not in ('open', 'closed')):
+                raise GitHubUnavailable('Prerequisite issue could not be verified')
+            if value['state'] != 'closed':
+                blocked.append(number)
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            if current.get('blocked_dependencies', []) != blocked:
+                self.ledger.event(data, current, 'dependencies_checked', blocked=blocked)
+            current['blocked_dependencies'] = blocked
+            current['dependency_reason'] = ('Waiting for ' + ', '.join('#' + str(n) for n in blocked) + '.') if blocked else None
+        return not blocked
+
     def reconcile(self, item):
         if item.get('operator_request'):
             return  # An interrupted decision must finish before observing new eligibility.
@@ -376,6 +406,26 @@ class Supervisor:
                 return
             held = item['environment_hold']
             failed_job = self.ledger.read()['jobs'].get(held['attempt'])
+            if (held['blocker'] == 'ci_evidence' and failed_job and failed_job['cleanup']
+                    and self.settings.admission(item['repo'])['allowed']):
+                if self.clock() < held.get('recheck_after', 0):
+                    return
+                try:
+                    self.github.ci_evidence(failed_job)
+                except GitHubBudgetExhausted:
+                    raise
+                except GitHubUnavailable:
+                    with self.ledger.transaction() as data:
+                        data['issues'][item['key']]['environment_hold']['recheck_after'] = (
+                            self.clock() + self.config['availability_retry_seconds'])
+                    return
+                self.ledger.resume_environment(item['key'], 'Commit-bound CI checks are readable again')
+                item = self.ledger.read()['issues'][item['key']]
+                # Continue normal requirements/candidate reconciliation before dispatch.
+                held = item.get('environment_hold')
+                if held is None:
+                    self.reconcile(item)
+                    return
             if failed_job and self.settings.admission(item['repo'])['allowed']:
                 capture = failed_job.get('capture') or {}
                 try:
@@ -409,6 +459,8 @@ class Supervisor:
             if self.settings.admission(item['repo'])['allowed'] and self.github.protections(item, {'base_ref': self.github.target(item)}):
                 self.ledger.resume_protection(item['key'])
                 item = self.ledger.read()['issues'][item['key']]
+        if not item['active'] and not self.dependency_ready(item, issue):
+            return
         if item['state'] in ('failed', 'cancelled', 'hold', 'investigating'):
             # A ready label cannot erase failures, but external closure/merge was
             # reconciled above so historical failures do not remain current alerts.
@@ -515,10 +567,11 @@ class Supervisor:
 
     def memory_priority(self, data):
         return next((item for item in memory_pending(data, self.config)
-                     if item.get('retry_after', 0) <= self.clock()
+                     if not item.get('blocked_dependencies')
+                     and item.get('retry_after', 0) <= self.clock()
                      and self.settings.admission(item['repo'])['allowed']), None)
 
-    def dispatch(self):
+    def dispatch(self, *, discover_missing=True):
         if not self.config.get('provider_pool') and self.ledger.read().get('provider_retry_after', 0) > self.clock():
             return
         try:
@@ -545,7 +598,7 @@ class Supervisor:
                 if data['slots'].get(slot):
                     continue
                 item, failure = self.choose(role, data)
-                if item is None and role == 'build':
+                if item is None and role == 'build' and discover_missing:
                     self.discover()
                     item, failure = self.choose(role, self.ledger.read())
                 if item is None:
@@ -561,6 +614,18 @@ class Supervisor:
                     # Do not backfill small jobs while this escalation drains.
                     return
                 try:
+                    # Re-read at the launch boundary, including newly discovered
+                    # issues that have not entered the observation rotation yet.
+                    issue, requirements = self.github.issue(item)
+                    if not self.dependency_ready(item, issue):
+                        continue
+                    if issue['state'] != 'open':
+                        self.ledger.cancel(item['key'], 'Issue closed externally')
+                        continue
+                    if requirements != item['requirements']:
+                        self.invalidate(item['key'], 'Issue requirements changed')
+                        self.update_requirements(item['key'], requirements)
+                        continue
                     target = self.github.target(item)
                     if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
                         self.ledger.pause_for_protection(item['key'])
@@ -568,6 +633,8 @@ class Supervisor:
                     job = self.ledger.reserve(item['key'], role, slot, publisher=self.github.publisher(role),
                         policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=worker_config, target_branch=target)
                     self.execution(job)
+                except GitHubBudgetExhausted:
+                    return
                 except (StateError, GitHubUnavailable, RunnerError) as error:
                     self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
 
@@ -579,7 +646,7 @@ class Supervisor:
             failure = next((f for f in priority['failures'] if f['investigation'] == 'pending'), None) if role == 'recovery' else None
             return priority, failure
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
-            if item.get('operator_request') or item.get('environment_hold'):
+            if item.get('operator_request') or item.get('environment_hold') or item.get('blocked_dependencies'):
                 continue
             if not self.settings.admission(item['repo'])['allowed']:
                 continue

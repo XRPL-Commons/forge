@@ -87,6 +87,24 @@ def submission(body):
 
 
 
+def dependencies(body):
+    """Same-repository prerequisites in explicit statements, not downstream links."""
+    numbers = set()
+    fenced = False
+    for line in (body or '').splitlines():
+        if line.lstrip().startswith(('```', '~~~')):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        match = re.search(r'\b(?:blocked by\b|depends on\b|dependency:)', line, re.I)
+        if match:
+            clause = re.split(r'\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
+                              maxsplit=1, flags=re.I)[0]
+            numbers.update(int(n) for n in re.findall(r'(?<![\w/])#([1-9]\d*)\b', clause))
+    return sorted(numbers)
+
+
 def references_issue(body, repo, number):
     """Conservative adoption guard, never proof of publication or ownership."""
     body = body or ''

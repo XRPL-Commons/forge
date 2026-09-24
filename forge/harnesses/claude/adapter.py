@@ -90,11 +90,17 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
             '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
             '--tools', 'Bash,Read,Edit,Write,Glob,Grep', '--permission-mode', 'acceptEdits',
             '--no-session-persistence', '--allowedTools', 'Bash,Read,Edit,Write,Glob,Grep',
-            '--add-dir', '/opt/forge/harnesses/claude']
+            '--add-dir', str(directory), '--add-dir', '/opt/forge/harnesses/claude']
     if note.get('model'):
         args += ['--model', note['model']]
     home = Path('/work/home'); home.mkdir(exist_ok=True)
-    code, raw = collect(args, prompt, directory, env)
+    launch = Path('/opt/forge/claude-control')
+    # Scrub mode protects the launch directory's manifests, lockfiles, scripts
+    # and node_modules/.bin. Keep that directory image-owned: repository code
+    # executes only in the sandbox, with the checkout as an added working dir.
+    prompt = ('The assigned repository is ' + str(directory) + '. Run repository commands with '
+              'an explicit cd to that directory. The launch directory is trusted runner code.\n' + prompt)
+    code, raw = collect(args, prompt, launch, env)
     events = []
     for line in raw.splitlines():
         try:
@@ -135,6 +141,7 @@ def run(note, directory, env, result_schema):
 
 def probe(note, directory):
     private = Path('/work/home/probe-private'); private.parent.mkdir(exist_ok=True); private.write_text('synthetic private canary')
+    subprocess.run(['git', 'init', str(directory)], check=True, capture_output=True)
     nonce = uuid.uuid4().hex
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}

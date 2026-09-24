@@ -360,6 +360,8 @@ class GitHub:
             report['sources'].append(source)
             if review:
                 reviews.append((review, source))
+        except GitHubBudgetExhausted:
+            raise
         except GitHubUnavailable as error:
             if error.status != 404:
                 report['errors'].append({'source': 'classic', 'detail':
@@ -384,6 +386,8 @@ class GitHub:
                                      parameters.get('require_code_owner_review', False)}, source))
                 else:
                     report['additional_rules'].append({'type': rule['type'], 'source': source})
+        except GitHubBudgetExhausted:
+            raise
         except GitHubUnavailable:
             report['errors'].append({'source': 'rulesets', 'detail':
                 'Repository rules could not be checked. Check GitHub access and try again.'})

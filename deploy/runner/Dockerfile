@@ -21,7 +21,8 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
     && corepack enable
 COPY forge/harnesses /opt/forge/harnesses
-RUN node /opt/forge/harnesses/install.cjs --links-only
+RUN node /opt/forge/harnesses/install.cjs --links-only \
+    && python3 /opt/forge/harnesses/claude/prepare_launch.py
 COPY forge/factory/job.py forge/factory/harness.py forge/factory/probe.py forge/factory/build_environment.py /opt/forge/
 COPY deploy/runner/browser-canary.cjs /opt/forge/browser-canary.cjs
 RUN ln -s /opt/forge/build_environment.py /usr/local/bin/safe-build

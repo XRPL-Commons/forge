@@ -98,6 +98,18 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(reconcile.call_count, 1)
         self.assertTrue(self.ledger.read()['slots'], 'dispatch must run after observation stops')
 
+    def test_discovery_exhaustion_preserves_dispatch_budget(self):
+        self.github.target.return_value = 'main'
+        now = [0.0]
+        def discovery():
+            now[0] = self.github.deadline
+        with patch('forge.factory.supervisor.time.monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.supervisor, 'discovery_due', return_value=True), \
+                patch.object(self.supervisor, 'discover', side_effect=discovery):
+            self.supervisor.cycle()
+        self.assertLess(now[0], self.github.deadline)
+        self.assertTrue(self.ledger.read()['slots'])
+
     def test_busy_factory_still_discovers_new_issues_on_a_cadence(self):
         # A ready issue is always queued, so dispatch never discovers on its own.
         self.settings.view.return_value = {'repositories': [{'id': 1, 'name': 'example/project', 'dispatch_allowed': True}]}

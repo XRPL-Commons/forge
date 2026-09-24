@@ -66,6 +66,18 @@ class HarnessTests(unittest.TestCase):
         events[1]['message']['content'][0]['is_error'] = True
         self.assertFalse(completed(events, 'canary', 'nonce'))
 
+    def test_claude_parent_never_launches_from_repository(self):
+        module = adapter('claude')
+        collect = Mock(return_value=(0, json.dumps({'type': 'result', 'structured_output': {'ready': True}})))
+        with patch.dict(module['invoke'].__globals__, {'collect': collect,
+                'Path': lambda value: self.root / Path(value).name}):
+            module['invoke']({}, self.root, {}, {}, 'Test')
+        args, prompt, directory, env = collect.call_args.args
+        self.assertIn(str(self.root), args)
+        self.assertIn('explicit cd', prompt)
+        self.assertEqual(env['CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'], '1')
+        self.assertNotEqual(directory, self.root)
+
     def test_claude_probe_reports_fixed_failure_reasons(self):
         reason = adapter('claude')['probe_failure_reason']
         self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')
