@@ -37,7 +37,24 @@ def role_properties(note):
                      'uncertainty': {'type': 'string'}, 'alternative': {'anyOf': [{'type': 'null'}, {
                          'type': 'object', 'properties': {k: {'type': 'string'} for k in ('change', 'reason', 'evidence')},
                          'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]}},
+        'strategist': strategist_properties(),
     }.get(note['role'], {})
+
+
+def strategist_properties():
+    nullable = lambda t: {'type': [t, 'null']}
+    return {
+        'strategy': {'type': 'string', 'enum': ['github_deployments', 'health', 'header', 'unobservable']},
+        'deploy': {'type': 'object', 'properties': {'workflow': nullable('string'), 'environment': nullable('string'), 'trigger': nullable('string')},
+                   'required': ['workflow', 'environment', 'trigger'], 'additionalProperties': False},
+        'domain': {'type': 'object', 'properties': {'value': nullable('string'), 'source': {'type': 'string', 'enum': ['workflow', 'docs', 'config', 'none']},
+                   'confidence': {'type': 'string', 'enum': ['high', 'low', 'none']}}, 'required': ['value', 'source', 'confidence'], 'additionalProperties': False},
+        'exposure': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['health', 'header', 'none']}, 'path': nullable('string'),
+                     'field': nullable('string'), 'header': nullable('string')}, 'required': ['kind', 'path', 'field', 'header'], 'additionalProperties': False},
+        'commit_source': {'type': 'string'},
+        'proposal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {'title': {'type': 'string'}, 'body': {'type': 'string'}},
+                     'required': ['title', 'body'], 'additionalProperties': False}]},
+    }
 
 
 def schema(note):
@@ -79,6 +96,10 @@ def main():
     if selected:
         git('-C', str(directory), 'fetch', 'origin', selected['head'])
         git('-C', str(directory), 'checkout', '--detach', selected['head'])
+    elif note['role'] == 'strategist':
+        # Read-only assignment: detach at the given head, never create a branch.
+        git('-C', str(directory), 'fetch', 'origin', note['head'])
+        git('-C', str(directory), 'checkout', '--detach', note['head'])
     else:
         git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
     if note['role'] == 'build':

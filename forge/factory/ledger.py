@@ -397,6 +397,36 @@ class Ledger:
             issue.update(state='cancelled', active=None, reason=reason)
             self.event(data, issue, 'cancelled', reason=reason)
 
+    def deployed(self, key, verdict):
+        """Evidence Forge read itself; a merge with none stays waiting, never failed."""
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            if issue['state'] != 'merged' or issue.get('deployed'):
+                return False
+            issue['deployed'] = {'commit': verdict['commit'], 'at': self.clock(), 'via': verdict['via']}
+            issue['deploy_failed'] = None
+            self.event(data, issue, 'deployed', commit=verdict['commit'], via=verdict['via'])
+            return True
+
+    def deploy_failed(self, key, info):
+        """Recorded until a later deployment carrying the merge succeeds."""
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            if issue['state'] != 'merged' or issue.get('deployed'):
+                return False
+            if (issue.get('deploy_failed') or {}).get('sha') == info['sha']:
+                return False
+            issue['deploy_failed'] = {'sha': info['sha'], 'at': self.clock(), 'run_url': info.get('run_url')}
+            self.event(data, issue, 'deploy_failed', sha=info['sha'], run_url=info.get('run_url'))
+            return True
+
+    def merge_commit(self, key, sha):
+        """Cache the merge commit on the candidate: it is read from GitHub once."""
+        with self.transaction() as data:
+            candidate = data['issues'][key]['candidate']
+            if candidate is not None:
+                candidate['merge_commit'] = sha
+
     def retry(self, key, reason, *, request_id=None):
         if not reason.strip():
             raise ValueError('Human retry must record a decision')

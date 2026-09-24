@@ -2,6 +2,7 @@
 // Repository setup (contracts §3.6). Every sentence the two pages can show is
 // either a map in this file or is produced by a function here, so the pages
 // only bind values and post actions.
+import { ago, shortCommit } from './format'
 
 export type AppRole = 'build' | 'review' | 'audit' | 'controller'
 export const APP_ROLES: AppRole[] = ['build', 'review', 'audit', 'controller']
@@ -19,6 +20,58 @@ export interface RoleAccess {
   installation_url: string | null
   app_slug: string | null
   install_url?: string | null      // only on RepositoriesView.connections
+  // A grant Forge uses when it has it and works without when it does not
+  // (today: `deployments: read` on the Controller). It is a recommendation,
+  // never part of `status`.
+  recommended_permissions?: Record<string, 'read' | 'write'>
+  missing_recommended?: string[]
+}
+
+// Deployment tracking (contracts §2, DeploymentRow). The strategist's reading
+// is a proposal until an operator confirms it; the confirmed profile lives in
+// factory.json and the observation of it on the factory view.
+export type DeploymentStrategy = 'github_deployments' | 'health' | 'header' | 'unobservable'
+export type DeploymentStatus = 'idle' | 'running' | 'proposed' | 'confirmed' | 'rejected' | 'failed'
+export interface DeploymentDeploy { workflow: string | null; environment: string | null; trigger: string | null }
+export interface DeploymentExposure { kind: 'health' | 'header' | 'none'; path: string | null; field: string | null; header: string | null }
+
+export interface DeploymentProposal {
+  strategy: DeploymentStrategy
+  deploy: DeploymentDeploy
+  domain: { value: string | null; source: 'workflow' | 'docs' | 'config' | 'none'; confidence: 'high' | 'low' | 'none' }
+  exposure: DeploymentExposure
+  commit_source: string
+  // Non-null means an issue is filed on the repository when the operator confirms.
+  proposal: { title: string; body: string } | null
+}
+
+export interface DeploymentProfile {
+  strategy: DeploymentStrategy
+  deploy: DeploymentDeploy
+  domain: string | null                 // a bare host, never a URL
+  exposure: DeploymentExposure
+  workflows_digest: string; confirmed_at: number
+  exposure_issue: number | null
+}
+
+export interface DeploymentRow {
+  status: DeploymentStatus
+  summary: string | null                // the strategist's sentence, or Forge's failure reason
+  proposal: DeploymentProposal | null
+  profile: DeploymentProfile | null
+  observation: { at: number; logs: string; execution: object } | null   // while status === 'running'
+  error: string | null
+  reason: string | null                 // the operator's rejection reason
+  exposure_issue: number | null
+  reread_requested: boolean
+}
+
+// GET /api/factory `deployments[repo_id]` — what the supervisor last observed.
+export interface FactoryDeployment {
+  name: string
+  live: { commit: string; at: number } | null
+  deploy: { sha: string; state: string; at: string | null; run_url: string | null } | null
+  error: string | null
 }
 
 export interface ProtectionSource { kind: 'classic' | 'ruleset'; name: string; url: string; id?: number | null; source_type?: string | null }
@@ -44,6 +97,7 @@ export interface RepositoryRow {
   protection_previous_status: 'ready' | 'needs_setup' | null
   protection_last_known: ProtectionReport | null
   rules_url: string; setup_url: string
+  deployment?: DeploymentRow
 }
 
 export type SyncState =
@@ -56,7 +110,7 @@ export interface FactoryConnection { app_id: number; private_key_env: string; in
 export interface FactoryConfig {
   version: 1; sync_interval_seconds: number; access_max_age_seconds: number
   connections: Partial<Record<AppRole, FactoryConnection>>
-  repositories: { id: number; name: string; enabled: boolean }[]
+  repositories: { id: number; name: string; enabled: boolean; deployment?: DeploymentProfile }[]
 }
 
 export interface SettingsView {
@@ -231,6 +285,9 @@ export interface ConnectionCardModel {
   role: AppRole; label: string; purpose: string; identity: string
   status: string; ready: boolean; observation: string
   action: ConnectionLink | null; errors: string[]
+  // A grant Forge would use if it had it. It sits under the required list and
+  // never turns the row red, because nothing is blocked without it.
+  recommendation: string
 }
 
 export function connectionCards(settings: SettingsView, onboarding: OnboardingSummary | null | undefined): ConnectionCardModel[] {
@@ -261,6 +318,7 @@ export function connectionCards(settings: SettingsView, onboarding: OnboardingSu
         ...(roleAccess.reason ? [roleAccess.reason] : []),
         ...(roleAccess.missing_permissions?.length ? ['Missing ' + roleAccess.missing_permissions.join(', ')] : []),
       ],
+      recommendation: roleAccess.missing_recommended?.length ? 'Recommended ' + roleAccess.missing_recommended.join(', ') : '',
     }
   })
 }
@@ -340,4 +398,133 @@ const GENERIC_FAILURES = ['', 'Request failed', 'Forge did not accept the action
 export function actionMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : ''
   return GENERIC_FAILURES.includes(message) ? fallback : message
+}
+
+// ---------------------------------------------------------------------------
+// The Deployment card on Settings · Repository setup (spec "Operator UI").
+// One card, three shapes: a proposal the operator decides on, a confirmed
+// profile with what Forge last observed, and one sentence for every other
+// state. Every sentence it can show is produced here.
+// ---------------------------------------------------------------------------
+
+export const STRATEGY_LABELS: Record<DeploymentStrategy, string> = {
+  github_deployments: 'GitHub deployments',
+  health: 'Health endpoint',
+  header: 'Response header',
+  unobservable: 'No deployment found',
+}
+
+// GitHub's own deployment states, said in words.
+export const DEPLOY_STATE_WORDS: Record<string, string> = {
+  success: 'succeeded', failure: 'failed', error: 'errored',
+  in_progress: 'in progress', queued: 'queued', pending: 'pending', inactive: 'inactive',
+}
+
+const DEPLOYMENT_BADGES: Record<DeploymentStatus, string> = {
+  idle: 'Not read yet', running: 'Reading…', proposed: 'Proposal ready',
+  confirmed: 'Tracked', rejected: 'Rejected', failed: 'Could not read',
+}
+
+const DEPLOYMENT_SENTENCES: Record<DeploymentStatus, string> = {
+  idle: 'Forge has not read how this repository deploys yet.',
+  running: 'Forge is reading how this repository deploys.',
+  proposed: 'Forge read this repository and proposes how to follow its deployments. Nothing is saved until you confirm.',
+  confirmed: '',
+  rejected: 'The last proposal was rejected. Re-read to look again.',
+  failed: 'Forge could not work out how this repository deploys.',
+}
+
+// Where the deployed commit is read from — or why it cannot be, and what
+// Forge does about it.
+export function exposureText(
+  exposure: DeploymentExposure | null | undefined,
+  issue: number | null,
+  willFile: boolean,
+): string {
+  if (exposure?.kind === 'health') return `Commit read from ${exposure.path || '/health'} \`${exposure.field || 'commit'}\``
+  if (exposure?.kind === 'header') return `Commit read from header \`${exposure.header || 'X-Build-Commit'}\``
+  if (issue) return `Not exposed — issue #${issue} filed`
+  return willFile ? 'Not exposed — an issue is filed when you confirm' : 'Not exposed — no commit can be read'
+}
+
+export function deployText(deploy: DeploymentDeploy | null | undefined): string {
+  if (!deploy?.workflow) return 'Deploy · no workflow found'
+  return 'Deploy · ' + deploy.workflow + (deploy.environment ? ' → ' + deploy.environment : '')
+}
+
+// A confirmed profile is settled, so it is one compact line rather than a list.
+export function profileText(profile: DeploymentProfile): string {
+  return [
+    STRATEGY_LABELS[profile.strategy] ?? profile.strategy,
+    profile.deploy?.workflow ? 'workflow ' + profile.deploy.workflow : '',
+    profile.deploy?.environment ? 'environment ' + profile.deploy.environment : '',
+    profile.domain || '',
+  ].filter(Boolean).join(' · ')
+}
+
+// What the supervisor last saw: the commit the domain serves, and the state of
+// the newest GitHub deployment. `deploy.at` is GitHub's ISO string, not a
+// number, and `now` is 0 until the page is mounted.
+export function observationText(observed: FactoryDeployment | null | undefined, now: number): string {
+  const parts: string[] = []
+  if (observed?.live?.commit) parts.push('live commit ' + shortCommit(observed.live.commit))
+  const deploy = observed?.deploy
+  if (deploy) {
+    const at = deploy.at ? Date.parse(deploy.at) : NaN
+    const when = now && Number.isFinite(at) ? ' ' + ago(now - Math.floor(at / 1000)) : ''
+    parts.push('deploy ' + (DEPLOY_STATE_WORDS[deploy.state] ?? deploy.state) + when)
+  }
+  return parts.join(' · ')
+}
+
+export interface DeploymentCardModel {
+  state: DeploymentStatus
+  status: string            // the badge
+  sentence: string          // the one sentence about this state, '' when confirmed
+  lines: string[]           // what the strategist read, or the confirmed profile
+  exposure: string
+  domain: string            // the candidate the domain box starts from
+  showDomain: boolean
+  actions: { confirm: boolean; reject: boolean; reread: boolean }
+  observation: string
+  error: string
+  note: string
+}
+
+export function deploymentCard(
+  row: RepositoryRow | null | undefined,
+  observed: FactoryDeployment | null | undefined,
+  now: number,
+): DeploymentCardModel | null {
+  const deployment = row?.deployment
+  if (!deployment) return null
+  const status = deployment.status
+  const proposal = status === 'proposed' ? deployment.proposal : null
+  const profile = status === 'confirmed' ? deployment.profile : null
+  const lines = proposal
+    ? ['Strategy · ' + (STRATEGY_LABELS[proposal.strategy] ?? proposal.strategy), deployText(proposal.deploy)]
+    : profile ? [profileText(profile)] : []
+  const exposure = proposal
+    ? exposureText(proposal.exposure, deployment.exposure_issue, !!proposal.proposal)
+    : profile ? exposureText(profile.exposure, deployment.exposure_issue, false) : ''
+  const sentence = profile
+    ? ''
+    : status === 'rejected' && deployment.reason
+      ? 'Rejected · ' + deployment.reason
+      : deployment.summary || DEPLOYMENT_SENTENCES[status] || ''
+  return {
+    state: status,
+    status: DEPLOYMENT_BADGES[status] ?? status,
+    sentence,
+    lines,
+    exposure,
+    domain: proposal?.domain?.value ?? '',
+    showDomain: !!proposal,
+    actions: { confirm: !!proposal, reject: !!proposal, reread: status !== 'running' },
+    // An observation is only meaningful against a confirmed profile: nothing
+    // is read from a domain Forge was never told to watch.
+    observation: profile ? (observationText(observed, now) || 'Nothing observed yet.') : '',
+    error: [deployment.error, profile ? observed?.error : null].filter(Boolean).join(' · '),
+    note: deployment.reread_requested ? 'A re-read is queued for the next cycle.' : '',
+  }
 }

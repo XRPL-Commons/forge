@@ -4,6 +4,7 @@ Call cycle under the runtime's exclusive controller lock. Every external effect
 has a preceding durable intent; ambiguous responses are reconciled on later cycles.
 """
 from copy import deepcopy
+from pathlib import Path
 import time
 import json
 
@@ -64,6 +65,7 @@ class Supervisor:
             finally:
                 with self.ledger.transaction() as data:
                     data['issues'][item['key']]['last_observed'] = self.clock()
+        self.observe_deployments(observe_until)
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
             # New issues must be found even while the queue is never empty:
             # dispatch only discovers on an empty queue, so a busy factory
@@ -73,6 +75,33 @@ class Supervisor:
             self.dispatch()
         return {'at': self.clock(), 'errors': self.errors, 'capacity': self.capacity,
                 'issues': len(self.ledger.read()['issues'])}
+
+    def factory_root(self):
+        """The live factory root, never the setup copy; the unit fakes have none."""
+        try:
+            root = Path(self.settings.root)
+        except (AttributeError, TypeError):
+            return None
+        return root.parent if root.name == 'setup' else root
+
+    def observe_deployments(self, observe_until):
+        """Deployment tracking is an observation: it reports, it never fails a cycle."""
+        root = self.factory_root()
+        if root is None or time.monotonic() >= observe_until:
+            return
+        from ..deployments import Deployments
+        from .live import read_commit
+        deadline = self.github.deadline
+        self.github.deadline = min(deadline, observe_until)
+        try:
+            store = Deployments(root, runner=self.runner, github=self.github,
+                                settings=self.settings, clock=self.clock)
+            for error in store.observe(self.github, self.ledger, read_commit):
+                self.errors.append({'repo': error['repo'], 'phase': 'deployment', 'reason': error['reason']})
+        except (GitHubUnavailable, StateError, OSError, ValueError, KeyError, TypeError) as error:
+            self.errors.append({'phase': 'deployment', 'reason': str(error)})
+        finally:
+            self.github.deadline = deadline
 
     def execution(self, job):
         runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ) if isinstance(self.runner, ContainerRunner)

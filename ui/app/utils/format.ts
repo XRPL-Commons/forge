@@ -4,6 +4,16 @@ export function formatAge(seconds: number): string {
   if (seconds < 86400) return Math.floor(seconds / 3600) + ' h'
   return Math.floor(seconds / 86400) + ' d'
 }
+// The age of something that already happened. `formatAge` says "just now"
+// rather than "0 min", so the suffix is only added where it reads.
+export function ago(seconds: number): string {
+  const age = formatAge(Math.max(0, Math.floor(seconds)))
+  return age === 'just now' ? age : age + ' ago'
+}
+// A commit as an operator reads it: the seven characters GitHub shows.
+export function shortCommit(commit: string | null | undefined): string {
+  return (commit ?? '').slice(0, 7)
+}
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return 'less than a minute'
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60)

@@ -117,6 +117,31 @@ and merge. Unavailable observations never count as passing. GitHub may hide
 bypass permissions: review those on GitHub yourself. A baseline pass does not
 certify bypass permissions or waive additional repository rules.
 
+## Deployment profile
+
+Once a repository is enabled, Forge reads it once to propose a deployment
+profile: how it deploys, and how to tell a running commit apart from the
+source. The Repository page shows this as a "Deployment" card — the strategy
+and deploy workflow Forge found, a domain box prefilled with its candidate
+when it found one, and where the running commit is exposed (an existing
+health field, a response header, or not exposed). The domain box is the only
+thing you type.
+
+Confirm accepts the profile. Confirming is the only moment it is written to
+repository settings and observation begins; nothing before that point reads
+the domain or files anything. Reject discards the proposal with a reason;
+Forge does not read the repository again until you press Re-read deployment
+or its deploy workflows change. Re-read deployment forces a fresh read
+regardless.
+
+When Forge finds no way to expose the running commit — no health field, no
+response header, but the application does serve HTTP — confirming also files
+an issue on the repository, labelled `forge:deployment`. That issue does not
+get the ready label: Forge never queues it for Build. Add the ready label
+yourself when you want it worked. A profile with no domain still observes
+GitHub deployment statuses for the deploy environment; it just cannot
+cross-check what is actually running.
+
 ## Host installation
 
 The browser assumes the host is installed. See factory-runtime.md for the pinned

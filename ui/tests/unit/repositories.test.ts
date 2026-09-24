@@ -3,7 +3,8 @@ import {
   ACCESS_LABELS, ACCESS_STATUS_NAMES, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES,
   actionMessage, checkedAtText, connectionAction, connectionCards, hintText,
   lastRefreshText, repoDescription, repoHeading, repoStage, repositoryRows, rowState,
-  statusPillText,
+  statusPillText, deploymentCard,
+  type DeploymentProfile, type DeploymentProposal, type DeploymentRow, type FactoryDeployment,
   type RepositoryRow, type RoleAccess, type SettingsView,
 } from '../../app/utils/repositories'
 
@@ -246,4 +247,156 @@ describe('checkedAtText and actionMessage', () => {
   it('falls back to the page sentence when the failure carries no reason', () =>
     expect(actionMessage(new Error('Forge did not accept the action.'), 'Could not refresh access. Try again.'))
       .toBe('Could not refresh access. Try again.'))
+})
+
+// ---------------------------------------------------------------------------
+// Deployment card (spec "Operator UI": the Repository page's Deployment card).
+// ---------------------------------------------------------------------------
+
+const NOW = 1790000000
+
+const proposal = (overrides: Partial<DeploymentProposal> = {}): DeploymentProposal => ({
+  strategy: 'health',
+  deploy: { workflow: '.github/workflows/deploy.yml', environment: 'production', trigger: 'push' },
+  domain: { value: 'academy.xrpl-commons.org', source: 'workflow', confidence: 'high' },
+  exposure: { kind: 'health', path: '/health', field: 'commit', header: null },
+  commit_source: 'GITHUB_SHA',
+  proposal: null,
+  ...overrides,
+})
+
+const profile = (overrides: Partial<DeploymentProfile> = {}): DeploymentProfile => ({
+  strategy: 'health',
+  deploy: { workflow: '.github/workflows/deploy.yml', environment: 'production', trigger: 'push' },
+  domain: 'academy.xrpl-commons.org',
+  exposure: { kind: 'health', path: '/health', field: 'commit', header: null },
+  workflows_digest: 'sha256:1', confirmed_at: NOW - 86400, exposure_issue: null,
+  ...overrides,
+})
+
+const deployment = (overrides: Partial<DeploymentRow> = {}): DeploymentRow => ({
+  status: 'idle', summary: null, proposal: null, profile: null, observation: null,
+  error: null, reason: null, exposure_issue: null, reread_requested: false, ...overrides,
+})
+
+const observed = (overrides: Partial<FactoryDeployment> = {}): FactoryDeployment => ({
+  name: 'XRPL-Commons/academy',
+  live: { commit: 'abc1234def5678', at: NOW - 60 },
+  deploy: { sha: 'abc1234def5678', state: 'success', at: new Date((NOW - 720) * 1000).toISOString(), run_url: 'https://github.com/x/y/actions/runs/1' },
+  error: null,
+  ...overrides,
+})
+
+describe('deploymentCard', () => {
+  it('says nothing for a row the API did not describe', () => {
+    expect(deploymentCard(null, null, NOW)).toBe(null)
+    expect(deploymentCard(row(), null, NOW)).toBe(null)
+  })
+
+  it('shows what the strategist read, a prefilled domain and the three decisions', () => {
+    const card = deploymentCard(row({
+      deployment: deployment({
+        status: 'proposed',
+        summary: 'Deploys through GitHub Actions and exposes its commit on /health.',
+        proposal: proposal(),
+      }),
+    }), null, NOW)!
+    expect(card.state).toBe('proposed')
+    expect(card.status).toBe('Proposal ready')
+    expect(card.sentence).toBe('Deploys through GitHub Actions and exposes its commit on /health.')
+    expect(card.lines).toEqual(['Strategy · Health endpoint', 'Deploy · .github/workflows/deploy.yml → production'])
+    expect(card.exposure).toBe('Commit read from /health `commit`')
+    expect(card.domain).toBe('academy.xrpl-commons.org')
+    expect(card.showDomain).toBe(true)
+    expect(card.actions).toEqual({ confirm: true, reject: true, reread: true })
+    expect(card.observation).toBe('')
+  })
+
+  it('reads a header exposure and an issue that is only filed on confirmation', () => {
+    const header = deploymentCard(row({
+      deployment: deployment({ status: 'proposed', proposal: proposal({ exposure: { kind: 'header', path: '/', field: null, header: 'X-Build-Commit' } }) }),
+    }), null, NOW)!
+    expect(header.exposure).toBe('Commit read from header `X-Build-Commit`')
+
+    const unexposed = deploymentCard(row({
+      deployment: deployment({
+        status: 'proposed',
+        proposal: proposal({ exposure: { kind: 'none', path: null, field: null, header: null }, proposal: { title: 'Expose the deployed commit', body: '…' } }),
+      }),
+    }), null, NOW)!
+    expect(unexposed.exposure).toBe('Not exposed — an issue is filed when you confirm')
+
+    const filed = deploymentCard(row({
+      deployment: deployment({
+        status: 'confirmed', exposure_issue: 41,
+        profile: profile({ exposure: { kind: 'none', path: null, field: null, header: null }, exposure_issue: 41 }),
+      }),
+    }), null, NOW)!
+    expect(filed.exposure).toBe('Not exposed — issue #41 filed')
+  })
+
+  it('folds a confirmed profile into one line and reads the observation beside it', () => {
+    const card = deploymentCard(row({ deployment: deployment({ status: 'confirmed', profile: profile() }) }), observed(), NOW)!
+    expect(card.state).toBe('confirmed')
+    expect(card.status).toBe('Tracked')
+    expect(card.sentence).toBe('')
+    expect(card.lines).toEqual(['Health endpoint · workflow .github/workflows/deploy.yml · environment production · academy.xrpl-commons.org'])
+    expect(card.observation).toBe('live commit abc1234 · deploy succeeded 12 min ago')
+    expect(card.showDomain).toBe(false)
+    expect(card.actions).toEqual({ confirm: false, reject: false, reread: true })
+  })
+
+  it('reports an observation failure instead of claiming a healthy deployment', () => {
+    const card = deploymentCard(
+      row({ deployment: deployment({ status: 'confirmed', profile: profile(), error: 'The deployment issue could not be filed; re-read deployment to retry' }) }),
+      observed({ live: null, deploy: null, error: 'The deployment did not answer in time (retrying in 8 min)' }),
+      NOW,
+    )!
+    expect(card.observation).toBe('Nothing observed yet.')
+    expect(card.error).toBe('The deployment issue could not be filed; re-read deployment to retry · The deployment did not answer in time (retrying in 8 min)')
+  })
+
+  it('gives every other state one sentence and a re-read', () => {
+    const idle = deploymentCard(row({ deployment: deployment() }), null, NOW)!
+    expect(idle.status).toBe('Not read yet')
+    expect(idle.sentence).toBe('Forge has not read how this repository deploys yet.')
+    expect(idle.lines).toEqual([])
+    expect(idle.actions).toEqual({ confirm: false, reject: false, reread: true })
+
+    const running = deploymentCard(row({ deployment: deployment({ status: 'running' }) }), null, NOW)!
+    expect(running.status).toBe('Reading…')
+    expect(running.actions.reread).toBe(false)
+
+    const failed = deploymentCard(row({ deployment: deployment({ status: 'failed', summary: 'No deploy workflow could be found.' }) }), null, NOW)!
+    expect(failed.status).toBe('Could not read')
+    expect(failed.sentence).toBe('No deploy workflow could be found.')
+    expect(failed.actions.reread).toBe(true)
+
+    const rejected = deploymentCard(row({ deployment: deployment({ status: 'rejected', reason: 'Wrong environment' }) }), null, NOW)!
+    expect(rejected.status).toBe('Rejected')
+    expect(rejected.sentence).toBe('Rejected · Wrong environment')
+
+    const queued = deploymentCard(row({ deployment: deployment({ status: 'confirmed', profile: profile(), reread_requested: true }) }), null, NOW)!
+    expect(queued.note).toBe('A re-read is queued for the next cycle.')
+  })
+})
+
+describe('connectionCards recommendations', () => {
+  it('lists a recommended permission without changing the row status', () => {
+    const settings = {
+      ok: true, controls_token: 'x', revision: 'r', configured: true, config_file: 'factory.json',
+      config: { version: 1, sync_interval_seconds: 300, access_max_age_seconds: 900, connections: { controller: { app_id: 4, private_key_env: 'K' } }, repositories: [] },
+      roles: {
+        build: access(), review: access(), audit: access(),
+        controller: access({ missing_recommended: ['deployments: read'], recommended_permissions: { deployments: 'read' } }),
+      },
+      repositories: [], sync: { status: 'complete', finished_at: 1790000000 },
+    } as unknown as SettingsView
+    const cards = connectionCards(settings, null)
+    const controller = cards.find(card => card.role === 'controller')!
+    expect(controller.ready).toBe(true)
+    expect(controller.errors).toEqual([])
+    expect(controller.recommendation).toBe('Recommended deployments: read')
+    expect(cards.find(card => card.role === 'build')!.recommendation).toBe('')
+  })
 })

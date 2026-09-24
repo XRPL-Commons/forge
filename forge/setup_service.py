@@ -14,11 +14,12 @@ import uuid
 
 from .onboarding import Onboarding
 from .credentials import Credentials
+from .deployments import Deployments
 from .settings import Settings, read_json, write_json
 from .state import StateError
 from .factory.config import load
 from .factory.control import controller_lock, requests
-from .factory.github import GitHub
+from .factory.github import GitHub, GitHubUnavailable
 from .factory.ledger import Ledger
 from .factory.runner import ContainerRunner, RunnerError, RunnerCapacity
 from .factory.supervisor import Supervisor
@@ -505,6 +506,22 @@ class Service:
             requests(self.root, ledger)
             observation = Supervisor(ledger, self.runner(config), self.github_class(settings, config), settings, config).cycle()
             write_json(self.root / 'state/factory/supervisor.json', observation)
+            if not op:
+                # Deployment tracking is an observation; it never holds up a cycle,
+                # and it gets a quarter of the remaining observation budget.
+                deployments = None
+                try:
+                    github = self.github_class(settings, config)
+                    github.deadline = time.monotonic() + config['cycle_budget_seconds'] / 4
+                    deployments = Deployments(self.root, runner=self.runner, github=github, settings=settings)
+                    deployments.tick(config)
+                except Exception as error:
+                    message = str(error) if isinstance(error, (ValueError, RunnerError, StateError, GitHubUnavailable)) else \
+                        'Deployment tracking failed (' + type(error).__name__ + '); it will be retried next cycle'
+                    try:
+                        (deployments or Deployments(self.root, runner=self.runner, github=None, settings=settings)).fail(message)
+                    except Exception:
+                        pass
             self.next_cycle = time.monotonic() + config['cycle_seconds']
 
 

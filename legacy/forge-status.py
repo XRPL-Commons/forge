@@ -493,7 +493,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/issues/action', '/api/issues/refresh'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/issues/action', '/api/issues/refresh'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -565,6 +565,15 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(value,dict) or set(value)!={'repo_id','revision'} or type(value['repo_id']) is not int:
                     raise ValueError('Expected repository identity and current revision')
                 result=RepositorySetup(settings_service()).enable(value['repo_id'],value['revision'])
+                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+            if self.path == '/api/repositories/deployment':
+                from forge.repository_setup import RepositorySetup
+                fields={'confirm':{'domain'},'reject':{'reason'},'reread':set()}
+                action=value.get('action') if isinstance(value,dict) else None
+                if (action not in fields or set(value)!={'repo_id','revision','action'}|fields[action]
+                        or type(value['repo_id']) is not int):
+                    raise ValueError('Expected repository identity, current revision, and a deployment decision')
+                result=RepositorySetup(settings_service()).deployment(**value)
                 self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
             if self.path == '/api/settings/sync':
                 if value != {}:raise ValueError('Expected an empty sync request')

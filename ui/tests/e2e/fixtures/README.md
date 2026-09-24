@@ -316,6 +316,37 @@ output has not.
   and description above the action bar, and the worker's full text only after
   "Details" is opened.
 
+## deployment/
+
+The two halves of deployment tracking, plus what the supervisor observed of a
+tracked repository (Task 5).
+
+- `repositories.json` — `GET /api/repositories` (and, by the naming rule,
+  `?repo_id=`) with `revision:"deploy-rev-1"`: academy (id 1) carries a
+  `proposed` deployment — a `health` strategy, the `deploy.yml` workflow in
+  `production`, and the domain candidate `academy.xrpl-commons.org` the card's
+  box starts from; hackathon (id 2) is enabled, ready, and already
+  `confirmed` with a `header` profile on `hackathon.xrpl-commons.org`. Both
+  protection statuses are `ready`, so the page's automatic re-check never
+  fires. `connections.controller` carries
+  `missing_recommended:["deployments: read"]`.
+- `repositories-deployment.post.json` — `POST /api/repositories/deployment`
+  override: the same view at `revision:"deploy-rev-2"` with academy's row
+  `confirmed`, which is what a confirmation returns (contracts §2).
+- `settings.json` — `default/settings.json` with the same
+  `missing_recommended` on the controller, for GitHub access's "Recommended
+  deployments: read" line.
+- `factory.json` — `default/factory.json` with hackathon's confirmed profile
+  on its repository row, a `deployments` map for repo 2 (a live commit and a
+  successful GitHub deployment), and three merged issues covering every
+  verdict: `2:606` deployed via `live`, `2:607` waiting, `2:608`
+  `deploy_failed` with a run URL. Its timestamps are anchored to `1790000000`
+  like every other fixture, so "Deployed today" counts 0 against a real
+  clock — the spec asserts the label and the meaning, not the number.
+- `issues.issue.json` — `GET /api/issues?issue=2:606`, the completed detail
+  behind the deployed verdict, so `/issues/2:606` renders its own page and the
+  Deployment line under the title.
+
 ## down (not a fixture directory)
 
 `down` is a scenario name recognized directly by `mock-api.mjs`, not a
