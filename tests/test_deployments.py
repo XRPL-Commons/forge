@@ -257,11 +257,19 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.deployments().confirm(7, 'academy.example.org')
 
-    def test_confirm_keeps_the_strategist_domain_when_the_operator_types_none(self):
+    def test_an_emptied_domain_box_means_github_deployments_only(self):
+        # The card prefills the strategist's candidate, so an empty box is the
+        # operator clearing it; only an absent value keeps the candidate.
         self.deployments().tick(self.config)
         self.finish()
         self.deployments().tick(self.config)
-        self.assertEqual(self.deployments().confirm(7, '')['domain'], 'academy.xrpl-commons.org')
+        self.assertIsNone(self.deployments().confirm(7, '')['domain'])
+
+    def test_confirm_keeps_the_strategist_domain_when_no_domain_is_supplied(self):
+        self.deployments().tick(self.config)
+        self.finish()
+        self.deployments().tick(self.config)
+        self.assertEqual(self.deployments().confirm(7, None)['domain'], 'academy.xrpl-commons.org')
 
     def test_a_proposed_domain_is_a_bare_host_or_the_result_is_refused(self):
         self.deployments().tick(self.config)

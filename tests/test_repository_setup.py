@@ -241,7 +241,7 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertNotIn(runtime_config({})['ready_label'], labels)
         # A second read and confirmation must never file the issue again.
         self.propose()
-        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='')
+        self.service.deployment(10, digest(self.settings.load()), 'confirm', domain='academy.xrpl-commons.org')
         self.github.return_value.file_issue.assert_called_once()
         profile = self.settings.load()['repositories'][0]['deployment']
         self.assertEqual(profile['exposure_issue'], 41)

@@ -368,7 +368,9 @@ describe('deployment verdicts', () => {
     const row = breakdown(tracked, now).find(entry => entry.id === 'merged')!
     expect(row).toMatchObject({
       label: 'Deployed today', value: 1, detail: 'in the last 24 h',
-      meaning: '3 merged and waiting · 1 deploy failed', to: '#completed', tone: 'warn',
+      // 1:702 alone is waiting: 1:701 is live, 1:703 is counted as failed
+      // beside it, and 2:704 belongs to a repository nobody tracks.
+      meaning: '1 merged and waiting · 1 deploy failed', to: '#completed', tone: 'warn',
     })
   })
 

@@ -88,7 +88,9 @@ export default async function (page, { base, scenario, requests }) {
     null,
     { timeout: 10000 },
   )
-  assert.equal(await box.getAttribute('title'), '2 merged and waiting · 1 deploy failed')
+  // Only the tracked repository's merge with no verdict is waiting: the
+  // failed one is counted beside it, the untracked repository's is not counted.
+  assert.equal(await box.getAttribute('title'), '1 merged and waiting · 1 deploy failed')
 
   // The completed card carries the same verdict in one word.
   await page.locator('#completed summary').click()

@@ -19,7 +19,7 @@ const timer = computed(() => {
 const progress = computed(() => [props.card.providerLine, timer.value].filter(Boolean).join(' · '))
 // A completed card's most useful line is where the merge got to, so the
 // deployment verdict takes the note over the outcome it already reported.
-const note = computed(() => props.card.footerLink?.label || props.card.deployment || props.card.reason || '')
+const note = computed(() => props.card.deployment || props.card.footerLink?.label || props.card.reason || '')
 </script>
 
 <template>
@@ -47,8 +47,8 @@ const note = computed(() => props.card.footerLink?.label || props.card.deploymen
         <span v-if="card.running" class="inline-block size-2.5 shrink-0 rounded-full border border-current border-r-transparent text-mint-200 motion-safe:animate-spin" aria-hidden="true" />
         <span v-if="progress" class="truncate">{{ progress }}</span>
         <span v-if="progress && note" class="shrink-0">·</span>
-        <NuxtLink v-if="card.footerLink && card.footerLink.to" :to="card.footerLink.to" class="truncate text-sky-200 hover:underline">{{ card.footerLink.label }}</NuxtLink>
-        <span v-else-if="note" class="truncate" :class="card.footerLink ? 'text-amber-200' : ''">{{ note }}</span>
+        <NuxtLink v-if="!card.deployment && card.footerLink && card.footerLink.to" :to="card.footerLink.to" class="truncate text-sky-200 hover:underline">{{ card.footerLink.label }}</NuxtLink>
+        <span v-else-if="note" class="truncate" :class="card.footerLink && !card.deployment ? 'text-amber-200' : ''">{{ note }}</span>
       </p>
       <span class="-mr-1.5 flex shrink-0 items-center">
         <UButton :to="card.to" size="xs" color="neutral" variant="ghost" icon="i-lucide-arrow-up-right" aria-label="Open" title="Open" />

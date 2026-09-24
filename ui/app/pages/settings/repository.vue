@@ -490,6 +490,7 @@ async function refreshAccess() {
       text="Forge keeps following this repository's issues. Nothing is saved to settings, and the reading can be requested again."
       confirm-label="Reject"
       reason-label="Why is this reading wrong?"
+      :error="deployError"
       @confirm="rejectDeployment"
       @close="rejecting = false"
     />

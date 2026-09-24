@@ -136,7 +136,9 @@ class Deployments:
                 raise ValueError('There is no deployment proposal to confirm')
             proposed = entry['proposal']
             value = {'strategy': proposed['strategy'], 'deploy': deepcopy(proposed['deploy']),
-                     'domain': host(domain) if domain else host(proposed['domain']['value']),
+                     # The card prefills the candidate, so an emptied box is a
+                     # decision: track GitHub deployments only.
+                     'domain': host(proposed['domain']['value']) if domain is None else host(domain),
                      'exposure': deepcopy(proposed['exposure']), 'workflows_digest': entry['workflows_digest'],
                      'confirmed_at': self.clock(), 'exposure_issue': None}
             entry.update(status='confirmed', observed_at=self.clock(), reason=None, error=None)

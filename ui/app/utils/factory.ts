@@ -399,9 +399,13 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   const mergedWeek = mergedSince(7 * 24 * 3600)
   // Once any repository is tracked, a merge is no longer the end of the line:
   // the box counts what reached production and says what is still behind it.
-  const tracked = trackedRepositories(view).size > 0
+  const trackedRepos = trackedRepositories(view)
+  const tracked = trackedRepos.size > 0
   const deployedDay = issues.filter(issue => issue.deployed && issue.deployed.at >= now - 24 * 3600).length
-  const waiting = mergedIssues.filter(issue => !issue.deployed).length
+  // Waiting is what a tracked repository merged and Forge has not seen live:
+  // a failed deploy is already counted beside it, and an untracked
+  // repository's merges are not part of this sentence at all.
+  const waiting = mergedIssues.filter(issue => !issue.deployed && !issue.deploy_failed && trackedRepos.has(issue.repo_id)).length
   const deployFailed = issues.filter(issue => issue.deploy_failed && !issue.deployed).length
   const deployedRow: BreakdownRow = tracked
     ? { id: 'merged', label: 'Deployed today', value: deployedDay, detail: 'in the last 24 h',
