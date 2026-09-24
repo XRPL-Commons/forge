@@ -16,6 +16,7 @@ class DependencySchedulingTests(CycleTest):
     def test_only_explicit_upstream_references_are_prerequisites(self):
         self.assertEqual(dependencies('See #1. Depends on: #2, #4. Blocks: #3.'), [2, 4])
         self.assertEqual(dependencies('Depends on #2. References: #7\nRelated: #8'), [2])
+        self.assertEqual(dependencies('Deployed verification depends on #23. Coordinate dependency changes with #22.'), [23])
         self.assertEqual(dependencies('Depends on other/project#9 and https://github.com/x/y/issues/10'), [])
         self.assertEqual(dependencies('```\nDepends on #2\n```\nBlocked by #4'), [4])
 
@@ -51,6 +52,19 @@ class DependencySchedulingTests(CycleTest):
             self.cycle()
             self.assertFalse(self.engine.jobs)
             self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_unreadable_dependency_backs_off_without_starving_another_issue(self):
+        self.dependency()
+        first = self.github.issue.return_value
+        self.github.issue.side_effect = lambda item: first if item['number'] == 1 else (
+            {'number': item['number'], 'state': 'open', 'body': '', 'labels': []}, 'requirements')
+        other = self.ledger.discover({'id': 1, 'name': 'example/project'}, 3, 'requirements')
+        self.github.call.side_effect = GitHubUnavailable('Prerequisite unavailable')
+        self.cycle()
+        self.assertEqual(self.active()['issue_key'], other)
+        held = self.ledger.read()['issues'][self.key]
+        self.assertGreater(held['retry_after'], 0)
+        self.assertEqual(held['failures'], [])
 
     def test_wait_is_visible_without_operator_action(self):
         self.dependency(); self.cycle()

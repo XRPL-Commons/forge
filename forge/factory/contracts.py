@@ -99,7 +99,7 @@ def dependencies(body):
             continue
         match = re.search(r'\b(?:blocked by\b|depends on\b|dependency:)', line, re.I)
         if match:
-            clause = re.split(r'\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
+            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
                               maxsplit=1, flags=re.I)[0]
             numbers.update(int(n) for n in re.findall(r'(?<![\w/])#([1-9]\d*)\b', clause))
     return sorted(numbers)

@@ -638,7 +638,16 @@ class Supervisor:
                     self.execution(job)
                 except GitHubBudgetExhausted:
                     return
-                except (StateError, GitHubUnavailable, RunnerError) as error:
+                except GitHubUnavailable as error:
+                    # A bad/inaccessible prerequisite must not monopolize every
+                    # free slot. Preserve the issue and let other work proceed.
+                    with self.ledger.transaction() as data:
+                        current = data['issues'][item['key']]
+                        if not current['active']:
+                            current.update(retry_after=self.clock() + self.config['availability_retry_seconds'],
+                                           reason=str(error))
+                    self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
+                except (StateError, RunnerError) as error:
                     self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
 
     def choose(self, role, data):
@@ -651,7 +660,7 @@ class Supervisor:
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
             if item.get('operator_request') or item.get('environment_hold') or item.get('blocked_dependencies'):
                 continue
-            if not self.settings.admission(item['repo'])['allowed']:
+            if not self.settings.admission(item['repo'])['allowed'] or item.get('retry_after', 0) > self.clock():
                 continue
             if any(j['issue_key'] == item['key'] and not j['cleanup'] for j in data['jobs'].values()):
                 continue
