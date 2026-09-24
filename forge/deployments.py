@@ -192,6 +192,15 @@ class Deployments:
         self.start(config, data)
 
     def start(self, config, data):
+        # Internal investigations must not consume capacity reserved for a
+        # larger pipeline retry waiting for existing workers to drain.
+        from .factory.memory import pending
+        from .factory.ledger import Ledger
+        ledger_root = self.root / 'state/factory'
+        if config.get('memory_tiers') and (ledger_root / 'factory-ledger.json').exists():
+            if any(self.settings.admission(item['repo'])['allowed']
+                   for item in pending(Ledger(ledger_root).read(), config)):
+                return
         if self.leased(config):
             return  # The coding account is held by a pipeline worker; retry next cycle.
         for row in self.settings.view()['repositories']:
