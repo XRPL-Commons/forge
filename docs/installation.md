@@ -144,7 +144,11 @@ watching after 15 minutes without cancelling the saved operation.
 
 Refreshable account logins have one active writer per credential reference. Forge
 saves refreshed credentials before removing the runner and refuses stale writes
-after a newer login. API-key jobs can use the full configured parallel capacity.
+after a newer login. API-key and long-lived-token jobs can use the full configured
+parallel capacity. For parallel Codex jobs with an existing ChatGPT subscription,
+set `codex_parallel_auth: true` in `runtime.json` and run a scoped Codex setup
+check. The controller owns refresh; workers get access-only snapshots. See the
+[runtime guide](factory-runtime.md) for lifecycle and recovery details.
 Losing a refresh during a crash can still require another login; cleanup and other
 available harnesses continue independently.
 

@@ -219,9 +219,16 @@ class ContainerRunner:
             try:
                 raw = auth_path.read_bytes()
                 credentials['FORGE_HARNESS_AUTH'] = json.loads(raw)
+                if self.config.get('provider', 'codex') == 'codex' and self.config.get('codex_parallel_auth'):
+                    from .codex_auth import snapshot, renew_in_container
+                    root = self.environ.get('FORGE_CREDENTIAL_ROOT')
+                    if not root:
+                        raise ValueError('Shared login must be installation-owned')
+                    credentials['FORGE_HARNESS_AUTH'] = snapshot(root, auth_ref, job['deadline'],
+                        lambda directory, **kwargs: renew_in_container(self, directory, **kwargs))
                 credentials['FORGE_AUTH_DIGEST'] = hashlib.sha256(raw).hexdigest()
-            except (OSError, ValueError):
-                raise RunnerUnavailable('Provider authentication file could not be loaded') from None
+            except (RunnerError, OSError, ValueError, KeyError):
+                raise RunnerUnavailable('Provider authentication file could not be loaded or renewed') from None
         credentials['GH_TOKEN'] = token
         note = assignment_note(job)
         note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
@@ -236,6 +243,9 @@ class ContainerRunner:
         self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
 
     def refresh_auth(self, current):
+        if self.config.get('provider', 'codex') == 'codex' and self.config.get('codex_parallel_auth'):
+            # Access-only workers cannot write back into the managed login.
+            return 'controller_managed'
         ref, root = self.config.get('provider_auth_file_env'), self.environ.get('FORGE_CREDENTIAL_ROOT')
         if not ref or not root:
             return 'not_managed'
