@@ -306,3 +306,25 @@ class SetupTests(unittest.TestCase):
 
 
 if __name__=='__main__': unittest.main()
+
+
+class ServiceLoopTests(unittest.TestCase):
+    """The loop that keeps the factory cycling, and what it says when it cannot."""
+
+    def test_a_failing_cycle_names_its_reason_in_the_log(self):
+        import io
+        from unittest.mock import patch
+        from forge.setup_service import main
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            def once(_seconds):
+                raise KeyboardInterrupt
+            with patch('sys.argv', ['forge service', '--root', directory]), \
+                    patch('forge.setup_service.Service.tick', side_effect=ValueError('Unknown runtime settings')), \
+                    patch('forge.setup_service.Service.stop_legacy'), \
+                    patch('forge.setup_service.time.sleep', side_effect=once), \
+                    patch('sys.stdout', new=output):
+                main()
+        printed = output.getvalue()
+        self.assertIn('Supervisor enquiry failed', printed)
+        self.assertIn('ValueError: Unknown runtime settings', printed)
