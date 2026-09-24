@@ -17,7 +17,9 @@ const timer = computed(() => {
 // One summary line carries provider, elapsed time and the note (attempts,
 // reason); the note is linked when the model gives it a target.
 const progress = computed(() => [props.card.providerLine, timer.value].filter(Boolean).join(' · '))
-const note = computed(() => props.card.footerLink?.label || props.card.reason || '')
+// A completed card's most useful line is where the merge got to, so the
+// deployment verdict takes the note over the outcome it already reported.
+const note = computed(() => props.card.footerLink?.label || props.card.deployment || props.card.reason || '')
 </script>
 
 <template>

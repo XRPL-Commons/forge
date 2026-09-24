@@ -25,5 +25,6 @@ defineProps<{ card: ConnectionCardModel }>()
       >{{ card.action.label }}</NuxtLink>
     </div>
     <p v-for="error in card.errors" :key="error" class="mt-2 text-xs text-rose-200">{{ error }}</p>
+    <p v-if="card.recommendation" data-recommendation class="mt-2 text-xs text-muted">{{ card.recommendation }}</p>
   </article>
 </template>

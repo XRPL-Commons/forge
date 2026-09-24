@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ForgeApiError } from '~/composables/useForgeApi'
+import type { FactoryView } from '~/utils/factory'
 import {
-  accessRows, actionMessage, branchText, checkedAtText, displayStatus, hintText, otherRulesText,
+  accessRows, actionMessage, branchText, checkedAtText, deploymentCard, displayStatus, hintText, otherRulesText,
   protectionReport, repoDescription, repoHeading, repoStage, requirements, rulesetFilename,
   rulesetHref, scopeText, statusPillText,
-  type RepositoriesView, type RepositoryRow,
+  type FactoryDeployment, type RepositoriesView, type RepositoryRow,
 } from '~/utils/repositories'
 
 // Settings · Repository setup (contracts §3.6): pick a repository, give the
@@ -40,6 +41,10 @@ const refreshing = ref(false)
 const accessNote = ref('')
 // One auto-check per observation: `revision:protection_status:observed_at`.
 const autoCheckKey = ref('')
+const deployError = ref('')
+const rejecting = ref(false)
+const deployments = ref<Record<string, FactoryDeployment>>({})
+let loadingDeployments = false
 let refreshStarted: number | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -49,14 +54,26 @@ const poll = usePoll<RepositoriesView>(async () => {
   // A view without the requested repository is not a page: the operator is
   // sent back to GitHub access rather than shown an empty shell.
   if (!Array.isArray(view.repositories) || (id !== null && !view.repositories.length)) throw new ForgeApiError(200, UNAVAILABLE)
+  // What Forge last observed of a tracked deployment lives on the factory
+  // view, not on this one. It is read beside the page, never in front of it:
+  // the card renders from the profile whether or not it answers.
+  if (view.repositories.find(candidate => candidate.id === id)?.deployment?.status === 'confirmed') void loadDeployments()
   return view
 // Repository setup wants a faster tick than the rest of the app (an access
 // check lands within seconds), but never slower than the configured one —
 // which is how the e2e harness's 300ms reaches this page too.
 }, { interval: Math.min(3000, useRuntimeConfig().public.pollInterval), allowed: () => !busy.value, onChange: observe })
 
-onMounted(() => poll.start())
-onBeforeUnmount(() => clearTimeout(refreshTimer))
+// The observation carries an age ("deploy succeeded 12 min ago"), which the
+// server cannot know; it appears once mounted and ticks with the clock.
+const now = ref(0)
+let ticker: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  poll.start()
+  now.value = Math.floor(Date.now() / 1000)
+  ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 30000)
+})
+onBeforeUnmount(() => { clearTimeout(refreshTimer); clearInterval(ticker) })
 
 // A different repository is a different page: drop the per-repository state
 // and load again immediately instead of waiting for the next tick.
@@ -64,6 +81,7 @@ watch(repoId, async () => {
   downloaded.value = false
   autoCheckKey.value = ''
   error.value = ''
+  deployError.value = ''
   // A refresh started before the navigation resolves with the previous
   // route's payload (`usePoll` coalesces in-flight loads), which holds no row
   // for the new repository: ask once more rather than leave the page empty
@@ -112,6 +130,10 @@ const downloadAriaDisabled = computed<'true' | 'false'>(() => (canDownload.value
 const checking = computed(() => row.value?.protection_status === 'checking')
 const syncing = computed(() => refreshing.value || view.value?.sync.status === 'running')
 const hint = computed(() => row.value ? hintText(row.value) : '')
+const observed = computed(() => repoId.value === null ? null : deployments.value[String(repoId.value)] ?? null)
+// The card exists only once the factory is live: a deployment profile is a
+// decision about a running repository, not a step of guided setup.
+const deployment = computed(() => live.value ? deploymentCard(row.value, observed.value, now.value) : null)
 
 watch(() => poll.error.value, (failure) => {
   if (failure) error.value = (poll.data.value ? 'Could not refresh. Showing the last received data. ' : '') + failure
@@ -189,6 +211,47 @@ async function enable() {
     busy.value = false
     enabling.value = false
   }
+}
+
+async function loadDeployments() {
+  if (loadingDeployments) return
+  loadingDeployments = true
+  try {
+    const factory = await api.get<FactoryView>('/api/factory', { timeout: 15000 })
+    deployments.value = factory.deployments ?? {}
+  } catch {
+    // A paused or unreachable factory says nothing about the profile: the
+    // card keeps the last observation it had rather than claiming a failure.
+  } finally {
+    loadingDeployments = false
+  }
+}
+
+// Confirm, reject and re-read are the same POST with the same envelope
+// (contracts §2): the response is the new snapshot, revision included.
+async function decide(action: 'confirm' | 'reject' | 'reread', extra: Record<string, unknown> = {}) {
+  const current = view.value
+  if (!current || busy.value || repoId.value === null) return
+  busy.value = true
+  deployError.value = ''
+  try {
+    const next = await api.act<RepositoriesView>('/api/repositories/deployment', {
+      repo_id: repoId.value, revision: current.revision, action, ...extra,
+    })
+    if (Array.isArray(next?.repositories)) poll.replace(next)
+    busy.value = false
+  } catch (failure: unknown) {
+    deployError.value = actionMessage(failure, 'Could not save this deployment decision.')
+    busy.value = false
+    await poll.refresh()
+  } finally {
+    busy.value = false
+  }
+}
+
+async function rejectDeployment(reason: string) {
+  rejecting.value = false
+  await decide('reject', { reason })
 }
 
 async function refreshAccess() {
@@ -382,6 +445,18 @@ async function refreshAccess() {
         >Continue to Forge →</UButton>
       </div>
 
+      <!-- How this repository reaches production: the strategist's reading,
+           the operator's decision, and what Forge observes afterwards. -->
+      <DeploymentCard
+        v-if="deployment"
+        :card="deployment"
+        :busy="busy"
+        :error="deployError"
+        @confirm="domain => decide('confirm', { domain })"
+        @reject="rejecting = true"
+        @reread="decide('reread')"
+      />
+
       <UCollapsible v-model:open="detailsOpen" class="mt-4">
         <UButton color="neutral" variant="link" class="px-0 text-xs">Setup details</UButton>
         <template #content>
@@ -408,5 +483,15 @@ async function refreshAccess() {
         </template>
       </UCollapsible>
     </template>
+
+    <ConfirmDialog
+      :open="rejecting"
+      :title="row ? `Reject the deployment reading for ${row.name}?` : ''"
+      text="Forge keeps following this repository's issues. Nothing is saved to settings, and the reading can be requested again."
+      confirm-label="Reject"
+      reason-label="Why is this reading wrong?"
+      @confirm="rejectDeployment"
+      @close="rejecting = false"
+    />
   </div>
 </template>

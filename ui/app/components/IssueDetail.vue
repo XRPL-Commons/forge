@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ForgeApiError } from '~/composables/useForgeApi'
-import type { FactoryView, JobView } from '~/utils/factory'
+import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
 import {
   ACTION_LABELS, STATUS_NAMES, eventLabel, issuePath, lastAction, pendingAction,
   preselectedReviewers, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, summaryBlock,
@@ -138,6 +138,14 @@ onMounted(() => {
 onBeforeUnmount(() => clearInterval(ticker))
 const reviewRequested = computed(() => reviewRequestText(detail.value?.reviewers_requested, now.value))
 
+// Whether the merge reached production is the ledger's verdict, which travels
+// on the factory view rather than on the issue payload — the same view this
+// page already polls for the issue's jobs.
+const deployment = computed(() => {
+  const factory = loaded.value?.factory ?? null
+  return deploymentLine((factory?.issues ?? []).find(issue => issue.key === props.issueKey), factory, now.value)
+})
+
 async function assignReviewer() {
   const issue = detail.value
   if (!issue || !reviewerLogins.value.length) return
@@ -269,6 +277,16 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <p v-if="summary?.headline" id="issue-headline" class="mt-2 text-base font-semibold text-white">{{ summary.headline }}</p>
       <p v-if="summary?.plain" id="issue-plain" class="mt-1 text-sm text-muted">{{ summary.plain }}</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
+      <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">
+        Deployment · {{ deployment.text }}
+        <a
+          v-if="deployment.runUrl"
+          :href="deployment.runUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="ml-1 text-sky-200 underline-offset-4 hover:underline"
+        >Deploy run ↗</a>
+      </p>
       <p v-if="message" id="detail-message" role="status" class="mt-2 text-sm text-amber-200">{{ message }}</p>
 
       <!-- One action bar under the title: what the operator can decide, then

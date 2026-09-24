@@ -2,9 +2,10 @@
 // renders a CardModel, every banner is produced by warnings(), so no component
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
-import { clampTitle, reviewerMentions } from './format'
+import { ago, clampTitle, reviewerMentions, shortCommit } from './format'
 import type { OnboardingView } from './onboarding'
 import type { IssueSummary } from './issues'
+import type { DeploymentRow, FactoryDeployment } from './repositories'
 
 export type JobRole = 'build' | 'review' | 'audit' | 'recovery' | 'merge'
 export type ColumnRole = 'build' | 'review' | 'audit'
@@ -31,6 +32,11 @@ export interface LedgerIssueView {
   reviewers_requested?: { logins: string[]; at: number } | null
   prerequisite_hold?: { state: string } | true | null
   history?: LedgerEvent[]
+  // Deployment verdicts (contracts §2). Both are present and null until the
+  // supervisor has evidence; `deployed` is written once, `deploy_failed` is
+  // cleared when the merge finally reaches production.
+  deployed?: { commit: string; at: number; via: 'live' | 'github' } | null
+  deploy_failed?: { sha: string; at: number; run_url: string | null } | null
 }
 
 export interface ObservationError { attempt?: string; issue?: string; phase: string; reason: string }
@@ -40,12 +46,15 @@ export interface OperatorRequest { id: string; action: string; target: string; r
 export interface FactoryView {
   ok: true; controls_token: string; active: boolean
   operator: OperatorStatus | null
-  repositories?: { id: number; name: string; enabled: boolean }[]
+  repositories?: { id: number; name: string; enabled: boolean; deployment?: DeploymentRow }[]
   observation?: { at: number; errors?: ObservationError[] } | Record<string, never>
   actions?: OperatorRequest[]
   issues?: LedgerIssueView[]
   jobs?: JobView[]
   slots?: Record<string, string>
+  // One entry per repository the supervisor has observed, keyed by id as a
+  // string (contracts §2).
+  deployments?: Record<string, FactoryDeployment>
   runtime: { enabled: boolean; slots: Record<string, number>; cycle_seconds: number; [key: string]: unknown }
   // The digest CapacityForm sends back on POST /api/runtime (contracts §2).
   runtime_revision: string
@@ -69,6 +78,9 @@ export interface CardModel {
   stoppable: boolean
   jobId: string | null
   footerLink: { to: string; label: string } | null
+  // "deployed" / "waiting for deploy" / "deploy failed" on a completed card,
+  // '' when this repository's deployments are not tracked.
+  deployment: string
 }
 
 
@@ -176,7 +188,50 @@ function stoppable(job: JobView | null): boolean {
   return !!job && job.role !== 'merge' && !job.cleanup && !job.outcome
 }
 
-function issueCard(issue: LedgerIssueView, job: JobView | null, view: FactoryView, now: number): CardModel {
+// ---------------------------------------------------------------------------
+// Deployment tracking (spec "Operator UI"). A repository is tracked once its
+// deployment profile is confirmed; only then does a merge that has not reached
+// production mean anything, so an untracked repository says nothing at all.
+// ---------------------------------------------------------------------------
+
+export function trackedRepositories(view: FactoryView | null | undefined): Set<number> {
+  const tracked = new Set<number>()
+  for (const repository of view?.repositories ?? []) if (repository.deployment?.profile) tracked.add(repository.id)
+  return tracked
+}
+
+// The word a completed card carries in its footer.
+export function deploymentNote(issue: LedgerIssueView, tracked: Set<number>): string {
+  if (issue.deployed) return 'deployed'
+  if (issue.deploy_failed) return 'deploy failed'
+  return issue.state === 'merged' && tracked.has(issue.repo_id) ? 'waiting for deploy' : ''
+}
+
+// The issue page's Deployment line: the same three states in full, with the
+// deploy run when GitHub gave one. `now` is 0 until the page is mounted, and
+// the sentence reads without an age until then.
+export function deploymentLine(
+  issue: LedgerIssueView | null | undefined,
+  view: FactoryView | null | undefined,
+  now: number,
+): { text: string; runUrl: string | null } | null {
+  if (!issue) return null
+  const when = (at: number) => (now ? ' · ' + ago(now - at) : '')
+  if (issue.deployed) {
+    const via = issue.deployed.via === 'github' ? 'from a GitHub deployment' : 'read from the live site'
+    return { text: `Deployed · commit ${shortCommit(issue.deployed.commit)} ${via}${when(issue.deployed.at)}`, runUrl: null }
+  }
+  if (issue.deploy_failed) {
+    return {
+      text: `Deploy failed · commit ${shortCommit(issue.deploy_failed.sha)}${when(issue.deploy_failed.at)}`,
+      runUrl: issue.deploy_failed.run_url ?? null,
+    }
+  }
+  if (issue.state === 'merged' && trackedRepositories(view).has(issue.repo_id)) return { text: 'Waiting for deploy', runUrl: null }
+  return null
+}
+
+function issueCard(issue: LedgerIssueView, job: JobView | null, view: FactoryView, now: number, tracked: Set<number>): CardModel {
   const running = isRunning(view, job, now)
   return {
     key: issue.key,
@@ -194,6 +249,7 @@ function issueCard(issue: LedgerIssueView, job: JobView | null, view: FactoryVie
     stoppable: stoppable(job),
     jobId: job?.id ?? null,
     footerLink: footerLinkFor(issue, job),
+    deployment: deploymentNote(issue, tracked),
   }
 }
 
@@ -218,6 +274,7 @@ export function toCard(job: JobView, view: FactoryView, now: number): CardModel 
     stoppable: stoppable(job),
     jobId: job.id,
     footerLink: null,
+    deployment: '',
   }
 }
 
@@ -248,9 +305,10 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
     attention: [], held: [], finishing: [], investigating: [], internalJobs: [], completed: [],
   }
   if (!view) return groups
+  const tracked = trackedRepositories(view)
   for (const issue of view.issues ?? []) {
     const job = jobFor(view, issue)
-    const card = issueCard(issue, job, view, now)
+    const card = issueCard(issue, job, view, now, tracked)
     // An issue with a live job belongs to the column of that job's role;
     // without one it waits in the column of the stage that comes next.
     const role = job && COLUMN_ROLES.includes(job.role as ColumnRole)
@@ -339,6 +397,19 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   const mergedSince = (seconds: number) => mergedIssues.filter(issue => mergedAt(issue) >= now - seconds).length
   const mergedDay = mergedSince(24 * 3600)
   const mergedWeek = mergedSince(7 * 24 * 3600)
+  // Once any repository is tracked, a merge is no longer the end of the line:
+  // the box counts what reached production and says what is still behind it.
+  const tracked = trackedRepositories(view).size > 0
+  const deployedDay = issues.filter(issue => issue.deployed && issue.deployed.at >= now - 24 * 3600).length
+  const waiting = mergedIssues.filter(issue => !issue.deployed).length
+  const deployFailed = issues.filter(issue => issue.deploy_failed && !issue.deployed).length
+  const deployedRow: BreakdownRow = tracked
+    ? { id: 'merged', label: 'Deployed today', value: deployedDay, detail: 'in the last 24 h',
+        meaning: `${waiting} merged and waiting · ${deployFailed} deploy failed`,
+        to: '#completed', tone: deployFailed ? 'warn' : 'ok' }
+    : { id: 'merged', label: 'Merged today', value: mergedDay, detail: 'in the last 24 h',
+        meaning: `${mergedWeek} in the last 7 days · ${mergedIssues.length} tracked in all · deployment not tracked`,
+        to: '#completed', tone: 'ok' }
   const workerSlots = (['build', 'review', 'audit'] as JobRole[]).reduce((total, role) => total + (slots[role] ?? 0), 0)
   return [
     { id: 'working', label: 'Working', value: working, detail: `of ${workerSlots} slots`,
@@ -352,8 +423,7 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
     { id: 'attention', label: 'Needs a decision', value: attention.length, detail: 'awaiting you',
       meaning: attention.length ? tally(attention.map(holdReason)) : 'Nothing needs you',
       to: '#needs-attention', tone: attention.length ? 'warn' : 'ok' },
-    { id: 'merged', label: 'Merged today', value: mergedDay, detail: 'in the last 24 h',
-      meaning: `${mergedWeek} in the last 7 days · ${mergedIssues.length} tracked in all`, to: '#completed', tone: 'ok' },
+    deployedRow,
   ]
 }
 

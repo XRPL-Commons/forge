@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
-  breakdown, isProgressStatus, phaseLabel, reasonText, toCard, warnings,
+  breakdown, deploymentLine, isProgressStatus, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
 
 const now = 1_000_000
@@ -244,7 +244,7 @@ describe('breakdown', () => {
     expect(byId.queued).toMatchObject({ value: 1, detail: 'waiting for a worker', meaning: 'Waiting for a free worker' })
     expect(byId.merging).toMatchObject({ value: 1, detail: 'approved, not merged', meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
     expect(byId.attention).toMatchObject({ value: 3, detail: 'awaiting you', meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
-    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, detail: 'in the last 24 h', meaning: '2 in the last 7 days · 3 tracked in all', to: '#completed' })
+    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, detail: 'in the last 24 h', meaning: '2 in the last 7 days · 3 tracked in all · deployment not tracked', to: '#completed' })
   })
 
   it('keeps the inline detail of every box a fixed phrase', () => {
@@ -324,5 +324,77 @@ describe('isProgressStatus', () => {
     for (const title of ['Waiting for available memory', 'An issue needs your attention', 'Waiting for a ready issue', null, undefined, '']) {
       expect(isProgressStatus(title)).toBe(false)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Deployment tracking (spec "Operator UI": the Activity board and the issue
+// page read the verdicts Task 4 writes onto the factory view).
+// ---------------------------------------------------------------------------
+
+const PROFILE = {
+  strategy: 'health',
+  deploy: { workflow: '.github/workflows/deploy.yml', environment: 'production', trigger: 'push' },
+  domain: 'academy.xrpl-commons.org',
+  exposure: { kind: 'health', path: '/health', field: 'commit', header: null },
+  workflows_digest: 'sha256:1', confirmed_at: now - 86400, exposure_issue: null,
+}
+
+function repositories(profiled: number[]): any[] {
+  return [
+    { id: 1, name: 'XRPL-Commons/academy', enabled: true },
+    { id: 2, name: 'XRPL-Commons/hackathon', enabled: true },
+  ].map(repo => (profiled.includes(repo.id)
+    ? { ...repo, deployment: { status: 'confirmed', summary: null, proposal: null, profile: PROFILE, observation: null, error: null, reason: null, exposure_issue: null, reread_requested: false } }
+    : repo))
+}
+
+const merged = (over: Record<string, unknown> = {}) =>
+  issue({ state: 'merged', history: [{ kind: 'merged', at: now - 3600 }], deployed: null, deploy_failed: null, ...over })
+
+describe('deployment verdicts', () => {
+  const tracked = view({
+    repositories: repositories([1]),
+    issues: [
+      merged({ key: '1:701', number: 701, deployed: { commit: 'abc1234def', at: now - 720, via: 'live' } }),
+      merged({ key: '1:702', number: 702 }),
+      merged({ key: '1:703', number: 703, deploy_failed: { sha: 'fed4321cba', at: now - 300, run_url: 'https://github.com/x/y/actions/runs/9' } }),
+      merged({ key: '2:704', number: 704, repo_id: 2, repo: 'XRPL-Commons/hackathon' }),
+    ],
+    deployments: { 1: { name: 'XRPL-Commons/academy', live: { commit: 'abc1234def', at: now - 60 }, deploy: null, error: null } },
+  })
+
+  it('turns the merged box into a deployed box once a profile is confirmed', () => {
+    const row = breakdown(tracked, now).find(entry => entry.id === 'merged')!
+    expect(row).toMatchObject({
+      label: 'Deployed today', value: 1, detail: 'in the last 24 h',
+      meaning: '3 merged and waiting · 1 deploy failed', to: '#completed', tone: 'warn',
+    })
+  })
+
+  it('keeps the merged box, and says so, while nothing is tracked', () => {
+    const row = breakdown(view({ repositories: repositories([]), issues: tracked.issues }), now).find(entry => entry.id === 'merged')!
+    expect(row).toMatchObject({ label: 'Merged today', value: 4, detail: 'in the last 24 h' })
+    expect(row.meaning.endsWith(' · deployment not tracked')).toBe(true)
+  })
+
+  it('notes the deployment on completed cards, and only for a tracked repository', () => {
+    const completed = Object.fromEntries(groupIssues(tracked, now).completed.map(card => [card.key, card.deployment]))
+    expect(completed).toEqual({ '1:701': 'deployed', '1:702': 'waiting for deploy', '1:703': 'deploy failed', '2:704': '' })
+  })
+
+  it('writes the issue page line for each of the three states', () => {
+    const line = (key: string) => deploymentLine(tracked.issues.find((entry: any) => entry.key === key), tracked, now)
+    expect(line('1:701')).toEqual({ text: 'Deployed · commit abc1234 read from the live site · 12 min ago', runUrl: null })
+    expect(line('1:702')).toEqual({ text: 'Waiting for deploy', runUrl: null })
+    expect(line('1:703')).toEqual({ text: 'Deploy failed · commit fed4321 · 5 min ago', runUrl: 'https://github.com/x/y/actions/runs/9' })
+    expect(line('2:704')).toBe(null)
+    expect(deploymentLine(null, tracked, now)).toBe(null)
+  })
+
+  it('names the source when the evidence is a GitHub deployment, and omits the age before mount', () => {
+    const github = merged({ key: '1:705', deployed: { commit: '0123456789ab', at: now - 30, via: 'github' } })
+    expect(deploymentLine(github, tracked, now)!.text).toBe('Deployed · commit 0123456 from a GitHub deployment · just now')
+    expect(deploymentLine(github, tracked, 0)!.text).toBe('Deployed · commit 0123456 from a GitHub deployment')
   })
 })

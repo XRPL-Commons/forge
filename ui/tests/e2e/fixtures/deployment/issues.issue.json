@@ -1,0 +1,73 @@
+{
+ "ok": true,
+ "controls_token": "synthetic",
+ "issue": {
+  "number": 606,
+  "title": "Normalize webhook signature verification",
+  "content_hash": "sha256:26060606",
+  "body_truncated": false,
+  "state": "open",
+  "updated_at": "2026-09-20T12:00:00Z",
+  "labels": [
+   "ready"
+  ],
+  "assignees": [],
+  "key": "2:606",
+  "repo": "XRPL-Commons/hackathon",
+  "repo_id": 2,
+  "status": "completed",
+  "explanation": "Merged",
+  "actions": [],
+  "setup_needed": false,
+  "environment_blocker": null,
+  "pull_requests": [
+   {
+    "number": 46,
+    "title": "Normalize webhook signature verification"
+   }
+  ],
+  "dependencies": [],
+  "fresh": true,
+  "revision": "current",
+  "setup_url": "/settings/repository?repo_id=2",
+  "active": null,
+  "body": "# Signature verification\n\nAccept the documented header casing.\n",
+  "history": [
+   {
+    "at": 1789980000,
+    "kind": "discovered",
+    "reason": null
+   },
+   {
+    "at": 1789996400,
+    "kind": "merged",
+    "reason": null
+   },
+   {
+    "at": 1789999000,
+    "kind": "deployed",
+    "reason": null
+   }
+  ],
+  "reviews": []
+ },
+ "repositories": [
+  {
+   "id": 1,
+   "name": "XRPL-Commons/academy",
+   "complete": true,
+   "fresh": true,
+   "at": 1790000000,
+   "error": null
+  },
+  {
+   "id": 2,
+   "name": "XRPL-Commons/hackathon",
+   "complete": true,
+   "fresh": true,
+   "at": 1790000000,
+   "error": null
+  }
+ ],
+ "actions": []
+}
