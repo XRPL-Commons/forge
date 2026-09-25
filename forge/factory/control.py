@@ -102,17 +102,39 @@ def deployments(root):
 def view(root):
     ledger = Ledger(Path(root) / 'state' / 'factory')
     data = ledger.read()
-    # Logs are available per execution rather than duplicating them on every card.
+    # Activity is a summary, not a second copy of the durable ledger. Full
+    # reports stay in the ledger and the issue/output endpoints.
+    issue_fields = ('key', 'repo_id', 'repo', 'number', 'title', 'state', 'reason',
+                    'active', 'last_summary', 'reviewers_requested', 'prerequisite_hold',
+                    'blocked_dependencies', 'dependency_reason', 'created_at', 'last_observed',
+                    'retry_after', 'deployed', 'deploy_failed')
+    histories = {}
+    for event in data['events']:
+        histories.setdefault(event['issue'], []).append(event)
     issues = []
     for item in data['issues'].values():
-        row = {**item, 'failure_count': ledger.failure_count(item)}
+        row = {key: item[key] for key in issue_fields if key in item}
+        row['failure_count'] = ledger.failure_count(item)
+        row['reason'] = str(row['reason'])[:1000] if row.get('reason') else None
         row.setdefault('last_summary', None)
-        row['history'] = [e for e in data['events'] if e['issue'] == item['key']][-50:]
-        row['failures'] = [{k: v for k, v in f.items() if k != 'evidence'} for f in item['failures']]
+        candidate = item.get('candidate')
+        row['candidate'] = {key: candidate[key] for key in ('pr', 'head', 'merge_commit') if key in candidate} if candidate else None
+        history = histories.get(item['key'], [])
+        recent = history[-3:]
+        merged = next((event for event in reversed(history) if event['kind'] == 'merged'), None)
+        # Merge timestamps drive the dashboard's last-day/week counts, even
+        # when later deployment events have pushed the merge out of the tail.
+        if merged is not None and merged not in recent:
+            recent = [merged, *recent]
+        row['history'] = [{key: event[key] for key in ('at', 'kind', 'provider', 'model') if key in event}
+                          for event in recent]
         row.setdefault('deployed', None)
         row.setdefault('deploy_failed', None)
         issues.append(row)
-    jobs = [{k: v for k, v in j.items() if k not in ('capture', 'observation', 'history', 'failure')}
+    job_fields = ('id', 'issue_key', 'repo_id', 'repo', 'issue_number', 'role', 'slot',
+                  'provider', 'provider_id', 'model', 'phase', 'outcome', 'cleanup', 'fenced',
+                  'capacity_wait_since', 'created_at', 'deadline', 'last_observed')
+    jobs = [{key: j[key] for key in job_fields if key in j}
             for j in data['jobs'].values() if not j['cleanup'] or j['outcome'] is None]
     for job in jobs:
         observed = data['jobs'][job['id']].get('observation') or {}
