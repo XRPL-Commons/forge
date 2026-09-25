@@ -64,6 +64,17 @@ class EnvironmentLifecycleTests(CycleTest):
         self.assertEqual(self.active()['resume_branch'], old['branch'])
         self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
 
+    def test_failed_partial_build_keeps_its_branch_after_investigation(self):
+        self.cycle(); old = self.active()
+        self.finish('build', 'reject'); self.cycle()
+        self.finish('recovery'); self.cycle()
+        job = self.active()
+        self.assertEqual(job['role'], 'build')
+        self.assertEqual(job['branch'], old['branch'])
+        self.assertEqual(job['resume_branch'], old['branch'])
+        self.assertIsNone(job['candidate'])
+        self.assertEqual(self.state(), 'ready')
+
     def test_ci_budget_defers_same_launch_without_fencing_or_failure(self):
         self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
         self.assertFalse(self.cycle()['errors'])

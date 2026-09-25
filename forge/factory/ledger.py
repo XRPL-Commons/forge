@@ -116,9 +116,10 @@ class Ledger:
                         report = result(capture.get('result'), previous)
                     except ValueError:
                         report = None
-                    # Environment repairs must resume published work too: a
-                    # blocked build may have pushed beyond the accepted candidate.
-                    if (previous['outcome'] in ('blocked_environment', 'waiting')
+                    # Failed builds can publish a useful draft without an accepted
+                    # candidate. Continue that assigned branch instead of
+                    # orphaning its PR on a fresh branch after investigation.
+                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed')
                             or ((runner_config or {}).get('memory_tiers') and confirmed(capture, report))):
                         retry = {'role': role, 'branch': previous['branch']}
             branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or (retry.get('branch') if role == 'build' else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
