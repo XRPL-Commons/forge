@@ -1,5 +1,6 @@
 """Image-owned Claude Code adapter. Managed sandbox policy is mandatory."""
 import json
+from collections import deque
 import os
 from pathlib import Path
 import subprocess
@@ -34,12 +35,12 @@ def probe_failure_reason(answer, failure, proof, nonce):
 
 
 def collect(args, prompt, directory, env):
-    """Drain output with a hard bound; the outer runner owns the deadline."""
+    """Drain an unlimited transcript into a bounded tail; keep its final result."""
     with tempfile.TemporaryFile(mode='w+', dir='/work/home') as source:
         source.write(prompt); source.seek(0)
         child = subprocess.Popen(args, stdin=source, cwd=directory, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
-        chunks, size = [], 0
+        chunks, size = deque(), 0
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(child.stdout, selectors.EVENT_READ)
@@ -49,9 +50,20 @@ def collect(args, prompt, directory, env):
                     if not block:
                         break
                     size += len(block)
-                    if size > 2 * 1024 * 1024:
-                        raise RuntimeError('Claude output exceeded its size limit')
                     chunks.append(block)
+                    # Tool-heavy work can emit much more than 2 MiB over its
+                    # lifetime. Bound retained memory, not completed work. The
+                    # CLI's terminal result is at the end; incomplete leading
+                    # JSON lines are ignored by invoke(). The runner still
+                    # enforces the execution deadline and 64 KiB result limit.
+                    while size > 2 * 1024 * 1024:
+                        excess = size - 2 * 1024 * 1024
+                        first = chunks.popleft()
+                        if len(first) > excess:
+                            chunks.appendleft(first[excess:])
+                            size -= excess
+                        else:
+                            size -= len(first)
             return child.wait(), b''.join(chunks).decode(errors='replace')
         finally:
             if child.poll() is None:

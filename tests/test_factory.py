@@ -45,6 +45,15 @@ class FactoryTest(unittest.TestCase):
         self.supervisor = Supervisor(self.ledger, self.runner, self.github, self.settings, self.config, clock=lambda: self.now)
         self.key = self.ledger.discover({'id': 1, 'name': 'example/project'}, 1, 'requirements')
 
+    def test_assignment_leaves_result_file_writes_to_the_harness(self):
+        from forge.factory.contracts import assignment_note
+        job = self.job()
+        note = assignment_note(job)
+        self.assertIn('final structured response', note['instructions'])
+        self.assertIn('do not write that file yourself', note['instructions'])
+        self.assertNotIn('Write the result contract atomically', note['instructions'])
+        self.assertIn('same tool invocation', note['instructions'])
+
     def test_existing_pr_association_uses_exact_issue_identity(self):
         job = self.job()
         body = '<!-- forge-submission ' + json.dumps({'version': 1, 'issue': 1, 'attempt': job['id'], 'head': None}) + ' -->'

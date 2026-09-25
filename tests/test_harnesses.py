@@ -66,6 +66,20 @@ class HarnessTests(unittest.TestCase):
         events[1]['message']['content'][0]['is_error'] = True
         self.assertFalse(completed(events, 'canary', 'nonce'))
 
+    def test_claude_large_transcript_retains_terminal_result_with_bounded_memory(self):
+        import sys, os
+        module = adapter('claude')
+        temporary_file = tempfile.TemporaryFile
+        terminal = {'type': 'result', 'structured_output': {'ready': True}}
+        program = ('import sys,json; '
+                   'sys.stdout.write(("x"*4096+"\\n")*800); '
+                   'print(json.dumps(' + repr(terminal) + '))')
+        with patch('tempfile.TemporaryFile', side_effect=lambda **kw: temporary_file(mode=kw['mode'], dir=self.root)):
+            code, raw = module['collect']([sys.executable, '-c', program], 'prompt', self.root, dict(os.environ))
+        self.assertEqual(code, 0)
+        self.assertLessEqual(len(raw.encode()), 2*1024*1024)
+        self.assertEqual(json.loads(raw.splitlines()[-1]), terminal)
+
     def test_claude_parent_never_launches_from_repository(self):
         module = adapter('claude')
         collect = Mock(return_value=(0, json.dumps({'type': 'result', 'structured_output': {'ready': True}})))
