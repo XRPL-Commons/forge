@@ -442,6 +442,16 @@ class Service:
         write_json(self.root / 'state/setup-service.json', {'at': self.setup.clock()})
         data = self.setup.read()
         op = data.get('operation')
+        from .factory.discussions import Discussions
+        discussions = Discussions(self.root, runner=self.runner)
+        if op:
+            # Setup/reset must not race a discussion's rotating provider login.
+            with controller_lock(self.root):
+                discussions.cancel_all()
+                jobs = discussions.active_jobs()
+                if jobs:
+                    discussions.drive(jobs[0], None)  # fenced: cleanup needs no GitHub credential
+                    return
         scoped = bool(op and op['action'] == 'harness_check' and op.get('providers') and data['phase'] == 'active')
         if op:
             try:
@@ -504,6 +514,12 @@ class Service:
                 self.next_sync = time.monotonic() + settings.load()['sync_interval_seconds']
             ledger = Ledger(self.root / 'state/factory')
             requests(self.root, ledger)
+            # Discussions clean up first; productive jobs get first choice of new capacity.
+            github = self.github_class(settings, config)
+            try:
+                discussions.tick(config, github, settings, launch=False)
+            except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
+                pass  # Durable intent/lease remains; cleanup is retried next cycle.
             observation = Supervisor(ledger, self.runner(config), self.github_class(settings, config), settings, config).cycle()
             write_json(self.root / 'state/factory/supervisor.json', observation)
             if not op:
@@ -522,6 +538,13 @@ class Service:
                         (deployments or Deployments(self.root, runner=self.runner, github=None, settings=settings)).fail(message)
                     except Exception:
                         pass
+            if not op:
+                try:
+                    github = self.github_class(settings, config)
+                    github.deadline = time.monotonic() + 10
+                    discussions.tick(config, github, settings)
+                except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
+                    pass  # Durable discussion intent is retried; never corrupt deployment state.
             self.next_cycle = time.monotonic() + config['cycle_seconds']
 
 

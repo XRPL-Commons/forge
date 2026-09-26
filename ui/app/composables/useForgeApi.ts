@@ -9,6 +9,7 @@ export interface GetOptions { timeout?: number }
 
 export function useForgeApi() {
   const current = token()
+  const resources = useResources()
   async function get<T>(path: string, options: GetOptions = {}): Promise<T> {
     let response
     try {
@@ -24,15 +25,19 @@ export function useForgeApi() {
     return payload as T
   }
   async function act<T>(path: string, body: object): Promise<T> {
+    const clear = path === "/api/onboarding" && (body as { action?: string }).action === "reset"
+    resources.invalidate(() => true, clear)
     let response
     try {
       response = await $fetch.raw<T & { ok?: boolean; reason?: string }>(path, { method: 'POST', body, credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-Forge-Action': current.value } })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason
+      resources.invalidate(() => true, status === 403 || clear)
       throw new ForgeApiError(status, reason ?? (status === 403 ? 'This page is out of date. Refresh and try again.' : 'Forge did not accept the action.'))
     }
     const payload = response._data as any
+    resources.invalidate(() => true, clear)
     checkOk(response.status, payload, 'Forge did not accept the action.')
     return payload as T
   }

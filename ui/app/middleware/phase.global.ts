@@ -15,10 +15,13 @@ export default defineNuxtRouteMiddleware(async (to) => {
   // useRequestFetch so the SSR call carries the browser's Host and Cookie
   // through the proxy to Python.
   const request = useRequestFetch()
+  const resources = useResources()
 
   let payload: Payload
   try {
-    payload = await request<Payload>('/api/onboarding', { headers: { accept: 'application/json' } })
+    const value = await resources.load('/api/onboarding', () => request<Payload>('/api/onboarding', { headers: { accept: 'application/json' }, timeout: 5000 }), 5000)
+    if (!value) return
+    payload = value
   } catch {
     // Setup state is unreachable: the page renders its own connection error
     // rather than being bounced somewhere that cannot load either.

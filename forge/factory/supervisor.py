@@ -24,6 +24,10 @@ class Supervisor:
         self.settings, self.config, self.clock = settings, config, clock
         self.errors = []
         self.capacity = None
+        root = self.factory_root()
+        if root is not None:
+            from .discussions import Discussions, reserve_logins
+            self.config = reserve_logins(config, Discussions(root).active_jobs())
 
     def cycle(self):
         self.errors = []

@@ -34,11 +34,20 @@ def reviewer_logins(reason):
     return logins
 
 
-def request(root, *, key, action, revision: str, reason):
+def request(root, *, key, action, revision: str, reason, request_id=None):
     if not isinstance(action, str) or action not in ACTIONS or not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
         raise ValueError('Choose an issue action and record the decision.')
     if action == 'assign_reviewer':
         reviewer_logins(reason)
+    if request_id is not None:
+        try: uuid.UUID(request_id)
+        except (ValueError, TypeError, AttributeError): raise ValueError('Invalid decision identity') from None
+        with AtomicStore(Path(root) / 'state/issues', 'actions').transaction() as data:
+            old = data.get(request_id)
+            if old:
+                if (old['key'], old['action'], old['revision'], old['reason']) != (key, action, revision, reason.strip()):
+                    raise ValueError('Decision identity was already used')
+                return request_id
     inventory = IssueInventory(root)
     row = inventory.view(key=key)['issue']
     if row['revision'] != revision or action not in row['actions']:
@@ -47,10 +56,10 @@ def request(root, *, key, action, revision: str, reason):
     with store.transaction() as data:
         for identifier, value in data.items():
             if value['key'] == key and value['status'] == 'pending':
-                if (value['action'], value['revision']) == (action, revision):
+                if (value['action'], value['revision'], value['reason']) == (action, revision, reason.strip()):
                     return identifier
                 raise ValueError('Another decision for this issue is still being applied.')
-        identifier = str(uuid.uuid4())
+        identifier = request_id or str(uuid.uuid4())
         data[identifier] = {'key': key, 'repo_id': row['repo_id'], 'repo': row['repo'], 'number': row['number'],
                             'action': action, 'revision': revision, 'reason': reason.strip(),
                             'status': 'pending', 'created_at': time.time()}
@@ -218,6 +227,8 @@ class IssueActions:
                 current.pop('operator_hold', None)
                 current.pop('prerequisite_hold', None)
                 current.pop('environment_hold', None)
+            if decision['action'] in ('queue', 'resume', 'recheck'):
+                current['retry_plan'] = decision['reason']
             current.pop('operator_request', None)
             current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
             self.ledger.event(state, current, 'operator_' + decision['action'], reason=decision['reason'], request=identifier)

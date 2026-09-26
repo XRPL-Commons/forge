@@ -16,16 +16,7 @@ const router = useRouter()
 
 // A {ok:false, reason} answer is a state, not a failed request: it replaces
 // the payload, so the page shows the fence instead of a stale factory.
-const poll = usePoll<FactoryView | Fence>(async () => {
-  try {
-    return await api.get<FactoryView>('/api/factory', { timeout: 15000 })
-  } catch (error: unknown) {
-    if (error instanceof ForgeApiError && error.status === 200) return { ok: false as const, reason: error.message }
-    throw error
-  }
-}, {
-  interval: useRuntimeConfig().public.pollInterval,
-})
+const poll = useFactory()
 
 const now = ref(Math.floor(Date.now() / 1000))
 let ticker: ReturnType<typeof setInterval> | undefined
@@ -97,7 +88,7 @@ const runnerCards = computed(() => [...groups.value.investigating, ...groups.val
 const runnersAuto = computed(() => runnerCards.value.some(card => card.running || card.phaseLabel === 'Last seen working'))
 const runnersManual = ref<boolean | null>(null)
 const runnersOpen = computed(() => runnersManual.value ?? runnersAuto.value)
-const completedOpen = ref(false)
+const completedOpen = useState('activity-completed-open', () => false)
 
 const announcement = ref('')
 let placement = new Map<string, ColumnRole>()
