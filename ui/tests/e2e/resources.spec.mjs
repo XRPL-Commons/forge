@@ -23,12 +23,12 @@ export default async function(page, { base, requests }) {
     document.querySelector('[data-key="1:610"] a').click()
     return done
   })
-  assert.ok(elapsed < 100, `warm detail paints within 100ms despite 750ms API delay (${elapsed.toFixed(1)}ms)`)
+  if (!process.env.FORGE_BENCH_BASELINE) assert.ok(elapsed < 100, `warm detail paints within 100ms despite 750ms API delay (${elapsed.toFixed(1)}ms)`)
   const reads = (await requests()).filter(r => r.method === 'GET')
   const report = { clientApiDelayMs: 750, warmIssueRenderMs: elapsed, requests: {
     factory: reads.filter(r => r.path === '/api/factory').length,
     issue: reads.filter(r => r.path === '/api/issues' && r.query.issue).length,
     list: reads.filter(r => r.path === '/api/issues' && !r.query.issue).length } }
-  await writeFile('/tmp/forge-ui-resource-measurements.json', JSON.stringify(report, null, 2))
+  await writeFile(process.env.FORGE_BENCH_BASELINE ? '/tmp/forge-ui-resource-baseline.json' : '/tmp/forge-ui-resource-measurements.json', JSON.stringify(report, null, 2))
   console.log('resource measurements', report)
 }

@@ -25,8 +25,27 @@ GET `/api/issues/discussion?issue=<key>&before=<sequence>` reads a conversation.
 
 ## UI resource cache
 
-Activity, header and detail share the factory resource; issue list queries and detail keys have separate entries. The request-scoped Nuxt app owns the cache, with no cross-request singleton data or local-storage persistence. One poll owner per key, shared requests, five-second default freshness, at most eighty idle entries and five-minute idle retention. Active subscribers are retained. Readiness middleware uses a five-second cache and a five-second request timeout; server guards remain authoritative.
+Activity, header and detail share the factory resource; issue list queries and detail keys have separate entries. The request-scoped Nuxt app owns the cache, with no cross-request singleton data or local-storage persistence. One poll owner per key, shared requests, five-second default freshness, at most eighty idle entries and five-minute idle retention. Active subscribers are retained. Readiness middleware uses a five-second freshness window and a five-second request timeout, revalidating a known-active state in the background; explicit lifecycle invalidation forces a fresh check; server guards remain authoritative.
 
 Actions invalidate cached generations before and after the request so an older poll cannot overwrite a newer decision. Views revalidate promptly and retain last-known data on failure. Reset and rejected authorization clear cached data. No optimistic worker-start, merge, approval or eligibility claims. Issue filters and Activity's completed-section state survive client navigation.
 
 #49 still owns whole-page initial SSR, ETag/304 and heavy-section response work. This change does not change those backend contracts.
+
+
+## Release verification
+
+- Linux: 1,283 Python tests passed (four skips). The broad macOS run is not a passing result because legacy tests require Linux process/cgroup behavior; focused portable tests passed locally.
+- UI: 272 unit tests, Vue/server typechecks and production build passed on macOS and Linux. All twelve Chromium browser suites passed locally, including conversation send/apply/reload, plain-HTTP message identity, keyboard controls and no horizontal overflow at 320/390/1440 px.
+- Authenticated read-only qualification passed for Codex and Claude using the current accounts and the discussion result schema. Both containers were verified removed afterward. This qualifies reconstructed context, not native session resume.
+- The deployed API-to-scheduler-to-Claude-to-UI path completed a read-only question on an existing blocked issue. Its two messages persisted; no proposal was applied. Repeated message identity was deduplicated; a missing-token/cross-origin POST returned 403.
+
+Controlled navigation benchmark (local Chrome on the Mac development machine, identical fixtures and 750 ms injected latency on client API GETs):
+
+| Activity measured | Pre-release installed UI artifact | New UI |
+| --- | ---: | ---: |
+| Reopen a previously viewed issue, through the Issues list, to next paint | 1,525 ms | 17 ms |
+| Factory GETs during this specific journey | 7 | 2 |
+| Issue-detail GETs during this journey | 3 | 1 |
+| Issue-list GETs during this journey | 5 | 2 |
+
+These are individual controlled runs, not production latency percentiles. Request totals include polling during the journey; the slower baseline also spends longer polling. The old artifact was tested separately without changing production. Reproduce with `FORGE_E2E_SPEC=resources.spec.mjs`; `FORGE_E2E_OUTPUT_DIR` selects a saved build and `FORGE_BENCH_BASELINE=1` records the comparison without imposing the new warm-render target. Browser executable selection follows the normal e2e runner.

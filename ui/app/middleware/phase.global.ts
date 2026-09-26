@@ -19,9 +19,19 @@ export default defineNuxtRouteMiddleware(async (to) => {
 
   let payload: Payload
   try {
-    const value = await resources.load('/api/onboarding', () => request<Payload>('/api/onboarding', { headers: { accept: 'application/json' }, timeout: 5000 }), 5000)
-    if (!value) return
-    payload = value
+    const entry = resources.entry<Payload>('/api/onboarding')
+    const cached = entry.data.value
+    const refresh = () => resources.load('/api/onboarding', () => request<Payload>('/api/onboarding', { headers: { accept: 'application/json' }, timeout: 5000 }), 5000)
+    // Known-active navigation never waits for a background readiness read.
+    // Explicit lifecycle invalidation sets updatedAt to zero and forces a check.
+    if (cached && cached.ok !== false && cached.phase === 'active' && entry.updatedAt.value) {
+      payload = cached
+      void refresh()
+    } else {
+      const value = await refresh()
+      if (!value) return
+      payload = value
+    }
   } catch {
     // Setup state is unreachable: the page renders its own connection error
     // rather than being bounced somewhere that cannot load either.

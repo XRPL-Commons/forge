@@ -41,12 +41,6 @@ def note(job):
                 "Never include credentials.")}
 
 
-def properties():
-    return {"proposal": {"anyOf": [{"type": "null"}, {"type": "object", "properties": {
-        "action": {"type": "string", "enum": sorted(ACTIONS)},
-        "reason": {"type": "string", "maxLength": 2000}},
-        "required": ["action", "reason"], "additionalProperties": False}]}}
-
 
 class Discussions:
     def __init__(self, root, *, runner=ContainerRunner, inventory=None, clock=time.time):
@@ -152,6 +146,7 @@ class Discussions:
         evidence = []
         for job in jobs:
             result = (job.get("capture") or {}).get("result") or {}
+            if not isinstance(result, dict): result = {}
             evidence.append({"attempt": job["id"], "role": job["role"], "provider": (job.get("runner_config") or {}).get("provider"),
                 "phase": job.get("phase"), "outcome": job.get("outcome"), "created_at": job.get("created_at"),
                 "summary": scrub(str(result.get("summary", "")))[:10000],
