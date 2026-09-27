@@ -219,6 +219,16 @@ class GitHub:
                 out.append({'label': label, 'login': (row.get('actor') or {}).get('login'), 'at': row.get('created_at')})
         return out
 
+    def own_draft(self, item, number, publisher):
+        """Branch of Forge's own open PR for this issue, most recently updated first."""
+        prefix = f'forge/issue-{number}-'
+        rows = [p for p in self.pulls(item)
+                if isinstance(p, dict) and str((p.get('head') or {}).get('ref') or '').startswith(prefix)
+                and (p.get('user') or {}).get('login') == publisher
+                and ((p.get('head') or {}).get('repo') or {}).get('id') == item['repo_id']]
+        rows.sort(key=lambda p: str(p.get('updated_at') or ''), reverse=True)
+        return rows[0]['head']['ref'] if rows else None
+
     def pr(self, item, number):
         value = self.call('controller', item, 'GET', f'/pulls/{number}')
         if value.get('number') != number or value.get('base', {}).get('repo', {}).get('id') != item['repo_id']:

@@ -75,6 +75,19 @@ class EnvironmentLifecycleTests(CycleTest):
         self.assertIsNone(job['candidate'])
         self.assertEqual(self.state(), 'ready')
 
+    def test_a_retry_continues_the_open_forge_draft_even_when_the_last_attempt_used_another_branch(self):
+        self.cycle(); old = self.active()
+        self.finish('build', 'reject'); self.cycle()
+        self.finish('recovery')
+        # An earlier attempt published the draft GitHub still has open.
+        self.github.draft = 'forge/issue-1-earlier00'
+        self.cycle()
+        job = self.active()
+        self.assertEqual(job['role'], 'build')
+        self.assertEqual(job['branch'], 'forge/issue-1-earlier00')
+        self.assertEqual(job['resume_branch'], 'forge/issue-1-earlier00')
+        self.assertNotEqual(job['branch'], old['branch'])
+
     def test_ci_budget_defers_same_launch_without_fencing_or_failure(self):
         self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
         self.assertFalse(self.cycle()['errors'])

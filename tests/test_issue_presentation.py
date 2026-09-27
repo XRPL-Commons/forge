@@ -63,3 +63,20 @@ class HoldAndReviewerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OwnDraftTests(unittest.TestCase):
+    def test_own_draft_is_forges_newest_open_pr_for_the_issue(self):
+        from unittest.mock import Mock
+        from forge.factory.github import GitHub
+        github = object.__new__(GitHub)
+        pr = lambda n, ref, user, updated, repo=7: {'number': n, 'head': {'ref': ref, 'repo': {'id': repo}}, 'user': {'login': user}, 'updated_at': updated}
+        github.pulls = Mock(return_value=[
+            pr(659, 'forge/issue-658-daa53604', 'forge-build[bot]', '2026-09-25T21:00:00Z'),
+            pr(660, 'forge/issue-658-89d21b0e', 'forge-build[bot]', '2026-09-25T23:00:00Z'),
+            pr(661, 'forge/issue-658-fork', 'forge-build[bot]', '2026-09-26T00:00:00Z', repo=99),
+            pr(664, 'issue-639-product-icons', 'someone', '2026-09-27T00:00:00Z'),
+            pr(700, 'forge/issue-6580-x', 'forge-build[bot]', '2026-09-27T00:00:00Z')])
+        item = {'repo': 'example/project', 'repo_id': 7}
+        self.assertEqual(github.own_draft(item, 658, 'forge-build[bot]'), 'forge/issue-658-89d21b0e')
+        self.assertIsNone(github.own_draft(item, 658, 'other[bot]'))
