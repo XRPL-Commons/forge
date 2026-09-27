@@ -91,6 +91,11 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('"NITRO_FORGE_API=http://127.0.0.1:8788"', ui)
         self.assertIn(host_update.NODE_IMAGE, ui)
         self.assertIn('service --root', self.host.unit('forge-supervisor'))
+        secret = self.host.root / 'state/ui-upstream.secret'
+        self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
+        self.assertIn('FORGE_UPSTREAM_SECRET_FILE=' + str(secret), status)
+        self.assertIn('source=' + str(secret) + ',target=/run/forge/upstream.secret,readonly', ui)
+        self.assertIn('NITRO_FORGE_UPSTREAM_SECRET_FILE=/run/forge/upstream.secret', ui)
         self.assertTrue((self.host.root / 'ui/current/server/index.mjs').exists())
         for guide in ('onboarding.md', 'issue-state-machine.md', 'factory-runtime.md'):
             self.assertTrue((self.host.root / 'ui/current/docs' / guide).exists())

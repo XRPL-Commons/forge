@@ -59,6 +59,39 @@ class SettingsHTTPTests(unittest.TestCase):
             service.save.assert_not_called()
             self.assertFalse(json.loads(handler._send.call_args.args[0])['ok'])
 
+    def test_only_the_operator_ui_may_call_the_api(self):
+        with patch.object(dashboard,'UPSTREAM_SECRET','u'*43), patch.object(dashboard,'settings_service') as service:
+            service.return_value.view.return_value={'config':{},'revision':'r'}
+            for path,method in (('/api/settings','do_GET'),('/api/settings/sync','do_POST')):
+                handler=self.handler(path,{}); getattr(handler,method)()
+                handler.send_error.assert_called_once_with(403)
+                handler=self.handler(path,{},**{'X-Forge-Upstream':'wrong'}); getattr(handler,method)()
+                handler.send_error.assert_called_once_with(403)
+                handler=self.handler(path,{},**{'X-Forge-Upstream':'u'*43}); getattr(handler,method)()
+                handler.send_error.assert_not_called()
+
+    def test_status_api_refuses_network_and_unset_binds(self):
+        import os, subprocess, sys
+        script=os.path.join(os.path.dirname(__file__),'..','legacy','forge-status.py')
+        with tempfile.TemporaryDirectory() as directory:
+            for bind,message in (('', 'Set FORGE_BIND_ADDRESS=127.0.0.1'), ('100.64.0.7', 'binds loopback only')):
+                env={**os.environ,'FORGE_ROOT':directory,'FORGE_BIND_ADDRESS':bind,'FORGE_PORT':'1',
+                     'PYTHONPATH':os.path.join(os.path.dirname(__file__),'..')}
+                env.pop('FORGE_ALLOW_NETWORK_BIND',None)
+                result=subprocess.run([sys.executable,script],env=env,capture_output=True,text=True,timeout=30)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn(message,result.stderr)
+
+    def test_upstream_secret_is_created_private_and_reused(self):
+        import os, stat
+        with tempfile.TemporaryDirectory() as directory:
+            path=os.path.join(directory,'state','ui-upstream.secret')
+            first=dashboard.upstream_secret(path)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode),0o600)
+            self.assertEqual(dashboard.upstream_secret(path),first)
+            os.chmod(path,0o644)
+            with self.assertRaises(SystemExit): dashboard.upstream_secret(path)
+
     def test_app_manifest_returns_through_the_name_the_browser_used(self):
         cases=[({}, 'http://127.0.0.1:8787'),
                ({'X-Forwarded-Host':'100.64.0.7:8787'}, 'http://100.64.0.7:8787'),

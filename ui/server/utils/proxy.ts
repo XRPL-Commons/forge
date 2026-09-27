@@ -80,8 +80,11 @@ export function guardAction({ method, headers, contentLength }: GuardInput): Gua
 // guardHost. The status service builds GitHub App manifest URLs from it, so
 // App callbacks return through this front door rather than to the loopback
 // upstream address.
-export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string): Headers {
+export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string, secret = ''): Headers {
   const out: Headers = { host: upstreamHost }
+  // The status API refuses requests without it: another local process cannot
+  // read this 0600 file, so it cannot act as the operator or forge the host.
+  if (secret) out['x-forge-upstream'] = secret
   if (headers.host) out['x-forwarded-host'] = headers.host
   for (const name of ['cookie', 'content-type', 'x-forge-action', 'accept']) if (headers[name]) out[name] = headers[name]
   if (method === 'POST') { out.origin = 'http://' + upstreamHost; out['sec-fetch-site'] = 'same-origin' }
@@ -126,4 +129,10 @@ export async function readCapped(response: Response, limit: number, controller: 
   } finally {
     try { reader.releaseLock() } catch { /* already released or stream errored */ }
   }
+}
+
+// Read per request (a few bytes) so a secret created after the UI started is used.
+export function readUpstreamSecret(path: string, read: (path: string) => string): string {
+  if (!path) return ''
+  try { return read(path).trim() } catch { return '' }
 }

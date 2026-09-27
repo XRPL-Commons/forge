@@ -194,6 +194,10 @@ npm run build       # writes the self-contained Nitro bundle to .output/
 node .output/server/index.mjs
 ```
 
+Against a real status API, also set `NITRO_FORGE_UPSTREAM_SECRET_FILE` to its
+`<runtime-root>/state/ui-upstream.secret`; without it every proxied request is
+refused with 403.
+
 `.output/` bundles its own server code and dependencies; `node_modules` is
 not needed alongside it. Configure `HOST`, `PORT`, `NITRO_FORGE_API` and
 `NITRO_HELP_DOC` as environment variables (see the table above; the

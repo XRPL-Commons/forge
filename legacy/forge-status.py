@@ -20,6 +20,29 @@ WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
 SESS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _cache = {}  # key -> (expires, value)
 CONTROLS_TOKEN = secrets.token_urlsafe(32)
+# Proof that a request came through the operator UI, not from another local
+# process: a 0600 file only this account (and the UI container, read-only) can
+# read. Loaded by __main__; None only when imported by tests.
+UPSTREAM_SECRET = None
+
+
+def upstream_secret(path):
+    """Read the UI↔API secret, creating it (0600) on first start."""
+    path = Path(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(secrets.token_urlsafe(32))
+    except FileExistsError:
+        pass
+    info = path.lstat()
+    if not path.is_file() or path.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise SystemExit(f'{path} must be a private regular file owned by this account')
+    value = path.read_text().strip()
+    if len(value) < 32:
+        raise SystemExit(f'{path} does not hold a usable secret')
+    return value
 
 
 def sh(cmd, timeout=25):
@@ -482,9 +505,14 @@ class H(BaseHTTPRequestHandler):
         self.send_header('Content-Length','0')
         self.end_headers()
 
+    def _upstream(self):
+        # Every request must come through the operator UI (see UPSTREAM_SECRET).
+        return UPSTREAM_SECRET is None or hmac.compare_digest(self.headers.get('X-Forge-Upstream',''),UPSTREAM_SECRET)
+
     def _public_host(self):
         # Behind the operator UI, Host is the loopback upstream; the UI forwards
         # the name the browser used after validating it against its own binds.
+        # Only the UI can send it: requests without the upstream secret never get here.
         forwarded=self.headers.get('X-Forwarded-Host','')
         if re.fullmatch(r'[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?|\[[0-9A-Fa-f:.]{2,45}\](?::[0-9]{1,5})?',forwarded):
             return forwarded
@@ -499,7 +527,7 @@ class H(BaseHTTPRequestHandler):
         return self.headers.get('Host','')==expected
 
     def do_POST(self):
-        if not self._trusted_host():
+        if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/issues/action', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
@@ -618,7 +646,7 @@ class H(BaseHTTPRequestHandler):
             self._send(json.dumps({'ok':False,'reason':'Operation unavailable; check server configuration'}))
 
     def do_GET(self):
-        if not self._trusted_host():
+        if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         u = urlparse(self.path)
         if u.path.startswith('/api/') and u.path!='/api/onboarding' and (Path(WD)/'state/factory-paused.json').exists():
@@ -744,16 +772,19 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ip = os.environ.get('FORGE_BIND_ADDRESS') or sh(["tailscale", "ip", "-4"]).strip().split("\n")[0]
-    if not ip:
-        raise SystemExit('Set FORGE_BIND_ADDRESS=127.0.0.1 for local use or configure Tailscale')
+    # The operator UI is the network front door; this API listens on loopback.
+    ip = os.environ.get('FORGE_BIND_ADDRESS', '')
     try:
         address=ipaddress.ip_address(ip)
         port=int(os.environ.get('FORGE_PORT',str(PORT)))
         if address.version != 4 or address.is_unspecified or not 1 <= port <= 65535:
             raise ValueError()
     except ValueError:
-        raise SystemExit('A specific IPv4 bind address and valid FORGE_PORT are required')
+        raise SystemExit('Set FORGE_BIND_ADDRESS=127.0.0.1 and a valid FORGE_PORT; bin/forge setup writes both')
+    if not address.is_loopback and os.environ.get('FORGE_ALLOW_NETWORK_BIND') != '1':
+        raise SystemExit('The status API binds loopback only; the operator UI serves the network. '
+                         'Set FORGE_ALLOW_NETWORK_BIND=1 only for a legacy installation without the UI.')
+    UPSTREAM_SECRET = upstream_secret(os.environ.get('FORGE_UPSTREAM_SECRET_FILE') or Path(WD) / 'state/ui-upstream.secret')
     print(f"forge-status on http://{ip}:{port}")
     threading.Thread(target=settings_service().watch,daemon=True).start()
     ThreadingHTTPServer((ip, port), H).serve_forever()

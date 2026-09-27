@@ -7,7 +7,7 @@
 // behavior of keeping each `set-cookie` as its own entry. The
 // `responseHeaders` test below depends on that real behavior.
 import { describe, it, expect } from 'vitest'
-import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, responseHeaders, readCapped } from '../../server/utils/proxy'
+import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
   host: '100.111.151.38:8787', origin: 'http://100.111.151.38:8787', 'sec-fetch-site': 'same-origin',
@@ -95,6 +95,15 @@ describe('upstreamHeaders', () => {
     expect(out['sec-fetch-site']).toBe('same-origin')
     expect(out['x-forge-action']).toBe('tok')
     expect(out['content-type']).toBe('application/json')
+  })
+  it('sends the upstream secret only when one is configured', () => {
+    expect(upstreamHeaders({ host: 'x' }, 'GET', '127.0.0.1:8788', 's'.repeat(43))['x-forge-upstream']).toBe('s'.repeat(43))
+    expect(upstreamHeaders({ host: 'x' }, 'GET', '127.0.0.1:8788')['x-forge-upstream']).toBeUndefined()
+  })
+  it('reads the secret file per request and tolerates a missing one', () => {
+    expect(readUpstreamSecret('', () => 'unused')).toBe('')
+    expect(readUpstreamSecret('/f', () => 'value\n')).toBe('value')
+    expect(readUpstreamSecret('/f', () => { throw new Error('missing') })).toBe('')
   })
   it('forwards the validated browser host so App callbacks return through the UI', () => {
     const out = upstreamHeaders({ host: 'forge.tail.ts.net:8787' }, 'GET', '127.0.0.1:8788')

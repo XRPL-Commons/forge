@@ -12,6 +12,13 @@ There is no manual build or switch-over step. See
 | `forge-status` | `127.0.0.1:8788` | `legacy/forge-status.py`: the JSON API and the GitHub App callback |
 | `forge-supervisor` | — | `bin/forge service` |
 
+The status API accepts only requests carrying the secret in
+`<runtime-root>/state/ui-upstream.secret` (0600, created by setup). The UI container
+mounts it read-only and sends it on every proxied request, so another local process
+or account cannot read the control token or act as the operator. The API refuses to
+bind anything but loopback unless `FORGE_ALLOW_NETWORK_BIND=1` is set for a legacy
+installation without the UI.
+
 The UI proxies `/api/**` and `/onboarding/github/callback` to the status API (see
 `ui/README.md`). It forwards the host name the browser used, after checking it, so
 that GitHub App manifests send their callbacks back through the UI.
