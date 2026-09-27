@@ -21,6 +21,8 @@ const CALLBACK_COOKIE = 'synthetic-cookie-Kf3n0pQ7rLxW9sVbZt2yHdE'
 
 let scenario = 'default'
 let requests = []
+// Like the real server, a saved runtime is what later factory reads return.
+let savedFactory = null
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
 
 function readBody(req) {
@@ -137,6 +139,7 @@ const server = http.createServer(async (req, res) => {
     const name = body && typeof body === 'object' ? body.name : undefined
     if (typeof name === 'string' && name) scenario = name
     requests = []
+    savedFactory = null
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     return send(res, 200, { ok: true })
   }
@@ -183,7 +186,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET') {
     record(req, pathname, query, body)
-    const fixture = resolveGetFixture(base, query)
+    const fixture = base === 'factory' && savedFactory && !Object.keys(query).length ? savedFactory : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
     const headers = {}
     if (base === 'repositories-ruleset') {
@@ -199,6 +202,7 @@ const server = http.createServer(async (req, res) => {
       && req.headers['sec-fetch-site'] === 'same-origin'
     if (!guarded) return send(res, 403, { ok: false, reason: 'Action rejected by mock' })
     const fixture = resolvePostFixture(base, query)
+    if (base === 'runtime' && fixture?.runtime) savedFactory = fixture
     if (fixture !== undefined) return send(res, 200, withToken(fixture))
     return send(res, 200, { ok: true })
   }
