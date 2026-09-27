@@ -1,5 +1,8 @@
 # Software factory contract
 
+For lifecycle diagrams, waiting reasons and operator actions, see the
+[issue state machine and blockers](issue-state-machine.md).
+
 Implementation: `forge/factory`. This contract supersedes the earlier three
 rejected-build-cycle design. Deployment is an explicit cutover; the legacy fleet
 is not changed by installing source. See [runtime setup](factory-runtime.md) for

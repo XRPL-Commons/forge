@@ -158,6 +158,9 @@ class Deployments:
     def leased(self, config):
         """A rotating OAuth credential has one writer; pipeline work holds it first."""
         reference = config.get('provider_auth_file_env')
+        from .factory.discussions import Discussions
+        if reference and any(j['runner_config'].get('provider_auth_file_env') == reference for j in Discussions(self.root).active_jobs()):
+            return True
         root = self.root / 'state/factory'
         if not reference or not (root / 'factory-ledger.json').exists():
             return False

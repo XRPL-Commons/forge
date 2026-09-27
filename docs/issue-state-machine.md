@@ -1,113 +1,180 @@
-# Issue state machine and bounded rework
+# Issue state machine
 
-The issue lifecycle is defined in `forge/workflow_definition.py`. Worker execution,
-assignment delivery and slot retirement are separate lifecycles. A rejected review
-or audit is a completed attempt with a Build handoff, not an infrastructure failure.
+This page describes the **current durable factory** in `forge/factory`, including
+why an issue can have no worker while its pipeline stage is `ready`.
+Open **Help → Issue states and blockers** in Forge, or start here when the
+Activity page appears stuck. The
+[software factory contract](software-factory-spec.md) defines evidence and authority;
+[runtime setup](factory-runtime.md) covers admission and resources. The older
+SQLite/tmux workflow is documented separately in the
+[legacy state machine](legacy-issue-state-machine.md).
+
+## Pipeline progress and permission to run
+
+Forge records two separate facts:
+
+- **Pipeline state:** the last accepted milestone or an explicit stop condition.
+- **Dispatch eligibility:** whether the next step may start now, after checking
+  dependencies, holds, cleanup, repository access, provider availability and capacity.
+
+There is currently **no `blocked` or `waiting_for_dependencies` value** in the
+persisted issue-state enum. Unmet issue dependencies are stored in
+`blocked_dependencies`, with a readable `dependency_reason`. For example:
+
+```json
+{
+  "state": "ready",
+  "blocked_dependencies": [17],
+  "dependency_reason": "Waiting for #17."
+}
+```
+
+This means “the next stage is Build, but issue #17 must close first.” It does not
+mean a worker is available, reserved, or even eligible to start. Closing the
+prerequisite removes that gate on a subsequent successful reconciliation; all
+other gates still apply. Waiting consumes no coding-failure budget.
+
+**Current UI limitation:** Activity counts these issues as queued and can say
+“waiting for a worker.” That label does not reflect scheduler eligibility. The
+scheduler already refuses dependency-blocked work; the UI projection needs to
+make that distinction visible.
+
+## Persisted issue states
+
+The authoritative enum and next-role mapping are in
+[`contracts.py`](../forge/factory/contracts.py). Transitions are implemented by
+[`ledger.py`](../forge/factory/ledger.py),
+[`supervisor.py`](../forge/factory/supervisor.py), and
+[`issue_actions.py`](../forge/factory/issue_actions.py).
+
+| State | Meaning | What can move it forward? |
+| --- | --- | --- |
+| `ready` | Build is the next stage; a build may already be active. | Eligible Build publishes an independently verified candidate. |
+| `built` | Candidate accepted; Review is next or active. | Verified Review pass for the current candidate. |
+| `reviewed` | Review accepted; Audit is next or active. | Verified Audit pass for the current candidate. |
+| `audited` | Technical audit accepted; merge gates remain. | Supervisor verifies checks, protection and human policy, then confirms merge. |
+| `approval_needed` | Current candidate needs a human decision. | Supervisor observes the required current GitHub approval and rechecks merge gates. |
+| `investigating` | A charged attempt failed; Recovery investigates. | Findings allow a retry at the appropriate milestone or require a hold. |
+| `hold` | Explicit operator, environment, protection or recovery stop. | The hold-specific repair/recheck or an allowed operator decision. |
+| `failed` | Three charged failures exhausted the current budget. | Explicit retry with a recorded approach and fresh eligibility checks. |
+| `merged` | GitHub confirms the accepted candidate merged. | Terminal for pipeline work; deployment is observed separately. |
+| `cancelled` | Work cancelled, including an issue closed externally without an observed candidate merge. | An allowed explicit operator decision can return it to eligibility checks. |
+
+Running is represented by the assigned job and its execution phase, not by
+additional `building`, `reviewing` or `auditing` issue states. Finishing a process
+is not evidence of a successful stage. Merge and deployment are separate facts.
+
+### Main path
+
+Arrows below require independently verified evidence. Dispatch itself leaves the
+issue at its current milestone until the job's result is accepted.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> queued
-    queued --> build: dispatch
-    build --> review: published candidate
-    review --> audit: verified pass
-    review --> build: rejection, budget remains
-    audit --> build: rejection, budget remains
-    audit --> merge: verified pass
-    merge --> done: issue confirmed completed
-    review --> failed: third rejected build cycle
-    audit --> failed: third rejected build cycle
-    failed --> build: explicit retry with reason
+    [*] --> ready: discovered and admitted to the pipeline
+    ready --> built: Build submission verified
+    built --> reviewed: Review pass verified
+    reviewed --> audited: Audit pass verified
+    audited --> approval_needed: human approval required
+    audited --> merged: merge gates pass and GitHub confirms merge
+    approval_needed --> merged: current approval and merge gates pass
+    merged --> [*]
 ```
 
-`merge` describes the issue's final handoff, not permission to merge. Existing audit
-policy, exact candidate checks, required human approvals and repository protections
-continue to govern merging. A process exit or merged PR never proves issue completion.
-Fresh GitHub observations can import progress that occurred between polls or outside
-Forge; they cannot erase an exhausted issue retry budget.
+Discovery can also place an issue directly on `hold`, for example when existing
+work requires explicit adoption. A changed candidate, base, requirements or policy
+can invalidate evidence and return work to an earlier milestone or a reconciliation
+hold. An externally confirmed candidate merge is reconciled even after a failure;
+an external issue closure without that merge is reconciled as cancellation.
 
-## Three rejected build cycles
+### Failure, recovery and holds
 
-The default is **3 total rejected cycles**, shared across Review and Audit. The
-initial build can be cycle one. Rejections belong to the preceding submitted Build
-assignment; reviewing the same candidate twice does not create another build cycle.
-A new Build assignment counts as a new cycle even when it publishes the same commit.
-Provider migrations keep the assignment ID and do not consume an issue retry.
+This diagram groups the four retry milestones to keep recovery readable; it does
+not add a `milestone` state to the ledger.
 
-Verified published results bind the role, assignment, generation, PR, full head/base,
-review ID, timestamp and body digest. They are recorded before admitting rework, and
-also via verified retirement/reconciliation receipts. Each assignment result is
-immutable and idempotent. The result, rejected-cycle record, failure latch and workflow
-history/outbox event are committed in one SQLite transaction.
-
-The third rejected cycle sets issue stage `failed`. All roles refuse new dispatch
-for that issue. A failed candidate is skipped so another eligible issue in the same
-repository can still be selected. Labels, restarts, newer snapshots, freed slots and
-later PR revisions cannot reset that latch. Already-running work is preserved.
-
-Tracked Audit admission requires a verified Review PASS for the exact current head
-and base; relabeling cannot skip the review. Tracked rework requires a verified
-rejection. Legacy untracked candidates retain the existing admission policy; Forge
-does not fabricate old assignments or infer a failure count from worker prose.
-
-## Explicit retry
-
-Inspect the findings and preserved work first. When no assignment still owns the
-issue, the operator can start a fresh budget with a durable reason and idempotency ID:
-
-```sh
-python3 -m forge.workflow_control retry-failed --config CONFIG --state STATE \
-  --repo OWNER/REPO --issue 17 --reason 'Approved repair approach' \
-  --event-id 'operator-retry-17-unique-request-id'
+```mermaid
+stateDiagram-v2
+    state "ready / built / reviewed / audited" as milestone
+    milestone --> investigating: charged failure with budget remaining
+    milestone --> failed: third charged failure
+    investigating --> milestone: supported retry after investigation
+    investigating --> hold: repeated failure without supported new approach
+    milestone --> hold: operator or environment or protection stop
+    hold --> milestone: hold-specific repair or allowed resume
+    hold --> ready: explicit retry where allowed
+    failed --> ready: explicit retry with recorded approach
+    milestone --> cancelled: cancellation or external issue closure
+    cancelled --> ready: allowed explicit resume
 ```
 
-This retains all prior results and cycles in history and increments the retry epoch.
-It does not clear holds, change GitHub labels, unquarantine a checkout, grant merge
-permission, or immediately dispatch. Fresh eligibility checks must pass. Late
-results from assignments created before the reset cannot consume the new budget.
+The current factory counts **charged failures across roles**, not just rejected
+build cycles. A code rejection retries Build (`ready`); execution failure retries
+the failed role's milestone after investigation. A third charged failure enters
+`failed`; its investigation may still record findings but does not reset the budget.
+Repeated failures can stop earlier on `hold` when there is no supported new approach.
 
-## September 9 audit findings
+Provider unavailability and dependency waits do not consume that budget. Validated
+memory exhaustion can retry the same stage at a larger configured memory tier;
+other validated environment blockers enter a typed hold, preserving the stage and
+candidate. See [runtime setup](factory-runtime.md) for memory and automatic rechecks.
+An unrelated dependency closing never clears an explicit hold or failed budget.
 
-The prior implementation persisted assignments and slots transactionally, but
-reconstructed issue stages from queue labels and had no issue failure budget.
-Execution quarantine preserved work, but was surfaced as if every preserved report
-were a current failed issue. Release verification discarded published role outcomes
-instead of recording them as durable issue transitions. A returned PR could become
-eligible for its builder before the reviewer finished workspace cleanup.
+## Dispatch eligibility
 
-This change records outcomes before rework admission, retains them through release
-recovery, centralizes transition policy, enforces the shared retry budget, and shows
-failed issues separately from operational workspace blocks. Busy workers with an
-unverified issue link are labeled `Verifying assignment`.
+This conceptual diagram describes the gates, not an additional persisted state
+machine or the exact order of every scheduler check. Gates can coexist.
 
-The old blocked builder workspaces are a separate recovery problem: preservation
-records do not expire automatically. Their issue status and historical attempt are
-shown separately. This change does not delete preserved work or guess a legacy
-assignment to clear those records.
+```mermaid
+flowchart TD
+    stage[Next pipeline step] --> gates{Unresolved eligibility gate?}
+    gates -->|Open prerequisite issue| dependency[Waiting for dependencies]
+    gates -->|Hold or decision required| decision[Needs action or repair]
+    gates -->|Observation or retry pending| recheck[Waiting for recheck]
+    gates -->|No| capacity{Launch resources available?}
+    capacity -->|No| waiting[Waiting for capacity or provider]
+    capacity -->|Yes| reserve[Reserve assignment and launch]
+    dependency -->|Prerequisites verified closed| gates
+    decision -->|Required evidence or decision recorded| gates
+    recheck -->|Fresh checks succeed| gates
+    waiting -->|Capacity or availability changes| gates
+```
 
-Completed role workspaces can be recovered when their clean checkout is verified
-as published history, including an ancestor of an open PR. An audit PASS awaiting
-human approval finishes the worker step without authorizing a merge. Human-wait
-recognition consumes the revision-bound `FORGE_RESULT` record; it does not depend
-on the worker choosing a particular prose heading. Legacy explicit headings remain
-supported, while malformed or mismatched records fail closed.
+| Gate | Evidence or recorded field | How it clears |
+| --- | --- | --- |
+| Issue dependency | `blocked_dependencies`, `dependency_reason` | Fresh GitHub reads verify each prerequisite closed. |
+| Explicit stop | `hold`, `failed`, `approval_needed` and their reasons | Appropriate decision or verified repair; no blanket retry. |
+| Environment or repository protection | `environment_hold`, `prerequisite_hold` | Hold-specific recheck or allowed resume; saved stage retained. |
+| Pending operator action | `operator_request` | Finish applying the durable decision before scheduling. |
+| Old execution still owns resources | Active job or unverified cleanup | Verified cleanup before a replacement job. |
+| Temporary availability | `retry_after`, provider cooldown/readiness, observation errors | Retry interval and fresh successful availability checks. |
+| Dispatch disabled or repository unavailable | Runtime and repository admission settings | Enable dispatch or restore required access/settings. |
+| Worker capacity | Role slots, memory admission, provider credential lease | Resources become available; no failure charged for waiting. |
 
-A redundant auditor that stops without a duplicate review can be recovered only
-after fresh verification of the exact candidate's existing human-approval wait.
-That recovery does not attribute the earlier PASS to the new assignment or record
-another rejected cycle. Intentional retirement clears the running marker after
-successful teardown; reconciliation also clears stale markers from older releases.
-Neither operation treats a recovered workspace as a crashed worker.
+Dependencies are declared in individual issue-body lines using `Depends on: #17`,
+`Blocked by #17`, or `Dependency: #17`. Only same-repository issue references are
+supported. A downstream `Blocks:` clause, general references and fenced examples
+are excluded. An unreadable prerequisite is not assumed closed. Dependency cycles
+and references to intentionally parked issues require correcting the requirements;
+adding worker slots cannot resolve them.
 
-## Rollout and validation
+## Recommended visible status model — not yet implemented
 
-The schema is additive (`issue_retry_state`, `issue_results`, `rejected_build_cycles`).
-Back up the live database with SQLite backup, not a raw copy of a WAL database. Deploy
-all workflow modules together with admission paused; restart the status process to
-load the new projection. Existing observed history is retained; no speculative
-backfill is performed. A rollback to code without the retry gate could bypass a
-recorded failure, so pause admission before rollback and retain the database.
+Keep the pipeline milestone and expose an explicit **Waiting for dependencies**
+status, with links to every blocking issue. Replacing `ready` with a single generic
+`blocked` state would lose where the issue should resume unless another field saved
+that stage. A separate eligibility status preserves that information naturally.
 
-Tests cover the requested mixed rejection path, three-cycle exhaustion, idempotent
-receipts, exact revision/generation checks, admission gates, transaction rollback,
-hold preservation, explicit retry, and provider migration. They use synthetic
-GitHub responses and temporary state only.
+The UI/API follow-up should:
+
+- Derive one shared eligibility projection from scheduler facts, with typed reasons;
+  avoid independently guessing eligibility in each UI component.
+- Separate runnable queued work from dependency-blocked work in counts and groups.
+- Show the next stage, all known blockers, who or what can clear each one, and
+  whether rechecking is automatic. Keep unresolved/unknown checks visible.
+- Recompute after reconciliation and decisions; clearing one dependency must not
+  erase another gate, reset the retry budget or waive approval.
+
+For example, a Build issue waiting on #17 should read **Waiting for dependencies —
+Build resumes after #17**, while an eligible Build waiting for a slot should read
+**Queued — waiting for a Build worker**. This documentation change does not migrate
+the ledger or change the deployed dashboard.

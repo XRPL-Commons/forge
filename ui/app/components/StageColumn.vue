@@ -12,7 +12,8 @@ const role = computed(() => props.id.replace(/^stage-/, '') as 'build' | 'review
 
 <template>
   <div :id="id" class="min-w-0 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
-    <div class="flex items-baseline justify-between gap-2">
+    <div class="flex items-center gap-2">
+      <RoleIllustration :role="role" class="h-12 w-12" />
       <h2 class="text-sm font-semibold text-white">{{ title }}</h2>
     </div>
     <p class="mt-0.5 text-xs text-muted">{{ summary }}</p>

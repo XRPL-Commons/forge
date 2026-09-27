@@ -27,6 +27,20 @@ const posted = (path) => (entry) => entry.method === 'POST' && entry.path === pa
 export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings/github')
   await waitForText(page, 'See the four Forge Apps')
+  // The original role illustrations survive on both migrated UI surfaces.
+  for (const role of ['build', 'review', 'audit', 'controller']) {
+    const art = page.locator(`#connections svg.role-illustration[data-role="${role}"]`)
+    await art.waitFor()
+    assert.equal(await art.getAttribute('aria-hidden'), 'true')
+    assert.ok(await art.locator('path, rect, circle').count() > 0)
+    assert.equal(await art.locator('[data-github-badge]').count(), 1)
+  }
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 })
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `role artwork overflow at ${width}`)
+    await page.screenshot({ path: `/tmp/forge-roles-settings-github-${width}.png`, fullPage: true })
+  }
+
 
   assert.equal(await page.title(), 'GitHub access · Forge')
   assert.equal(await page.getByRole('link', { name: 'GitHub access' }).getAttribute('aria-current'), 'page')

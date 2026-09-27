@@ -493,7 +493,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host():
             self.send_error(403);return
-        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/issues/action', '/api/issues/refresh'}:
+        if self.path not in {'/api/slots/action', '/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/issues/action', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -532,6 +532,18 @@ class H(BaseHTTPRequestHandler):
             setup_state=Path(WD)/'state/onboarding/setup.json'
             if self.path in ('/api/settings','/api/runtime') and setup_state.is_file() and json.loads(setup_state.read_text()).get('phase')!='active':
                 raise ValueError('Use guided setup until the factory has started')
+            if self.path == '/api/issues/discussion':
+                from forge.factory.discussions import Discussions
+                service = Discussions(WD)
+                if not isinstance(value, dict): raise ValueError('Expected a conversation action')
+                action = value.get('action')
+                fields = {'send': {'key', 'action', 'message', 'request_id'}, 'cancel': {'key', 'action'}, 'apply': {'key', 'action', 'message_id'}}
+                if action not in fields or set(value) != fields[action]: raise ValueError('Invalid conversation action')
+                result = None
+                if action == 'send': result = service.send(value['key'], value['message'], value['request_id'])
+                elif action == 'cancel': service.cancel(value['key'])
+                else: result = service.apply(value['key'], value['message_id'])
+                self._send(json.dumps({'ok': True, 'request': result}));return
             if self.path == '/api/issues/action':
                 from forge.factory.issue_actions import request
                 if not isinstance(value,dict) or set(value)!={'key','action','revision','reason'}:
@@ -621,6 +633,16 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':CONTROLS_TOKEN}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Setup state is unavailable; inspect the supervisor service'}))
+        elif u.path == '/api/issues/discussion':
+            from forge.factory.discussions import Discussions
+            try:
+                query = parse_qs(u.query)
+                if set(query) - {'issue', 'before'} or 'issue' not in query or any(len(v) != 1 for v in query.values()):
+                    raise ValueError('Invalid conversation view')
+                result = Discussions(WD).view(query['issue'][0], int(query['before'][0]) if 'before' in query else None)
+                self._send(json.dumps({'ok': True, **result, 'controls_token': CONTROLS_TOKEN}))
+            except (ValueError, KeyError, OSError, RuntimeError):
+                self._send(json.dumps({'ok': False, 'reason': 'Conversation unavailable. Refresh the issue and try again.'}))
         elif u.path == '/api/issues':
             from forge.factory.issues import IssueInventory
             try:

@@ -21,6 +21,7 @@ const CALLBACK_COOKIE = 'synthetic-cookie-Kf3n0pQ7rLxW9sVbZt2yHdE'
 
 let scenario = 'default'
 let requests = []
+let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -136,7 +137,22 @@ const server = http.createServer(async (req, res) => {
     const name = body && typeof body === 'object' ? body.name : undefined
     if (typeof name === 'string' && name) scenario = name
     requests = []
+    conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     return send(res, 200, { ok: true })
+  }
+
+  if (pathname === '/api/issues/discussion') {
+    record(req, pathname, query, body)
+    if (req.method === 'POST') {
+      if (body.action === 'send') {
+        conversation.messages.push({ id: body.request_id, sequence: 1, role: 'user', text: body.message })
+        conversation.messages.push({ id: '11111111-2222-4333-8444-555555555555', sequence: 2, role: 'assistant',
+          text: 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)',
+          proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
+      } else if (body.action === 'apply') conversation.messages[1].receipt = 'discussion-decision'
+      return send(res, 200, withToken({ ok: true, request: 'discussion-decision' }))
+    }
+    return send(res, 200, withToken({ ok: true, ...conversation }))
   }
 
   // GitHub App manifest hand-off stand-in: accepts any content type (the

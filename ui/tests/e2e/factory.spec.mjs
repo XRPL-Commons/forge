@@ -61,6 +61,20 @@ async function closeStack(page, dialog) {
 // stop confirmation round-trip, column moves and the reset fence.
 export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/')
+  // The original role illustrations survive on both migrated UI surfaces.
+  for (const role of ['build', 'review', 'audit']) {
+    const art = page.locator(`#columns svg.role-illustration[data-role="${role}"]`)
+    await art.waitFor()
+    assert.equal(await art.getAttribute('aria-hidden'), 'true')
+    assert.ok(await art.locator('path, rect, circle').count() > 0)
+    assert.equal(await art.locator('[data-github-badge]').count(), 0)
+  }
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 })
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `role artwork overflow at ${width}`)
+    await page.screenshot({ path: `/tmp/forge-roles-factory-${width}.png`, fullPage: true })
+  }
+
   await waitForText(page, 'Publish build logs without leaking install tokens')
 
   // Every card is the same height, although the default fixture deliberately

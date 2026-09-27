@@ -1,5 +1,8 @@
 # Running the durable factory
 
+For lifecycle diagrams, waiting reasons and operator actions, see the
+[issue state machine and blockers](issue-state-machine.md).
+
 The new implementation lives in `forge/factory`. It is selected explicitly; installing
 this source does not take over the legacy fleet. The operator UI is a separate
 `forge-ui` service on the tailnet address, and `forge-status` serves only the JSON

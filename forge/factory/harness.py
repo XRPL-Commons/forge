@@ -30,6 +30,9 @@ def role_properties(note):
     candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
     return {
         'build': {},
+        'discussion': {'proposal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
+            'action': {'type': 'string', 'enum': ['retry', 'resume', 'recheck', 'queue', 'pause', 'backlog']},
+            'reason': {'type': 'string', 'maxLength': 2000}}, 'required': ['action', 'reason'], 'additionalProperties': False}]}},
         'review': candidate,
         'audit': {**candidate, 'human_required': {'type': 'string', 'enum': ['required', 'not_required', 'unknown']},
                   'human_reason': {'type': 'string'}},

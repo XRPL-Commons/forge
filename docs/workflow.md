@@ -1,9 +1,12 @@
-# Issue workflow and worker slots
+# Legacy issue workflow and worker slots
+
+This page covers the SQLite/tmux compatibility workflow. For the current factory,
+see the [issue state machine and blockers](issue-state-machine.md).
 
 Forge keeps issue progress and execution ownership in `state/workflow.sqlite3`.
 An issue is the unit of pipeline work: queued → build → review → audit → done.
 Review and audit rejection return it to Build. Three rejected build cycles enter
-`failed`; the durable policy and operator retry are defined in [issue-state-machine.md](issue-state-machine.md). A stage also has a disposition:
+`failed`; the durable policy and operator retry are defined in [legacy-issue-state-machine.md](legacy-issue-state-machine.md). A stage also has a disposition:
 `pending`, `working`, `critical` (human approval), or `stalled` (recorded blocker).
 An idle process, a merged PR, or a released worker does not by itself complete an
 issue. GitHub must report the issue closed as completed.
