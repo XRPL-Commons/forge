@@ -5,7 +5,8 @@ The durable factory implementation is available through `bin/forge factory` and
 and audit, mandatory failure investigations, and a shared three-failure budget.
 Start with [VM installation and terminal login](docs/installation.md),
 [guided onboarding](docs/onboarding.md), and the
-[workflow contract](docs/software-factory-spec.md). It uses an explicit cutover;
+[workflow contract](docs/software-factory-spec.md). For pipeline states and why an
+issue is waiting, see the [issue state machine and blockers](docs/issue-state-machine.md). It uses an explicit cutover;
 installing this source does not take over the legacy fleet.
 
 
