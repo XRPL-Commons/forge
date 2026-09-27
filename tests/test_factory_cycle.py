@@ -41,6 +41,7 @@ class GitHubFacts:
         self.closed = False
     def ci_evidence(self, job): return None
     def publisher(self, role): return role + '[bot]'
+    def own_draft(self, item, number, publisher): return getattr(self, 'draft', None)
     def target(self, item): return 'main'
     def token(self, *args, **kwargs): return 'artificial-token'
     def issue(self, item):

@@ -73,7 +73,8 @@ class Ledger:
                 self.event(data, issue, 'discovered', reason=hold)
         return key
 
-    def reserve(self, key, role, slot, *, publisher, policy, timeout, failure=None, provider='default', runner_config=None, target_branch='main'):
+    def reserve(self, key, role, slot, *, publisher, policy, timeout, failure=None, provider='default', runner_config=None, target_branch='main',
+                existing_draft=None):
         """One atomic ownership transfer before any external process launch."""
         with self.transaction() as data:
             issue = data['issues'][key]
@@ -123,6 +124,10 @@ class Ledger:
                     if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed')
                             or ((runner_config or {}).get('memory_tiers') and confirmed(capture, report))):
                         retry = {'role': role, 'branch': previous['branch']}
+            # GitHub's open draft is the truth about where the work is; the last
+            # job's branch only stands in when there is none.
+            if role == 'build' and not issue['candidate'] and existing_draft:
+                retry = {'role': role, 'branch': existing_draft}
             branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or (retry.get('branch') if role == 'build' else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
             job = {'id': identifier, 'issue_key': key, 'repo_id': issue['repo_id'], 'repo': issue['repo'],
                    'issue_number': issue['number'], 'role': role, 'slot': slot, 'provider': provider,
