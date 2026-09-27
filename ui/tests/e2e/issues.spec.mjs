@@ -144,6 +144,8 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(`${base}/issues/1%3A604?job=${RECOVERY_JOB}`)
   await waitForText(page, DETAIL_TITLE)
   const jobs = page.locator('#issue-jobs li')
+  // The job list fills in from client data after the title renders.
+  await jobs.first().waitFor()
   assert.equal(await jobs.count(), 1, 'the issue lists its own jobs')
   assert.match(await jobs.first().innerText(), /^recovery · running/)
   assert.equal(await jobs.first().getByRole('link').getAttribute('aria-current'), 'true')
