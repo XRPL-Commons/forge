@@ -20,7 +20,9 @@ DEFAULT = {
     'image': '', 'engine': '/usr/bin/docker', 'engine_socket': '/var/run/docker.sock',
     'apparmor_profile': 'forge-runner-private-proc', 'seccomp_profile_env': 'FORGE_RUNNER_SECCOMP',
     'network': 'forge-workers', 'proxy': 'http://forge-egress:3128',
-    'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 256,
+    # pids_limit counts threads too: a dev server, pnpm and a headless Chromium
+    # together exceed 256 (pthread_create: Resource temporarily unavailable).
+    'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 1024,
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
