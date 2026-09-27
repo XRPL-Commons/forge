@@ -211,7 +211,7 @@ class ContainerRunner:
             raise RunnerUnavailable('Provider credentials unavailable')
         auth_ref = self.config.get('provider_auth_file_env')
         if auth_ref:
-            env = (Credentials(self.environ['FORGE_CREDENTIAL_ROOT']).environment()
+            env = (Credentials(self.environ['FORGE_CREDENTIAL_ROOT']).environment(only=[auth_ref])
                    if self.environ.get('FORGE_CREDENTIAL_ROOT') else self.environ)
             auth_path = Path(env.get(auth_ref, ''))
             if not auth_path.is_absolute() or not auth_path.is_file() or auth_path.stat().st_size > 65536:

@@ -327,17 +327,6 @@ class Onboarding:
             data.update(provider_revision=str(uuid.uuid4()), checks={}, provider_checks={}, provider_errors={}, error=None)
             data.pop('readiness', None)
 
-    def provider(self, api_key=None):
-        # Backward-compatible server/API import. New installations use terminal login.
-        env = self.credentials.environment()
-        value = api_key or env.get('OPENAI_API_KEY')
-        if value:
-            return self.connect('codex', api_key=value)
-        path = Path(env.get('FORGE_CODEX_AUTH_FILE') or Path.home() / '.codex/auth.json')
-        if not path.is_file() or path.stat().st_size > 65536:
-            raise ValueError('No server connection found. Run bin/forge setup login codex on the server')
-        return self.connect('codex', auth_value=path.read_text())
-
     def scope(self, harness):
         """Every pool entry of one harness; the rest keeps its recorded verdict."""
         item = manifest(harness)

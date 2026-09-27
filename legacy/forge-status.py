@@ -526,13 +526,12 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(value,dict):raise ValueError('Expected a setup action')
                 action=value.pop('action',None)
                 fields={'github':{'role','owner','account_type'},'refresh':set(),'repository':{'repo_id'},
-                        'provider':{'api_key'},'check':{'revision'},'start':{'revision'},'reset':{'generation'}}
+                        'check':{'revision'},'start':{'revision'},'reset':{'generation'}}
                 if action not in fields or set(value)!=fields[action]:raise ValueError('Invalid setup action')
                 result={}
                 if action=='github':result=setup.begin(**value,origin='http://'+self._public_host(),browser=self._browser())
                 elif action=='refresh':result=setup.refresh()
                 elif action=='repository':setup.select(value['repo_id'])
-                elif action=='provider':setup.provider(value['api_key'])
                 else:result={'request':setup.queue(action,**value)}
                 self._send(json.dumps({'ok':True,**result}));return
             if (Path(WD)/'state/factory-paused.json').exists():

@@ -53,6 +53,17 @@ class Credentials:
         index = read_json(self.root / 'index.json') if (self.root / 'index.json').exists() else {}
         index[reference] = {'name': name, 'file': file}
         write_json(self.root / 'index.json', index)
+        self._prune(index)
+
+    def _prune(self, index):
+        """Delete secrets no reference points to: replaced keys and rotated logins.
+
+        A running job that mounted a replaced login keeps its open copy; its
+        refresh then fails the CAS check instead of resurrecting it."""
+        current = {record['name'] for record in index.values()}
+        for path in self.root.iterdir():
+            if re.fullmatch(r'[a-f0-9]{32}', path.name) and path.name not in current and path.is_file() and not path.is_symlink():
+                path.unlink()
 
     def refresh(self, reference, expected, value):
         """CAS: an old runner cannot replace a newer login. Never update external files."""
@@ -61,13 +72,16 @@ class Credentials:
             record = index.get(reference)
             if not record or not record['file']:
                 return False
-            path = Path(self.environment()[reference])
+            path = Path(self.environment(only=[reference])[reference])
             if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 return False
             self._put(reference, value, file=True)
             return True
 
-    def environment(self):
+    def environment(self, only=None):
+        """The process environment plus stored credentials, which take precedence.
+
+        `only` limits the stored credentials read to the named references."""
         env = dict(os.environ)
         env['FORGE_CREDENTIAL_ROOT'] = str(self.root.parent.resolve())
         if not self.root.exists():
@@ -75,6 +89,8 @@ class Credentials:
         self._private()
         index = read_json(self.root / 'index.json') if (self.root / 'index.json').exists() else {}
         for reference, record in index.items():
+            if only is not None and reference not in only:
+                continue
             if (not self.valid_reference(reference)
                     or not re.fullmatch(r'[a-f0-9]{32}', record['name'])):
                 raise ValueError('Invalid stored credential reference')

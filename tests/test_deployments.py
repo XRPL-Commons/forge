@@ -546,7 +546,7 @@ class ServiceHookTests(unittest.TestCase):
             data['apps'] = {role: {'connection': config['connections'][role]} for role in ROLES}
             data['owner'], data['account_type'] = 'example', 'organization'
         self.setup.select(10)
-        self.setup.provider('test-provider-value-no-real-credential')
+        self.setup.connect('codex', api_key='test-provider-value-no-real-credential')
         runtime = self.setup.runtime(); runtime['image'] = 'sha256:' + 'a' * 64
         write_json(self.root / 'setup/runtime.json', runtime)
 

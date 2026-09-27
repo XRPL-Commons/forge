@@ -68,7 +68,7 @@ class SetupTests(unittest.TestCase):
             data['owner'] = 'example'
             data['account_type'] = 'organization'
         self.setup.select(10)
-        self.setup.provider('test-provider-value-no-real-credential')
+        self.setup.connect('codex', api_key='test-provider-value-no-real-credential')
 
     def service(self):
         engine = {}
@@ -260,7 +260,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.setup.read()['phase'],'resetting')
         self.assertTrue(self.setup.settings().path.exists())
         self.assertTrue((self.root/'credentials').exists())
-        with self.assertRaises(ValueError): self.setup.provider('another-value-no-real-secret')
+        with self.assertRaises(ValueError): self.setup.connect('codex', api_key='another-value-no-real-secret')
         service.tick(); service.tick()
         self.assertEqual(self.setup.read()['phase'],'setup')
 
