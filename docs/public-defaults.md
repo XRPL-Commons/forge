@@ -16,16 +16,17 @@ for setup order and the boundary between access readiness and live execution.
 
 The public auditor template grants no administrative merge bypass. NORMAL and CRITICAL work must satisfy repository-required approvals and all other protections; CRITICAL work additionally needs a qualifying human review of the current candidate. Role instructions remain cooperative operating policy, not credential isolation.
 
-Service templates use the current user's home (`%h`), and Python defaults resolve `Path.home()`. They assume an operator-managed flat installation under `~/ops/forge-watchdog`; cloning the source alone does not install services or relocate the compatibility scripts. Configure the paths for your installation. The dashboard binds to the machine's Tailscale address and requires a trusted private network.
+`bin/forge setup` writes the user services for the checkout and runtime root it is given (default `~/.local/share/forge`); cloning the source alone installs nothing. The operator UI binds to loopback unless `--bind` names a private tailnet address, and requires a trusted private network. The remaining `deploy/*.service*` files and `~/ops/forge-watchdog` paths belong to the [legacy](legacy.md) installation.
 
-Model triage is opt-in. Service templates default to local rules and disable model data authorization. The supervisor defaults to three fleet sessions and one per role, with conservative pressure guardrails. These are starting settings, not a sizing guarantee.
+Model triage is opt-in. Service templates default to local rules and disable model data authorization. Legacy supervisor session limits are described in [legacy operation](legacy.md#legacy-defaults).
 
 The optional remote queue notification channel is named `relay`; configure the `RELAY_*` environment variables only if using that adapter. No channels are connected by this repository. The package manifest is private and pins browser-test tooling; it is not an npm publication package.
 
 Provider isolation and executor integration tools are experimental, opt-in components. Synthetic tests are not evidence that an arbitrary production installation is isolated. See [implementation status](implementation.md).
 
-The durable factory has its own disabled `examples/runtime.json.example`: four
-Build, two Review, one Audit and one Recovery slot, a shared cap of eight, and
-separate dispatch/merge switches. Its image, native policy and internal network are
-operator-provisioned; cloning source does not alter host security or start workers.
-See [factory runtime](factory-runtime.md). The legacy defaults above remain separate.
+The durable factory's defaults live in `forge/factory/config.py`, and the disabled
+`examples/runtime.json.example` restates them: 2 Build, 1 Review, 1 Audit and 1 Recovery
+slot as per-role ceilings (memory admission decides how many run), and separate
+dispatch/merge switches. `bin/forge setup` provisions the image, policies and internal
+network; cloning source does not alter host security or start workers. See
+[factory runtime](factory-runtime.md).
