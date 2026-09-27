@@ -55,6 +55,13 @@ def command(argv, **kwargs):
     return subprocess.run(argv, check=True, **kwargs)
 
 
+def apparmor_help():
+    source = SOURCE / 'deploy/runner' / (APPARMOR_PROFILE + '.apparmor')
+    return ('Installing the runner AppArmor profile needs root, and sudo did not succeed for this account. '
+            'Ask an administrator to run:\n  sudo install -m 0644 ' + str(source) + ' ' + str(APPARMOR_TARGET)
+            + '\n  sudo apparmor_parser -r ' + str(APPARMOR_TARGET) + '\nthen rerun this command.')
+
+
 def digest_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -438,9 +445,13 @@ def reconcile(root, bind=None, assume_yes=False):
         try:
             command(['sudo', 'install', '-m', '0644', stream.name, str(APPARMOR_TARGET)])
             command(['sudo', 'apparmor_parser', '-r', str(APPARMOR_TARGET)])
+        except subprocess.CalledProcessError:
+            raise ValueError(apparmor_help()) from None
         finally:
             os.unlink(stream.name)
-        record.managed(APPARMOR_TARGET, apparmor)
+    # Also adopts a profile an administrator installed from this source, so a
+    # later change to it is an ordinary update rather than a foreign edit.
+    record.managed(APPARMOR_TARGET, apparmor)
     if runtime_changed:
         # Image presence is not readiness: run the offline canary before switching.
         qualify_runner(image, seccomp or root / 'runner-seccomp.json', APPARMOR_PROFILE)
@@ -453,8 +464,16 @@ def reconcile(root, bind=None, assume_yes=False):
     network.mkdir(parents=True, exist_ok=True)
     for name in ('compose.yaml', 'egress.py'):
         shutil.copyfile(SOURCE / 'deploy/runner' / name, network / name)
-    command(['docker', 'compose', '-p', 'forge', '-f', str(network / 'compose.yaml'), 'up', '-d', 'egress'],
-            env={**os.environ, 'FORGE_EGRESS_IMAGE': PYTHON_IMAGE})
+    # The proxy reads its bind-mounted script as the service account, whose uid
+    # is not necessarily 1000. Waiting for its health check catches a proxy that
+    # would otherwise crash-loop unnoticed and cut every worker off the network.
+    try:
+        command(['docker', 'compose', '-p', 'forge', '-f', str(network / 'compose.yaml'), 'up', '-d',
+                 '--wait', '--wait-timeout', '60', 'egress'],
+                env={**os.environ, 'FORGE_EGRESS_IMAGE': PYTHON_IMAGE, 'FORGE_EGRESS_USER': f'{os.getuid()}:{os.getgid()}'})
+    except subprocess.CalledProcessError:
+        raise ValueError('The worker egress proxy did not become healthy; see `docker logs forge-egress-1`, '
+                         'correct it and rerun this command.') from None
     if not fresh and runtime_changed:
         switch_runtime(root, image, APPARMOR_PROFILE)
     switch_ui(root, release)
