@@ -400,3 +400,20 @@ describe('deployment verdicts', () => {
     expect(deploymentLine(github, tracked, 0)!.text).toBe('Deployed · commit 0123456 from a GitHub deployment')
   })
 })
+
+describe('issues waiting on dependencies', () => {
+  const blocked = issue({ key: '1:612', number: 612, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
+  const free = issue({ key: '1:613', number: 613 })
+  const v = view({ issues: [blocked, free], jobs: [] })
+
+  it('are grouped apart from the stage they would enter, naming the blocker', () => {
+    const groups = groupIssues(v, now)
+    expect(groups.columns.build.map(c => c.key)).toEqual(['1:613'])
+    expect(groups.waiting.map(c => c.key)).toEqual(['1:612'])
+    expect(groups.waiting[0]).toMatchObject({ phaseLabel: 'Waiting on #658', reason: 'Waiting for #658.' })
+  })
+
+  it('are not counted as queued for a worker', () => {
+    expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(1)
+  })
+})

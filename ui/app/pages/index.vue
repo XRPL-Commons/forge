@@ -201,6 +201,16 @@ watch(() => panel.value.key, (key, before) => {
         <p v-if="!attentionCount" class="mt-2 text-xs text-muted">No issues need your attention.</p>
       </section>
 
+      <!-- Blocked by open dependencies: not queued for a worker, and back in
+           its stage by itself once the issues it names are closed. -->
+      <section v-if="groups.waiting.length" id="waiting" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
+        <h2 class="text-sm font-semibold text-white">Waiting on other issues · {{ groups.waiting.length }}</h2>
+        <p class="mt-0.5 text-xs text-muted">These start by themselves once the issues they depend on are closed.</p>
+        <div class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+          <IssueCard v-for="card in groups.waiting" :key="card.key" :card="card" @open="open(card)" />
+        </div>
+      </section>
+
       <section id="finishing" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
         <h2 class="text-sm font-semibold text-white">Finishing</h2>
         <p class="mt-0.5 text-xs text-muted">Approved work waiting to merge, or being merged.</p>
