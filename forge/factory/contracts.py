@@ -27,7 +27,12 @@ ROLE_FIELDS = {'build': frozenset(),
 
 def clamp(text, limit):
     text = ' '.join(str(text or '').split())
-    return text if len(text) <= limit else text[:limit - 1].rstrip() + '…'
+    if len(text) <= limit:
+        return text
+    # Cut at a word boundary: "…esbu…" reads as a typo, "…esbuild…" does not.
+    cut = text[:limit - 1]
+    space = cut.rfind(' ')
+    return (cut[:space] if space > limit // 2 else cut).rstrip(' ,;:') + '…'
 
 
 def plain_text(text, limit=PLAIN_LIMIT, sentences=PLAIN_SENTENCES):
@@ -116,6 +121,21 @@ def references_issue(body, repo, number):
     return bool(re.search(r'(?<![\w/#])#' + str(number) + r'(?!\d)', body)
                 or re.search(r'https://github\.com/' + re.escape(repo)
                              + r'/issues/' + str(number) + r'(?!\d)', body, re.I))
+
+
+def claims_issue(body, repo, number):
+    """A PR that says it resolves this issue: Forge's marker or a closing keyword.
+
+    Stricter than references_issue: a PR that merely mentions the issue is not
+    work on it."""
+    body = body or ''
+    try:
+        if submission(body)['issue'] == number:
+            return True
+    except (ValueError, TypeError):
+        pass
+    target = r'(?:#' + str(number) + r'|https://github\.com/' + re.escape(repo) + r'/issues/' + str(number) + r')(?!\d)'
+    return bool(re.search(r'\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+' + target, body, re.I))
 
 
 def candidate(pr, job, requirements, policy):
