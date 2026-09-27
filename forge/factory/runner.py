@@ -54,13 +54,52 @@ def scrub(text, secrets=()):
         if value:
             text = text.replace(value, '[REDACTED]')
     text = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,})\b', '[REDACTED]', text)
+    # Login files carry OAuth access/refresh tokens as JWTs.
+    text = re.sub(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b', '[REDACTED]', text)
     return text
 
 
+def secret_values(value, minimum=12):
+    """Every string leaf of a login file long enough to be a credential."""
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in secret_values(child, minimum)]
+    if isinstance(value, list):
+        return [item for child in value for item in secret_values(child, minimum)]
+    return [value] if isinstance(value, str) and len(value) >= minimum else []
+
+
+def revoke_token(token):
+    """Best effort: an installation token revoked at teardown cannot outlive its worker."""
+    from ..app_access import AppClient, AccessError
+    try:
+        AppClient()._request('DELETE', '/installation/token', token)
+        return 'revoked'
+    except AccessError:
+        return 'failed'
+
+
 class ContainerRunner:
-    def __init__(self, config, *, run=subprocess.run, environ=None):
-        self.config, self.run = config, run
+    def __init__(self, config, *, run=subprocess.run, environ=None, revoke=revoke_token):
+        self.config, self.run, self.revoke = config, run, revoke
         self.environ = os.environ if environ is None else environ
+
+    def _secrets_path(self, job):
+        root = self.environ.get('FORGE_CREDENTIAL_ROOT')
+        name = hashlib.sha256(str(job['id']).encode()).hexdigest()[:32] + '.json'
+        return Path(root) / 'state/factory/job-secrets' / name if root else None
+
+    def job_secrets(self, job):
+        """What this job's worker was given: scrubbed exactly from its output, revoked at reset."""
+        path = self._secrets_path(job)
+        try:
+            return json.loads(path.read_text()) if path else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _scrub_values(self, job):
+        stored = self.job_secrets(job)
+        return ([self.environ.get(name, '') for name in self.config['provider_environment']]
+                + stored.get('values', []) + [stored.get('github_token') or ''])
 
     def _bounded(self, argv, env, payload, timeout, limit, combine=False):
         # Worker-controlled result files must not fill controller memory or disk.
@@ -237,6 +276,14 @@ class ContainerRunner:
             except (RunnerError, OSError, ValueError, KeyError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded or renewed') from None
         credentials['GH_TOKEN'] = token
+        path = self._secrets_path(job)
+        if path:
+            # Written before the worker can see them: capture scrubs these exact
+            # values and reset revokes the token, in whichever cycle they run.
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                json.dump({'github_token': token, 'values': secret_values(credentials.get('FORGE_HARNESS_AUTH'))}, stream)
         # A job built by a caller that predates roles still gets an assignment.
         role = job.get('role')
         if role == 'discussion':
@@ -327,7 +374,7 @@ class ContainerRunner:
         if current is None:
             observation['missing'].append('container')
             return observation
-        secrets = [self.environ.get(name, '') for name in self.config['provider_environment']]
+        secrets = self._scrub_values(job)
         try:
             observation['logs'] = scrub(self.call(['logs', '--tail', '100', current['id']],
                 combine=True, timeout=5, max_output=262144).stdout.decode(errors='replace')[-65536:], secrets)
@@ -340,7 +387,7 @@ class ContainerRunner:
         if current is None:
             return {'result': None, 'logs': '', 'missing': ['container and worker-local evidence']}
         captured = {'result': None, 'logs': '', 'missing': []}
-        secrets = [self.environ.get(name, '') for name in self.config['provider_environment']]
+        secrets = self._scrub_values(job)
         try:
             raw = self.call(['cp', current['id'] + ':/work/result.json', '-'], max_output=131072).stdout
             if len(raw) > 131072:
@@ -380,4 +427,11 @@ class ContainerRunner:
         if self.inspect(job) is not None:
             raise RunnerError('Teardown remains unverified')
         self.call(['info', '--format', '{{.ServerVersion}}'])
-        return {'container_absent': True, 'capacity_ready': True, 'auth_refresh': auth_refresh}
+        token = self.job_secrets(job).get('github_token')
+        # Installation tokens are ghs_…; anything else was never minted by GitHub.
+        token_revocation = self.revoke(token) if isinstance(token, str) and token.startswith('ghs_') else 'not_available'
+        path = self._secrets_path(job)
+        if path:
+            path.unlink(missing_ok=True)
+        return {'container_absent': True, 'capacity_ready': True, 'auth_refresh': auth_refresh,
+                'token_revocation': token_revocation}
