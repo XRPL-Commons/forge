@@ -10,6 +10,8 @@ import json
 
 from .contracts import NEXT_ROLE, ROLES, candidate, digest, result, references_issue, environment_key, summary as plain_summary
 from .config import policy
+from .memory import allocation as memory_allocation, confirmed as memory_confirmed, pending as memory_pending
+from .capacity import memory_bytes
 from .providers import available as provider_available
 from .github import GitHubUnavailable, GitHubBudgetExhausted
 from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
@@ -226,6 +228,14 @@ class Supervisor:
 
     def outcome(self, job):
         capture = job['capture']
+        try:
+            memory_report = result(capture.get('result'), job)
+        except ValueError:
+            memory_report = None
+        if memory_confirmed(capture, memory_report):
+            detail = (memory_report or {}).get('summary', 'Container OOM kill')
+            if self.ledger.retry_memory(job['id'], self.config, detail):
+                return
         if (capture.get('execution') or {}).get('oom_killed'):
             self.ledger.block_environment(job['id'], 'resources', 'The container exceeded its memory limit. The published candidate is retained; review worker capacity before rechecking.',
                                           summary=self.card({'headline': 'Stopped: the worker ran out of memory',
@@ -364,7 +374,24 @@ class Supervisor:
             if labels.intersection(self.config['hold_labels']):
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
-            if (item['environment_hold']['environment'] != environment_key(self.config)
+            held = item['environment_hold']
+            failed_job = self.ledger.read()['jobs'].get(held['attempt'])
+            if failed_job and self.settings.admission(item['repo'])['allowed']:
+                capture = failed_job.get('capture') or {}
+                try:
+                    report = result(capture.get('result'), failed_job)
+                except ValueError:
+                    report = None
+                if memory_confirmed(capture, report) and self.ledger.retry_memory(
+                        failed_job['id'], self.config, held['detail'], held=True):
+                    return
+            effective = self.memory_config(item, failed_job['role'] if failed_job else 'build')
+            # A lower default is not a repair for a worker that exhausted a
+            # larger tier. Keep cap-exhausted jobs held until the environment improves.
+            used = (failed_job.get('runner_config') or {}).get('memory') if failed_job else None
+            if used and memory_bytes(used) > memory_bytes(effective['memory']):
+                effective['memory'] = used
+            if (held['environment'] != environment_key(effective)
                     and self.settings.admission(item['repo'])['allowed']):
                 self.ledger.resume_environment(item['key'], 'Runner environment changed; run readiness checks again')
                 item = self.ledger.read()['issues'][item['key']]
@@ -482,6 +509,15 @@ class Supervisor:
             self.ledger.event(data, current, 'merge_requested', attempt=identifier)
             return identifier
 
+    def memory_config(self, item, role, data=None):
+        data = self.ledger.read() if data is None else data
+        return {**self.config, 'memory': memory_allocation(self.config, data, item, role)}
+
+    def memory_priority(self, data):
+        return next((item for item in memory_pending(data, self.config)
+                     if item.get('retry_after', 0) <= self.clock()
+                     and self.settings.admission(item['repo'])['allowed']), None)
+
     def dispatch(self):
         if not self.config.get('provider_pool') and self.ledger.read().get('provider_retry_after', 0) > self.clock():
             return
@@ -491,7 +527,13 @@ class Supervisor:
             self.errors.append({'phase': 'capacity', 'reason': str(error)})
             return
         # Recovery before Audit, Review, Build; memory admission applies to all roles.
-        for role in ROLES:
+        priority = self.memory_priority(self.ledger.read())
+        roles = list(ROLES)
+        if priority:
+            role = priority['memory_retry']['role']
+            roles.remove(role)
+            roles.insert(0, role)
+        for role in roles:
             for index in range(self.config['slots'][role]):
                 if time.monotonic() >= self.github.deadline:
                     return
@@ -508,8 +550,15 @@ class Supervisor:
                     item, failure = self.choose(role, self.ledger.read())
                 if item is None:
                     continue
-                self.capacity = self.runner.capacity()
+                worker_config = self.memory_config(item, role, self.ledger.read())
+                runner = (ContainerRunner(worker_config, environ=self.runner.environ)
+                          if isinstance(self.runner, ContainerRunner) else self.runner)
+                self.capacity = runner.capacity()
                 if not self.capacity['allowed']:
+                    total = self.capacity.get('total_bytes')
+                    if total and (memory_bytes(worker_config['memory']) + memory_bytes(self.config['host_reserve']) > total):
+                        self.ledger.hold(item['key'], 'Required worker memory exceeds host capacity; resize the host or revise memory tiers')
+                    # Do not backfill small jobs while this escalation drains.
                     return
                 try:
                     target = self.github.target(item)
@@ -517,12 +566,18 @@ class Supervisor:
                         self.ledger.pause_for_protection(item['key'])
                         continue
                     job = self.ledger.reserve(item['key'], role, slot, publisher=self.github.publisher(role),
-                        policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=self.config, target_branch=target)
+                        policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=worker_config, target_branch=target)
                     self.execution(job)
                 except (StateError, GitHubUnavailable, RunnerError) as error:
                     self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
 
     def choose(self, role, data):
+        priority = self.memory_priority(data)
+        if priority:
+            if priority['memory_retry']['role'] != role:
+                return None, None
+            failure = next((f for f in priority['failures'] if f['investigation'] == 'pending'), None) if role == 'recovery' else None
+            return priority, failure
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
             if item.get('operator_request') or item.get('environment_hold'):
                 continue

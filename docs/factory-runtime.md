@@ -37,6 +37,31 @@ from normalized runtime settings. Operators configure only the per-role limits.
 This is admission control, not a reservation against unrelated host processes:
 external processes may still grow after the check. Per-container hard limits remain.
 
+Adaptive memory is opt-in: set `memory: "2g"` and
+`memory_tiers: ["2g", "4g", "6g"]`. An empty list retains fixed sizing.
+Every tier remains a hard container limit and is reserved in full. A container
+OOM kill, or a validated `blocked_environment/resources` result identifying heap
+or memory exhaustion, retries the same stage at the next tier. Generic resource
+failures, timeouts and text appearing only in logs do not escalate. Memory retries
+consume no coding-failure allowance and do not create code investigations. At the
+largest tier the issue stays on an environment hold for operator attention.
+
+The ledger remembers successful allocations by repository ID and role. Existing
+memory-failure evidence also prevents retrying that issue at a known-small limit.
+This is a role-level approximation of workload type: a review may run a full build.
+A larger pending retry takes precedence over new small jobs; workers already
+running finish normally. Deployment investigators also defer. An allocation that
+cannot fit even on an empty host is held, rather than blocking the whole queue.
+Capacity and pressure checks still apply, and role limits are unchanged.
+
+Retries keep the candidate, pipeline stage and build branch. If a build pushed
+work before reporting memory exhaustion, the new harness checks out that remote
+branch, including commits newer than the last accepted candidate. Unpublished
+changes in a disposable container cannot be recovered after its removal. Deploy
+the updated harness image before enabling tiers. Changing runtime policy does
+not resize or interrupt existing containers. The installation ledger stores
+`memory_profiles` and per-issue `memory_retry`; back it up with the rest of state.
+
 Build times out after 45 minutes, Review/Audit after 20, Recovery after 10.
 The graceful-stop limit is 10 seconds. The supervisor polls every 30 seconds and
 budgets GitHub reconciliation to 60 seconds plus the current bounded request.

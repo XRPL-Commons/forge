@@ -183,6 +183,8 @@ def assignment_note(job):
     """Data is context, never permission to change factory state or run another job."""
     base = {k: job[k] for k in ('id', 'role', 'repo', 'repo_id', 'issue_number', 'branch', 'publisher', 'target_branch', 'candidate', 'deadline', 'history')}
     base['result_file'] = '/work/result.json'
+    if job.get('resume_branch'):
+        base['resume_branch'] = job['resume_branch']
     base['review_policy'] = job.get('review_policy', {})
     base['ci_evidence'] = job.get('ci_evidence')
     base['instructions'] = (
@@ -240,6 +242,8 @@ def strategist_note(job):
     base['candidate'] = None
     base['head'] = job['head']
     base['result_file'] = '/work/result.json'
+    if job.get('resume_branch'):
+        base['resume_branch'] = job['resume_branch']
     base['instructions'] = (
         'Read only: no edits, comments, labels, merges, or launches. Inspect the repository at the given head. '
         'Identify the deploy workflow, its trigger, and the environment it deploys to. '

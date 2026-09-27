@@ -104,7 +104,21 @@ class Ledger:
                 runner_config.update({k: v for k, v in entry.items() if k != 'id'})
                 provider, provider_id = entry['provider'], entry['id']
             identifier = str(uuid.uuid4())
-            branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
+            retry = issue.get('memory_retry') or {}
+            if not retry and role == 'build' and (runner_config or {}).get('memory_tiers'):
+                from .memory import confirmed
+                from .contracts import result
+                previous = max((j for j in data['jobs'].values() if j['issue_key'] == key and j['role'] == role),
+                               key=lambda j: j['created_at'], default=None)
+                if previous:
+                    capture = previous.get('capture') or {}
+                    try:
+                        report = result(capture.get('result'), previous)
+                    except ValueError:
+                        report = None
+                    if confirmed(capture, report):
+                        retry = {'role': role, 'branch': previous['branch']}
+            branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or (retry.get('branch') if role == 'build' else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
             job = {'id': identifier, 'issue_key': key, 'repo_id': issue['repo_id'], 'repo': issue['repo'],
                    'issue_number': issue['number'], 'role': role, 'slot': slot, 'provider': provider,
                    'provider_id': provider_id, 'model': (runner_config or {}).get('model'),
@@ -115,6 +129,8 @@ class Ledger:
                    'history': {'failures': [{'attempt': f['attempt'], 'role': f['role'], 'cause': f['cause'][:2000],
                                              'findings': deepcopy(f.get('findings'))} for f in issue['failures'][-3:]],
                                'retry_plan': issue['retry_plan']}}
+            if retry and retry['role'] == role:
+                job['resume_branch'] = retry.get('branch') if role == 'build' else None
             if role == 'recovery':
                 job['failure'] = deepcopy(failure)
                 actual['investigation'] = identifier
@@ -174,6 +190,7 @@ class Ledger:
             # accepted candidate is the outcome record that otherwise has none.
             self.remember(issue, summary, issue['candidate'] if candidate is not None else None)
             job['outcome'] = 'accepted'
+            self.learn_memory(data, issue, job)
             self.event(data, issue, 'accepted', attempt=identifier, role=job['role'], candidate=issue['candidate'])
             return True
 
@@ -219,6 +236,8 @@ class Ledger:
             failure.update(investigation='complete', findings=findings)
             self.remember(issue, summary)
             job['outcome'] = 'investigated'
+            if not findings.get('incomplete'):
+                self.learn_memory(data, issue, job)
             self.event(data, issue, 'investigated', attempt=failure['attempt'], findings=findings)
             if issue['state'] != 'investigating':
                 return
@@ -250,6 +269,53 @@ class Ledger:
             job['outcome'] = 'accepted'
             issue.update(state='built', candidate={**candidate, 'accepted_at': self.clock()}, reason=None, evidence={})
             self.event(data, issue, 'failure_corrected', attempt=identifier, candidate=candidate)
+            return True
+
+    def learn_memory(self, data, issue, job):
+        from .memory import profile_key
+        from .capacity import memory_bytes
+        config = job.get('runner_config') or {}
+        if config.get('memory_tiers'):
+            profiles = data.setdefault('memory_profiles', {})
+            key = profile_key(job['repo_id'], job['role'])
+            previous = profiles.get(key, {}).get('memory', config['memory_tiers'][0])
+            if memory_bytes(config['memory']) >= memory_bytes(previous):
+                profiles[key] = {'memory': config['memory'], 'attempt': job['id'], 'at': self.clock()}
+        if (issue.get('memory_retry') or {}).get('role') == job['role']:
+            issue.pop('memory_retry', None)
+
+    def retry_memory(self, identifier, config, detail, *, held=False):
+        """Record one bounded escalation atomically; never charge a code failure."""
+        from .capacity import memory_bytes
+        with self.transaction() as data:
+            job = data['jobs'][identifier]
+            issue = data['issues'][job['issue_key']]
+            if (issue['state'] in ('merged', 'cancelled') or issue.get('operator_hold')
+                    or (job['outcome'] is not None and not (held and job['outcome'] == 'blocked_environment'))):
+                return False
+            if held:
+                if (issue.get('environment_hold') or {}).get('attempt') != identifier or issue['active']:
+                    return False
+            elif issue['state'] == 'hold' or (job['role'] != 'recovery' and issue['active'] != identifier):
+                return False
+            used = (job.get('runner_config') or {}).get('memory', config['memory'])
+            target = next((v for v in config.get('memory_tiers', []) if memory_bytes(v) > memory_bytes(used)), None)
+            if not target:
+                return False
+            if job['role'] == 'recovery':
+                failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
+                failure['investigation'] = 'pending'
+            retry_state = (issue.get('environment_hold') or {}).get('state', issue['state'])
+            issue.pop('environment_hold', None)
+            issue.update(state=retry_state, active=None, retry_after=0,
+                         reason=f'Waiting for a {target} worker after memory exhaustion',
+                         memory_retry={'role': job['role'], 'memory': target, 'attempt': identifier,
+                                       'branch': job['branch'], 'at': self.clock()})
+            issue['last_summary'] = {'headline': f'Retrying with {target} of memory',
+                                    'plain': 'The worker ran out of memory. Forge will retry with a larger worker when capacity is available. Published work is retained.',
+                                    'role': job['role'], 'at': self.clock()}
+            job['outcome'] = 'memory_retry'
+            self.event(data, issue, 'memory_escalated', attempt=identifier, previous=used, memory=target, detail=detail[:2000])
             return True
 
     def block_environment(self, identifier, blocker, detail, summary=None):
