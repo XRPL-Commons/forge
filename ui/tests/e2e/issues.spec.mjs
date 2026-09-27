@@ -39,6 +39,17 @@ function waitForRequest(requests, predicate, what) {
 // filters the operator actually uses, one URL per issue, the worker output of
 // any job the issue has had, and the decision round-trip.
 export default async function (page, { base, scenario, requests }) {
+  // Server-rendered text appears before Vue attaches; typing into an input
+  // then is lost and its button stays disabled. Every load waits for hydration.
+  const load = page.goto.bind(page)
+  page.goto = async (...args) => {
+    const response = await load(...args)
+    await page.waitForFunction(() => {
+      const app = document.querySelector('#__nuxt')?.__vue_app__
+      return app?.config.globalProperties.$nuxt?.isHydrating === false
+    }, undefined, { timeout: 15000 })
+    return response
+  }
   await page.goto(base + '/issues')
   await waitForText(page, 'Redact credential values at the logging boundary')
 
@@ -133,6 +144,8 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(`${base}/issues/1%3A604?job=${RECOVERY_JOB}`)
   await waitForText(page, DETAIL_TITLE)
   const jobs = page.locator('#issue-jobs li')
+  // The job list fills in from client data after the title renders.
+  await jobs.first().waitFor()
   assert.equal(await jobs.count(), 1, 'the issue lists its own jobs')
   assert.match(await jobs.first().innerText(), /^recovery · running/)
   assert.equal(await jobs.first().getByRole('link').getAttribute('aria-current'), 'true')
