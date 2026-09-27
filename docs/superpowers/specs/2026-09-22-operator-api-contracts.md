@@ -16,11 +16,11 @@ Conventions: types are TypeScript-style. `number` timestamps are Unix seconds (f
 ### GET guards
 1. `Host` header must equal the bound `address:port` exactly (IPv6 form `[addr]:port`), else **403** (DNS-rebinding defence). No `Origin` requirement on GET.
 2. If `state/factory-paused.json` exists (reset in progress) every `/api/*` path except `/api/onboarding` returns `{ok:false, reason:"Factory reset is in progress"}`.
-3. Unknown path → **404**. Query parameters are validated per route (see endpoint sections); invalid queries return `{ok:false, reason}` (issues/repositories/factory) or **400** (`/api/workflow`, `/api/history`, `/api/repository`, `/api/pane` — legacy dashboard only, not used by the operator pages).
+3. Unknown path → **404**. Query parameters are validated per route (see endpoint sections); invalid queries return `{ok:false, reason}` (issues/repositories/factory). (The legacy dashboard endpoints `/api/status`, `/api/workflow`, `/api/history`, `/api/repository`, `/api/pane` and `/api/slots/action` were removed.)
 
 ### POST guards (in order)
 1. `Host` trusted as above → else **403**.
-2. Path must be one of: `/api/slots/action`, `/api/settings`, `/api/settings/sync`, `/api/factory/action`, `/api/runtime`, `/api/onboarding`, `/api/repositories/check`, `/api/repositories/enable`, `/api/issues/action`, `/api/issues/refresh` → else **404**.
+2. Path must be one of: `/api/settings`, `/api/settings/sync`, `/api/factory/action`, `/api/runtime`, `/api/onboarding`, `/api/repositories/check`, `/api/repositories/enable`, `/api/issues/action`, `/api/issues/refresh` → else **404**.
 3. `X-Forge-Action` header must equal (constant-time compare) the process-wide `controls_token`; `Origin` must parse as scheme `http`, netloc equal to `Host`, and no path/query/fragment; `Sec-Fetch-Site` if present must be `same-origin` (absent is accepted) → else **403**.
 4. `Content-Type` (before `;`) must be `application/json` and no `Transfer-Encoding` header → else **415**.
 5. `Content-Length` must satisfy `0 < length <= max` where max = **262144** for `/api/settings` and `/api/runtime`, **8192** for all other POSTs. Otherwise `{ok:false, reason:"invalid_request_size"}`.
@@ -31,7 +31,6 @@ Conventions: types are TypeScript-style. `number` timestamps are Unix seconds (f
 ### controls_token flow
 - `CONTROLS_TOKEN = secrets.token_urlsafe(32)`, generated once per server process. Every GET JSON payload the pages consume includes `controls_token: string` (`/api/factory`, `/api/issues`, `/api/settings`, `/api/onboarding`, `/api/repositories`). It is also echoed in `/api/settings` POST, `/api/runtime` POST and `/api/repositories/enable` POST responses.
 - Pages read it from their last GET and send it as `X-Forge-Action` on every POST. A server restart rotates it; pages recover because the next poll delivers the new one.
-- `/api/status` (legacy dashboard) sets `controls_token: null` when slot actions are unavailable; the factory pages never see that.
 
 ### Cookie `forge_setup`
 - Set by GET `/onboarding`, `/reset`, `/settings/harnesses`: `forge_setup=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600`. Value is the existing cookie if it matches `[A-Za-z0-9_-]{32,128}`, else a fresh `secrets.token_urlsafe(32)`.
@@ -466,7 +465,10 @@ Body exactly `{repo_id: number, revision, action}` plus `domain` for `confirm` a
 - `reject` (needs a non-empty `reason`) and `reread` touch only `state/deployments.json`; settings are untouched.
 Other errors: "There is no deployment proposal to confirm/reject", "A rejected proposal needs a reason", "A deployment domain is a bare host name, without scheme, port or path", "Enable this repository before confirming its deployment profile.". Response `RepositoriesView(repo_id) & {ok:true, controls_token}`, so `revision` is the new one.
 
-### POST /api/slots/action
+### POST /api/slots/action (removed)
+
+Removed with the legacy dashboard; the rest of this section is historical.
+
 Legacy dashboard only (`{action, session, generation}` strings → `forge.slot_actions.request`). **Not used by any factory-era page**; omit from the Nuxt rebuild.
 
 ### Pages/assets served (for routing parity)
