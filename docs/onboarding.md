@@ -1,21 +1,23 @@
 # Set up Forge
 
-Open /onboarding on the trusted private dashboard address.
+`bin/forge setup` prepares the host and connects coding accounts in the terminal
+(see [installation](installation.md)). Then open /onboarding on the trusted private
+dashboard address. It has three steps: GitHub, Repository and Start.
 
-1. Connect GitHub. Enter your organization (or personal account) name. Create and
+1. **GitHub.** Connect GitHub. Enter your organization (or personal account) name. Create and
    install each of the four Apps in the guided GitHub flow. Choose the same
    repositories for every installation. Return to Forge after installation;
    Refresh access verifies connections without granting additional access.
-2. Choose one shared repository. This saves a draft, without starting work.
-3. Prepare the repository. Forge checks its default branch using read-only GitHub
+2. **Repository.** Choose one shared repository. This saves a draft, without
+   starting work. Then prepare it. Forge checks its default branch using read-only GitHub
    access. If a review setting is missing, download the ruleset, import it on
    GitHub using your own account, then return and press Check setup. Repositories
    that already meet the requirements skip the import step.
-4. Connect Codex and/or Claude Code from `bin/forge setup` on the VM. The Coding
-   accounts screen provides copyable terminal commands. Verification checks the
-   connected accounts and isolated worker lifecycle; small model requests may
-   incur provider charges.
-5. On the Start page, press Verify repository. Recent account and worker evidence
+3. **Start.** Coding accounts (Codex, Claude Code, Grok Build) are connected from
+   the VM terminal; the Coding accounts screen (/settings/harnesses) provides
+   copyable commands. Verification checks the connected accounts and isolated
+   worker lifecycle; small model requests may incur provider charges. Press
+   Verify repository. Recent account and worker evidence
    can be reused for fifteen minutes if credentials and runtime settings have not
    changed. Repository-only rechecks do not repeat those model probes. Press
    Start Forge once verification passes. This explicitly authorizes eligible
@@ -144,34 +146,15 @@ cross-check what is actually running.
 
 ## Host installation
 
-The browser assumes the host is installed. See factory-runtime.md for the pinned
-runner image, native sandbox policies and internal egress network. Use Linux,
-Python 3.10+, and a Docker engine accessible only to the trusted controller.
+`bin/forge setup` installs the host: runner image, isolation policies, egress
+network, operator UI and services. `bin/forge update` applies newer releases. See
+[installation](installation.md); there are no files to copy by hand.
 
-Keep source separate from private runtime data. Copy the example service units,
-replace their paths, and run both the dashboard and supervisor. The stable
-supervisor command is:
+Guided setup starts with at most two Build workers and one each for Review, Audit and
+Recovery. These are ceilings: how many actually run depends on available memory
+(see [factory runtime](factory-runtime.md)).
 
-    /path/to/forge/bin/forge service --root /path/to/private-runtime
-
-The dashboard needs FORGE_ROOT pointing to that same private runtime. Set
-FORGE_BIND_ADDRESS to its trusted private IP. It accepts requests at the exact
-bound IP and port; arbitrary reverse-proxy hostnames are not supported.
-
-Before setup, copy examples/host-runtime.json.example to host-runtime.json in the
-private runtime and set the pinned image ID. This file describes prepared host
-infrastructure, so reset preserves it. Put the reviewed seccomp JSON at
-runner-seccomp.json in that runtime, or set FORGE_RUNNER_SECCOMP to its absolute
-path in the supervisor service. Install the dedicated AppArmor profile and start
-the egress proxy as documented in factory-runtime.md. No global sandbox bypass is
-used. Run the real container and native sandbox canaries before accepting jobs.
-
-The initial capacity is one running 4 GiB container, shared across roles, with
-two Builder slots and one each for Review, Audit and Recovery. Increase concurrency
-only after qualifying the host's available memory. Slot counts do not override
-the shared running limit. Setup probes use the same resource and isolation policy.
-
-Connect or reconnect either harness from the VM terminal with
+Connect or reconnect a harness from the VM terminal with
 `bin/forge setup login codex --root <runtime>` or
 `bin/forge setup login claude --root <runtime>`, then `bin/forge setup check` with
 the same root. The UI shows connection status and terminal instructions.

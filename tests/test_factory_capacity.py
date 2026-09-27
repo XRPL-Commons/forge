@@ -7,7 +7,7 @@ import uuid
 from unittest.mock import Mock, patch
 
 from forge.factory.capacity import GIB, observe, launch_lock
-from forge.factory.config import validate
+from forge.factory.config import DEFAULT, validate
 from forge.factory.runner import ContainerRunner, RunnerCapacity, RunnerError
 
 
@@ -45,7 +45,7 @@ class MemoryAdmissionTests(unittest.TestCase):
 
     def test_old_total_is_removed_on_normalization(self):
         self.assertNotIn('max_running', validate({'max_running': 1}))
-        self.assertEqual(validate({'max_running': 1})['slots']['build'], 4)
+        self.assertEqual(validate({'max_running': 1})['slots'], DEFAULT['slots'])
 
     def test_check_and_launch_lock_is_shared(self):
         with tempfile.TemporaryDirectory() as directory, patch('forge.factory.capacity.tempfile.gettempdir', return_value=directory):

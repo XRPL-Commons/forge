@@ -97,7 +97,7 @@ is explicit, and snapshots never replace GitHub's current merge requirements.
 The wizard offers each coding account in turn. Each login runs the installed
 harness's official login command in a temporary container, without any repository
 or GitHub credentials. Follow the link/code instructions in your terminal using
-your browser. Skip either account if desired. Forge privately stores the resulting
+your browser. Skip any account if desired. Forge privately stores the resulting
 login under the service account's runtime directory; no secret belongs in Git,
 command arguments, or browser onboarding.
 
