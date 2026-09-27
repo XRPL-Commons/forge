@@ -71,6 +71,8 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(posted[0].body.config.slots.build, 3)
   assert.equal(posted[0].body.config.slots.review, 1)
   assert.equal(posted[0].body.config.image, 'forge/worker:2026.09')
+  // Let polls (300 ms) run: they must keep showing the saved value.
+  await page.waitForTimeout(700)
   assert.equal(await builders.inputValue(), '3')
 
   // A second save fired right after the first must use the revision from

@@ -56,13 +56,15 @@ const pending = computed(() => (detail.value ? pendingAction(actions.value, deta
 const busy = computed(() => submitting.value || !!pending.value)
 
 // Description: rendered and sanitized server-side, re-rendered whenever the
-// body changes (an operator edit on GitHub arrives through the poll).
+// body changes (an operator edit on GitHub arrives through the poll). Lazy:
+// server rendering still includes it, but client navigation never waits for
+// the render round trip before painting the (cached) issue.
 const { data: html } = await useAsyncData(`md-${props.issueKey}`, async () => {
   const issue = detail.value
   if (!issue?.body) return ''
   const rendered = await $fetch<{ html: string }>('/_ui/markdown', { method: 'POST', body: { text: issue.body, repo: issue.repo } })
   return rendered.html
-}, { watch: [() => detail.value?.body] })
+}, { watch: [() => detail.value?.body], lazy: true })
 
 const submitted = ref('')
 const dialogError = ref<string | null>(null)
@@ -444,7 +446,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       </section>
 
       <section class="mt-5 rounded-xl border border-line bg-panel p-4">
-        <MarkdownBody :html="html ?? ''" />
+        <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
+        <MarkdownBody v-if="html != null" :html="html" />
         <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
       </section>
 
