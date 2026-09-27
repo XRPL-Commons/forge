@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
   decisionNeedsReason, emptyState, freshnessText, listParams, preselectedReviewers,
-  reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
+  attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -136,6 +136,42 @@ describe('decisionNeedsReason', () => {
   })
 })
 
+describe('pull requests and attempts', () => {
+  it('labels each pull request by what it is to the issue', () => {
+    expect(pullLabel({ number: 31, title: '', kind: 'candidate' })).toBe('PR #31')
+    expect(pullLabel({ number: 30, title: '', kind: 'forge_attempt' })).toBe('Earlier Forge draft #30')
+    expect(pullLabel({ number: 29, title: '', kind: 'external' })).toBe('Other PR #29')
+    expect(pullLabel({ number: 28, title: '' })).toBe('PR #28')
+  })
+
+  it('requests the review on the candidate, never on someone else’s pull request', () => {
+    expect(reviewPull([{ number: 29, title: '', kind: 'external' }, { number: 31, title: '', kind: 'candidate' }])?.number).toBe(31)
+    expect(reviewPull([{ number: 28, title: '' }])?.number).toBe(28)
+    expect(reviewPull([{ number: 29, title: '', kind: 'external' }])).toBeNull()
+    expect(reviewPull(undefined)).toBeNull()
+  })
+
+  it('says which label paused the issue, who applied it and when', () => {
+    expect(heldByLines([
+      { label: 'forge:hold', login: 'maintainer', at: '2026-09-21T09:00:00Z' },
+      { label: 'blocked', login: null, at: '2026-01-05T23:30:00Z' },
+    ])).toEqual([
+      'Labelled forge:hold by @maintainer on Sep 21',
+      'Labelled blocked on Jan 5',
+    ])
+    expect(heldByLines([{ label: 'blocked', login: 'x', at: 'not a date' }])).toEqual(['Labelled blocked by @x'])
+    expect(heldByLines(null)).toEqual([])
+    expect(heldByLines(undefined)).toEqual([])
+  })
+
+  it('counts failed attempts only once one has failed', () => {
+    expect(attemptsText({ failed: 2, limit: 3 })).toBe('2 of 3 attempts failed')
+    expect(attemptsText({ failed: 0, limit: 3 })).toBe('')
+    expect(attemptsText(null)).toBe('')
+    expect(attemptsText(undefined)).toBe('')
+  })
+})
+
 describe('reviewRows', () => {
   it('names the role, the outcome and the lead sentence of each review', () => {
     const rows = reviewRows([
@@ -144,13 +180,13 @@ describe('reviewRows', () => {
     ])
     expect(rows).toEqual([
       {
-        role: 'review', label: 'Review', outcome: 'passed', outcomeLabel: 'Passed',
+        role: 'review', label: 'Review', outcome: 'passed', outcomeLabel: 'Passed', tone: 'success',
         lead: 'The change is correct.',
         summary: 'The change is correct. It adds tests for the redaction helper and keeps the public API stable.',
         more: true,
       },
       {
-        role: 'audit', label: 'Security review', outcome: 'rejected', outcomeLabel: 'Rejected',
+        role: 'audit', label: 'Security review', outcome: 'rejected', outcomeLabel: 'Rejected', tone: 'error',
         lead: 'The install token is still written to the build log.',
         summary: 'The install token is still written to the build log.',
         more: false,
@@ -175,6 +211,21 @@ describe('reviewRows', () => {
     expect(row!.more).toBe(true)
   })
 
+  it('reads a pass that still needs a person as a warning, with the reason as its text', () => {
+    const [row] = reviewRows([{
+      role: 'audit', outcome: 'pass', summary: 'PASS.', human_required: true, human_reason: 'It rotates a signing key. A maintainer must confirm.',
+    }])
+    expect(row).toMatchObject({
+      outcome: 'passed', outcomeLabel: 'Passed · needs a person', tone: 'warning',
+      lead: 'It rotates a signing key.', summary: 'It rotates a signing key. A maintainer must confirm.', more: true,
+    })
+    // Only a pass can need a person; a rejection keeps its own verdict and text.
+    expect(reviewRows([{ role: 'review', outcome: 'reject', summary: 'Broken.', human_required: true, human_reason: 'x' }])[0])
+      .toMatchObject({ outcomeLabel: 'Rejected', tone: 'error', summary: 'Broken.' })
+    expect(reviewRows([{ role: 'review', outcome: 'pass', summary: 'PASS.', human_required: true }])[0])
+      .toMatchObject({ outcomeLabel: 'Passed · needs a person', summary: 'PASS.' })
+  })
+
   it('is empty when the issue has no reviews', () => {
     expect(reviewRows(undefined)).toEqual([])
     expect(reviewRows([])).toEqual([])
@@ -193,6 +244,18 @@ describe('reviewer control', () => {
       { value: 'second-pair', label: 'second-pair' },
     ])
     expect(reviewerOptions(undefined)).toEqual([])
+  })
+
+  it('hints where each person was found', () => {
+    expect(reviewerOptions([
+      { login: 'a', name: '', source: 'collaborator' },
+      { login: 'b', name: 'Bee', source: 'recent_author' },
+      { login: 'c', name: '', source: 'configured' },
+    ])).toEqual([
+      { value: 'a', label: 'a', description: 'collaborator' },
+      { value: 'b', label: 'b · Bee', description: 'recently merged work here' },
+      { value: 'c', label: 'c', description: 'configured reviewer' },
+    ])
   })
 
   it('starts from the configured human reviewers this repository actually offers', () => {

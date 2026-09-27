@@ -27,7 +27,8 @@
     "pull_requests": [
       {
         "number": 31,
-        "title": "Rotate the release signing key"
+        "title": "Rotate the release signing key",
+        "kind": "candidate"
       }
     ],
     "dependencies": [],

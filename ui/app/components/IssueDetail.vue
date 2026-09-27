@@ -2,9 +2,9 @@
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
 import {
-  ACTION_LABELS, STATUS_NAMES, eventLabel, issuePath, lastAction, pendingAction,
-  preselectedReviewers, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, summaryBlock,
-  type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse, type ReviewOutcome,
+  ACTION_LABELS, STATUS_NAMES, attemptsText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
+  pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
+  type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
 } from '~/utils/issues'
 
 // The one detail view: /issues/<key> owns the issue's decisions and its
@@ -84,35 +84,38 @@ const message = computed(() => {
 // sentences. Forge's own status line and the worker's prose move into Details,
 // so nobody has to open it to learn where this issue stands or why.
 const summary = computed(() => summaryBlock(detail.value))
-const detailsOpen = useState(`issue-details-${props.issueKey}`, () => false)
+const detailsOpen = useState(`issue-details-${props.issueKey}`, () => true)
+const descriptionOpen = ref(false)
+const discussOpen = ref(false)
+const attempts = computed(() => attemptsText(detail.value?.attempts))
+const holds = computed(() => heldByLines(detail.value?.held_by))
 const hasDetails = computed(() => !!summary.value?.details || reviews.value.length > 0)
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
 function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
 
-// Assigning a human reviewer is the one decision with an argument, so its
-// control lives in the action bar rather than behind a confirmation dialog:
-// the operator picks the people, then confirms. A login the collaborator
-// listing does not know is still accepted — GitHub validates it — and a
-// listing that failed leaves the free-text box as the only input.
-const reviewerChoices = computed(() => reviewerOptions(detail.value?.reviewers))
+// Assigning a human reviewer is the one decision with an argument: its
+// button opens a dialog where the operator picks from the people Forge found
+// for this repository (never a typed login), starting from the configured
+// human reviewers.
 const canAssign = computed(() => !!detail.value?.actions.includes('assign_reviewer'))
 const decisions = computed(() => (detail.value?.actions ?? []).filter(action => action !== 'assign_reviewer'))
-const chosenReviewers = ref<string[]>([])
-const typedReviewers = ref('')
+const assigning = ref(false)
 const assignError = ref<string | null>(null)
-const preselected = ref<string | null>(null)
+const preselected = computed(() => preselectedReviewers(detail.value))
+const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
+const candidateUrl = computed(() => (candidatePull.value ? pullUrl(candidatePull.value.number) : issueUrl.value))
 
-watchEffect(() => {
-  const issue = detail.value
-  if (!issue || preselected.value === issue.key || !issue.actions.includes('assign_reviewer')) return
-  preselected.value = issue.key
-  chosenReviewers.value = preselectedReviewers(issue)
-})
-
-const reviewerLogins = computed(() => (reviewerChoices.value.length
-  ? chosenReviewers.value
-  : typedReviewers.value.split(/[\s,;]+/)).filter(Boolean))
+function askReviewer() {
+  assignError.value = null
+  assigning.value = true
+  submitting.value = true
+}
+function closeReviewer() {
+  assigning.value = false
+  assignError.value = null
+  submitting.value = false
+}
 
 // "· 12 min ago" needs a clock the server does not have, so the age only
 // appears once mounted; the sentence itself renders either way.
@@ -133,21 +136,18 @@ const deployment = computed(() => {
   return deploymentLine((factory?.issues ?? []).find(issue => issue.key === props.issueKey), factory, now.value)
 })
 
-async function assignReviewer() {
+async function assignReviewer(logins: string[]) {
   const issue = detail.value
-  if (!issue || !reviewerLogins.value.length) return
+  const reason = reviewerReason(logins)
+  if (!issue || !reason) return
   assignError.value = null
-  submitting.value = true
   try {
-    await api.act('/api/issues/action', {
-      key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason: reviewerReason(reviewerLogins.value),
-    })
+    await api.act('/api/issues/action', { key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason })
   } catch (error: unknown) {
     assignError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
-  } finally {
-    submitting.value = false
   }
+  closeReviewer()
   submitted.value = 'Decision submitted. Waiting for confirmation.'
   await poll.refresh()
 }
@@ -156,9 +156,6 @@ async function assignReviewer() {
 // Details; "More" reveals the worker's full text. The chip is that reviewer's
 // verdict, never the issue's status, which the badge in the title line carries.
 const reviews = computed(() => reviewRows(detail.value?.reviews))
-const REVIEW_COLORS: Record<ReviewOutcome, 'success' | 'error' | 'warning' | 'neutral'> = {
-  passed: 'success', rejected: 'error', unable: 'warning', unknown: 'neutral',
-}
 const expanded = ref(new Set<string>())
 function toggleReview(role: string) {
   const next = new Set(expanded.value)
@@ -307,6 +304,10 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <h1 id="issue-title" class="text-2xl font-semibold text-white">{{ detail.title }}</h1>
         <UBadge color="neutral" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
       </div>
+      <p v-if="attempts" id="issue-attempts" class="mt-1 text-xs text-amber-200">{{ attempts }}</p>
+      <ul v-if="holds.length" id="issue-held-by" class="mt-1 text-xs text-muted">
+        <li v-for="line in holds" :key="line">{{ line }}</li>
+      </ul>
       <p v-if="summary?.headline" id="issue-headline" class="mt-2 text-base font-semibold text-white">{{ summary.headline }}</p>
       <p v-if="summary?.plain" id="issue-plain" class="mt-1 text-sm text-muted">{{ summary.plain }}</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
@@ -334,37 +335,20 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           :disabled="busy"
           @click="ask(action)"
         >{{ ACTION_LABELS[action] }}</UButton>
-        <template v-if="canAssign">
-          <USelectMenu
-            v-if="reviewerChoices.length"
-            v-model="chosenReviewers"
-            :items="reviewerChoices"
-            value-key="value"
-            multiple
-            size="sm"
-            aria-label="Reviewers"
-            placeholder="Choose reviewers"
-            class="min-w-[220px]"
-            :disabled="busy"
-          >
-            <template #trailing><SelectChevron /></template>
-          </USelectMenu>
-          <UInput
-            v-else
-            v-model="typedReviewers"
-            size="sm"
-            aria-label="Reviewers"
-            placeholder="GitHub login"
-            class="min-w-[180px]"
-            :disabled="busy"
-          />
-          <UButton
-            size="sm"
-            color="primary"
-            :disabled="busy || !reviewerLogins.length"
-            @click="assignReviewer"
-          >{{ ACTION_LABELS.assign_reviewer }}</UButton>
-        </template>
+        <UButton
+          v-if="canAssign"
+          size="sm"
+          color="primary"
+          :disabled="busy"
+          @click="askReviewer"
+        >{{ ACTION_LABELS.assign_reviewer }}</UButton>
+        <UButton
+          size="sm"
+          color="neutral"
+          variant="outline"
+          :aria-expanded="discussOpen"
+          @click="discussOpen = !discussOpen"
+        >Discuss blocker</UButton>
         <UButton v-if="detail.setup_needed" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
         <UButton
           :to="issueUrl"
@@ -390,7 +374,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           variant="outline"
           icon="i-lucide-arrow-up-right"
           trailing
-        >PR #{{ pull.number }}</UButton>
+        >{{ pullLabel(pull) }}</UButton>
         <UButton
           v-if="detail.active && detail.status === 'working'"
           size="sm"
@@ -409,10 +393,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         >Reset runner</UButton>
       </div>
 
-      <p v-if="assignError" role="alert" class="mt-2 text-sm text-rose-200">{{ assignError }}</p>
-
-      <!-- Everything the worker wrote stays available, one click away. -->
-      <IssueConversation :key="detail.key" :issue-key="detail.key" />
+      <!-- The discussion opens under the action bar that started it. -->
+      <IssueConversation :key="detail.key" v-model:open="discussOpen" :issue-key="detail.key" />
 
       <section v-if="hasDetails" id="issue-details" class="mt-4 rounded-xl border border-line bg-bg p-3">
         <UCollapsible v-model:open="detailsOpen">
@@ -425,7 +407,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
             <div v-if="reviews.length" id="issue-reviews" class="mt-3 flex flex-col gap-2">
               <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
                 <div class="flex flex-wrap items-center gap-2">
-                  <UBadge :color="REVIEW_COLORS[row.outcome]" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>
+                  <UBadge :color="row.tone" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>
                   <span class="text-sm font-semibold text-white">{{ row.label }}</span>
                   <UButton
                     v-if="row.more"
@@ -445,10 +427,22 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         </UCollapsible>
       </section>
 
-      <section class="mt-5 rounded-xl border border-line bg-panel p-4">
-        <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
-        <MarkdownBody v-if="html != null" :html="html" />
-        <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
+      <!-- Collapsed by default but always rendered, so the server-rendered
+           description is in the page from the first paint. -->
+      <section id="issue-description" class="mt-3 rounded-xl border border-line bg-bg p-3">
+        <UCollapsible v-model:open="descriptionOpen" :unmount-on-hide="false">
+          <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
+            Description
+            <SelectChevron :class="descriptionOpen ? 'rotate-180' : ''" />
+          </UButton>
+          <template #content>
+            <div class="mt-2 rounded-xl border border-line bg-panel p-4">
+              <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
+              <MarkdownBody v-if="html != null" :html="html" />
+              <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
+            </div>
+          </template>
+        </UCollapsible>
       </section>
 
       <p v-if="detail.dependencies.length" class="mt-2 text-sm text-muted">
@@ -511,6 +505,18 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           </template>
         </UCollapsible>
       </section>
+
+      <ReviewerDialog
+        v-if="assigning"
+        :open="assigning"
+        :reviewers="detail.reviewers ?? []"
+        :preselected="preselected"
+        :pull="candidatePull"
+        :pull-url="candidateUrl"
+        :error="assignError"
+        @submit="assignReviewer"
+        @close="closeReviewer"
+      />
 
       <DecisionPanel
         v-if="decision"

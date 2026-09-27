@@ -22,7 +22,8 @@
     "pull_requests": [
       {
         "number": 30,
-        "title": "Redact install tokens in build logs"
+        "title": "Redact install tokens in build logs",
+        "kind": "candidate"
       }
     ],
     "dependencies": [],
