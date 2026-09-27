@@ -72,6 +72,11 @@ and restarted:
   when their definition changes, and restarted when their unit, the source revision
   or the UI release changes. Update then waits for the API and the UI to answer.
 
+Drop-ins (`<service>.service.d/*.conf`) for settings such as
+`NITRO_ALLOWED_HOSTS` or resource limits are kept. A drop-in that replaces what a
+service runs (`ExecStart`, `WorkingDirectory`, or `PYTHONPATH`, `FORGE_ROOT`,
+`HOST`, `PORT` and the other addresses) would silently undo an update. Update shows
+it and, once you confirm, moves it to `<runtime-root>/backups/`.
 A unit or AppArmor policy edited outside Forge is never replaced silently. Update
 shows the difference and asks, or stops unless you pass `--yes`. A failed build or
 canary leaves everything in use unchanged. An interrupted update converges when

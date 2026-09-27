@@ -12,6 +12,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import runpy
 import shutil
@@ -43,6 +44,11 @@ RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses',
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
 SERVICES = ('forge-status', 'forge-ui', 'forge-supervisor')
 RECORD = 'host.json'
+# A drop-in that sets any of these makes systemd run something other than the
+# unit update writes, silently undoing it. Other drop-ins (NITRO_ALLOWED_HOSTS,
+# resource limits) are the operator's and are kept.
+OVERRIDING = re.compile(r'^\s*(ExecStart|ExecStartPre|WorkingDirectory)\s*=|^\s*Environment\s*=.*?(?<![A-Z_])'
+                        r'(PYTHONPATH|FORGE_ROOT|FORGE_BIND_ADDRESS|FORGE_PORT|HOST|PORT|NITRO_FORGE_API)=', re.M)
 
 
 def command(argv, **kwargs):
@@ -319,12 +325,22 @@ def wait_healthy(bind, timeout=90):
                          'journalctl --user -u ' + ' -u '.join(pending))
 
 
-def confirm(changes, assume_yes):
-    if not changes:
+def dropins(units):
+    """(service, path, overriding) for each drop-in on a service this module manages."""
+    for name in SERVICES:
+        for path in sorted((units / (name + '.service.d')).glob('*.conf')):
+            yield name, path, bool(OVERRIDING.search(path.read_text()))
+
+
+def confirm(changes, assume_yes, overrides=()):
+    if not changes and not overrides:
         return
     for path, current, desired in changes:
         print('\n' + str(path) + ' was changed outside Forge and will be replaced:')
         sys.stdout.writelines(difflib.unified_diff(current.splitlines(True), desired.splitlines(True), 'installed', 'update'))
+    for _, path, _ in overrides:
+        print('\n' + str(path) + ' overrides what this service runs and will be moved to the backups directory:')
+        print(path.read_text().rstrip())
     if assume_yes:
         return
     if not sys.stdin.isatty():
@@ -371,7 +387,12 @@ def reconcile(root, bind=None, assume_yes=False):
             foreign.append((path, current, content))
     if installed_apparmor is not None and installed_apparmor != apparmor and not record.owns(APPARMOR_TARGET, installed_apparmor):
         foreign.append((APPARMOR_TARGET, installed_apparmor.decode(errors='replace'), apparmor.decode()))
-    restart = set(unit_changes)
+    overrides, kept = [], []
+    for name, path, overriding in dropins(units):
+        (overrides if overriding else kept).append((name, path, overriding))
+    for _, path, _ in kept:
+        print('Keeping drop-in ' + str(path) + ' (it does not change what the service runs).')
+    restart = set(unit_changes) | {name for name, _, _ in overrides}
     if source != record.data.get('source'):
         restart.update(('forge-status', 'forge-supervisor'))  # Python services run this checkout.
     if release != record.data.get('ui_release'):
@@ -385,12 +406,13 @@ def reconcile(root, bind=None, assume_yes=False):
     if release != record.data.get('ui_release'):
         plan.append('operator UI release ' + release)
     plan += ['service ' + name for name in unit_changes]
+    plan += ['remove overriding drop-in ' + path.name + ' from ' + name for name, path, _ in overrides]
     if not fresh and not plan and not restart:
         print('Forge host is up to date' + (' at ' + source[:12] if source else '') + '.')
         return False
     if not fresh:
         print('Updating: ' + ('; '.join(plan) if plan else 'restart services for source ' + (source or 'unknown')[:12]))
-    confirm(foreign, assume_yes)
+    confirm(foreign, assume_yes, overrides)
     if installed_apparmor != apparmor:
         # The canary runs under the loaded policy, so it is installed first.
         with tempfile.NamedTemporaryFile(dir=root, delete=False) as stream:
@@ -423,6 +445,13 @@ def reconcile(root, bind=None, assume_yes=False):
         path = units / (name + '.service')
         path.write_text(wanted[name])
         record.managed(path, wanted[name].encode())
+    if overrides:
+        backup = root / 'backups' / time.strftime('unit-dropins-%Y%m%dT%H%M%SZ', time.gmtime())
+        for name, path, _ in overrides:
+            target = backup / path.parent.name
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), target / path.name)
+        print('Moved overriding drop-ins to ' + str(backup))
     command(['systemctl', '--user', 'daemon-reload'])
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
     # The API first: the UI and supervisor depend on it.
