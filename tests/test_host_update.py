@@ -186,6 +186,36 @@ class ReconcileTests(unittest.TestCase):
         self.host.reconcile(assume_yes=True)
         self.assertIn('512m', path.read_text())
 
+    def test_drop_ins_that_override_the_service_are_moved_aside_after_confirmation(self):
+        self.host.reconcile()
+        units = self.host.home / '.config/systemd/user'
+        override = units / 'forge-supervisor.service.d/99-onboarding-service.conf'
+        override.parent.mkdir()
+        override.write_text('[Service]\nExecStart=\nExecStart=/old/copy/bin/forge service --root /r\n')
+        extra = units / 'forge-supervisor.service.d/capacity.conf'
+        extra.write_text('[Service]\nEnvironment=MAX_SESSIONS=6\n')
+        allowed = units / 'forge-ui.service.d/override.conf'
+        allowed.parent.mkdir()
+        allowed.write_text('[Service]\nEnvironment=NITRO_ALLOWED_HOSTS=forge.tail.ts.net:8787\n')
+        with patch.object(host_update.sys.stdin, 'isatty', return_value=False):
+            with self.assertRaisesRegex(ValueError, 'rerun with --yes'):
+                self.host.reconcile()
+        self.assertTrue(override.exists())
+        _, output = self.host.reconcile(assume_yes=True)
+        self.assertFalse(override.exists())
+        self.assertTrue(extra.exists())
+        self.assertTrue(allowed.exists())
+        self.assertIn('remove overriding drop-in 99-onboarding-service.conf', output)
+        moved = list((self.host.root / 'backups').glob('unit-dropins-*/forge-supervisor.service.d/99-onboarding-service.conf'))
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(self.host.restarted(), [['forge-supervisor.service']])
+
+    def test_environment_overrides_count_as_overriding(self):
+        for line, overriding in [('Environment=PYTHONPATH=/old', True), ('Environment="FORGE_ROOT=/x" "A=b"', True),
+                                 ('Environment=HOST=10.0.0.1', True), ('Environment=NITRO_ALLOWED_HOSTS=a:1', False),
+                                 ('Environment=MAX_SESSIONS=6', False), ('MemoryMax=2G', False)]:
+            self.assertEqual(bool(host_update.OVERRIDING.search('[Service]\n' + line + '\n')), overriding, line)
+
     def test_units_from_the_previous_installer_upgrade_without_a_prompt_and_keep_their_bind(self):
         units = self.host.home / '.config/systemd/user'; units.mkdir(parents=True)
         for name in ('forge-status', 'forge-supervisor'):
