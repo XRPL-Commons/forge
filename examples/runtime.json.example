@@ -3,8 +3,8 @@
   "enabled": false,
   "merge_enabled": false,
   "slots": {
-    "build": 2,
-    "review": 1,
+    "build": 4,
+    "review": 2,
     "audit": 1,
     "recovery": 1
   },

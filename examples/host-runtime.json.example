@@ -1,12 +1,6 @@
 {
   "version": 1,
   "image": "",
-  "slots": {
-    "build": 2,
-    "review": 1,
-    "audit": 1,
-    "recovery": 1
-  },
   "memory": "4g",
   "cpus": 2,
   "network": "forge-workers",

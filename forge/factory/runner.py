@@ -151,7 +151,7 @@ class ContainerRunner:
         except (ValueError, KeyError, TypeError, IndexError):
             raise RunnerError('Runner image lacks the build-environment contract. Rebuild and qualify it using docs/installation.md.') from None
         if self.config.get('seccomp_profile_env'):
-            path = Path(self.environ.get(self.config['seccomp_profile_env'], ''))
+            path = self.seccomp_policy(self.config)
             if not path.is_absolute() or not path.is_file():
                 raise RunnerError('Provision the runner seccomp policy before dispatch')
         try:
@@ -192,7 +192,7 @@ class ContainerRunner:
                 config['image'], '-I', '/opt/forge/job.py']
         args[1:1] = process_isolation(config)
         if config.get('seccomp_profile_env'):
-            seccomp = Path(self.environ.get(config['seccomp_profile_env'], ''))
+            seccomp = self.seccomp_policy(config)
             if not seccomp.is_absolute() or not seccomp.is_file():
                 raise RunnerError('Runner seccomp policy is unavailable')
             args[1:1] = ['--security-opt', 'seccomp=' + str(seccomp)]
@@ -201,6 +201,13 @@ class ContainerRunner:
         if current is None or current['status'] != 'created':
             raise RunnerError('Container creation outcome is unknown')
         return current['id']
+
+    def seccomp_policy(self, config):
+        """The configured variable, else the policy setup installs in the runtime root."""
+        value = self.environ.get(config['seccomp_profile_env'])
+        if not value and self.environ.get('FORGE_CREDENTIAL_ROOT'):
+            value = str(Path(self.environ['FORGE_CREDENTIAL_ROOT']) / 'runner-seccomp.json')
+        return Path(value or '')
 
     def prepare(self, job, token):
         current = self.inspect(job)

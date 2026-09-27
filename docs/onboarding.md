@@ -150,9 +150,9 @@ cross-check what is actually running.
 network, operator UI and services. `bin/forge update` applies newer releases. See
 [installation](installation.md); there are no files to copy by hand.
 
-Guided setup starts with at most two Build workers and one each for Review, Audit and
-Recovery. These are ceilings: how many actually run depends on available memory
-(see [factory runtime](factory-runtime.md)).
+Guided setup allows up to four Build, two Review, one Audit and one Recovery worker.
+These are ceilings: how many actually run depends on available memory (see
+[factory runtime](factory-runtime.md)), so a small host needs no tuning.
 
 Connect or reconnect a harness from the VM terminal with
 `bin/forge setup login codex --root <runtime>` or

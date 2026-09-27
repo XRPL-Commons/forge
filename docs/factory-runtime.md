@@ -22,7 +22,7 @@ copies, App keys, provider authentication, or `state/`.
 - Issue history, assignments, runner ownership and operator requests live under
   `state/factory/`, outside every disposable workspace. Back up that directory.
 
-Defaults (`forge/factory/config.py`) are 2 Build, 1 Review, 1 Audit and 1 Recovery
+Defaults (`forge/factory/config.py`) are 4 Build, 2 Review, 1 Audit and 1 Recovery
 slot, with 4 GiB and two CPUs per job. Role slots are upper limits. Total concurrency is automatic:
 before reserving work and immediately before starting a container, Forge checks
 host MemAvailable, memory pressure and the full memory limits of existing Forge
