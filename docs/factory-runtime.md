@@ -330,3 +330,26 @@ verifies those identities. GitHub applies the repository owner’s permissions a
 protection rules to all actors. Forge’s supervisor gates govern the merges Forge
 requests, not merges by other authorized actors. A future write broker could
 enforce every individual builder API operation; role prompts are not that boundary.
+
+
+Claude launches from `/opt/forge/claude-control`, an image-owned directory with
+empty sandbox mount placeholders prepared at build time. Its checkout is an
+added working directory; the credential-scrubbing mode stays enabled. This keeps
+launch-local package manifests, lockfiles and executable links protected without
+making the repository's dependency installation read-only. The Claude readiness
+probe performs offline npm install/ci and pnpm install/frozen-install, executes a
+fixture's bin link and lifecycle script, verifies Git writes, and checks credential
+and filesystem isolation inside the actual Bash sandbox.
+
+The scheduler honors same-repository `Depends on`, `Blocked by` and `Dependency:`
+statements on individual issue-body lines. A following `Blocks:` clause describes
+downstream work and is excluded. It verifies prerequisites are closed on GitHub
+before reserving a worker, rechecks waiting issues automatically, and does not
+consume their code retry budget. General references, cross-repository references,
+and fenced examples are not dependency declarations. Existing operator/repeated
+failure holds still require their recorded decision; this does not erase them.
+
+Exhausting a controller cycle's GitHub budget defers the existing launch intent;
+it does not create a CI or repository-protection hold. Actual CI-read failures
+retain the candidate and stage and are rechecked with the availability retry
+interval. Discovery has a bounded share of the cycle so dispatch retains time.

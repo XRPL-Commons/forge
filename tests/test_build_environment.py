@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from forge.factory import build_environment as build
 from forge.factory.contracts import result
 from forge.factory.harness import schema
-from forge.factory.github import GitHubUnavailable
+from forge.factory.github import GitHubUnavailable, GitHubBudgetExhausted
 from tests.test_factory_cycle import CycleTest
 
 
@@ -46,6 +46,75 @@ class EnvironmentLifecycleTests(CycleTest):
         item = self.ledger.read()['issues'][self.key]
         self.assertEqual(item['environment_hold']['blocker'], 'ci_evidence')
         self.assertEqual(item['failures'], [])
+
+    def test_environment_repair_preserves_build_branch_without_accepted_candidate(self):
+        self.cycle(); old = self.active()
+        report = {'version': 1, 'attempt': old['id'], 'role': 'build', 'outcome': 'blocked_environment',
+                  'blocker': 'sandbox', 'summary': 'Published work but package install was read-only',
+                  'headline': 'Install blocked', 'plain': 'Published the work before stopping.'}
+        self.engine.finish(old, report); self.cycle()
+        self.config['image'] = 'sha256:' + 'b' * 64
+        self.cycle()
+        job = self.active()
+        self.assertEqual(job['branch'], old['branch'])
+        self.assertEqual(job['resume_branch'], old['branch'])
+        self.ledger.wait(job['id'], 'Role credentials unavailable', 0)
+        self.ledger.job_update(job['id'], fenced=True, phase='stopping')
+        self.cycle()
+        self.assertEqual(self.active()['resume_branch'], old['branch'])
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_failed_partial_build_keeps_its_branch_after_investigation(self):
+        self.cycle(); old = self.active()
+        self.finish('build', 'reject'); self.cycle()
+        self.finish('recovery'); self.cycle()
+        job = self.active()
+        self.assertEqual(job['role'], 'build')
+        self.assertEqual(job['branch'], old['branch'])
+        self.assertEqual(job['resume_branch'], old['branch'])
+        self.assertIsNone(job['candidate'])
+        self.assertEqual(self.state(), 'ready')
+
+    def test_ci_budget_defers_same_launch_without_fencing_or_failure(self):
+        self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
+        self.assertFalse(self.cycle()['errors'])
+        job = self.active()
+        self.assertEqual(job['phase'], 'reserved')
+        self.assertFalse(job['fenced'])
+        self.assertFalse(self.engine.jobs)
+        self.assertNotIn('environment_hold', self.ledger.read()['issues'][self.key])
+        self.github.ci_evidence = Mock(return_value=None)
+        self.assertFalse(self.cycle()['errors'])
+        self.assertEqual(self.active()['id'], job['id'])
+        self.assertEqual(self.active()['phase'], 'running')
+
+    def test_ci_hold_recovers_without_image_change_and_backs_off_while_unavailable(self):
+        from forge.factory.supervisor import Supervisor
+        from tests.test_factory_cycle import Settings
+        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
+        self.cycle()
+        # Teardown first. A failed recheck sets a bounded retry time.
+        self.cycle()
+        held = self.ledger.read()['issues'][self.key]
+        retry_at = held['environment_hold']['recheck_after']
+        calls = self.github.ci_evidence.call_count
+        self.cycle()
+        self.assertEqual(self.github.ci_evidence.call_count, calls)
+        self.github.ci_evidence = Mock(return_value=None)
+        controller = Supervisor(self.ledger, self.engine, self.github, Settings(), self.config,
+                                clock=lambda: retry_at + 1)
+        self.assertFalse(controller.cycle()['errors'])
+        self.assertEqual(self.active()['phase'], 'running')
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_budget_during_ci_hold_recheck_does_not_set_backoff_or_release_hold(self):
+        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
+        self.cycle()
+        self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
+        self.assertFalse(self.cycle()['errors'])
+        held = self.ledger.read()['issues'][self.key]['environment_hold']
+        self.assertNotIn('recheck_after', held)
+        self.assertFalse(self.engine.jobs)
 
     def test_code_rejection_still_consumes_budget(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()

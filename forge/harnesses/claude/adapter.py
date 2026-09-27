@@ -1,5 +1,6 @@
 """Image-owned Claude Code adapter. Managed sandbox policy is mandatory."""
 import json
+from collections import deque
 import os
 from pathlib import Path
 import subprocess
@@ -34,12 +35,12 @@ def probe_failure_reason(answer, failure, proof, nonce):
 
 
 def collect(args, prompt, directory, env):
-    """Drain output with a hard bound; the outer runner owns the deadline."""
+    """Drain an unlimited transcript into a bounded tail; keep its final result."""
     with tempfile.TemporaryFile(mode='w+', dir='/work/home') as source:
         source.write(prompt); source.seek(0)
         child = subprocess.Popen(args, stdin=source, cwd=directory, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
-        chunks, size = [], 0
+        chunks, size = deque(), 0
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(child.stdout, selectors.EVENT_READ)
@@ -49,9 +50,20 @@ def collect(args, prompt, directory, env):
                     if not block:
                         break
                     size += len(block)
-                    if size > 2 * 1024 * 1024:
-                        raise RuntimeError('Claude output exceeded its size limit')
                     chunks.append(block)
+                    # Tool-heavy work can emit much more than 2 MiB over its
+                    # lifetime. Bound retained memory, not completed work. The
+                    # CLI's terminal result is at the end; incomplete leading
+                    # JSON lines are ignored by invoke(). The runner still
+                    # enforces the execution deadline and 64 KiB result limit.
+                    while size > 2 * 1024 * 1024:
+                        excess = size - 2 * 1024 * 1024
+                        first = chunks.popleft()
+                        if len(first) > excess:
+                            chunks.appendleft(first[excess:])
+                            size -= excess
+                        else:
+                            size -= len(first)
             return child.wait(), b''.join(chunks).decode(errors='replace')
         finally:
             if child.poll() is None:
@@ -90,11 +102,17 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
             '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
             '--tools', 'Bash,Read,Edit,Write,Glob,Grep', '--permission-mode', 'acceptEdits',
             '--no-session-persistence', '--allowedTools', 'Bash,Read,Edit,Write,Glob,Grep',
-            '--add-dir', '/opt/forge/harnesses/claude']
+            '--add-dir', str(directory), '--add-dir', '/opt/forge/harnesses/claude']
     if note.get('model'):
         args += ['--model', note['model']]
     home = Path('/work/home'); home.mkdir(exist_ok=True)
-    code, raw = collect(args, prompt, directory, env)
+    launch = Path('/opt/forge/claude-control')
+    # Scrub mode protects the launch directory's manifests, lockfiles, scripts
+    # and node_modules/.bin. Keep that directory image-owned: repository code
+    # executes only in the sandbox, with the checkout as an added working dir.
+    prompt = ('The assigned repository is ' + str(directory) + '. Run repository commands with '
+              'an explicit cd to that directory. The launch directory is trusted runner code.\n' + prompt)
+    code, raw = collect(args, prompt, launch, env)
     events = []
     for line in raw.splitlines():
         try:
@@ -135,6 +153,7 @@ def run(note, directory, env, result_schema):
 
 def probe(note, directory):
     private = Path('/work/home/probe-private'); private.parent.mkdir(exist_ok=True); private.write_text('synthetic private canary')
+    subprocess.run(['git', 'init', str(directory)], check=True, capture_output=True)
     nonce = uuid.uuid4().hex
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}

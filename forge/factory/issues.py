@@ -8,7 +8,7 @@ import time
 from ..settings import Settings, read_json, write_json
 from ..state import AtomicStore
 from .config import load
-from .contracts import HEADLINE_LIMIT, clamp, digest, plain_text, references_issue
+from .contracts import HEADLINE_LIMIT, clamp, digest, plain_text, references_issue, dependencies
 from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
 from .ledger import APPROACH_HOLD
@@ -38,14 +38,6 @@ def revision(issue, item):
     return digest({'github': public, 'ledger': tracked})
 
 
-def dependencies(body):
-    # Only explicit prerequisite statements, not arbitrary issue references.
-    result = set()
-    for line in (body or '').splitlines():
-        if re.search(r'\b(?:blocked by\b|depends on\b|dependency:)', line, re.I):
-            result.update(int(n) for n in re.findall(r'(?<![\w/])#(\d+)\b', line))
-    return sorted(result)
-
 
 # Plain language for the issue page: one headline sentence and at most three
 # short sentences, for a reader who does not read code. Forge writes them for
@@ -74,6 +66,8 @@ SUMMARIES = {
                 'Forge is clearing up after the last attempt. The next step starts as soon as that is done.'),
     'label_hold': ('Paused by a label on GitHub',
                    '{why} Forge leaves the issue alone until that label is removed.'),
+    'dependencies': ('Waiting for prerequisite issues',
+                     '{why} Forge checks again automatically and starts when they are closed.'),
     'environment_hold': ('Stopped: Forge’s working environment needs attention',
                          'The worker could not run properly, so Forge stopped before finishing. The pull request and the remaining attempts are kept. Repair the environment, then recheck the issue.'),
     'setup_ready': ('Ready to start once you recheck',
@@ -133,6 +127,8 @@ def forge_summary(case, why=''):
 
 def why_for(case, item):
     """The reason this issue is where it is, in the words Forge already has."""
+    if case == 'dependencies':
+        return item.get('dependency_reason') or ''
     if case == 'approval_needed':
         return item.get('reason') or (item.get('evidence') or {}).get('audit', {}).get('human_reason') or ''
     if case in ('failed', 'hold', 'operator_hold'):
@@ -205,6 +201,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         # Asking a named human for that review is the only decision on offer;
         # the approval itself still has to reach Forge through GitHub.
         actions = ['assign_reviewer'] if owned_pr else []
+    elif item.get('blocked_dependencies'):
+        state, detail, case = 'waiting', item.get('dependency_reason'), 'dependencies'
     elif item.get('state') in ('built', 'reviewed', 'audited', 'investigating'):
         state, detail = 'queued', {'built': 'Waiting for review.', 'reviewed': 'Waiting for security review.', 'audited': 'Checking merge requirements.', 'investigating': 'Waiting for a failure investigation.'}[item['state']]
         actions, case = (['pause'] if item['state'] != 'investigating' else []), item['state']

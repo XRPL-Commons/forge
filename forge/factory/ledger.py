@@ -105,7 +105,7 @@ class Ledger:
                 provider, provider_id = entry['provider'], entry['id']
             identifier = str(uuid.uuid4())
             retry = issue.get('memory_retry') or {}
-            if not retry and role == 'build' and (runner_config or {}).get('memory_tiers'):
+            if not retry and role == 'build':
                 from .memory import confirmed
                 from .contracts import result
                 previous = max((j for j in data['jobs'].values() if j['issue_key'] == key and j['role'] == role),
@@ -116,7 +116,11 @@ class Ledger:
                         report = result(capture.get('result'), previous)
                     except ValueError:
                         report = None
-                    if confirmed(capture, report):
+                    # Failed builds can publish a useful draft without an accepted
+                    # candidate. Continue that assigned branch instead of
+                    # orphaning its PR on a fresh branch after investigation.
+                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed')
+                            or ((runner_config or {}).get('memory_tiers') and confirmed(capture, report))):
                         retry = {'role': role, 'branch': previous['branch']}
             branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or (retry.get('branch') if role == 'build' else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
             job = {'id': identifier, 'issue_key': key, 'repo_id': issue['repo_id'], 'repo': issue['repo'],

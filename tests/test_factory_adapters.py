@@ -51,6 +51,24 @@ class AdapterTests(unittest.TestCase):
         client.request.return_value = {'token': 'synthetic-installation-token'}
         return GitHub(settings, validate({}), client=client), client, settings
 
+    def test_repair_launch_preserves_completed_check_until_a_new_verdict(self):
+        github, _, _ = self.github()
+        app_id = github.connection('controller')['app_id']
+        completed = {'id': 123, 'name': 'forge/merge-policy', 'head_sha': 'a'*40,
+                     'app': {'id': app_id}, 'external_id': 'candidate-key',
+                     'status': 'completed', 'conclusion': 'failure'}
+        github.pages = Mock(return_value=[completed])
+        github.call = Mock()
+        candidate = {'head': 'a'*40}
+        self.assertEqual(github.check({}, 'controller', candidate, 'candidate-key', None,
+                                      'Candidate is being processed'), 123)
+        github.call.assert_not_called()
+        # A final verdict still updates and verifies the same owned check.
+        github.pages.side_effect = [[completed], [{**completed, 'conclusion': 'success'}]]
+        self.assertEqual(github.check({}, 'controller', candidate, 'candidate-key', 'success',
+                                      'Current policy passed'), 123)
+        self.assertEqual(github.call.call_args.args[2], 'PATCH')
+
     def test_worker_tokens_are_fresh_repository_scoped_and_read_only_for_evaluators(self):
         github, client, _ = self.github()
         for role in ('review', 'audit', 'recovery'):
