@@ -9,10 +9,11 @@ from ..harnesses.registry import manifests
 
 # The single source of runtime defaults: guided setup, examples and docs follow it
 # (tests/test_runtime_examples.py). Slots are per-role ceilings; memory admission
-# decides how many workers actually run.
+# decides how many workers actually run, so ceilings are generous: a small host
+# still runs only what fits, and a large one needs no tuning.
 DEFAULT = {
     'version': 1, 'enabled': False, 'merge_enabled': False,
-    'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1},
+    'slots': {'build': 4, 'review': 2, 'audit': 1, 'recovery': 1},
     'cycle_seconds': 30,
     'timeout_seconds': {'build': 2700, 'review': 1200, 'audit': 1200, 'recovery': 600},
     'grace_seconds': 10, 'availability_retry_seconds': 300,

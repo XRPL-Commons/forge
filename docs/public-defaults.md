@@ -25,7 +25,7 @@ The optional remote queue notification channel is named `relay`; configure the `
 Provider isolation and executor integration tools are experimental, opt-in components. Synthetic tests are not evidence that an arbitrary production installation is isolated. See [implementation status](implementation.md).
 
 The durable factory's defaults live in `forge/factory/config.py`, and the disabled
-`examples/runtime.json.example` restates them: 2 Build, 1 Review, 1 Audit and 1 Recovery
+`examples/runtime.json.example` restates them: 4 Build, 2 Review, 1 Audit and 1 Recovery
 slot as per-role ceilings (memory admission decides how many run), and separate
 dispatch/merge switches. `bin/forge setup` provisions the image, policies and internal
 network; cloning source does not alter host security or start workers. See

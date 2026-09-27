@@ -78,3 +78,20 @@ class BrowserSecretTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SeccompDefaultTests(unittest.TestCase):
+    def runner(self, environ):
+        from forge.factory.runner import ContainerRunner
+        runner = object.__new__(ContainerRunner)
+        runner.environ = environ
+        return runner
+
+    def test_runner_uses_the_installed_policy_without_an_environment_variable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {'seccomp_profile_env': 'FORGE_RUNNER_SECCOMP'}
+            self.assertEqual(self.runner({'FORGE_CREDENTIAL_ROOT': directory}).seccomp_policy(config),
+                             Path(directory) / 'runner-seccomp.json')
+            self.assertEqual(self.runner({'FORGE_CREDENTIAL_ROOT': directory, 'FORGE_RUNNER_SECCOMP': '/custom.json'}).seccomp_policy(config),
+                             Path('/custom.json'))
+            self.assertEqual(self.runner({}).seccomp_policy(config), Path(''))

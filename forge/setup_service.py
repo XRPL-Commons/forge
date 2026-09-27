@@ -142,11 +142,8 @@ class Service:
         self.next_sync = 0
 
     def runner(self, config):
-        env = Credentials(self.root).environment()
-        policy = self.root / 'runner-seccomp.json'
-        if policy.is_file():
-            env.setdefault('FORGE_RUNNER_SECCOMP', str(policy))
-        return self.runner_class(config, environ=env)
+        # The runner finds <root>/runner-seccomp.json through FORGE_CREDENTIAL_ROOT.
+        return self.runner_class(config, environ=Credentials(self.root).environment())
 
     def update(self, expected, **values):
         with self.setup.store.transaction() as data:
