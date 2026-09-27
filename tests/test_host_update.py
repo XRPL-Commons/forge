@@ -124,6 +124,56 @@ class ReconcileTests(unittest.TestCase):
         self.assertFalse(any(argv[:2] in (['docker', 'build'], ['docker', 'run'], ['docker', 'compose']) for argv in self.host.calls))
         self.host.qualify.assert_called_once()  # Only by the install.
 
+    def failing(self, prefix):
+        run = self.host.run
+        def fail(argv, check=False, **kwargs):
+            if argv[:len(prefix)] == prefix:
+                self.host.calls.append(argv)
+                raise subprocess.CalledProcessError(1, argv)
+            return run(argv, check=check, **kwargs)
+        self.host.run = fail
+
+    def test_without_sudo_setup_prints_the_administrator_apparmor_commands(self):
+        self.failing(['sudo'])
+        with self.assertRaises(ValueError) as caught:
+            self.host.reconcile()
+        message = str(caught.exception)
+        self.assertIn('sudo install -m 0644 ' + str(host_update.SOURCE / 'deploy/runner/forge-runner-private-proc.apparmor')
+                      + ' ' + str(self.host.apparmor), message)
+        self.assertIn('sudo apparmor_parser -r ' + str(self.host.apparmor), message)
+        self.assertFalse((self.host.home / '.config/systemd/user/forge-ui.service').exists())
+        self.host.qualify.assert_not_called()
+
+    def test_a_profile_an_administrator_installed_needs_no_sudo_and_later_updates_normally(self):
+        wanted = (host_update.SOURCE / 'deploy/runner/forge-runner-private-proc.apparmor').read_bytes()
+        self.host.apparmor.write_bytes(wanted)
+        self.host.reconcile()
+        self.assertFalse(any(argv[0] == 'sudo' for argv in self.host.calls))
+        self.assertTrue(host_update.Record(self.host.root).owns(self.host.apparmor, wanted))
+
+    def test_the_egress_proxy_runs_as_the_service_account_and_must_become_healthy(self):
+        seen = []
+        run = self.host.run
+        def record(argv, check=False, **kwargs):
+            if argv[:2] == ['docker', 'compose']:
+                seen.append((argv, kwargs.get('env', {})))
+            return run(argv, check=check, **kwargs)
+        self.host.run = record
+        self.host.reconcile()
+        argv, env = seen[0]
+        self.assertEqual(argv[argv.index('up'):], ['up', '-d', '--wait', '--wait-timeout', '60', 'egress'])
+        self.assertEqual(env['FORGE_EGRESS_USER'], f'{host_update.os.getuid()}:{host_update.os.getgid()}')
+        compose = (host_update.SOURCE / 'deploy/runner/compose.yaml').read_text()
+        self.assertIn('user: "${FORGE_EGRESS_USER:-1000:1000}"', compose)
+        self.assertIn('healthcheck:', compose)
+
+    def test_an_unhealthy_egress_proxy_fails_setup_before_services_are_installed(self):
+        self.failing(['docker', 'compose'])
+        with self.assertRaisesRegex(ValueError, 'egress proxy did not become healthy'):
+            self.host.reconcile()
+        self.assertFalse((self.host.home / '.config/systemd/user/forge-ui.service').exists())
+        self.assertFalse((self.host.root / 'host-runtime.json').exists())
+
     def test_a_source_change_restarts_the_python_services_only(self):
         self.host.reconcile()
         self.host.revision = 'b' * 40
@@ -295,6 +345,23 @@ class SetupCommandTests(unittest.TestCase):
         self.assertIn('--no-pull', argv)
         self.assertEqual(argv[argv.index('--bind') + 1], '100.64.0.7')
         self.assertIn('--yes', argv)
+
+    def test_setup_finds_the_lingering_user_manager_after_sudo_i(self):
+        seen = []
+        with tempfile.TemporaryDirectory() as directory, patch.dict(host_setup.os.environ, {}, clear=True), \
+                patch.object(host_setup, 'Path', side_effect=lambda *parts: Path(directory) if parts == ('/run/user',) else Path(*parts)), \
+                patch.object(host_setup, 'command', side_effect=lambda argv, **kw: seen.append(host_setup.os.environ.get('XDG_RUNTIME_DIR'))):
+            (Path(directory) / str(host_setup.os.getuid())).mkdir()
+            host_setup.user_manager()
+            self.assertEqual(seen, [str(Path(directory) / str(host_setup.os.getuid()))])
+
+    def test_setup_explains_a_missing_user_manager(self):
+        failure = subprocess.CalledProcessError(1, ['systemctl'])
+        with patch.dict(host_setup.os.environ, {'XDG_RUNTIME_DIR': '/nonexistent'}), \
+                patch.object(host_setup, 'command', side_effect=failure), \
+                patch.object(host_setup.getpass, 'getuser', return_value='forge'):
+            with self.assertRaisesRegex(ValueError, r'sudo loginctl enable-linger forge'):
+                host_setup.user_manager()
 
     def test_update_requires_an_installed_host(self):
         with tempfile.TemporaryDirectory() as directory:

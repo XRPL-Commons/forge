@@ -53,7 +53,23 @@ def preflight():
             raise ValueError('Install Docker Engine with Compose, Python 3, and systemd first; see docs/installation.md')
     command(['docker', 'info'], stdout=subprocess.DEVNULL)
     command(['docker', 'compose', 'version'], stdout=subprocess.DEVNULL)
-    command(['systemctl', '--user', 'show-environment'], stdout=subprocess.DEVNULL)
+    user_manager()
+
+
+def user_manager():
+    """Reach the account's systemd user manager, which runs Forge's services.
+
+    `sudo -iu <account>` and `su - <account>` start no login session, so they leave
+    XDG_RUNTIME_DIR unset and `systemctl --user` cannot find the manager even though
+    lingering keeps it running. Its runtime directory is fixed, so use it directly."""
+    runtime = Path('/run/user') / str(os.getuid())
+    if not os.environ.get('XDG_RUNTIME_DIR') and runtime.is_dir():
+        os.environ['XDG_RUNTIME_DIR'] = str(runtime)
+    try:
+        command(['systemctl', '--user', 'show-environment'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        raise ValueError("This account's systemd user manager is not running. Enable lingering once as an administrator "
+                         '(sudo loginctl enable-linger ' + getpass.getuser() + '), then rerun setup; see docs/installation.md') from None
 
 
 def install(root, bind=None, assume_yes=False):

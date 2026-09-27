@@ -4,21 +4,45 @@ Use an AppArmor-enabled Linux VM (Ubuntu 24.04 is the tested host) with Python
 3.10+, Git, Docker Engine with the Compose plugin, and systemd. Run Forge as a dedicated non-root service account with Docker
 access. Follow [Docker's installation instructions](https://docs.docker.com/engine/install/)
 for your distribution. Docker access is administrative authority; never give it
-to a worker. Enable lingering for that account if its user services must survive
-logout (`sudo loginctl enable-linger <service-account>`).
+to a worker.
+
+As an administrator, create the account, give it Docker access, and enable
+lingering so its user services start at boot and survive logout. Setup refuses
+to run without that user service manager. Then install the runner's AppArmor
+profile from the reviewed source, since the service account normally has no sudo:
 
 ```sh
-git clone https://github.com/XRPL-Commons/forge.git
-cd forge
+cat /sys/module/apparmor/parameters/enabled   # must print Y
+sudo useradd --create-home --shell /bin/bash forge
+sudo usermod -aG docker forge
+sudo loginctl enable-linger forge
+sudo -iu forge git clone https://github.com/XRPL-Commons/forge.git
+sudo install -m 0644 ~forge/forge/deploy/runner/forge-runner-private-proc.apparmor /etc/apparmor.d/forge-runner-private-proc
+sudo apparmor_parser -r /etc/apparmor.d/forge-runner-private-proc
+```
+
+If the account may use sudo, you can skip the last two commands: setup installs
+the profile itself and prompts for the password. Otherwise, when a later update
+changes the profile, setup stops and prints the same two commands to run.
+
+Then, as the service account (`sudo -iu forge` is fine):
+
+```sh
+cd ~/forge
 bin/forge setup
 ```
+
+`bin/forge setup install` prepares the host without offering coding-account logins.
+A first install builds the runner image and the UI; it took about three minutes on
+a 4-CPU VM.
 
 Keep this checkout in place: the installed services run its reviewed source.
 Setup builds the pinned runner image containing Codex, Claude Code and Grok Build, installs
 the runner's isolation policy and private egress network, builds the operator UI in a
 pinned Node container, and starts the UI, the status API and the supervisor as user
-services. The host needs no Node toolchain. Installing the AppArmor profile may prompt for sudo. It does not
-start issue processing or alter GitHub permissions.
+services. The host needs no Node toolchain. It does not start issue processing or
+alter GitHub permissions. To run `systemctl --user` or `journalctl --user` yourself
+after `sudo -iu forge`, first `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
 
 The image also owns the build environment: Node 22, npm, Corepack (with pnpm
 10.23.0 preloaded), Python 3.12, a C/C++ compiler and Chromium. You do not install
@@ -64,7 +88,7 @@ and restarted:
   against the new image, and new work waits for that check. Workers already
   running finish on the image they started with.
 - **Isolation policies.** The seccomp and AppArmor policies are replaced only when
-  their sources change. Installing AppArmor may prompt for sudo.
+  their sources change. Installing AppArmor uses sudo; without it, setup prints the commands for an administrator (see above).
 - **Operator UI.** Built into a content-addressed release under
   `<runtime-root>/ui/releases/`. `ui/current` switches atomically, and the previous
   release is kept.
@@ -113,7 +137,7 @@ If none pass, the factory stays stopped. Cleanup intent is always retained.
 
 Open `http://127.0.0.1:8787/onboarding` to configure GitHub Apps, choose repositories,
 verify repository protection, and explicitly start Forge. From your computer,
-forward the port with `ssh -L 8787:127.0.0.1:8787 <service-account>@<vm>`.
+forward the port with `ssh -L 8787:127.0.0.1:8787 <you>@<vm>` (any account you can SSH into; the service account needs no SSH login).
 The UI has no per-user authentication: bind only to loopback or your trusted
 tailnet (`--bind <tailnet-address>`).
 
