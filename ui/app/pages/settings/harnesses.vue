@@ -47,8 +47,13 @@ function openDialog(harness: Harness) {
 
 <template>
   <div class="mx-auto max-w-[780px]">
-    <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">Settings</p>
-    <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Coding accounts</h1>
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p class="text-xs uppercase tracking-wide text-muted">Settings</p>
+        <h1 class="text-3xl font-semibold text-white">Coding accounts</h1>
+      </div>
+      <NuxtLink v-if="state && state.phase !== 'active'" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
+    </div>
     <p class="mt-2 text-muted">Manage sign-in from the Forge VM terminal.</p>
 
     <UAlert v-if="notice" class="mt-5" color="warning" variant="subtle" :description="notice" />

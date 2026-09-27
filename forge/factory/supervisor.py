@@ -637,8 +637,12 @@ class Supervisor:
                     if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
                         self.ledger.pause_for_protection(item['key'])
                         continue
-                    job = self.ledger.reserve(item['key'], role, slot, publisher=self.github.publisher(role),
-                        policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=worker_config, target_branch=target)
+                    publisher = self.github.publisher(role)
+                    draft = (self.github.own_draft(item, item['number'], publisher)
+                             if role == 'build' and not item.get('candidate') else None)
+                    job = self.ledger.reserve(item['key'], role, slot, publisher=publisher,
+                        policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=worker_config, target_branch=target,
+                        existing_draft=draft)
                     self.execution(job)
                 except GitHubBudgetExhausted:
                     return

@@ -26,6 +26,7 @@ class FactoryTest(unittest.TestCase):
         self.settings.admission.return_value = {'allowed': True}
         self.settings.view.return_value = {'repositories': []}
         self.github = Mock()
+        self.github.own_draft.return_value = None  # No open Forge draft unless a test says so.
         self.github.ci_evidence.return_value = None
         self.github.publisher.side_effect = lambda role: role + '[bot]'
         self.github.issue.return_value = ({'state': 'open', 'labels': []}, 'requirements')

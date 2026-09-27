@@ -36,6 +36,7 @@ class Facts:
     def issues(self, item): return []
     def pulls(self, item): return []
     def publisher(self, role): return role + '[bot]'
+    def own_draft(self, item, number, publisher): return None
     def target(self, item): return 'main'
     def token(self, *args, **kwargs): return 'synthetic-worker-token'
     def ci_evidence(self, job): return None
