@@ -61,7 +61,7 @@ assert private.read_text() == 'private'
 def validate(image, seccomp, apparmor=None):
     name = 'forge-build-canary-' + uuid.uuid4().hex
     argv = ['docker', 'run', '--rm', '--name', name, '-i', '--network', 'none',
-            '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--pids-limit', '256',
+            '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--pids-limit', '1024',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
             '--security-opt', 'seccomp=' + str(seccomp),
             '--read-only', '--user', '1000:1000', '--env', 'HOME=/work/home',

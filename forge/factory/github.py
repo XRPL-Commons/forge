@@ -195,6 +195,30 @@ class GitHub:
         return [{'login': row['login'], 'name': str(row.get('name') or '')[:120]}
                 for row in rows if isinstance(row, dict) and isinstance(row.get('login'), str)][:500]
 
+    def recent_authors(self, item):
+        """People whose pull requests were recently merged here: they demonstrably
+        ship to this repository, including org members GitHub does not list as
+        collaborators to an App."""
+        rows = self.call('controller', item, 'GET', '/pulls?state=closed&sort=updated&direction=desc&per_page=100')
+        logins = []
+        for row in rows if isinstance(rows, list) else []:
+            user = row.get('user') or {} if isinstance(row, dict) else {}
+            login = user.get('login')
+            if row.get('merged_at') and isinstance(login, str) and user.get('type') != 'Bot' and not login.endswith('[bot]') and login not in logins:
+                logins.append(login)
+        return logins[:30]
+
+    def label_events(self, item, number):
+        """Who last applied each label, newest first."""
+        rows = self.call('controller', item, 'GET', f'/issues/{number}/events?per_page=100')
+        seen, out = set(), []
+        for row in reversed(rows if isinstance(rows, list) else []):
+            label = ((row or {}).get('label') or {}).get('name')
+            if row.get('event') == 'labeled' and isinstance(label, str) and label not in seen:
+                seen.add(label)
+                out.append({'label': label, 'login': (row.get('actor') or {}).get('login'), 'at': row.get('created_at')})
+        return out
+
     def pr(self, item, number):
         value = self.call('controller', item, 'GET', f'/pulls/{number}')
         if value.get('number') != number or value.get('base', {}).get('repo', {}).get('id') != item['repo_id']:

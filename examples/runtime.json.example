@@ -28,7 +28,7 @@
   "memory_tiers": [],
   "host_reserve": "2g",
   "cpus": 2,
-  "pids_limit": 256,
+  "pids_limit": 1024,
   "harness_argv": [
     "/usr/local/bin/python3",
     "-I",

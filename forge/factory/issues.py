@@ -8,7 +8,7 @@ import time
 from ..settings import Settings, read_json, write_json
 from ..state import AtomicStore
 from .config import load
-from .contracts import HEADLINE_LIMIT, clamp, digest, plain_text, references_issue, dependencies
+from .contracts import HEADLINE_LIMIT, MAX_FAILURES, claims_issue, clamp, digest, plain_text, dependencies
 from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
 from .ledger import APPROACH_HOLD
@@ -115,7 +115,7 @@ WORKER_LED = ('failed', 'environment_hold')
 
 def sentence(text):
     text = ' '.join(str(text or '').split())
-    return text if not text or text[-1] in '.!?' else text + '.'
+    return text if not text or text[-1] in '.!?…' else text + '.'
 
 
 def forge_summary(case, why=''):
@@ -146,14 +146,43 @@ def summary_for(case, item, held):
     return forge_summary(case, why)
 
 
+def reviewers(entry, configured):
+    """Known people who can approve here, each with where Forge learned of them."""
+    rows, seen = [], set()
+    sources = ([(r, 'collaborator') for r in (entry.get('collaborators') or {}).get('rows', [])]
+               + [({'login': login, 'name': ''}, 'recent_author') for login in (entry.get('collaborators') or {}).get('authors', [])]
+               + [({'login': login, 'name': ''}, 'configured') for login in configured])
+    for row, source in sources:
+        login = str(row.get('login') or '')
+        if login and login.lower() not in seen:
+            seen.add(login.lower())
+            rows.append({'login': login, 'name': row.get('name') or '', 'source': source})
+    return rows
+
+
+def attempts(item):
+    """Charged failures since the budget last reset, against the limit."""
+    failures = (item or {}).get('failures') or []
+    start = (item or {}).get('budget_start') or 0
+    return {'failed': sum(1 for f in failures[start:] if f.get('charged', True)), 'limit': MAX_FAILURES}
+
+
+def forge_branch(pr, number):
+    return str(pr.get('branch') or '').startswith(f'forge/issue-{number}-')
+
+
 def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     item = item or {}
     held = labels(issue).intersection(runtime['hold_labels'])
-    linked = [p for p in prs if references_issue(p.get('body'), repo['name'], issue['number'])]
+    number = issue['number']
+    # Work on this issue is a PR that claims it, not one that mentions it.
+    linked = [p for p in prs if forge_branch(p, number) or claims_issue(p.get('body'), repo['name'], number)]
     owned_pr = (item.get('candidate') or {}).get('pr')
-    external = [p for p in linked if p['number'] != owned_pr]
+    # Forge's own earlier drafts are not someone else's work.
+    external = [p for p in linked if p['number'] != owned_pr and not forge_branch(p, number)]
     if owned_pr and not any(p['number'] == owned_pr for p in linked):
         linked.append({'number': owned_pr, 'title': 'Forge pull request'})
+    kind = lambda p: 'candidate' if p['number'] == owned_pr else 'forge_attempt' if forge_branch(p, number) else 'external'
     state, detail, actions, case = 'backlog', 'Not queued for Forge.', [], 'backlog'
     setup = bool(item.get('prerequisite_hold')) or item.get('reason') == LEGACY_SETUP_REASON
     cleanup = bool(item.get('cleanup_pending'))
@@ -181,12 +210,12 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         ready = repo.get('protection_ready') and repo.get('access_ready')
         detail = 'Repository setup now passes. Recheck to resume.' if ready else 'Repository setup needs attention.'
         actions, case = (['recheck'] if ready else []), ('setup_ready' if ready else 'setup')
+    elif item.get('state') == 'failed':
+        state, detail, actions, case = 'attention', item.get('reason') or 'The last attempt failed.', ['retry'], 'failed'
     elif external or (not owned_pr and (issue.get('assignees') or 'wip' in labels(issue))):
         state, detail, case = 'attention', 'Existing work needs review before Forge starts another attempt.', 'external'
     elif item.get('state') == 'cancelled':
         state, detail, actions, case = 'attention', 'The previous attempt was stopped. Review before resuming.', ['resume'], 'cancelled'
-    elif item.get('state') == 'failed':
-        state, detail, actions, case = 'attention', item.get('reason') or 'The last attempt failed.', ['retry'], 'failed'
     elif item.get('operator_hold'):
         backlog = item['operator_hold']['kind'] == 'backlog'
         state, detail, actions = ('backlog', 'Not queued for Forge.', ['queue']) if backlog else ('attention', 'Paused by an operator.', ['resume'])
@@ -225,7 +254,9 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
     return {'status': state, 'explanation': detail, 'summary': summary_for(case, item, held), 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
-            'pull_requests': [{'number': p['number'], 'title': p.get('title', '')} for p in linked],
+            'pull_requests': [{'number': p['number'], 'title': p.get('title', ''), 'kind': kind(p)} for p in linked],
+            'attempts': attempts(item) if attempts(item)['failed'] else None,
+            'held_by': [h for h in (issue.get('label_events') or []) if h.get('label') in held] or None,
             'dependencies': dependencies(issue.get('body')), 'fresh': fresh,
             'reviewers_requested': {k: v for k, v in (item.get('reviewers_requested') or {}).items()
                                     if k in ('logins', 'at')} or None}
@@ -275,7 +306,11 @@ class IssueInventory:
                             rows = self.github.collaborators(item)
                         except (GitHubUnavailable, ValueError, KeyError, TypeError, OSError):
                             rows = []
-                        entry['collaborators'] = {'at': self.clock(), 'rows': rows}
+                        try:
+                            authors = self.github.recent_authors(item)
+                        except (GitHubUnavailable, ValueError, KeyError, TypeError, OSError):
+                            authors = []
+                        entry['collaborators'] = {'at': self.clock(), 'rows': rows, 'authors': authors}
                     try:
                         while time.monotonic() < self.github.deadline:
                             if scan['page'] > 100:
@@ -286,6 +321,16 @@ class IssueInventory:
                             for issue in batch:
                                 if 'pull_request' not in issue:
                                     row = facts(issue)
+                                    previous = (old.get('issues') or {}).get(str(row['number'])) or {}
+                                    if set(row['labels']) & set(self.runtime['hold_labels']):
+                                        # Who put a hold here is the first question; keep it until labels change.
+                                        if previous.get('labels') == row['labels'] and 'label_events' in previous:
+                                            row['label_events'] = previous['label_events']
+                                        else:
+                                            try:
+                                                row['label_events'] = self.github.label_events(item, row['number'])
+                                            except (GitHubUnavailable, ValueError, KeyError, TypeError, OSError):
+                                                row['label_events'] = []
                                     scan['issues'][str(row['number'])] = row
                             entry['issues'] = {**old.get('issues', {}), **scan['issues']}
                             entry.update(at=self.clock(), complete=False)
@@ -293,7 +338,8 @@ class IssueInventory:
                                 if scan['state'] == 'open':
                                     scan.update(state='closed', page=1)
                                 else:
-                                    entry['pulls'] = [{'number': p['number'], 'title': p.get('title', ''), 'body': (p.get('body') or '')[:262144]}
+                                    entry['pulls'] = [{'number': p['number'], 'title': p.get('title', ''), 'body': (p.get('body') or '')[:262144],
+                                                       'branch': (p.get('head') or {}).get('ref'), 'author': (p.get('user') or {}).get('login')}
                                                       for p in self.github.pulls(item)]
                                     entry.update(issues=scan['issues'], complete=True, refreshing=False)
                                     entry.pop('scan', None)
@@ -352,13 +398,19 @@ class IssueInventory:
                        'revision': revision(issue, item), 'setup_url': repo['setup_url'],
                        'history': [{k: e[k] for k in ('at', 'kind', 'reason') if k in e} for e in ledger['events'] if e['issue'] == issue_key][-15:],
                        'active': item.get('active') if item else None,
-                       'reviews': [{'role': role, 'outcome': value.get('outcome'), 'summary': value.get('summary', '')[:1000]}
+                       'reviews': [{'role': role, 'outcome': value.get('outcome'), 'summary': value.get('summary', '')[:1000],
+                                    'human_required': bool(value.get('human_required')),
+                                    'human_reason': str(value.get('human_reason') or '')[:2000] or None}
                                    for role, value in (item or {}).get('evidence', {}).items() if role in ('review', 'audit')],
-                       'reviewers': (entry.get('collaborators') or {}).get('rows', []),
+                       'reviewers': reviewers(entry, self.runtime['human_reviewers']),
                        'default_reviewers': list(self.runtime['human_reviewers'])}
                 if key is not None:
                     if key == issue_key:
-                        return {'issue': row, 'repositories': scopes, 'actions': self.action_statuses()}
+                        # A receipt is news until the issue moves on; after that it only misleads.
+                        latest = max((e['at'] for e in row['history']), default=0)
+                        actions = [a for a in self.action_statuses() if a['status'] == 'pending' or a['key'] != issue_key
+                                   or (a.get('at') or 0) >= latest]
+                        return {'issue': row, 'repositories': scopes, 'actions': actions}
                     continue
                 if state == 'open' and row['status'] == 'completed' or state == 'completed' and row['status'] != 'completed':
                     continue
@@ -379,5 +431,6 @@ class IssueInventory:
         with AtomicStore(self.root / 'state/issues', 'actions').transaction() as data:
             ordered = sorted(data.items(), key=lambda pair: pair[1]['created_at'])
             recent = {key for key, value in ordered[-20:]}
-            return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message')}
+            return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message'),
+                     'at': value.get('created_at')}
                     for key, value in ordered if value['status'] == 'pending' or key in recent]
