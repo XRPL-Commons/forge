@@ -18,6 +18,23 @@ from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRun
 from ..state import StateError
 
 
+def classify_error(text: str) -> str:
+    """Use only CLI error channels, never successful model prose, for health."""
+    lowered = text.lower()
+    if any(s in lowered for s in ("bwrap:", "bubblewrap is required", "no space left on device",
+                                  "cannot allocate memory", "sandbox could not initialize")):
+        return "failed_infrastructure"
+    if any(s in lowered for s in ("permission denied", "approval required", "sandbox denied")):
+        return "blocked_permission"
+    if any(s in lowered for s in ("insufficient_quota", "credit balance", "usage limit",
+                                  "out of credits", "exhausted credits")):
+        return "blocked_quota"
+    if any(s in lowered for s in ("authentication_error", "invalid_api_key", "not logged in",
+                                  "please login", "please log in", "token expired", "unauthorized")):
+        return "blocked_auth"
+    return "failed_retryable"
+
+
 class Supervisor:
     def __init__(self, ledger, runner, github, settings, config, *, clock=time.time):
         self.ledger, self.runner, self.github = ledger, runner, github
@@ -232,7 +249,6 @@ class Supervisor:
     def availability(capture):
         if (capture.get('execution') or {}).get('exit_code', 0) == 0:
             return None
-        from ..worker import classify_error
         for line in capture.get('logs', '').splitlines():
             try:
                 event = json.loads(line)
@@ -330,7 +346,6 @@ class Supervisor:
                                      evidence=[f"PR #{current['number']}, check {check_id}"], summary=self.card(report, job))
                 return
         if report and report['outcome'] == 'wait':
-            from ..worker import classify_error
             classification = classify_error(report['summary'])
             if classification in ('blocked_auth', 'blocked_quota'):
                 self.ledger.wait(job['id'], classification, self.clock() + self.config['availability_retry_seconds'])

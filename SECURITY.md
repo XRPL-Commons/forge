@@ -6,9 +6,10 @@ for this repository when available. If it is unavailable, request a private
 reporting channel from the maintainer without including sensitive details.
 
 Forge is experimental operator software. Coding agents execute tools with the
-credentials and filesystem access their deployment grants. The working tmux
-supervisor is not a credential-isolation boundary. The staged isolated executor
-must remain disabled for live repository work until its documented gates are met.
+credentials and filesystem access their deployment grants. Workers run in
+disposable containers with repository-scoped credentials; see
+[implementation status](docs/implementation.md) and [isolation](docs/isolation.md)
+for what those boundaries do and do not establish.
 
 The dashboard exposes local operational details and has no application login.
 Keep it on a trusted private network. Critical changes require qualifying human

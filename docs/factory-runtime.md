@@ -3,8 +3,7 @@
 For lifecycle diagrams, waiting reasons and operator actions, see the
 [issue state machine and blockers](issue-state-machine.md).
 
-The new implementation lives in `forge/factory`. It is selected explicitly; installing
-this source does not take over the legacy fleet. The operator UI is a separate
+The implementation lives in `forge/factory`; it is Forge's only operating mode. The operator UI is a separate
 `forge-ui` service on the tailnet address, and `forge-status` serves only the JSON
 API on localhost; see `docs/ui-deployment.md`. Settings edits
 `factory.json` and `runtime.json` with validation and conflict detection.
@@ -97,7 +96,7 @@ bounded container with no repository, no model turn, and a private durable auth
 directory. Interrupted renewal is reconciled before another refresh is allowed.
 Snapshots are never written back into the installation login.
 
-Legacy workers with refresh authority must finish cleanup before parallel workers
+Workers started with refresh authority must finish cleanup before parallel workers
 start. Disabling the setting likewise waits for existing jobs before returning to
 single-writer mode. Role slots, provider quota cooldowns and host memory admission
 still apply. This uses ChatGPT subscription entitlement, not an OpenAI API key.
@@ -267,7 +266,7 @@ not granted it still gets domain reads — only the GitHub deployments half of
 observation is unavailable. The GitHub access page lists it among the
 controller's missing recommended permissions until granted.
 
-## Qualification and cutover
+## Qualification and activation
 
 Run the regression suite and credential-free container reset canary first:
 
@@ -286,16 +285,15 @@ App/authenticated workflow on a selected pilot repository before expanding acces
 The reset canary builds a synthetic image, creates its own internal network, and
 removes only its uniquely named resources.
 
-Before cutover, drain and stop legacy workers, reconcile their PRs, and retain their
-old state as history. Install the updated legacy supervisor guard first. Both
-controllers share `state-supervisor.lock`; `state/factory-v2.enabled` additionally
-prevents a legacy restart after cutover. Do not operate two separate runtime roots
-against the same repositories: the file lock is local, not a distributed claim.
+Guided setup's Start activates the factory. For a CLI-only installation, the commands
+below do the same. The setup supervisor and the CLI share `state-supervisor.lock`, and
+`state/factory-v2.enabled` records the activation. Do not operate two separate runtime
+roots against the same repositories: the file lock is local, not a distributed claim.
 
 ```sh
 bin/forge factory validate --root /var/lib/forge
 bin/forge settings sync --root /var/lib/forge
-bin/forge factory activate --root /var/lib/forge --legacy-drained
+bin/forge factory activate --root /var/lib/forge
 bin/forge factory once --root /var/lib/forge
 bin/forge factory run --root /var/lib/forge
 ```
@@ -303,8 +301,8 @@ bin/forge factory run --root /var/lib/forge
 Keep `enabled` and `merge_enabled` false until the image, access and pilot are
 ready. Enabling a repository does not change those runtime switches. Existing PR
 associations found during first discovery are held for an explicit decision;
-legacy terminal states and old rejected-cycle counters are never silently imported
-as current pipeline facts. Human retry retains the old findings and starts Build.
+earlier labels and rejected-cycle counters are never silently imported as current
+pipeline facts. Human retry retains the old findings and starts Build.
 It does not delete or guess ownership of an existing PR.
 
 ## Operations and limitations

@@ -209,12 +209,11 @@ remains available throughout. Old reset intents cannot target a newer setup.
 Archives remain private under archives/reset-<operation-id>/; they do not feed the
 new queue or failure budget. Remove old App registrations on GitHub separately.
 
-Installing the update on a legacy fleet preserves its workers. The setup screen
-offers Reset existing factory before fresh setup. Reset can stop legacy workers
-only when each terminal has a verifiable, dedicated systemd scope. If ownership
-is ambiguous, reset stays pending for operator reconciliation. Legacy auxiliary timers belonging to this runtime are disabled during reset; the
-new supervisor replaces their scheduling responsibilities. Legacy checkouts
-are preserved because they were not provisioned as disposable runner workspaces.
+Reset stops only Forge's own runner containers and discussion jobs. It does not
+look for or stop tmux sessions or other processes, and it does not touch
+checkouts that Forge did not provision as disposable runner workspaces. A setup
+state recorded by the retired tmux fleet mode (phase `legacy`) is read as a fresh
+setup.
 
 ## Configuration and recovery
 

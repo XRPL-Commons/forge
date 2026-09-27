@@ -1,6 +1,6 @@
 # Observer (staged; independent mirror required)
 
-The observer reports merged-code findings without editing repositories. It must run under a dedicated read-only identity with protected observer state and a separately provisioned mirror. Merely choosing another path does not enforce that host boundary. Each enabled observer-only `.repo` configuration needs `OBSERVER_MIRROR` pointing at that protected bare mirror. Keep these declarations in a separate root-owned configuration tree; the legacy supervisor parser does not accept observer-only keys. Using `CLONE_BUILD` as the mirror is rejected.
+The observer reports merged-code findings without editing repositories. It must run under a dedicated read-only identity with protected observer state and a separately provisioned mirror. Merely choosing another path does not enforce that host boundary. Each enabled observer-only `.repo` configuration needs `OBSERVER_MIRROR` pointing at that protected bare mirror. Keep these declarations in a separate root-owned configuration tree. Using `CLONE_BUILD` as the mirror is rejected.
 
 State defaults to `FORGE_HOME/state/observer`; `FORGE_OBSERVER_STATE` overrides it. The default Forge home is the installed source parent, never the old live tree implicitly.
 

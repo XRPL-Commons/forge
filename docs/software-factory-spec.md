@@ -4,8 +4,7 @@ For lifecycle diagrams, waiting reasons and operator actions, see the
 [issue state machine and blockers](issue-state-machine.md).
 
 Implementation: `forge/factory`. This contract supersedes the earlier three
-rejected-build-cycle design. Deployment is an explicit cutover; the legacy fleet
-is not changed by installing source. See [runtime setup](factory-runtime.md) for
+rejected-build-cycle design and the tmux fleet it ran on. See [runtime setup](factory-runtime.md) for
 concrete defaults, host policy, authentication and verification.
 
 ## Authority
@@ -219,10 +218,9 @@ in editable source/configuration; workers never inherit App private keys.
 agents and Settings. UI saves validate and reject stale revisions. Defaults/examples
 are portable and disabled; private runtime files are excluded from public source.
 
-Drain legacy executions and reconcile their GitHub work before cutover. Keep old
-history; do not infer new milestones or budgets from ambiguous legacy state.
-Controller modes share one lock and a persistent selection marker. A new install
-must not share repositories with another independent controller root.
+Do not infer milestones or budgets from ambiguous earlier state. The setup
+supervisor and the factory CLI share one lock and a persistent activation marker.
+A new install must not share repositories with another independent controller root.
 
 After observing the assigned PR as merged, the supervisor closes the GitHub issue
 as completed and reconciles its final pipeline label. Failed or unknown API writes

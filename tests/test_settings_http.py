@@ -77,7 +77,6 @@ class SettingsHTTPTests(unittest.TestCase):
             for bind,message in (('', 'Set FORGE_BIND_ADDRESS=127.0.0.1'), ('100.64.0.7', 'binds loopback only')):
                 env={**os.environ,'FORGE_ROOT':directory,'FORGE_BIND_ADDRESS':bind,'FORGE_PORT':'1',
                      'PYTHONPATH':os.path.join(os.path.dirname(__file__),'..')}
-                env.pop('FORGE_ALLOW_NETWORK_BIND',None)
                 result=subprocess.run([sys.executable,script],env=env,capture_output=True,text=True,timeout=30)
                 self.assertNotEqual(result.returncode,0)
                 self.assertIn(message,result.stderr)

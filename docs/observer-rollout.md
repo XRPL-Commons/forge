@@ -25,7 +25,7 @@ For each mirror, an operator must independently match the configured `OWNER/REPO
 
 The runtime accepts only a minimal bare-repository Git configuration and the configured GitHub remote; unexpected local customization, symlink paths, group/world-writable paths, object alternates and shallow history are refused. Git invocations disable hooks, external diff/textconv, submodule recursion, ambient global/system Git configuration and inherited SSH agents. Fetch writes exactly `+refs/heads/main:refs/remotes/origin/main` and never pushes. SSH identities must be selected in the root-protected observer SSH configuration; known-host verification remains enabled.
 
-Root-reviewed configuration is separate from the legacy supervisor's `.repo` files. In `/opt/forge-observer/repos.d/OWNER--REPO.repo`, declare:
+Root-reviewed configuration lives in its own tree. In `/opt/forge-observer/repos.d/OWNER--REPO.repo`, declare:
 
 ```
 REPO="OWNER/REPO"
@@ -33,7 +33,7 @@ ENABLED=true
 OBSERVER_MIRROR="/var/lib/forge-observer/mirrors/OWNER--REPO.git"
 ```
 
-Do not add observer-only keys to the legacy supervisor configuration parser. Keep repositories explicitly disabled until their mirror/authentication checks pass. Duplicated repository identities or shared mirrors are rejected.
+Keep repositories explicitly disabled until their mirror/authentication checks pass. Duplicated repository identities or shared mirrors are rejected.
 
 ## Coverage activation and recovery
 

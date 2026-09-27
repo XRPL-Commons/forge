@@ -316,9 +316,8 @@ if __name__ == "__main__":
             raise ValueError()
     except ValueError:
         raise SystemExit('Set FORGE_BIND_ADDRESS=127.0.0.1 and a valid FORGE_PORT; bin/forge setup writes both')
-    if not address.is_loopback and os.environ.get('FORGE_ALLOW_NETWORK_BIND') != '1':
-        raise SystemExit('The status API binds loopback only; the operator UI serves the network. '
-                         'Set FORGE_ALLOW_NETWORK_BIND=1 only for a legacy installation without the UI.')
+    if not address.is_loopback:
+        raise SystemExit('The status API binds loopback only; the operator UI serves the network.')
     UPSTREAM_SECRET = upstream_secret(os.environ.get('FORGE_UPSTREAM_SECRET_FILE') or Path(WD) / 'state/ui-upstream.secret')
     print(f"forge-status on http://{ip}:{port}")
     threading.Thread(target=settings_service().watch,daemon=True).start()

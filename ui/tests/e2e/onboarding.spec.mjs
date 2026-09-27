@@ -193,21 +193,6 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings')
   await page.waitForURL(base + '/onboarding', { timeout: 10000 })
 
-  // --- A running pre-v2 factory: reset is the only way forward -----------
-  await scenario('legacy')
-  await page.goto(base + '/')
-  await page.waitForURL(base + '/onboarding', { timeout: 10000 })
-  await waitForText(page, 'Start with a clean factory')
-  const legacy = await text(page)
-  assert.ok(legacy.includes('Fresh setup'), legacy)
-  assert.ok(legacy.includes('Your existing factory is still running. Reset it before creating the new setup.'))
-  const reinstate = page.getByRole('link', { name: 'Reset existing factory' })
-  assert.equal(await reinstate.count(), 1)
-  assert.equal(await reinstate.getAttribute('href'), '/reset')
-  // The pre-v2 dashboard is gone, so the screen never offers a way back to
-  // `/` — which would only redirect here again.
-  assert.equal(await page.locator('main a[href="/"]').count(), 0)
-
   // --- The setup cookie survives a client-side navigation ----------------
   // E3: the recorded `cookie` proves Python receives it, not merely that
   // Nitro set it. Cookies are cleared after the document load, so only the
@@ -244,7 +229,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok(reset.includes('Stop all Forge-managed work'), reset)
   assert.ok(reset.includes('Pause scheduling and terminate every owned worker.'))
   assert.ok(reset.includes('Discard unfinished local work'))
-  assert.ok(reset.includes('Remove disposable workspaces and pending factory work. Existing legacy checkouts are preserved.'))
+  assert.ok(reset.includes('Remove disposable workspaces and pending factory work.'))
   assert.ok(reset.includes('Clear the current setup'))
   assert.ok(reset.includes('Remove selections, settings and Forge-owned credential copies.'))
   assert.ok(reset.includes('Keep your GitHub work'))

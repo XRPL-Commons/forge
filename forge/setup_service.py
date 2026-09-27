@@ -1,11 +1,9 @@
-"""Stable supervisor entrypoint: legacy operation, setup checks, activation, and reset."""
+"""Stable supervisor entrypoint: setup checks, activation, the factory cycle, and reset."""
 import argparse
 from copy import deepcopy
 import fcntl
 import json
-import os
 from pathlib import Path
-import re
 import shutil
 import signal
 import subprocess
@@ -23,77 +21,6 @@ from .factory.github import GitHub, GitHubUnavailable
 from .factory.ledger import Ledger
 from .factory.runner import ContainerRunner, RunnerError, RunnerCapacity
 from .factory.supervisor import Supervisor
-
-
-def command(args):
-    return subprocess.run(args, capture_output=True, text=True, check=True, timeout=30).stdout
-
-
-def stop_auxiliary(root):
-    """Retire only legacy services whose installed command belongs to this runtime."""
-    if not (Path(root) / 'supervisor.sh').is_file():
-        return
-    for name in ('forge-triage', 'forge-activity', 'forge-observability', 'forge-notify', 'forge-observer'):
-        result = subprocess.run(['systemctl', '--user', 'show', name + '.service', '--property=ExecStart', '--value'],
-                                capture_output=True, text=True, timeout=10)
-        if result.returncode:
-            raise ValueError('Could not verify legacy services before reset')
-        if str(Path(root).resolve()) + '/' in result.stdout:
-            command(['systemctl', '--user', 'disable', '--now', name + '.timer'])
-            command(['systemctl', '--user', 'stop', name + '.service'])
-
-
-def legacy_inventory(root):
-    """Only configured terminals in individually identifiable user scopes are resettable."""
-    from .config import load_repositories
-    from .lifecycle import observe_generation
-    names = {r.short + '-' + role for r in load_repositories(Path(root) / 'repos.d', include_factory=False)
-             for role in ('build', 'review', 'audit')}
-    if not names:
-        return []
-    result = subprocess.run(['tmux', 'list-panes', '-a', '-F', '#{session_name}|#{pane_pid}'],
-                            capture_output=True, text=True, timeout=5)
-    if result.returncode:
-        # Explicit no-server is absence; permission/socket failures are unknown.
-        if any(s in result.stderr for s in ('no server running', 'No such file or directory')):
-            return []
-        raise ValueError('Could not inventory legacy terminals; check the tmux server')
-    panes = []
-    for line in result.stdout.splitlines():
-        name, pid = line.split('|')
-        path = Path('/proc') / pid / 'cgroup'
-        groups = [v[3:] for v in path.read_text().splitlines() if v.startswith('0::')]
-        if len(groups) != 1:
-            raise ValueError('Legacy terminal has no verifiable cgroup')
-        panes.append((name, groups[0]))
-    found = []
-    for name, group in panes:
-        if name not in names:
-            continue
-        scope = group.rsplit('/', 1)[-1]
-        identity = observe_generation(name)
-        if (not re.fullmatch(r'tmux-spawn-[a-f0-9-]+\.scope', scope) or not identity
-                or any(n != name and g == group for n, g in panes)
-                or '..' in Path(group).parts):
-            raise ValueError('Legacy worker isolation is unverified; stop its dedicated scope before retrying reset')
-        found.append({'name': name, 'generation': identity['id'], 'scope': scope, 'cgroup': group})
-    return found
-
-
-def reset_legacy(record):
-    from .lifecycle import observe_generation
-    current = observe_generation(record['name'])
-    if current and current['id'] != record['generation']:
-        raise ValueError('Legacy worker generation changed; reconcile it before continuing reset')
-    group = Path('/sys/fs/cgroup') / record['cgroup'].lstrip('/')
-    events = group / 'cgroup.events'
-    if events.exists() and 'populated 1' in events.read_text():
-        command(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGKILL', record['scope']])
-        return False
-    if current:
-        command(['tmux', 'kill-session', '-t', record['generation'].split('|')[0]])
-        return False
-    return not events.exists() or 'populated 0' in events.read_text()
 
 
 PROBE_FAILURE_MESSAGES = {
@@ -137,7 +64,6 @@ class Service:
         self.root = Path(root)
         self.setup = Onboarding(root)
         self.runner_class, self.github_class = runner, github
-        self.legacy = None
         self.next_cycle = 0
         self.next_sync = 0
 
@@ -151,17 +77,6 @@ class Service:
                     or (data.get('operation') or {}).get('id') != expected['id']):
                 raise StateError('Setup operation was superseded')
             data.update(values)
-
-    def stop_legacy(self):
-        if self.legacy:
-            if self.legacy.poll() is None:
-                os.killpg(self.legacy.pid, signal.SIGTERM)
-                try:
-                    self.legacy.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(self.legacy.pid, signal.SIGKILL)
-                    self.legacy.wait(timeout=5)
-            self.legacy = None
 
     def access(self, data):
         settings = self.setup.settings()
@@ -370,11 +285,8 @@ class Service:
         current = self.setup.read()
         if current['generation'] != op['generation'] or (current.get('operation') or {}).get('id') != op['id']:
             raise StateError('Reset belongs to an earlier setup generation')
-        self.stop_legacy()
         with controller_lock(self.root):
             if op['step'] == 'queued':
-                stop_auxiliary(self.root)
-                legacy = legacy_inventory(self.root)
                 jobs = []
                 path = self.root / 'state/factory/factory-ledger.json'
                 if path.exists() or path.with_suffix('.initialized').exists():
@@ -387,17 +299,13 @@ class Service:
                 for job in data['probe_jobs']:
                     job['fenced'] = True
                 self.update(op, probe_jobs=data['probe_jobs'],
-                            operation={**op, 'step': 'stop_workers', 'legacy': legacy, 'jobs': jobs})
+                            operation={**op, 'step': 'stop_workers', 'jobs': jobs})
                 return
             if op['step'] == 'stop_workers':
                 from .harnesses.accounts import reset_logins
                 reset_logins(self.root)
                 for job in [*op['jobs'], *data['probe_jobs']]:
                     self.runner(job['runner_config']).reset(job)
-                if not all([reset_legacy(record) for record in op['legacy']]):
-                    return
-                if legacy_inventory(self.root):
-                    raise ValueError('A legacy worker appeared during reset; reconcile ownership before continuing')
                 self.update(op, operation={**op, 'step': 'clear_setup'})
                 return
             if op['step'] != 'clear_setup':
@@ -407,7 +315,7 @@ class Service:
                 archive.parent.mkdir(mode=0o700, exist_ok=True)
                 archive.mkdir(parents=True, mode=0o700, exist_ok=True)
                 # Keep the journal and fences outside the archive. Never archive credential values.
-                paths = [self.root / name for name in ('factory.json', 'runtime.json', 'repos.d', 'setup')]
+                paths = [self.root / name for name in ('factory.json', 'runtime.json', 'setup')]
                 paths += [p for p in (self.root / 'state').iterdir()
                           if p.name not in {'onboarding', 'factory-paused.json', 'factory-onboarding.enabled'}]
                 for source in paths:
@@ -491,13 +399,7 @@ class Service:
                 (self.root / 'state/factory-paused.json').unlink()
                 return
             # A crash between fencing and recording reset requires an explicit retry.
-            self.stop_legacy()
             return
-        if data['phase'] == 'legacy':
-            if self.legacy is None or self.legacy.poll() is not None:
-                self.legacy = subprocess.Popen(['/bin/bash', str(self.root / 'supervisor.sh')], start_new_session=True)
-            return
-        self.stop_legacy()
         if data['phase'] != 'active' or time.monotonic() < self.next_cycle:
             return
         with controller_lock(self.root):
@@ -568,8 +470,6 @@ def main():
                 time.sleep(2)
         except KeyboardInterrupt:
             pass
-        finally:
-            service.stop_legacy()
 
 
 if __name__ == '__main__':

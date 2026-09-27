@@ -8,7 +8,7 @@ useHead({ title: 'Reset Forge' })
 
 const STEPS = [
   ['01', 'Stop all Forge-managed work', 'Pause scheduling and terminate every owned worker.'],
-  ['02', 'Discard unfinished local work', 'Remove disposable workspaces and pending factory work. Existing legacy checkouts are preserved.'],
+  ['02', 'Discard unfinished local work', 'Remove disposable workspaces and pending factory work.'],
   ['03', 'Clear the current setup', 'Remove selections, settings and Forge-owned credential copies.'],
   ['04', 'Keep your GitHub work', 'Issues, commits, branches, PRs and App registrations remain.'],
 ]

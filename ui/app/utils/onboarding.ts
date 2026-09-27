@@ -9,7 +9,7 @@
 // utils/repositories.ts exports this same union as `AppRole`, and two
 // exports of one name shadow each other in Nuxt's auto-import registry.
 type AppRole = 'build' | 'review' | 'audit' | 'controller'
-export type SetupPhase = 'setup' | 'legacy' | 'active' | 'resetting'
+export type SetupPhase = 'setup' | 'active' | 'resetting'
 export type CheckStatus = 'checking' | 'passed' | 'failed'
 export type CheckKey = 'github' | 'provider' | 'runner'
 

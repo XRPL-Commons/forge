@@ -6,7 +6,7 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
-from forge.factory.capacity import GIB, observe, launch_lock
+from forge.factory.capacity import GIB, observe, launch_lock, parse_meminfo, parse_pressure
 from forge.factory.config import DEFAULT, validate
 from forge.factory.runner import ContainerRunner, RunnerCapacity, RunnerError
 
@@ -18,6 +18,24 @@ def telemetry(total=16, available=14, some=0, full=0):
 
 def container(limit=4*GIB):
     return {'HostConfig': {'Memory': limit}}
+
+
+class TelemetryParsingTests(unittest.TestCase):
+    MEMORY = 'MemTotal: 8388608 kB\nMemAvailable: 5242880 kB\n'
+    PSI = 'some avg10=0.00 avg60=0.00 avg300=0.00 total=10\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n'
+
+    def test_well_formed_telemetry_is_parsed(self):
+        self.assertEqual(parse_meminfo(self.MEMORY), {'MemTotal': 8 * GIB, 'MemAvailable': 5 * GIB})
+        self.assertEqual(parse_pressure(self.PSI)['some']['total'], 10)
+
+    def test_duplicate_or_inconsistent_fields_are_rejected(self):
+        for bad in (self.MEMORY + 'MemAvailable: 3 kB\n', 'MemTotal: 1 kB\nMemAvailable: 2 kB\n', 'MemTotal: 1 kB\n'):
+            with self.assertRaises(ValueError):
+                parse_meminfo(bad)
+        for bad in (self.PSI.replace('total=10', 'total=10 avg10=0'), self.PSI.replace('0.00', '101', 1),
+                    self.PSI.splitlines()[0], self.PSI.replace('total=1', 'total=-1')):
+            with self.assertRaises(ValueError):
+                parse_pressure(bad)
 
 
 class MemoryAdmissionTests(unittest.TestCase):

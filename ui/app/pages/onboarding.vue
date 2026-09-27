@@ -157,7 +157,7 @@ async function act(action: 'github' | 'refresh' | 'repository' | 'check' | 'star
 
 const resetting = computed(() => state.value?.phase === 'resetting')
 const phase = computed(() => state.value?.phase)
-const solo = computed(() => resetting.value || phase.value === 'legacy' || phase.value === 'active')
+const solo = computed(() => resetting.value || phase.value === 'active')
 const rolesOk = computed(() => Boolean(state.value) && ROLES.every(role => state.value!.roles?.[role]?.status === 'ok'))
 const pending = computed(() => (state.value ? nextRole(state.value) : null))
 const harnesses = computed(() => state.value?.harnesses ?? [])
@@ -213,15 +213,6 @@ function activityFor(target: string): string | null {
           <span role="status">{{ resetStep(state.operation) }}</span>
         </div>
         <p class="mt-4 text-[13px] text-muted">{{ RESETTING_SCREEN.note }}</p>
-      </template>
-
-      <template v-else-if="phase === 'legacy'">
-        <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">Fresh setup</p>
-        <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Start with a clean factory</h1>
-        <p class="mt-2 text-muted">Your existing factory is still running. Reset it before creating the new setup.</p>
-        <!-- No "Open dashboard": the pre-v2 dashboard does not exist in
-             this UI, and `/` redirects back here for every non-active phase. -->
-        <UButton class="mt-6" color="neutral" variant="outline" to="/reset">Reset existing factory</UButton>
       </template>
 
       <template v-else-if="phase === 'active'">
