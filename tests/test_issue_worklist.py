@@ -44,6 +44,8 @@ class GitHub:
     def protections(self, *args): return self.rules
     def pulls(self, item): return deepcopy(self.prs)
     def labels(self, item): pass
+    def recent_authors(self, item): return list(getattr(self, 'authors', []))
+    def label_events(self, item, number): return list(getattr(self, 'events', {}).get(number, []))
     def collaborators(self, item):
         self.people_calls += 1
         if not self.available or self.fail_people: raise GitHubUnavailable('Unavailable')
@@ -404,8 +406,8 @@ class WorklistTests(unittest.TestCase):
         identifier, decision = self.decision('assign_reviewer', reason='maintainer')
         row = self.inventory.view(key='1:1')['issue']
         self.assertEqual(row['actions'], ['assign_reviewer'])
-        self.assertEqual(row['reviewers'], [{'login': 'maintainer', 'name': 'A Maintainer'},
-                                            {'login': 'second-pair', 'name': ''}])
+        self.assertEqual(row['reviewers'], [{'login': 'maintainer', 'name': 'A Maintainer', 'source': 'collaborator'},
+                                            {'login': 'second-pair', 'name': '', 'source': 'collaborator'}])
         self.actions.process()
         self.assertEqual([c for c in self.github.calls if c[0] == 'POST'],
                          [('POST', '/pulls/30/requested_reviewers', {'reviewers': ['maintainer']}),
