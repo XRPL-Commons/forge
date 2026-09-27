@@ -13,6 +13,27 @@ same no-op-if-present logic at `GET /_ui/setup-cookie`, which Onboarding,
 Reset and Coding accounts call on mount — a client-side route change into
 those pages never reaches the middleware.
 
+## Help guides
+
+The header Help icon opens `/setup-help`. Its guide menu includes setup, issue
+states and blockers (`?topic=workflow`), issue discussions (`?topic=discussions`),
+and workers and capacity (`?topic=runtime`). Existing setup anchors remain valid.
+
+`shared/help-topics.ts` is the allowlist mapping stable topic IDs to documentation
+filenames. The server never accepts an arbitrary path. Copy all four catalog
+Markdown files into the installation's `docs/` directory when deploying the UI.
+`FORGE_ROOT/docs/<filename>` takes precedence over the source checkout's docs;
+`NITRO_HELP_DOC` overrides only the setup guide. Resolved documents are cached for
+60 seconds, with at most twelve cached paths. Missing/unknown guides return 404;
+a guide read failure offers an in-page retry.
+
+Help uses Markdown tables, lists, code fences and stable heading anchors. Guide
+links stay inside Forge; other documentation/source links lead to GitHub. Raw HTML
+is disabled and rendered HTML is sanitized. Mermaid is a lazy client import only
+when a guide has a diagram; strict mode disables diagram links, and diagram source
+remains readable if rendering fails. The surrounding guide is server-rendered.
+Tables and diagrams scroll within their own regions on narrow screens.
+
 ## Develop
 
 ```

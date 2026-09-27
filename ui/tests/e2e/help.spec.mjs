@@ -45,7 +45,7 @@ export default async function (page, { base }) {
   for (let index = 0; index < FIXTURE_HEADINGS.length; index += 1) {
     const link = sidebarLinks.nth(index)
     assert.equal((await link.innerText()).trim(), FIXTURE_HEADINGS[index].text)
-    assert.equal(await link.getAttribute('href'), `#${FIXTURE_HEADINGS[index].id}`)
+    assert.equal(await link.getAttribute('href'), `/setup-help#${FIXTURE_HEADINGS[index].id}`)
   }
   assert.equal((await page.locator('nav[aria-label="Help topics"] p').textContent())?.trim(), 'On this page')
 
@@ -71,6 +71,47 @@ export default async function (page, { base }) {
   }, null, { timeout: 10000 })
   const rect = await page.locator('#host-installation').evaluate((el) => el.getBoundingClientRect().top)
   assert.ok(rect >= 0 && rect < 200, `#host-installation should be scrolled near the top, got ${rect}`)
+
+  // Guide navigation is client-side; the diagrams are actual SVGs and tables
+  // remain structured HTML. Reload and Back preserve the selected guide.
+  await page.getByRole('link', { name: 'Issue states and blockers', exact: true }).click()
+  await page.waitForURL(base + '/setup-help?topic=workflow')
+  await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
+  assert.equal(await page.locator('.help-diagram svg').count(), 3)
+  assert.equal(await page.locator('.forge-help table').count(), 2)
+  await page.getByRole('button', { name: 'Fit diagram', exact: true }).first().click()
+  assert.equal(await page.getByRole('button', { name: 'Actual size', exact: true }).getAttribute('aria-pressed'), 'true')
+  await page.getByRole('button', { name: 'Actual size', exact: true }).click()
+  assert.equal(await page.getByRole('link', { name: 'Issue states and blockers', exact: true }).getAttribute('aria-current'), 'page')
+  await page.reload()
+  await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `workflow overflow at ${width}`)
+    await page.screenshot({ path: `/tmp/forge-help-${width}.png`, fullPage: true })
+  }
+  await page.getByRole('link', { name: 'Discussing an issue', exact: true }).click()
+  await page.waitForURL(base + '/setup-help?topic=discussions')
+  await page.locator('.forge-help h1').waitFor()
+  assert.equal(await page.locator('.help-diagram').count(), 0)
+  await page.goBack()
+  await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
+
+  // Unknown topics never resolve arbitrary files and keep recovery navigation.
+  const invalid = await page.request.get(base + '/_ui/help?topic=../../package.json')
+  assert.equal(invalid.status(), 404)
+  await page.goto(base + '/setup-help?topic=unknown')
+  await waitForText(page, 'Help topic not found')
+  await page.getByRole('link', { name: 'Setup help', exact: true }).click()
+  await waitForText(page, 'Forge setup help')
+
+  // A guide fetch failure offers retry without losing the guide menu.
+  await page.route('**/_ui/help?topic=runtime', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"statusMessage":"Unavailable"}' }))
+  await page.getByRole('link', { name: 'Workers and capacity', exact: true }).click()
+  await waitForText(page, 'Guide unavailable')
+  await page.unroute('**/_ui/help?topic=runtime')
+  await page.getByRole('button', { name: 'Try again' }).click()
+  await waitForText(page, 'Running the durable factory')
 
   // On a phone-width viewport nothing scrolls sideways.
   await page.setViewportSize({ width: 390, height: 844 })

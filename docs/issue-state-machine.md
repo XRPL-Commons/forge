@@ -2,7 +2,8 @@
 
 This page describes the **current durable factory** in `forge/factory`, including
 why an issue can have no worker while its pipeline stage is `ready`.
-Start here when the Activity page appears stuck. The
+Open **Help → Issue states and blockers** in Forge, or start here when the
+Activity page appears stuck. The
 [software factory contract](software-factory-spec.md) defines evidence and authority;
 [runtime setup](factory-runtime.md) covers admission and resources. The older
 SQLite/tmux workflow is documented separately in the

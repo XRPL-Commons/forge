@@ -579,9 +579,26 @@ Legacy dashboard only (`{action, session, generation}` strings → `forge.slot_a
 - Reset (`/reset`): "Reset Forge" / "Start fresh" / "Stop this factory and return to a blank setup."; list 01 "Stop all Forge-managed work" / "Pause scheduling and terminate every owned worker.", 02 "Discard unfinished local work" / "Remove disposable workspaces and pending factory work. Existing legacy checkouts are preserved.", 03 "Clear the current setup" / "Remove selections, settings and Forge-owned credential copies.", 04 "Keep your GitHub work" / "Issues, commits, branches, PRs and App registrations remain."; note "Previous lifecycle history is archived. Shared credentials and unrelated host processes remain untouched."; "Cancel" (`/`) and danger button "Stop and reset Forge" → `POST {action:'reset', generation}`. Completion (phase setup, receipt present and blank state, or generation changed): "Reset complete" / "Forge has been reset" / "Cleanup is verified. Your GitHub work has been preserved." + "Old GitHub Apps remain registered. You can remove them on GitHub separately." + link "Set up Forge →" (`/onboarding`). A reset error (`error`) is shown in the notice and the completion screen is withheld.
 - Notice: `actionError` (last request failure) wins; else `state.error` unless it is the repository-check failure already explained inline on step 3.
 
-### 3.9 Help (`/setup-help`, `forge/setup_help.py`)
-- Title `Forge · Setup help`. Renders `docs/onboarding.md` (installation copy at `$FORGE_ROOT/docs/onboarding.md` overrides the repo file) with a restricted Markdown subset: `#`/`##`/`###` headings (ids = slugified text), paragraphs, `-` and numbered lists, 4-space code blocks, inline `code` and `[label](url)`; relative `*.md` links rewrite to `https://github.com/XRPL-Commons/forge/blob/main/docs/<file>`; non-http(s) links are rendered as text. No raw HTML.
-- Layout: sticky sidebar "On this page" with links to h1/h2 anchors; main with eyebrow "Help". Current headings/anchors: "Set up Forge" (`#set-up-forge`), "Maintain GitHub access" (`#maintain-github-access`), "GitHub repository protection" (`#github-repository-protection`), "Host installation" (`#host-installation`), "First work" (`#first-work`), "Reset and restart" (`#reset-and-restart`), "Configuration and recovery" (`#configuration-and-recovery`). Deep links used elsewhere: `#host-installation`, `#github-repository-protection`.
+### 3.9 Help (`/setup-help`, Nitro `/_ui/help`)
+
+Updated 27 September 2026: Help now has an allowlisted guide menu. Setup remains
+at `/setup-help`; `?topic=workflow`, `?topic=discussions`, and `?topic=runtime` load
+the corresponding repository Markdown guides. Titles follow `<guide title> · Forge`.
+Existing setup deep links, including `#host-installation` and
+`#github-repository-protection`, remain valid. See [UI Help implementation](../../../ui/README.md#help-guides)
+for resolution, caching and deployment requirements.
+
+- `GET /_ui/help?topic=<id>` returns `{html, toc, blocks}`. `blocks` preserve Markdown
+  document order with sanitized HTML or Mermaid source/title entries. `html` keeps
+  a source-code fallback for diagrams. Unknown IDs never resolve filesystem paths.
+- Supports headings with unique slug IDs, paragraphs, emphasis, lists, tables,
+  indented/fenced code and safe links. Raw HTML is disabled; output is sanitized.
+  Catalog document links navigate inside Forge, other guide/source links use GitHub.
+- Mermaid loads only when needed, in strict mode. No diagram click handlers are
+  bound. Source remains available when diagrams cannot render.
+- Layout: Guides navigation, then an On this page heading index, with the Help
+  eyebrow above the reading column. Mobile tables/diagrams scroll locally; guide
+  choices and retry remain available when a guide fails to load.
 
 ---
 
