@@ -67,6 +67,14 @@ async function reset() {
     busy.value = false
   }
 }
+
+// Back to the page that led here (Settings or setup), not to Activity, which
+// may not exist yet and would bounce to onboarding.
+const router = useRouter()
+function cancel() {
+  if (window.history.state?.back) router.back()
+  else navigateTo('/settings/github')
+}
 </script>
 
 <template>
@@ -109,7 +117,7 @@ async function reset() {
       <p class="text-[13px] text-muted">Previous lifecycle history is archived. Shared credentials and unrelated host processes remain untouched.</p>
 
       <div class="mt-8 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-6">
-        <UButton color="neutral" variant="outline" to="/">Cancel</UButton>
+        <UButton color="neutral" variant="outline" @click="cancel">Cancel</UButton>
         <UButton color="warning" :loading="busy" :disabled="busy || !state" @click="reset">Stop and reset Forge</UButton>
       </div>
     </template>

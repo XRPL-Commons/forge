@@ -1,15 +1,25 @@
 <script setup lang="ts">
+import type { OnboardingView } from '~/utils/onboarding'
 const route = useRoute()
-// One top-level nav on every page; Settings keeps its own second row of tabs.
-const links = [
-  { to: '/', label: 'Activity', current: (path: string) => path === '/' },
+// The setup state the phase middleware already read on this navigation.
+// While Forge is not started, Activity and Settings · General redirect to
+// guided setup, so the nav offers Setup and GitHub access instead (#73).
+const onboarding = useResources().entry<OnboardingView | { ok: false }>('/api/onboarding')
+const settingUp = computed(() => {
+  const value = onboarding.data.value
+  return !!value && 'phase' in value && value.phase !== 'active'
+})
+const links = computed(() => [
+  settingUp.value
+    ? { to: '/onboarding', label: 'Setup', current: (path: string) => path === '/onboarding' }
+    : { to: '/', label: 'Activity', current: (path: string) => path === '/' },
   { to: '/issues', label: 'Issues', current: (path: string) => path === '/issues' || path.startsWith('/issues/') },
-  { to: '/settings', label: 'Settings', current: (path: string) => path === '/settings' || path.startsWith('/settings/') },
-]
+  { to: settingUp.value ? '/settings/github' : '/settings', label: 'Settings', current: (path: string) => path === '/settings' || path.startsWith('/settings/') },
+])
 </script>
 <template>
   <header class="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 py-3 sm:px-7 sm:py-4">
-    <NuxtLink to="/" aria-label="Forge home" class="flex items-center gap-2.5 text-lg font-bold tracking-tight text-white no-underline">
+    <NuxtLink :to="settingUp ? '/onboarding' : '/'" aria-label="Forge home" class="flex items-center gap-2.5 text-lg font-bold tracking-tight text-white no-underline">
       <span aria-hidden="true" class="grid size-7 -rotate-6 place-items-center rounded-md border border-mint-200 text-mint-200">F</span>
       Forge
     </NuxtLink>
@@ -18,7 +28,7 @@ const links = [
       <nav aria-label="Main navigation" class="flex items-center gap-4 text-sm sm:gap-5">
         <NuxtLink
           v-for="link in links"
-          :key="link.to"
+          :key="link.label"
           :to="link.to"
           :aria-current="link.current(route.path) ? 'page' : undefined"
           :class="link.current(route.path) ? 'text-mint-200 underline underline-offset-4' : 'text-muted hover:text-white'"

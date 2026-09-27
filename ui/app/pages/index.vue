@@ -139,7 +139,7 @@ watch(() => panel.value.key, (key, before) => {
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-xs uppercase tracking-wide text-muted">Live operations</p>
-        <h1 class="text-3xl font-semibold text-white">Factory</h1>
+        <h1 class="text-3xl font-semibold text-white">Activity</h1>
       </div>
       <p
         v-if="!fence"
