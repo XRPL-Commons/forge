@@ -45,9 +45,8 @@ export default defineNuxtRouteMiddleware(async (to) => {
   }
   if (payload.phase === 'resetting') return onboarding()
 
-  // Contracts §2 and legacy/forge-status.py:637 — `/` belongs to the started
-  // factory, so every phase short of `active` (legacy included: the pre-v2
-  // dashboard is a non-goal for this UI) is sent back to guided setup.
+  // Contracts §2 and legacy/forge-status.py — `/` belongs to the started
+  // factory, so every phase short of `active` is sent back to guided setup.
   if (to.path === '/' && payload.phase !== 'active') return onboarding()
 
   // forge-status.py:681 keys the /settings 303 on `state/factory-v2.enabled`,

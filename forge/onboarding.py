@@ -37,9 +37,11 @@ class Onboarding:
     def initialize(self, data):
         if not data:
             active = (self.root / 'state/factory-v2.enabled').exists()
-            legacy = any((self.root / 'repos.d').glob('*.repo'))
-            data.update(version=1, generation=str(uuid.uuid4()), phase='active' if active else 'legacy' if legacy else 'setup',
+            data.update(version=1, generation=str(uuid.uuid4()), phase='active' if active else 'setup',
                         apps={}, checks={}, probe_jobs=[], operation=None, error=None)
+        elif data.get('phase') == 'legacy':
+            # The tmux fleet mode is retired; a host left in it starts factory setup.
+            data['phase'] = 'setup'
 
     def read(self):
         with self.store.transaction() as data:

@@ -1,4 +1,4 @@
-"""One controller lease shared with the legacy supervisor; durable operator requests."""
+"""One controller lease shared by the setup supervisor and this CLI; durable operator requests."""
 import argparse
 from contextlib import contextmanager
 import fcntl
@@ -171,7 +171,6 @@ def main(argv=None):
     parser.add_argument('--root', required=True)
     parser.add_argument('--target')
     parser.add_argument('--reason', default='')
-    parser.add_argument('--legacy-drained', action='store_true', help='Confirm all legacy executions have been stopped and reconciled')
     args = parser.parse_args(argv)
     root = Path(args.root)
     try:
@@ -190,16 +189,14 @@ def main(argv=None):
             marker = root / 'state' / 'factory-v2.enabled'
             ledger = Ledger(root / 'state' / 'factory')
             if args.command == 'activate':
-                if not args.legacy_drained:
-                    raise ValueError('Drain legacy workers and confirm --legacy-drained before changing controller mode')
                 if not settings.path.exists():
                     raise ValueError('Configure GitHub Apps before activating the new controller')
                 ledger.read()  # Initialize durable ownership before marking the mode.
-                write_json(marker, {'version': 1, 'activated_at': time.time(), 'legacy_drained': True})
+                write_json(marker, {'version': 1, 'activated_at': time.time()})
                 print('Factory controller selected. runtime.json still controls dispatch and merge.')
                 return 0
             if not marker.exists():
-                raise ValueError('New controller is not selected; run activate after draining legacy workers')
+                raise ValueError('Factory controller is not selected; finish setup or run activate first')
             last_sync = 0
             while True:
                 if (root / 'state/factory-paused.json').exists():

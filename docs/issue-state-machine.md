@@ -5,9 +5,7 @@ why an issue can have no worker while its pipeline stage is `ready`.
 Open **Help → Issue states and blockers** in Forge, or start here when the
 Activity page appears stuck. The
 [software factory contract](software-factory-spec.md) defines evidence and authority;
-[runtime setup](factory-runtime.md) covers admission and resources. The older
-SQLite/tmux workflow is documented separately in the
-[legacy state machine](legacy-issue-state-machine.md).
+[runtime setup](factory-runtime.md) covers admission and resources.
 
 ## Pipeline progress and permission to run
 

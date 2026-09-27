@@ -95,6 +95,15 @@ class SetupTests(unittest.TestCase):
         service.setup = self.setup
         return service, engine, resets
 
+    def test_retired_legacy_phase_is_read_as_setup(self):
+        with self.setup.store.transaction() as data:
+            data['phase'] = 'legacy'
+        self.assertEqual(self.setup.read()['phase'], 'setup')
+        (self.root / 'fresh/repos.d').mkdir(parents=True)
+        (self.root / 'fresh/repos.d/example.repo').write_text('REPO=example/project\n')
+        fresh = Onboarding(self.root / 'fresh', client=self.api)
+        self.assertEqual(fresh.read()['phase'], 'setup')
+
     def test_draft_does_not_change_legacy_admission(self):
         self.connected()
         self.assertFalse((self.root/'factory.json').exists())
@@ -321,7 +330,6 @@ class ServiceLoopTests(unittest.TestCase):
                 raise KeyboardInterrupt
             with patch('sys.argv', ['forge service', '--root', directory]), \
                     patch('forge.setup_service.Service.tick', side_effect=ValueError('Unknown runtime settings')), \
-                    patch('forge.setup_service.Service.stop_legacy'), \
                     patch('forge.setup_service.time.sleep', side_effect=once), \
                     patch('sys.stdout', new=output):
                 main()

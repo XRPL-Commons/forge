@@ -2,15 +2,62 @@
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import math
 import os
 from pathlib import Path
+import re
 import tempfile
 import time
 
-from ..capacity import parse_meminfo, parse_pressure
-
 GIB = 1024 ** 3
 HOST_RESERVE = 2 * GIB
+
+
+def parse_meminfo(text):
+    values = {}
+    for line in text.splitlines():
+        name, separator, raw = line.partition(':')
+        if name not in {'MemTotal', 'MemAvailable'}:
+            continue
+        match = re.fullmatch(r'\s*([0-9]+)\s+kB\s*', raw)
+        if not separator or name in values or not match:
+            raise ValueError('malformed memory telemetry')
+        values[name] = int(match[1]) * 1024
+    if (set(values) != {'MemTotal', 'MemAvailable'} or values['MemTotal'] <= 0 or
+            not 0 <= values['MemAvailable'] <= values['MemTotal']):
+        raise ValueError('missing or inconsistent memory telemetry')
+    return values
+
+
+def parse_pressure(text):
+    result = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        kind = fields[0]
+        if kind not in {'some', 'full'} or kind in result:
+            raise ValueError('malformed memory pressure telemetry')
+        row = {}
+        for field in fields[1:]:
+            name, separator, raw = field.partition('=')
+            if not separator or name in row or name not in {'avg10', 'avg60', 'avg300', 'total'}:
+                raise ValueError('malformed pressure field')
+            if name == 'total':
+                if not raw.isascii() or not raw.isdigit():
+                    raise ValueError('invalid pressure total')
+                row[name] = int(raw)
+            else:
+                value = float(raw)
+                if not math.isfinite(value) or not 0 <= value <= 100:
+                    raise ValueError('invalid pressure percentage')
+                row[name] = value
+        if set(row) != {'avg10', 'avg60', 'avg300', 'total'}:
+            raise ValueError('missing pressure field')
+        result[kind] = row
+    if set(result) != {'some', 'full'}:
+        raise ValueError('missing memory pressure telemetry')
+    return result
 
 
 def memory_bytes(value):

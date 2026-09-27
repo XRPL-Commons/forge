@@ -2,12 +2,24 @@
 set -euo pipefail
 FORGE_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="$FORGE_SOURCE"
+usage() {
+  cat <<'USAGE'
+Usage: bin/forge COMMAND [ARGS...]
+
+Commands:
+  setup     Install or configure this host (services, logins, UI)
+  update    Update the installed runtime from this checkout
+  service   Run the setup supervisor and factory cycle (systemd entry point)
+  factory   Inspect or operate the factory controller
+  settings  Inspect or synchronize GitHub App settings
+USAGE
+}
 case "${1:-}" in
   setup) shift; exec /usr/bin/python3 -m forge.host_setup "$@";;
   update) exec /usr/bin/python3 -m forge.host_setup "$@";;
   service) shift; exec /usr/bin/python3 -m forge.setup_service "$@";;
   factory) shift; exec /usr/bin/python3 -m forge.factory.control "$@";;
   settings) shift; exec /usr/bin/python3 -m forge.settings "$@";;
-  triage|plan|next) exec /usr/bin/python3 -m forge.scheduling "$@";;
-  *) exec /usr/bin/python3 -m forge.control "$@";;
+  -h|--help|help) usage;;
+  *) usage >&2; exit 2;;
 esac

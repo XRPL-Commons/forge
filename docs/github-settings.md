@@ -33,22 +33,11 @@ reads local data only. Refresh requests run in a background thread. Each install
 has a 90-second deadline, with up to 15 seconds for its final in-flight HTTP call;
 large or inconsistent paginated responses fail rather than becoming empty lists.
 
-To use the settings UI, set `FORGE_ROOT` to the absolute directory containing
-`factory.json`, `repos.d/`, and `state/`, then run the existing dashboard service.
-It binds to its Tailscale IPv4 address and port 8787. Visit `/settings` using that
-exact address. As with the fleet dashboard, keep this service on a trusted private
-network: it does not provide per-user login. Mutating requests require the bound
-Host, matching Origin, JSON, and a per-process capability token.
-
-For a local preview, without Tailscale or live workers:
-
-```sh
-FORGE_ROOT="$PWD/local" FORGE_BIND_ADDRESS=127.0.0.1 PYTHONPATH=. \
-  python3 legacy/forge-status.py
-```
-
-Open `http://127.0.0.1:8787/settings`. Set `FORGE_PORT` if that port is in use.
-This starts only the dashboard and access sync, not the supervisor or any workers.
+The settings UI is the operator UI's `/settings` page. `bin/forge setup` installs the
+UI and the loopback status API it reads, with `FORGE_ROOT` set to the runtime root
+that holds `factory.json` and `state/`; see [UI deployment](ui-deployment.md). Keep
+the UI on a trusted private network: it does not provide per-user login. Mutating
+requests require same-origin JSON and a per-process capability token.
 
 ## Create and install role Apps
 
@@ -138,29 +127,10 @@ inherit activation from a different numeric ID.
 The supervisor's snapshot and capacity/assignment gates consult this access state.
 An enabled repository with missing, expired, suspended, or unverified access cannot
 start new work. Failed syncs preserve intent and the last known inventory but do
-not authorize dispatch from stale facts. Existing issue history is retained. This
-gate does not revoke the credentials of an already-running legacy worker.
-
-## Legacy migration boundary
-
-Without `factory.json`, the existing `.repo` configuration continues unchanged.
-Once `factory.json` exists, it is authoritative for repository activation. Saving
-the first empty configuration therefore pauses new dispatch for previously
-configured repositories until they are explicitly enabled and access is verified.
-Legacy `.repo` files temporarily retain clone paths and ownership labels. Deselected
-legacy repositories remain visible to resource inventory for cleanup.
-
-New repositories use the legacy ownership label `auto:owned-by-forge` and default
-clone paths until their execution configuration is supplied. The existing
-supervisor still requires its ownership label and complete issue/PR observation
-before admission. Access sync does not provision these prerequisites.
-
-**This change implements setup, discovery, activation, and admission checks. It
-does not switch the legacy coding harnesses from their shared GitHub CLI identity
-to per-role App credentials.** The deterministic runner and scoped credential
-adapter must be integrated and tested before claiming role isolation or switching
-the live fleet to the new identities. Do not grant runners access to the App keys
-as a shortcut. See [implementation status](implementation.md).
+not authorize dispatch from stale facts. Existing issue history is retained.
+`factory.json` is authoritative for repository activation. Do not grant runners
+access to the App keys; they receive repository-scoped role tokens only. See
+[implementation status](implementation.md).
 
 ## Sync without the dashboard
 
@@ -188,7 +158,7 @@ connections immediately. Failed refreshes never remove configured repositories.
 
 The new controller and resettable runners are implemented in `forge/factory`; see
 [factory runtime](factory-runtime.md) for image/native-sandbox provisioning, the
-three-failure budget, approval enforcement and explicit legacy cutover. Controller
+three-failure budget and approval enforcement. Controller
 App permissions now also include **Administration: read** for branch-protection
 verification. This does not grant administration writes.
 

@@ -172,48 +172,6 @@ class SettingsTests(unittest.TestCase):
         with patch('forge.settings.Settings', return_value=self.settings), redirect_stdout(io.StringIO()):
             self.assertEqual(main(['sync','--root',str(self.root)]),1)
 
-    def test_disabled_config_preserves_legacy_worker_inventory(self):
-        from forge.config import load_repositories
-        directory = self.root/'repos.d'; directory.mkdir()
-        (directory/'old.repo').write_text('REPO=example/old\nOWNER_LABEL=auto:owned-by-forge\nENABLED=true\n')
-        rows = load_repositories(directory)
-        self.assertEqual([(r.repo, r.enabled) for r in rows], [('example/old', False)])
-
-    def test_access_gate_preserves_snapshot_and_blocks_external_read(self):
-        from forge.control import observe, snapshot_path
-        from forge.config import Repository
-        state = self.root/'state'
-        target = snapshot_path(state, 'example/project')
-        write_json(target, {'status': 'ok', 'previous': 'evidence'})
-        github = Mock()
-        result = observe(Repository('example/project', 'auto:owned-by-forge'), state, github)
-        self.assertEqual(result['status'], 'access_blocked')
-        github.snapshot.assert_not_called()
-        self.assertEqual(json.loads(target.read_text())['previous'], 'evidence')
-
-    def test_unknown_access_blocks_direct_triage_before_github(self):
-        from forge.scheduling import main
-        from contextlib import redirect_stdout
-        self.settings.refresh(); self.prepare(); self.enable()
-        self.now = 3000
-        directory = self.root/'repos.d'; directory.mkdir()
-        # The process clock also needs to see the deliberately expired fixture.
-        with patch('forge.scheduling.SchedulingGitHub') as github, redirect_stdout(io.StringIO()):
-            result = main(['triage','--config',str(directory),'--state',str(self.root/'state'),
-                           '--repo','example/project'])
-        self.assertEqual(result,1)
-        github.return_value.items.assert_not_called()
-
-    def test_unknown_access_blocks_direct_assignment_reservation(self):
-        from forge.workflow_control import reserve
-        from forge.workflow import Refused
-        self.settings.refresh(); self.prepare(); self.enable()
-        directory = self.root/'repos.d'; directory.mkdir()
-        with patch('forge.workflow_lifecycle.reconcile'), patch('forge.workflow_control.canonical_pr') as read:
-            with self.assertRaisesRegex(Refused, 'github_access_unverified'):
-                reserve(directory,self.root/'state','project-build')
-        read.assert_not_called()
-
     def test_examples_validate_and_start_disabled(self):
         example = Path(__file__).parents[1]/'examples/factory.json.example'
         config = validate(json.loads(example.read_text()))

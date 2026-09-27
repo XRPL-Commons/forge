@@ -1,7 +1,7 @@
 {
   "ok": true,
   "controls_token": "synthetic",
-  "phase": "legacy",
+  "phase": "setup",
   "generation": "gen-1",
   "revision": "rev-1",
   "account_type": "organization",

@@ -35,31 +35,24 @@ the [issue state machine and blockers](docs/issue-state-machine.md) and the
 and real credential-free runner canaries. The guided setup verifies access, provider
 authentication and disposable runner cleanup before Start; GitHub App approvals
 still happen on GitHub. See [implementation status](docs/implementation.md).
-Existing tmux fleets are a separate compatibility path described in
-[legacy operation](docs/legacy.md); installing this source does not take them over.
 
 ## Dashboard and history
 
 Guided onboarding creates the GitHub Apps and configuration. The
 [GitHub settings guide](docs/github-settings.md) is the reference for the `/settings`
 page, repository discovery, explicit activation and the underlying files; secrets
-remain outside the source tree. The durable factory issues repository-scoped role credentials;
-the compatibility supervisor retains its existing authentication.
+remain outside the source tree. The factory issues repository-scoped role credentials.
 
 The operator UI is the Nuxt app in `ui/` (service `forge-ui`); it reads local
-state through `legacy/forge-status.py`, which now serves only the JSON API on
+state through the JSON API in `legacy/forge-status.py`, which listens only on
 loopback. `bin/forge setup` installs both and `bin/forge update` keeps them current;
-see [`docs/ui-deployment.md`](docs/ui-deployment.md). The pages refresh automatically. The server exposes local worker
+see [`docs/ui-deployment.md`](docs/ui-deployment.md). The pages refresh automatically. The UI exposes local worker
 output; keep it on a trusted private network. It has no per-user application
-authentication layer. Slot controls use a per-process capability token and
-require the exact bound address and same-origin JSON requests; only the
-supervisor executes them. See the
-[monitoring guide](docs/monitoring.md) for Stop, Resume, and Release behavior.
-
-See [observability](docs/observability.md), [activity](docs/activity.md),
-[workflow and slots](docs/workflow.md), [handoffs](docs/handoff.md), and [capacity](docs/capacity.md) for the data model and
-operational behavior. GitHub raw content remains authoritative; cached summaries
-and observed transitions are not independent proof of approval or completion.
+authentication layer. Operator actions use a per-process capability token and
+same-origin JSON requests; the API only queues them and the supervisor executes them.
+[Runtime setup](docs/factory-runtime.md) covers admission, capacity and operations.
+GitHub raw content remains authoritative; cached summaries are not independent
+proof of approval or completion.
 
 ## Development
 
@@ -92,9 +85,8 @@ must be enabled explicitly.
 
 | Directory | Purpose |
 | --- | --- |
-| `forge/` | Factory supervisor, setup/update, scheduling, evidence and lifecycle logic |
+| `forge/` | Setup/update, settings, the setup supervisor, and the durable factory (`forge/factory`) |
 | `ui/` | Operator UI (Nuxt) |
-| `legacy/` | Status API (`forge-status.py`) and the compatibility tmux supervisor |
 | `observer/` | Independent observation and isolation experiments |
 | `deploy/` | Runner image, isolation policies and deployment utilities |
 | `tests/` | Deterministic backend and browser regression checks |

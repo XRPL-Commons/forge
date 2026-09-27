@@ -1,9 +1,8 @@
 # Implementation status
 
-The new `forge/factory` path implements the [durable factory contract](software-factory-spec.md).
-It has an explicit controller mode and does not replace the running compatibility
-fleet merely because its source is installed. See [runtime setup](factory-runtime.md)
-for the exact configuration, host policy and cutover procedure.
+`forge/factory` implements the [durable factory contract](software-factory-spec.md).
+It is Forge's only operating mode; the earlier tmux fleet supervisor has been removed.
+See [runtime setup](factory-runtime.md) for the exact configuration and host policy.
 
 ## Implemented
 
@@ -34,22 +33,16 @@ prove an authenticated production workflow against a particular repository.
 
 Production cutover still requires operator-owned App installations/keys, provider
 authentication, the named runner host policy/internal network, protected branches,
-and a successful setup readiness check. No existing fleet is automatically stopped, no global
-sandbox setting is relaxed, and no administrator credential is used to configure
+and a successful setup readiness check. No global sandbox setting is relaxed, and no administrator credential is used to configure
 GitHub. The first adapter handles classic branch protection and conservative
 wildcard human CODEOWNERS gates; ruleset-only/merge-queue alternatives are held.
 
-## Compatibility and separate staged components
+## Separate staged components
 
-The tmux supervisor remains available for existing installations. Its workers retain
-ambient same-user authority; terminal observations do not prove assignment or task
-success. The updated supervisor exits when the new controller selection marker is
-present, and both modes use the same runtime lock.
-
-The earlier `forge/executor.py` systemd scaffold remains gated to synthetic workloads.
-Its separate activation/isolation requirements have not been removed. Independent
-observer/mirror components also retain their own provisioning and baseline checks;
-the new factory does not claim those are deployed.
+The independent observer (`observer/`) and its mirror retain their own provisioning
+and baseline checks; the factory does not claim those are deployed. A setup state
+left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
+or stops tmux sessions.
 
 The factory ledger is local JSON with atomic fsync/replace and invariants, not a
 distributed claim service. Do not operate separate controller roots against the same
