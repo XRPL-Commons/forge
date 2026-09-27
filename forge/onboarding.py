@@ -50,8 +50,7 @@ class Onboarding:
         path = self.root / ('runtime.json' if (self.root / 'state/factory-v2.enabled').exists() else 'setup/runtime.json')
         host = self.root / 'host-runtime.json'
         config = read_json(path) if path.exists() else read_json(host) if host.exists() else {}
-        return runtime_config({'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}, **config,
-                               'enabled': False, 'merge_enabled': False})
+        return runtime_config({**config, 'enabled': False, 'merge_enabled': False})
 
     def revision(self, data):
         return digest({'generation': data['generation'], 'config': self.settings().load(), 'runtime': self.runtime(),

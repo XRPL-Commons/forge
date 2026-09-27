@@ -271,6 +271,12 @@ class GitHub:
                and r.get('external_id') == external_id]
         if len(own) > 1:
             raise GitHubUnavailable('Duplicate check publication needs reconciliation')
+        # GitHub retains a completed check's conclusion when asked to mark it
+        # in_progress again. Keep that verdict until a new revision/verdict is
+        # available; trying to reopen it makes verification fail and blocks the
+        # very build that must repair it. Review/audit attempts have new IDs.
+        if own and own[0].get('head_sha') == candidate_value['head'] and own[0].get('status') == 'completed' and conclusion is None:
+            return own[0]['id']
         payload = {'name': name, 'external_id': external_id,
                    'status': 'completed' if conclusion else 'in_progress',
                    'output': {'title': name + (': ' + conclusion if conclusion else ': waiting'),
@@ -360,6 +366,8 @@ class GitHub:
             report['sources'].append(source)
             if review:
                 reviews.append((review, source))
+        except GitHubBudgetExhausted:
+            raise
         except GitHubUnavailable as error:
             if error.status != 404:
                 report['errors'].append({'source': 'classic', 'detail':
@@ -384,6 +392,8 @@ class GitHub:
                                      parameters.get('require_code_owner_review', False)}, source))
                 else:
                     report['additional_rules'].append({'type': rule['type'], 'source': source})
+        except GitHubBudgetExhausted:
+            raise
         except GitHubUnavailable:
             report['errors'].append({'source': 'rulesets', 'detail':
                 'Repository rules could not be checked. Check GitHub access and try again.'})

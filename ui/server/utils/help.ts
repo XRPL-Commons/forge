@@ -1,164 +1,96 @@
-// Renders the installation-owned setup guide (docs/onboarding.md, or an
-// installation copy at $FORGE_ROOT/docs/onboarding.md) for GET /_ui/help.
-//
-// This is a *restricted* Markdown subset (contracts §3.9), not a general
-// renderer: it is a faithful TypeScript port of the reference implementation
-// the removed `forge/setup_help.py` (`inline`/`render`), which the operator
-// API contracts §3.9 name as the source of truth. Every character of source
-// text is escaped as it is
-// emitted; the only tags this module ever writes are the literal `<h1-3>`,
-// `<p>`, `<ul>`/`<ol>`/`<li>`, `<code>`, `<pre>` and `<a>` strings below, so
-// nothing in the document — however it tries to smuggle a tag in — can ever
-// become live markup. `sanitizeHtml` is then run over the result anyway, as
-// the same defence-in-depth belt Task 7's `renderMarkdown` uses: the tag and
-// attribute allowlist is imported from `server/utils/markdown.ts`
-// (`MARKDOWN_ALLOWLIST`) rather than redeclared here, minus `input` (a help
-// doc never has checkboxes), plus `id` on the heading tags so the anchors
-// this page's own sidebar and other pages' deep links rely on survive.
+// Render installation-owned guides with the same Markdown parser and HTML
+// allowlist as issue descriptions. Diagrams remain plain source data until the
+// browser renders them with Mermaid's strict mode; raw document HTML is disabled.
 import path from 'node:path'
+import MarkdownIt from 'markdown-it'
 import sanitizeHtml from 'sanitize-html'
 import { MARKDOWN_ALLOWLIST } from './markdown'
+import { HELP_TOPICS, helpTopic, helpTopicHref } from '../../shared/help-topics'
 
 export type TocEntry = { id: string; text: string; level: 1 | 2 }
-export type HelpDoc = { html: string; toc: TocEntry[] }
+export type HelpBlock = { html: string } | { diagram: string; title: string }
+export type HelpDoc = { html: string; toc: TocEntry[]; blocks: HelpBlock[] }
 
-// Task 7's allowlist minus `input` (renderHelp never emits a checkbox), plus
-// `id` on the heading tags — the one addition beyond Task 7's list, since an
-// issue body never needs a heading anchor but this page's sidebar and other
-// pages' deep links (#host-installation, #github-repository-protection) do.
-const ALLOWED_TAGS = MARKDOWN_ALLOWLIST.tags.filter((tag) => tag !== 'input')
-const ALLOWED_ATTRIBUTES: Record<string, string[]> = {
+const DOCS_BASE = 'https://github.com/XRPL-Commons/forge/blob/main/docs/'
+const ALLOWED_ATTRIBUTES = {
   ...Object.fromEntries(Object.entries(MARKDOWN_ALLOWLIST.attributes).filter(([tag]) => tag !== 'input')),
-  h1: ['id'], h2: ['id'], h3: ['id'],
+  h1: ['id'], h2: ['id'], h3: ['id'], h4: ['id'], h5: ['id'], h6: ['id'],
+  div: ['class'],
 }
 
-// Only a bare "name.md" — letters and hyphens, no path separators, matching
-// the removed `forge/setup_help.py`'s `re.fullmatch(r'[a-z-]+\.md', url)` — is
-// treated as
-// a sibling of docs/onboarding.md and rewritten to the GitHub blob URL. Any
-// other relative link (a path, a fragment, an extensionless slug) is not a
-// document this help page can resolve, so it renders as text instead of a
-// dead or surprising href.
-const REPO_MD_FILE = /^[a-z-]+\.md$/
-const DOCS_BLOB_BASE = 'https://github.com/XRPL-Commons/forge/blob/main/docs/'
-
-const HEADING = /^(#{1,3}) (.+)$/
-const LIST_ITEM = /^(?:(-)|\d+\.) (.+)$/
-const INLINE_TOKEN = /`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-// GitHub's own slugifier, as the removed setup_help.py ported it: lowercase, collapse
-// every run of non-alphanumeric characters to one hyphen, trim the ends.
-function slugify(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-}
-
-// Resolves a link's target, or returns null when it must render as plain
-// text: only http(s) links survive, and only after a bare *.md filename has
-// had the chance to become one.
-function resolveHref(url: string): string | null {
-  const rewritten = REPO_MD_FILE.test(url) ? DOCS_BLOB_BASE + url : url
-  let parsed: URL
+function resolveHref(href: string): string | null {
+  if (/^#[a-z0-9-]+$/.test(href)) return href
+  const local = /^([a-z-]+\.md)(#[a-z0-9-]+)?$/.exec(href)
+  if (local) {
+    const topic = HELP_TOPICS.find(topic => topic.file === local[1])
+    return topic ? helpTopicHref(topic.id) + (local[2] ?? '') : DOCS_BASE + href
+  }
+  // Source-code references in a guide remain on the project's GitHub tree.
+  if (/^\.\.\/(forge|deploy|ui)\/[a-zA-Z0-9_./-]+$/.test(href)) {
+    const resolved = new URL(href, DOCS_BASE)
+    return resolved.pathname.startsWith('/XRPL-Commons/forge/blob/main/') ? resolved.href : null
+  }
   try {
-    parsed = new URL(rewritten)
-  } catch {
-    return null
-  }
-  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null
+    const url = new URL(href)
+    return ['https:', 'http:'].includes(url.protocol) ? url.href : null
+  } catch { return null }
 }
 
-// Inline spans: backtick code and [label](url) links, in source order;
-// everything else is literal text. Matches the removed setup_help.py's `inline()`.
-function renderInline(text: string): string {
-  let out = ''
-  let lastIndex = 0
-  for (const match of text.matchAll(INLINE_TOKEN)) {
-    out += escapeHtml(text.slice(lastIndex, match.index))
-    if (match[1] !== undefined) {
-      out += `<code>${escapeHtml(match[1])}</code>`
-    } else {
-      const label = match[2] ?? ''
-      const href = resolveHref(match[3] ?? '')
-      out += href ? `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>` : escapeHtml(label)
-    }
-    lastIndex = match.index + match[0].length
-  }
-  out += escapeHtml(text.slice(lastIndex))
-  return out
-}
-
-// Pure: markdown source in, sanitized HTML + a table of contents out. No
-// file I/O and no caching — those belong to the route (server/routes/_ui/help.get.ts).
-export function renderHelp(markdown: string): HelpDoc {
-  const blocks: string[] = []
-  const toc: TocEntry[] = []
-  let paragraph: string[] = []
-  let items: string[] = []
-  let listType: 'ul' | 'ol' | null = null
-  let code: string[] = []
-
-  function flush(): void {
-    if (paragraph.length) {
-      blocks.push(`<p>${renderInline(paragraph.join(' '))}</p>`)
-      paragraph = []
-    }
-    if (items.length) {
-      const tag = listType ?? 'ul'
-      blocks.push(`<${tag}>${items.map((item) => `<li>${renderInline(item)}</li>`).join('')}</${tag}>`)
-      items = []
-      listType = null
-    }
-    if (code.length) {
-      blocks.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`)
-      code = []
-    }
-  }
-
-  for (const line of markdown.split('\n')) {
-    const headingMatch = HEADING.exec(line)
-    const itemMatch = LIST_ITEM.exec(line)
-    if (!line.trim()) {
-      flush()
-    } else if (headingMatch) {
-      flush()
-      const level = (headingMatch[1] ?? '').length
-      const text = headingMatch[2] ?? ''
-      const id = slugify(text)
-      blocks.push(`<h${level} id="${id}">${renderInline(text)}</h${level}>`)
-      if (level <= 2) toc.push({ id, text, level: level as 1 | 2 })
-    } else if (itemMatch) {
-      const kind: 'ul' | 'ol' = itemMatch[1] ? 'ul' : 'ol'
-      if (paragraph.length || code.length || (listType && listType !== kind)) flush()
-      listType = kind
-      items.push(itemMatch[2] ?? '')
-    } else if (items.length && line.startsWith(' ')) {
-      // A wrapped continuation line of the current list item.
-      items[items.length - 1] += ` ${line.trim()}`
-    } else if (line.startsWith('    ')) {
-      if (paragraph.length || items.length) flush()
-      code.push(line.slice(4))
-    } else {
-      if (items.length || code.length) flush()
-      paragraph.push(line.trim())
-    }
-  }
-  flush()
-
-  const html = sanitizeHtml(blocks.join(''), {
-    allowedTags: ALLOWED_TAGS,
+function sanitize(html: string): string {
+  return sanitizeHtml(html, {
+    allowedTags: [...MARKDOWN_ALLOWLIST.tags.filter(tag => tag !== 'input'), 'div'],
     allowedAttributes: ALLOWED_ATTRIBUTES,
     allowedSchemes: ['http', 'https'],
     disallowedTagsMode: 'discard',
-  })
+    transformTags: {
+      a: (tagName, attribs): sanitizeHtml.Tag => {
+        const href = resolveHref(attribs.href ?? '')
+        if (!href) return { tagName: 'span', attribs: {} }
+        return { tagName, attribs: { href } }
+      },
+    },
+  }).trim()
+}
 
-  return { html, toc }
+export function renderHelp(markdown: string): HelpDoc {
+  const md = new MarkdownIt({ html: false, linkify: false })
+  md.renderer.rules.table_open = () => '<div class="help-table"><table>'
+  md.renderer.rules.table_close = () => '</table></div>'
+  const tokens = md.parse(markdown, {})
+  const toc: TocEntry[] = []
+  const blocks: HelpBlock[] = []
+  const counts = new Map<string, number>()
+  let section = 'Diagram'
+  let start = 0
+  const htmlParts: string[] = []
+  function flush(end: number) {
+    const html = sanitize(md.renderer.render(tokens.slice(start, end), md.options, {}))
+    if (html) { blocks.push({ html }); htmlParts.push(html) }
+  }
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!
+    if (token.type === 'heading_open') {
+      const inline = tokens[index + 1]
+      const text = inline?.children?.filter(child => child.type !== 'html_inline').map(child => child.content).join('') || inline?.content || ''
+      const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'section'
+      const count = counts.get(slug) ?? 0
+      counts.set(slug, count + 1)
+      const id = count ? `${slug}-${count}` : slug
+      token.attrSet('id', id)
+      const level = Number(token.tag.slice(1))
+      if (level <= 2) toc.push({ id, text, level: level as 1 | 2 })
+      section = text
+    }
+    if (token.type === 'fence' && token.info.trim() === 'mermaid') {
+      flush(index)
+      blocks.push({ diagram: token.content, title: section })
+      // Preserve a non-JavaScript/older-client representation in the API.
+      htmlParts.push(sanitize(md.renderer.render([token], md.options, {})))
+      start = index + 1
+    }
+  }
+  flush(tokens.length)
+  return { html: htmlParts.join(''), toc, blocks }
 }
 
 // --- Document resolution (pure; the route supplies the real inputs and I/O) ---
@@ -192,20 +124,22 @@ export const REPO_DEFAULT_HELP_DOC = '../docs/onboarding.md'
 // root yet) has to fall through to $FORGE_ROOT and then to the repo copy,
 // which it cannot do if it is also the last candidate.
 export function helpCandidates(
-  { helpDoc, forgeRoot, cwd }: { helpDoc?: string | null; forgeRoot?: string | null; cwd: string },
+  { helpDoc, forgeRoot, cwd, topic = 'setup' }: { helpDoc?: string | null; forgeRoot?: string | null; cwd: string; topic?: string },
 ): HelpDocCandidates {
+  const guide = helpTopic(topic)
+  if (!guide) throw new Error('Unknown help topic')
   const configured = String(helpDoc ?? '').trim() || REPO_DEFAULT_HELP_DOC
   return {
-    nitroHelpDoc: configured === REPO_DEFAULT_HELP_DOC ? null : path.resolve(cwd, configured),
+    nitroHelpDoc: topic !== 'setup' || configured === REPO_DEFAULT_HELP_DOC ? null : path.resolve(cwd, configured),
     forgeRoot: String(forgeRoot ?? '').trim() || null,
-    repoDefault: path.resolve(cwd, REPO_DEFAULT_HELP_DOC),
+    repoDefault: path.resolve(cwd, '../docs', guide.file),
   }
 }
 
 export function resolveHelpDocPath(candidates: HelpDocCandidates, isReadable: (path: string) => boolean): string | null {
   const ordered = [
     candidates.nitroHelpDoc,
-    candidates.forgeRoot ? `${candidates.forgeRoot.replace(/\/+$/, '')}/docs/onboarding.md` : null,
+    candidates.forgeRoot ? `${candidates.forgeRoot.replace(/\/+$/, '')}/docs/${path.basename(candidates.repoDefault)}` : null,
     candidates.repoDefault,
   ].filter((path): path is string => Boolean(path))
   return ordered.find((path) => isReadable(path)) ?? null

@@ -23,7 +23,9 @@ export default async function (page, { base, scenario }) {
   assert.equal(await page.title(), 'Coding accounts · Forge')
   await waitForText(page, 'Manage sign-in from the Forge VM terminal.')
 
-  // Three harnesses, each reading its own state (contracts §3.7).
+  // Three harnesses, each reading its own state (contracts §3.7). The intro
+  // renders before the list does, so wait for the rows rather than the copy.
+  await page.waitForSelector('[data-harness]', { timeout: 10000 })
   assert.equal(await page.locator('[data-harness]').count(), 3)
   const listed = await text(page)
   assert.ok(listed.includes('Codex'), listed)

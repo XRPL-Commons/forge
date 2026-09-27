@@ -64,7 +64,7 @@ async function stop(child) {
 }
 
 async function main() {
-  const outputDir = path.join(UI_ROOT, '.output')
+  const outputDir = process.env.FORGE_E2E_OUTPUT_DIR || path.join(UI_ROOT, '.output')
   if (!existsSync(outputDir)) {
     log('.output missing, building…')
     const build = spawnSync('npm', ['run', 'build'], { cwd: UI_ROOT, stdio: 'inherit' })
@@ -128,7 +128,7 @@ async function main() {
     }
 
     const entries = await readdir(__dirname)
-    const specNames = entries.filter((name) => name.endsWith('.spec.mjs')).sort()
+    const specNames = entries.filter((name) => name.endsWith('.spec.mjs') && (!process.env.FORGE_E2E_SPEC || name === process.env.FORGE_E2E_SPEC)).sort()
     if (specNames.length === 0) log('no *.spec.mjs files found')
 
     for (const specName of specNames) {

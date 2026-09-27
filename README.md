@@ -1,68 +1,53 @@
 # Forge
 
-The durable factory implementation is available through `bin/forge factory` and
-`/factory`: resettable runners, supervisor-owned issue history, sequential review
-and audit, mandatory failure investigations, and a shared three-failure budget.
-Start with [VM installation and terminal login](docs/installation.md),
-[guided onboarding](docs/onboarding.md), and the
-[workflow contract](docs/software-factory-spec.md). It uses an explicit cutover;
-installing this source does not take over the legacy fleet.
-
-
 Forge moves GitHub issues through **Build → Review → Security audit → Merge**.
 GitHub holds requirements, code and review evidence. The supervisor owns the durable
 issue ledger, assignments, failure history and resource allocation. Workers receive
 one assignment and run inside disposable containers; completion is verified against
 GitHub before the issue advances.
 
-**Status: experimental.** The durable factory is implemented and independently
-selectable. It has synthetic workflow/restart tests and real credential-free runner
-canaries. GitHub App installation and repository protection still require owner setup before a live run.
-The guided setup verifies access, provider authentication and disposable runner cleanup before Start. Human GitHub App approvals still happen on GitHub. Existing tmux fleets remain active until an explicit reset.
-See [implementation status](docs/implementation.md).
+## Install
 
-The following observation and monitoring instructions describe the compatibility
-path. New installations should begin with the runtime setup linked above.
-
-## Start with observation
-
-Use Linux, Python 3.10 or newer, Git, and the GitHub CLI (`gh`). Authenticate `gh`
-with access to the repositories you want to observe.
+On an AppArmor-enabled Linux VM with Docker Engine (Compose plugin), systemd and
+Python 3.10+, as a dedicated non-root account:
 
 ```sh
 git clone https://github.com/XRPL-Commons/forge.git
 cd forge
-mkdir -p local/repos.d
-cp examples/repos.d/example.repo.example local/repos.d/project.repo
-# Edit project.repo: repository, ownership label, bot identity, and clone paths.
-bin/forge shadow --config ./local/repos.d --state ./local/state
+bin/forge setup      # host, runner image, operator UI, coding-account logins
 ```
 
-The example starts disabled. Before enabling a repository, deliberately provision
-its configured `auto:owned-by-*` ownership label. Shadow mode reads queues and
-writes local snapshots; it does not launch workers, change labels, or merge PRs.
-Set `RECOVERY_AUTHOR` explicitly to the GitHub identity used by your workers.
+Then open `http://127.0.0.1:8787/onboarding` (through an SSH tunnel, or on your
+tailnet address with `--bind`) to connect GitHub, choose a repository and start.
+Label an issue `ready` to have it worked. To apply a newer release later:
 
-Legacy live execution additionally needs tmux, supported coding-agent CLIs, separate
-worker clones, and an operator-managed service installation. The files in
-`deploy/` are templates and containment utilities, not a one-command production
-installer. Configure paths, agent identities, credentials, and merge policy for
-your own installation before starting a supervisor. Never copy another fleet's
-operational state or credentials.
+```sh
+bin/forge update
+```
+
+See [installation](docs/installation.md), [guided onboarding](docs/onboarding.md),
+the [issue state machine and blockers](docs/issue-state-machine.md) and the
+[workflow contract](docs/software-factory-spec.md).
+
+**Status: experimental.** The durable factory has synthetic workflow/restart tests
+and real credential-free runner canaries. The guided setup verifies access, provider
+authentication and disposable runner cleanup before Start; GitHub App approvals
+still happen on GitHub. See [implementation status](docs/implementation.md).
+Existing tmux fleets are a separate compatibility path described in
+[legacy operation](docs/legacy.md); installing this source does not take them over.
 
 ## Dashboard and history
 
-The [GitHub settings guide](docs/github-settings.md) covers the `/settings` page,
-human-managed App installation, repository discovery, and explicit activation.
-Start with `examples/factory.json.example`: it has no credentials or enabled
-repositories. Settings are editable in the UI or as a file; secrets remain outside
-the source tree. The durable factory issues repository-scoped role credentials;
+Guided onboarding creates the GitHub Apps and configuration. The
+[GitHub settings guide](docs/github-settings.md) is the reference for the `/settings`
+page, repository discovery, explicit activation and the underlying files; secrets
+remain outside the source tree. The durable factory issues repository-scoped role credentials;
 the compatibility supervisor retains its existing authentication.
 
 The operator UI is the Nuxt app in `ui/` (service `forge-ui`); it reads local
 state through `legacy/forge-status.py`, which now serves only the JSON API on
-loopback. See [`docs/ui-deployment.md`](docs/ui-deployment.md) for how the two
-are deployed. The pages refresh automatically. The server exposes local worker
+loopback. `bin/forge setup` installs both and `bin/forge update` keeps them current;
+see [`docs/ui-deployment.md`](docs/ui-deployment.md). The pages refresh automatically. The server exposes local worker
 output; keep it on a trusted private network. It has no per-user application
 authentication layer. Slot controls use a per-process capability token and
 require the exact bound address and same-origin JSON requests; only the
@@ -105,10 +90,11 @@ must be enabled explicitly.
 
 | Directory | Purpose |
 | --- | --- |
-| `forge/` | Queue, scheduling, activity, evidence, capacity, and lifecycle logic |
-| `legacy/` | Working tmux supervisor, role instructions, and dashboard |
+| `forge/` | Factory supervisor, setup/update, scheduling, evidence and lifecycle logic |
+| `ui/` | Operator UI (Nuxt) |
+| `legacy/` | Status API (`forge-status.py`) and the compatibility tmux supervisor |
 | `observer/` | Independent observation and isolation experiments |
-| `deploy/` | Service templates and controlled deployment utilities |
+| `deploy/` | Runner image, isolation policies and deployment utilities |
 | `tests/` | Deterministic backend and browser regression checks |
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and

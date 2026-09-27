@@ -45,6 +45,15 @@ class FactoryTest(unittest.TestCase):
         self.supervisor = Supervisor(self.ledger, self.runner, self.github, self.settings, self.config, clock=lambda: self.now)
         self.key = self.ledger.discover({'id': 1, 'name': 'example/project'}, 1, 'requirements')
 
+    def test_assignment_leaves_result_file_writes_to_the_harness(self):
+        from forge.factory.contracts import assignment_note
+        job = self.job()
+        note = assignment_note(job)
+        self.assertIn('final structured response', note['instructions'])
+        self.assertIn('do not write that file yourself', note['instructions'])
+        self.assertNotIn('Write the result contract atomically', note['instructions'])
+        self.assertIn('same tool invocation', note['instructions'])
+
     def test_existing_pr_association_uses_exact_issue_identity(self):
         job = self.job()
         body = '<!-- forge-submission ' + json.dumps({'version': 1, 'issue': 1, 'attempt': job['id'], 'head': None}) + ' -->'
@@ -97,6 +106,31 @@ class FactoryTest(unittest.TestCase):
             self.supervisor.cycle()
         self.assertEqual(reconcile.call_count, 1)
         self.assertTrue(self.ledger.read()['slots'], 'dispatch must run after observation stops')
+
+    def test_slow_api_observation_cannot_spend_dispatch_deadline(self):
+        self.github.target.return_value = 'main'
+        now = [0.0]
+        def observe(item):
+            now[0] = self.github.deadline
+            raise GitHubBudgetExhausted('Observation allowance used')
+        with patch('forge.factory.supervisor.time.monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.supervisor, 'reconcile', side_effect=observe):
+            self.supervisor.cycle()
+        self.assertLessEqual(now[0], self.config['cycle_budget_seconds'] / 2)
+        self.assertEqual(self.github.deadline, self.config['cycle_budget_seconds'])
+        self.assertTrue(self.ledger.read()['slots'])
+
+    def test_discovery_exhaustion_preserves_dispatch_budget(self):
+        self.github.target.return_value = 'main'
+        now = [0.0]
+        def discovery():
+            now[0] = self.github.deadline
+        with patch('forge.factory.supervisor.time.monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.supervisor, 'discovery_due', return_value=True), \
+                patch.object(self.supervisor, 'discover', side_effect=discovery):
+            self.supervisor.cycle()
+        self.assertLess(now[0], self.github.deadline)
+        self.assertTrue(self.ledger.read()['slots'])
 
     def test_busy_factory_still_discovers_new_issues_on_a_cadence(self):
         # A ready issue is always queued, so dispatch never discovers on its own.

@@ -66,6 +66,32 @@ class HarnessTests(unittest.TestCase):
         events[1]['message']['content'][0]['is_error'] = True
         self.assertFalse(completed(events, 'canary', 'nonce'))
 
+    def test_claude_large_transcript_retains_terminal_result_with_bounded_memory(self):
+        import sys, os
+        module = adapter('claude')
+        temporary_file = tempfile.TemporaryFile
+        terminal = {'type': 'result', 'structured_output': {'ready': True}}
+        program = ('import sys,json; '
+                   'sys.stdout.write(("x"*4096+"\\n")*800); '
+                   'print(json.dumps(' + repr(terminal) + '))')
+        with patch('tempfile.TemporaryFile', side_effect=lambda **kw: temporary_file(mode=kw['mode'], dir=self.root)):
+            code, raw = module['collect']([sys.executable, '-c', program], 'prompt', self.root, dict(os.environ))
+        self.assertEqual(code, 0)
+        self.assertLessEqual(len(raw.encode()), 2*1024*1024)
+        self.assertEqual(json.loads(raw.splitlines()[-1]), terminal)
+
+    def test_claude_parent_never_launches_from_repository(self):
+        module = adapter('claude')
+        collect = Mock(return_value=(0, json.dumps({'type': 'result', 'structured_output': {'ready': True}})))
+        with patch.dict(module['invoke'].__globals__, {'collect': collect,
+                'Path': lambda value: self.root / Path(value).name}):
+            module['invoke']({}, self.root, {}, {}, 'Test')
+        args, prompt, directory, env = collect.call_args.args
+        self.assertIn(str(self.root), args)
+        self.assertIn('explicit cd', prompt)
+        self.assertEqual(env['CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'], '1')
+        self.assertNotEqual(directory, self.root)
+
     def test_claude_probe_reports_fixed_failure_reasons(self):
         reason = adapter('claude')['probe_failure_reason']
         self.assertEqual(reason(None, 'Provider authentication_error; reconnect the account', None, 'n'), 'provider_login_expired')

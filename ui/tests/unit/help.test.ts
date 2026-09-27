@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { HELP_TOPICS, helpTopic } from '../../shared/help-topics'
 import { REPO_DEFAULT_HELP_DOC, helpCandidates, renderHelp, resolveHelpDocPath } from '../../server/utils/help'
 
 const ONBOARDING_MD = fileURLToPath(new URL('../../../docs/onboarding.md', import.meta.url))
@@ -25,14 +26,14 @@ describe('renderHelp', () => {
   it('renders paragraphs, bullet lists and numbered lists', () => {
     const { html } = renderHelp('A paragraph.\n\n- First\n- Second\n\n1. Step one\n2. Step two\n')
     expect(html).toContain('<p>A paragraph.</p>')
-    expect(html).toContain('<ul><li>First</li><li>Second</li></ul>')
-    expect(html).toContain('<ol><li>Step one</li><li>Step two</li></ol>')
+    expect(html.replace(/\n/g, '')).toContain('<ul><li>First</li><li>Second</li></ul>')
+    expect(html.replace(/\n/g, '')).toContain('<ol><li>Step one</li><li>Step two</li></ol>')
   })
 
   it('renders a 4-space-indented code block and inline code', () => {
     const { html } = renderHelp('Run `bin/forge setup` then:\n\n    forge service --root /srv/forge\n')
     expect(html).toContain('<code>bin/forge setup</code>')
-    expect(html).toContain('<pre><code>forge service --root /srv/forge</code></pre>')
+    expect(html).toContain('<pre><code>forge service --root /srv/forge\n</code></pre>')
   })
 
   it('rewrites a relative *.md link to the GitHub blob URL', () => {
@@ -169,5 +170,52 @@ describe('resolveHelpDocPath', () => {
   it('returns null when no candidate is readable', () => {
     const resolved = resolveHelpDocPath({ nitroHelpDoc: null, forgeRoot: null, repoDefault }, () => false)
     expect(resolved).toBeNull()
+  })
+})
+
+
+describe('operator help guides', () => {
+  it('only accepts catalog IDs, never browser-supplied paths', () => {
+    for (const value of ['../package.json', '/etc/passwd', '', ['workflow'], 'onboarding.md']) {
+      expect(helpTopic(value)).toBeUndefined()
+    }
+    expect(helpTopic(undefined)?.id).toBe('setup')
+    expect(() => helpCandidates({ cwd: '/repo/ui', topic: '../secret' })).toThrow('Unknown help topic')
+  })
+
+  it('resolves a guide independently of the setup-only override', () => {
+    const candidates = helpCandidates({ cwd: '/repo/ui', helpDoc: '/custom/setup.md', forgeRoot: '/srv/forge', topic: 'workflow' })
+    expect(candidates.nitroHelpDoc).toBeNull()
+    expect(candidates.repoDefault).toBe('/repo/docs/issue-state-machine.md')
+    expect(resolveHelpDocPath(candidates, p => p.startsWith('/srv/forge/'))).toBe('/srv/forge/docs/issue-state-machine.md')
+    expect(resolveHelpDocPath(candidates, p => p.startsWith('/repo/'))).toBe('/repo/docs/issue-state-machine.md')
+  })
+
+  it('keeps guide links and fragments in Forge, with source links on GitHub', () => {
+    const { html } = renderHelp('[states](issue-state-machine.md#dispatch-eligibility) [source](../forge/factory/contracts.py) [here](#main-path) [bad](//evil.example)')
+    expect(html).toContain('href="/setup-help?topic=workflow#dispatch-eligibility"')
+    expect(html).toContain('href="https://github.com/XRPL-Commons/forge/blob/main/forge/factory/contracts.py"')
+    expect(html).toContain('href="#main-path"')
+    expect(html).not.toContain('href="//')
+  })
+
+  it('renders rich Markdown while keeping diagram source separate from HTML', () => {
+    const source = '# Flow\n\n**Progress**\n\n| Stage | Next |\n| --- | --- |\n| ready | Build |\n\n```mermaid\nflowchart TD\n A --> B\n```\n\n## Flow\n\nAfter'
+    const doc = renderHelp(source)
+    expect(doc.html).toContain('<strong>Progress</strong>')
+    expect(doc.html).toContain('<div class="help-table"><table>')
+    expect(doc.blocks[1]).toEqual({ diagram: 'flowchart TD\n A --> B\n', title: 'Flow' })
+    expect(doc.toc.map(x => x.id)).toEqual(['flow', 'flow-1'])
+    expect(doc.blocks[2]).toHaveProperty('html', expect.stringContaining('After'))
+  })
+
+  it('renders every shipped guide and all three state-machine diagrams', () => {
+    for (const topic of HELP_TOPICS) {
+      const source = readFileSync(fileURLToPath(new URL(`../../../docs/${topic.file}`, import.meta.url)), 'utf8')
+      const doc = renderHelp(source)
+      expect(doc.toc.length).toBeGreaterThan(1)
+      expect(doc.html).not.toContain('<script')
+      if (topic.id === 'workflow') expect(doc.blocks.filter(b => 'diagram' in b)).toHaveLength(3)
+    }
   })
 })

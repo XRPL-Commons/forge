@@ -16,6 +16,7 @@ const { store, fetchRaw } = vi.hoisted(() => ({
 vi.mock('#app/composables/state', () => ({
   useState: (key: string, init: () => any) => { store[key] ??= { value: init() }; return store[key] },
 }))
+vi.mock('../../app/composables/useResource', () => ({ useResources: () => ({ invalidate: vi.fn() }) }))
 vi.mock('#build/fetch.mjs', () => ({
   $fetch: Object.assign(vi.fn(), { raw: fetchRaw }),
 }))

@@ -96,6 +96,11 @@ describe('upstreamHeaders', () => {
     expect(out['x-forge-action']).toBe('tok')
     expect(out['content-type']).toBe('application/json')
   })
+  it('forwards the validated browser host so App callbacks return through the UI', () => {
+    const out = upstreamHeaders({ host: 'forge.tail.ts.net:8787' }, 'GET', '127.0.0.1:8788')
+    expect(out['x-forwarded-host']).toBe('forge.tail.ts.net:8787')
+    expect(out.host).toBe('127.0.0.1:8788')
+  })
   it('does not invent an origin on GET', () => {
     const out = upstreamHeaders({ host: 'x', cookie: 'forge_setup=abc' }, 'GET', '127.0.0.1:8788')
     expect(out.origin).toBeUndefined(); expect(out.cookie).toBe('forge_setup=abc')

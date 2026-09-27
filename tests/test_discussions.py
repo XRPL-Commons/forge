@@ -1,0 +1,154 @@
+import json
+from copy import deepcopy
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+import uuid
+from unittest.mock import Mock, patch
+
+from forge.factory.discussions import Discussions, partial_text, note
+from forge.factory.ledger import Ledger
+from forge.factory.runner import RunnerError
+from forge.factory.config import DEFAULT
+from forge.factory.issue_actions import request
+from forge.state import AtomicStore
+
+
+class DiscussionsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.row = dict(key='1:2', repo='example/app', repo_id=1, number=2, revision='revision-a',
+                        title='Fix tests', body='Required evidence', status='failed', actions=['retry'], dependencies=[])
+        self.inventory = Mock(); self.inventory.view.side_effect = lambda **kwargs: {'issue': deepcopy(self.row)}
+        self.runner = Mock(); self.runner.inspect.return_value = {'status': 'created', 'running': False}
+        self.runner.create.return_value = 'container-id'
+        self.factory = Mock(return_value=self.runner)
+        self.service = Discussions(self.root, runner=self.factory, inventory=self.inventory, clock=lambda: 1000)
+        self.settings = Mock(); self.settings.paused.return_value = False
+        self.github = Mock(); self.github.token.return_value = 'read-only-token'
+        self.config = {**deepcopy(DEFAULT), 'enabled': True, 'provider_pool': [], 'provider_ready': None}
+        Ledger(self.root / 'state/factory').read()
+
+    def send(self):
+        identifier = str(uuid.uuid4())
+        self.service.send('1:2', 'Why did this fail?', identifier)
+        return identifier
+
+    def start(self):
+        self.send(); self.service.tick(self.config, self.github, self.settings)
+        return self.service.read()['1:2']['job']
+
+    def finish(self, job, **fields):
+        self.runner.inspect.return_value = {'status': 'exited', 'running': False}
+        result = {'attempt': job['id'], 'role': 'discussion', 'outcome': 'pass', 'summary': 'Fix the shared producer type first.',
+                  'proposal': {'action': 'retry', 'reason': 'Fix the shared producer type first.'}, **fields}
+        self.runner.capture.return_value = {'result': result}
+        self.service.drive(job, self.github)
+
+    def test_send_idempotent_and_never_mutates_pipeline(self):
+        before = Ledger(self.root / 'state/factory').read()
+        identifier = self.send()
+        self.service.send('1:2', 'Why did this fail?', identifier)
+        self.assertEqual(len(self.service.view('1:2')['messages']), 1)
+        self.assertEqual(before, Ledger(self.root / 'state/factory').read())
+        with self.assertRaises(ValueError): self.send()
+
+    def test_read_only_token_and_reconstructed_assignment(self):
+        job = self.start()
+        self.github.token.assert_called_once_with('recovery', 1, worker=True)
+        self.assertEqual(note(job)['role'], 'discussion')
+        self.assertIn('NOT a resumed', note(job)['instructions'])
+        self.assertEqual(self.service.view('1:2')['status'], 'running')
+
+    def test_complete_then_apply_requires_explicit_operator_and_is_idempotent(self):
+        job = self.start(); self.finish(job)
+        view = self.service.view('1:2')
+        self.assertEqual(view['status'], 'idle')
+        self.assertEqual(len(view['messages']), 2)
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            receipt = self.service.apply('1:2', job['id'])
+            self.assertEqual(receipt, self.service.apply('1:2', job['id']))
+        with AtomicStore(self.root / 'state/issues', 'actions').transaction() as data:
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[receipt]['reason'], 'Fix the shared producer type first.')
+            self.assertEqual(data[receipt]['status'], 'pending')
+
+    def test_stale_proposal_cannot_apply(self):
+        job = self.start(); self.finish(job)
+        self.row['revision'] = 'changed-head'
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            with self.assertRaisesRegex(ValueError, 'changed'): self.service.apply('1:2', job['id'])
+
+    def test_action_receipt_survives_crash_before_conversation_receipt(self):
+        job = self.start(); self.finish(job)
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            request(self.root, key='1:2', action='retry', revision='revision-a', reason='Fix the shared producer type first.', request_id=job['id'])
+            self.row['revision'] = 'changed-after-apply'
+            self.assertEqual(self.service.apply('1:2', job['id']), job['id'])
+
+    def test_cancel_is_fenced_and_reconciled_before_replacement(self):
+        job = self.start(); self.service.cancel('1:2')
+        # A running observation returning after Cancel must not erase the fence.
+        self.service.save('1:2', job=job, status='running')
+        with self.assertRaises(ValueError): self.send()
+        self.service.tick(self.config, self.github, self.settings, launch=False)
+        self.assertTrue(self.service.read()['1:2']['job']['cleanup'])
+        self.assertEqual(self.service.view('1:2')['status'], 'cancelled')
+        self.send()
+
+    def test_reset_cleans_up_even_after_repository_removed(self):
+        self.start(); self.inventory.view.side_effect = KeyError('removed')
+        self.service.cancel_all()
+        job = self.service.active_jobs()[0]
+        self.service.drive(job, None)
+        self.assertFalse(self.service.active_jobs())
+
+    def test_failed_cleanup_retains_lease(self):
+        self.start(); self.service.cancel('1:2')
+        self.runner.reset.side_effect = RunnerError('engine unavailable')
+        self.service.tick(self.config, self.github, self.settings, launch=False)
+        self.assertEqual(len(self.service.active_jobs()), 1)
+        with self.assertRaises(ValueError): self.send()
+
+    def test_restart_after_answer_before_cleanup_does_not_duplicate_reply(self):
+        job = self.start(); self.runner.reset.side_effect = RunnerError('interrupted cleanup')
+        self.finish(job)
+        self.runner.reset.side_effect = None
+        self.service.tick(self.config, self.github, self.settings, launch=False)
+        self.assertEqual(len(self.service.view('1:2')['messages']), 2)
+        self.assertEqual(self.service.view('1:2')['status'], 'idle')
+
+    def test_forbidden_proposal_is_not_shown_as_applicable(self):
+        job = self.start(); self.finish(job, proposal={'action': 'merge', 'reason': 'Skip review'})
+        self.assertEqual(len(self.service.view('1:2')['messages']), 1)
+        self.assertEqual(self.service.view('1:2')['status'], 'unavailable')
+        self.assertTrue(self.service.active_jobs()[0]['fenced'])
+
+    def test_stream_only_contains_public_assistant_text(self):
+        events = [{'type': 'assistant', 'message': {'content': [{'type': 'thinking', 'thinking': 'private'}, {'type': 'text', 'text': 'Checking evidence'}, {'type': 'tool_use', 'input': 'secret'}]}},
+                  {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'A public answer'}},
+                  {'type': 'item.completed', 'item': {'type': 'command_execution', 'output': 'secret'}}]
+        self.assertEqual(partial_text('\n'.join(json.dumps(e) for e in events)), 'Checking evidence\nA public answer')
+
+    def test_provider_login_leased_by_pipeline_waits_without_spending_attempt(self):
+        self.config['provider_auth_file_env'] = 'AUTH_REF'
+        state = Ledger(self.root / 'state/factory').read()
+        state['jobs']['other'] = {'issue_key': '1:9', 'created_at': 1, 'cleanup': False, 'runner_config': {'provider_auth_file_env': 'AUTH_REF'}}
+        self.send()
+        with patch('forge.factory.discussions.Ledger.read', return_value=state):
+            self.service.tick(self.config, self.github, self.settings)
+        self.runner.start.assert_not_called()
+        self.assertEqual(self.service.view('1:2')['status'], 'queued')
+
+    def test_pagination_and_issue_isolation(self):
+        with self.service.store.transaction() as data:
+            data['1:2'] = {'messages': [{'id': str(i), 'sequence': i, 'role': 'user', 'text': str(i)} for i in range(1, 44)]}
+        self.assertEqual(len(self.service.view('1:2')['messages']), 20)
+        self.assertEqual(self.service.view('1:2')['before'], 24)
+        self.assertEqual(self.service.view('1:2', 24)['messages'][-1]['sequence'], 23)
+        self.assertEqual(self.service.view('1:3')['messages'], [])
+        with self.assertRaises(ValueError): self.service.view('../private')
+
+
+if __name__ == '__main__': unittest.main()

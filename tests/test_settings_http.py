@@ -59,6 +59,18 @@ class SettingsHTTPTests(unittest.TestCase):
             service.save.assert_not_called()
             self.assertFalse(json.loads(handler._send.call_args.args[0])['ok'])
 
+    def test_app_manifest_returns_through_the_name_the_browser_used(self):
+        cases=[({}, 'http://127.0.0.1:8787'),
+               ({'X-Forwarded-Host':'100.64.0.7:8787'}, 'http://100.64.0.7:8787'),
+               ({'X-Forwarded-Host':'forge.tail.ts.net:8787'}, 'http://forge.tail.ts.net:8787'),
+               ({'X-Forwarded-Host':'evil/path'}, 'http://127.0.0.1:8787')]
+        for headers,origin in cases:
+            with patch('forge.onboarding.Onboarding') as setup, patch.object(dashboard.H,'_browser',return_value='b'*32):
+                setup.return_value.begin.return_value={}
+                handler=self.handler('/api/onboarding',{'action':'github','role':'builder','owner':'o','account_type':'personal'},**headers)
+                handler.do_POST()
+                self.assertEqual(setup.return_value.begin.call_args.kwargs['origin'],origin)
+
     def test_onboarding_start_and_reset_queue_supervisor_intent(self):
         for action,fields in [('start',{'revision':'verified'}),('reset',{'generation':'current'})]:
             with patch('forge.onboarding.Onboarding') as setup:

@@ -3,8 +3,8 @@
   "enabled": false,
   "merge_enabled": false,
   "slots": {
-    "build": 4,
-    "review": 2,
+    "build": 2,
+    "review": 1,
     "audit": 1,
     "recovery": 1
   },
@@ -25,6 +25,8 @@
   "network": "forge-workers",
   "proxy": "http://forge-egress:3128",
   "memory": "4g",
+  "memory_tiers": [],
+  "host_reserve": "2g",
   "cpus": 2,
   "pids_limit": 256,
   "harness_argv": [
@@ -67,5 +69,6 @@
       ],
       "provider_auth_file_env": null
     }
-  ]
+  ],
+  "codex_parallel_auth": false
 }

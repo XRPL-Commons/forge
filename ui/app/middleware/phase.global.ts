@@ -15,10 +15,23 @@ export default defineNuxtRouteMiddleware(async (to) => {
   // useRequestFetch so the SSR call carries the browser's Host and Cookie
   // through the proxy to Python.
   const request = useRequestFetch()
+  const resources = useResources()
 
   let payload: Payload
   try {
-    payload = await request<Payload>('/api/onboarding', { headers: { accept: 'application/json' } })
+    const entry = resources.entry<Payload>('/api/onboarding')
+    const cached = entry.data.value
+    const refresh = () => resources.load('/api/onboarding', () => request<Payload>('/api/onboarding', { headers: { accept: 'application/json' }, timeout: 5000 }), 5000)
+    // Known-active navigation never waits for a background readiness read.
+    // Explicit lifecycle invalidation sets updatedAt to zero and forces a check.
+    if (cached && cached.ok !== false && cached.phase === 'active' && entry.updatedAt.value) {
+      payload = cached
+      void refresh()
+    } else {
+      const value = await refresh()
+      if (!value) return
+      payload = value
+    }
   } catch {
     // Setup state is unreachable: the page renders its own connection error
     // rather than being bounced somewhere that cannot load either.

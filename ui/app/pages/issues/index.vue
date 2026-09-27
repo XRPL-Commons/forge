@@ -19,11 +19,11 @@ if (redirecting) await navigateTo(issuePath(asked as string), { redirectCode: 30
 
 interface Loaded { list: IssueListResponse | null; fence: string | null }
 
-const show = ref('open')
-const repoValue = ref('')
-const search = ref('')
-const query = ref('')
-const page = ref(1)
+const show = useState('issues-show', () => 'open')
+const repoValue = useState('issues-repoValue', () => '')
+const search = useState('issues-search', () => '')
+const query = useState('issues-query', () => '')
+const page = useState('issues-page', () => 1)
 
 const repoId = computed(() => (repoValue.value ? Number(repoValue.value) : null))
 const params = computed(() => listParams({ state: show.value, repoId: repoId.value, q: query.value, page: page.value }))
@@ -33,9 +33,9 @@ const params = computed(() => listParams({ state: show.value, repoId: repoId.val
 const submitting = ref(false)
 const actionError = ref('')
 
-const poll = usePoll<Loaded>(async () => {
+const poll = useResource<Loaded>(() => `/api/issues?${params.value}`, async (path) => {
   try {
-    return { list: await api.get<IssueListResponse>(`/api/issues?${params.value}`, { timeout: 30000 }), fence: null }
+    return { list: await api.get<IssueListResponse>(path, { timeout: 30000 }), fence: null }
   } catch (error: unknown) {
     // A 200 {ok:false} is a state, not a failed request: the reset fence
     // replaces the list instead of leaving a stale one on screen.
@@ -57,7 +57,7 @@ watch(search, (value) => {
   debounce = setTimeout(() => { query.value = value.trim(); page.value = 1 }, 200)
 })
 watch([show, repoValue], () => { page.value = 1 })
-watch(params, () => { void poll.refresh() })
+
 onBeforeUnmount(() => clearTimeout(debounce))
 
 const list = computed(() => poll.data.value?.list ?? null)

@@ -13,6 +13,27 @@ same no-op-if-present logic at `GET /_ui/setup-cookie`, which Onboarding,
 Reset and Coding accounts call on mount — a client-side route change into
 those pages never reaches the middleware.
 
+## Help guides
+
+The header Help icon opens `/setup-help`. Its guide menu includes setup, issue
+states and blockers (`?topic=workflow`), issue discussions (`?topic=discussions`),
+and workers and capacity (`?topic=runtime`). Existing setup anchors remain valid.
+
+`shared/help-topics.ts` is the allowlist mapping stable topic IDs to documentation
+filenames. The server never accepts an arbitrary path. Copy all four catalog
+Markdown files into the installation's `docs/` directory when deploying the UI.
+`FORGE_ROOT/docs/<filename>` takes precedence over the source checkout's docs;
+`NITRO_HELP_DOC` overrides only the setup guide. Resolved documents are cached for
+60 seconds, with at most twelve cached paths. Missing/unknown guides return 404;
+a guide read failure offers an in-page retry.
+
+Help uses Markdown tables, lists, code fences and stable heading anchors. Guide
+links stay inside Forge; other documentation/source links lead to GitHub. Raw HTML
+is disabled and rendered HTML is sanitized. Mermaid is a lazy client import only
+when a guide has a diagram; strict mode disables diagram links, and diagram source
+remains readable if rendering fails. The surrounding guide is server-rendered.
+Tables and diagrams scroll within their own regions on narrow screens.
+
 ## Develop
 
 ```
@@ -175,12 +196,12 @@ node .output/server/index.mjs
 
 `.output/` bundles its own server code and dependencies; `node_modules` is
 not needed alongside it. Configure `HOST`, `PORT`, `NITRO_FORGE_API` and
-`NITRO_HELP_DOC` as environment variables (see the table above and
-`deploy/forge-ui.service.example`). No runtime dependency on the Iconify
+`NITRO_HELP_DOC` as environment variables (see the table above; the
+`forge-ui` unit written by `bin/forge setup` sets them). No runtime dependency on the Iconify
 API: Nuxt UI's own `i-lucide-*` icons are bundled into `.output/` by
 `icon: { serverBundle: 'local' }` plus the pinned `@iconify-json/lucide`
 dev dependency, and `/api/_nuxt_icon/**` (excluded from `proxyPaths()`) is
 answered by Nitro from that bundle.
 
-To switch a running host from the legacy Python dashboard to this UI, see
+Hosts build and run this UI through `bin/forge setup` / `bin/forge update`; see
 [`docs/ui-deployment.md`](../docs/ui-deployment.md).

@@ -57,7 +57,9 @@ an operator wants the factory to do.
   Help uses the same outer spacing with a reading column and topic sidebar.
 
 - App cards put the role and App name together beside the illustration, followed
-  by its purpose. Keep connection status, repository count and access action compact.
+  by its purpose. Use the shared `RoleIllustration` component on GitHub App cards
+  (with its GitHub badge) and pipeline column headings (without the badge). Preserve
+  the original role artwork and colors when migrating these surfaces. Keep connection status, repository count and access action compact.
 - Normal repository rows keep the same height whether automation is enabled or
   disabled. Use quiet Set up pills for navigation and retain mobile tap targets.
 - Verified coding accounts show a green check and no reconnect action. Show a

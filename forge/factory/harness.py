@@ -30,6 +30,9 @@ def role_properties(note):
     candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
     return {
         'build': {},
+        'discussion': {'proposal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
+            'action': {'type': 'string', 'enum': ['retry', 'resume', 'recheck', 'queue', 'pause', 'backlog']},
+            'reason': {'type': 'string', 'maxLength': 2000}}, 'required': ['action', 'reason'], 'additionalProperties': False}]}},
         'review': candidate,
         'audit': {**candidate, 'human_required': {'type': 'string', 'enum': ['required', 'not_required', 'unknown']},
                   'human_reason': {'type': 'string'}},
@@ -93,7 +96,20 @@ def main():
     git('-C', str(directory), 'config', 'user.name', note['publisher'])
     git('-C', str(directory), 'config', 'user.email', note['publisher'] + '@users.noreply.github.com')
     selected = note.get('candidate')
-    if selected:
+    if note['role'] == 'build' and note.get('resume_branch'):
+        # A memory retry may have pushed newer work than the last accepted
+        # candidate. Resume that branch, preserving the PR and published commits.
+        ref = 'refs/heads/' + note['resume_branch']
+        published = git('-C', str(directory), 'ls-remote', '--heads', 'origin', ref).stdout.strip()
+        if published:
+            git('-C', str(directory), 'fetch', 'origin', ref)
+            git('-C', str(directory), 'checkout', '--detach', 'FETCH_HEAD')
+        elif selected:
+            git('-C', str(directory), 'fetch', 'origin', selected['head'])
+            git('-C', str(directory), 'checkout', '--detach', selected['head'])
+        else:
+            git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
+    elif selected:
         git('-C', str(directory), 'fetch', 'origin', selected['head'])
         git('-C', str(directory), 'checkout', '--detach', selected['head'])
     elif note['role'] == 'strategist':

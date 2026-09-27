@@ -26,39 +26,24 @@ interface Loaded { detail: IssueDetailResponse | null; fence: string | null; fac
 // never re-render the issue under the operator's hands.
 const submitting = ref(false)
 
-async function load(): Promise<Loaded> {
-  const [detail, factory] = await Promise.all([
-    api.get<IssueDetailResponse>(`/api/issues?issue=${encodeURIComponent(props.issueKey)}`, { timeout: 30000 })
-      .then(value => ({ value, fence: null as string | null }))
-      .catch((error: unknown) => {
-        // A 200 {ok:false} is a state (the reset fence); a 404 is an issue
-        // that is not in a managed repository any more.
-        if (error instanceof ForgeApiError && error.status === 200) return { value: null, fence: error.message }
-        if (error instanceof ForgeApiError && error.status === 404) return { value: null, fence: UNMANAGED }
-        throw error
-      }),
-    api.get<FactoryView>('/api/factory', { timeout: 30000 }).catch(() => null),
-  ])
-  return { detail: detail.value, fence: detail.fence, factory }
-}
-
-// Rendered on the server for the first paint (the shared link lands here);
-// the poll takes over on the client.
-const { data: initial } = await useAsyncData(`issue-${props.issueKey}`, load)
-
-const poll = usePoll<Loaded>(load, {
-  interval: useRuntimeConfig().public.pollInterval,
-  allowed: () => !submitting.value,
-})
-
+const factory = useFactory()
+const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${encodeURIComponent(props.issueKey)}`, async (path) => {
+  try { return { detail: await api.get<IssueDetailResponse>(path, { timeout: 30000 }), fence: null } }
+  catch (error) {
+    if (error instanceof ForgeApiError && error.status === 200) return { detail: null, fence: error.message }
+    if (error instanceof ForgeApiError && error.status === 404) return { detail: null, fence: UNMANAGED }
+    throw error
+  }
+}, { allowed: () => !submitting.value })
+// Warm detail opens synchronously; cold direct links retain SSR data.
+const { data: initial } = await useAsyncData(`issue-${props.issueKey}`, () => poll.refresh(5000))
+if (!poll.data.value && initial.value) poll.replace(initial.value)
 const mounted = ref(false)
-onMounted(() => {
-  mounted.value = true
-  if (!poll.data.value && initial.value) poll.replace(initial.value)
-  poll.start()
+onMounted(() => { mounted.value = true; poll.start(); factory.start() })
+const loaded = computed<Loaded | null>(() => {
+  const value = poll.data.value
+  return value ? { ...value, factory: factory.data.value?.ok === false ? null : factory.data.value } : null
 })
-
-const loaded = computed<Loaded | null>(() => poll.data.value ?? initial.value ?? null)
 const detail = computed<IssueDetailView | null>(() => loaded.value?.detail?.issue ?? null)
 const actions = computed(() => loaded.value?.detail?.actions ?? [])
 const fence = computed(() => loaded.value?.fence ?? null)
@@ -97,7 +82,7 @@ const message = computed(() => {
 // sentences. Forge's own status line and the worker's prose move into Details,
 // so nobody has to open it to learn where this issue stands or why.
 const summary = computed(() => summaryBlock(detail.value))
-const detailsOpen = ref(false)
+const detailsOpen = useState(`issue-details-${props.issueKey}`, () => false)
 const hasDetails = computed(() => !!summary.value?.details || reviews.value.length > 0)
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
@@ -425,6 +410,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <p v-if="assignError" role="alert" class="mt-2 text-sm text-rose-200">{{ assignError }}</p>
 
       <!-- Everything the worker wrote stays available, one click away. -->
+      <IssueConversation :key="detail.key" :issue-key="detail.key" />
+
       <section v-if="hasDetails" id="issue-details" class="mt-4 rounded-xl border border-line bg-bg p-3">
         <UCollapsible v-model:open="detailsOpen">
           <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">

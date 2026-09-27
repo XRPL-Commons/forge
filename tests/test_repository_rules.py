@@ -2,7 +2,7 @@ import base64
 import unittest
 from unittest.mock import Mock
 
-from forge.factory.github import GitHub, GitHubUnavailable
+from forge.factory.github import GitHub, GitHubUnavailable, GitHubBudgetExhausted
 
 
 def classic(count=2, stale=True, owners=False):
@@ -69,6 +69,12 @@ class RepositoryRuleTests(unittest.TestCase):
         for status in [403, 429, 500]:
             self.assertFalse(self.reader(GitHubUnavailable('Unknown', status=status), [rule()]).protections(self.item, {'base_ref': 'main'}))
             self.assertFalse(self.reader(classic(), GitHubUnavailable('Unknown', status=status)).protections(self.item, {'base_ref': 'main'}))
+
+    def test_budget_exhaustion_never_becomes_a_protection_failure(self):
+        for protection, rules in [(GitHubBudgetExhausted('Cycle ended'), []),
+                                  (classic(), GitHubBudgetExhausted('Cycle ended'))]:
+            with self.assertRaises(GitHubBudgetExhausted):
+                self.reader(protection, rules).protection_report(self.item, {'base_ref': 'main'})
 
     def test_malformed_rules_fail_closed(self):
         for rules in [[None], [{'type': 'pull_request'}], [rule('2')], [rule(stale='true')]]:

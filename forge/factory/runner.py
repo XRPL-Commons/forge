@@ -230,7 +230,13 @@ class ContainerRunner:
             except (RunnerError, OSError, ValueError, KeyError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded or renewed') from None
         credentials['GH_TOKEN'] = token
-        note = strategist_note(job) if job.get('role') == 'strategist' else assignment_note(job)
+        # A job built by a caller that predates roles still gets an assignment.
+        role = job.get('role')
+        if role == 'discussion':
+            from .discussions import note as discussion_note
+            note = discussion_note(job)
+        else:
+            note = strategist_note(job) if role == 'strategist' else assignment_note(job)
         note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
                     proxy=self.config['proxy'], provider=self.config.get('provider', 'codex'), model=self.config.get('model'))
         content = io.BytesIO()

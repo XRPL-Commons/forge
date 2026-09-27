@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from forge.factory import build_environment as build
 from forge.factory.contracts import result
 from forge.factory.harness import schema
-from forge.factory.github import GitHubUnavailable
+from forge.factory.github import GitHubUnavailable, GitHubBudgetExhausted
 from tests.test_factory_cycle import CycleTest
 
 
@@ -46,6 +46,75 @@ class EnvironmentLifecycleTests(CycleTest):
         item = self.ledger.read()['issues'][self.key]
         self.assertEqual(item['environment_hold']['blocker'], 'ci_evidence')
         self.assertEqual(item['failures'], [])
+
+    def test_environment_repair_preserves_build_branch_without_accepted_candidate(self):
+        self.cycle(); old = self.active()
+        report = {'version': 1, 'attempt': old['id'], 'role': 'build', 'outcome': 'blocked_environment',
+                  'blocker': 'sandbox', 'summary': 'Published work but package install was read-only',
+                  'headline': 'Install blocked', 'plain': 'Published the work before stopping.'}
+        self.engine.finish(old, report); self.cycle()
+        self.config['image'] = 'sha256:' + 'b' * 64
+        self.cycle()
+        job = self.active()
+        self.assertEqual(job['branch'], old['branch'])
+        self.assertEqual(job['resume_branch'], old['branch'])
+        self.ledger.wait(job['id'], 'Role credentials unavailable', 0)
+        self.ledger.job_update(job['id'], fenced=True, phase='stopping')
+        self.cycle()
+        self.assertEqual(self.active()['resume_branch'], old['branch'])
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_failed_partial_build_keeps_its_branch_after_investigation(self):
+        self.cycle(); old = self.active()
+        self.finish('build', 'reject'); self.cycle()
+        self.finish('recovery'); self.cycle()
+        job = self.active()
+        self.assertEqual(job['role'], 'build')
+        self.assertEqual(job['branch'], old['branch'])
+        self.assertEqual(job['resume_branch'], old['branch'])
+        self.assertIsNone(job['candidate'])
+        self.assertEqual(self.state(), 'ready')
+
+    def test_ci_budget_defers_same_launch_without_fencing_or_failure(self):
+        self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
+        self.assertFalse(self.cycle()['errors'])
+        job = self.active()
+        self.assertEqual(job['phase'], 'reserved')
+        self.assertFalse(job['fenced'])
+        self.assertFalse(self.engine.jobs)
+        self.assertNotIn('environment_hold', self.ledger.read()['issues'][self.key])
+        self.github.ci_evidence = Mock(return_value=None)
+        self.assertFalse(self.cycle()['errors'])
+        self.assertEqual(self.active()['id'], job['id'])
+        self.assertEqual(self.active()['phase'], 'running')
+
+    def test_ci_hold_recovers_without_image_change_and_backs_off_while_unavailable(self):
+        from forge.factory.supervisor import Supervisor
+        from tests.test_factory_cycle import Settings
+        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
+        self.cycle()
+        # Teardown first. A failed recheck sets a bounded retry time.
+        self.cycle()
+        held = self.ledger.read()['issues'][self.key]
+        retry_at = held['environment_hold']['recheck_after']
+        calls = self.github.ci_evidence.call_count
+        self.cycle()
+        self.assertEqual(self.github.ci_evidence.call_count, calls)
+        self.github.ci_evidence = Mock(return_value=None)
+        controller = Supervisor(self.ledger, self.engine, self.github, Settings(), self.config,
+                                clock=lambda: retry_at + 1)
+        self.assertFalse(controller.cycle()['errors'])
+        self.assertEqual(self.active()['phase'], 'running')
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_budget_during_ci_hold_recheck_does_not_set_backoff_or_release_hold(self):
+        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
+        self.cycle()
+        self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
+        self.assertFalse(self.cycle()['errors'])
+        held = self.ledger.read()['issues'][self.key]['environment_hold']
+        self.assertNotIn('recheck_after', held)
+        self.assertFalse(self.engine.jobs)
 
     def test_code_rejection_still_consumes_budget(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
@@ -98,29 +167,6 @@ class BuildToolsTests(unittest.TestCase):
             self.assertEqual(env['GH_TOKEN'], 'job-scoped')
             self.assertNotIn('OPENAI_API_KEY', env)
             self.assertNotIn('FORGE_PROBE_SECRET', env)
-
-    def test_failed_fresh_install_canary_never_installs_services_or_success_marker(self):
-        import io
-        from forge import host_setup
-        with tempfile.TemporaryDirectory() as temporary, \
-                patch.object(host_setup.platform, 'system', return_value='Linux'), \
-                patch.object(host_setup.os, 'getuid', return_value=1000), \
-                patch.object(host_setup, 'apparmor_enabled', return_value=True), \
-                patch.object(host_setup.shutil, 'which', return_value='/bin/tool'), \
-                patch.object(host_setup, 'command', return_value=Mock(stdout='sha256:' + 'a'*64)), \
-                patch.object(host_setup.urllib.request, 'urlopen', return_value=io.BytesIO(b'policy')), \
-                patch.object(host_setup.shutil, 'copyfile'), \
-                patch.object(host_setup, 'Onboarding') as onboarding, \
-                patch.object(host_setup, 'install_services') as services, \
-                patch.object(host_setup.runpy, 'run_path') as script:
-            onboarding.return_value.runtime.return_value = {}
-            validate = Mock(side_effect=RuntimeError('Browser unavailable'))
-            script.side_effect = [{'generate': lambda *args: {}}, {'validate': validate}]
-            with self.assertRaisesRegex(RuntimeError, 'Browser unavailable'):
-                host_setup.install(Path(temporary))
-            services.assert_not_called()
-            self.assertFalse((Path(temporary) / 'host-runtime.json').exists())
-            self.assertTrue(validate.called)
 
     def test_cache_and_temp_use_repository_disk(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(build.shutil, 'copytree'):

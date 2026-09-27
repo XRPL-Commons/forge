@@ -1,5 +1,8 @@
 # Running the durable factory
 
+For lifecycle diagrams, waiting reasons and operator actions, see the
+[issue state machine and blockers](issue-state-machine.md).
+
 The new implementation lives in `forge/factory`. It is selected explicitly; installing
 this source does not take over the legacy fleet. The operator UI is a separate
 `forge-ui` service on the tailnet address, and `forge-status` serves only the JSON
@@ -19,8 +22,8 @@ copies, App keys, provider authentication, or `state/`.
 - Issue history, assignments, runner ownership and operator requests live under
   `state/factory/`, outside every disposable workspace. Back up that directory.
 
-Defaults are four Build, two Review, one Audit and one Recovery slot, with 4 GiB
-and two CPUs per job. Role slots are upper limits. Total concurrency is automatic:
+Defaults (`forge/factory/config.py`) are 2 Build, 1 Review, 1 Audit and 1 Recovery
+slot, with 4 GiB and two CPUs per job. Role slots are upper limits. Total concurrency is automatic:
 before reserving work and immediately before starting a container, Forge checks
 host MemAvailable, memory pressure and the full memory limits of existing Forge
 containers. It retains 2 GiB for the host, never treats swap as available RAM,
@@ -36,6 +39,31 @@ The legacy `max_running` value is accepted for compatibility but ignored and omi
 from normalized runtime settings. Operators configure only the per-role limits.
 This is admission control, not a reservation against unrelated host processes:
 external processes may still grow after the check. Per-container hard limits remain.
+
+Adaptive memory is opt-in: set `memory: "2g"` and
+`memory_tiers: ["2g", "4g", "6g"]`. An empty list retains fixed sizing.
+Every tier remains a hard container limit and is reserved in full. A container
+OOM kill, or a validated `blocked_environment/resources` result identifying heap
+or memory exhaustion, retries the same stage at the next tier. Generic resource
+failures, timeouts and text appearing only in logs do not escalate. Memory retries
+consume no coding-failure allowance and do not create code investigations. At the
+largest tier the issue stays on an environment hold for operator attention.
+
+The ledger remembers successful allocations by repository ID and role. Existing
+memory-failure evidence also prevents retrying that issue at a known-small limit.
+This is a role-level approximation of workload type: a review may run a full build.
+A larger pending retry takes precedence over new small jobs; workers already
+running finish normally. Deployment investigators also defer. An allocation that
+cannot fit even on an empty host is held, rather than blocking the whole queue.
+Capacity and pressure checks still apply, and role limits are unchanged.
+
+Retries keep the candidate, pipeline stage and build branch. If a build pushed
+work before reporting memory exhaustion, the new harness checks out that remote
+branch, including commits newer than the last accepted candidate. Unpublished
+changes in a disposable container cannot be recovered after its removal. Deploy
+the updated harness image before enabling tiers. Changing runtime policy does
+not resize or interrupt existing containers. The installation ledger stores
+`memory_profiles` and per-issue `memory_retry`; back it up with the rest of state.
 
 Build times out after 45 minutes, Review/Audit after 20, Recovery after 10.
 The graceful-stop limit is 10 seconds. The supervisor polls every 30 seconds and
@@ -321,3 +349,26 @@ verifies those identities. GitHub applies the repository owner’s permissions a
 protection rules to all actors. Forge’s supervisor gates govern the merges Forge
 requests, not merges by other authorized actors. A future write broker could
 enforce every individual builder API operation; role prompts are not that boundary.
+
+
+Claude launches from `/opt/forge/claude-control`, an image-owned directory with
+empty sandbox mount placeholders prepared at build time. Its checkout is an
+added working directory; the credential-scrubbing mode stays enabled. This keeps
+launch-local package manifests, lockfiles and executable links protected without
+making the repository's dependency installation read-only. The Claude readiness
+probe performs offline npm install/ci and pnpm install/frozen-install, executes a
+fixture's bin link and lifecycle script, verifies Git writes, and checks credential
+and filesystem isolation inside the actual Bash sandbox.
+
+The scheduler honors same-repository `Depends on`, `Blocked by` and `Dependency:`
+statements on individual issue-body lines. A following `Blocks:` clause describes
+downstream work and is excluded. It verifies prerequisites are closed on GitHub
+before reserving a worker, rechecks waiting issues automatically, and does not
+consume their code retry budget. General references, cross-repository references,
+and fenced examples are not dependency declarations. Existing operator/repeated
+failure holds still require their recorded decision; this does not erase them.
+
+Exhausting a controller cycle's GitHub budget defers the existing launch intent;
+it does not create a CI or repository-protection hold. Actual CI-read failures
+retain the candidate and stage and are rechecked with the availability retry
+interval. Discovery has a bounded share of the cycle so dispatch retains time.

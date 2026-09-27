@@ -1,5 +1,10 @@
 # GitHub setup and repository access
 
+> Guided onboarding (`/onboarding`) creates the four Apps through GitHub's manifest
+> flow, stores their keys privately and writes this configuration for you. This page
+> is the reference for what it produces, for the `/settings` pages, and for CLI-only
+> installations that configure GitHub by hand.
+
 Forge separates three decisions: GitHub grants repository access, the settings
 sync discovers it, and `factory.json` records which repositories the operator
 wants to automate. Discovery never enables a repository automatically.

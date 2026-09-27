@@ -7,16 +7,19 @@ from .contracts import ROLES
 from ..settings import read_json
 from ..harnesses.registry import manifests
 
+# The single source of runtime defaults: guided setup, examples and docs follow it
+# (tests/test_runtime_examples.py). Slots are per-role ceilings; memory admission
+# decides how many workers actually run.
 DEFAULT = {
     'version': 1, 'enabled': False, 'merge_enabled': False,
-    'slots': {'build': 4, 'review': 2, 'audit': 1, 'recovery': 1},
+    'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1},
     'cycle_seconds': 30,
     'timeout_seconds': {'build': 2700, 'review': 1200, 'audit': 1200, 'recovery': 600},
     'grace_seconds': 10, 'availability_retry_seconds': 300,
     'image': '', 'engine': '/usr/bin/docker', 'engine_socket': '/var/run/docker.sock',
-    'apparmor_profile': 'forge-runner-native', 'seccomp_profile_env': 'FORGE_RUNNER_SECCOMP',
+    'apparmor_profile': 'forge-runner-private-proc', 'seccomp_profile_env': 'FORGE_RUNNER_SECCOMP',
     'network': 'forge-workers', 'proxy': 'http://forge-egress:3128',
-    'memory': '4g', 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 256,
+    'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 256,
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -80,6 +83,15 @@ def validate(value):
         raise ValueError('Use an internal HTTP CONNECT proxy name and port')
     if not re.fullmatch(r'[1-9][0-9]*[mg]', config['memory']):
         raise ValueError('memory must use m or g units')
+    tiers = config['memory_tiers']
+    if (not isinstance(tiers, list) or len(tiers) > 8
+            or any(not isinstance(v, str) or not re.fullmatch(r'[1-9][0-9]*[mg]', v) for v in tiers)):
+        raise ValueError('memory_tiers must be a list of at most eight memory limits')
+    if tiers:
+        from .capacity import memory_bytes
+        sizes = [memory_bytes(v) for v in tiers]
+        if tiers[0] != config['memory'] or sizes != sorted(set(sizes)):
+            raise ValueError('memory_tiers must increase strictly from the default memory limit')
     if not re.fullmatch(r'[1-9][0-9]*[mg]', config['host_reserve']):
         raise ValueError('host_reserve must use m or g units')
     for key in ('harness_argv', 'provider_environment', 'human_reviewers', 'hold_labels'):
