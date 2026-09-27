@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { summarizeActivity } from '../../app/utils/activity'
+import { summarizeActivity, ROLE_TARGET } from '../../app/utils/activity'
 const now = 1_000_000
 const payload = { ok: true, active: true, observation: { at: now - 10 }, runtime: { cycle_seconds: 30, enabled: true },
   jobs: [ { role: 'build', phase: 'running', observed_at: now - 5 }, { role: 'recovery', phase: 'running', observed_at: now - 5 },
@@ -15,5 +15,21 @@ describe('summarizeActivity', () => {
   })
   it('treats a non-array repositories as all repos enabled and counts all queued issues', () => {
     expect(summarizeActivity({ ...payload, repositories: null } as any, now).queued).toBe(2)
+  })
+})
+
+describe('ROLE_TARGET', () => {
+  it('sends merge workers to Finishing, where merge cards are grouped', () => {
+    expect(ROLE_TARGET.merge).toBe('/#finishing')
+  })
+  it('points every role at a section the Activity page renders', async () => {
+    const { readFileSync } = await import('node:fs')
+    const page = readFileSync(`${process.cwd()}/app/pages/index.vue`, 'utf8')
+    for (const target of Object.values(ROLE_TARGET)) {
+      const id = target.split('#')[1]
+      // Stage columns render as :id="`stage-${role}`"; the other sections have literal ids.
+      const rendered = page.includes(`id="${id}"`) || (/^stage-(build|review|audit)$/.test(id) && page.includes(':id="`stage-${role}`"'))
+      expect(rendered, `${id} is rendered`).toBe(true)
+    }
   })
 })
