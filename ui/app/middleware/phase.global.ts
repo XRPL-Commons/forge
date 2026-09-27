@@ -56,7 +56,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
   // and Settings then renders with its capacity form locked ("Use guided
   // setup until the factory has started"). Only that case needs the second
   // read, so an activated setup never pays for it.
-  if (to.path === '/settings' || to.path === '/settings/advanced') {
+  if (to.path === '/settings') {
     if (payload.phase === 'active') return
     let factory: { ok?: boolean; active?: boolean }
     try {

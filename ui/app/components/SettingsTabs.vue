@@ -1,7 +1,7 @@
 <script setup lang="ts">
 const route = useRoute()
 const tabs = [
-  { href: '/settings', label: 'General', extra: ['/settings/advanced'] },
+  { href: '/settings', label: 'General', extra: [] as string[] },
   { href: '/settings/github', label: 'GitHub access', extra: ['/settings/repository'] },
   { href: '/settings/harnesses', label: 'Coding accounts', extra: [] as string[] },
 ]
