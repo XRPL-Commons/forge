@@ -97,7 +97,7 @@ not delete a reservation or ignore a blocker to make capacity appear available.
 The dashboard exposes local, read-only state and paginated events:
 
 ```text
-GET /api/workflow
+GET /api/workflow   (removed from the status API; historical reference)
 GET /api/workflow?repo=OWNER/REPO&after=0&limit=100
 GET /api/workflow?repo=OWNER/REPO&recent=1&limit=100
 ```
