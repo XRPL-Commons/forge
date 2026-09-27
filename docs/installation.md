@@ -15,8 +15,9 @@ bin/forge setup
 
 Keep this checkout in place: the installed services run its reviewed source.
 Setup builds the pinned runner image containing Codex, Claude Code and Grok Build, installs
-the runner's isolation policy and private egress network, and starts the dashboard
-and supervisor. Installing the AppArmor profile may prompt for sudo. It does not
+the runner's isolation policy and private egress network, builds the operator UI in a
+pinned Node container, and starts the UI, the status API and the supervisor as user
+services. The host needs no Node toolchain. Installing the AppArmor profile may prompt for sudo. It does not
 start issue processing or alter GitHub permissions.
 
 The image also owns the build environment: Node 22, npm, Corepack (with pnpm
@@ -42,23 +43,45 @@ This is independent of the host's systemd-based `bin/safe-build` helper. Project
 needing another runtime or more memory stop with an environment blocker; Forge
 does not bypass isolation or treat missing infrastructure as a code defect.
 
-## Qualify an updated runner
-
-Existing installations keep their pinned image when `setup install` is repeated.
-For an upgrade, build the reviewed checkout using the `NODE_IMAGE` and
-`PYTHON_IMAGE` digests in `forge/host_setup.py`, then run:
+## Update Forge
 
 ```sh
-python3 deploy/test_build_environment.py --image <new-image-id> \
-  --seccomp <runtime-root>/runner-seccomp.json \
-  --apparmor forge-runner-private-proc
+bin/forge update
 ```
 
-The same private-process AppArmor policy is mandatory for qualification and live
-workers; unsupported hosts fail installation explicitly. Keep dispatch paused while
-updating the image references in host/runtime and saved setup configuration, then
-run `bin/forge setup check --root <runtime-root>` before resuming. Never mutate an
-old image in place or copy a host dependency directory into a worker.
+Update fast-forwards this checkout to its upstream branch, then converges the host
+to it. It refuses a checkout with local changes or diverged history; use
+`bin/forge update --no-pull` to apply the checkout exactly as it is (after your own
+`git pull`, or to test a branch).
+
+Each part is compared with what the source wants, and only changed parts are rebuilt
+and restarted:
+
+- **Runner image.** Tagged by a digest of its build inputs, so an unchanged source
+  never rebuilds. A new image must pass the offline canary described above before
+  any runtime configuration points at it. The switch happens between supervisor
+  cycles. When coding accounts are connected, update then runs `setup check`
+  against the new image, and new work waits for that check. Workers already
+  running finish on the image they started with.
+- **Isolation policies.** The seccomp and AppArmor policies are replaced only when
+  their sources change. Installing AppArmor may prompt for sudo.
+- **Operator UI.** Built into a content-addressed release under
+  `<runtime-root>/ui/releases/`. `ui/current` switches atomically, and the previous
+  release is kept.
+- **Services.** `forge-status`, `forge-ui` and `forge-supervisor` are rewritten
+  when their definition changes, and restarted when their unit, the source revision
+  or the UI release changes. Update then waits for the API and the UI to answer.
+
+A unit or AppArmor policy edited outside Forge is never replaced silently. Update
+shows the difference and asks, or stops unless you pass `--yes`. A failed build or
+canary leaves everything in use unchanged. An interrupted update converges when
+rerun.
+
+To roll back, check out the previous revision (printed by update and recorded in
+`<runtime-root>/host.json`) and run `bin/forge update --no-pull`. Earlier images
+and UI releases are reused when still present, and rebuilt otherwise.
+`bin/forge setup install` on an installed host performs the same reconciliation
+without fetching.
 
 An environment blocker preserves the published PR, stage and code-failure budget.
 Deploying a different image or resource configuration permits a new readiness
@@ -89,9 +112,10 @@ forward the port with `ssh -L 8787:127.0.0.1:8787 <service-account>@<vm>`.
 The UI has no per-user authentication: bind only to loopback or your trusted
 tailnet (`--bind <tailnet-address>`).
 
-Port 8787 is served by the Nuxt/Nitro operator UI (`ui/`), which proxies the
-Python status API on loopback. To build and switch over that front door on
-an existing host, see [the UI deployment runbook](ui-deployment.md).
+Port 8787 is served by the Nuxt/Nitro operator UI (`ui/`). It proxies the Python
+status API, which listens only on `127.0.0.1:8788`. Update keeps the `--bind`
+address you chose at setup; pass `--bind` to `bin/forge update` to change it. See
+[the operator UI deployment notes](ui-deployment.md).
 
 ## Resume or reconnect
 
@@ -101,7 +125,7 @@ have mode 0700. Existing host settings and credentials are preserved when setup
 is repeated. Reset is an explicit separate operation in the UI.
 
 ```sh
-bin/forge setup install                 # Prepare the host without interactive login
+bin/forge setup install                 # Prepare or converge the host without interactive login
 bin/forge setup login codex             # Device-code login
 bin/forge setup login claude            # Claude Code's browser/code login
 bin/forge setup check                   # Verify all configured harnesses

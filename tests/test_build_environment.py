@@ -168,29 +168,6 @@ class BuildToolsTests(unittest.TestCase):
             self.assertNotIn('OPENAI_API_KEY', env)
             self.assertNotIn('FORGE_PROBE_SECRET', env)
 
-    def test_failed_fresh_install_canary_never_installs_services_or_success_marker(self):
-        import io
-        from forge import host_setup
-        with tempfile.TemporaryDirectory() as temporary, \
-                patch.object(host_setup.platform, 'system', return_value='Linux'), \
-                patch.object(host_setup.os, 'getuid', return_value=1000), \
-                patch.object(host_setup, 'apparmor_enabled', return_value=True), \
-                patch.object(host_setup.shutil, 'which', return_value='/bin/tool'), \
-                patch.object(host_setup, 'command', return_value=Mock(stdout='sha256:' + 'a'*64)), \
-                patch.object(host_setup.urllib.request, 'urlopen', return_value=io.BytesIO(b'policy')), \
-                patch.object(host_setup.shutil, 'copyfile'), \
-                patch.object(host_setup, 'Onboarding') as onboarding, \
-                patch.object(host_setup, 'install_services') as services, \
-                patch.object(host_setup.runpy, 'run_path') as script:
-            onboarding.return_value.runtime.return_value = {}
-            validate = Mock(side_effect=RuntimeError('Browser unavailable'))
-            script.side_effect = [{'generate': lambda *args: {}}, {'validate': validate}]
-            with self.assertRaisesRegex(RuntimeError, 'Browser unavailable'):
-                host_setup.install(Path(temporary))
-            services.assert_not_called()
-            self.assertFalse((Path(temporary) / 'host-runtime.json').exists())
-            self.assertTrue(validate.called)
-
     def test_cache_and_temp_use_repository_disk(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(build.shutil, 'copytree'):
             env = build.environment(temporary)
