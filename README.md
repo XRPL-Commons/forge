@@ -9,7 +9,9 @@ GitHub before the issue advances.
 ## Install
 
 On an AppArmor-enabled Linux VM with Docker Engine (Compose plugin), systemd and
-Python 3.10+, as a dedicated non-root account:
+Python 3.10+, as a dedicated non-root account in the `docker` group with lingering
+enabled (an administrator also installs the runner's AppArmor profile unless that
+account may use sudo; see [installation](docs/installation.md) for these commands):
 
 ```sh
 git clone https://github.com/XRPL-Commons/forge.git

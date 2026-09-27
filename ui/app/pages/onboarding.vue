@@ -219,7 +219,7 @@ function activityFor(target: string): string | null {
         <p class="text-xs font-semibold tracking-[1.4px] text-mint-200 uppercase">Setup complete</p>
         <h1 class="mt-2 text-[32px] leading-tight font-semibold tracking-tight">Forge is enabled</h1>
         <p class="mt-2 text-muted">Open the factory to see the service status and the next eligible issue.</p>
-        <UButton class="mt-6" color="neutral" variant="outline" to="/">Open factory</UButton>
+        <UButton class="mt-6" color="neutral" variant="outline" to="/">Open Activity</UButton>
       </template>
 
       <!-- Step 1 · GitHub -->

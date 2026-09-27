@@ -182,8 +182,13 @@ async function disable(id: number) {
 <template>
   <div>
     <div>
-      <p class="text-xs uppercase tracking-wide text-muted">Settings</p>
-      <h1 class="text-3xl font-semibold text-white">GitHub access</h1>
+      <div class="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p class="text-xs uppercase tracking-wide text-muted">Settings</p>
+          <h1 class="text-3xl font-semibold text-white">GitHub access</h1>
+        </div>
+        <NuxtLink v-if="settingUp" to="/onboarding" class="text-sm text-sky-200 hover:underline">Continue setup</NuxtLink>
+      </div>
       <p class="mt-1 text-sm text-muted">See the four Forge Apps, their verified permissions, and repository access. Refresh after changing access on GitHub.</p>
     </div>
 

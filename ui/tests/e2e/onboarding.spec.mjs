@@ -235,7 +235,8 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok(reset.includes('Keep your GitHub work'))
   assert.ok(reset.includes('Issues, commits, branches, PRs and App registrations remain.'))
   assert.ok(reset.includes('Previous lifecycle history is archived. Shared credentials and unrelated host processes remain untouched.'))
-  assert.equal(await page.getByRole('link', { name: 'Cancel' }).getAttribute('href'), '/')
+  // Cancel returns to the page that led here, not to Activity (#73).
+  assert.equal(await page.getByRole('button', { name: 'Cancel' }).count(), 1)
 
   await page.getByRole('button', { name: 'Stop and reset Forge' }).click()
   const requested = await waitForPost(requests, (entry) => entry.body?.action === 'reset', 'reset')

@@ -171,11 +171,10 @@ or host-policy changes; a model's success claim is insufficient evidence.
 ## Network boundary
 
 Workers use the internal `forge-workers` Docker network. They reach public services
-through the separate HTTPS CONNECT proxy; no host port is published:
-
-```sh
-docker compose -f deploy/runner/compose.yaml up -d egress
-```
+through the separate HTTPS CONNECT proxy; no host port is published. Setup and
+update start it as the `forge-egress-1` container (Compose project `forge`, from
+the copy under `<runtime-root>/deploy/runner/`), running as the service account's
+uid, and wait for its health check. `docker ps` should show it `healthy`.
 
 The proxy permits configured domains on port 443 and rejects private, loopback and
 non-global DNS answers. Its default allowlist covers GitHub, OpenAI, Anthropic, npm and PyPI.

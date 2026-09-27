@@ -3,7 +3,13 @@ services:
   egress:
     image: ${FORGE_EGRESS_IMAGE:-python:3.12-slim}
     command: ["python3", "-I", "/opt/forge/egress.py"]
-    user: "1000:1000"
+    # Setup passes the service account's uid:gid: it owns the private egress.py.
+    user: "${FORGE_EGRESS_USER:-1000:1000}"
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c", "import socket; socket.create_connection(('127.0.0.1', 3128), 2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
