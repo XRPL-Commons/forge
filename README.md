@@ -62,8 +62,8 @@ the compatibility supervisor retains its existing authentication.
 
 The operator UI is the Nuxt app in `ui/` (service `forge-ui`); it reads local
 state through `legacy/forge-status.py`, which now serves only the JSON API on
-loopback. See [`docs/ui-deployment.md`](docs/ui-deployment.md) for how the two
-are deployed. The pages refresh automatically. The server exposes local worker
+loopback. `bin/forge setup` installs both and `bin/forge update` keeps them current;
+see [`docs/ui-deployment.md`](docs/ui-deployment.md). The pages refresh automatically. The server exposes local worker
 output; keep it on a trusted private network. It has no per-user application
 authentication layer. Slot controls use a per-process capability token and
 require the exact bound address and same-origin JSON requests; only the

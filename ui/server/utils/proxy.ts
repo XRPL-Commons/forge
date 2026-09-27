@@ -76,8 +76,13 @@ export function guardAction({ method, headers, contentLength }: GuardInput): Gua
   return { ok: true }
 }
 
+// `x-forwarded-host` is the name the browser used, already checked by
+// guardHost. The status service builds GitHub App manifest URLs from it, so
+// App callbacks return through this front door rather than to the loopback
+// upstream address.
 export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string): Headers {
   const out: Headers = { host: upstreamHost }
+  if (headers.host) out['x-forwarded-host'] = headers.host
   for (const name of ['cookie', 'content-type', 'x-forge-action', 'accept']) if (headers[name]) out[name] = headers[name]
   if (method === 'POST') { out.origin = 'http://' + upstreamHost; out['sec-fetch-site'] = 'same-origin' }
   return out

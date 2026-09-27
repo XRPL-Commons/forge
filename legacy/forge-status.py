@@ -482,6 +482,14 @@ class H(BaseHTTPRequestHandler):
         self.send_header('Content-Length','0')
         self.end_headers()
 
+    def _public_host(self):
+        # Behind the operator UI, Host is the loopback upstream; the UI forwards
+        # the name the browser used after validating it against its own binds.
+        forwarded=self.headers.get('X-Forwarded-Host','')
+        if re.fullmatch(r'[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?|\[[0-9A-Fa-f:.]{2,45}\](?::[0-9]{1,5})?',forwarded):
+            return forwarded
+        return self.headers.get('Host','')
+
     def _trusted_host(self):
         # Reject DNS rebinding even when Origin and Host agree with each other.
         # Only the address actually bound by this tailnet server can read its
@@ -521,7 +529,7 @@ class H(BaseHTTPRequestHandler):
                         'provider':{'api_key'},'check':{'revision'},'start':{'revision'},'reset':{'generation'}}
                 if action not in fields or set(value)!=fields[action]:raise ValueError('Invalid setup action')
                 result={}
-                if action=='github':result=setup.begin(**value,origin='http://'+host,browser=self._browser())
+                if action=='github':result=setup.begin(**value,origin='http://'+self._public_host(),browser=self._browser())
                 elif action=='refresh':result=setup.refresh()
                 elif action=='repository':setup.select(value['repo_id'])
                 elif action=='provider':setup.provider(value['api_key'])

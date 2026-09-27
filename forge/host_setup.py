@@ -2,21 +2,19 @@
 import argparse
 import fcntl
 import getpass
-import hashlib
 import json
 import os
 from pathlib import Path
 import platform
-import runpy
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from contextlib import contextmanager
 
+from . import host_update
 from .onboarding import Onboarding
 from .settings import read_json, write_json
 from .setup_service import Service
@@ -26,10 +24,6 @@ from .harnesses.accounts import owner as login_owner
 from .state import StateError
 
 SOURCE = Path(__file__).resolve().parent.parent
-NODE_IMAGE = 'node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6'
-PYTHON_IMAGE = 'python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea'
-SECCOMP_URL = 'https://raw.githubusercontent.com/moby/profiles/3c28324314729dbade8287e868eef6338c42807a/seccomp/default.json'
-SECCOMP_SHA = '536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74'
 
 
 def command(argv, **kwargs):
@@ -49,8 +43,7 @@ def apparmor_enabled():
     return path.exists() and path.read_text().strip() == 'Y'
 
 
-def install(root, bind='127.0.0.1'):
-    """Idempotent host preparation; never reset or start issue processing."""
+def preflight():
     if platform.system() != 'Linux' or os.getuid() == 0:
         raise ValueError('Run setup on Linux as the non-root Forge service account')
     if not apparmor_enabled():
@@ -61,76 +54,24 @@ def install(root, bind='127.0.0.1'):
     command(['docker', 'info'], stdout=subprocess.DEVNULL)
     command(['docker', 'compose', 'version'], stdout=subprocess.DEVNULL)
     command(['systemctl', '--user', 'show-environment'], stdout=subprocess.DEVNULL)
-    if (root / 'host-runtime.json').exists():
-        print('Host already configured; preserving its image, policies and services.')
-        return
-    tag = 'forge-runner:setup-' + hashlib.sha256(str(root).encode()).hexdigest()[:12]
-    command(['docker', 'build', '--build-arg', 'NODE_IMAGE=' + NODE_IMAGE, '--build-arg', 'PYTHON_IMAGE=' + PYTHON_IMAGE,
-             '-f', str(SOURCE / 'deploy/runner/Dockerfile'), '-t', tag, str(SOURCE)])
-    image = command(['docker', 'image', 'inspect', tag, '--format', '{{.Id}}'], capture_output=True, text=True).stdout.strip()
-    with tempfile.TemporaryDirectory() as temporary:
-        source = Path(temporary) / 'seccomp.json'
-        with urllib.request.urlopen(SECCOMP_URL, timeout=30) as response:
-            source.write_bytes(response.read(1024 * 1024))
-        generate = runpy.run_path(str(SOURCE / 'deploy/runner/seccomp_profile.py'))['generate']
-        write_json(root / 'runner-seccomp.json', generate(source, SECCOMP_SHA))
-    profile = None
-    if apparmor_enabled():
-        profile = 'forge-runner-private-proc'
-        target = Path('/etc/apparmor.d/forge-runner-private-proc')
-        source = SOURCE / 'deploy/runner/forge-runner-private-proc.apparmor'
-        if target.exists() and target.read_bytes() != source.read_bytes():
-            raise ValueError('An existing Forge AppArmor policy differs; review it before replacing it')
-        if not target.exists():
-            command(['sudo', 'install', '-m', '0644', str(source), str(target)])
-            command(['sudo', 'apparmor_parser', '-a', str(target)])
-    network_dir = root / 'deploy/runner'; network_dir.mkdir(parents=True, exist_ok=True)
-    for name in ('compose.yaml', 'egress.py'):
-        shutil.copyfile(SOURCE / 'deploy/runner' / name, network_dir / name)
-    command(['docker', 'compose', '-p', 'forge', '-f', str(network_dir / 'compose.yaml'), 'up', '-d', 'egress'],
-            env={**os.environ, 'FORGE_EGRESS_IMAGE': PYTHON_IMAGE})
-    config = Onboarding(root).runtime()
-    config.update(image=image, apparmor_profile=profile)
-    # Image presence is not readiness. This runs without accounts or network,
-    # before any service or success marker is installed on a fresh host.
-    runpy.run_path(str(SOURCE / 'deploy/test_build_environment.py'))['validate'](
-        image, root / 'runner-seccomp.json', profile)
-    # Save last: failed installation can be repeated without a false success marker.
-    install_services(root, bind)
-    write_json(root / 'host-runtime.json', config)
 
 
-def unit_quote(value):
-    return json.dumps(str(value).replace('%', '%%'))
+def install(root, bind=None, assume_yes=False):
+    """Idempotent: installs a new host or converges an existing one to this checkout.
+
+    Never resets or starts issue processing. Returns True when the runner changed
+    and connected accounts must be verified against it."""
+    preflight()
+    return host_update.reconcile(root, bind, assume_yes)
 
 
-def install_services(root, bind):
-    import ipaddress
-    address = ipaddress.ip_address(bind)
-    if not address.is_loopback and not (address.version == 4 and address in ipaddress.ip_network('100.64.0.0/10')):
-        raise ValueError('Bind the unauthenticated operator UI to loopback or a private tailnet address')
-    units = Path.home() / '.config/systemd/user'; units.mkdir(parents=True, exist_ok=True)
-    commands = {
-        'forge-status': '/usr/bin/python3 ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
-        'forge-supervisor': unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root),
-    }
-    pending = {}
-    for name, execution in commands.items():
-        path = units / (name + '.service')
-        content = ('[Unit]\nDescription=Forge ' + name + '\nAfter=network-online.target\n\n[Service]\n'
-                        'Type=simple\nExecStart=' + execution + '\n'
-                        'Environment=' + unit_quote('PYTHONPATH=' + str(SOURCE)) + '\n'
-                        'Environment=' + unit_quote('FORGE_ROOT=' + str(root)) + '\n'
-                        'Environment=' + unit_quote('FORGE_BIND_ADDRESS=' + bind) + '\n'
-                        'Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nUMask=0077\n\n'
-                        '[Install]\nWantedBy=default.target\n')
-        if path.exists() and path.read_text() != content:
-            raise ValueError('Existing Forge services differ; use the documented upgrade procedure')
-        pending[path] = content
-    for path, content in pending.items():
-        path.write_text(content)
-    command(['systemctl', '--user', 'daemon-reload'])
-    command(['systemctl', '--user', 'enable', '--now', 'forge-status.service', 'forge-supervisor.service'])
+def update(root, bind=None, assume_yes=False):
+    if not (root / 'host-runtime.json').exists():
+        raise ValueError('This host has no Forge installation yet; run bin/forge setup first')
+    preflight()
+    if host_update.reconcile(root, bind, assume_yes) and Onboarding(root).view()['provider_connected']:
+        print('The runner changed; verifying connected accounts against it. New work waits for this check.', flush=True)
+        check(root)
 
 
 @contextmanager
@@ -346,10 +287,12 @@ def status(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=['install', 'login', 'check', 'status'], default=None)
+    parser.add_argument('action', nargs='?', choices=['install', 'update', 'login', 'check', 'status'], default=None)
     parser.add_argument('provider', nargs='?', choices=list(manifests()))
     parser.add_argument('--root', default=str(Path.home() / '.local/share/forge'))
-    parser.add_argument('--bind', default='127.0.0.1')
+    parser.add_argument('--bind', help='Operator UI address: loopback (default) or a private tailnet address; kept across updates')
+    parser.add_argument('--no-pull', action='store_true', help='update: apply the checkout as it is, without fetching')
+    parser.add_argument('--yes', action='store_true', help='Replace service or policy files that were edited outside Forge')
     auth = parser.add_mutually_exclusive_group()
     auth.add_argument('--api-key', action='store_true')
     auth.add_argument('--token', action='store_true',
@@ -360,8 +303,17 @@ def main():
     os.umask(0o077)
     try:
         root = private_root(args.root)
+        if args.action == 'update':
+            if not args.no_pull and host_update.pull():
+                # Run the reconciliation that shipped with the new source, not this one.
+                argv = [sys.executable, '-m', 'forge.host_setup', 'update', '--no-pull', '--root', str(root)]
+                argv += ['--bind', args.bind] if args.bind else []
+                argv += ['--yes'] if args.yes else []
+                os.execv(sys.executable, argv)
+            update(root, args.bind, args.yes)
         if args.action in (None, 'install'):
-            install(root, args.bind)
+            if install(root, args.bind, args.yes) and Onboarding(root).view()['provider_connected']:
+                print('The runner changed; run bin/forge setup check to verify connected accounts against it.')
         if args.action == 'login':
             if not args.provider:
                 parser.error('login requires a harness name')
@@ -378,7 +330,7 @@ def main():
             if Onboarding(root).view()['provider_connected']:
                 print('Checking connections with a small model request per entry; provider charges may apply.')
                 check(root)
-            print('Continue GitHub setup at http://' + args.bind + ':8787/onboarding')
+            print('Continue GitHub setup at http://' + host_update.Record(root).data['bind'] + ':8787/onboarding')
             print('For a remote VM, forward port 8787 over SSH to reach the loopback dashboard.')
         return 0
     except (OSError, ValueError, StateError, subprocess.SubprocessError) as error:
