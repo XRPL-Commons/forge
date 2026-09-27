@@ -3,10 +3,12 @@ import { requestId } from '~/utils/requestId'
 import { ACTION_LABELS, type IssueAction } from '~/utils/issues'
 interface Message { id: string; sequence: number; role: 'user' | 'assistant'; text: string; proposal?: { action: IssueAction; reason: string } | null; receipt?: string }
 interface Conversation { messages: Message[]; before: number | null; status: string; provider?: string; reason: string | null; partial: string; origin: { role: string; provider: string; link: string } | null }
+// Opened from the issue's action bar ("Discuss blocker"); nothing renders,
+// and nothing polls, until it is.
 const props = defineProps<{ issueKey: string }>()
+const open = defineModel<boolean>('open', { default: false })
 const api = useForgeApi()
 const poll = useResource<Conversation>(() => `/api/issues/discussion?issue=${encodeURIComponent(props.issueKey)}`, path => api.get<Conversation>(path), { interval: 2500 })
-const open = ref(false)
 const question = ref('')
 const error = ref('')
 const sending = ref(false)
@@ -52,9 +54,8 @@ async function loadOlder() {
 }
 </script>
 <template>
-  <section class="mt-4 rounded-xl border border-line bg-panel p-3">
-    <UButton color="neutral" variant="outline" class="min-h-11" :aria-expanded="open" @click="open = !open">Discuss blocker</UButton>
-    <div v-if="open" class="mt-3 flex min-w-0 flex-col gap-3">
+  <section v-if="open" id="issue-discussion" class="mt-4 rounded-xl border border-line bg-panel p-3">
+    <div class="flex min-w-0 flex-col gap-3">
       <p class="text-sm text-muted">Discuss why this issue is blocked and what to try next. Applying a proposal submits a decision for Forge to check.</p>
       <p class="text-xs text-muted">New conversation using saved issue evidence.<span v-if="poll.data.value?.provider"> Replying with {{ poll.data.value.provider }}.</span><template v-if="poll.data.value?.origin"> Latest context: {{ poll.data.value.origin.provider }} · {{ poll.data.value.origin.role }}. <NuxtLink :to="poll.data.value.origin.link" class="underline">View attempt</NuxtLink></template></p>
       <UButton v-if="before" color="neutral" variant="ghost" class="self-start min-h-11" @click="loadOlder">Earlier messages</UButton>

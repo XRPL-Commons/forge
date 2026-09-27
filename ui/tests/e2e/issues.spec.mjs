@@ -104,6 +104,10 @@ export default async function (page, { base, scenario, requests }) {
 
   // The description is rendered server-side: no script survives, the
   // relative link points at the file on GitHub, the checkbox is disabled.
+  // It starts collapsed, but is in the page from the first paint.
+  assert.equal(await page.locator('.forge-markdown').isVisible(), false, 'the description starts collapsed')
+  await page.getByRole('button', { name: 'Description' }).click()
+  await page.locator('.forge-markdown').waitFor()
   const injected = await page.evaluate(() => window.injected ?? null)
   assert.equal(injected, null, 'a <script> in an issue body must never execute')
   assert.equal(await page.locator('.forge-markdown script').count(), 0)
@@ -182,14 +186,17 @@ export default async function (page, { base, scenario, requests }) {
     'https://github.com/XRPL-Commons/academy/pull/30')
   assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
   assert.equal(await page.getByRole('link', { name: 'Open on GitHub ↗' }).count(), 0, 'the links row at the bottom is gone')
+  // Discussing the blocker is one more button in the same bar.
+  assert.equal(await actionBar.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 1)
+  await page.getByRole('button', { name: 'Description' }).click()
+  await page.locator('.forge-markdown').waitFor()
   const barBox = await actionBar.boundingBox()
   const bodyBox = await page.locator('.forge-markdown').boundingBox()
   assert.ok(barBox.y + barBox.height <= bodyBox.y, 'the action bar must sit above the description')
 
-  // The review rows live inside Details, and each chip is that reviewer's own
-  // verdict — a passed review reads "Passed" whatever the issue's status is.
-  assert.equal(await page.locator('#issue-reviews').count(), 0, 'the worker prose starts collapsed')
-  await page.getByRole('button', { name: 'Details' }).click()
+  // The review rows live inside Details, open from the start, and each chip is
+  // that reviewer's own verdict — a passed review reads "Passed" whatever the
+  // issue's status is.
   await waitForText(page, 'The change is correct')
   const reviewRows = page.locator('#issue-reviews > div')
   assert.equal(await reviewRows.count(), 2)
@@ -207,7 +214,7 @@ export default async function (page, { base, scenario, requests }) {
 
   // An issue whose worker wrote pages of detail still opens with one headline
   // sentence and a short description, above the decisions; the paths, commands
-  // and environment variables it wrote are only there once Details is opened.
+  // and environment variables it wrote stay in Details below them.
   await scenario('summarised')
   await page.goto(base + '/issues/1%3A620')
   await waitForText(page, 'Stop the release job leaking install tokens')
@@ -216,20 +223,34 @@ export default async function (page, { base, scenario, requests }) {
   const plain = (await page.locator('#issue-plain').innerText()).trim()
   assert.equal(plain.split(/(?<=[.!?])\s+/).filter(Boolean).length, 3, 'at most three sentences of description')
   assert.equal(plain.includes('/'), false, 'no paths in the description')
-  const body = await page.locator('body').innerText()
-  assert.equal(body.includes('ENEEDAUTH'), false, 'the worker’s full text stays behind Details')
-  assert.equal(body.includes('pipeline.ts'), false, 'the worker’s full text stays behind Details')
 
   const summaryBox = await page.locator('#issue-plain').boundingBox()
   const actionsBox = await page.locator('#issue-actions').boundingBox()
   assert.ok(summaryBox.y + summaryBox.height <= actionsBox.y, 'the summary must sit above the action bar')
 
-  await page.getByRole('button', { name: 'Details' }).click()
   await waitForText(page, 'ENEEDAUTH')
   assert.match(await page.locator('#issue-explanation').innerText(), /pipeline\.ts/)
+  const detailsBox = await page.locator('#issue-details').boundingBox()
+  assert.ok(actionsBox.y + actionsBox.height <= detailsBox.y, 'the worker’s full text sits below the action bar')
+
+  // A pass that still needs a person is a warning, and says why instead of "PASS.".
   const verdicts = page.locator('#issue-reviews > div')
-  assert.match(await verdicts.first().innerText(), /^Passed\s+Review/)
+  assert.match(await verdicts.first().innerText(), /^Passed · needs a person\s+Review/)
+  assert.match(await verdicts.first().innerText(), /It changes how release credentials are handled\./)
+  assert.equal((await verdicts.first().innerText()).includes('PASS.'), false)
   assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
+
+  // Three failed attempts out of three, under the status badge.
+  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), '3 of 3 attempts failed')
+  // …and the label that paused it, with who applied it and when.
+  assert.equal((await page.locator('#issue-held-by').innerText()).trim(), 'Labelled forge:hold by @maintainer on Sep 21')
+
+  // Each pull request is named for what it is to the issue.
+  const pulls = page.locator('#issue-actions')
+  assert.equal(await pulls.getByRole('link', { name: 'PR #30' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Earlier Forge draft #26' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/pull/26')
+  assert.equal(await pulls.getByRole('link', { name: 'Other PR #25' }).count(), 1)
 
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')
@@ -253,6 +274,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/issues/1%3A608')
   await waitForText(page, 'Keep learners signed in')
   // The API cut this body short, and the issue says so beside it.
+  await page.getByRole('button', { name: 'Description' }).click()
   await waitForText(page, 'Description shortened. Open on GitHub to read the full issue.')
   await page.getByRole('button', { name: 'Pause' }).click()
   await waitForText(page, 'Pause?')
@@ -269,42 +291,54 @@ export default async function (page, { base, scenario, requests }) {
   })
 
   // An issue waiting for a human approval offers the one decision that helps:
-  // asking named people for the review. The select starts from the configured
-  // human reviewers, and confirming sends the chosen logins as the decision.
+  // asking named people for the review. The button opens a dialog whose select
+  // starts from the configured human reviewers and offers no free text;
+  // confirming sends the chosen logins as the decision.
   await scenario('approval')
   await page.goto(base + '/issues/1%3A614')
   await waitForText(page, 'Rotate the release signing key')
   await waitForText(page, 'The pull request needs a human review.')
   const reviewerBar = page.locator('#issue-actions')
-  const reviewers = reviewerBar.getByRole('button', { name: 'Reviewers' })
-  assert.equal(await reviewers.count(), 1, 'an approval_needed issue offers the reviewer select')
+  assert.equal(await reviewerBar.getByRole('button', { name: 'Reviewers' }).count(), 0, 'the bar holds one button, not a select')
+  assert.equal(await reviewerBar.getByRole('textbox').count(), 0)
+  await reviewerBar.getByRole('button', { name: 'Assign reviewer' }).click()
+  const reviewerDialog = page.getByRole('dialog')
+  await reviewerDialog.waitFor()
+  await waitForText(page, 'Forge asks GitHub to request a review of PR #31 from the people you choose')
+  assert.equal(await reviewerDialog.getByRole('textbox').count(), 0, 'no login can be typed')
+  const reviewers = reviewerDialog.getByRole('button', { name: 'Reviewers' })
   assert.match(await reviewers.innerText(), /maintainer/, 'the configured human reviewers start selected')
   await reviewers.click()
-  await page.getByRole('option', { name: 'second-pair' }).click()
+  await waitForText(page, 'recently merged work here')
+  await page.getByRole('option', { name: /second-pair/ }).click()
   await page.keyboard.press('Escape')
-  await reviewerBar.getByRole('button', { name: 'Assign reviewer' }).click()
+  await reviewerDialog.getByRole('button', { name: 'Assign reviewer' }).click()
   await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  assert.equal(await page.getByRole('dialog').count(), 0, 'the dialog closes once Forge accepts the decision')
   const assigned = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
   assert.equal(assigned.length, 1)
   assert.deepEqual(assigned[0].body, {
     key: '1:614', action: 'assign_reviewer', revision: 'current', reason: 'maintainer, second-pair',
   })
 
-  // Once recorded, the issue says who was asked. A collaborator listing that
-  // failed leaves the free-text box, so an unlisted login is still possible.
+  // Once recorded, the issue says who was asked. With no known reviewers (a
+  // failed listing), the dialog says so and points at the pull request on
+  // GitHub — there is nothing to type and nothing to submit.
   await scenario('approval-requested')
   await page.goto(base + '/issues/1%3A614')
   await waitForText(page, 'Review requested from @maintainer')
   assert.match((await page.locator('#review-requested').innerText()).trim(), /^Review requested from @maintainer( · .+ ago)?$/)
-  assert.equal(await page.locator('#issue-actions').getByRole('button', { name: 'Reviewers' }).count(), 0)
-  const typed = page.locator('#issue-actions').getByRole('textbox', { name: 'Reviewers' })
-  assert.equal(await typed.count(), 1, 'a failed listing falls back to a free-text login')
-  await typed.fill('@outside-collaborator')
   await page.locator('#issue-actions').getByRole('button', { name: 'Assign reviewer' }).click()
-  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
-  const unlisted = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
-  assert.equal(unlisted.length, 1)
-  assert.equal(unlisted[0].body.reason, 'outside-collaborator')
+  const noneDialog = page.getByRole('dialog')
+  await noneDialog.waitFor()
+  await waitForText(page, 'Forge could not find any known reviewers for this repository.')
+  assert.equal(await noneDialog.getByRole('textbox').count(), 0, 'no free-text fallback')
+  assert.equal(await noneDialog.getByRole('button', { name: 'Assign reviewer' }).count(), 0, 'nothing to submit')
+  assert.equal(await noneDialog.getByRole('link', { name: 'Open PR #31 on GitHub ↗' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/pull/31')
+  await noneDialog.getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('dialog').waitFor({ state: 'detached' })
+  assert.equal((await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action').length, 0)
 
   // No other issue offers it: the decision belongs to a waiting pull request.
   await scenario('decision-queue')

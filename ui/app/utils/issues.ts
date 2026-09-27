@@ -9,8 +9,15 @@ import { clampTitle, reviewerMentions } from './format'
 export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed'
 export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop'
 
+// Which pull request this is to the issue: the one Forge is carrying now, an
+// earlier Forge draft it moved on from, or someone else's. Older payloads omit it.
+export type PullRequestKind = 'candidate' | 'forge_attempt' | 'external'
+export interface PullRequestRef { number: number; title: string; kind?: PullRequestKind }
+
 export interface IssueScope { id: number; name: string; complete: boolean; fresh: boolean; at: number | null; error: string | null }
-export interface IssueActionStatus { id: string; key: string; status: 'pending' | 'applied' | 'rejected'; message: string | null }
+// `at` (epoch seconds): when the decision was recorded. The server already
+// drops receipts older than the issue's latest event.
+export interface IssueActionStatus { id: string; key: string; status: 'pending' | 'applied' | 'rejected'; message: string | null; at?: number }
 
 // The plain-language card Forge keeps for every issue: one headline sentence
 // and at most three sentences, written for a reader who does not read code.
@@ -25,7 +32,7 @@ export interface IssueRow {
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop'>[]
   setup_needed: boolean; environment_blocker: string | null
-  pull_requests: { number: number; title: string }[]
+  pull_requests: PullRequestRef[]
   dependencies: number[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
 }
@@ -33,14 +40,27 @@ export interface IssueRow {
 // Who was asked for the human approval, and when. Set by the assign_reviewer
 // decision; the approval itself still has to come through GitHub.
 export interface ReviewRequest { logins: string[]; at: number }
-export interface Reviewer { login: string; name: string }
+// Where Forge found this person: the repository's collaborators, the authors of
+// recently merged work here, or the runtime's configured human reviewers.
+export type ReviewerSource = 'collaborator' | 'recent_author' | 'configured'
+export interface Reviewer { login: string; name: string; source?: ReviewerSource }
 
 export interface IssueHistoryEvent { at: number; kind: string; reason?: string | null }
-export interface IssueReview { role: 'review' | 'audit'; outcome: string | null; summary: string }
+// `human_required`: the worker passed the change but says a person must still
+// look (a secret, a migration, …); `human_reason` says why.
+export interface IssueReview {
+  role: 'review' | 'audit'; outcome: string | null; summary: string
+  human_required?: boolean; human_reason?: string
+}
+export interface IssueAttempts { failed: number; limit: number }
+// A GitHub label that paused the issue, who applied it and when (ISO time).
+export interface IssueLabelHold { label: string; login: string | null; at: string }
 export interface IssueDetail extends IssueRow {
   body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
   // Detail only: the list view carries neither the collaborators nor the request.
   reviewers: Reviewer[]; default_reviewers: string[]; reviewers_requested: ReviewRequest | null
+  attempts?: IssueAttempts | null
+  held_by?: IssueLabelHold[] | null
 }
 
 export interface IssueListResponse {
@@ -157,6 +177,8 @@ export interface ReviewRow {
   // review on an issue that needs attention is still a passed review.
   outcome: ReviewOutcome
   outcomeLabel: string
+  // A pass that still needs a person reads as a warning, not a green light.
+  tone: 'success' | 'error' | 'warning' | 'neutral'
   lead: string
   summary: string
   // True when the lead leaves something out, so the row offers "More".
@@ -173,6 +195,9 @@ const REVIEW_OUTCOMES: Record<string, ReviewOutcome> = {
 const REVIEW_OUTCOME_LABELS: Record<ReviewOutcome, string> = {
   passed: 'Passed', rejected: 'Rejected', unable: 'Could not review', unknown: 'No verdict',
 }
+const REVIEW_TONES: Record<ReviewOutcome, ReviewRow['tone']> = {
+  passed: 'success', rejected: 'error', unable: 'warning', unknown: 'neutral',
+}
 
 function leadSentence(text: string): string {
   const end = text.search(/[.!?](\s|$)/)
@@ -180,14 +205,18 @@ function leadSentence(text: string): string {
 }
 
 export function reviewRow(review: IssueReview): ReviewRow {
-  const summary = (review.summary ?? '').replace(/\s+/g, ' ').trim()
-  const lead = leadSentence(summary)
   const outcome = REVIEW_OUTCOMES[(review.outcome ?? '').toLowerCase()] ?? 'unknown'
+  // The summary of such a pass is often just "PASS."; the reason is the news.
+  const needsPerson = outcome === 'passed' && !!review.human_required
+  const text = (needsPerson && (review.human_reason ?? '').trim()) || review.summary || ''
+  const summary = text.replace(/\s+/g, ' ').trim()
+  const lead = leadSentence(summary)
   return {
     role: review.role,
     label: REVIEW_LABELS[review.role] ?? review.role,
     outcome,
-    outcomeLabel: REVIEW_OUTCOME_LABELS[outcome],
+    outcomeLabel: needsPerson ? 'Passed · needs a person' : REVIEW_OUTCOME_LABELS[outcome],
+    tone: needsPerson ? 'warning' : REVIEW_TONES[outcome],
     lead,
     summary,
     more: summary !== lead,
@@ -202,12 +231,25 @@ export function reviewRows(reviews: IssueReview[] | null | undefined): ReviewRow
 // reads or sends is decided here: the select's options, what it starts with,
 // the decision text that becomes `reason`, and the line the page shows once
 // GitHub has been asked.
-export interface ReviewerOption { value: string; label: string }
+export interface ReviewerOption { value: string; label: string; description?: string }
 
+const REVIEWER_SOURCES: Record<ReviewerSource, string> = {
+  collaborator: 'collaborator',
+  recent_author: 'recently merged work here',
+  configured: 'configured reviewer',
+}
+
+// Only people Forge found for this repository: there is no free-text entry,
+// so a typo can never ask a stranger for the review.
 export function reviewerOptions(reviewers: Reviewer[] | null | undefined): ReviewerOption[] {
   return (reviewers ?? [])
     .filter(person => !!person?.login)
-    .map(person => ({ value: person.login, label: person.name ? `${person.login} · ${person.name}` : person.login }))
+    .map((person) => {
+      const option: ReviewerOption = { value: person.login, label: person.name ? `${person.login} · ${person.name}` : person.login }
+      const source = person.source ? REVIEWER_SOURCES[person.source] : undefined
+      if (source) option.description = source
+      return option
+    })
 }
 
 // Pre-selected: the people the runtime already trusts to approve, kept to the
@@ -219,7 +261,6 @@ export function preselectedReviewers(
   return (detail?.default_reviewers ?? []).filter(login => known.has(login.toLowerCase()))
 }
 
-// A login the list does not know is still accepted: GitHub validates it.
 export function reviewerReason(logins: string[]): string {
   const cleaned = logins.map(login => login.trim().replace(/^@+/, '')).filter(Boolean)
   return [...new Set(cleaned)].join(', ')
@@ -230,6 +271,39 @@ export function reviewRequestText(request: ReviewRequest | null | undefined, now
   const line = `Review requested from ${reviewerMentions(request.logins)}`
   const age = now - (request.at ?? 0)
   return request.at && age >= 0 ? `${line} · ${elapsed(age)} ago` : line
+}
+
+// The pull request a review is requested on: the candidate Forge carries,
+// else (an older payload without kinds) the first one listed.
+export function reviewPull(pulls: PullRequestRef[] | null | undefined): PullRequestRef | null {
+  const list = pulls ?? []
+  return list.find(pull => pull.kind === 'candidate') ?? list.find(pull => !pull.kind) ?? null
+}
+
+const PULL_PREFIXES: Record<PullRequestKind, string> = {
+  candidate: 'PR', forge_attempt: 'Earlier Forge draft', external: 'Other PR',
+}
+
+export function pullLabel(pull: PullRequestRef): string {
+  return `${(pull.kind && PULL_PREFIXES[pull.kind]) || 'PR'} #${pull.number}`
+}
+
+export function attemptsText(attempts: IssueAttempts | null | undefined): string {
+  if (!attempts || !(attempts.failed > 0)) return ''
+  return `${attempts.failed} of ${attempts.limit} attempts failed`
+}
+
+// "Labelled forge:hold by @maintainer on Sep 21", one line per label. The
+// date is the UTC day, so the server and the browser render the same text.
+export function heldByLines(holds: IssueLabelHold[] | null | undefined): string[] {
+  return (holds ?? []).filter(hold => !!hold?.label).map((hold) => {
+    const by = hold.login ? ` by @${hold.login}` : ''
+    const at = new Date(hold.at)
+    const on = Number.isNaN(at.getTime())
+      ? ''
+      : ` on ${at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`
+    return `Labelled ${hold.label}${by}${on}`
+  })
 }
 
 export function eventLabel(kind: string): string {

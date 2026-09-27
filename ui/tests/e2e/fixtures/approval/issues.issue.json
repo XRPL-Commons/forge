@@ -8,7 +8,9 @@
     "body_truncated": false,
     "state": "open",
     "updated_at": "2026-09-21T09:00:00Z",
-    "labels": ["ready"],
+    "labels": [
+      "ready"
+    ],
     "assignees": [],
     "key": "1:614",
     "repo": "XRPL-Commons/academy",
@@ -23,7 +25,8 @@
     "pull_requests": [
       {
         "number": 31,
-        "title": "Rotate the release signing key"
+        "title": "Rotate the release signing key",
+        "kind": "candidate"
       }
     ],
     "dependencies": [],
@@ -43,11 +46,13 @@
     "reviewers": [
       {
         "login": "maintainer",
-        "name": "A Maintainer"
+        "name": "A Maintainer",
+        "source": "configured"
       },
       {
         "login": "second-pair",
-        "name": ""
+        "name": "",
+        "source": "recent_author"
       }
     ],
     "default_reviewers": [

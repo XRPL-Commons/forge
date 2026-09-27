@@ -262,17 +262,20 @@ exercise a decision that needs no reason and one that does:
 
 The two halves of the reviewer decision on an `approval_needed` issue
 (`1:614`, a row of its own, not in `default/issues.json`): `actions`
-carries `assign_reviewer` alone, and `pull_requests` the candidate `#31`.
+carries `assign_reviewer` alone, and `pull_requests` the candidate `#31`
+(`kind:"candidate"`).
 
 - `approval/issues.issue.json` — before anyone is asked: `reviewers` lists
-  two collaborators with push access, `default_reviewers:["maintainer"]` (the
-  runtime's `human_reviewers`, which the select starts from) and
+  two people (`maintainer`, `source:"configured"`; `second-pair`,
+  `source:"recent_author"`), `default_reviewers:["maintainer"]` (the
+  runtime's `human_reviewers`, which the dialog's select starts from) and
   `reviewers_requested: null`.
 - `approval-requested/issues.issue.json` — the same issue once GitHub has
   been asked: `reviewers_requested:{logins:["maintainer"],at:1790000000}` and
   `assignees:["maintainer"]`. Its `reviewers` is empty, which is what a
   failed collaborator listing looks like, so the same fixture exercises the
-  free-text login box that replaces the select.
+  "no known reviewers" dialog: a link to the pull request on GitHub, no
+  free-text login and no submit.
 
 ## orphan-job/
 
@@ -298,11 +301,11 @@ output has not.
 ## reviewed/
 
 - `issues.issue.json` — `default/issues.issue.json` (the working `1:610` row)
-  with a pull request (`#30`), a Forge-authored `summary` (headline "Writing
+  with a pull request (`#30`, `kind:"candidate"`), a Forge-authored `summary` (headline "Writing
   the change") and two reviews carrying the worker contract's own outcomes: a
   `pass` `review` whose summary runs past its lead sentence, and a `reject`
   `audit`. Exercises the issue detail's action bar ("GitHub ↗", "PR #30 ↗")
-  and, inside "Details", its clamped review rows with the "More" toggle and
+  and, inside "Details" (open by default), its clamped review rows with the "More" toggle and
   the per-verdict chips ("Passed" / "Rejected").
 
 ## summarised/
@@ -311,10 +314,16 @@ output has not.
   `retry`) whose worker wrote a long `explanation` full of paths, commands and
   environment variables, plus the plain-language `summary` Forge leads with
   (headline "Stopped: the release job fails before it publishes" and a
-  three-sentence `plain`). Its reviews are a `pass` `review` and an `unable`
-  `audit`, for the "Could not review" chip. Exercises Issue #47: the headline
-  and description above the action bar, and the worker's full text only after
-  "Details" is opened.
+  three-sentence `plain`). Its reviews are a `pass` `review` with
+  `human_required:true` and a `human_reason` (the "Passed · needs a person"
+  chip, whose text is the reason, not the summary's "PASS.") and an `unable`
+  `audit`, for the "Could not review" chip. `attempts:{failed:3,limit:3}`
+  drives the "3 of 3 attempts failed" line, `held_by` (`forge:hold` by
+  `maintainer`) the "Labelled forge:hold by @maintainer on Sep 21" line, and `pull_requests` carries one of
+  each `kind` (`#30` candidate, `#26` forge_attempt, `#25` external) for the
+  "PR #30" / "Earlier Forge draft #26" / "Other PR #25" chips. Exercises Issue #47: the headline
+  and description above the action bar, and the worker's full text in
+  "Details" below it.
 
 ## deployment/
 
