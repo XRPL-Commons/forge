@@ -23,6 +23,13 @@ function currentStep(page) {
   return page.locator('#repository-stage [aria-current="step"] [data-label]').innerText()
 }
 
+// The heading renders with the repository row; the strip settles when its
+// protection check does. Wait for the step instead of racing it.
+function waitForStep(page, label) {
+  return page.waitForFunction((expected) => document.querySelector('#repository-stage [aria-current="step"] [data-label]')?.textContent?.trim() === expected,
+    label, { timeout: 10000 })
+}
+
 // End-to-end behaviour of Settings · Repository setup: the picker, the four
 // setup steps, the review-rules download (filename and Content-Disposition
 // through the Nitro proxy), enabling automation, and the automatic re-check.
@@ -52,6 +59,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.locator('#repo-options').getByRole('link', { name: 'XRPL-Commons/hackathon' }).click()
   await page.waitForURL(base + '/settings/repository?repo_id=2')
   await waitForText(page, 'Enable repository')
+  await waitForStep(page, 'Enable')
   assert.equal((await currentStep(page)).trim(), 'Enable')
   assert.equal((await page.locator('#status').innerText()).trim(), 'Ready to enable')
   assert.equal(
