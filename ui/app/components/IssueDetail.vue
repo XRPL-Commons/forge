@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
 import {
@@ -14,7 +15,6 @@ import {
 const props = defineProps<{ issueKey: string }>()
 
 const UNMANAGED = 'This issue is not in a managed repository. Refresh the issue list.'
-const STALE = 'Showing the last received issue. Refresh before making a decision.'
 const PRIMARY_ACTIONS: IssueAction[] = ['queue', 'resume', 'retry', 'recheck']
 
 const api = useForgeApi()
@@ -64,19 +64,29 @@ const { data: html } = await useAsyncData(`md-${props.issueKey}`, async () => {
   return rendered.html
 }, { watch: [() => detail.value?.body] })
 
-const submitted = ref('')
+const submitted = ref<DecisionReceipt | null>(null)
+const workerReceipt = ref<{ id: string; before: string } | null>(null)
 const dialogError = ref<string | null>(null)
 const decision = ref<IssueAction | null>(null)
 
 // One message line, in the order the operator needs it: what Forge is doing
 // with the last decision, then whether what they are looking at is current,
 // then the receipt for what they just submitted.
-const message = computed(() => {
-  const last = detail.value ? lastAction(actions.value, detail.value.key) : null
-  if (last) return last.status === 'pending' ? 'Applying your decision…' : (last.message ?? '')
-  if (poll.stale.value) return STALE
-  return submitted.value
+const observedDecision = computed(() => workerReceipt.value ? null : receiptAction(actions.value, props.issueKey, submitted.value))
+const message = computed(() => decisionFeedback(observedDecision.value, submitted.value, poll.stale.value))
+watch([observedDecision, submitted], ([action]) => {
+  if (submitted.value && action && action.status !== 'pending') submitted.value = null
 })
+watch(() => props.issueKey, () => { submitted.value = null; workerReceipt.value = null })
+
+function previousDecision(): string | null {
+  return lastAction(actions.value, props.issueKey)?.id ?? null
+}
+function recordDecision(reply: { request?: string }, previous: string | null) {
+  workerReceipt.value = null
+  submitted.value = { request: reply.request ?? null, previous }
+}
+
 
 // What the page leads with: one headline sentence, then at most three
 // sentences. Forge's own status line and the worker's prose move into Details,
@@ -137,16 +147,17 @@ async function assignReviewer() {
   assignError.value = null
   submitting.value = true
   try {
-    await api.act('/api/issues/action', {
+    const previous = previousDecision()
+    const reply = await api.act<{ request?: string }>('/api/issues/action', {
       key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason: reviewerReason(reviewerLogins.value),
     })
+    recordDecision(reply, previous)
   } catch (error: unknown) {
     assignError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
   } finally {
     submitting.value = false
   }
-  submitted.value = 'Decision submitted. Waiting for confirmation.'
   await poll.refresh()
 }
 
@@ -208,6 +219,17 @@ const internalJob = computed<JobView | null>(() => {
   return (factory?.issues ?? []).some(issue => issue.active === id) ? null : job
 })
 
+function workerState(id: string): string {
+  const job = jobs.value.find(job => job.id === id)
+  return JSON.stringify(job ? [job.phase, job.outcome, job.cleanup] : null)
+}
+watch(() => workerReceipt.value && workerState(workerReceipt.value.id), value => {
+  if (workerReceipt.value && value !== workerReceipt.value.before) {
+    workerReceipt.value = null
+    submitted.value = null
+  }
+})
+
 const RESET = {
   title: 'Reset runner?',
   text: 'This terminates the old execution and discards its disposable workspace. Capacity is released only after teardown is verified.',
@@ -230,13 +252,15 @@ async function confirmReset(reason: string) {
   if (!job) return
   resetError.value = null
   try {
+    const before = workerState(job.id)
     await api.act('/api/factory/action', { action: 'reset', target: job.id, reason })
+    submitted.value = { request: null, previous: previousDecision() }
+    workerReceipt.value = { id: job.id, before }
   } catch (error: unknown) {
     resetError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
   }
   closeReset()
-  submitted.value = 'Decision submitted. Waiting for confirmation.'
   await poll.refresh()
 }
 
@@ -281,15 +305,22 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
   if (!issue) return
   dialogError.value = null
   try {
-    if (action === 'stop') await api.act('/api/factory/action', { action: 'stop', target: issue.active, reason })
-    else await api.act('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
+    const previous = previousDecision()
+    if (action === 'stop') {
+      const before = workerState(issue.active!)
+      await api.act('/api/factory/action', { action: 'stop', target: issue.active, reason })
+      submitted.value = { request: null, previous }
+      workerReceipt.value = { id: issue.active!, before }
+    } else {
+      const reply = await api.act<{ request?: string }>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
+      recordDecision(reply, previous)
+    }
   } catch (error: unknown) {
     dialogError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
   }
   decision.value = null
   submitting.value = false
-  submitted.value = 'Decision submitted. Waiting for confirmation.'
   await poll.refresh()
 }
 </script>

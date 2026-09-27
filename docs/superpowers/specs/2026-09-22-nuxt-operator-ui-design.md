@@ -55,7 +55,7 @@ Redundancy rules while porting: one component per concept (card, banner, status 
 
 ## UI kit and theme
 
-Nuxt UI v4 + Tailwind v4, dark only. Theme tokens in `ui/app/assets/css/main.css`: background `#101416`, panel `#192024`, line `#303b40`, text `#edf1ee`, muted `#acb7b9`, mint `#bfe6cd` (primary), blue `#abcfff`, amber `#ecc486`. Components: `USelectMenu` for every select, `UAlert` for banners, `UCard`, `UBadge`, `UModal`, `UTable`, `UButton`. No page-level custom CSS.
+Nuxt UI v4 + Tailwind v4, dark only. Theme tokens in `ui/app/assets/css/main.css`: background `#101416`, panel `#192024`, line `#303b40`, text `#edf1ee`, muted `#acb7b9`, mint `#bfe6cd` (primary), blue `#abcfff`, amber `#ecc486`. Components: `USelectMenu` for every select, `UAlert` for banners, `UCard`, `UBadge`, `UModal`, `UTable`, `UButton`. No page-level custom CSS. Scoped styles belong in components that own sanitized Markdown typography (`MarkdownBody`, `HelpBody`) or card movement (`StageColumn`); these are explicit exceptions to the utility-only layout rule.
 
 ## Testing
 

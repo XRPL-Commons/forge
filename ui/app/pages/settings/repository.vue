@@ -411,13 +411,12 @@ async function refreshAccess() {
       <!-- Footer: check, enable, continue. -->
       <div class="mt-4 flex flex-wrap items-center gap-3">
         <UButton
-          v-if="!accessNeeded"
           id="check"
           color="neutral"
           variant="ghost"
           aria-label="Refresh repository"
           title="Refresh repository"
-          :disabled="busy"
+          :disabled="busy || accessNeeded"
           :aria-busy="checking || busy ? 'true' : undefined"
           @click="check"
         >

@@ -28,13 +28,13 @@ onBeforeUnmount(() => clearInterval(ticker))
 
 const fence = computed(() => { const payload = poll.data.value; return payload && payload.ok === false ? payload : null })
 const view = computed(() => { const payload = poll.data.value; return payload && payload.ok !== false ? payload : null })
-const connectionLost = computed(() => !!poll.error.value && !!view.value)
+const connectionLost = computed(() => !!poll.error.value && !!poll.data.value)
 const fresh = computed(() => isFresh(view.value, now.value))
 const observedAt = computed(() => (view.value?.observation as { at?: number } | undefined)?.at ?? null)
 
 const freshness = computed(() => {
+  if (connectionLost.value) return 'Reconnecting · last known state'
   if (!view.value) return 'Connecting…'
-  if (poll.error.value) return 'Reconnecting · last known state'
   if (fresh.value && observedAt.value) return `Live · checked ${elapsed(now.value - observedAt.value)} ago`
   return 'Updates delayed · last known state'
 })
@@ -44,12 +44,12 @@ const freshness = computed(() => {
 // status line. A {ok:false, reason} payload leaves no state to show, so its
 // reason is the page's single banner.
 const banners = computed<Warning[]>(() => {
+  if (connectionLost.value) return []
   if (fence.value) return [{ kind: 'other', text: fence.value.reason, ...destination('other', route.path) }]
   if (!view.value) {
     const reason = poll.error.value
     return reason ? [{ kind: 'other', text: reason, ...destination('other', route.path) }] : []
   }
-  if (connectionLost.value) return []
   return warnings({ factory: view.value }, now.value, route.path)
 })
 
@@ -77,7 +77,7 @@ function summary(role: ColumnRole, cards: CardModel[]): string {
   const working = cards.filter(card => card.running).length
   const waiting = cards.filter(card => !card.jobId).length
   const between = cards.length - working - waiting
-  return [`${working} working`, `${waiting} queued`, ...(between ? [`${between} starting / finishing`] : []), `${slots.value[role] ?? 0} maximum`].join(' · ')
+  return [`${working} working`, `${waiting} queued`, ...(between ? [`${between} ${fresh.value && !poll.error.value ? 'starting / finishing' : 'last observed'}`] : []), `${slots.value[role] ?? 0} maximum`].join(' · ')
 }
 
 const attentionCount = computed(() => groups.value.attention.length + groups.value.held.length)
@@ -89,6 +89,21 @@ const runnersAuto = computed(() => runnerCards.value.some(card => card.running |
 const runnersManual = ref<boolean | null>(null)
 const runnersOpen = computed(() => runnersManual.value ?? runnersAuto.value)
 const completedOpen = useState('activity-completed-open', () => false)
+
+// Hash targets can arrive before the first factory snapshot, or point inside
+// a manually collapsed disclosure. Open it before scrolling to the target.
+async function revealSection() {
+  if (!view.value) return
+  const hash = route.hash
+  if (hash === '#stage-recovery' || hash === '#runners') runnersManual.value = true
+  else if (hash === '#completed') completedOpen.value = true
+  else return
+  await nextTick()
+  document.getElementById(hash.slice(1))?.scrollIntoView({ block: 'start' })
+}
+watch([() => route.hash, () => !!view.value], () => { if (import.meta.client) void revealSection() }, { flush: 'post' })
+onMounted(revealSection)
+
 
 const announcement = ref('')
 let placement = new Map<string, ColumnRole>()
@@ -142,7 +157,7 @@ watch(() => panel.value.key, (key, before) => {
         <h1 class="text-3xl font-semibold text-white">Factory</h1>
       </div>
       <p
-        v-if="!fence"
+        v-if="!fence || connectionLost"
         id="freshness"
         role="status"
         class="text-xs"
