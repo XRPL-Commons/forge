@@ -24,6 +24,7 @@ DEFAULT = {
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
     'provider': 'codex', 'model': None, 'provider_pool': [], 'provider_ready': None,
+    'codex_parallel_auth': False,
     'ready_label': 'ready', 'hold_labels': ['hold', 'blocked'],
     'merge_method': 'squash',
 }
@@ -57,7 +58,7 @@ def validate(value):
     if config['provider_ready'] is not None and (not isinstance(config['provider_ready'], list)
             or any(not isinstance(v, str) or v not in ids for v in config['provider_ready'])):
         raise ValueError('Verified provider entries must belong to the configured pool')
-    for key in ('enabled', 'merge_enabled', 'human_required'):
+    for key in ('enabled', 'merge_enabled', 'human_required', 'codex_parallel_auth'):
         if type(config[key]) is not bool:
             raise ValueError(key + ' must be boolean')
     for key, low, high in [('cycle_budget_seconds', 15, 300), ('cycle_seconds', 5, 3600), ('grace_seconds', 1, 60),

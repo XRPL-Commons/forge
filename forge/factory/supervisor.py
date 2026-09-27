@@ -599,7 +599,7 @@ class Supervisor:
                     return
                 data = self.ledger.read()
                 pool = self.config.get('provider_pool', [])
-                if pool and not any((self.config.get('provider_ready') is None or entry['id'] in self.config['provider_ready']) and provider_available(entry, data, self.clock()) for entry in pool):
+                if pool and not any((self.config.get('provider_ready') is None or entry['id'] in self.config['provider_ready']) and provider_available(entry, data, self.clock(), codex_parallel_auth=self.config.get('codex_parallel_auth', False)) for entry in pool):
                     return
                 slot = f'{role}-{index + 1}'
                 if data['slots'].get(slot):

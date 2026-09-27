@@ -96,7 +96,8 @@ class Ledger:
                 start = data.get('provider_cursor', 0) % len(pool)
                 selected = next(((start + offset) % len(pool) for offset in range(len(pool))
                                  if ((runner_config.get('provider_ready') is None or pool[(start + offset) % len(pool)]['id'] in runner_config['provider_ready'])
-                                     and provider_available(pool[(start + offset) % len(pool)], data, self.clock()))), None)
+                                     and provider_available(pool[(start + offset) % len(pool)], data, self.clock(),
+                                                            codex_parallel_auth=runner_config.get('codex_parallel_auth', False)))), None)
                 if selected is None:
                     raise StateError('All coding providers are temporarily unavailable')
                 entry = pool[selected]

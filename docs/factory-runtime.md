@@ -85,8 +85,24 @@ entries fence unverified reconnects until qualification completes.
 
 Credentials stay in the private installation store. Refreshable OAuth credentials
 are serialized per reference and saved using compare-and-swap before teardown;
-API-key jobs retain full configured concurrency. Refreshed credentials never
-replace a newer manual login or mutate an external imported login file.
+API-key and long-lived-token jobs retain full configured concurrency. Refreshed
+credentials never replace a newer manual login or mutate an external imported login file.
+
+Set `codex_parallel_auth: true` in `runtime.json` to share an existing ChatGPT
+subscription across Codex workers. The controller gives each worker an access-only
+`chatgptAuthTokens` snapshot, without the refresh token. It checks that the access
+token lasts beyond the job deadline plus five minutes. When needed, the pinned
+Codex app-server renews the login under the installation credential lock, in a
+bounded container with no repository, no model turn, and a private durable auth
+directory. Interrupted renewal is reconciled before another refresh is allowed.
+Snapshots are never written back into the installation login.
+
+Legacy workers with refresh authority must finish cleanup before parallel workers
+start. Disabling the setting likewise waits for existing jobs before returning to
+single-writer mode. Role slots, provider quota cooldowns and host memory admission
+still apply. This uses ChatGPT subscription entitlement, not an OpenAI API key.
+Revoked access still requires reconnecting the account. Qualify Codex with
+`bin/forge setup check codex --root ROOT` after enabling this mode.
 
 ## Image and host policy
 

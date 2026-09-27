@@ -69,5 +69,6 @@
       ],
       "provider_auth_file_env": null
     }
-  ]
+  ],
+  "codex_parallel_auth": false
 }
