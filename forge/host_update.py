@@ -157,6 +157,21 @@ def unit(description, execution, environment=(), *, after='network-online.target
             + 'Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nUMask=0077\n\n[Install]\nWantedBy=default.target\n')
 
 
+UPSTREAM_SECRET = 'state/ui-upstream.secret'
+
+
+def ensure_upstream_secret(root):
+    """The secret the UI presents to the status API (0600, created once)."""
+    import secrets
+    path = Path(root) / UPSTREAM_SECRET
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not path.exists():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(secrets.token_urlsafe(32))
+    return path
+
+
 def ui_container(root):
     return 'forge-ui-' + hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:12]
 
@@ -172,12 +187,15 @@ def desired_units(root, bind):
           '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--user', f'{os.getuid()}:{os.getgid()}',
           '--memory', '512m', '--pids-limit', '256', '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m',
           '--mount', 'type=bind,source=' + str(root / 'ui/current') + ',target=/app,readonly',
+          '--mount', 'type=bind,source=' + str(root / UPSTREAM_SECRET) + ',target=/run/forge/upstream.secret,readonly',
+          '--env', 'NITRO_FORGE_UPSTREAM_SECRET_FILE=/run/forge/upstream.secret',
           '--env', 'NODE_ENV=production', '--env', 'HOST=' + bind, '--env', 'PORT=' + str(UI_PORT),
           '--env', f'NITRO_FORGE_API=http://127.0.0.1:{API_PORT}', '--env', 'FORGE_ROOT=/app',
           NODE_IMAGE, 'node', '/app/server/index.mjs']
     return {
         'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
-                             python + ['FORGE_BIND_ADDRESS=127.0.0.1', 'FORGE_PORT=' + str(API_PORT)]),
+                             python + ['FORGE_BIND_ADDRESS=127.0.0.1', 'FORGE_PORT=' + str(API_PORT),
+                                       'FORGE_UPSTREAM_SECRET_FILE=' + str(root / UPSTREAM_SECRET)]),
         'forge-ui': unit('Forge operator UI', ' '.join(unit_quote(part) for part in ui),
                          after='network-online.target forge-status.service',
                          extra='ExecStartPre=-' + docker + ' rm --force ' + name + '\n'
@@ -440,6 +458,7 @@ def reconcile(root, bind=None, assume_yes=False):
     if not fresh and runtime_changed:
         switch_runtime(root, image, APPARMOR_PROFILE)
     switch_ui(root, release)
+    ensure_upstream_secret(root)
     units.mkdir(parents=True, exist_ok=True)
     for name in unit_changes:
         path = units / (name + '.service')

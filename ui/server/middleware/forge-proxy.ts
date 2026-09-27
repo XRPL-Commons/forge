@@ -1,4 +1,5 @@
-import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, responseHeaders, readCapped, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
+import { readFileSync } from 'node:fs'
+import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
 
 export default defineEventHandler(async (event) => {
   const path = event.path
@@ -16,14 +17,16 @@ export default defineEventHandler(async (event) => {
   }
   const guard = guardAction({ method: req.method ?? 'GET', headers, contentLength: Number(headers['content-length'] ?? 0) })
   if (!guard.ok) { setResponseStatus(event, guard.status); return { ok: false, reason: guard.reason } }
-  const base = useRuntimeConfig().forgeApi.replace(/\/$/, '')
+  const config = useRuntimeConfig()
+  const base = config.forgeApi.replace(/\/$/, '')
+  const secret = readUpstreamSecret(config.forgeUpstreamSecretFile, path => readFileSync(path, 'utf8'))
   const upstreamHost = new URL(base).host
   // A Node Buffer is a valid fetch body at runtime; the DOM `BodyInit` type
   // just does not name it.
   const body = (req.method === 'POST' ? await readRawBody(event, false) : undefined) as BodyInit | undefined
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
   try {
-    const upstream = await fetch(base + path, { method: req.method, headers: upstreamHeaders(headers, req.method ?? 'GET', upstreamHost) as Record<string, string>,
+    const upstream = await fetch(base + path, { method: req.method, headers: upstreamHeaders(headers, req.method ?? 'GET', upstreamHost, secret) as Record<string, string>,
       body, redirect: 'manual', signal: controller.signal })
     const result = await readCapped(upstream, MAX_RESPONSE_BODY, controller)
     if (!(result instanceof Buffer)) { setResponseStatus(event, 502); return { ok: false, reason: 'Upstream response too large' } }
