@@ -148,11 +148,15 @@ const server = http.createServer(async (req, res) => {
     record(req, pathname, query, body)
     if (req.method === 'POST') {
       if (body.action === 'send') {
-        conversation.messages.push({ id: body.request_id, sequence: 1, role: 'user', text: body.message })
-        conversation.messages.push({ id: '11111111-2222-4333-8444-555555555555', sequence: 2, role: 'assistant',
+        conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text: body.message })
+        // A message containing "(hold)" leaves the reply in progress so a
+        // spec can exercise stopping it; anything else is answered at once.
+        if (body.message.includes('(hold)')) Object.assign(conversation, { status: 'running', reason: 'Agent is reading the saved evidence', partial: 'Reading the saved evidence' })
+        else conversation.messages.push({ id: '11111111-2222-4333-8444-555555555555', sequence: conversation.messages.length + 1, role: 'assistant',
           text: 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)',
           proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
-      } else if (body.action === 'apply') conversation.messages[1].receipt = 'discussion-decision'
+      } else if (body.action === 'cancel') Object.assign(conversation, { status: 'cancelled', reason: 'Reply stopped', partial: '' })
+      else if (body.action === 'apply') conversation.messages.find(m => m.id === body.message_id).receipt = 'discussion-decision'
       return send(res, 200, withToken({ ok: true, request: 'discussion-decision' }))
     }
     return send(res, 200, withToken({ ok: true, ...conversation }))
