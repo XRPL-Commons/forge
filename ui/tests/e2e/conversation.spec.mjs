@@ -26,6 +26,8 @@ export default async function (page, { base, requests }) {
   await page.getByText('Reading the saved evidence', { exact: true }).waitFor()
   assert.equal(await prompt.isDisabled(), true)
   await page.screenshot({ path: '/tmp/forge-conversation-replying.png', fullPage: true })
+  // Stop is the live control while a reply runs: enabled, not greyed out.
+  assert.equal(await page.getByRole('button', { name: 'Stop reply', exact: true }).isEnabled(), true)
   await page.getByRole('button', { name: 'Stop reply', exact: true }).click()
   await page.getByText('Reply stopped').waitFor()
   assert.equal(await prompt.isDisabled(), false)

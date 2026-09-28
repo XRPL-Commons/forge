@@ -137,7 +137,7 @@ async function loadOlder() {
             size="sm"
             :status="promptStatus"
             :loading="sending"
-            :disabled="sending || busy || !question.trim()"
+            :disabled="promptStatus === 'ready' ? sending || !question.trim() : sending"
             :aria-label="submitLabel"
             @stop="cancel"
             @reload="send"
