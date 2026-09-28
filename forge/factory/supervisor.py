@@ -562,9 +562,11 @@ class Supervisor:
         fresh = self.github.pr(item, pr['number'])
         if fresh['head']['sha'] == item['candidate']['head'] and fresh.get('mergeable') is False:
             target = item['candidate'].get('base_ref') or 'the target branch'
-            if self.ledger.resolve_conflict(item['key'], target):
-                self.github.check(item, 'controller', item['candidate'], external, 'failure',
-                                  f'Conflicts with {target}; Forge is returning it to Build to update the branch')
+            # Publish first: once the issue leaves approval it is not checked here
+            # again, so a check lost after the move would stay "waiting" forever.
+            self.github.check(item, 'controller', item['candidate'], external, 'failure',
+                              f'Conflicts with {target}; Forge is returning it to Build to update the branch')
+            self.ledger.resolve_conflict(item['key'], target)
             return
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
