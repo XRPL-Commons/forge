@@ -107,6 +107,26 @@ class FactoryTest(unittest.TestCase):
             self.supervisor.cycle()
         self.assertIn(done, [c.args[0]['key'] for c in reconcile.call_args_list])
 
+    def test_an_issue_cut_short_by_the_budget_is_observed_first_next_cycle(self):
+        from forge.factory.github import GitHubBudgetExhausted
+        other = self.ledger.discover({'id': 1, 'name': 'example/project'}, 2, 'requirements')
+        with self.ledger.transaction() as data:
+            data['issues'][self.key]['last_observed'] = self.now - 100
+            data['issues'][other]['last_observed'] = self.now - 50
+        with patch.object(self.supervisor, 'reconcile', side_effect=GitHubBudgetExhausted('Cycle observation budget reached')):
+            self.supervisor.cycle()
+        self.assertEqual(self.ledger.read()['issues'][self.key]['last_observed'], self.now - 100)
+        with patch.object(self.supervisor, 'reconcile') as reconcile:
+            self.supervisor.cycle()
+        self.assertEqual(reconcile.call_args_list[0].args[0]['key'], self.key)
+        # An issue that never fits rotates after three interruptions in a row.
+        with self.ledger.transaction() as data:
+            data['issues'][self.key]['last_observed'] = self.now - 100
+        with patch.object(self.supervisor, 'reconcile', side_effect=GitHubBudgetExhausted('Cycle observation budget reached')):
+            for _ in range(3):
+                self.supervisor.cycle()
+        self.assertEqual(self.ledger.read()['issues'][self.key]['last_observed'], self.now)
+
     def test_dispatch_keeps_a_share_of_the_cycle_budget(self):
         # Two slow observations would eat the whole 60 s budget; the second is
         # skipped so a builder is still reserved this cycle.

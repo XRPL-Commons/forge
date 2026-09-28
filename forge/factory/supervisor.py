@@ -94,16 +94,27 @@ class Supervisor:
             try:
                 self.reconcile(item)
             except GitHubBudgetExhausted:
-                pass  # The next cycle resumes with the least recently observed issue.
+                # Cut short: leave it least recently observed so the next cycle
+                # starts with it. Marking it observed sent a heavy issue (8 calls,
+                # ~12 s) to the back of the rotation every time it was interrupted.
+                # After three interruptions in a row it rotates anyway, so one
+                # issue that never fits cannot starve the others.
+                with self.ledger.transaction() as data:
+                    current = data['issues'][item['key']]
+                    current['budget_interruptions'] = current.get('budget_interruptions', 0) + 1
+                    if current['budget_interruptions'] >= 3:
+                        current.update(last_observed=self.clock(), budget_interruptions=0)
+                break
             except (GitHubUnavailable, ValueError, KeyError) as error:
                 self.errors.append({'issue': item['key'], 'phase': 'github', 'reason': str(error)})
-            finally:
-                with self.ledger.transaction() as data:
-                    data['issues'][item['key']]['last_observed'] = self.clock()
-                    if settled:
-                        data['issues'][item['key']]['settled_observed'] = True
-                    else:
-                        data['issues'][item['key']].pop('settled_observed', None)
+            # Observed only when the reconcile finished or failed on its own terms.
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['last_observed'] = self.clock()
+                data['issues'][item['key']].pop('budget_interruptions', None)
+                if settled:
+                    data['issues'][item['key']]['settled_observed'] = True
+                else:
+                    data['issues'][item['key']].pop('settled_observed', None)
         self.observe_deployments(observe_until)
         self.github.deadline = cycle_deadline
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
