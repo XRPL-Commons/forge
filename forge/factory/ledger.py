@@ -232,6 +232,22 @@ class Ledger:
             self.event(data, issue, 'failed_attempt', attempt=identifier, cause=cause, count=self.failure_count(issue))
             return True
 
+    def resolve_conflict(self, key, target):
+        """The target moved under a finished candidate: rebuild it on the same branch.
+
+        Not a failed attempt: the change was fine when made, so no budget is
+        charged. Review and audit run again on the updated head."""
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            if issue['active'] or not issue['candidate']:
+                return False
+            plan = (f'The pull request now conflicts with the latest {target}. Update the existing branch from {target}, '
+                    'resolve the conflicts without changing the intended behaviour, run the checks again and push to the same pull request.')
+            issue.update(state='ready', retry_plan=plan, reason=f'Conflicts with {target}; returning to Build to update the branch',
+                         evidence={})
+            self.event(data, issue, 'candidate_conflict', reason=plan)
+            return True
+
     @staticmethod
     def failure_count(issue):
         return sum(f['charged'] for f in issue['failures'][issue['budget_start']:])

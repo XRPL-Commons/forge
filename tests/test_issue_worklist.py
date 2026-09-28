@@ -212,9 +212,12 @@ class WorklistTests(unittest.TestCase):
         row = self.inventory.view()['issues'][0]
         self.assertFalse(row['fresh']); self.assertEqual(row['actions'], [])
         data = self.inventory.read(); entry = data['repositories']['1']
+        # A routine rescan in progress: the issue is still known from the last
+        # complete listing, so its actions stay (they are re-checked against
+        # GitHub before anything is applied). Stale or failed data still offers none.
         entry.update(error=None, at=time.time(), complete=False, scan={'issues': {}})
         write_json(self.inventory.path, data)
-        self.assertFalse(self.inventory.view()['issues'][0]['fresh'])
+        self.assertTrue(self.inventory.view()['issues'][0]['fresh'])
 
     def test_queue_is_explicit_preserves_labels_and_is_replayable(self):
         identifier, decision = self.decision('queue')

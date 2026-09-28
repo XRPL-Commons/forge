@@ -132,6 +132,29 @@ class CycleTest(unittest.TestCase):
         self.github.available = True; self.cycle()
         self.assertEqual(self.active()['role'], 'review')
 
+    def test_a_conflict_while_waiting_for_approval_returns_to_build_without_charging_an_attempt(self):
+        self.cycle(); build = self.active(); self.github.publish(build); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
+        self.assertEqual(self.state(), 'approval_needed')
+        # The target moves on and the PR now conflicts; nobody has approved yet.
+        self.github.pull['mergeable'] = False
+        self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['failures'], [])
+        self.assertIn('Update the existing branch', item['retry_plan'])
+        self.assertEqual(item['evidence'], {})
+        self.assertEqual(self.active()['role'], 'build')
+        self.assertEqual(self.active()['branch'], build['branch'])
+
+    def test_a_conflict_found_after_approval_also_returns_to_build_uncharged(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle()
+        self.github.pull['mergeable'] = False
+        self.finish('audit'); self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(self.ledger.failure_count(item), 0)
+        self.assertEqual(self.active()['role'], 'build')
+
     def test_human_wait_then_approval_without_additional_audit(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
