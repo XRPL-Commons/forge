@@ -16,7 +16,7 @@ RUN mongod --version && npm install --global mongoose@9.10.2 \
     && ln -s /opt/forge/build_environment.py /usr/local/bin/forge-services \
     && sed -i '/^"\/sys\/fs\/cgroup" = "read"$/a "/sys/devices/system/cpu/possible" = "read"' /etc/codex/requirements.toml \
     && touch /opt/forge/full-environment
-COPY deploy/runner/services-canary.cjs /opt/forge/services-canary.cjs
+COPY --chmod=0644 deploy/runner/services-canary.cjs /opt/forge/services-canary.cjs
 LABEL org.forge.services="mongodb,postgres,redis"
 USER 1000:1000
 WORKDIR /work

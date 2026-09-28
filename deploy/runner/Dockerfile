@@ -2,7 +2,7 @@
 ARG NODE_IMAGE=node:24-slim
 ARG PYTHON_IMAGE=python:3.12-slim
 FROM ${NODE_IMAGE} AS harnesses
-COPY forge/harnesses /opt/forge/harnesses
+COPY --chmod=0755 forge/harnesses /opt/forge/harnesses
 RUN node /opt/forge/harnesses/install.cjs
 RUN npm install --global corepack@0.34.0 playwright-core@1.55.0 \
     && COREPACK_HOME=/opt/forge/corepack corepack prepare pnpm@10.23.0 --activate
@@ -20,11 +20,13 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
     && corepack enable
-COPY forge/harnesses /opt/forge/harnesses
+COPY --chmod=0755 forge/harnesses /opt/forge/harnesses
 RUN node /opt/forge/harnesses/install.cjs --links-only \
     && python3 /opt/forge/harnesses/claude/prepare_launch.py
-COPY forge/factory/job.py forge/factory/harness.py forge/factory/probe.py forge/factory/build_environment.py /opt/forge/
-COPY deploy/runner/browser-canary.cjs /opt/forge/browser-canary.cjs
+# Updates run with a private umask; image permissions must not inherit it.
+COPY --chmod=0644 forge/factory/job.py forge/factory/harness.py forge/factory/probe.py /opt/forge/
+COPY --chmod=0755 forge/factory/build_environment.py /opt/forge/build_environment.py
+COPY --chmod=0644 deploy/runner/browser-canary.cjs /opt/forge/browser-canary.cjs
 RUN ln -s /opt/forge/build_environment.py /usr/local/bin/safe-build
 LABEL org.forge.build-environment="1"
 USER 1000:1000
