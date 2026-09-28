@@ -105,7 +105,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
-        if self.path not in {'/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/issues/action', '/api/issues/refresh', '/api/issues/discussion'}:
+        if self.path not in {'/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -197,6 +197,17 @@ class H(BaseHTTPRequestHandler):
                         or type(value['repo_id']) is not int):
                     raise ValueError('Expected repository identity, current revision, and a deployment decision')
                 result=RepositorySetup(settings_service()).deployment(**value)
+                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+            if self.path == '/api/repositories/environment':
+                from forge.repository_environments import RepositoryEnvironments
+                from forge.repository_setup import RepositorySetup
+                if (not isinstance(value,dict) or set(value)!={'repo_id','revision','environment_revision','action'}
+                        or type(value['repo_id']) is not int or value['action'] not in ('scan','confirm')
+                        or not isinstance(value['revision'],str) or not isinstance(value['environment_revision'],str)):
+                    raise ValueError('Expected repository, current requirements, and scan or confirm.')
+                settings=settings_service()
+                RepositoryEnvironments(settings).act(**value)
+                result=RepositorySetup(settings).view(value['repo_id'])
                 self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
             if self.path == '/api/settings/sync':
                 if value != {}:raise ValueError('Expected an empty sync request')

@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict'
+
+const path = '/settings/repository?repo_id=2'
+const endpoint = '/api/repositories/environment'
+export default async function (page, { base, scenario, requests }) {
+  await scenario('environment-idle')
+  await page.goto(base + path)
+  const card = page.locator('#test-databases')
+  await card.getByRole('button', { name: 'Scan requirements' }).click()
+  await page.waitForFunction(() => document.querySelector('#test-databases')?.textContent.includes('Scanning dependency'))
+  assert.equal(await card.getByRole('button', { name: 'Scan requirements' }).isDisabled(), true)
+  const scan = (await requests()).filter(r => r.method === 'POST' && r.path === endpoint)
+  assert.equal(scan.length, 1)
+  assert.deepEqual(scan[0].body, { repo_id: 2, revision: 'settings-rev-1', environment_revision: 'env-idle', action: 'scan' })
+
+  await scenario('environment-proposed')
+  await card.getByRole('button', { name: 'Save requirements' }).waitFor()
+  assert.ok((await card.innerText()).includes('Detected: MongoDB'))
+  await card.locator('summary').click()
+  assert.ok((await card.innerText()).includes('package.json: declares or references mongodb'))
+  assert.ok((await card.innerText()).includes('tests/e2e/fixtures/global-setup.ts'))
+  await card.getByRole('button', { name: 'Save requirements' }).click()
+  await page.waitForFunction(() => document.querySelector('#test-databases')?.textContent.includes('Saved: MongoDB'))
+  const saved = (await requests()).filter(r => r.method === 'POST' && r.path === endpoint)
+  assert.deepEqual(saved[0].body, { repo_id: 2, revision: 'settings-rev-1', environment_revision: 'env-proposed', action: 'confirm' })
+  await page.reload()
+  await page.waitForFunction(() => document.querySelector('#test-databases')?.textContent.includes('Saved: MongoDB'))
+  assert.equal(await card.getByRole('button', { name: 'Save requirements' }).count(), 0)
+  assert.ok((await card.innerText()).includes('Forge reuses them for future jobs'))
+  assert.equal((await requests()).filter(r => r.method === 'POST' && r.path === endpoint).length, 1, 'reload must not scan or confirm again')
+
+  await scenario('environment-failed')
+  await page.goto(base + path)
+  await card.getByRole('alert').waitFor()
+  assert.ok((await card.innerText()).includes('Saved: MongoDB'), 'failure must preserve saved requirements')
+  await card.getByRole('button', { name: 'Scan again' }).click()
+  await page.waitForFunction(() => document.querySelector('#test-databases')?.textContent.includes('Scanning dependency'))
+
+  await scenario('environment-unavailable')
+  await page.goto(base + path)
+  await card.getByRole('button', { name: 'Save requirements' }).waitFor()
+  assert.equal(await card.getByRole('button', { name: 'Save requirements' }).isDisabled(), true)
+  assert.ok((await card.innerText()).includes('Database workers are unavailable'))
+
+  await scenario('environment-empty')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(base + path)
+  await card.getByRole('button', { name: 'Save requirements' }).click()
+  await card.getByRole('alert').waitFor()
+  assert.ok((await card.innerText()).includes('No supported databases detected'))
+  assert.ok((await card.innerText()).includes('Reload and review them again'))
+  assert.equal(await card.getByRole('button', { name: 'Save requirements' }).isDisabled(), false)
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+  await page.screenshot({ path: '/tmp/forge-environment-ui-mobile.png', fullPage: true })
+
+  await scenario('environment-proposed')
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(base + path)
+  await card.getByRole('button', { name: 'Save requirements' }).waitFor()
+  await card.locator('summary').click()
+  await page.screenshot({ path: '/tmp/forge-environment-ui-desktop.png', fullPage: true })
+}

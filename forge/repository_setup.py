@@ -54,6 +54,9 @@ class RepositorySetup:
             return {'repositories': {}}
 
     def views(self, rows, config):
+        from .repository_environments import RepositoryEnvironments
+        environments = RepositoryEnvironments(self.settings)
+        environment_snapshot = environments.snapshot()
         data, now = self.read(), self.settings.clock()
         profiles = {r['id']: r.get('deployment') for r in config['repositories']}
         entries = self.proposals()
@@ -72,6 +75,7 @@ class RepositorySetup:
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
             result.append({**row, 'protection_status': status, 'protection_ready': status == 'ready',
+                           'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
                            'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
                            'setup_url': '/settings/repository?repo_id=' + str(row['id']),
