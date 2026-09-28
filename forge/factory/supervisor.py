@@ -83,6 +83,14 @@ class Supervisor:
         for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: i.get('last_observed', 0)):
             if time.monotonic() >= observe_until:
                 break
+            # Merged and cancelled issues change rarely (a reopen); observing them
+            # as often as open work stretched a full rotation to ~20 minutes.
+            # The first observation after settling still runs: it closes the
+            # GitHub issue and updates labels.
+            settled = item['state'] in self.SETTLED_STATES and not item.get('active')
+            if (settled and item.get('settled_observed')
+                    and self.clock() - item.get('last_observed', 0) < self.SETTLED_OBSERVE_SECONDS):
+                continue
             try:
                 self.reconcile(item)
             except GitHubBudgetExhausted:
@@ -92,6 +100,10 @@ class Supervisor:
             finally:
                 with self.ledger.transaction() as data:
                     data['issues'][item['key']]['last_observed'] = self.clock()
+                    if settled:
+                        data['issues'][item['key']]['settled_observed'] = True
+                    else:
+                        data['issues'][item['key']].pop('settled_observed', None)
         self.observe_deployments(observe_until)
         self.github.deadline = cycle_deadline
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
@@ -700,6 +712,8 @@ class Supervisor:
         return None, None
 
     DISCOVERY_INTERVAL = 300
+    SETTLED_STATES = ('merged', 'cancelled')
+    SETTLED_OBSERVE_SECONDS = 3600
 
     def discovery_due(self):
         """True when any enabled repository has not been read for new issues in a while."""

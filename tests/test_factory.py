@@ -93,6 +93,20 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(self.item()['active'], job['id'])
         self.assertEqual(self.item()['state'], 'ready')
 
+    def test_settled_issues_are_observed_hourly_and_open_ones_every_rotation(self):
+        done = self.ledger.discover({'id': 1, 'name': 'example/project'}, 2, 'requirements')
+        with self.ledger.transaction() as data:
+            data['issues'][done].update(state='merged', last_observed=self.now - 60, settled_observed=True)
+            data['issues'][self.key]['last_observed'] = self.now - 60
+        with patch.object(self.supervisor, 'reconcile') as reconcile:
+            self.supervisor.cycle()
+        self.assertEqual([c.args[0]['key'] for c in reconcile.call_args_list], [self.key])
+        with self.ledger.transaction() as data:
+            data['issues'][done]['last_observed'] = self.now - 3601
+        with patch.object(self.supervisor, 'reconcile') as reconcile:
+            self.supervisor.cycle()
+        self.assertIn(done, [c.args[0]['key'] for c in reconcile.call_args_list])
+
     def test_dispatch_keeps_a_share_of_the_cycle_budget(self):
         # Two slow observations would eat the whole 60 s budget; the second is
         # skipped so a builder is still reserved this cycle.
