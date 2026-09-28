@@ -11,6 +11,16 @@ export type AccessStatus = 'ok' | 'unknown' | 'not_configured' | 'stale' | 'miss
 export type RepoAccessStatus = 'ready' | 'missing_access' | 'name_changed' | 'archived' | AccessStatus
 export type ProtectionStatus = 'unchecked' | 'checking' | 'unknown' | 'stale' | 'ready' | 'needs_setup' | 'access_needed'
 
+export interface EnvironmentRequirements { services: string[]; evidence: string[]; head: string }
+export interface RepositoryEnvironment {
+  profile: (EnvironmentRequirements & { confirmed_at: number }) | null
+  proposal: (EnvironmentRequirements & { revision: string }) | null
+  status: 'idle' | 'running' | 'complete' | 'failed'
+  error: string | null
+  full_available: boolean
+  revision: string
+}
+
 export interface RoleAccess {
   status: AccessStatus
   missing_permissions: string[]
@@ -98,6 +108,7 @@ export interface RepositoryRow {
   protection_last_known: ProtectionReport | null
   rules_url: string; setup_url: string
   deployment?: DeploymentRow
+  environment?: RepositoryEnvironment
 }
 
 export type SyncState =

@@ -395,9 +395,25 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/deployment']:
+        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/deployment','/api/repositories/environment']:
             h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
             h.do_POST();h.send_error.assert_called_once_with(403)
+
+    def test_environment_actions_validate_envelope_and_return_repository_view(self):
+        with patch('forge.repository_environments.RepositoryEnvironments') as environment, \
+                patch('forge.repository_setup.RepositorySetup') as setup:
+            setup.return_value.view.return_value = {'repositories': [{'id': 10}], 'revision': 'r'}
+            for action in ('scan', 'confirm'):
+                value = {'repo_id': 10, 'revision': 'r', 'environment_revision': 'env-r', 'action': action}
+                environment.return_value.act.reset_mock()
+                h = self.handler('/api/repositories/environment', value); h.do_POST()
+                environment.return_value.act.assert_called_once_with(**value)
+                self.assertTrue(json.loads(h._send.call_args.args[0])['ok'])
+            for change in ({'action': 'launch'}, {'repo_id': True}, {'environment_revision': None}, {'extra': True}):
+                environment.return_value.act.reset_mock()
+                h = self.handler('/api/repositories/environment', {**value, **change}); h.do_POST()
+                environment.return_value.act.assert_not_called()
+                self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
 
     def test_download_is_attachment_and_does_not_start_a_check(self):
         with patch('forge.repository_setup.RepositorySetup') as cls:

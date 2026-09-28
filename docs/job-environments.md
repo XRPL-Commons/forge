@@ -32,6 +32,21 @@ The base MongoDB image is digest-pinned in `deploy/runner/Dockerfile.full`.
 
 ## Review each repository's services
 
+Open the repository's setup page from **Settings → GitHub access**. In
+**Test databases**, select **Scan requirements**. Forge scans dependency, test
+and CI files in the background and shows the databases it found. Expand
+**Source files** to review the evidence, then select **Save requirements**.
+
+The saved requirements appear on the same page and apply to future jobs. You do
+not need to repeat this for every issue or every run. Use **Scan again** when
+the repository's dependencies or test setup change. A failed scan keeps the
+previously saved requirements. If no supported databases are detected, saving
+selects the standard environment. Explicit issue environment labels still win.
+Database requirements can only be saved when the host has a qualified full
+environment. The UI does not launch a test job when you save.
+
+The equivalent terminal commands remain available for administrators:
+
 ```sh
 bin/forge factory environment-probe --root /path/to/forge-runtime --target REPOSITORY_ID
 bin/forge factory environment-confirm --root /path/to/forge-runtime \

@@ -42,6 +42,8 @@ const accessNote = ref('')
 // One auto-check per observation: `revision:protection_status:observed_at`.
 const autoCheckKey = ref('')
 const deployError = ref('')
+const environmentError = ref('')
+const environmentAction = ref<'scan' | 'confirm' | null>(null)
 const rejecting = ref(false)
 const deployments = ref<Record<string, FactoryDeployment>>({})
 let loadingDeployments = false
@@ -82,6 +84,7 @@ watch(repoId, async () => {
   autoCheckKey.value = ''
   error.value = ''
   deployError.value = ''
+  environmentError.value = ''
   // A refresh started before the navigation resolves with the previous
   // route's payload (`usePoll` coalesces in-flight loads), which holds no row
   // for the new repository: ask once more rather than leave the page empty
@@ -252,6 +255,28 @@ async function decide(action: 'confirm' | 'reject' | 'reread', extra: Record<str
 async function rejectDeployment(reason: string) {
   rejecting.value = false
   await decide('reject', { reason })
+}
+
+async function updateEnvironment(action: 'scan' | 'confirm') {
+  const current = row.value
+  if (!view.value || !current?.environment || busy.value) return
+  busy.value = true
+  environmentAction.value = action
+  environmentError.value = ''
+  try {
+    const next = await api.act<RepositoriesView>('/api/repositories/environment', {
+      repo_id: current.id, revision: view.value.revision,
+      environment_revision: current.environment.revision, action,
+    })
+    if (repoId.value === current.id) poll.replace(next)
+  } catch (failure: unknown) {
+    if (repoId.value === current.id) environmentError.value = actionMessage(failure, 'Could not update database requirements.')
+    busy.value = false
+    await poll.refresh()
+  } finally {
+    busy.value = false
+    environmentAction.value = null
+  }
 }
 
 async function refreshAccess() {
@@ -455,6 +480,18 @@ async function refreshAccess() {
         @confirm="domain => decide('confirm', { domain })"
         @reject="rejecting = true"
         @reread="decide('reread')"
+      />
+
+      <RepositoryEnvironmentCard
+        v-if="live && row.environment"
+        :key="row.id"
+        :environment="row.environment"
+        :busy="busy"
+        :action="environmentAction"
+        :error="environmentError"
+        :access-ready="row.access_ready"
+        @scan="updateEnvironment('scan')"
+        @confirm="updateEnvironment('confirm')"
       />
 
       <UCollapsible v-model:open="detailsOpen" class="mt-4">
