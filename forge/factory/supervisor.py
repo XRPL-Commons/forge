@@ -534,6 +534,15 @@ class Supervisor:
         elif not self.github.protections(item, item['candidate']):
             reason = 'The two-review and stale-approval protection baseline is missing'
         external = item['candidate']['key']
+        # A conflicted candidate cannot merge whatever a person decides, so it
+        # goes back to Build before anyone is asked to approve it.
+        fresh = self.github.pr(item, pr['number'])
+        if fresh['head']['sha'] == item['candidate']['head'] and fresh.get('mergeable') is False:
+            target = item['candidate'].get('base_ref') or 'the target branch'
+            if self.ledger.resolve_conflict(item['key'], target):
+                self.github.check(item, 'controller', item['candidate'], external, 'failure',
+                                  f'Conflicts with {target}; Forge is returning it to Build to update the branch')
+            return
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
             with self.ledger.transaction() as data:
@@ -544,13 +553,7 @@ class Supervisor:
             return
         # Keep merge-policy pending until every fresh observation passes. GitHub
         # performs the final checks at merge time, with the exact head precondition.
-        fresh = self.github.pr(item, pr['number'])
         if fresh['head']['sha'] != item['candidate']['head'] or fresh['base']['sha'] != item['candidate']['base']:
-            return
-        if fresh.get('mergeable') is False:
-            identifier = self.merge_attempt(item)
-            self.ledger.fail(identifier, 'Candidate has merge conflicts', rejection=True)
-            self.github.check(item, 'controller', item['candidate'], external, 'failure', 'Return to Build to resolve merge conflicts')
             return
         if fresh.get('mergeable') is not True:
             return  # GitHub is still computing mergeability; no failed attempt.

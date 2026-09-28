@@ -392,7 +392,11 @@ class IssueInventory:
                 observed = (item or {}).get('github_observation')
                 if observed and observed['at'] > entry.get('at', 0):
                     issue = observed['issue']
-                ready = fresh and str(issue['number']) in entry.get('scan', {}).get('issues', entry.get('issues', {}))
+                # A rescan runs every minute; an issue it has not reached yet is still
+                # known from the last complete one. Actions carry the revision and are
+                # re-checked against GitHub before anything is applied.
+                ready = fresh and (str(issue['number']) in entry.get('scan', {}).get('issues', {})
+                                   or str(issue['number']) in entry.get('issues', {}))
                 row = {**issue, 'key': issue_key, 'repo': repo['name'], 'repo_id': repo['id'],
                        **presentation(issue, item, repo, self.runtime, entry.get('pulls', []), fresh=ready),
                        'revision': revision(issue, item), 'setup_url': repo['setup_url'],
