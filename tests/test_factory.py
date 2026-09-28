@@ -127,6 +127,27 @@ class FactoryTest(unittest.TestCase):
                 self.supervisor.cycle()
         self.assertEqual(self.ledger.read()['issues'][self.key]['last_observed'], self.now)
 
+    def test_dispatch_still_launches_when_observation_overran_the_cycle(self):
+        self.github.target.return_value = 'main'
+        clock = {'now': 0.0}
+        fake = Mock()
+        fake.monotonic.side_effect = lambda: clock['now']
+        def overrun(observe_until):
+            clock['now'] += 80  # deployment tracking ran past the whole 60 s budget
+        with patch('forge.factory.supervisor.time', fake), patch.object(self.supervisor, 'reconcile'), \
+                patch.object(self.supervisor, 'observe_deployments', side_effect=overrun):
+            self.supervisor.cycle()
+        self.assertTrue(self.ledger.read()['slots'], 'launching keeps its own share of the budget')
+
+    def test_a_launch_trusts_dependencies_observation_just_confirmed(self):
+        self.github.target.return_value = 'main'
+        with self.ledger.transaction() as data:
+            data['issues'][self.key].update(blocked_dependencies=[], dependencies_checked_at=self.now - 30)
+        with patch.object(self.supervisor, 'reconcile'), patch.object(self.supervisor, 'dependency_ready') as check:
+            self.supervisor.cycle()
+        check.assert_not_called()
+        self.assertTrue(self.ledger.read()['slots'])
+
     def test_dispatch_keeps_a_share_of_the_cycle_budget(self):
         # Two slow observations would eat the whole 60 s budget; the second is
         # skipped so a builder is still reserved this cycle.
