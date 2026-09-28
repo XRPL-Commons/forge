@@ -212,6 +212,38 @@ class ReconcileTests(unittest.TestCase):
             changed, _ = self.host.reconcile()
         self.assertTrue(changed)
 
+    def test_full_environment_is_opt_in_and_only_switches_after_service_qualification(self):
+        self.host.reconcile()
+        with ExitStack() as stack:
+            for patcher in self.host.patches():
+                stack.enter_context(patcher)
+            self.host.qualify.side_effect = RuntimeError('MongoDB round trip failed')
+            with self.assertRaisesRegex(RuntimeError, 'MongoDB'):
+                host_update.install_full_environment(self.host.root)
+            runtime = json.loads((self.host.root / 'host-runtime.json').read_text())
+            self.assertEqual(runtime.get('environment_tiers', {}), {})
+            self.host.qualify.side_effect = None
+            host_update.install_full_environment(self.host.root)
+        full = json.loads((self.host.root / 'host-runtime.json').read_text())['environment_tiers']['full']
+        self.assertEqual(full['image'], 'sha256:' + '2' * 64)
+        self.assertEqual(self.host.qualify.call_args.kwargs, {'full': True})
+        self.assertEqual(json.loads((self.host.root / 'host.json').read_text())['full_image'], full['image'])
+
+    def test_update_rebuilds_and_qualifies_the_opted_in_full_tier(self):
+        self.host.reconcile()
+        with ExitStack() as stack:
+            for patcher in self.host.patches():
+                stack.enter_context(patcher)
+            host_update.install_full_environment(self.host.root)
+        self.host.qualify.reset_mock()
+        with patch.object(host_update, 'RUNNER_INPUTS', host_update.RUNNER_INPUTS + ('README.md',)):
+            changed, _ = self.host.reconcile()
+        self.assertTrue(changed)
+        self.assertEqual(self.host.qualify.call_count, 2)
+        self.assertTrue(self.host.qualify.call_args.kwargs['full'])
+        runtime = json.loads((self.host.root / 'host-runtime.json').read_text())
+        self.assertEqual(runtime['environment_tiers']['full']['image'], 'sha256:' + '4' * 64)
+
     def test_a_source_update_prints_how_to_roll_back(self):
         self.host.reconcile()
         self.host.revision = 'b' * 40

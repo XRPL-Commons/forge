@@ -319,7 +319,7 @@ class WorkerContractTests(unittest.TestCase):
             self.assertEqual(shape['properties']['plain']['maxLength'], PLAIN_LIMIT)
             self.assertFalse(shape['additionalProperties'])
             self.assertEqual(set(shape['properties']) - {'version', 'attempt', 'role', 'outcome', 'blocker',
-                                                         'summary', 'headline', 'plain'}, set(ROLE_FIELDS[role]))
+                                                         'summary', 'headline', 'plain', 'decision', 'required_services'}, set(ROLE_FIELDS[role]))
 
     def test_assignment_instructions_teach_the_tone_with_examples(self):
         from forge.factory.contracts import assignment_note

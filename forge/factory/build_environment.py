@@ -13,15 +13,19 @@ import shutil
 import signal
 import subprocess
 import sys
+import socket
+import tempfile
+import time
+from contextlib import contextmanager
 
 
-def environment(directory):
+def environment(directory, services=()):
     root = Path(directory) / '.forge'
     for name in ('tmp', 'cache', 'config', 'home', 'corepack', 'pnpm'):
         (root / name).mkdir(parents=True, exist_ok=True)
     if not (root / 'corepack/v1').exists():
         shutil.copytree('/opt/forge/corepack', root / 'corepack', dirs_exist_ok=True)
-    return {
+    return {**service_environment(services),
         'TMPDIR': str(root / 'tmp'), 'TMP': str(root / 'tmp'), 'TEMP': str(root / 'tmp'),
         'XDG_CACHE_HOME': str(root / 'cache'), 'XDG_CONFIG_HOME': str(root / 'config'),
         'npm_config_cache': str(root / 'cache/npm'),
@@ -31,6 +35,81 @@ def environment(directory):
         'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH': '/usr/bin/chromium',
         'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD': '1', 'CHROME_BIN': '/usr/bin/chromium',
     }
+
+
+SERVICE_PORTS = {'mongodb': 27017, 'postgres': 5432, 'redis': 6379}
+
+
+def service_environment(services):
+    if any(s not in SERVICE_PORTS for s in services) or len(set(services)) != len(services):
+        raise ValueError('Unsupported database service')
+    env = {'FORGE_REQUIRED_SERVICES': ','.join(services)}
+    if 'mongodb' in services:
+        env.update(MONGODB_URI='mongodb://127.0.0.1:27017/forge', MONGOMS_SYSTEM_BINARY='/usr/bin/mongod',
+                   MONGOMS_RUNTIME_DOWNLOAD='false')
+    if 'postgres' in services:
+        env['DATABASE_URL'] = 'postgresql://forge@127.0.0.1:5432/postgres'
+    if 'redis' in services:
+        env['REDIS_URL'] = 'redis://127.0.0.1:6379/0'
+    return env
+
+
+@contextmanager
+def running_services(directory, requested):
+    """Job-local processes, data and sockets; no daemon, host port or new capability."""
+    env = service_environment(requested)
+    root = Path(directory) / '.forge/services'
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / 'lock').open('a') as lock, tempfile.TemporaryDirectory(dir=root) as temporary:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        work = Path(temporary).resolve()
+        processes, logs = [], []
+        try:
+            for service in requested:
+                data = work / service; data.mkdir()
+                if service == 'mongodb':
+                    argv = ['mongod', '--bind_ip', '127.0.0.1', '--port', '27017', '--dbpath', str(data),
+                            '--wiredTigerCacheSizeGB', '0.25', '--nounixsocket']
+                elif service == 'postgres':
+                    subprocess.run(['initdb', '-D', str(data), '-U', 'forge', '-A', 'trust', '--no-locale'],
+                                   check=True, timeout=30, stdout=subprocess.DEVNULL)
+                    argv = ['postgres', '-D', str(data), '-h', '127.0.0.1', '-p', '5432', '-k', str(work)]
+                else:
+                    argv = ['redis-server', '--bind', '127.0.0.1', '--port', '6379', '--save', '',
+                            '--appendonly', 'no', '--dir', str(data)]
+                log = (work / (service + '.log')).open('w+'); logs.append(log)
+                child = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+                processes.append(child)
+                deadline = time.monotonic() + 30
+                while True:
+                    if child.poll() is not None or time.monotonic() >= deadline:
+                        log.seek(0)
+                        raise RuntimeError(service + ' failed to start: ' + log.read(2000))
+                    try:
+                        with socket.create_connection(('127.0.0.1', SERVICE_PORTS[service]), timeout=0.2):
+                            break
+                    except OSError:
+                        time.sleep(0.1)
+            yield env
+        finally:
+            for child in reversed(processes):
+                try: os.killpg(child.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+            for child in reversed(processes):
+                try: child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try: os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    child.wait()
+            for log in logs:
+                log.close()
+
+
+def with_services(argv):
+    requested = [s for s in os.environ.get('FORGE_REQUIRED_SERVICES', '').split(',') if s]
+    with running_services(Path.cwd(), requested) as env:
+        os.environ.update(env)
+        return safe_build(argv)
 
 
 def memory_limit():
@@ -83,6 +162,10 @@ def check():
     if safe_build(['node', '-e', 'console.log("bounded-build-ok")']):
         raise RuntimeError('Bounded build failed')
     subprocess.run(['node', '/opt/forge/browser-canary.cjs'], check=True, timeout=45)
+    if Path('/opt/forge/full-environment').exists():
+        with running_services(Path.cwd(), list(SERVICE_PORTS)) as env:
+            subprocess.run(['node', '/opt/forge/services-canary.cjs'], env={**os.environ, **env},
+                           check=True, timeout=30)
     print('forge-build-environment-ok', flush=True)
 
 
@@ -106,6 +189,8 @@ if __name__ == '__main__':
     try:
         if sys.argv[1:] == ['--check-environment']:
             check()
+        elif Path(sys.argv[0]).name == 'forge-services':
+            raise SystemExit(with_services(sys.argv[1:]))
         else:
             raise SystemExit(safe_build(sys.argv[1:]))
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

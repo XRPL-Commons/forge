@@ -10,7 +10,7 @@ from ..settings import Settings
 from ..state import AtomicStore, StateError
 from .config import load
 from .contracts import references_issue
-from .github import GitHub, GitHubUnavailable
+from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD
 
@@ -115,8 +115,12 @@ class IssueActions:
                 raise ValueError(f'Issue #{number} must be completed first.')
         owned = (item.get('candidate') or {}).get('pr') if item else None
         pulls = self.github.pulls(decision)
-        if any(p['number'] != owned and references_issue(p.get('body'), decision['repo'], decision['number']) for p in pulls):
-            raise ValueError('An existing pull request needs review before Forge starts another attempt.')
+        linked = [p for p in pulls if p['number'] != owned
+                  and references_issue(p.get('body'), decision['repo'], decision['number'])]
+        if linked:
+            publisher = self.github.publisher('build')
+            if any(not own_build_pr(p, decision['repo_id'], decision['number'], publisher) for p in linked):
+                raise ValueError('An existing pull request needs review before Forge starts another attempt.')
         if not owned and (issue.get('assignees') or 'wip' in labels(issue)):
             raise ValueError('Existing work or an assignee needs review before Forge starts another attempt.')
         if not self.settings.admission(decision['repo'])['allowed']:
@@ -254,7 +258,8 @@ class IssueActions:
     def validate_action(self, action, issue, item):
         state = (item or {}).get('state')
         held = labels(issue).intersection(self.config['hold_labels'])
-        if action == 'retry' and not (state == 'failed' or (state == 'hold' and (item or {}).get('reason') == APPROACH_HOLD)):
+        if action == 'retry' and not (state == 'failed' or (state == 'hold' and (
+                (item or {}).get('reason') == APPROACH_HOLD or (item or {}).get('decision_request')))):
             raise ValueError('Retry is only for failed attempts or a hold that waits for a new approach.')
         if action in ('queue', 'backlog', 'pause') and (held or state in ('failed', 'merged', 'approval_needed', 'investigating')):
             raise ValueError('Resolve the existing decision before changing the queue.')

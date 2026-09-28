@@ -310,6 +310,15 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       </ul>
       <p v-if="summary?.headline" id="issue-headline" class="mt-2 text-base font-semibold text-white">{{ summary.headline }}</p>
       <p v-if="summary?.plain" id="issue-plain" class="mt-1 text-sm text-muted">{{ summary.plain }}</p>
+      <section v-if="detail.decision_request" id="issue-decision" class="mt-3 space-y-2 text-sm" aria-labelledby="decision-question">
+        <h2 id="decision-question" class="font-semibold">{{ detail.decision_request.question }}</h2>
+        <ul class="list-disc space-y-1 pl-5">
+          <li v-for="option in detail.decision_request.options" :key="option">{{ option }}</li>
+        </ul>
+        <p><strong>Recommendation:</strong> {{ detail.decision_request.recommendation }}</p>
+        <p class="text-muted">{{ detail.decision_request.evidence }}</p>
+        <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
+      </section>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">
         Deployment · {{ deployment.text }}

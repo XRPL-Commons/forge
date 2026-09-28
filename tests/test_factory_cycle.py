@@ -104,6 +104,45 @@ class CycleTest(unittest.TestCase):
         self.engine.finish(job, report); return job
     def state(self): return self.ledger.read()['issues'][self.key]['state']
 
+    def test_resume_owned_draft_records_the_choice_without_accepting_it(self):
+        self.github.draft = {'pr': 22, 'branch': 'forge/issue-1-existing', 'superseded': [21]}
+        self.cycle()
+        job = self.active()
+        self.assertEqual(job['branch'], self.github.draft['branch'])
+        self.assertEqual(job['resume_branch'], job['branch'])
+        from forge.factory.contracts import assignment_note
+        self.assertEqual(assignment_note(job)['resume_pr'], 22)
+        self.assertIsNone(job['candidate'])
+        event = next(e for e in self.ledger.read()['events'] if e['kind'] == 'draft_resumed')
+        self.assertEqual(event['pr'], 22)
+        self.assertEqual(event['superseded'], [21])
+
+    def test_decision_survives_restart_without_pr_failure_or_review_and_answer_reaches_build(self):
+        self.cycle()
+        build = self.active()
+        decision = {'question': 'Accept the residual advisory?', 'options': ['Accept an exception', 'Wait for a fix'],
+                    'recommendation': 'Wait for a fix', 'evidence': 'No supported release fixes the advisory.'}
+        self.engine.finish(build, {'version': 1, 'attempt': build['id'], 'role': 'build',
+                                  'outcome': 'needs_decision', 'summary': 'A policy decision is needed.', 'decision': decision})
+        self.assertFalse(self.cycle()['errors'])
+        self.assertFalse(self.cycle()['errors'])
+        data = self.ledger.read()
+        self.assertEqual(self.state(), 'hold')
+        self.assertEqual(data['issues'][self.key]['failures'], [])
+        self.assertEqual(data['issues'][self.key]['decision_request']['question'], decision['question'])
+        self.assertEqual(len(data['jobs']), 1)
+        self.assertFalse(data['slots'])
+        self.assertIsNone(self.github.pull)
+        self.assertFalse(self.github.checks)
+        self.ledger.retry(self.key, 'Use the now available compatible release')
+        self.assertFalse(self.cycle()['errors'])
+        next_job = self.active()
+        self.assertEqual(next_job['role'], 'build')
+        self.assertEqual(next_job['history']['retry_plan'], 'Use the now available compatible release')
+        self.assertEqual(next_job['branch'], build['branch'])
+        self.assertNotIn('decision_request', self.ledger.read()['issues'][self.key])
+        self.assertTrue(any(e['kind'] == 'decision_answered' for e in self.ledger.read()['events']))
+
     def test_build_review_audit_merge_with_restart_at_every_step(self):
         self.assertFalse(self.cycle()['errors']); build = self.active()
         self.github.publish(build); self.finish('build')

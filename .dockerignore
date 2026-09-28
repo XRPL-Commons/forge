@@ -7,6 +7,8 @@
 !deploy/
 !deploy/runner/
 !deploy/runner/Dockerfile
+!deploy/runner/Dockerfile.full
+!deploy/runner/services-canary.cjs
 
 !forge/harnesses/
 !forge/harnesses/*/

@@ -239,6 +239,10 @@ def connect_login(root, provider, *, api_key=False, token=False, import_login=No
 
 def check(root, provider=None):
     setup = Onboarding(root)
+    full = setup.runtime().get('environment_tiers', {}).get('full')
+    if full:
+        print('Checking database services in the full environment…', flush=True)
+        host_update.qualify_runner(full['image'], root / 'runner-seccomp.json', host_update.APPARMOR_PROFILE, full=True)
     item = manifest(provider) if provider else None
     print(('Checking the ' + item['name'] + ' account…') if item else 'Checking coding accounts and worker isolation…', flush=True)
     operation = setup.queue('harness_check', setup.view()['revision'], harness=provider)
@@ -303,7 +307,7 @@ def status(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=['install', 'update', 'login', 'check', 'status'], default=None)
+    parser.add_argument('action', nargs='?', choices=['install', 'update', 'login', 'check', 'status', 'full-environment'], default=None)
     parser.add_argument('provider', nargs='?', choices=list(manifests()))
     parser.add_argument('--root', default=str(Path.home() / '.local/share/forge'))
     parser.add_argument('--bind', help='Operator UI address: loopback (default) or a private tailnet address; kept across updates')
@@ -338,6 +342,8 @@ def main():
             check(root, args.provider)
         elif args.action == 'status':
             status(root)
+        elif args.action == 'full-environment':
+            host_update.install_full_environment(root)
         elif args.action is None:
             for key, item in manifests().items():
                 answer = input('Connect ' + item['name'] + '? [Y/n] ').strip().lower()

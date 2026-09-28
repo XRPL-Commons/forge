@@ -238,6 +238,22 @@ def runner_image():
     return found.stdout.strip()
 
 
+def full_runner_image(base):
+    inputs = ('deploy/runner/Dockerfile.full', 'deploy/runner/services-canary.cjs')
+    tag = 'forge-runner-full:' + tree_digest(inputs, base)[:16]
+    inspect = ['docker', 'image', 'inspect', tag, '--format', '{{.Id}}']
+    found = subprocess.run(inspect, capture_output=True, text=True)
+    if found.returncode:
+        # BuildKit parses a bare sha256 image ID as a registry repository name.
+        # Give the verified local image a content-derived tag for FROM.
+        base_tag = 'forge-runner-base:' + base.removeprefix('sha256:')
+        command(['docker', 'tag', base, base_tag])
+        command(['docker', 'build', '--build-arg', 'RUNNER_IMAGE=' + base_tag,
+                 '-f', str(SOURCE / 'deploy/runner/Dockerfile.full'), '-t', tag, str(SOURCE)])
+        found = command(inspect, capture_output=True, text=True)
+    return found.stdout.strip()
+
+
 def seccomp_policy(root, record):
     """Returns the new policy path, or None when the installed one is current."""
     inputs = digest_bytes((SECCOMP_SHA + (SOURCE / 'deploy/runner/seccomp_profile.py').read_text()).encode())
@@ -325,6 +341,29 @@ def switch_runtime(root, image, profile):
         raise ValueError('The supervisor stayed busy for two minutes; nothing was switched. Rerun bin/forge update.') from None
 
 
+def switch_full_environment(root, image):
+    with controller_lock(root, timeout=120):
+        for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
+            path = Path(root) / name
+            if path.exists():
+                config = read_json(path)
+                tiers = config.setdefault('environment_tiers', {})
+                tiers['full'] = {**{'memory': '4g', 'cpus': 2}, **tiers.get('full', {}), 'image': image}
+                write_json(path, config)
+
+
+def install_full_environment(root):
+    record = Record(root)
+    if not record.data.get('image'):
+        raise ValueError('Run setup install before adding the full environment')
+    base = runner_image()
+    image = full_runner_image(base)
+    qualify_runner(image, Path(root) / 'runner-seccomp.json', APPARMOR_PROFILE, full=True)
+    switch_full_environment(root, image)
+    record.save(full_image=image)
+    print('Full environment qualified. Probe and confirm repository services before use.')
+
+
 def reachable(url):
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
@@ -374,9 +413,9 @@ def confirm(changes, assume_yes, overrides=()):
         raise ValueError('Update cancelled; nothing was replaced')
 
 
-def qualify_runner(image, seccomp, profile):
+def qualify_runner(image, seccomp, profile, *, full=False):
     """Offline canary: tools, memory limits, browser and credential protection in the real sandbox."""
-    runpy.run_path(str(SOURCE / 'deploy/test_build_environment.py'))['validate'](image, seccomp, profile)
+    runpy.run_path(str(SOURCE / 'deploy/test_build_environment.py'))['validate'](image, seccomp, profile, services=full)
 
 
 def reconcile(root, bind=None, assume_yes=False):
@@ -391,6 +430,7 @@ def reconcile(root, bind=None, assume_yes=False):
 
     # 1. Build and qualify everything new. Nothing in use changes here.
     image = runner_image()
+    full_image = full_runner_image(image) if record.data.get('full_image') else None
     seccomp, seccomp_inputs = seccomp_policy(root, record)
     apparmor = (SOURCE / 'deploy/runner' / (APPARMOR_PROFILE + '.apparmor')).read_bytes()
     installed_apparmor = APPARMOR_TARGET.read_bytes() if APPARMOR_TARGET.exists() else None
@@ -398,7 +438,8 @@ def reconcile(root, bind=None, assume_yes=False):
     # The recorded image covers an update interrupted after switching but before
     # it finished: the rerun still requalifies.
     runtime_changed = (fresh or seccomp is not None or installed_apparmor != apparmor
-                       or current_runtime.get('image') != image or record.data.get('image') not in (None, image))
+                       or current_runtime.get('image') != image or record.data.get('image') not in (None, image)
+                       or (full_image is not None and record.data.get('full_image') != full_image))
     release = ui_release(root)
     wanted = desired_units(root, bind)
     foreign, unit_changes = [], []
@@ -455,6 +496,8 @@ def reconcile(root, bind=None, assume_yes=False):
     if runtime_changed:
         # Image presence is not readiness: run the offline canary before switching.
         qualify_runner(image, seccomp or root / 'runner-seccomp.json', APPARMOR_PROFILE)
+        if full_image:
+            qualify_runner(full_image, seccomp or root / 'runner-seccomp.json', APPARMOR_PROFILE, full=True)
 
     # 2. Switch. Each step is idempotent; an interrupted update converges when rerun.
     if seccomp is not None:
@@ -476,6 +519,8 @@ def reconcile(root, bind=None, assume_yes=False):
                          'correct it and rerun this command.') from None
     if not fresh and runtime_changed:
         switch_runtime(root, image, APPARMOR_PROFILE)
+        if full_image:
+            switch_full_environment(root, full_image)
     switch_ui(root, release)
     ensure_upstream_secret(root)
     units.mkdir(parents=True, exist_ok=True)
@@ -499,6 +544,7 @@ def reconcile(root, bind=None, assume_yes=False):
     wait_healthy(bind)
     prune_ui(root, {release, record.data.get('ui_release')})
     record.save(bind=bind, source=source, image=image, ui_release=release, updated_at=time.time(),
+                full_image=full_image,
                 previous={key: record.data.get(key) for key in ('source', 'image', 'ui_release')} if not fresh else None)
     if fresh:
         # Written last: a failed installation can be repeated without a false success marker.

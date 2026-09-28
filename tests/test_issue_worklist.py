@@ -41,6 +41,7 @@ class GitHub:
         if not self.available: raise GitHubUnavailable('Unavailable')
         return deepcopy(self.value), 'requirements'
     def target(self, item): return 'main'
+    def publisher(self, role): return role + '[bot]'
     def protections(self, *args): return self.rules
     def pulls(self, item): return deepcopy(self.prs)
     def labels(self, item): pass
@@ -328,6 +329,39 @@ class WorklistTests(unittest.TestCase):
         self.tracked(hold='Wait for a decision'); self.refresh()
         with self.assertRaises(ValueError): self.decision('retry')
         with self.assertRaises(ValueError): self.actions.validate_action('retry', facts(self.github.value), self.ledger.read()['issues']['1:1'])
+
+    def test_retry_allows_verified_own_drafts_but_never_a_foreign_author(self):
+        self.tracked()
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['state'] = 'failed'
+        self.github.prs = [{'number': 22, 'body': 'Fixes #1', 'state': 'open', 'draft': True,
+                            'head': {'ref': 'forge/issue-1-previous', 'repo': {'id': 1}},
+                            'base': {'repo': {'id': 1}}, 'user': {'login': 'build[bot]', 'type': 'Bot'}}]
+        identifier, decision = self.decision('retry', 'Continue the existing draft')
+        item = self.ledger.read()['issues']['1:1']
+        self.github.prs[0]['user']['login'] = 'another[bot]'
+        with self.assertRaisesRegex(ValueError, 'existing pull request'):
+            self.actions.prerequisites(decision, self.github.value, item)
+        self.github.prs[0]['user']['login'] = 'build[bot]'
+        self.actions.apply(identifier, decision)
+        self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'ready')
+
+    def test_builder_decision_is_visible_and_existing_retry_records_the_answer(self):
+        self.tracked(hold='Choose a supported approach')
+        question = {'question': 'Wait for upstream?', 'options': ['Wait', 'Remove the dependency'],
+                    'recommendation': 'Wait', 'evidence': 'No compatible release exists.', 'attempt': 'previous'}
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['decision_request'] = question
+        self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual(row['decision_request'], question)
+        self.assertEqual(row['actions'], ['retry'])
+        identifier, decision = self.decision('retry', 'Remove the dependency and replace its usage')
+        self.actions.apply(identifier, decision)
+        issue = self.ledger.read()['issues']['1:1']
+        self.assertEqual(issue['state'], 'ready')
+        self.assertEqual(issue['retry_plan'], decision['reason'])
+        self.assertNotIn('decision_request', issue)
 
     def test_active_attempt_and_cleanup_prevent_queue_mutations(self):
         self.tracked(); identifier, decision = self.decision('queue')

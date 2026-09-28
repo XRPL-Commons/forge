@@ -187,6 +187,8 @@ class ContainerRunner:
             image = json.loads(self.call(['image', 'inspect', self.config['image']]).stdout)
             if image[0]['Config'].get('Labels', {}).get('org.forge.build-environment') != '1':
                 raise ValueError()
+            if self.config.get('environment_tier') == 'full' and image[0]['Config'].get('Labels', {}).get('org.forge.services') != 'mongodb,postgres,redis':
+                raise ValueError()
         except (ValueError, KeyError, TypeError, IndexError):
             raise RunnerError('Runner image lacks the build-environment contract. Rebuild and qualify it using docs/installation.md.') from None
         if self.config.get('seccomp_profile_env'):

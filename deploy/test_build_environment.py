@@ -58,7 +58,7 @@ assert private.read_text() == 'private'
 '''
 
 
-def validate(image, seccomp, apparmor=None):
+def validate(image, seccomp, apparmor=None, *, services=False):
     name = 'forge-build-canary-' + uuid.uuid4().hex
     argv = ['docker', 'run', '--rm', '--name', name, '-i', '--network', 'none',
             '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--pids-limit', '1024',
@@ -72,8 +72,10 @@ def validate(image, seccomp, apparmor=None):
         result = subprocess.run(argv + [image, 'python3', '-I', '-'], input=SCRIPT, text=True,
                                 capture_output=True, timeout=120)
         print(result.stdout); print(result.stderr)
-        if result.returncode or any(marker not in result.stdout for marker in
-                                    ('forge-build-environment-ok', 'forge-browser-ok', 'forge-isolation-ok')):
+        markers = ['forge-build-environment-ok', 'forge-browser-ok', 'forge-isolation-ok']
+        if services:
+            markers.append('forge-services-ok')
+        if result.returncode or any(marker not in result.stdout for marker in markers):
             raise RuntimeError('Runner build-environment canary failed')
     finally:
         subprocess.run(['docker', 'rm', '--force', name], capture_output=True, timeout=15)
@@ -84,5 +86,6 @@ if __name__ == '__main__':
     parser.add_argument('--image', required=True)
     parser.add_argument('--seccomp', type=Path, required=True)
     parser.add_argument('--apparmor')
+    parser.add_argument('--services', action='store_true')
     args = parser.parse_args()
-    validate(args.image, args.seccomp, args.apparmor)
+    validate(args.image, args.seccomp, args.apparmor, services=args.services)

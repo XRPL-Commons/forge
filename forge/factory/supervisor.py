@@ -315,7 +315,10 @@ class Supervisor:
             report = None
         item = self.ledger.read()['issues'][job['issue_key']]
         if report and report['outcome'] == 'blocked_environment':
-            self.ledger.block_environment(job['id'], report['blocker'], report['summary'], summary=self.card(report, job))
+            if report['blocker'] == 'services' and self.ledger.retry_services(job['id'], self.config, report['required_services']):
+                return
+            self.ledger.block_environment(job['id'], report['blocker'], report['summary'], summary=self.card(report, job),
+                                          required_services=report.get('required_services'))
             return
         if job['role'] == 'recovery':
             original = self.ledger.read()['jobs'][job['failure']['attempt']]
@@ -342,6 +345,9 @@ class Supervisor:
             self.update_requirements(item['key'], requirements)
             return
         if job['role'] == 'build':
+            if report and report['outcome'] == 'needs_decision':
+                self.ledger.request_decision(job['id'], report['decision'], summary=self.card(report, job))
+                return
             published = self.github.publication(job, requirements, job['policy'])
             if published:
                 self.ledger.accept(job['id'], candidate=published, summary=self.card(report, job))
@@ -462,6 +468,8 @@ class Supervisor:
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
             held = item['environment_hold']
+            if held['blocker'] == 'services':
+                return  # A full-tier or unconfirmed service blocker needs an operator recheck.
             failed_job = self.ledger.read()['jobs'].get(held['attempt'])
             if (held['blocker'] == 'ci_evidence' and failed_job and failed_job['cleanup']
                     and self.settings.admission(item['repo'])['allowed']):
@@ -625,7 +633,44 @@ class Supervisor:
 
     def memory_config(self, item, role, data=None):
         data = self.ledger.read() if data is None else data
-        return {**self.config, 'memory': memory_allocation(self.config, data, item, role)}
+        from .environments import worker_config
+        config = worker_config(self.config, item)
+        allocated = memory_allocation(self.config, data, item, role)
+        config['memory'] = max((config['memory'], allocated), key=memory_bytes)
+        return config
+
+    def select_environment(self, item):
+        from .environments import choose
+        issue, _ = self.github.issue(item)
+        if (not self.config['environment_tiers'] and not self.config['repository_environments']
+                and not any(l['name'].startswith('env:') for l in issue.get('labels', []))):
+            return item
+        pending = item.get('environment_label_pending')
+        if pending:
+            observed = {l['name'] for l in issue.get('labels', []) if l['name'].startswith('env:')}
+            before, target = set(pending['before']), pending['target']
+            if observed not in (before, before | {target}, {target}):
+                raise ValueError('Environment label changed while selection was being applied; review the issue')
+            self.github.environment_label(item, issue, target)
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']].pop('environment_label_pending', None)
+            item = self.ledger.read()['issues'][item['key']]
+            issue, _ = self.github.issue(item)
+        choice = choose(self.config, item, issue)
+        label = 'env:' + choice['tier']
+        # Persist intent before publishing the label, so interruption after the
+        # GitHub write cannot turn our own selection into an operator override.
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            if choice != current.get('environment_choice'):
+                self.ledger.event(data, current, 'environment_selected', **choice)
+            current.update(environment_choice=choice, environment_label=label)
+            current['environment_label_pending'] = {'before': [l['name'] for l in issue.get('labels', [])
+                                                                if l['name'].startswith('env:')], 'target': label}
+        self.github.environment_label(item, issue, label)
+        with self.ledger.transaction() as data:
+            data['issues'][item['key']].pop('environment_label_pending', None)
+        return self.ledger.read()['issues'][item['key']]
 
     def memory_priority(self, data):
         return next((item for item in memory_pending(data, self.config)
@@ -665,6 +710,17 @@ class Supervisor:
                     item, failure = self.choose(role, self.ledger.read())
                 if item is None:
                     continue
+                try:
+                    if self.config['environment_tiers'] or self.config['repository_environments'] or item.get('environment_choice'):
+                        item = self.select_environment(item)
+                except GitHubBudgetExhausted:
+                    return
+                except (ValueError, GitHubUnavailable) as error:
+                    with self.ledger.transaction() as data:
+                        data['issues'][item['key']].update(reason=str(error),
+                            retry_after=self.clock() + self.config['availability_retry_seconds'])
+                    self.errors.append({'issue': item['key'], 'phase': 'environment', 'reason': str(error)})
+                    continue
                 worker_config = self.memory_config(item, role, self.ledger.read())
                 runner = (ContainerRunner(worker_config, environ=self.runner.environ)
                           if isinstance(self.runner, ContainerRunner) else self.runner)
@@ -679,6 +735,11 @@ class Supervisor:
                     # Re-read at the launch boundary, including newly discovered
                     # issues that have not entered the observation rotation yet.
                     issue, requirements = self.github.issue(item)
+                    if not self.config['environment_tiers'] and not self.config['repository_environments']:
+                        from .environments import choose
+                        choose(self.config, item, issue)  # Reject unavailable explicit tiers even when opt-in is off.
+                    if isinstance(runner, ContainerRunner) and worker_config['environment_tier'] == 'full':
+                        runner.ready()
                     if not self.dependencies_recently_clear(item) and not self.dependency_ready(item, issue):
                         continue
                     if issue['state'] != 'open':
@@ -710,6 +771,11 @@ class Supervisor:
                             current.update(retry_after=self.clock() + self.config['availability_retry_seconds'],
                                            reason=str(error))
                     self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
+                except ValueError as error:
+                    with self.ledger.transaction() as data:
+                        data['issues'][item['key']].update(reason=str(error),
+                            retry_after=self.clock() + self.config['availability_retry_seconds'])
+                    self.errors.append({'issue': item['key'], 'phase': 'environment', 'reason': str(error)})
                 except (StateError, RunnerError) as error:
                     self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
 

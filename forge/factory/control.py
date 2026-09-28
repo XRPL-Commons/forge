@@ -12,7 +12,7 @@ from ..state import AtomicStore, StateError
 from ..credentials import Credentials
 from .config import load, validate
 from .contracts import summary as plain_summary
-from .github import GitHub
+from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
 from .runner import ContainerRunner
 from .supervisor import Supervisor
@@ -167,10 +167,12 @@ def save_runtime(root, config, revision):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['status', 'validate', 'activate', 'once', 'run', 'stop', 'reset', 'retry'])
+    parser.add_argument('command', choices=['status', 'validate', 'activate', 'once', 'run', 'stop', 'reset', 'retry',
+                                          'environment-probe', 'environment-confirm'])
     parser.add_argument('--root', required=True)
     parser.add_argument('--target')
     parser.add_argument('--reason', default='')
+    parser.add_argument('--revision', help='Exact environment proposal revision to confirm')
     args = parser.parse_args(argv)
     root = Path(args.root)
     try:
@@ -181,6 +183,28 @@ def main(argv=None):
             print(json.dumps(view(root), indent=2))
             return 0
         settings, config = Settings(root), load(root)
+        if args.command in ('environment-probe', 'environment-confirm'):
+            from .environments import probe
+            repo = next((r for r in settings.view()['repositories'] if str(r['id']) == args.target), None)
+            if not repo:
+                raise ValueError('Use --target with a connected repository ID')
+            store = AtomicStore(root / 'state', 'environment-proposals')
+            if args.command == 'environment-probe':
+                value = probe(GitHub(settings, config), {'repo': repo['name'], 'repo_id': repo['id']})
+                with store.transaction() as data:
+                    data[args.target] = value
+                print(json.dumps(value, indent=2))
+            else:
+                with settings.locked('runtime-config'), store.transaction() as data:
+                    proposal = data.get(args.target)
+                    if not proposal or not args.revision or proposal['revision'] != args.revision:
+                        raise ValueError('Probe the repository and confirm its exact --revision')
+                    current = load(root)
+                    current['repository_environments'] = {**current['repository_environments'], args.target: {
+                        **{k: proposal[k] for k in ('services', 'evidence', 'head')}, 'confirmed_at': time.time()}}
+                    write_json(root / 'runtime.json', validate(current))
+                print('Repository services confirmed. Issue environment labels still take precedence.')
+            return 0
         if args.command == 'validate':
             settings.load()
             print('Runtime configuration is valid. Access and execution preflight are separate checks.')
@@ -214,7 +238,7 @@ def main(argv=None):
                     print(json.dumps(observation))
                     return 0 if not observation['errors'] else 1
                 time.sleep(config['cycle_seconds'])
-    except (ValueError, StateError, OSError) as error:
+    except (ValueError, StateError, OSError, GitHubUnavailable) as error:
         parser.exit(1, str(error) + '\n')
 
 

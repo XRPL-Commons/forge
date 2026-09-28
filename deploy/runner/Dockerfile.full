@@ -1,0 +1,22 @@
+# Optional variant of the same qualified worker; never mounts a Docker socket.
+ARG RUNNER_IMAGE
+ARG MONGO_IMAGE=mongo:8.0@sha256:4968f22d0c6c10ef29952f3e807f62872ba22b3312f25803564fbfc08255efc2
+FROM ${MONGO_IMAGE} AS mongodb
+FROM ${RUNNER_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      postgresql redis-server libcurl4 libssl3 libsnappy1v5 liblzma5 libzstd1 libsasl2-2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --no-create-home --home-dir /work forge-worker \
+    && for name in initdb postgres psql; do \
+         ln -sf /usr/lib/postgresql/*/bin/$name /usr/local/bin/$name; \
+       done
+COPY --from=mongodb /usr/bin/mongod /usr/bin/mongod
+RUN mongod --version && npm install --global mongoose@9.10.2 \
+    && ln -s /opt/forge/build_environment.py /usr/local/bin/forge-services \
+    && sed -i '/^"\/sys\/fs\/cgroup" = "read"$/a "/sys/devices/system/cpu/possible" = "read"' /etc/codex/requirements.toml \
+    && touch /opt/forge/full-environment
+COPY deploy/runner/services-canary.cjs /opt/forge/services-canary.cjs
+LABEL org.forge.services="mongodb,postgres,redis"
+USER 1000:1000
+WORKDIR /work

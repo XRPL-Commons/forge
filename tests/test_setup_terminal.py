@@ -25,6 +25,7 @@ class TerminalCheckTests(unittest.TestCase):
                 patch.object(host_setup.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(host_setup.time, 'sleep', side_effect=sleep), \
                 patch('sys.stdout', output):
+            setup.return_value.runtime.return_value = {}
             setup.return_value.queue.return_value = 'existing'
             setup.return_value.read.side_effect = [waiting, waiting, probing, finished]
             setup.return_value.activity.side_effect = Onboarding.activity
@@ -54,6 +55,7 @@ class TerminalCheckTests(unittest.TestCase):
                 patch.object(host_setup.time, 'monotonic', side_effect=lambda: 0), \
                 patch.object(host_setup.time, 'sleep', side_effect=lambda _: None), \
                 patch('sys.stdout', output):
+            setup.return_value.runtime.return_value = {}
             setup.return_value.queue.return_value = 'scoped'
             setup.return_value.read.side_effect = [waiting, waiting, finished]
             setup.return_value.activity.side_effect = Onboarding.activity
@@ -79,6 +81,7 @@ class TerminalCheckTests(unittest.TestCase):
                 patch.object(host_setup.time, 'monotonic', side_effect=lambda: 0), \
                 patch.object(host_setup.time, 'sleep', side_effect=lambda _: None), \
                 patch('sys.stdout', output):
+            setup.return_value.runtime.return_value = {}
             setup.return_value.queue.return_value = 'scoped'
             setup.return_value.read.side_effect = [{'phase': 'active', 'operation': operation}, finished]
             setup.return_value.activity.side_effect = Onboarding.activity
@@ -106,6 +109,7 @@ class TerminalCheckTests(unittest.TestCase):
                 patch.object(host_setup.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(host_setup.time, 'sleep', side_effect=sleep), \
                 patch('sys.stdout', io.StringIO()):
+            setup.return_value.runtime.return_value = {}
             setup.return_value.queue.return_value = 'existing'
             setup.return_value.read.return_value = data
             setup.return_value.activity.side_effect = Onboarding.activity

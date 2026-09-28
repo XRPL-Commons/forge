@@ -80,7 +80,7 @@ class EnvironmentLifecycleTests(CycleTest):
         self.finish('build', 'reject'); self.cycle()
         self.finish('recovery')
         # An earlier attempt published the draft GitHub still has open.
-        self.github.draft = 'forge/issue-1-earlier00'
+        self.github.draft = {'pr': 22, 'branch': 'forge/issue-1-earlier00', 'superseded': []}
         self.cycle()
         job = self.active()
         self.assertEqual(job['role'], 'build')
@@ -169,10 +169,10 @@ class BuildToolsTests(unittest.TestCase):
             def path(value):
                 return root / value.removeprefix('/work/')
             with patch.object(adapter, 'Path', side_effect=path), \
-                    patch.object(adapter.runpy, 'run_path', return_value={'environment': lambda _: {'TMPDIR': str(root / 'tmp')}}):
+                    patch.object(adapter.runpy, 'run_path', return_value={'environment': lambda _, services: {'TMPDIR': str(root / 'tmp'), **build.service_environment(services)}}):
                 env = adapter.prepare_tool_environment(root / 'repository', {
                     'GH_TOKEN': 'job-scoped', 'OPENAI_API_KEY': 'private-provider-key',
-                    'FORGE_PROBE_SECRET': 'private-parent-secret'})
+                    'FORGE_PROBE_SECRET': 'private-parent-secret', 'FORGE_REQUIRED_SERVICES': 'mongodb'})
             policy = tomllib.loads((root / 'home/.codex/config.toml').read_text())['shell_environment_policy']
             self.assertEqual(policy['inherit'], 'none')
             self.assertEqual(policy['set'], env)
@@ -180,6 +180,7 @@ class BuildToolsTests(unittest.TestCase):
             self.assertEqual(env['GH_TOKEN'], 'job-scoped')
             self.assertNotIn('OPENAI_API_KEY', env)
             self.assertNotIn('FORGE_PROBE_SECRET', env)
+            self.assertEqual(env['MONGOMS_SYSTEM_BINARY'], '/usr/bin/mongod')
 
     def test_cache_and_temp_use_repository_disk(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(build.shutil, 'copytree'):
