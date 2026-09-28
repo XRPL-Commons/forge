@@ -70,7 +70,8 @@ class OwnDraftTests(unittest.TestCase):
         from unittest.mock import Mock
         from forge.factory.github import GitHub
         github = object.__new__(GitHub)
-        pr = lambda n, ref, user, updated, repo=7: {'number': n, 'head': {'ref': ref, 'repo': {'id': repo}}, 'user': {'login': user}, 'updated_at': updated}
+        pr = lambda n, ref, user, updated, repo=7: {'number': n, 'head': {'ref': ref, 'repo': {'id': repo}},
+            'base': {'repo': {'id': 7}}, 'state': 'open', 'user': {'login': user, 'type': 'Bot'}, 'updated_at': updated}
         github.pulls = Mock(return_value=[
             pr(659, 'forge/issue-658-daa53604', 'forge-build[bot]', '2026-09-25T21:00:00Z'),
             pr(660, 'forge/issue-658-89d21b0e', 'forge-build[bot]', '2026-09-25T23:00:00Z'),
@@ -78,5 +79,14 @@ class OwnDraftTests(unittest.TestCase):
             pr(664, 'issue-639-product-icons', 'someone', '2026-09-27T00:00:00Z'),
             pr(700, 'forge/issue-6580-x', 'forge-build[bot]', '2026-09-27T00:00:00Z')])
         item = {'repo': 'example/project', 'repo_id': 7}
-        self.assertEqual(github.own_draft(item, 658, 'forge-build[bot]'), 'forge/issue-658-89d21b0e')
+        self.assertEqual(github.own_draft(item, 658, 'forge-build[bot]'),
+                         {'pr': 660, 'branch': 'forge/issue-658-89d21b0e', 'superseded': [659]})
         self.assertIsNone(github.own_draft(item, 658, 'other[bot]'))
+        github.pulls.return_value = [pr(660, 'forge/issue-658-x', 'forge-build[bot]', '2026-09-25T23:00:00Z')]
+        self.assertEqual(github.own_draft(item, 658, 'forge-build[bot]')['superseded'], [])
+        for field, value in [('state', 'closed'), ('user', {'login': 'forge-build[bot]', 'type': 'User'}),
+                             ('base', {'repo': {'id': 99}})]:
+            original = github.pulls.return_value[0]
+            github.pulls.return_value = [{**original, field: value}]
+            self.assertIsNone(github.own_draft(item, 658, 'forge-build[bot]'))
+            github.pulls.return_value = [original]

@@ -121,13 +121,20 @@ class Ledger:
                     # Failed builds can publish a useful draft without an accepted
                     # candidate. Continue that assigned branch instead of
                     # orphaning its PR on a fresh branch after investigation.
-                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed')
+                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed', 'needs_decision', 'services_retry')
                             or ((runner_config or {}).get('memory_tiers') and confirmed(capture, report))):
                         retry = {'role': role, 'branch': previous['branch']}
             # GitHub's open draft is the truth about where the work is; the last
             # job's branch only stands in when there is none.
             if role == 'build' and not issue['candidate'] and existing_draft:
-                retry = {'role': role, 'branch': existing_draft}
+                retry = {'role': role, 'branch': existing_draft['branch']}
+                self.event(data, issue, 'draft_resumed', attempt=identifier,
+                           pr=existing_draft['pr'], branch=existing_draft['branch'],
+                           superseded=existing_draft['superseded'],
+                           reason=f"Continuing PR #{existing_draft['pr']}." + (
+                               ' Superseded drafts left open for operator review: '
+                               + ', '.join('#' + str(n) for n in existing_draft['superseded']) + '.'
+                               if existing_draft['superseded'] else ''))
             branch = (issue['candidate'].get('branch') if issue['candidate'] else None) or (retry.get('branch') if role == 'build' else None) or f"forge/issue-{issue['number']}-{identifier[:8]}"
             job = {'id': identifier, 'issue_key': key, 'repo_id': issue['repo_id'], 'repo': issue['repo'],
                    'issue_number': issue['number'], 'role': role, 'slot': slot, 'provider': provider,
@@ -141,6 +148,8 @@ class Ledger:
                                'retry_plan': issue['retry_plan']}}
             if retry and retry['role'] == role:
                 job['resume_branch'] = retry.get('branch') if role == 'build' else None
+            if role == 'build' and existing_draft and not issue['candidate']:
+                job['resume_pr'] = existing_draft['pr']
             if role == 'recovery':
                 job['failure'] = deepcopy(failure)
                 actual['investigation'] = identifier
@@ -344,7 +353,46 @@ class Ledger:
             self.event(data, issue, 'memory_escalated', attempt=identifier, previous=used, memory=target, detail=detail[:2000])
             return True
 
-    def block_environment(self, identifier, blocker, detail, summary=None):
+    def request_decision(self, identifier, decision, summary=None):
+        """A question stops dispatch without charging a failure or starting review."""
+        with self.transaction() as data:
+            job, issue = self._current(data, identifier)
+            if job['outcome'] is not None:
+                return
+            if job['role'] != 'build':
+                raise StateError('Only a build can request a decision')
+            issue['decision_request'] = {**deepcopy(decision), 'attempt': identifier}
+            issue.update(state='hold', active=None, reason=decision['question'])
+            job['outcome'] = 'needs_decision'
+            self.remember(issue, summary)
+            self.event(data, issue, 'decision_requested', attempt=identifier, decision=deepcopy(decision), reason=decision['question'])
+
+    def retry_services(self, identifier, config, required):
+        """Escalate once, only to a configured tier and operator-confirmed services."""
+        with self.transaction() as data:
+            job = data['jobs'][identifier]
+            issue = data['issues'][job['issue_key']]
+            profile = config['repository_environments'].get(str(issue['repo_id']), {})
+            choice = issue.get('environment_choice') or {}
+            if (job['outcome'] is not None or issue.get('environment_retry')
+                    or (job.get('runner_config') or {}).get('environment_tier') == 'full'
+                    or 'full' not in config['environment_tiers'] or not required
+                    or not set(required) <= set(profile.get('services', []))
+                    or (choice.get('tier') == 'standard' and choice.get('automatic') is False)
+                    or issue['state'] in ('hold', 'merged', 'cancelled') or issue.get('operator_hold')):
+                return False
+            if job['role'] != 'recovery' and issue['active'] != identifier:
+                raise StateError('Obsolete attempt cannot change its environment')
+            if job['role'] == 'recovery':
+                failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
+                failure['investigation'] = 'pending'
+            issue['environment_retry'] = {'attempt': identifier, 'services': list(required), 'branch': job['branch']}
+            issue.update(active=None, retry_after=0, reason='Retrying with the confirmed database services')
+            job['outcome'] = 'services_retry'
+            self.event(data, issue, 'services_retry', attempt=identifier, services=list(required), branch=job['branch'])
+            return True
+
+    def block_environment(self, identifier, blocker, detail, summary=None, required_services=None):
         """Availability is not a code failure; retain the candidate and stage."""
         from .contracts import ENVIRONMENT_BLOCKERS, environment_key
         if blocker not in ENVIRONMENT_BLOCKERS:
@@ -365,6 +413,8 @@ class Ledger:
             issue['environment_hold'] = {'state': issue['state'], 'blocker': blocker,
                                          'detail': detail[:8000], 'attempt': identifier,
                                          'environment': environment_key(job.get('runner_config') or {})}
+            if required_services:
+                issue['environment_hold']['required_services'] = list(required_services)
             self.remember(issue, summary, issue['environment_hold'])
             issue.update(state='hold', active=None, reason='Forge environment needs attention (' + blocker.replace('_', ' ') + ')')
             job['outcome'] = 'blocked_environment'
@@ -529,4 +579,7 @@ class Ledger:
             if any(j['issue_key'] == key and not j['cleanup'] for j in data['jobs'].values()):
                 raise StateError('Reset old executions before retrying')
             issue.update(state='ready', budget_start=len(issue['failures']), retry_plan=reason, reason=None, evidence={})
+            decision = issue.pop('decision_request', None)
+            if decision:
+                self.event(data, issue, 'decision_answered', decision=decision, reason=reason, request=request_id)
             self.event(data, issue, 'human_retry', reason=reason, request=request_id)

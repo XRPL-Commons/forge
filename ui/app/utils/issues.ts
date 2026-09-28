@@ -32,6 +32,7 @@ export interface IssueRow {
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop'>[]
   setup_needed: boolean; environment_blocker: string | null
+  decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   pull_requests: PullRequestRef[]
   dependencies: number[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
@@ -109,6 +110,11 @@ export const EVENT_LABELS: Record<string, string> = {
   protection_hold_migrated: 'Recognized an earlier setup hold',
   protection_restored: 'Repository setup verified',
   human_retry: 'Another attempt approved',
+  draft_resumed: 'Continuing an earlier draft',
+  decision_requested: 'Waiting for your decision',
+  decision_answered: 'Your answer recorded',
+  environment_selected: 'Worker environment selected',
+  services_retry: 'Retrying with database services',
   operator_queue: 'Queued for Forge',
   operator_backlog: 'Returned to backlog',
   operator_pause: 'Paused by an operator',

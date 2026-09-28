@@ -10,11 +10,11 @@ class PreparationError(RuntimeError):
     pass
 
 
-def prepare_environment(directory):
+def prepare_environment(directory, services=()):
     # The entrypoint uses Python -I: sibling modules are deliberately not on
     # sys.path. Load only this immutable, image-owned absolute path.
     build = runpy.run_path('/opt/forge/build_environment.py')
-    env = build['environment'](directory)
+    env = build['environment'](directory, services)
     with (directory / '.git/info/exclude').open('a') as stream:
         stream.write('\n/.forge/\n/.home/\n')
     return env
@@ -29,7 +29,12 @@ def role_properties(note):
     """Role-specific result fields: a fifth role is one line here."""
     candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
     return {
-        'build': {},
+        'build': {'decision': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
+            **{k: {'type': 'string', 'minLength': 1, 'maxLength': 4000}
+               for k in ('question', 'recommendation', 'evidence')},
+            'options': {'type': 'array', 'minItems': 2, 'maxItems': 6,
+                        'items': {'type': 'string', 'minLength': 1, 'maxLength': 1000}}},
+            'required': ['question', 'options', 'recommendation', 'evidence'], 'additionalProperties': False}]}},
         'discussion': {'proposal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
             'action': {'type': 'string', 'enum': ['retry', 'resume', 'recheck', 'queue', 'pause', 'backlog']},
             'reason': {'type': 'string', 'maxLength': 2000}}, 'required': ['action', 'reason'], 'additionalProperties': False}]}},
@@ -65,12 +70,17 @@ def schema(note):
              'attempt': {'type': 'string', 'enum': [note['id']]},
              'role': {'type': 'string', 'enum': [note['role']]},
              'outcome': {'type': 'string', 'enum': ['pass', 'reject', 'unable', 'wait', 'blocked_environment']},
-             'blocker': {'type': ['string', 'null'], 'enum': [None, 'toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence']},
+             'blocker': {'type': ['string', 'null'], 'enum': [None, 'toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services']},
              'summary': {'type': 'string'},
              # Plain language for a reader who does not read code, in every role.
              'headline': {'type': 'string', 'maxLength': HEADLINE_LIMIT},
              'plain': {'type': 'string', 'maxLength': PLAIN_LIMIT}}
     props.update(role_properties(note))
+    if note['role'] in ('build', 'review', 'audit', 'recovery'):
+        props['required_services'] = {'type': 'array', 'maxItems': 3,
+                                      'items': {'type': 'string', 'enum': ['mongodb', 'postgres', 'redis']}}
+    if note['role'] == 'build':
+        props['outcome']['enum'].append('needs_decision')
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 
@@ -120,7 +130,7 @@ def main():
         git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
     if note['role'] == 'build':
         git('-C', str(directory), 'checkout', '-B', note['branch'])
-    env.update(prepare_environment(directory))
+    env.update(prepare_environment(directory, (note.get('environment') or {}).get('services', [])))
     registry = runpy.run_path('/opt/forge/harnesses/registry.py')
     return registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
 

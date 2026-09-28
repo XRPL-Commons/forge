@@ -1,5 +1,8 @@
 # Install a new Forge VM
 
+For repositories whose tests need databases, add the optional
+[full job environment](job-environments.md) after the standard installation.
+
 Use an AppArmor-enabled Linux VM (Ubuntu 24.04 is the tested host) with Python
 3.10+, Git, Docker Engine with the Compose plugin, and systemd. Run Forge as a dedicated non-root service account with Docker
 access. Follow [Docker's installation instructions](https://docs.docker.com/engine/install/)

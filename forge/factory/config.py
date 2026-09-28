@@ -1,5 +1,6 @@
 """Operator-editable runtime policy, separate from credentials and GitHub discovery."""
 import json
+from copy import deepcopy
 from pathlib import Path
 import re
 
@@ -23,6 +24,7 @@ DEFAULT = {
     # pids_limit counts threads too: a dev server, pnpm and a headless Chromium
     # together exceed 256 (pthread_create: Resource temporarily unavailable).
     'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 1024,
+    'environment_tiers': {}, 'repository_environments': {},
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -37,7 +39,7 @@ def validate(value):
     if not isinstance(value, dict) or set(value) - (set(DEFAULT) | {'max_running'}):
         raise ValueError('Unknown runtime settings')
     # Older installations carry a manual total. Memory admission replaces it.
-    config = {**DEFAULT, **{key: item for key, item in value.items() if key != 'max_running'}}
+    config = deepcopy({**DEFAULT, **{key: item for key, item in value.items() if key != 'max_running'}})
     if type(config['version']) is not int or config['version'] != 1:
         raise ValueError('Expected runtime version 1')
     if config['provider'] not in manifests():
@@ -114,6 +116,17 @@ def validate(value):
         raise ValueError('Invalid merge method or ready label')
     if config['enabled'] and (not config['image'] or not config['harness_argv']):
         raise ValueError('Enabling requires a pinned image and harness command')
+    tiers = config['environment_tiers']
+    if not isinstance(tiers, dict) or set(tiers) - {'standard', 'full'}:
+        raise ValueError('Environment tiers must be standard or full')
+    for tier in tiers.values():
+        if (not isinstance(tier, dict) or set(tier) != {'image', 'memory', 'cpus'}
+                or not isinstance(tier['image'], str) or not tier['image']
+                or not isinstance(tier['memory'], str)):
+            raise ValueError('Each environment tier needs a pinned image, memory and cpus')
+        validate({**tier, 'environment_tiers': {}, 'repository_environments': {}})
+    from .environments import validate_profiles
+    validate_profiles(config['repository_environments'])
     return config
 
 

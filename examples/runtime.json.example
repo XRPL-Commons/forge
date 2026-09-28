@@ -70,5 +70,7 @@
       "provider_auth_file_env": null
     }
   ],
-  "codex_parallel_auth": false
+  "codex_parallel_auth": false,
+  "environment_tiers": {},
+  "repository_environments": {}
 }

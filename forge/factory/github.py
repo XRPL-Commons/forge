@@ -12,6 +12,16 @@ from .contracts import SHA, candidate, digest, submission
 COMPARISONS = {}
 
 
+def own_build_pr(pr, repo_id, number, publisher):
+    return (isinstance(pr, dict)
+            and str((pr.get('head') or {}).get('ref') or '').startswith(f'forge/issue-{number}-')
+            and (pr.get('user') or {}).get('login') == publisher
+            and (pr.get('user') or {}).get('type') == 'Bot'
+            and pr.get('state') == 'open' and not pr.get('merged')
+            and ((pr.get('head') or {}).get('repo') or {}).get('id') == repo_id
+            and ((pr.get('base') or {}).get('repo') or {}).get('id') == repo_id)
+
+
 class GitHubUnavailable(RuntimeError):
     def __init__(self, message, *, status=None):
         super().__init__(message)
@@ -220,14 +230,23 @@ class GitHub:
         return out
 
     def own_draft(self, item, number, publisher):
-        """Branch of Forge's own open PR for this issue, most recently updated first."""
-        prefix = f'forge/issue-{number}-'
+        """Resume an owned PR, without treating a draft as a verified candidate."""
         rows = [p for p in self.pulls(item)
-                if isinstance(p, dict) and str((p.get('head') or {}).get('ref') or '').startswith(prefix)
-                and (p.get('user') or {}).get('login') == publisher
-                and ((p.get('head') or {}).get('repo') or {}).get('id') == item['repo_id']]
-        rows.sort(key=lambda p: str(p.get('updated_at') or ''), reverse=True)
-        return rows[0]['head']['ref'] if rows else None
+                if own_build_pr(p, item['repo_id'], number, publisher)]
+        rows.sort(key=lambda p: (str(p.get('updated_at') or ''), p['number']), reverse=True)
+        return ({'pr': rows[0]['number'], 'branch': rows[0]['head']['ref'],
+                 'superseded': [p['number'] for p in rows[1:]]} if rows else None)
+
+    def environment_label(self, item, issue, label):
+        labels = {row['name'] for row in issue.get('labels', [])}
+        if label not in labels:
+            self.call('controller', item, 'POST', f"/issues/{item['number']}/labels", {'labels': [label]})
+        for old in labels.intersection({'env:standard', 'env:full'}) - {label}:
+            try:
+                self.call('controller', item, 'DELETE', f"/issues/{item['number']}/labels/" + quote(old, safe=''))
+            except GitHubUnavailable as error:
+                if error.status != 404:
+                    raise
 
     def pr(self, item, number):
         value = self.call('controller', item, 'GET', f'/pulls/{number}')

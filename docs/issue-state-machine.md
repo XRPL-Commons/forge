@@ -7,6 +7,11 @@ Activity page appears stuck. The
 [software factory contract](software-factory-spec.md) defines evidence and authority;
 [runtime setup](factory-runtime.md) covers admission and resources.
 
+A builder that needs an operator choice can [request a decision](build-decisions.md)
+without publishing a PR or consuming a failure attempt. Database availability is
+handled through [job environments](job-environments.md), including a bounded retry
+and an operator hold when the full environment is still insufficient.
+
 ## Pipeline progress and permission to run
 
 Forge records two separate facts:

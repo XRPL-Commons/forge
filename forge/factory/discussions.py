@@ -156,6 +156,7 @@ class Discussions:
                 "issue_url": "https://github.com/" + row["repo"] + "/issues/" + str(row["number"]),
                 "actions": [a for a in row["actions"] if a in ACTIONS], "revision": row["revision"],
                 "candidate": item.get("candidate"), "attempts": evidence,
+                "decision_request": item.get("decision_request"),
                 "history": [{"at": e.get("at"), "kind": e.get("kind"), "reason": scrub(str(e.get("reason") or ""))[:2000]} for e in item.get("history", [])[-10:]], "observed_at": self.clock()}, evidence[0] if evidence else None
 
     def tick(self, config, github, settings, *, launch=True):

@@ -34,7 +34,7 @@ def facts(issue):
 def revision(issue, item):
     public = {k: issue.get(k) for k in ('number', 'title', 'content_hash', 'state', 'assignees')}
     public['labels'] = sorted(l for l in labels(issue) if not l.startswith('forge:'))
-    tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold')}
+    tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request')}
     return digest({'github': public, 'ledger': tracked})
 
 
@@ -44,6 +44,8 @@ def revision(issue, item):
 # every state a worker has not spoken for; {why} carries the reason the issue
 # is where it is, so nobody has to open Details to learn it.
 SUMMARIES = {
+    'decision': ('Waiting for your decision',
+                 'The builder needs your answer before work can continue. Discuss the options, then retry with your decision.'),
     'merged': ('The work is merged',
                'The pull request was merged and the issue is closed. Nothing more is needed here.'),
     'closed': ('The issue is closed on GitHub',
@@ -110,7 +112,7 @@ SUMMARIES = {
                      'Forge cannot reach this repository, or it is not enabled for Forge. Put its access or activation right. Forge resumes afterwards.'),
 }
 # The worker's own words lead where the worker is the one who knows.
-WORKER_LED = ('failed', 'environment_hold')
+WORKER_LED = ('failed', 'environment_hold', 'decision')
 
 
 def sentence(text):
@@ -205,6 +207,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     elif item.get('environment_hold'):
         state, detail, actions = 'attention', 'Forge’s build environment needs attention. The pull request and code-retry budget are preserved. Repair the environment, then recheck.', ['recheck']
         case = 'environment_hold'
+    elif item.get('decision_request'):
+        state, detail, actions, case = 'attention', item['decision_request']['question'], ['retry'], 'decision'
     elif setup:
         state = 'attention'
         ready = repo.get('protection_ready') and repo.get('access_ready')
@@ -254,6 +258,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
     return {'status': state, 'explanation': detail, 'summary': summary_for(case, item, held), 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
+            'decision_request': item.get('decision_request'),
             'pull_requests': [{'number': p['number'], 'title': p.get('title', ''), 'kind': kind(p)} for p in linked],
             'attempts': attempts(item) if attempts(item)['failed'] else None,
             'held_by': [h for h in (issue.get('label_events') or []) if h.get('label') in held] or None,

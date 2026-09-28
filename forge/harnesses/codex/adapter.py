@@ -17,7 +17,7 @@ def prepare_tool_environment(directory, env):
                  'GH_TOKEN': env.get('GH_TOKEN', ''), 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
                  'HTTP_PROXY': env.get('HTTP_PROXY', ''), 'HTTPS_PROXY': env.get('HTTPS_PROXY', '')}
     build = runpy.run_path('/opt/forge/build_environment.py')
-    child_env.update(build['environment'](directory))
+    child_env.update(build['environment'](directory, [s for s in env.get('FORGE_REQUIRED_SERVICES', '').split(',') if s]))
     Path(child_env['HOME']).mkdir(mode=0o700, exist_ok=True)
     config = 'default_permissions = "forge_runner"\napproval_policy = "never"\nweb_search = "disabled"\n[shell_environment_policy]\ninherit = "none"\n[shell_environment_policy.set]\n'
     config += '\n'.join(key + ' = ' + json.dumps(value) for key, value in child_env.items()) + '\n'
