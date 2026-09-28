@@ -146,6 +146,19 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.active()['role'], 'build')
         self.assertEqual(self.active()['branch'], build['branch'])
 
+    def test_a_conflict_check_that_cannot_be_published_leaves_the_issue_to_retry(self):
+        from forge.factory.github import GitHubUnavailable
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
+        self.github.pull['mergeable'] = False
+        publish = self.github.check
+        self.github.check = lambda *a, **k: (_ for _ in ()).throw(GitHubUnavailable('Checks API unavailable'))
+        self.cycle()
+        self.assertEqual(self.state(), 'approval_needed')
+        self.github.check = publish
+        self.cycle()
+        self.assertEqual(self.active()['role'], 'build')
+
     def test_a_conflict_found_after_approval_also_returns_to_build_uncharged(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review'); self.cycle()
