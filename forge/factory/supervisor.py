@@ -116,7 +116,10 @@ class Supervisor:
                 else:
                     data['issues'][item['key']].pop('settled_observed', None)
         self.observe_deployments(observe_until)
-        self.github.deadline = cycle_deadline
+        # Launching gets at least half the budget even when observation ran
+        # over: otherwise a long launch path (academy #640: 17 dependency
+        # reads) ran out every cycle and was silently retried forever.
+        self.github.deadline = max(cycle_deadline, time.monotonic() + budget / 2)
         if self.config['enabled'] and time.monotonic() < self.github.deadline:
             # New issues must be found even while the queue is never empty:
             # dispatch only discovers on an empty queue, so a busy factory
@@ -414,7 +417,16 @@ class Supervisor:
                 self.ledger.event(data, current, 'dependencies_checked', blocked=blocked)
             current['blocked_dependencies'] = blocked
             current['dependency_reason'] = ('Waiting for ' + ', '.join('#' + str(n) for n in blocked) + '.') if blocked else None
+            current['dependencies_checked_at'] = self.clock()
         return not blocked
+
+    DEPENDENCY_RECHECK_SECONDS = 120
+
+    def dependencies_recently_clear(self, item):
+        """Observation confirmed every dependency closed moments ago; a body
+        change is caught by the requirements comparison that follows."""
+        return (not item.get('blocked_dependencies')
+                and 0 <= self.clock() - item.get('dependencies_checked_at', -1e9) < self.DEPENDENCY_RECHECK_SECONDS)
 
     def reconcile(self, item):
         if item.get('operator_request'):
@@ -667,7 +679,7 @@ class Supervisor:
                     # Re-read at the launch boundary, including newly discovered
                     # issues that have not entered the observation rotation yet.
                     issue, requirements = self.github.issue(item)
-                    if not self.dependency_ready(item, issue):
+                    if not self.dependencies_recently_clear(item) and not self.dependency_ready(item, issue):
                         continue
                     if issue['state'] != 'open':
                         self.ledger.cancel(item['key'], 'Issue closed externally')
