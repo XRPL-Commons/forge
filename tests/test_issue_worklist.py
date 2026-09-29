@@ -241,6 +241,15 @@ class WorklistTests(unittest.TestCase):
                                          candidate={'pr': pr, 'head': 'abc123', 'base': 'def456', 'base_ref': 'main'})
         self.github.prs = [{'number': pr, 'title': 'Forge pull request', 'body': 'Closes #1'}]
 
+    def test_the_audit_badge_reads_the_human_decision_word_not_its_truthiness(self):
+        self.awaiting_approval()
+        for word, expected in (('not_required', False), ('required', True)):
+            with self.ledger.transaction() as data:
+                data['issues']['1:1']['evidence'] = {'audit': {'outcome': 'pass', 'summary': 'PASS.', 'human_required': word,
+                                                               'human_reason': 'reason'}}
+            reviews = self.inventory.view(key='1:1')['issue']['reviews']
+            self.assertEqual([r['human_required'] for r in reviews if r['role'] == 'audit'], [expected], word)
+
     def test_environment_recheck_preserves_stage_and_failure_budget(self):
         self.tracked()
         with self.ledger.transaction() as state:

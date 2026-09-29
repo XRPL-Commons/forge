@@ -101,3 +101,4 @@ class OwnDraftTests(unittest.TestCase):
             github.pulls.return_value = [{**original, field: value}]
             self.assertIsNone(github.own_draft(item, 658, 'forge-build[bot]'))
             github.pulls.return_value = [original]
+

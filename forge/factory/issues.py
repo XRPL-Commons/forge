@@ -444,7 +444,8 @@ class IssueInventory:
                        'history': [{k: e[k] for k in ('at', 'kind', 'reason') if k in e} for e in ledger['events'] if e['issue'] == issue_key][-15:],
                        'active': item.get('active') if item else None,
                        'reviews': [{'role': role, 'outcome': value.get('outcome'), 'summary': value.get('summary', '')[:1000],
-                                    'human_required': bool(value.get('human_required')),
+                                    # The audit records 'required' / 'not_required': a word, not a flag.
+                                    'human_required': value.get('human_required') == 'required',
                                     'human_reason': str(value.get('human_reason') or '')[:2000] or None}
                                    for role, value in (item or {}).get('evidence', {}).items() if role in ('review', 'audit')],
                        'reviewers': reviewers(entry, self.runtime['human_reviewers']),
