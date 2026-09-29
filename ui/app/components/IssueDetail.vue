@@ -5,6 +5,7 @@ import {
   ACTION_LABELS, STATUS_NAMES, attemptsText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
   type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
+  type IssueEnvironmentSelection,
 } from '~/utils/issues'
 
 // The one detail view: /issues/<key> owns the issue's decisions and its
@@ -25,6 +26,8 @@ interface Loaded { detail: IssueDetailResponse | null; fence: string | null; fac
 // True while a decision dialog is open or a POST is in flight, so a poll can
 // never re-render the issue under the operator's hands.
 const submitting = ref(false)
+const environmentOpen = ref(false)
+const environmentError = ref('')
 
 const factory = useFactory()
 const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${encodeURIComponent(props.issueKey)}`, async (path) => {
@@ -34,7 +37,7 @@ const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${enc
     if (error instanceof ForgeApiError && error.status === 404) return { detail: null, fence: UNMANAGED }
     throw error
   }
-}, { allowed: () => !submitting.value })
+}, { allowed: () => !submitting.value && !environmentOpen.value })
 // Warm detail opens synchronously; cold direct links retain SSR data.
 const { data: initial } = await useAsyncData(`issue-${props.issueKey}`, () => poll.refresh(5000))
 if (!poll.data.value && initial.value) poll.replace(initial.value)
@@ -269,6 +272,23 @@ function ask(action: IssueAction) {
   decision.value = action
   submitting.value = true
 }
+
+async function saveEnvironment(environment: IssueEnvironmentSelection) {
+  const issue = detail.value
+  if (!issue || busy.value) return
+  submitting.value = true
+  environmentError.value = ''
+  try {
+    await api.act('/api/issues/environment', { key: issue.key, revision: issue.revision, environment })
+    environmentOpen.value = false
+    submitted.value = 'Environment preference submitted. Waiting for the supervisor to apply it.'
+  } catch (error: unknown) {
+    environmentError.value = error instanceof Error ? error.message : 'Could not save the environment.'
+  } finally {
+    submitting.value = false
+    if (!environmentOpen.value) await poll.refresh()
+  }
+}
 function closeDecision() {
   decision.value = null
   dialogError.value = null
@@ -331,6 +351,14 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         >Deploy run ↗</a>
       </p>
       <p v-if="message" id="detail-message" role="status" class="mt-2 text-sm text-amber-200">{{ message }}</p>
+      <IssueEnvironmentCard
+        v-if="detail.environment"
+        v-model:open="environmentOpen"
+        :environment="detail.environment"
+        :busy="busy"
+        :error="environmentError"
+        @save="saveEnvironment"
+      />
 
       <!-- One action bar under the title: what the operator can decide, then
            where the work lives on GitHub, then stopping the attempt. -->

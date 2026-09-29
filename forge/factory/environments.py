@@ -1,4 +1,4 @@
-"""Confirmed repository services and deterministic, bounded environment selection."""
+"""Repository evidence and automatic, bounded issue environment selection."""
 import base64
 import json
 import re
@@ -26,7 +26,9 @@ def validate_profiles(profiles):
         raise ValueError('Repository environments must be keyed by repository ID')
     for key, value in profiles.items():
         if (not isinstance(key, str) or not re.fullmatch(r'[1-9][0-9]*', key)
-                or not isinstance(value, dict) or set(value) != {'services', 'evidence', 'head', 'confirmed_at'}
+                or not isinstance(value, dict) or set(value) - {'services', 'evidence', 'head', 'confirmed_at', 'default'}
+                or not {'services', 'evidence', 'head', 'confirmed_at'} <= set(value)
+                or ('default' in value and type(value['default']) is not bool)
                 or not isinstance(value['head'], str) or not SHA.fullmatch(value['head'])
                 or type(value['confirmed_at']) not in (int, float) or value['confirmed_at'] <= 0
                 or not isinstance(value['evidence'], list) or len(value['evidence']) > 100
@@ -95,32 +97,59 @@ def probe(github, repo):
     return {**value, 'revision': digest(value)}
 
 
-def choose(config, item, issue):
-    """Explicit labels win; otherwise database repositories use full by default.
+def override(value):
+    if not isinstance(value, dict) or set(value) != {'mode', 'services'} or value['mode'] not in ('automatic', 'standard', 'full'):
+        raise ValueError('Choose automatic, standard, or database workers.')
+    selected = services(value['services'])
+    if (value['mode'] == 'full') != bool(selected):
+        raise ValueError('Choose databases only for a database worker.')
+    return {'mode': value['mode'], 'services': selected}
 
-    Only a clearly scoped copy/docs-only title opts out. Uncertain work keeps
-    the repository's services; the controller never guesses new permissions.
-    """
+
+def choose(config, item, issue, evidence=None):
+    """Choose per issue; repository scans are evidence, never an approval gate."""
+    evidence = evidence or {}
     profile = config['repository_environments'].get(str(item['repo_id']), {})
-    allowed = profile.get('services', [])
-    labels = {l['name'] for l in issue.get('labels', []) if l['name'].startswith('env:')}
+    defaults = profile.get('services', []) if profile.get('default') else []
+    known = evidence.get('services', profile.get('services', []))
+    labels = {l['name'] if isinstance(l, dict) else l for l in issue.get('labels', [])}
+    labels = {name for name in labels if name.startswith('env:')}
     if len(labels) > 1 or labels - {'env:standard', 'env:full'}:
         raise ValueError('Choose exactly one supported env:standard or env:full label')
     previous = item.get('environment_choice') or {}
     explicit = bool(labels and not (previous.get('automatic') and labels == {item.get('environment_label')}))
-    if explicit:
-        tier, reason = next(iter(labels))[4:], 'Explicit issue label'
+    manual = item.get('environment_override')
+    title, body = issue.get('title', ''), issue.get('body') or ''
+    text = title + '\n' + body
+    mentioned = inspect_files({'issue-test-setup.txt': text})['services']
+    docs = re.search(r'\b(?:copy|docs?|documentation)[ -]only\b|^(?:docs?|documentation|copy)\s*:', title, re.I)
+    testing = re.search(r'\b(?:api|backend|server|database|integration|e2e|end.to.end|tests?|testing|migration)\b', text, re.I)
+    automatic = not (manual or explicit)
+    if manual:
+        selected = manual['services']
+        reason = 'Environment selected for this issue by an operator'
+        tier = manual['mode']
+    elif explicit:
+        tier = next(iter(labels))[4:]
+        selected = (known or defaults or list(SERVICES)) if tier == 'full' else []
+        reason = 'Explicit issue environment label'
     elif item.get('environment_retry'):
-        tier, reason = 'full', 'Retry with the confirmed required services'
-    elif re.search(r'\b(?:copy|docs?|documentation)[ -]only\b', issue.get('title', ''), re.I):
-        tier, reason = 'standard', 'Issue explicitly limits the change to copy or documentation'
+        selected = item['environment_retry']['services']
+        tier, reason = 'full', 'Worker reported missing databases; retrying this issue with them available'
+    elif docs:
+        tier, selected, reason = 'standard', [], 'This issue is scoped to documentation or copy'
+    elif mentioned:
+        tier, selected, reason = 'full', mentioned, 'The issue names these database dependencies'
+    elif testing and known:
+        tier, selected, reason = 'full', known, 'The issue concerns backend or test work; the repository scan found these databases'
+    elif defaults:
+        tier, selected, reason = 'full', defaults, 'Using the optional repository default for this issue'
     else:
-        tier = 'full' if allowed else 'standard'
-        reason = 'Confirmed repository services' if allowed else 'No confirmed repository services'
+        tier, selected, reason = 'standard', [], 'No database requirement identified for this issue; the worker can request one if needed'
     if tier == 'full' and 'full' not in config['environment_tiers']:
-        raise ValueError('The full environment is not configured; install and qualify it first')
-    return {'tier': tier, 'services': list(allowed) if tier == 'full' else [],
-            'reason': reason, 'automatic': not explicit}
+        raise ValueError('Database workers are unavailable on this host; enable the full environment.')
+    return {'tier': tier, 'services': sorted(selected), 'reason': reason, 'automatic': automatic,
+            'evidence_head': evidence.get('head'), 'evidence': evidence.get('evidence', []) if selected else []}
 
 
 def worker_config(config, item):

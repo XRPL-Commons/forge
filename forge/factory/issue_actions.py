@@ -14,7 +14,7 @@ from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD
 
-ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer'}
+ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer', 'environment'}
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
@@ -34,9 +34,14 @@ def reviewer_logins(reason):
     return logins
 
 
-def request(root, *, key, action, revision: str, reason, request_id=None):
+def request(root, *, key, action, revision: str, reason, request_id=None, environment=None):
     if not isinstance(action, str) or action not in ACTIONS or not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
         raise ValueError('Choose an issue action and record the decision.')
+    if action == 'environment':
+        from .environments import override
+        environment = override(environment)
+    elif environment is not None:
+        raise ValueError('An environment belongs to an environment decision.')
     if action == 'assign_reviewer':
         reviewer_logins(reason)
     if request_id is not None:
@@ -45,24 +50,25 @@ def request(root, *, key, action, revision: str, reason, request_id=None):
         with AtomicStore(Path(root) / 'state/issues', 'actions').transaction() as data:
             old = data.get(request_id)
             if old:
-                if (old['key'], old['action'], old['revision'], old['reason']) != (key, action, revision, reason.strip()):
+                if (old['key'], old['action'], old['revision'], old['reason'], old.get('environment')) != (key, action, revision, reason.strip(), environment):
                     raise ValueError('Decision identity was already used')
                 return request_id
     inventory = IssueInventory(root)
     row = inventory.view(key=key)['issue']
-    if row['revision'] != revision or action not in row['actions']:
+    allowed = row.get('environment', {}).get('editable', False) if action == 'environment' else action in row['actions']
+    if row['revision'] != revision or not allowed:
         raise ValueError('This issue changed or needs a fresh check. Review it again before continuing.')
     store = AtomicStore(Path(root) / 'state/issues', 'actions')
     with store.transaction() as data:
         for identifier, value in data.items():
             if value['key'] == key and value['status'] == 'pending':
-                if (value['action'], value['revision'], value['reason']) == (action, revision, reason.strip()):
+                if (value['action'], value['revision'], value['reason'], value.get('environment')) == (action, revision, reason.strip(), environment):
                     return identifier
                 raise ValueError('Another decision for this issue is still being applied.')
         identifier = request_id or str(uuid.uuid4())
         data[identifier] = {'key': key, 'repo_id': row['repo_id'], 'repo': row['repo'], 'number': row['number'],
                             'action': action, 'revision': revision, 'reason': reason.strip(),
-                            'status': 'pending', 'created_at': time.time()}
+                            'status': 'pending', 'created_at': time.time(), **({'environment': environment} if action == 'environment' else {})}
     return identifier
 
 
@@ -152,7 +158,13 @@ class IssueActions:
                 raise ValueError('This issue changed. Refresh it before applying the decision.')
             self.validate_action(decision['action'], issue, item)
             add, remove = [], []
-            if decision['action'] == 'pause':
+            if decision['action'] == 'environment':
+                from .environments import override
+                selected = override(decision.get('environment'))
+                if selected['mode'] == 'full' and 'full' not in self.config['environment_tiers']:
+                    raise ValueError('Database workers are unavailable on this host.')
+                remove = sorted(label for label in labels(issue) if label.startswith('env:'))
+            elif decision['action'] == 'pause':
                 add = ['hold']
             elif decision['action'] == 'backlog':
                 remove = [self.config['ready_label']]
@@ -188,6 +200,8 @@ class IssueActions:
             self.validate_action(decision['action'], plan['before'], compare_item)
             if decision['action'] in ('queue', 'resume', 'retry', 'recheck'):
                 self.prerequisites(decision, value, item)
+        if decision['action'] == 'environment' and plan.get('new_item') and self.config['ready_label'] in labels(issue):
+            self.prerequisites(decision, value, item)
         if item is None:
             self.ledger.discover(repo, decision['number'], requirements, hold='Applying operator decision', title=value.get('title'))
         with self.ledger.transaction() as state:
@@ -206,6 +220,32 @@ class IssueActions:
             raise ValueError('GitHub changed during this decision. Review the current issue.')
         if decision['action'] in ('queue', 'resume', 'retry', 'recheck'):
             self.prerequisites(decision, confirmed, item)
+        if decision['action'] == 'environment':
+            from .environments import override
+            selected = override(decision.get('environment'))
+            if plan.get('new_item') and self.config['ready_label'] in labels(confirmed):
+                self.prerequisites(decision, confirmed, item)
+            if selected['mode'] == 'full' and 'full' not in self.config['environment_tiers']:
+                raise ValueError('Database workers are unavailable on this host.')
+            with self.ledger.transaction() as state:
+                current = state['issues'][decision['key']]
+                for field in ('environment_choice', 'environment_label', 'environment_label_pending', 'environment_retry'):
+                    current.pop(field, None)
+                if selected['mode'] == 'automatic':
+                    current.pop('environment_override', None)
+                else:
+                    current['environment_override'] = selected
+                if plan.get('new_item'):
+                    queued = self.config['ready_label'] in labels(confirmed)
+                    current.update(state='ready' if queued else 'hold', reason=None if queued else 'Not queued for Forge')
+                    if not queued:
+                        current['operator_hold'] = {'kind': 'backlog', 'state': 'ready'}
+                current.pop('operator_request', None)
+                current['retry_after'] = 0
+                current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
+                self.ledger.event(state, current, 'environment_override', reason=decision['reason'],
+                                  environment=selected, request=identifier)
+            return
         if decision['action'] == 'retry':
             self.ledger.retry(decision['key'], decision['reason'], request_id=identifier)
             with self.ledger.transaction() as state:

@@ -201,9 +201,9 @@ def main(argv=None):
                         raise ValueError('Probe the repository and confirm its exact --revision')
                     current = load(root)
                     current['repository_environments'] = {**current['repository_environments'], args.target: {
-                        **{k: proposal[k] for k in ('services', 'evidence', 'head')}, 'confirmed_at': time.time()}}
+                        **{k: proposal[k] for k in ('services', 'evidence', 'head')}, 'confirmed_at': time.time(), 'default': True}}
                     write_json(root / 'runtime.json', validate(current))
-                print('Repository services confirmed. Issue environment labels still take precedence.')
+                print('Optional repository default saved. Issue environment choices take precedence.')
             return 0
         if args.command == 'validate':
             settings.load()

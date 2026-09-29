@@ -395,9 +395,23 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/deployment','/api/repositories/environment']:
+        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/deployment','/api/repositories/environment','/api/issues/environment']:
             h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
             h.do_POST();h.send_error.assert_called_once_with(403)
+
+    def test_issue_environment_endpoint_validates_services_and_queues_a_decision(self):
+        with patch('forge.factory.issue_actions.request', return_value='request-1') as request:
+            value = {'key': '10:1', 'revision': 'r', 'environment': {'mode': 'full', 'services': ['mongodb']}}
+            h = self.handler('/api/issues/environment', value); h.do_POST()
+            self.assertTrue(json.loads(h._send.call_args.args[0])['ok'])
+            self.assertEqual(request.call_args.kwargs['action'], 'environment')
+            self.assertEqual(request.call_args.kwargs['environment'], value['environment'])
+            for selected in ({'mode': 'full', 'services': ['docker']}, {'mode': 'full', 'services': []},
+                             {'mode': 'automatic', 'services': ['mongodb']}, {'mode': 'standard'}, None):
+                request.reset_mock()
+                h = self.handler('/api/issues/environment', {**value, 'environment': selected}); h.do_POST()
+                self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
+                request.assert_not_called()
 
     def test_environment_actions_validate_envelope_and_return_repository_view(self):
         with patch('forge.repository_environments.RepositoryEnvironments') as environment, \

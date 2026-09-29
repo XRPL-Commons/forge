@@ -1,6 +1,7 @@
 """Issue inventory is observation; durable decisions alone change admission."""
 from contextlib import nullcontext
 from copy import deepcopy
+from urllib.parse import unquote
 from pathlib import Path
 import tempfile
 import time
@@ -64,7 +65,7 @@ class GitHub:
             if self.lose_response:
                 self.lose_response = False
                 raise GitHubUnavailable('Connection lost after commit')
-        if method == 'DELETE': self.value['labels'] = [l for l in self.value['labels'] if l['name'] != path.split('/')[-1]]
+        if method == 'DELETE': self.value['labels'] = [l for l in self.value['labels'] if l['name'] != unquote(path.split('/')[-1])]
         return {}
 
 
@@ -166,6 +167,72 @@ class WorklistTests(unittest.TestCase):
 
     def tracked(self, hold=None):
         self.ledger.discover(self.settings.repos[0], 1, 'requirements', hold=hold)
+
+    def test_issue_environment_override_is_durable_and_does_not_queue_backlog(self):
+        from forge.factory.config import validate
+        self.actions.config = validate({'environment_tiers': {'full': {'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'cpus': 2}}})
+        self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            identifier = request(self.root, key='1:1', action='environment', revision=row['revision'],
+                                 reason='Use MongoDB for this issue', environment={'mode': 'full', 'services': ['mongodb']})
+        with self.actions.store.transaction() as data: decision = deepcopy(data[identifier])
+        self.actions.apply(identifier, decision)
+        item = self.ledger.read()['issues']['1:1']
+        self.assertEqual(item['environment_override'], {'mode': 'full', 'services': ['mongodb']})
+        self.assertEqual(item['state'], 'hold')
+        self.assertEqual(item['operator_hold']['kind'], 'backlog')
+        self.actions.apply(identifier, decision)
+        events = [e for e in self.ledger.read()['events'] if e.get('request') == identifier]
+        self.assertEqual(len(events), 1)
+        self.assertFalse(self.ledger.read()['jobs'])
+
+    def test_return_to_automatic_clears_issue_override_and_labels_without_releasing_hold(self):
+        self.tracked(hold='Operator review needed')
+        self.github.value['labels'].append({'name': 'env:full'})
+        with self.ledger.transaction() as data:
+            item = data['issues']['1:1']
+            item['environment_override'] = {'mode': 'full', 'services': ['mongodb']}
+            item['environment_choice'] = {'tier': 'full', 'services': ['mongodb'], 'automatic': False}
+        self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            identifier = request(self.root, key='1:1', action='environment', revision=row['revision'],
+                                 reason='Use automatic selection', environment={'mode': 'automatic', 'services': []})
+        with self.actions.store.transaction() as data: decision = deepcopy(data[identifier])
+        self.actions.apply(identifier, decision)
+        item = self.ledger.read()['issues']['1:1']
+        self.assertNotIn('environment_override', item)
+        self.assertNotIn('environment_choice', item)
+        self.assertEqual(item['state'], 'hold')
+        self.assertEqual(item['reason'], 'Operator review needed')
+        self.assertNotIn('env:full', [label['name'] for label in self.github.value['labels']])
+
+    def test_stale_environment_override_is_rejected(self):
+        self.tracked(); self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            identifier = request(self.root, key='1:1', action='environment', revision=row['revision'],
+                                 reason='Use standard', environment={'mode': 'standard', 'services': []})
+        with self.actions.store.transaction() as data: decision = deepcopy(data[identifier])
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['environment_choice'] = {'tier': 'full', 'services': ['mongodb']}
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.actions.apply(identifier, decision)
+        self.assertNotIn('environment_override', self.ledger.read()['issues']['1:1'])
+
+    def test_environment_override_cannot_admit_untracked_work_with_an_assignee(self):
+        self.github.value['labels'].append({'name': self.actions.config['ready_label']})
+        self.github.value['assignees'] = [{'login': 'maintainer'}]
+        self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        with patch('forge.factory.issue_actions.IssueInventory', return_value=self.inventory):
+            identifier = request(self.root, key='1:1', action='environment', revision=row['revision'],
+                                 reason='Use standard', environment={'mode': 'standard', 'services': []})
+        with self.actions.store.transaction() as data: decision = deepcopy(data[identifier])
+        with self.assertRaisesRegex(ValueError, 'assignee'):
+            self.actions.apply(identifier, decision)
+        self.assertNotIn('1:1', self.ledger.read()['issues'])
 
     def awaiting_approval(self, pr=30):
         self.tracked()

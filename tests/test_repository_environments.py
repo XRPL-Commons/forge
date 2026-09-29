@@ -135,3 +135,34 @@ class RepositoryEnvironmentTests(unittest.TestCase):
             self.assertIsNone(row['environment']['profile'])
         self.assertFalse((self.root / 'state/environment-scans.json').exists())
         self.service.github_class.assert_not_called()
+
+    def test_automatic_scan_is_cached_and_never_creates_a_default(self):
+        repo = {'repo_id': 10, 'repo': 'example/project'}
+        with patch('forge.repository_environments.threading.Thread') as thread:
+            self.assertFalse(self.service.automatic(repo).get('services'))
+            self.service.automatic(repo)
+            thread.return_value.start.assert_called_once()
+        identifier = read_json(self.root / 'state/environment-scans.json')['10']['id']
+        self.finish(identifier)
+        with patch('forge.repository_environments.threading.Thread') as thread:
+            self.assertEqual(self.service.automatic(repo), self.proposal)
+            thread.assert_not_called()
+            self.now += 601
+            self.assertEqual(self.service.automatic(repo), self.proposal)
+            thread.return_value.start.assert_called_once()
+        self.assertEqual(load(self.root)['repository_environments'], {})
+
+    def test_optional_default_can_be_removed_without_losing_scan_evidence(self):
+        self.proposed(); self.action('confirm')
+        self.action('automatic')
+        self.assertEqual(load(self.root)['repository_environments'], {})
+        self.assertEqual(self.service.view(10)['proposal']['services'], ['mongodb'])
+
+    def test_legacy_profile_is_evidence_without_a_repository_default(self):
+        from tests.test_environment_tiers import PROFILE
+        write_json(self.root / 'runtime.json', {'environment_tiers': {'full': FULL}, 'repository_environments': {'10': PROFILE}})
+        self.assertIsNone(self.service.view(10)['profile'])
+        with patch('forge.repository_environments.threading.Thread'):
+            evidence = self.service.automatic({'repo_id': 10, 'repo': 'example/project'})
+        self.assertEqual(evidence['services'], ['mongodb'])
+        self.assertNotIn('default', load(self.root)['repository_environments']['10'])

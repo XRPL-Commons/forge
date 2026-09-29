@@ -23,6 +23,14 @@ export interface IssueActionStatus { id: string; key: string; status: 'pending' 
 // and at most three sentences, written for a reader who does not read code.
 export interface IssueSummary { headline: string; plain: string; role?: string; at?: number }
 
+export interface IssueEnvironmentSelection { mode: 'automatic' | 'standard' | 'full'; services: string[] }
+export interface IssueEnvironment {
+  choice: { tier: 'standard' | 'full'; services: string[]; reason: string; automatic: boolean; evidence?: string[]; evidence_head?: string | null } | null
+  override: IssueEnvironmentSelection | null
+  full_available: boolean
+  editable: boolean
+}
+
 export interface IssueRow {
   key: string; repo: string; repo_id: number; number: number; title: string
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
@@ -33,6 +41,7 @@ export interface IssueRow {
   actions: Exclude<IssueAction, 'stop'>[]
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
+  environment?: IssueEnvironment
   pull_requests: PullRequestRef[]
   dependencies: number[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
@@ -114,6 +123,7 @@ export const EVENT_LABELS: Record<string, string> = {
   decision_requested: 'Waiting for your decision',
   decision_answered: 'Your answer recorded',
   environment_selected: 'Worker environment selected',
+  environment_override: 'Issue environment preference saved',
   services_retry: 'Retrying with database services',
   operator_queue: 'Queued for Forge',
   operator_backlog: 'Returned to backlog',

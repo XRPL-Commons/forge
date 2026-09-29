@@ -47,7 +47,7 @@ class SelectionTests(unittest.TestCase):
     def test_confirmation_limits_services_and_explicit_labels_win(self):
         item = {'repo_id': 1}
         config = validate({'environment_tiers': {'full': FULL}})
-        issue = {'title': 'Upgrade dependencies', 'labels': []}
+        issue = {'title': 'Run API tests', 'labels': []}
         self.assertEqual(choose(config, item, issue)['services'], [])
         config['repository_environments']['1'] = PROFILE
         selected = choose(config, item, issue)
@@ -62,6 +62,40 @@ class SelectionTests(unittest.TestCase):
                 choose(config, item, {**issue, 'labels': [{'name': l} for l in labels]})
         with self.assertRaises(ValueError):
             choose(validate({}), item, {**issue, 'labels': [{'name': 'env:full'}]})
+
+    def test_issue_requirements_choose_services_without_a_saved_profile(self):
+        config = validate({'environment_tiers': {'full': FULL}})
+        evidence = {'services': ['mongodb', 'redis'], 'head': 'a' * 40, 'evidence': ['package.json: mongodb']}
+        item = {'repo_id': 1}
+        for title, body, expected in [
+                ('Fix navbar spacing', '', []),
+                ('Docs: describe MongoDB setup', '', []),
+                ('Fix MongoDB connection', '', ['mongodb']),
+                ('Fix cache invalidation', 'Redis keys expire too early', ['redis']),
+                ('Run API integration tests', '', ['mongodb', 'redis'])]:
+            with self.subTest(title=title):
+                selected = choose(config, item, {'title': title, 'body': body, 'labels': []}, evidence)
+                self.assertEqual(selected['services'], expected)
+                self.assertTrue(selected['automatic'])
+        self.assertEqual(config['repository_environments'], {})
+
+    def test_legacy_profiles_are_evidence_and_new_defaults_are_explicit(self):
+        config = validate({'environment_tiers': {'full': FULL}, 'repository_environments': {'1': PROFILE}})
+        item = {'repo_id': 1}
+        ui_issue = {'title': 'Fix navigation spacing', 'labels': []}
+        self.assertEqual(choose(config, item, ui_issue)['services'], [])
+        self.assertEqual(choose(config, item, {'title': 'Fix API tests', 'labels': []})['services'], ['mongodb'])
+        config['repository_environments']['1']['default'] = True
+        self.assertEqual(choose(config, item, ui_issue)['services'], ['mongodb'])
+
+    def test_issue_override_wins_over_requirements_and_defaults(self):
+        config = validate({'environment_tiers': {'full': FULL}, 'repository_environments': {'1': PROFILE}})
+        issue = {'title': 'Fix MongoDB', 'labels': []}
+        item = {'repo_id': 1, 'environment_override': {'mode': 'standard', 'services': []}}
+        self.assertEqual(choose(config, item, issue)['services'], [])
+        self.assertFalse(choose(config, item, issue)['automatic'])
+        item['environment_override'] = {'mode': 'full', 'services': ['redis']}
+        self.assertEqual(choose(config, item, issue)['services'], ['redis'])
 
     def test_worker_uses_selected_image_and_limits(self):
         config = validate({'environment_tiers': {'full': FULL}})
@@ -131,21 +165,68 @@ class ServiceCycleTests(cycle.CycleTest):
         self.assertEqual(self.state(), 'hold')
         self.assertEqual(data['issues'][self.key]['environment_hold']['required_services'], ['mongodb'])
 
-    def test_unconfirmed_or_unapproved_services_never_escalate(self):
+    def test_worker_can_request_services_without_repository_confirmation(self):
         self.setup_services(confirmed=False)
         self.cycle(); self.block_services(); self.cycle()
+        self.assertEqual(self.state(), 'ready')
+        self.assertEqual(self.active()['runner_config']['services'], ['mongodb'])
+        self.assertEqual(len(self.ledger.read()['jobs']), 2)
+
+    def test_supervisor_assigns_different_environments_in_the_same_repository(self):
+        from forge.factory.supervisor import Supervisor
+        self.setup_services(confirmed=False)
+        second = self.ledger.discover({'id': 1, 'name': 'example/project'}, 2, 'requirements')
+        titles = {1: 'Docs: update README', 2: 'Run API integration tests'}
+        observed = {1: [], 2: []}
+        self.github.issue = lambda item: ({'state': 'open', 'title': titles[item['number']],
+            'labels': [{'name': name} for name in observed[item['number']]]}, 'requirements')
+        self.github.environment_label = lambda item, issue, label: observed.update({item['number']: [label]})
+        supervisor = Supervisor(self.ledger, self.engine, self.github, cycle.Settings(), self.config)
+        with patch.object(supervisor, 'factory_root', return_value=Path(self.temp.name)), \
+                patch('forge.repository_environments.RepositoryEnvironments') as scan:
+            scan.return_value.automatic.return_value = {'services': ['mongodb'], 'head': 'a' * 40, 'evidence': ['package.json: mongodb']}
+            first = supervisor.select_environment(self.ledger.read()['issues'][self.key])
+            other = supervisor.select_environment(self.ledger.read()['issues'][second])
+            scan.return_value.automatic.assert_called_once()
+        self.assertEqual(first['environment_choice']['tier'], 'standard')
+        self.assertEqual(other['environment_choice']['services'], ['mongodb'])
+        self.assertIn('test work', other['environment_choice']['reason'])
+        self.assertEqual(self.config['repository_environments'], {})
+
+    def test_full_worker_can_add_a_missing_service_once(self):
+        self.setup_services(title='Fix MongoDB query', confirmed=False)
+        self.cycle()
+        first = self.active()
+        self.assertEqual(first['runner_config']['services'], ['mongodb'])
+        self.block_services(required=['redis']); self.cycle()
+        self.assertEqual(self.active()['runner_config']['services'], ['mongodb', 'redis'])
+        self.assertEqual(self.active()['branch'], first['branch'])
+        self.block_services(required=['postgres']); self.cycle()
         self.assertEqual(self.state(), 'hold')
-        self.assertEqual(len(self.ledger.read()['jobs']), 1)
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_legacy_service_hold_resumes_once_without_approval(self):
+        self.setup_services(confirmed=False)
+        self.cycle()
+        first = self.active()
+        self.ledger.block_environment(first['id'], 'services', 'MongoDB missing', required_services=['mongodb'])
+        with self.ledger.transaction() as data:
+            data['jobs'][first['id']].update(cleanup=True, fenced=True)
+            data['slots'].clear()
+        self.engine.jobs.clear()
+        self.cycle()
+        self.assertEqual(self.active()['runner_config']['services'], ['mongodb'])
+        self.assertEqual(self.active()['branch'], first['branch'])
 
     def test_explicit_standard_label_prevents_automatic_escalation(self):
-        self.setup_services(title='Upgrade dependencies')
+        self.setup_services(title='Run API tests')
         self.labels = ['env:standard']
         self.cycle(); self.block_services(); self.cycle()
         self.assertEqual(self.state(), 'hold')
         self.assertEqual(self.labels, ['env:standard'])
 
     def test_a_lost_label_write_resumes_before_reserving_any_job(self):
-        self.setup_services(title='Upgrade dependencies')
+        self.setup_services(title='Run API tests')
         def lost(item, issue, label):
             self.labels = [label]
             raise GitHubUnavailable('Lost response after label was written')

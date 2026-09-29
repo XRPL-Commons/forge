@@ -41,12 +41,14 @@ class Supervisor:
         self.settings, self.config, self.clock = settings, config, clock
         self.errors = []
         self.capacity = None
+        self.environment_evidence = {}
         root = self.factory_root()
         if root is not None:
             from .discussions import Discussions, reserve_logins
             self.config = reserve_logins(config, Discussions(root).active_jobs())
 
     def cycle(self):
+        self.environment_evidence = {}
         self.errors = []
         self.capacity = None
         budget = self.config['cycle_budget_seconds']
@@ -469,7 +471,13 @@ class Supervisor:
                 return
             held = item['environment_hold']
             if held['blocker'] == 'services':
-                return  # A full-tier or unconfirmed service blocker needs an operator recheck.
+                # Older installations held missing databases for manual approval.
+                # Resume once under the same bounded policy as a new blocker.
+                from .environments import choose
+                selected = choose(self.config, item, issue)
+                if selected['automatic'] and self.settings.admission(item['repo'])['allowed']:
+                    self.ledger.retry_services(held['attempt'], self.config, held.get('required_services', []), held=True)
+                return
             failed_job = self.ledger.read()['jobs'].get(held['attempt'])
             if (held['blocker'] == 'ci_evidence' and failed_job and failed_job['cleanup']
                     and self.settings.admission(item['repo'])['allowed']):
@@ -656,7 +664,16 @@ class Supervisor:
                 data['issues'][item['key']].pop('environment_label_pending', None)
             item = self.ledger.read()['issues'][item['key']]
             issue, _ = self.github.issue(item)
-        choice = choose(self.config, item, issue)
+        root = self.factory_root()
+        if root is not None and 'full' in self.config['environment_tiers']:
+            from ..repository_environments import RepositoryEnvironments
+            key = str(item['repo_id'])
+            if key not in self.environment_evidence:
+                try:
+                    self.environment_evidence[key] = RepositoryEnvironments(self.settings).automatic(item)
+                except (OSError, ValueError):
+                    self.environment_evidence[key] = {}  # Scan failures never block an otherwise eligible issue.
+        choice = choose(self.config, item, issue, self.environment_evidence.get(str(item['repo_id'])))
         label = 'env:' + choice['tier']
         # Persist intent before publishing the label, so interruption after the
         # GitHub write cannot turn our own selection into an operator override.

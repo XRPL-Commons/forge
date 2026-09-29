@@ -30,22 +30,55 @@ Once installed, `bin/forge update` rebuilds and qualifies the full tier when its
 inputs change. `bin/forge setup check` also verifies its database services.
 The base MongoDB image is digest-pinned in `deploy/runner/Dockerfile.full`.
 
-## Review each repository's services
+## Automatic assignment per issue
 
-Open the repository's setup page from **Settings → GitHub access**. In
-**Test databases**, select **Scan requirements**. Forge scans dependency, test
-and CI files in the background and shows the databases it found. Expand
-**Source files** to review the evidence, then select **Save requirements**.
+The supervisor chooses an environment for each issue. No repository profile or
+confirmation is required. It scans repository dependencies, test setup, Compose
+and CI files in the background when assigning work. Results are cached and
+refreshed after ten minutes when another issue is assigned. Each scan records the
+exact repository commit and file evidence. A failed or interrupted scan does not
+block dispatch; the supervisor can use earlier evidence, and the worker can report
+missing databases.
 
-The saved requirements appear on the same page and apply to future jobs. You do
-not need to repeat this for every issue or every run. Use **Scan again** when
-the repository's dependencies or test setup change. A failed scan keeps the
-previously saved requirements. If no supported databases are detected, saving
-selects the standard environment. Explicit issue environment labels still win.
-Database requirements can only be saved when the host has a qualified full
-environment. The UI does not launch a test job when you save.
+Selection uses the issue title and description:
 
-The equivalent terminal commands remain available for administrators:
+- Explicit documentation/copy-only work starts on standard workers.
+- An issue naming MongoDB, PostgreSQL or Redis gets those services.
+- Backend, API, integration or test work uses databases found by the cached scan.
+- Otherwise the issue starts on standard workers, or an optional repository default.
+
+The issue's **Worker environment** section shows the assignment and reason. Use
+**Change environment** to choose an optional override for that issue, or return to
+**Automatic**. Overrides apply to the next attempt and cannot change an active
+worker. Saving an override does not queue a backlog issue or release an existing
+hold. Explicit `env:standard` and `env:full` GitHub labels are also respected;
+changing the selection in the UI clears those labels so the new preference wins.
+Unsupported/conflicting labels or unavailable database workers defer dispatch
+without charging a code failure. The controller records each assignment in history.
+
+If a worker reports `blocked_environment`, `blocker: services`, with supported
+`required_services`, the supervisor adds those databases and retries once on the
+same branch. This also works when a database worker needs another service. No
+repository confirmation is required. The retry is bounded to the installed
+MongoDB, PostgreSQL and Redis services. Explicit overrides prevent automatic
+adjustments. A repeated blocker stays held for repair and **Recheck readiness**;
+neither case consumes a code-failure attempt. Older service holds can use this
+same one-retry policy after cleanup completes.
+
+## Repository evidence and optional defaults
+
+Open **Settings → GitHub access → repository → Test databases** to inspect the
+cached evidence or select **Scan again**. These scans inform issue assignment
+immediately. They do not require approval.
+
+**Optional repository default** lets an operator deliberately choose a fallback
+for issues without a specific requirement. Previously confirmed profiles become
+scan evidence; they no longer force a database worker on every issue.
+**Use automatic selection** removes the default while preserving scan evidence.
+Issue-specific choices take precedence. Database defaults require a qualified
+full environment on the host.
+
+The terminal commands remain available for administrators:
 
 ```sh
 bin/forge factory environment-probe --root /path/to/forge-runtime --target REPOSITORY_ID
@@ -53,39 +86,10 @@ bin/forge factory environment-confirm --root /path/to/forge-runtime \
   --target REPOSITORY_ID --revision REVISION_FROM_PROBE
 ```
 
-The first command reads dependency manifests, test setup, Compose and CI files at
-one commit. It never executes repository code. It prints proposed services and
-file references, then saves a proposal with no scheduling effect. Review that
-output before confirming its exact revision. Confirmation writes the repository
-profile to `repository_environments` in runtime configuration. No profile means
-no requested services. Re-probe after the repository's requirements change.
-
-The probe is deliberately bounded: at most 60 relevant files, 64 KiB per file;
-an incomplete tree or an exceeded file count requires manual investigation. It
-looks for known dependencies and service references; it is a proposal for review,
-not proof that every integration requirement was discovered.
-
-## Selection and retries
-
-The current supervisor selects the environment before reserving a worker. It
-does not use the retired triage modules. Explicit `env:standard` or `env:full`
-labels win. Otherwise, a confirmed database repository uses full, except when
-the title explicitly scopes the issue to a **copy-only** or **docs-only** change.
-Unknown work keeps the confirmed services. Conflicting or unavailable tier labels
-defer dispatch with a reason and consume no code-failure budget.
-
-The controller records the tier, services and reason in issue history and writes
-the corresponding `env:*` label. Its own label is tracked separately so it does
-not become an operator override on the next cycle. Interrupted label writes are
-reconciled before a job is reserved.
-
-A worker reports a missing database as `blocked_environment`, `blocker: services`,
-and a nonempty `required_services` list drawn from `mongodb`, `postgres`, `redis`.
-On standard, this permits one retry on full, on the same build branch, only when
-the full image exists in configuration and the repository profile confirms every
-requested service. An explicit standard label prevents automatic escalation.
-Unconfirmed services or a second service blocker hold the issue for an operator
-to repair and **Recheck readiness**. Neither case consumes a code-failure attempt.
+The first command refreshes evidence. The second saves an optional repository
+default. Neither executes repository code. The probe is bounded to 60 files of
+64 KiB each. An incomplete or oversized scan is reported; it is not treated as
+proof that no databases are required.
 
 Inside a full-tier job, run services and tests in the same tool invocation:
 
