@@ -20,14 +20,17 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings')
   await waitForText(page, 'Manage worker capacity and factory setup.')
 
-  // Five status rows, each reporting the default fixture's state.
-  const rows = page.locator('[data-status-row]')
-  assert.equal(await rows.count(), 5, 'expected the five status rows')
-  await waitForText(page, 'Enabled')
-  await waitForText(page, 'forge/worker:2026.09 · verified')
-  await waitForText(page, 'All coding accounts verified.')
-  await waitForText(page, '4 of 4 Apps verified')
-  await waitForText(page, 'Supervisor seen')
+  // The fixture's last supervisor observation is days old: the summary says
+  // so in one sentence and shows only that row; the rest fold away.
+  await waitForText(page, 'One thing needs your attention.')
+  await waitForText(page, 'Not responding: last seen')
+  await page.getByText('Show details').click()
+  const rows = page.locator('details [data-status-row]')
+  assert.equal(await rows.count(), 5, 'expected the five status rows under Show details')
+  await waitForText(page, 'Checked and ready')
+  await waitForText(page, 'All signed in and working')
+  await waitForText(page, 'All Forge Apps connected')
+  assert.ok(!(await page.evaluate(() => document.body.innerText.includes('sha256'))), 'no image hash on the page')
 
   // The onboarding error is a single sentence, rendered once by the banner
   // (with its own remediation button) — never repeated inside the accounts
@@ -38,14 +41,15 @@ export default async function (page, { base, scenario, requests }) {
   const openAccounts = page.getByRole('link', { name: 'Open coding accounts' })
   assert.equal(await openAccounts.count(), 1)
   assert.equal(await openAccounts.getAttribute('href'), '/settings/harnesses')
-  const accountsRow = await page.locator('[data-status-row="accounts"]').innerText()
+  // Only the row that needs the operator is shown above the fold.
+  const accountsRow = await page.locator('[data-status-row="accounts"]').first().innerText()
   assert.ok(!accountsRow.includes(PROVIDER_ERROR), 'the accounts row must not repeat the banner sentence')
   assert.ok(accountsRow.includes('Claude Code failed'), `expected the raw status in the accounts row, saw: ${accountsRow}`)
 
   // Back to a clean baseline for the capacity form.
   await scenario('default')
   await page.reload()
-  await waitForText(page, 'All coding accounts verified.')
+  await waitForText(page, 'needs your attention')
 
   const builders = page.locator('#capacity-build')
   await builders.waitFor({ state: 'visible' })
@@ -107,7 +111,7 @@ export default async function (page, { base, scenario, requests }) {
   // through the freshness notice, once.
   await scenario('default')
   await page.reload()
-  await waitForText(page, 'All coding accounts verified.')
+  await waitForText(page, 'needs your attention')
   await scenario('paused')
   await waitForText(page, 'Factory reset is in progress')
   assert.equal(await occurrences(page, 'Factory reset is in progress'), 1)
@@ -117,7 +121,8 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('default')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/settings')
-  await waitForText(page, 'All coding accounts verified.')
+  await waitForText(page, 'needs your attention')
+  await page.getByText('Show details').click()
   const direction = await page.locator('[data-status-row="dispatch"]').evaluate((el) => getComputedStyle(el).flexDirection)
   assert.equal(direction, 'column', 'status rows must stack on a phone-width viewport')
   const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }))

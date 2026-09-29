@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { statusRows } from '../../app/utils/status'
+import { statusRows, statusSummary } from '../../app/utils/status'
 
 const now = 1_000_000
 
@@ -42,9 +42,9 @@ function row(rows: ReturnType<typeof statusRows>, id: string) {
 }
 
 describe('statusRows · dispatch', () => {
-  it('reads Enabled/ok from a running factory', () => {
+  it('reads On/ok from a running factory', () => {
     const rows = statusRows({ factory: factory(), settings: null, onboarding: null }, now)
-    expect(row(rows, 'dispatch').value).toBe('Enabled')
+    expect(row(rows, 'dispatch').value).toBe('On')
     expect(row(rows, 'dispatch').tone).toBe('ok')
     expect(row(rows, 'dispatch').to).toBe('/settings#worker-capacity')
   })
@@ -56,7 +56,7 @@ describe('statusRows · dispatch', () => {
     })
     const rows = statusRows({ factory: paused, settings: null, onboarding: null }, now)
     const dispatch = row(rows, 'dispatch')
-    expect(dispatch.value).toBe('Paused')
+    expect(dispatch.value).toBe('Paused: no new work starts')
     expect(dispatch.tone).toBe('warn')
     expect(dispatch.detail).toBe('Issue processing is disabled. Existing worker cleanup continues.')
   })
@@ -66,29 +66,22 @@ describe('statusRows · image', () => {
   it('reports the image verified when the last check covered it', () => {
     const rows = statusRows({ factory: factory(), settings: null, onboarding: onboarding({ image_verified: true }) }, now)
     const image = row(rows, 'image')
-    expect(image.value).toBe('forge/worker:2026.09 · verified')
+    expect(image.value).toBe('Checked and ready')
     expect(image.tone).toBe('ok')
+    expect(image.value).not.toContain('sha256')
   })
 
-  it('ends with verification required, tone warn, and keeps the whole repo:tag when not fresh', () => {
+  it('asks for the account check, tone warn, when the image changed since the last check', () => {
     const rows = statusRows({ factory: factory(), settings: null, onboarding: onboarding({ image_verified: false }) }, now)
     const image = row(rows, 'image')
-    expect(image.value.endsWith(' · verification required')).toBe(true)
-    expect(image.value.startsWith('forge/worker:2026.09')).toBe(true)
+    expect(image.value).toContain('run the account check')
     expect(image.tone).toBe('warn')
-  })
-
-  it('truncates at the tag boundary, never a fixed slice', () => {
-    const withDigest = factory({
-      runtime: { enabled: true, slots: { build: 2, review: 1, audit: 1, recovery: 1 }, cycle_seconds: 30, image: 'forge/worker:2026.09@sha256:abcdef0123456789' },
-    })
-    const rows = statusRows({ factory: withDigest, settings: null, onboarding: onboarding({ image_verified: true }) }, now)
-    expect(row(rows, 'image').value).toBe('forge/worker:2026.09 · verified')
+    expect(image.to).toBe('/settings/harnesses')
   })
 })
 
 describe('statusRows · accounts', () => {
-  it('reads All coding accounts verified when every model passed', () => {
+  it('reads all signed in when every model passed', () => {
     const rows = statusRows({ factory: null, settings: null, onboarding: onboarding({
       harnesses: [
         { id: 'codex', name: 'Codex', version: '1', connected: true, models: [{ id: 'codex', model: 'gpt', status: 'passed' }], login_command: '', check_command: '' },
@@ -97,7 +90,7 @@ describe('statusRows · accounts', () => {
       ],
     }) }, now)
     const accounts = row(rows, 'accounts')
-    expect(accounts.value).toBe('All coding accounts verified.')
+    expect(accounts.value).toBe('All signed in and working')
     expect(accounts.tone).toBe('ok')
   })
 
@@ -141,7 +134,7 @@ describe('statusRows · github', () => {
   it('counts ok roles out of the total', () => {
     const rows = statusRows({ factory: null, settings: settings(), onboarding: null }, now)
     const github = row(rows, 'github')
-    expect(github.value).toBe('4 of 4 Apps verified')
+    expect(github.value).toBe('All Forge Apps connected')
     expect(github.tone).toBe('ok')
   })
 
@@ -150,7 +143,7 @@ describe('statusRows · github', () => {
       roles: { build: { status: 'ok' }, review: { status: 'stale' }, audit: { status: 'ok' }, controller: { status: 'ok' } },
     }), onboarding: null }, now)
     const github = row(rows, 'github')
-    expect(github.value).toBe('3 of 4 Apps verified')
+    expect(github.value).toBe('3 of 4 Forge Apps connected')
     expect(github.tone).toBe('warn')
   })
 })
@@ -159,7 +152,7 @@ describe('statusRows · observation', () => {
   it('reports a fresh observation age with an ok tone', () => {
     const rows = statusRows({ factory: factory({ observation: { at: now - 10, errors: [], capacity: null, issues: 0 } }), settings: null, onboarding: null }, now)
     const observation = row(rows, 'observation')
-    expect(observation.value).toBe('Supervisor seen just now ago')
+    expect(observation.value).toBe('Running · checked just now')
     expect(observation.tone).toBe('ok')
   })
 
@@ -168,9 +161,9 @@ describe('statusRows · observation', () => {
     expect(row(rows, 'observation').tone).toBe('warn')
   })
 
-  it('reads No observation yet when there is none', () => {
+  it('reads Not seen yet when there is none', () => {
     const rows = statusRows({ factory: factory({ observation: {} }), settings: null, onboarding: null }, now)
-    expect(row(rows, 'observation').value).toBe('No observation yet')
+    expect(row(rows, 'observation').value).toBe('Not seen yet')
   })
 })
 
@@ -183,5 +176,33 @@ describe('statusRows · missing sources', () => {
       expect(entry.tone).toBe('muted')
       expect(entry.to).toBeUndefined()
     }
+  })
+})
+
+describe('statusSummary', () => {
+  const healthy = () => statusRows({ factory: factory({ observation: { at: now - 10, errors: [], capacity: null, issues: 0 } }),
+    settings: settings(), onboarding: onboarding({ image_verified: true, harnesses: [
+      { id: 'codex', name: 'Codex', version: '1', connected: true, models: [{ id: 'codex', model: 'gpt', status: 'passed' }], login_command: '', check_command: '' }] }) }, now)
+
+  it('says one sentence and lists nothing when everything is healthy', () => {
+    const summary = statusSummary(healthy())
+    expect(summary).toMatchObject({ tone: 'ok', headline: 'Forge is running. Workers can start new work.', attention: [] })
+  })
+
+  it('lists only the rows that need the operator', () => {
+    const rows = healthy().map(r => r.id === 'github' ? { ...r, tone: 'warn' as const, value: '3 of 4 Forge Apps connected' } : r)
+    const summary = statusSummary(rows)
+    expect(summary.headline).toBe('One thing needs your attention.')
+    expect(summary.attention.map(r => r.id)).toEqual(['github'])
+  })
+
+  it('reads paused when dispatch is the only issue', () => {
+    const rows = healthy().map(r => r.id === 'dispatch' ? { ...r, tone: 'warn' as const } : r)
+    expect(statusSummary(rows).headline).toBe('Forge is paused. No new work starts.')
+  })
+
+  it('does not claim a problem before any data arrived', () => {
+    const summary = statusSummary(statusRows({ factory: null, settings: null, onboarding: null }, now))
+    expect(summary).toMatchObject({ tone: 'muted', attention: [] })
   })
 })
