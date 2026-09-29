@@ -22,6 +22,7 @@ const CALLBACK_COOKIE = 'synthetic-cookie-Kf3n0pQ7rLxW9sVbZt2yHdE'
 let scenario = 'default'
 let requests = []
 // Like the real server, a saved runtime is what later factory reads return.
+let savedSettings = null
 let savedFactory = null
 let savedRepositoryView = null
 let savedIssue = null
@@ -141,6 +142,7 @@ const server = http.createServer(async (req, res) => {
     const name = body && typeof body === 'object' ? body.name : undefined
     if (typeof name === 'string' && name) scenario = name
     requests = []
+    savedSettings = null
     savedFactory = null
     savedRepositoryView = null
     savedIssue = null
@@ -194,7 +196,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET') {
     record(req, pathname, query, body)
-    const fixture = base === 'factory' && savedFactory && !Object.keys(query).length ? savedFactory
+    const fixture = base === 'settings' && savedSettings ? savedSettings
+      : base === 'factory' && savedFactory && !Object.keys(query).length ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
@@ -213,6 +216,16 @@ const server = http.createServer(async (req, res) => {
       && req.headers['sec-fetch-site'] === 'same-origin'
     if (!guarded) return send(res, 403, { ok: false, reason: 'Action rejected by mock' })
     const fixture = resolvePostFixture(base, query)
+    if (base === 'repositories-disable' && fixture === undefined) {
+      savedSettings = resolveGetFixture('settings', {})
+      savedSettings.revision = 'settings-rev-disabled'
+      for (const rows of [savedSettings.repositories, savedSettings.config.repositories]) {
+        const row = rows.find(row => row.id === body.repo_id)
+        if (row) row.enabled = false
+      }
+      return send(res, 200, withToken({ revision: savedSettings.revision,
+        repositories: savedSettings.repositories.filter(row => row.id === body.repo_id) }))
+    }
     if (base === 'runtime' && fixture?.runtime) savedFactory = fixture
     if (['repositories-environment', 'repositories-enable'].includes(base) && fixture?.repositories) savedRepositoryView = fixture
     if (base === 'issues-action' && fixture?.issue) savedIssue = fixture

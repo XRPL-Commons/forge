@@ -20,16 +20,16 @@ Conventions: types are TypeScript-style. `number` timestamps are Unix seconds (f
 
 ### POST guards (in order)
 1. `Host` trusted as above → else **403**.
-2. Path must be one of: `/api/settings`, `/api/settings/sync`, `/api/factory/action`, `/api/runtime`, `/api/onboarding`, `/api/repositories/check`, `/api/repositories/enable`, `/api/issues/action`, `/api/issues/refresh` → else **404**.
+2. Path must be one of: `/api/settings/sync`, `/api/factory/action`, `/api/runtime`, `/api/onboarding`, `/api/repositories/check`, `/api/repositories/enable`, `/api/repositories/disable`, `/api/issues/action`, `/api/issues/refresh` → else **404**.
 3. `X-Forge-Action` header must equal (constant-time compare) the process-wide `controls_token`; `Origin` must parse as scheme `http`, netloc equal to `Host`, and no path/query/fragment; `Sec-Fetch-Site` if present must be `same-origin` (absent is accepted) → else **403**.
 4. `Content-Type` (before `;`) must be `application/json` and no `Transfer-Encoding` header → else **415**.
-5. `Content-Length` must satisfy `0 < length <= max` where max = **262144** for `/api/settings` and `/api/runtime`, **8192** for all other POSTs. Otherwise `{ok:false, reason:"invalid_request_size"}`.
+5. `Content-Length` must satisfy `0 < length <= max` where max = **262144** for `/api/runtime`, **8192** for all other POSTs. Otherwise `{ok:false, reason:"invalid_request_size"}`.
 6. Body is `json.loads` of exactly that many bytes. Shape validation is per route; any `ValueError`/`TypeError` → `{ok:false, reason:<message>}`; `OSError`/`ImportError`/`SubprocessError` → `{ok:false, reason:"Operation unavailable; check server configuration"}`.
 7. For every POST other than `/api/onboarding`: if `state/factory-paused.json` exists → `{ok:false, reason:"Factory reset is in progress"}`.
-8. For `/api/settings` and `/api/runtime`: if `state/onboarding/setup.json` exists and its `phase != "active"` → `{ok:false, reason:"Use guided setup until the factory has started"}`.
+8. For `/api/runtime`: if `state/onboarding/setup.json` exists and its `phase != "active"` → `{ok:false, reason:"Use guided setup until the factory has started"}`.
 
 ### controls_token flow
-- `CONTROLS_TOKEN = secrets.token_urlsafe(32)`, generated once per server process. Every GET JSON payload the pages consume includes `controls_token: string` (`/api/factory`, `/api/issues`, `/api/settings`, `/api/onboarding`, `/api/repositories`). It is also echoed in `/api/settings` POST, `/api/runtime` POST and `/api/repositories/enable` POST responses.
+- `CONTROLS_TOKEN = secrets.token_urlsafe(32)`, generated once per server process. Every GET JSON payload the pages consume includes `controls_token: string` (`/api/factory`, `/api/issues`, `/api/settings`, `/api/onboarding`, `/api/repositories`). It is also echoed in `/api/runtime`, `/api/repositories/enable` and `/api/repositories/disable` POST responses.
 - Pages read it from their last GET and send it as `X-Forge-Action` on every POST. A server restart rotates it; pages recover because the next poll delivers the new one.
 
 ### Cookie `forge_setup`
@@ -373,8 +373,8 @@ type SettingsView = { ok: true; controls_token: string;
   roles: Record<Role, RoleAccess>; repositories: RepositoryRow[] /* sorted by name */; sync: SyncState };
 ```
 
-### POST /api/settings
-Body exactly `{config: FactoryConfig, revision}`. Validation errors from `validate()` (e.g. "Expected version 1 settings with connections, repositories, and sync limits", "Settings changed; reload before saving", "<name>: verify access for every role before enabling", "<name>: finish repository setup and check again before enabling", "Factory reset is in progress"). Response `SettingsView & {ok:true, controls_token}`. Max body 262144.
+### POST /api/settings (removed)
+Full factory configuration writes are no longer exposed through the operator API; this path returns 404. Internal setup and CLI code continue to use `Settings.save`. Repository activation uses the enable/disable actions below.
 
 ### POST /api/settings/sync
 Body exactly `{}` ("Expected an empty sync request"). Starts background `refresh_all()` (access discovery for all four roles, then a protection check for enabled repos). Response `{ok:true, message:"Access refresh requested"}`. Progress is observed through `sync.status` on subsequent GETs.
@@ -457,7 +457,12 @@ Errors (as `{ok:false, reason}`): "Repository settings changed. Check again befo
 Body exactly `{repo_id: number|null, revision}` (`null` = all enabled repos) else "Expected repository identity and current revision". Revision mismatch → "Repository settings changed. Reload and check again.". Starts a background protection check (rows go `protection_status:'checking'` with `protection_previous_status`). Response `{ok:true}`.
 
 ### POST /api/repositories/enable
-Body exactly `{repo_id: number, revision}`. Errors: "Finish initial Forge setup before enabling automation", "Repository settings changed. Check again before enabling.", plus `Settings.save` errors. Response `RepositoriesView(repo_id) & {ok:true, controls_token}`.
+Body exactly `{repo_id: positive integer, revision: nonempty string}`. Errors: "Finish initial Forge setup before enabling automation", "Repository settings changed. Check again before enabling.", plus `Settings.save` errors. Response `RepositoriesView(repo_id) & {ok:true, controls_token}`.
+
+### POST /api/repositories/disable
+Body exactly `{repo_id: positive integer, revision: nonempty string}`. Changes only that repository's `enabled` field; a discovered repository without a config row is recorded with `enabled:false`. Existing connections, other repositories and deployment settings are preserved. Access or review-rule failures do not prevent disabling. The config revision is checked again under the save lock; setup and reset fences still apply.
+
+Errors: "Finish initial Forge setup before changing automation", "Repository settings changed. Reload before disabling.", plus `Settings.save` errors. Response `RepositoriesView(repo_id) & {ok:true, controls_token}`, including the new revision.
 
 ### POST /api/repositories/deployment
 Body exactly `{repo_id: number, revision, action}` plus `domain` for `confirm` and `reason` for `reject` (`reread` takes no extra field), else "Expected repository identity, current revision, and a deployment decision". Revision mismatch → "Repository settings changed. Reload and check again.".
@@ -541,7 +546,7 @@ Legacy dashboard only (`{action, session, generation}` strings → `forge.slot_a
 - Connection card per role (build/review/audit/controller): `labels` Builder/Reviewer/Auditor/Controller; `purposes` "Writes code and opens pull requests." / "Reviews proposed changes." / "Checks changes for security issues." / "Coordinates issues and merges approved pull requests."; identity = `roles[role].app_slug` or slug parsed from onboarding `install_url`, fallback "No App connected"; badge `statusNames`: ready "Access verified", ok "Connected", unknown "Access unknown", not_configured "Not connected", stale "Refresh needed", missing_permissions "Permissions missing", missing_access "No access", name_changed "Repository renamed", archived "Archived or disabled"; if no `config.connections[role].app_id` but onboarding says registered → "Installation unverified". Observation: status ok → "<n> repository|repositories with verified access"; else `observed_at` → "Last checked <locale>"; else "Access has not been verified.". Action link: canonical `installation_url` → "Manage access ↗"; else no app_id and canonical `install_url` → "Install App ↗"; else no app_id → "Connect in setup →" (`/onboarding`). Errors: `reason` and "Missing <permissions>". Under those, "Recommended <missing_recommended>" (e.g. "Recommended deployments: read") in muted text: a grant Forge uses when it has it, which never changes the badge or the row's readiness.
 - Refresh: dirty → error "Save or discard your edits before refreshing access."; `onboarding.phase==='setup'` → `POST /api/onboarding {action:'refresh'}` then message "Access refreshed."; else `POST /api/settings/sync {}`. Button spins while `sync.status==='running'`.
 - "Repositories" section: count "<n> enabled | Setup in progress · <total> discovered or configured"; link "Add repository" (`/settings/repository`); icon button "Refresh repositories" (→ `POST /api/repositories/check {repo_id:null, revision}`; disabled when no enabled repo; hidden while setting up); intro "Choose Enable to check a repository and finish its setup. Automation starts only after you confirm."; search "Find a repository" placeholder "Repository name" (client-side filter); table columns "Repository" / "Automation"; empty "Connect the Forge Apps through setup, then refresh access to discover repositories."; footer "Forge checks existing issues and pull requests before starting work. If access is lost, new work pauses and issue history is kept.".
-- Row: state icon (aria-label "Needs attention" amber when enabled but access or protection not ready [protection counts as ready while `checking` with `protection_previous_status==='ready'`], "Enabled" green, "Not enabled"), name link to `setup_url`, "Needs attention" note; action: setting up → "Continue setup →"; enabled → optional "Resolve →" + quiet button "Disable"; else pill "Set up" (`/settings/repository?repo_id=`). Disable → `POST /api/settings {config with enabled:false, revision}` → "Settings saved."; dirty guard "Save or discard your edits before changing repository activation.". Enabling never happens from this table.
+- Row: state icon (aria-label "Needs attention" amber when enabled but access or protection not ready [protection counts as ready while `checking` with `protection_previous_status==='ready'`], "Enabled" green, "Not enabled"), name link to `setup_url`, "Needs attention" note; action: setting up → "Continue setup →"; enabled → optional "Resolve →" + quiet button "Disable"; else pill "Set up" (`/settings/repository?repo_id=`). Disable → `POST /api/repositories/disable {repo_id, revision}` → "Settings saved."; dirty guard "Save or discard your edits before changing repository activation.". Enabling never happens from this table.
 
 ### 3.6 Settings · Repository setup (`/settings/repository[?repo_id=]`, `legacy/repository-setup.html` + `.js`)
 - Title `Forge · Prepare repository`; breadcrumb "Settings › Repo setup"; progress steps "Repository" › "App access" › "Review rules" › "Enable" (last reads "Finish setup" when `!activation_available`). Stage = 0 no repo, 1 `!access_ready`, 2 protection not ready, 3 ready (setup mode), 4 enabled and live.

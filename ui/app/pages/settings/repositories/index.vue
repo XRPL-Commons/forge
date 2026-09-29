@@ -66,11 +66,7 @@ async function disable(id: number) {
   busy.value = true
   say('')
   try {
-    const config = structuredClone(toRaw(current.config))
-    const entry = config.repositories.find(row => row.id === id)
-    if (entry) entry.enabled = false
-    else config.repositories.push({ id, name: repository.name, enabled: false })
-    await api.act('/api/settings', { config, revision: current.revision })
+    await api.act('/api/repositories/disable', { repo_id: id, revision: current.revision })
     say('Settings saved.')
     busy.value = false
     await poll.refresh()

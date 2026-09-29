@@ -105,7 +105,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
-        if self.path not in {'/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
+        if self.path not in {'/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -121,7 +121,7 @@ class H(BaseHTTPRequestHandler):
             self.send_error(415);return
         try:
             length=int(self.headers.get('Content-Length','0'))
-            maximum = 262144 if self.path in ('/api/settings', '/api/runtime') else 8192
+            maximum = 262144 if self.path == '/api/runtime' else 8192
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
             if self.path == '/api/onboarding':
@@ -141,7 +141,7 @@ class H(BaseHTTPRequestHandler):
             if (Path(WD)/'state/factory-paused.json').exists():
                 raise ValueError('Factory reset is in progress')
             setup_state=Path(WD)/'state/onboarding/setup.json'
-            if self.path in ('/api/settings','/api/runtime') and setup_state.is_file() and json.loads(setup_state.read_text()).get('phase')!='active':
+            if self.path == '/api/runtime' and setup_state.is_file() and json.loads(setup_state.read_text()).get('phase')!='active':
                 raise ValueError('Use guided setup until the factory has started')
             if self.path == '/api/issues/discussion':
                 from forge.factory.discussions import Discussions
@@ -196,11 +196,15 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected repository identity and current revision')
                 RepositorySetup(settings_service()).start_check(value['repo_id'],value['revision'])
                 self._send(json.dumps({'ok':True}));return
-            if self.path == '/api/repositories/enable':
+            if self.path in ('/api/repositories/enable', '/api/repositories/disable'):
                 from forge.repository_setup import RepositorySetup
-                if not isinstance(value,dict) or set(value)!={'repo_id','revision'} or type(value['repo_id']) is not int:
+                if (not isinstance(value,dict) or set(value)!={'repo_id','revision'}
+                        or type(value['repo_id']) is not int or value['repo_id'] <= 0
+                        or not isinstance(value['revision'],str) or not value['revision']):
                     raise ValueError('Expected repository identity and current revision')
-                result=RepositorySetup(settings_service()).enable(value['repo_id'],value['revision'])
+                setup=RepositorySetup(settings_service())
+                action=setup.enable if self.path.endswith('/enable') else setup.disable
+                result=action(value['repo_id'],value['revision'])
                 self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
             if self.path == '/api/repositories/deployment':
                 from forge.repository_setup import RepositorySetup
@@ -226,12 +230,6 @@ class H(BaseHTTPRequestHandler):
                 if value != {}:raise ValueError('Expected an empty sync request')
                 settings_service().start_refresh()
                 self._send(json.dumps({'ok':True,'message':'Access refresh requested'}));return
-            if self.path == '/api/settings':
-                if not isinstance(value,dict) or set(value) != {'config','revision'}:
-                    raise ValueError('Expected config and revision')
-                result=settings_service().save(value['config'],value['revision'])
-                result.update(ok=True,controls_token=CONTROLS_TOKEN)
-                self._send(json.dumps(result));return
             raise ValueError('invalid_action_request')
         except (ValueError,TypeError) as exc:
             self._send(json.dumps({'ok':False,'reason':str(exc)}))
