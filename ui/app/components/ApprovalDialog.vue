@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{ reason: string; url: string; canAssign: boolean }>()
-const emit = defineEmits<{ close: []; assign: [] }>()
+const emit = defineEmits<{ close: []; assign: []; opened: [] }>()
 </script>
 
 <template>
@@ -15,7 +15,7 @@ const emit = defineEmits<{ close: []; assign: [] }>()
     </template>
     <template #footer>
       <div class="flex flex-wrap gap-2">
-        <UButton :to="url" external target="_blank" rel="noopener noreferrer" @click="emit('close')">Review and approve on GitHub</UButton>
+        <UButton :to="url" external target="_blank" rel="noopener noreferrer" @click="emit('opened'); emit('close')">Review and approve on GitHub</UButton>
         <UButton v-if="canAssign" color="neutral" variant="outline" @click="emit('assign')">Assign reviewer…</UButton>
       </div>
     </template>
