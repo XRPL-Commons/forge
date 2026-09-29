@@ -9,7 +9,8 @@ Fresh-host installation is tracked in #136.
 ## Credential boundary
 
 `GitHub` runs the operator's local `gh api` with fixed github.com endpoints and
-structured input. It never obtains a token string. Child output is bounded;
+structured input. It delegates authentication to `gh` and never asks it to print
+a token. Child output is bounded;
 errors omit raw output and diagnostics. The subprocess receives local GitHub
 credential configuration, while the Forge interface receives only repository
 identity, instance/generation, capabilities and configuration revisions.

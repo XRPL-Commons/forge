@@ -1,4 +1,4 @@
-"""Bounded local GitHub broker; GitHub credentials stay inside the gh process."""
+"""Bounded local GitHub broker; credential values are never sent to Forge."""
 import json
 import os
 import selectors
