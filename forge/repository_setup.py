@@ -121,6 +121,24 @@ class RepositorySetup:
         self.settings.save(config, revision)
         return self.view(repo_id)
 
+    def disable(self, repo_id, revision):
+        if self.settings.root.name == 'setup':
+            raise ValueError('Finish initial Forge setup before changing automation')
+        config = self.settings.load()
+        if revision != digest(config):
+            raise ValueError('Repository settings changed. Reload before disabling.')
+        row = self.view(repo_id)['repositories'][0]
+        configured = next((r for r in config['repositories'] if r['id'] == repo_id), None)
+        if configured is None:
+            config['repositories'].append({'id': row['id'], 'name': row['name'], 'enabled': False})
+        else:
+            configured['enabled'] = False
+        # save checks the revision again under the config lock. Access and rule
+        # readiness are only required when enabling, so lost access cannot
+        # prevent an operator from stopping new work.
+        self.settings.save(config, revision)
+        return self.view(repo_id)
+
     def deployment(self, repo_id, revision, action, domain=None, reason=None):
         """Confirming is the only moment settings change or an issue is filed."""
         if self.settings.root.name == 'setup':

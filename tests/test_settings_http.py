@@ -36,7 +36,7 @@ class SettingsHTTPTests(unittest.TestCase):
         service.start_refresh.assert_not_called(); service.refresh.assert_not_called()
 
     def test_settings_mutations_reject_cross_origin_and_bad_token(self):
-        for path in ('/api/issues/action','/api/issues/refresh','/api/settings','/api/settings/sync','/api/factory/action','/api/runtime','/api/onboarding'):
+        for path in ('/api/issues/action','/api/issues/refresh','/api/repositories/disable','/api/settings/sync','/api/factory/action','/api/runtime','/api/onboarding'):
             for headers in ({'Origin':'http://attacker.example'}, {'X-Forge-Action':'bad'}, {'Sec-Fetch-Site':'cross-site'}):
                 with patch.object(dashboard,'settings_service') as service:
                     handler = self.handler(path,{},**headers); handler.do_POST()
@@ -49,15 +49,12 @@ class SettingsHTTPTests(unittest.TestCase):
         service.start_refresh.assert_called_once_with(); service.refresh.assert_not_called()
         self.assertTrue(json.loads(handler._send.call_args.args[0])['ok'])
 
-    def test_save_passes_revision_and_rejects_extra_fields(self):
-        service = Mock(); service.save.return_value = {'config':{},'revision':'new'}
-        with patch.object(dashboard,'settings_service',return_value=service):
-            handler = self.handler('/api/settings',{'config':{},'revision':'old'}); handler.do_POST()
-            service.save.assert_called_once_with({},'old')
-            service.reset_mock()
-            handler = self.handler('/api/settings',{'config':{},'revision':'old','private_key':'not-accepted'}); handler.do_POST()
-            service.save.assert_not_called()
-            self.assertFalse(json.loads(handler._send.call_args.args[0])['ok'])
+    def test_full_config_posts_are_not_available_to_the_operator_ui(self):
+        with patch.object(dashboard,'settings_service') as service:
+            handler = self.handler('/api/settings',{'config':{},'revision':'current'})
+            handler.do_POST()
+            handler.send_error.assert_called_once_with(404)
+            service.assert_not_called()
 
     def test_only_the_operator_ui_may_call_the_api(self):
         with patch.object(dashboard,'UPSTREAM_SECRET','u'*43), patch.object(dashboard,'settings_service') as service:

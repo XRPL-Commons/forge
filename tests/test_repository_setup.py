@@ -146,6 +146,60 @@ class RepositorySetupTests(unittest.TestCase):
         self.service.enable(10,revision)
         self.assertTrue(self.settings.view()['repositories'][0]['enabled'])
 
+    def test_disable_preserves_other_settings_even_without_access_or_rules(self):
+        config = self.settings.load()
+        config['repositories'].append({'id': 11, 'name': 'example/other', 'enabled': False})
+        write_json(self.settings.path, config)
+        write_json(self.settings.state / 'access.json', {'roles': {}})
+        result = self.service.disable(10, digest(config))
+        config['repositories'][0]['enabled'] = False
+        self.assertEqual(self.settings.load(), config)
+        self.assertEqual(result['revision'], digest(config))
+        self.assertFalse(result['repositories'][0]['enabled'])
+        self.assertFalse(result['repositories'][0]['dispatch_allowed'])
+        self.client.discover.reset_mock()
+        self.service.disable(10, digest(config))  # Already disabled is harmless.
+        self.assertEqual(self.settings.load(), config)
+        self.client.discover.assert_not_called()
+
+    def test_disable_records_a_discovered_repository_without_a_config_row(self):
+        config = self.settings.load()
+        config['repositories'] = []
+        write_json(self.settings.path, config)
+        self.service.disable(10, digest(config))
+        config['repositories'] = [{'id': 10, 'name': 'example/project', 'enabled': False}]
+        self.assertEqual(self.settings.load(), config)
+
+    def test_disable_rejects_unknown_repository_and_stale_revision_without_writes(self):
+        config = self.settings.load()
+        for repo_id, revision in [(999, digest(config)), (10, 'old')]:
+            with self.assertRaises(ValueError):
+                self.service.disable(repo_id, revision)
+            self.assertEqual(self.settings.load(), config)
+
+    def test_disable_cannot_overwrite_a_concurrent_settings_change(self):
+        config = self.settings.load()
+        revision = digest(config)
+        config['repositories'].append({'id': 11, 'name': 'example/other', 'enabled': False})
+        save = self.settings.save
+        def concurrent_save(candidate, expected):
+            write_json(self.settings.path, config)
+            return save(candidate, expected)
+        with patch.object(self.settings, 'save', side_effect=concurrent_save):
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                self.service.disable(10, revision)
+        self.assertEqual(self.settings.load(), config)
+
+    def test_disable_is_fenced_during_setup_and_factory_reset(self):
+        config = self.settings.load()
+        with patch.object(self.settings, 'root', self.settings.root / 'setup'):
+            with self.assertRaisesRegex(ValueError, 'Finish initial Forge setup'):
+                self.service.disable(10, digest(config))
+        write_json(self.settings.root / 'state/factory-paused.json', {})
+        with self.assertRaisesRegex(ValueError, 'reset is in progress'):
+            self.service.disable(10, digest(config))
+        self.assertEqual(self.settings.load(), config)
+
     def test_unknown_missing_rules_and_access_cannot_enable(self):
         config=self.settings.load();config['repositories']=[];write_json(self.settings.path,config)
         revision=digest(config)
@@ -395,7 +449,7 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/deployment','/api/repositories/environment','/api/issues/environment']:
+        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/disable','/api/repositories/deployment','/api/repositories/environment','/api/issues/environment']:
             h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
             h.do_POST();h.send_error.assert_called_once_with(403)
 
@@ -459,6 +513,26 @@ class RepositoryHTTPTests(unittest.TestCase):
                 cls.return_value.deployment.reset_mock()
                 h=self.handler('/api/repositories/deployment',value);h.do_POST()
                 cls.return_value.deployment.assert_not_called()
+                self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
+
+    def test_disable_accepts_only_one_repository_and_current_revision(self):
+        with patch('forge.repository_setup.RepositorySetup') as cls:
+            cls.return_value.disable.return_value = {'revision': 'new', 'repositories': [{'id': 10, 'enabled': False}]}
+            h = self.handler('/api/repositories/disable', {'repo_id': 10, 'revision': 'current'})
+            h.do_POST()
+            cls.return_value.disable.assert_called_once_with(10, 'current')
+            result = json.loads(h._send.call_args.args[0])
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['revision'], 'new')
+            self.assertFalse(result['repositories'][0]['enabled'])
+            self.assertEqual(result['controls_token'], dashboard.CONTROLS_TOKEN)
+            cls.return_value.enable.assert_not_called()
+            for change in ({'repo_id': None}, {'repo_id': True}, {'repo_id': 0}, {'repo_id': -1},
+                           {'repo_id': '10'}, {'revision': None}, {'revision': ''}, {'config': {}}, {'enabled': True}):
+                cls.return_value.disable.reset_mock()
+                h = self.handler('/api/repositories/disable', {'repo_id': 10, 'revision': 'current', **change})
+                h.do_POST()
+                cls.return_value.disable.assert_not_called()
                 self.assertFalse(json.loads(h._send.call_args.args[0])['ok'])
 
     def test_enable_accepts_only_one_repository_and_current_revision(self):
