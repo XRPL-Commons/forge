@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
+import { allowedHosts, clientPath, guardClient, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, MAX_RESPONSE_BODY, UPSTREAM_TIMEOUT_MS } from '../utils/proxy'
 
 export default defineEventHandler(async (event) => {
   const path = event.path
@@ -15,7 +15,8 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 403)
     return { ok: false, reason: 'Untrusted host' }
   }
-  const guard = guardAction({ method: req.method ?? 'GET', headers, contentLength: Number(headers['content-length'] ?? 0), publicOrigin: process.env.NITRO_FORGE_PUBLIC_ORIGIN })
+  const client = clientPath(path)
+  const guard = (client ? guardClient : guardAction)({ method: req.method ?? 'GET', headers, contentLength: Number(headers['content-length'] ?? 0), publicOrigin: process.env.NITRO_FORGE_PUBLIC_ORIGIN })
   if (!guard.ok) { setResponseStatus(event, guard.status); return { ok: false, reason: guard.reason } }
   const config = useRuntimeConfig()
   const base = config.forgeApi.replace(/\/$/, '')
@@ -26,7 +27,7 @@ export default defineEventHandler(async (event) => {
   const body = (req.method === 'POST' ? await readRawBody(event, false) : undefined) as BodyInit | undefined
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
   try {
-    const upstream = await fetch(base + path, { method: req.method, headers: upstreamHeaders(headers, req.method ?? 'GET', upstreamHost, secret) as Record<string, string>,
+    const upstream = await fetch(base + path, { method: req.method, headers: upstreamHeaders(headers, req.method ?? 'GET', upstreamHost, secret, client) as Record<string, string>,
       body, redirect: 'manual', signal: controller.signal })
     const result = await readCapped(upstream, MAX_RESPONSE_BODY, controller)
     if (!(result instanceof Buffer)) { setResponseStatus(event, 502); return { ok: false, reason: 'Upstream response too large' } }

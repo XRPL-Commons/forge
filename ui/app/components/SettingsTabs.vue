@@ -4,6 +4,7 @@ const tabs = [
   { href: '/settings', label: 'General', extra: [] as string[] },
   { href: '/settings/repositories', label: 'Repositories', extra: ['/settings/repository'] },
   { href: '/settings/github', label: 'GitHub access', extra: [] as string[] },
+  { href: '/settings/agents', label: 'Agent connections', extra: [] as string[] },
   { href: '/settings/harnesses', label: 'Coding accounts', extra: [] as string[] },
 ]
 function isCurrent(tab: (typeof tabs)[number]) {

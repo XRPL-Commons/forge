@@ -27,6 +27,7 @@ let savedSettings = null
 let savedFactory = null
 let savedRepositoryView = null
 let savedIssue = null
+let connectedAgents = []
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
 
 function readBody(req) {
@@ -152,10 +153,34 @@ const server = http.createServer(async (req, res) => {
     savedFactory = null
     savedRepositoryView = null
     savedIssue = null
+    connectedAgents = []
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     return send(res, 200, { ok: true })
   }
 
+  if (pathname === '/api/connections') {
+    record(req, pathname, query, body)
+    return send(res, 200, withToken({ enabled: scenario === 'auth-agents', connections: connectedAgents,
+      reason: 'Configure HTTPS and operator sign-in to connect an agent.' }))
+  }
+  if (pathname === '/api/connections/preview') {
+    record(req, pathname, query, body)
+    if (body.code !== 'BCDF-2345') return send(res, 200, { ok: false, reason: 'This code expired or has already been used.' })
+    return send(res, 200, withToken({ name: 'Local agent', user_code: body.code, expires: 1790682000, origin: 'https://forge.example',
+      capabilities: ['repositories:read', 'repositories:prepare', 'repositories:activate'],
+      scope: { repositories: [{ id: 321, name: 'example/project' }], owners: [{ id: 88, login: 'example' }] } }))
+  }
+  if (pathname === '/api/connections/decide') {
+    record(req, pathname, query, body)
+    if (body.decision === 'approve') connectedAgents.push({ id: 'synthetic-client', name: 'Local agent', operator: { id: 123, login: 'forge-operator' },
+      created: 1790680000, expires: 1798456000, last_used: null, status: 'active', capabilities: body.capabilities, scope: body.scope })
+    return send(res, 200, withToken({ status: body.decision === 'approve' ? 'approved' : 'denied' }))
+  }
+  if (pathname === '/api/connections/revoke') {
+    record(req, pathname, query, body)
+    connectedAgents.find(c => c.id === body.id).status = 'revoked'
+    return send(res, 200, withToken({ revoked: true }))
+  }
   if (pathname === '/api/auth/session') {
     record(req, pathname, query, body)
     const enabled = scenario.startsWith('auth-')

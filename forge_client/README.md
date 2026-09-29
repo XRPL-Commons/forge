@@ -1,9 +1,10 @@
 # Local Forge client foundation
 
 This package implements the repository preparation engine for #122. It is a
-library under development; a distributable CLI, authenticated HTTPS transport,
-client connection UI and agent skill are subsequent integration work. No public
-operator API or new dashboard authorization path is enabled by this change.
+library with an installable connection CLI, authenticated HTTPS transport and
+browser approval/revocation. See [agent connections](../docs/agent-connections.md)
+for installation and supported commands. Repository write commands, durable
+operations and the agent skill remain integration work.
 Fresh-host installation is tracked in #136.
 
 ## Credential boundary
@@ -50,9 +51,10 @@ The transport must filter response schemas, bound request/response sizes and
 supply pinned App identities from an approved connection. The requirements
 helper is not an authentication gate and must not be exposed unauthenticated.
 
-Operator sign-in (#15), TLS, connection approval/revocation, server operation
-journaling, local credential storage and command packaging remain prerequisites
-for enabling this workflow against a live remote instance. Browser action tokens
+Operator sign-in (#15), TLS, connection approval/revocation and local credential
+storage now support the connection and requirements commands. Server operation
+journaling and repository write command integration remain prerequisites for
+enabling the complete preparation workflow against a live remote instance. Browser action tokens
 and the UI upstream secret are not substitutes for client authentication.
 
 ## Verification

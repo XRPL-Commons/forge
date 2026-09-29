@@ -80,14 +80,15 @@ export function guardAction({ method, headers, contentLength, publicOrigin }: Gu
 // guardHost. The status service builds GitHub App manifest URLs from it, so
 // App callbacks return through this front door rather than to the loopback
 // upstream address.
-export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string, secret = ''): Headers {
+export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string, secret = '', client = false): Headers {
   const out: Headers = { host: upstreamHost }
   // The status API refuses requests without it: another local process cannot
   // read this 0600 file, so it cannot act as the operator or forge the host.
   if (secret) out['x-forge-upstream'] = secret
   if (headers.host) out['x-forwarded-host'] = headers.host
   for (const name of ['cookie', 'content-type', 'x-forge-action', 'accept', 'if-none-match']) if (headers[name]) out[name] = headers[name]
-  if (method === 'POST') { out.origin = 'http://' + upstreamHost; out['sec-fetch-site'] = 'same-origin' }
+  if (client && headers.authorization) out.authorization = headers.authorization
+  if (method === 'POST' && !client) { out.origin = 'http://' + upstreamHost; out['sec-fetch-site'] = 'same-origin' }
   return out
 }
 
@@ -135,4 +136,18 @@ export async function readCapped(response: Response, limit: number, controller: 
 export function readUpstreamSecret(path: string, read: (path: string) => string): string {
   if (!path) return ''
   try { return read(path).trim() } catch { return '' }
+}
+
+// Only these closed client routes bypass browser CSRF. Ambient browser
+// credentials and Origin are rejected; the Python service verifies client grants.
+export function clientPath(path: string): boolean {
+  return ['/api/client/device', '/api/client/token', '/api/client/refresh', '/api/client/status',
+    '/api/client/disconnect', '/api/client/requirements'].includes(path)
+}
+export function guardClient({ method, headers, contentLength }: GuardInput): GuardResult {
+  if (method !== 'POST') return { ok: false, status: 405, reason: 'Client requests use POST' }
+  if (headers.origin || headers.cookie) return { ok: false, status: 403, reason: 'Use local client credentials' }
+  if ((headers['content-type'] ?? '').split(';')[0]?.trim() !== 'application/json' || headers['transfer-encoding']) return { ok: false, status: 415, reason: 'Client requests are JSON' }
+  if (!(contentLength > 0 && contentLength <= 16384)) return { ok: false, status: 413, reason: 'Client request too large' }
+  return { ok: true }
 }

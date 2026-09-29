@@ -210,3 +210,24 @@ describe('operator HTTPS origin', () => {
     expect(proxyPaths('/login')).toBe(false)
   })
 })
+
+describe('local client routes', () => {
+  it('only bypasses browser CSRF for a fixed client endpoint with no ambient browser credentials', async () => {
+    const { clientPath, guardClient } = await import('../../server/utils/proxy')
+    expect(clientPath('/api/client/device')).toBe(true)
+    expect(clientPath('/api/client/device?bypass=1')).toBe(false)
+    expect(clientPath('/api/settings')).toBe(false)
+    const input = { method: 'POST', contentLength: 42, headers: { 'content-type': 'application/json' } }
+    expect(guardClient(input)).toEqual({ ok: true })
+    expect(guardClient({ ...input, method: 'GET' })).toMatchObject({ status: 405 })
+    expect(guardClient({ ...input, headers: { ...input.headers, cookie: 'forge_session=token' } })).toMatchObject({ status: 403 })
+    expect(guardClient({ ...input, headers: { ...input.headers, origin: 'https://forge.example' } })).toMatchObject({ status: 403 })
+    expect(guardClient({ ...input, contentLength: 16385 })).toMatchObject({ status: 413 })
+  })
+  it('forwards a client bearer only on an explicit client route', () => {
+    const headers = { host: 'forge.example', authorization: 'Bearer synthetic' }
+    expect(upstreamHeaders(headers, 'POST', '127.0.0.1:8788', 'proxy', true)).toEqual({
+      host: '127.0.0.1:8788', 'x-forge-upstream': 'proxy', 'x-forwarded-host': 'forge.example', authorization: 'Bearer synthetic' })
+    expect(upstreamHeaders(headers, 'POST', '127.0.0.1:8788', 'proxy').authorization).toBeUndefined()
+  })
+})
