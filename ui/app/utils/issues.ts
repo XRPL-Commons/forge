@@ -132,6 +132,7 @@ export const EVENT_LABELS: Record<string, string> = {
   operator_recheck: 'Repository setup checked',
   reviewer_requested: 'Review requested',
   operator_conflict: 'Decision needs another review',
+  operator_synced: 'GitHub labels confirmed',
   reserved: 'Attempt prepared',
   merged: 'Pull request merged',
   cancelled: 'Attempt stopped',

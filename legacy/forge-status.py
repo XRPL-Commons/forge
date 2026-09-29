@@ -156,10 +156,13 @@ class H(BaseHTTPRequestHandler):
                 else: result = service.apply(value['key'], value['message_id'])
                 self._send(json.dumps({'ok': True, 'request': result}));return
             if self.path == '/api/issues/action':
-                from forge.factory.issue_actions import request
+                from forge.factory.issue_actions import decide, IMMEDIATE
+                from forge.factory.issues import IssueInventory
                 if not isinstance(value,dict) or set(value)!={'key','action','revision','reason'}:
                     raise ValueError('Expected issue, action, current revision, and decision')
-                self._send(json.dumps({'ok':True,'request':request(WD,**value)}));return
+                identifier=decide(WD,**value)
+                result=IssueInventory(WD).view(key=value['key']) if value['action'] in IMMEDIATE else {}
+                self._send(json.dumps({'ok':True,'request':identifier,**result,'controls_token':CONTROLS_TOKEN}));return
             if self.path == '/api/issues/environment':
                 from forge.factory.issue_actions import request
                 from forge.factory.environments import override

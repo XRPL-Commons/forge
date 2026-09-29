@@ -14,6 +14,7 @@ from .memory import allocation as memory_allocation, confirmed as memory_confirm
 from .capacity import memory_bytes
 from .providers import available as provider_available
 from .github import GitHubUnavailable, GitHubBudgetExhausted
+from .ledger import DecisionChanged
 from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
 from ..state import StateError
 
@@ -82,7 +83,7 @@ class Supervisor:
                     self.errors.append({'attempt': job['id'], 'phase': 'reconciliation', 'reason': str(error)})
                 finally:
                     self.ledger.job_update(job['id'], last_observed=self.clock())
-        for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: i.get('last_observed', 0)):
+        for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: (not bool(i.get('operator_sync')), i.get('last_observed', 0))):
             if time.monotonic() >= observe_until:
                 break
             # Merged and cancelled issues change rarely (a reopen); observing them
@@ -107,6 +108,8 @@ class Supervisor:
                     if current['budget_interruptions'] >= 3:
                         current.update(last_observed=self.clock(), budget_interruptions=0)
                 break
+            except DecisionChanged:
+                continue  # Keep the new decision first in the next observation rotation.
             except (GitHubUnavailable, ValueError, KeyError) as error:
                 self.errors.append({'issue': item['key'], 'phase': 'github', 'reason': str(error)})
             # Observed only when the reconcile finished or failed on its own terms.
@@ -437,6 +440,15 @@ class Supervisor:
                 and 0 <= self.clock() - item.get('dependencies_checked_at', -1e9) < self.DEPENDENCY_RECHECK_SECONDS)
 
     def reconcile(self, item):
+        with self.ledger.observing(item):
+            self.reconcile_current(item)
+
+    def reconcile_current(self, item):
+        if item.get('operator_sync'):
+            from .issue_actions import IssueActions
+            root = self.factory_root() or self.ledger.store.root.parent.parent
+            IssueActions(root, self.ledger, settings=self.settings, github=self.github).sync(item)
+            item = self.ledger.read()['issues'][item['key']]
         if item.get('operator_request'):
             return  # An interrupted decision must finish before observing new eligibility.
         issue, requirements = self.github.issue(item)
@@ -691,7 +703,7 @@ class Supervisor:
 
     def memory_priority(self, data):
         return next((item for item in memory_pending(data, self.config)
-                     if not item.get('blocked_dependencies')
+                     if not item.get('operator_sync') and not item.get('operator_hold') and not item.get('blocked_dependencies')
                      and item.get('retry_after', 0) <= self.clock()
                      and self.settings.admission(item['repo'])['allowed']), None)
 
@@ -728,72 +740,83 @@ class Supervisor:
                 if item is None:
                     continue
                 try:
-                    if self.config['environment_tiers'] or self.config['repository_environments'] or item.get('environment_choice'):
-                        item = self.select_environment(item)
-                except GitHubBudgetExhausted:
-                    return
-                except (ValueError, GitHubUnavailable) as error:
-                    with self.ledger.transaction() as data:
-                        data['issues'][item['key']].update(reason=str(error),
-                            retry_after=self.clock() + self.config['availability_retry_seconds'])
-                    self.errors.append({'issue': item['key'], 'phase': 'environment', 'reason': str(error)})
-                    continue
-                worker_config = self.memory_config(item, role, self.ledger.read())
-                runner = (ContainerRunner(worker_config, environ=self.runner.environ)
-                          if isinstance(self.runner, ContainerRunner) else self.runner)
-                self.capacity = runner.capacity()
-                if not self.capacity['allowed']:
-                    total = self.capacity.get('total_bytes')
-                    if total and (memory_bytes(worker_config['memory']) + memory_bytes(self.config['host_reserve']) > total):
-                        self.ledger.hold(item['key'], 'Required worker memory exceeds host capacity; resize the host or revise memory tiers')
-                    # Do not backfill small jobs while this escalation drains.
-                    return
-                try:
-                    # Re-read at the launch boundary, including newly discovered
-                    # issues that have not entered the observation rotation yet.
-                    issue, requirements = self.github.issue(item)
-                    if not self.config['environment_tiers'] and not self.config['repository_environments']:
-                        from .environments import choose
-                        choose(self.config, item, issue)  # Reject unavailable explicit tiers even when opt-in is off.
-                    if isinstance(runner, ContainerRunner) and worker_config['environment_tier'] == 'full':
-                        runner.ready()
-                    if not self.dependencies_recently_clear(item) and not self.dependency_ready(item, issue):
-                        continue
-                    if issue['state'] != 'open':
-                        self.ledger.cancel(item['key'], 'Issue closed externally')
-                        continue
-                    if requirements != item['requirements']:
-                        self.invalidate(item['key'], 'Issue requirements changed')
-                        self.update_requirements(item['key'], requirements)
-                        continue
-                    target = self.github.target(item)
-                    if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
-                        self.ledger.pause_for_protection(item['key'])
-                        continue
-                    publisher = self.github.publisher(role)
-                    draft = (self.github.own_draft(item, item['number'], publisher)
-                             if role == 'build' and not item.get('candidate') else None)
-                    job = self.ledger.reserve(item['key'], role, slot, publisher=publisher,
-                        policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=worker_config, target_branch=target,
-                        existing_draft=draft)
-                    self.execution(job)
-                except GitHubBudgetExhausted:
-                    return
-                except GitHubUnavailable as error:
-                    # A bad/inaccessible prerequisite must not monopolize every
-                    # free slot. Preserve the issue and let other work proceed.
-                    with self.ledger.transaction() as data:
-                        current = data['issues'][item['key']]
-                        if not current['active']:
-                            current.update(retry_after=self.clock() + self.config['availability_retry_seconds'],
-                                           reason=str(error))
-                    self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
-                except ValueError as error:
-                    with self.ledger.transaction() as data:
-                        data['issues'][item['key']].update(reason=str(error),
-                            retry_after=self.clock() + self.config['availability_retry_seconds'])
-                    self.errors.append({'issue': item['key'], 'phase': 'environment', 'reason': str(error)})
-                except (StateError, RunnerError) as error:
+                    with self.ledger.observing(item):
+                        try:
+                            if self.config['environment_tiers'] or self.config['repository_environments'] or item.get('environment_choice'):
+                                item = self.select_environment(item)
+                        except GitHubBudgetExhausted:
+                            return
+                        except (ValueError, GitHubUnavailable) as error:
+                            with self.ledger.transaction() as data:
+                                data['issues'][item['key']].update(reason=str(error),
+                                    retry_after=self.clock() + self.config['availability_retry_seconds'])
+                            self.errors.append({'issue': item['key'], 'phase': 'environment', 'reason': str(error)})
+                            continue
+                        worker_config = self.memory_config(item, role, self.ledger.read())
+                        runner = (ContainerRunner(worker_config, environ=self.runner.environ)
+                                  if isinstance(self.runner, ContainerRunner) else self.runner)
+                        self.capacity = runner.capacity()
+                        if not self.capacity['allowed']:
+                            total = self.capacity.get('total_bytes')
+                            if total and (memory_bytes(worker_config['memory']) + memory_bytes(self.config['host_reserve']) > total):
+                                self.ledger.hold(item['key'], 'Required worker memory exceeds host capacity; resize the host or revise memory tiers')
+                            # Do not backfill small jobs while this escalation drains.
+                            return
+                        try:
+                            # Re-read at the launch boundary, including newly discovered
+                            # issues that have not entered the observation rotation yet.
+                            issue, requirements = self.github.issue(item)
+                            if item.get('decision_version'):
+                                from .issue_actions import IssueActions
+                                root = self.factory_root() or self.ledger.store.root.parent.parent
+                                IssueActions(root, self.ledger, settings=self.settings, github=self.github).prerequisites(item, issue, item)
+                            if {label['name'] for label in issue.get('labels', [])}.intersection(self.config['hold_labels']):
+                                self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
+                                continue
+                            if not self.config['environment_tiers'] and not self.config['repository_environments']:
+                                from .environments import choose
+                                choose(self.config, item, issue)  # Reject unavailable explicit tiers even when opt-in is off.
+                            if isinstance(runner, ContainerRunner) and worker_config['environment_tier'] == 'full':
+                                runner.ready()
+                            if not self.dependencies_recently_clear(item) and not self.dependency_ready(item, issue):
+                                continue
+                            if issue['state'] != 'open':
+                                self.ledger.cancel(item['key'], 'Issue closed externally')
+                                continue
+                            if requirements != item['requirements']:
+                                self.invalidate(item['key'], 'Issue requirements changed')
+                                self.update_requirements(item['key'], requirements)
+                                continue
+                            target = self.github.target(item)
+                            if role != 'recovery' and not self.github.protections(item, {'base_ref': target}):
+                                self.ledger.pause_for_protection(item['key'])
+                                continue
+                            publisher = self.github.publisher(role)
+                            draft = (self.github.own_draft(item, item['number'], publisher)
+                                     if role == 'build' and not item.get('candidate') else None)
+                            job = self.ledger.reserve(item['key'], role, slot, publisher=publisher,
+                                policy=digest(policy(self.config)), timeout=self.config['timeout_seconds'][role], failure=failure, runner_config=worker_config, target_branch=target,
+                                existing_draft=draft)
+                            self.execution(job)
+                        except GitHubBudgetExhausted:
+                            return
+                        except GitHubUnavailable as error:
+                            # A bad/inaccessible prerequisite must not monopolize every
+                            # free slot. Preserve the issue and let other work proceed.
+                            with self.ledger.transaction() as data:
+                                current = data['issues'][item['key']]
+                                if not current['active']:
+                                    current.update(retry_after=self.clock() + self.config['availability_retry_seconds'],
+                                                   reason=str(error))
+                            self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
+                        except ValueError as error:
+                            with self.ledger.transaction() as data:
+                                data['issues'][item['key']].update(reason=str(error),
+                                    retry_after=self.clock() + self.config['availability_retry_seconds'])
+                            self.errors.append({'issue': item['key'], 'phase': 'environment', 'reason': str(error)})
+                        except (StateError, RunnerError) as error:
+                            self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
+                except StateError as error:
                     self.errors.append({'issue': item['key'], 'phase': 'dispatch', 'reason': str(error)})
 
     def choose(self, role, data):
@@ -804,7 +827,7 @@ class Supervisor:
             failure = next((f for f in priority['failures'] if f['investigation'] == 'pending'), None) if role == 'recovery' else None
             return priority, failure
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
-            if item.get('operator_request') or item.get('environment_hold') or item.get('blocked_dependencies'):
+            if item.get('operator_request') or item.get('operator_sync') or item.get('operator_hold') or item.get('environment_hold') or item.get('blocked_dependencies'):
                 continue
             if not self.settings.admission(item['repo'])['allowed'] or item.get('retry_after', 0) > self.clock():
                 continue
@@ -857,7 +880,7 @@ class Supervisor:
                 # Interrupted mid-repository: leave it unstamped so it is the
                 # first repository read next cycle, resuming where it stopped.
                 break
-            except (GitHubUnavailable, ValueError, KeyError) as error:
+            except (GitHubUnavailable, ValueError, KeyError, StateError) as error:
                 self.errors.append({'repo': repo['name'], 'phase': 'discovery', 'reason': str(error)})
             with self.ledger.transaction() as data:
                 data.setdefault('discovery_observed', {})[str(repo['id'])] = self.clock()

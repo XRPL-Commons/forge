@@ -1,4 +1,4 @@
-"""Supervisor-only issue ledger and durable launch intents, independent of terminals."""
+"""Serialized issue ledger and durable launch intents, independent of terminals."""
 from contextlib import contextmanager
 from copy import deepcopy
 from .providers import available as provider_available
@@ -13,10 +13,25 @@ from .contracts import MAX_FAILURES, NEXT_ROLE, PASS_STATE, RETRY_STATE, ROLES, 
 APPROACH_HOLD = 'Repeated failure requires a supported change of approach'
 
 
+class DecisionChanged(StateError):
+    """An operator superseded the supervisor's observation."""
+
+
 class Ledger:
     def __init__(self, root, clock=time.time):
         self.store = AtomicStore(root, 'factory-ledger')
         self.clock = clock
+        self.decision_fence = None
+
+    @contextmanager
+    def observing(self, item):
+        previous = self.decision_fence
+        self.decision_fence = (item['key'], item.get('decision_version', 0))
+        try:
+            self.read()  # Reject an already stale snapshot before external work.
+            yield
+        finally:
+            self.decision_fence = previous
 
     @contextmanager
     def transaction(self):
@@ -27,6 +42,10 @@ class Ledger:
             for key in ('issues', 'jobs', 'slots'):
                 data.setdefault(key, {})
             data.setdefault('events', [])
+            if self.decision_fence:
+                key, version = self.decision_fence
+                if data['issues'].get(key, {}).get('decision_version', 0) != version:
+                    raise DecisionChanged('An operator changed this issue; observe it again.')
             yield data
             self.validate(data)
 
@@ -64,20 +83,28 @@ class Ledger:
     def discover(self, repo, number, requirements, *, hold=None, title=None):
         key = f"{repo['id']}:{number}"
         with self.transaction() as data:
-            if key not in data['issues']:
-                issue = {'key': key, 'repo_id': repo['id'], 'repo': repo['name'], 'number': number,
-                         'title': title or f'Issue #{number}', 'state': 'hold' if hold else 'ready', 'reason': hold, 'requirements': requirements,
-                         'candidate': None, 'active': None, 'failures': [], 'budget_start': 0,
-                         'retry_plan': None, 'evidence': {}, 'created_at': self.clock()}
-                data['issues'][key] = issue
-                self.event(data, issue, 'discovered', reason=hold)
+            self.discover_in(data, repo, number, requirements, hold=hold, title=title)
         return key
+
+    def discover_in(self, data, repo, number, requirements, *, hold=None, title=None):
+        key = f"{repo['id']}:{number}"
+        if key not in data['issues']:
+            issue = {'key': key, 'repo_id': repo['id'], 'repo': repo['name'], 'number': number,
+                     'title': title or f'Issue #{number}', 'state': 'hold' if hold else 'ready', 'reason': hold, 'requirements': requirements,
+                     'candidate': None, 'active': None, 'failures': [], 'budget_start': 0,
+                     'retry_plan': None, 'evidence': {}, 'created_at': self.clock()}
+            data['issues'][key] = issue
+            self.event(data, issue, 'discovered', reason=hold)
 
     def reserve(self, key, role, slot, *, publisher, policy, timeout, failure=None, provider='default', runner_config=None, target_branch='main',
                 existing_draft=None):
         """One atomic ownership transfer before any external process launch."""
         with self.transaction() as data:
             issue = data['issues'][key]
+            if issue.get('operator_sync'):
+                raise StateError('Confirm the operator decision against GitHub before dispatch')
+            if issue.get('operator_hold'):
+                raise StateError('An operator hold prevents dispatch')
             if any(j['issue_key'] == key and not j['cleanup'] for j in data['jobs'].values()):
                 raise StateError('Previous execution must finish cleanup before replacement')
             if data['slots'].get(slot):
@@ -509,19 +536,22 @@ class Ledger:
     def migrate_protection_hold(self, key):
         """Recognize only the old pre-first-build setup gate, never a human hold."""
         with self.transaction() as data:
-            issue = data['issues'][key]
-            reason = 'Configure two approving reviews and stale-approval dismissal before dispatch'
-            events = [e for e in data['events'] if e['issue'] == key]
-            if (issue['state'] != 'hold' or issue.get('reason') != reason
-                    or issue['active'] or issue['candidate'] or issue['failures']
-                    or any(j['issue_key'] == key for j in data['jobs'].values())
-                    or [e['kind'] for e in events] != ['discovered', 'held']
-                    or events[0].get('reason') is not None or events[1].get('reason') != reason):
-                return False
-            issue.update(prerequisite_hold={'state': 'ready', 'legacy': True},
-                         reason='Repository review settings need attention')
-            self.event(data, issue, 'protection_hold_migrated')
-            return True
+            return self.migrate_protection_hold_in(data, key)
+
+    def migrate_protection_hold_in(self, data, key):
+        issue = data['issues'][key]
+        reason = 'Configure two approving reviews and stale-approval dismissal before dispatch'
+        events = [e for e in data['events'] if e['issue'] == key]
+        if (issue['state'] != 'hold' or issue.get('reason') != reason
+                or issue['active'] or issue['candidate'] or issue['failures']
+                or any(j['issue_key'] == key for j in data['jobs'].values())
+                or [e['kind'] for e in events] != ['discovered', 'held']
+                or events[0].get('reason') is not None or events[1].get('reason') != reason):
+            return False
+        issue.update(prerequisite_hold={'state': 'ready', 'legacy': True},
+                     reason='Repository review settings need attention')
+        self.event(data, issue, 'protection_hold_migrated')
+        return True
 
     def resume_protection(self, key):
         with self.transaction() as data:

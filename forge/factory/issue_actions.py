@@ -1,4 +1,4 @@
-"""Durable issue decisions. Executed only under the supervisor's controller lease."""
+"""Immediate local decisions, with GitHub side effects owned by the supervisor."""
 from copy import deepcopy
 from pathlib import Path
 import re
@@ -11,11 +11,90 @@ from ..state import AtomicStore, StateError
 from .config import load
 from .contracts import references_issue
 from .github import GitHub, GitHubUnavailable, own_build_pr
-from .issues import IssueInventory, facts, labels, revision, dependencies, LEGACY_SETUP_REASON
-from .ledger import APPROACH_HOLD
+from .issues import IssueInventory, facts, labels, revision as issue_revision, decision_labels, dependencies, LEGACY_SETUP_REASON
+from .ledger import APPROACH_HOLD, Ledger
 
 ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer', 'environment'}
+IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck'}
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
+
+
+def decide(root, *, key, action, revision: str, reason, request_id=None):
+    """Accept a decision without a GitHub call or waiting for the controller lease."""
+    if not isinstance(action, str) or action not in IMMEDIATE:
+        return request(root, key=key, action=action, revision=revision, reason=reason, request_id=request_id)
+    if not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+        raise ValueError('Choose an issue action and record the decision.')
+    identifier = str(uuid.uuid4()) if request_id is None else request_id
+    try:
+        uuid.UUID(identifier)
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('Invalid decision identity') from None
+    inventory = IssueInventory(root)
+    ledger = Ledger(Path(root) / 'state/factory')
+    service = IssueActions(root, ledger, settings=inventory.settings, github=inventory.github)
+    decision = {'key': key, 'action': action, 'revision': revision, 'reason': reason.strip()}
+    # Legacy requests and reviewer/environment writes still have external work.
+    with service.store.transaction() as requests:
+        if any(r['key'] == key and r['status'] == 'pending' for r in requests.values()):
+            raise ValueError('Another decision for this issue is still being applied.')
+    row = inventory.view(key=key)['issue']
+    with ledger.transaction() as data:
+        old = next((e for e in data['events'] if e.get('request') == identifier and e.get('decision')), None)
+        if old:
+            if old['decision'] != decision:
+                raise ValueError('Decision identity was already used')
+            return identifier
+        item = data['issues'].get(key)
+        if inventory.settings.paused():
+            raise ValueError('Forge is resetting. No issue decision was applied.')
+        if item and (item['active'] or item.get('operator_request') or any(
+                j['issue_key'] == key and (not j['cleanup'] or j.get('outcome') is None) for j in data['jobs'].values())):
+            raise ValueError('Wait for the active attempt and its cleanup before changing the queue.')
+        if row['revision'] != revision or issue_revision(row, item) != revision or action not in row['actions']:
+            raise ValueError('This issue changed or needs a fresh check. Review it again before continuing.')
+        service.validate_action(action, row, item)
+        if action == 'recheck' and labels(row).intersection(service.config['hold_labels']):
+            raise ValueError('An explicit hold requires a separate release decision.')
+        if action == 'recheck' and item.get('reason') == LEGACY_SETUP_REASON:
+            if not ledger.migrate_protection_hold_in(data, key):
+                raise ValueError('This hold cannot be confirmed as a repository setup hold. Review it before releasing.')
+        if item is None:
+            ledger.discover_in(data, {'id': row['repo_id'], 'name': row['repo']}, row['number'], None, title=row['title'])
+            item = data['issues'][key]
+        add, remove = [], []
+        if action == 'pause':
+            add = ['hold']
+        elif action == 'backlog':
+            remove = [service.config['ready_label']]
+        elif action in ('queue', 'resume', 'retry'):
+            add = [service.config['ready_label']]
+            if action == 'resume':
+                remove = ['hold']
+        # Compose successive decisions even if GitHub has not observed the first.
+        previous = item.get('operator_sync') or {}
+        adds = (set(previous.get('add', [])) | set(add)) - set(remove)
+        removes = (set(previous.get('remove', [])) | set(remove)) - set(add)
+        stage = (item.get('operator_hold') or item.get('environment_hold') or item.get('prerequisite_hold') or {}).get('state', 'ready')
+        if action in ('pause', 'backlog'):
+            stage = item['state'] if item['state'] in ('ready', 'built', 'reviewed', 'audited') else stage
+            item['operator_hold'] = {'kind': action, 'state': stage}
+            item.update(state='hold', reason='Paused by an operator' if action == 'pause' else 'Not queued for Forge')
+        else:
+            item.update(state='ready' if action == 'retry' else stage, reason=None, retry_plan=reason.strip())
+            item.pop('operator_hold', None)
+        if action == 'retry':
+            item.update(budget_start=len(item['failures']), evidence={})
+            answer = item.pop('decision_request', None)
+            if answer:
+                ledger.event(data, item, 'decision_answered', decision=answer, reason=reason.strip())
+        for field in ('prerequisite_hold', 'environment_hold', 'blocked_dependencies', 'dependency_reason'):
+            item.pop(field, None)
+        item.update(retry_after=0, last_observed=0, decision_version=item.get('decision_version', 0) + 1,
+                    operator_sync={'request': identifier, 'action': action, 'add': sorted(adds), 'remove': sorted(removes)})
+        ledger.event(data, item, 'human_retry' if action == 'retry' else 'operator_' + action,
+                     reason=reason.strip(), request=identifier, decision=decision)
+    return identifier
 
 
 def reviewer_logins(reason):
@@ -79,6 +158,47 @@ class IssueActions:
         self.config = load(root)
         self.github = github or GitHub(self.settings, self.config)
         self.store = AtomicStore(self.root / 'state/issues', 'actions')
+
+    def sync(self, item):
+        """Confirm an immediate decision against live GitHub before admission."""
+        pending = item['operator_sync']
+        issue, requirements = self.github.issue(item)
+        try:
+            if issue['state'] != 'open':
+                raise ValueError('Issue closed on GitHub.')
+            repo = next((r for r in self.settings.view()['repositories'] if r['id'] == item['repo_id'] and r['name'] == item['repo']), None)
+            if not repo or not repo.get('enabled') or not repo.get('access_ready'):
+                raise ValueError('Repository identity or access changed.')
+            if pending['action'] in ('queue', 'resume', 'retry', 'recheck'):
+                self.prerequisites(item, decision_labels(issue, item), item)
+            for name in pending['add']:
+                if name not in labels(issue):
+                    self.github.call('controller', item, 'POST', f"/issues/{item['number']}/labels", {'labels': [name]})
+            for name in pending['remove']:
+                if name in labels(issue):
+                    self.github.call('controller', item, 'DELETE', f"/issues/{item['number']}/labels/{quote(name, safe='')}")
+            confirmed, requirements = self.github.issue(item)
+            if not set(pending['add']) <= labels(confirmed) or set(pending['remove']) & labels(confirmed):
+                raise GitHubUnavailable('GitHub has not confirmed the issue labels.')
+            if confirmed['state'] != 'open':
+                raise ValueError('Issue closed on GitHub.')
+            if pending['action'] in ('queue', 'resume', 'retry', 'recheck'):
+                self.prerequisites(item, confirmed, item)
+        except ValueError as error:
+            with self.ledger.transaction() as data:
+                current = data['issues'][item['key']]
+                current['operator_hold'] = {'kind': 'conflict', 'state': current['state'] if current['state'] in ('ready', 'built', 'reviewed', 'audited') else 'ready'}
+                current.update(state='hold', reason=str(error))
+                current.pop('operator_sync', None)
+                self.ledger.event(data, current, 'operator_conflict', reason=str(error))
+            return
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            current.pop('operator_sync', None)
+            if current['requirements'] is None:
+                current['requirements'] = requirements
+            current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
+            self.ledger.event(data, current, 'operator_synced')
 
     def process(self):
         with self.store.transaction() as data:
@@ -154,7 +274,7 @@ class IssueActions:
             raise ValueError('This issue is closed.')
         plan = decision.get('plan')
         if plan is None:
-            if revision(issue, item) != decision['revision']:
+            if issue_revision(issue, item) != decision['revision']:
                 raise ValueError('This issue changed. Refresh it before applying the decision.')
             self.validate_action(decision['action'], issue, item)
             add, remove = [], []
@@ -180,7 +300,7 @@ class IssueActions:
             after = deepcopy(issue)
             after['labels'] = sorted((labels(issue) | set(add)) - set(remove))
             plan = {'add': add, 'remove': remove, 'before': issue, 'new_item': item is None,
-                    'after_revision': revision(after, item), 'ledger_revision': revision(issue, item)}
+                    'after_revision': issue_revision(after, item), 'ledger_revision': issue_revision(issue, item)}
             # Persist intent before touching GitHub; a restarted controller can
             # recognize the intended label changes without duplicating decisions.
             with self.store.transaction() as requests:
@@ -195,7 +315,7 @@ class IssueActions:
                 # The assignees this decision writes are its own effect, never
                 # a conflict when a restarted controller replays it.
                 normalized['assignees'] = before['assignees'] = []
-            if revision(normalized, compare_item) != revision(before, compare_item) or revision(plan['before'], compare_item) != decision['revision']:
+            if issue_revision(normalized, compare_item) != issue_revision(before, compare_item) or issue_revision(plan['before'], compare_item) != decision['revision']:
                 raise ValueError('Issue state changed while applying the earlier decision.')
             self.validate_action(decision['action'], plan['before'], compare_item)
             if decision['action'] in ('queue', 'resume', 'retry', 'recheck'):
@@ -216,7 +336,7 @@ class IssueActions:
             self.assign_reviewer(identifier, decision, item)
             return
         confirmed, requirements = self.github.issue(decision)
-        if revision(facts(confirmed), None if plan.get('new_item') else item) != plan['after_revision']:
+        if issue_revision(facts(confirmed), None if plan.get('new_item') else item) != plan['after_revision']:
             raise ValueError('GitHub changed during this decision. Review the current issue.')
         if decision['action'] in ('queue', 'resume', 'retry', 'recheck'):
             self.prerequisites(decision, confirmed, item)

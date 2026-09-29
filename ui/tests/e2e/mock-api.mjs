@@ -24,6 +24,7 @@ let requests = []
 // Like the real server, a saved runtime is what later factory reads return.
 let savedFactory = null
 let savedRepositoryView = null
+let savedIssue = null
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
 
 function readBody(req) {
@@ -142,6 +143,7 @@ const server = http.createServer(async (req, res) => {
     requests = []
     savedFactory = null
     savedRepositoryView = null
+    savedIssue = null
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     return send(res, 200, { ok: true })
   }
@@ -193,6 +195,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET') {
     record(req, pathname, query, body)
     const fixture = base === 'factory' && savedFactory && !Object.keys(query).length ? savedFactory
+      : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
@@ -212,6 +215,7 @@ const server = http.createServer(async (req, res) => {
     const fixture = resolvePostFixture(base, query)
     if (base === 'runtime' && fixture?.runtime) savedFactory = fixture
     if (base === 'repositories-environment' && fixture?.repositories) savedRepositoryView = fixture
+    if (base === 'issues-action' && fixture?.issue) savedIssue = fixture
     if (fixture !== undefined) return send(res, 200, withToken(fixture))
     return send(res, 200, { ok: true })
   }

@@ -125,11 +125,14 @@ class SettingsHTTPTests(unittest.TestCase):
             setup.return_value.callback.assert_not_called()
             handler._redirect.assert_called_once_with('/onboarding?connection_error=1')
 
-    def test_issue_decision_validates_schema_before_queueing(self):
-        with patch('forge.factory.issue_actions.request', return_value='intent') as request:
+    def test_issue_decision_returns_updated_issue_and_validates_schema(self):
+        with patch('forge.factory.issue_actions.decide', return_value='intent') as request, \
+                patch('forge.factory.issues.IssueInventory') as inventory:
+            inventory.return_value.view.return_value = {'issue': {'status': 'queued'}, 'actions': [], 'repositories': []}
             value={'key':'1:1','action':'queue','revision':'current','reason':'Operator decision'}
             handler=self.handler('/api/issues/action', value); handler.do_POST()
             request.assert_called_once_with(dashboard.WD, **value)
+            self.assertEqual(json.loads(handler._send.call_args.args[0])['issue']['status'], 'queued')
             request.reset_mock()
             handler=self.handler('/api/issues/action', {**value,'force':True}); handler.do_POST()
             request.assert_not_called()

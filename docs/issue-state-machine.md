@@ -148,6 +148,7 @@ flowchart TD
 | Explicit stop | `hold`, `failed`, `approval_needed` and their reasons | Appropriate decision or verified repair; no blanket retry. |
 | Environment or repository protection | `environment_hold`, `prerequisite_hold` | Hold-specific recheck or allowed resume; saved stage retained. |
 | Pending operator action | `operator_request` | Finish applying the durable decision before scheduling. |
+| Accepted local decision | `operator_sync` | State changes immediately; verify live prerequisites and synchronize GitHub labels before scheduling. |
 | Old execution still owns resources | Active job or unverified cleanup | Verified cleanup before a replacement job. |
 | Temporary availability | `retry_after`, provider cooldown/readiness, observation errors | Retry interval and fresh successful availability checks. |
 | Dispatch disabled or repository unavailable | Runtime and repository admission settings | Enable dispatch or restore required access/settings. |
