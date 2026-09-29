@@ -75,6 +75,6 @@ export default async function (page, { base, scenario }) {
     await route.fulfill({response,json:body})
   })
   await page.goto(base + '/settings/repository?repo_id=2')
-  assert.equal(await page.getByRole('button', { name: 'Refresh repository', exact: true }).isDisabled(), true)
+  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Refresh repository' && button.disabled))
   await page.unroute('**/api/repositories?repo_id=2')
 }

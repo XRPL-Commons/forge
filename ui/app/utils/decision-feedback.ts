@@ -1,6 +1,6 @@
 import type { IssueActionStatus } from './issues'
 
-export interface DecisionReceipt { request: string | null; previous: string | null }
+export interface DecisionReceipt { request: string | null; previous: string | null; message?: string }
 export const SUBMITTED_DECISION = 'Decision submitted. Waiting for confirmation.'
 
 // A receipt must not be hidden or cleared by the preceding decision's result.
@@ -15,5 +15,5 @@ export function decisionFeedback(action: IssueActionStatus | null, receipt: Deci
   if (action?.status === 'pending') return 'Applying your decision…'
   if (stale) return 'Showing the last received issue. Refresh before making a decision.'
   if (action) return action.message?.trim() || (action.status === 'applied' ? 'Decision applied.' : 'Decision rejected. Refresh the issue before trying again.')
-  return receipt ? SUBMITTED_DECISION : ''
+  return receipt ? receipt.message || SUBMITTED_DECISION : ''
 }

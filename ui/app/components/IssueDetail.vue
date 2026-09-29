@@ -86,9 +86,9 @@ watch(() => props.issueKey, () => { submitted.value = null; workerReceipt.value 
 function previousDecision(): string | null {
   return lastAction(actions.value, props.issueKey)?.id ?? null
 }
-function recordDecision(reply: { request?: string }, previous: string | null) {
+function recordDecision(reply: { request?: string }, previous: string | null, message?: string) {
   workerReceipt.value = null
-  submitted.value = { request: reply.request ?? null, previous }
+  submitted.value = { request: reply.request ?? null, previous, message }
 }
 
 
@@ -307,7 +307,7 @@ async function saveEnvironment(environment: IssueEnvironmentSelection) {
   try {
     const previous = previousDecision()
     const reply = await api.act<{ request?: string }>('/api/issues/environment', { key: issue.key, revision: issue.revision, environment })
-    recordDecision(reply, previous)
+    recordDecision(reply, previous, 'Environment preference submitted. Waiting for the supervisor to apply it.')
     environmentOpen.value = false
   } catch (error: unknown) {
     environmentError.value = error instanceof Error ? error.message : 'Could not save the environment.'
