@@ -15,6 +15,7 @@ const REFRESH_DEADLINE = 90000
 interface Snapshot { settings: SettingsView; onboarding: OnboardingSummary }
 
 const api = useForgeApi()
+const localTime = useLocalTime()
 
 const notice = ref('')
 const noticeError = ref(false)
@@ -42,8 +43,8 @@ const settings = computed(() => poll.data.value?.settings ?? null)
 const onboarding = computed(() => poll.data.value?.onboarding ?? null)
 const settingUp = computed(() => !!onboarding.value && onboarding.value.phase !== 'active')
 
-const syncStatus = computed(() => settings.value ? lastRefreshText(settings.value) : 'Loading settings…')
-const cards = computed(() => settings.value ? connectionCards(settings.value, onboarding.value) : [])
+const syncStatus = computed(() => settings.value ? lastRefreshText(settings.value, localTime) : 'Loading settings…')
+const cards = computed(() => settings.value ? connectionCards(settings.value, onboarding.value, localTime) : [])
 const syncing = computed(() => refreshing.value || settings.value?.sync.status === 'running')
 
 // The poll answers with the whole page, so its failure is the page's notice.

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const localTime = useLocalTime()
 import { checkedAtText } from '~/utils/repositories'
 const props = defineProps<{ repoId: number }>()
 const repoId = computed(() => props.repoId)
@@ -17,7 +18,7 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
       <div class="mt-4 flex flex-wrap items-center gap-3">
         <UButton @click="wizard = true">{{ row.enabled && ready ? 'Review setup' : 'Continue setup' }}</UButton>
         <UButton color="neutral" variant="outline" :disabled="busy || !row.access_ready" :loading="checking" @click="check">Refresh repository</UButton>
-        <span id="repo-checked-at" class="text-xs text-muted">{{ checkedAtText(report) }}</span>
+        <span id="repo-checked-at" class="text-xs text-muted">{{ checkedAtText(report, localTime) }}</span>
       </div>
       <RepositoryRulesPanel id-prefix="repo-" :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :download-aria-disabled="downloadAriaDisabled" :downloaded="downloaded" @download="downloaded = true" />
       <DeploymentCard

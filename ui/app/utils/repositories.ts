@@ -278,18 +278,21 @@ export function repoAccessAction(connection: RoleAccess | undefined): Connection
   return { label: 'Connect App →', href: '/onboarding', external: false }
 }
 
-export function lastRefreshText(settings: SettingsView): string {
+type DateFormatter = (at: number, timeOnly?: boolean) => string
+const utcTime: DateFormatter = at => new Date(at * 1000).toISOString()
+
+export function lastRefreshText(settings: SettingsView, format: DateFormatter = utcTime): string {
   const sync = settings.sync
   const finished = sync.status === 'complete' ? sync.finished_at : 0
   const observed = Math.max(0, ...APP_ROLES.map(role => settings.roles[role]?.observed_at ?? 0))
   const checked = finished || observed
-  const base = checked ? 'Last refresh ' + new Date(checked * 1000).toLocaleString() : 'Access has not been refreshed yet.'
+  const base = checked ? 'Last refresh ' + format(checked) : 'Access has not been refreshed yet.'
   return base + (sync.status === 'interrupted' ? ' · Refresh interrupted; the previous data is shown.' : '')
 }
 
-export function checkedAtText(report: ProtectionReport | null | undefined): string {
+export function checkedAtText(report: ProtectionReport | null | undefined, format: DateFormatter = utcTime): string {
   if (!report?.observed_at) return ''
-  return 'Last checked ' + new Date(report.observed_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return 'Last checked ' + format(report.observed_at, true)
 }
 
 export interface ConnectionCardModel {
@@ -301,7 +304,7 @@ export interface ConnectionCardModel {
   recommendation: string
 }
 
-export function connectionCards(settings: SettingsView, onboarding: OnboardingSummary | null | undefined): ConnectionCardModel[] {
+export function connectionCards(settings: SettingsView, onboarding: OnboardingSummary | null | undefined, format: DateFormatter = utcTime): ConnectionCardModel[] {
   return APP_ROLES.map((role) => {
     const roleAccess = settings.roles[role]
     const connection = settings.config.connections?.[role]
@@ -314,7 +317,7 @@ export function connectionCards(settings: SettingsView, onboarding: OnboardingSu
     const observation = roleAccess.status === 'ok'
       ? `${count} ${count === 1 ? 'repository' : 'repositories'} with verified access`
       : roleAccess.observed_at
-        ? 'Last checked ' + new Date(roleAccess.observed_at * 1000).toLocaleString()
+        ? 'Last checked ' + format(roleAccess.observed_at)
         : 'Access has not been verified.'
     return {
       role,
