@@ -3,6 +3,7 @@ import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
   decisionNeedsReason, emptyState, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
+  activityAge, rowFacts, rowPrimary, rowStory,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -73,14 +74,79 @@ describe('listParams', () => {
 describe('rowAction', () => {
   it('announces a decision that is still being applied', () => {
     expect(rowAction(row({ status: 'attention' }), { id: 'a1', key: '1:610', status: 'pending', message: null })).toBe('Applying…')
+    expect(rowPrimary(row({ status: 'attention', actions: ['retry'] }), { id: 'a1', key: '1:610', status: 'pending', message: null }))
+      .toEqual({ label: 'Applying…', decision: false })
+  })
+  it('names the decision the issue is waiting for', () => {
+    expect(rowPrimary(row({ status: 'backlog', actions: ['queue'] }), null)).toEqual({ label: 'Queue for Forge', decision: true })
+    expect(rowAction(row({ status: 'attention', actions: ['retry'] }), null)).toBe('Retry attempt')
+    expect(rowAction(row({ status: 'attention', actions: ['resume'] }), null)).toBe('Release hold')
+    expect(rowAction(row({ status: 'attention', actions: ['recheck'] }), null)).toBe('Recheck readiness')
+    expect(rowAction(row({ status: 'attention', actions: ['retry', 'assign_reviewer'] }), null)).toBe('Assign reviewer')
+  })
+  it('never leads with backing out of a queued issue', () => {
+    expect(rowPrimary(row({ status: 'queued', actions: ['backlog', 'pause'] }), null)).toEqual({ label: 'Open', decision: false })
   })
   it('sends a working issue to its progress, an attention issue to a review', () => {
-    expect(rowAction(row({ status: 'working' }), null)).toBe('View progress')
-    expect(rowAction(row({ status: 'attention' }), null)).toBe('Review')
+    expect(rowAction(row({ status: 'working', actions: [] }), null)).toBe('View progress')
+    expect(rowAction(row({ status: 'attention', actions: [] }), null)).toBe('Review')
   })
-  it('falls back to viewing the issue', () => {
-    expect(rowAction(row({ status: 'backlog' }), null)).toBe('View issue')
-    expect(rowAction(row({ status: 'completed' }), null)).toBe('View issue')
+  it('falls back to opening the issue', () => {
+    expect(rowAction(row({ status: 'completed', actions: [] }), null)).toBe('Open')
+    expect(rowAction(row({ status: 'waiting', actions: [] }), null)).toBe('Open')
+  })
+})
+
+describe('rowStory', () => {
+  it('leads with the headline and adds the plain sentences', () => {
+    expect(rowStory(row({ summary: { headline: 'Built and waiting for review.', plain: 'A reviewer checks it next.' } })))
+      .toEqual({ headline: 'Built and waiting for review.', plain: 'A reviewer checks it next.' })
+  })
+  it('falls back to the explanation and never repeats itself', () => {
+    expect(rowStory(row())).toEqual({ headline: 'Not queued for Forge.', plain: '' })
+    expect(rowStory(row({ summary: { headline: 'Same.', plain: 'Same.' } }))).toEqual({ headline: 'Same.', plain: '' })
+    expect(rowStory(row({ summary: { headline: '  ', plain: 'Only plain.' }, explanation: 'Queued.' })))
+      .toEqual({ headline: 'Queued.', plain: 'Only plain.' })
+  })
+})
+
+describe('activityAge', () => {
+  const now = Date.parse('2026-09-20T12:00:00Z') / 1000
+  it('says how long ago GitHub last saw activity', () => {
+    expect(activityAge('2026-09-20T09:00:00Z', now)).toBe('Updated 3 h ago')
+    expect(activityAge('2026-09-17T12:00:00Z', now)).toBe('Updated 3 d ago')
+    expect(activityAge('2026-09-20T11:59:30Z', now)).toBe('Updated just now')
+  })
+  it('says nothing about an unknown time', () => {
+    expect(activityAge(null, now)).toBe('')
+    expect(activityAge('not a date', now)).toBe('')
+  })
+})
+
+describe('rowFacts', () => {
+  const now = Date.parse('2026-09-20T12:00:00Z') / 1000
+  it('lists only the facts the row carries, in reading order', () => {
+    expect(rowFacts(row(), now)).toEqual([])
+    const facts = rowFacts(row({
+      pull_requests: [
+        { number: 88, title: 'a', kind: 'candidate' },
+        { number: 71, title: 'b', kind: 'forge_attempt' },
+        { number: 40, title: 'c', kind: 'external' },
+        { number: 12, title: 'd' },
+      ],
+      attempts: { failed: 2, limit: 3 },
+      dependencies: [584, 590],
+      held_by: [{ label: 'hold', login: 'maintainer', at: '2026-09-19T10:00:00Z' }, { label: 'hold', login: null, at: 'x' }],
+      updated_at: '2026-09-20T10:00:00Z',
+    }), now)
+    expect(facts.map(fact => fact.text)).toEqual([
+      'PR #88', 'Earlier Forge draft #71', 'Other PR #40', 'PR #12',
+      '2 of 3 attempts failed', 'Depends on #584, #590', 'On hold: hold', 'Updated 2 h ago',
+    ])
+    expect(new Set(facts.map(fact => fact.key)).size).toBe(facts.length)
+  })
+  it('leaves out attempts that never failed', () => {
+    expect(rowFacts(row({ attempts: { failed: 0, limit: 3 } }), now)).toEqual([])
   })
 })
 

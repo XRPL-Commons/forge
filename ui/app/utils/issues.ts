@@ -4,7 +4,7 @@
 // Rules follow the operator API contracts §2 (GET /api/issues) and §3.2–3.3.
 
 import { elapsed } from './factory'
-import { clampTitle, reviewerMentions } from './format'
+import { ago, clampTitle, reviewerMentions } from './format'
 
 export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed'
 export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop'
@@ -45,6 +45,9 @@ export interface IssueRow {
   pull_requests: PullRequestRef[]
   dependencies: number[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
+  // Sent on list rows and the detail alike; older payloads omit them.
+  attempts?: IssueAttempts | null
+  held_by?: IssueLabelHold[] | null
 }
 
 // Who was asked for the human approval, and when. Set by the assign_reviewer
@@ -69,8 +72,6 @@ export interface IssueDetail extends IssueRow {
   body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
   // Detail only: the list view carries neither the collaborators nor the request.
   reviewers: Reviewer[]; default_reviewers: string[]; reviewers_requested: ReviewRequest | null
-  attempts?: IssueAttempts | null
-  held_by?: IssueLabelHold[] | null
 }
 
 export interface IssueListResponse {
@@ -355,11 +356,66 @@ export function lastAction(actions: IssueActionStatus[] | undefined, key: string
   return forKey[forKey.length - 1] ?? null
 }
 
-export function rowAction(row: Pick<IssueRow, 'status'>, pending: IssueActionStatus | null | undefined): string {
-  if (pending) return 'Applying…'
-  if (row.status === 'working') return 'View progress'
-  if (row.status === 'attention') return 'Review'
-  return 'View issue'
+// The one button on an issue card. It always opens the issue — decisions are
+// confirmed there — but it is named after the decision the issue is waiting
+// for, so the list says what opening it is for. Returning to the backlog or
+// pausing are never the point of opening a queued issue, so they are not named.
+const PRIMARY_DECISIONS: IssueAction[] = ['assign_reviewer', 'retry', 'recheck', 'resume', 'queue']
+
+export interface RowAction { label: string; decision: boolean }
+
+export function rowPrimary(
+  row: Pick<IssueRow, 'status' | 'actions'>, pending: IssueActionStatus | null | undefined,
+): RowAction {
+  if (pending) return { label: 'Applying…', decision: false }
+  const decision = PRIMARY_DECISIONS.find(action => (row.actions ?? []).includes(action as Exclude<IssueAction, 'stop'>))
+  if (decision) return { label: ACTION_LABELS[decision], decision: true }
+  if (row.status === 'working') return { label: 'View progress', decision: false }
+  if (row.status === 'attention') return { label: 'Review', decision: false }
+  return { label: 'Open', decision: false }
+}
+
+export function rowAction(row: Pick<IssueRow, 'status' | 'actions'>, pending: IssueActionStatus | null | undefined): string {
+  return rowPrimary(row, pending).label
+}
+
+// The story an issue card tells: Forge's headline (or the older explanation
+// line), then the plain-language sentences behind it when they add anything.
+export interface RowStory { headline: string; plain: string }
+
+export function rowStory(row: Pick<IssueRow, 'summary' | 'explanation'>): RowStory {
+  const explanation = (row.explanation ?? '').trim()
+  const headline = (row.summary?.headline ?? '').trim() || explanation
+  const plain = (row.summary?.plain ?? '').trim()
+  return { headline, plain: plain && plain !== headline ? plain : '' }
+}
+
+// "Updated 3 h ago" from GitHub's ISO time; nothing when it is missing or
+// unreadable, so a card never claims an age it does not know.
+export function activityAge(updatedAt: string | null | undefined, now: number): string {
+  if (!updatedAt) return ''
+  const at = Date.parse(updatedAt)
+  if (Number.isNaN(at)) return ''
+  return `Updated ${ago(now - at / 1000)}`
+}
+
+// The compact facts under an issue card's story, in reading order, and only
+// the ones the list row actually carries.
+export interface RowFact { key: string; text: string }
+
+export function rowFacts(
+  row: Pick<IssueRow, 'pull_requests' | 'attempts' | 'dependencies' | 'held_by' | 'updated_at'>, now: number,
+): RowFact[] {
+  const facts: RowFact[] = (row.pull_requests ?? []).map(pull => ({ key: `pr-${pull.number}`, text: pullLabel(pull) }))
+  const attempts = attemptsText(row.attempts)
+  if (attempts) facts.push({ key: 'attempts', text: attempts })
+  const dependencies = (row.dependencies ?? []).filter(number => Number.isFinite(number))
+  if (dependencies.length) facts.push({ key: 'dependencies', text: `Depends on ${dependencies.map(number => `#${number}`).join(', ')}` })
+  const holds = [...new Set((row.held_by ?? []).map(hold => hold?.label).filter(Boolean))]
+  if (holds.length) facts.push({ key: 'hold', text: `On hold: ${holds.join(', ')}` })
+  const age = activityAge(row.updated_at, now)
+  if (age) facts.push({ key: 'age', text: age })
+  return facts
 }
 
 export function freshnessText(list: Pick<IssueListResponse, 'repositories' | 'complete'>): string {
