@@ -214,6 +214,13 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             or item.get('state') not in ('audited', 'approval_needed')):
         gate = {}
     merge_blocked = gate.get('kind') in ('blocked', 'refused')
+    audit = (item.get('evidence') or {}).get('audit') or {}
+    # Existing ledgers predate merge_gate. Only the exact human-request reason
+    # is sufficient; approval_needed also historically held technical blockers.
+    legacy_approval = not gate and not item.get('active') and bool(item.get('reason')) and (
+        item.get('reason') == 'An authorized human must approve the current candidate'
+        or audit.get('human_required') == 'required' and item.get('reason') == audit.get('human_reason'))
+    human_approval = gate.get('kind') == 'approval' or legacy_approval
     # Forge's own earlier drafts are not someone else's work.
     external = [p for p in linked if p['number'] != owned_pr and not forge_branch(p, number)]
     if owned_pr and not any(p['number'] == owned_pr for p in linked):
@@ -295,8 +302,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
                else ownership_summary(issue, external) if case == 'external' else summary_for(case, item, held))
     return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
-            'approval': {'pr': owned_pr, 'reason': gate.get('reason') or 'Review the pull request changes.'}
-                        if case == 'approval_needed' and gate.get('kind') == 'approval' and 'assign_reviewer' in actions else None,
+            'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
+                        if case == 'approval_needed' and owned_pr and human_approval else None,
             'merge_blocker': {'reason': detail} if case == 'merge_blocked' else None,
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'decision_request': item.get('decision_request'),
