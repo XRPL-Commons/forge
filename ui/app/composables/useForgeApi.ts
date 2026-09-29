@@ -22,6 +22,10 @@ export function useForgeApi() {
         headers: { ...forwarded, ...(cached ? { 'If-None-Match': cached.etag } : {}) }, signal: AbortSignal.timeout(options.timeout ?? 15000) })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason
+      if (status === 401) {
+        resources.invalidate(() => true, true)
+        if (import.meta.client) window.location.replace('/login')
+      }
       throw new ForgeApiError(status, reason ?? 'Request failed')
     }
     if (response.status === 304 && !cached) throw new ForgeApiError(304, 'Refresh to reload this view.')
@@ -41,7 +45,8 @@ export function useForgeApi() {
         headers: { 'Content-Type': 'application/json', 'X-Forge-Action': current.value } })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason
-      resources.invalidate(() => true, status === 403 || clear)
+      resources.invalidate(() => true, status === 401 || status === 403 || clear)
+      if (status === 401 && import.meta.client) window.location.replace('/login')
       throw new ForgeApiError(status, reason ?? (status === 403 ? 'This page is out of date. Refresh and try again.' : 'Forge did not accept the action.'))
     }
     const payload = response._data as any

@@ -3,7 +3,7 @@ import type { OnboardingView } from '~/utils/onboarding'
 // Route redirects mirroring the Python 303s (contracts §2, "Pages/assets
 // served"): an operator who is mid-setup, or mid-reset, is always sent back
 // to the one page that can move them forward.
-const SETUP_PAGES = ['/onboarding', '/reset', '/setup-help']
+const SETUP_PAGES = ['/login', '/onboarding', '/reset', '/setup-help']
 // Contracts §1, GET guard 2. /api/onboarding is exempt from the fence, but
 // letting the reason surface as a page error would be a dead end anyway.
 const RESET_FENCE = 'Factory reset is in progress'

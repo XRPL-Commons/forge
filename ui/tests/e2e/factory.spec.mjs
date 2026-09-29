@@ -250,12 +250,11 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('default')
   await page.waitForFunction(() => document.querySelectorAll('.issue-card').length > 0, null, { timeout: 10000 })
 
-  // A first load that never answers stays on "Connecting…" — there is no
-  // last known state to reconnect to — and renders no metrics.
+  // An unavailable authorization service cannot admit a new page load.
   await scenario('down')
   await page.goto(base + '/')
-  await waitForText(page, 'Forge status service is unavailable')
-  assert.equal((await page.locator('#freshness').innerText()).trim(), 'Connecting…')
+  await page.waitForURL(base + '/login')
+  await waitForText(page, 'The sign-in service is unavailable')
   assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
   assert.equal(await page.locator('#columns').count(), 0)
   assert.equal(await page.locator('.issue-card').count(), 0)

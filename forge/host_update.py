@@ -199,6 +199,15 @@ def desired_units(root, bind):
           '--env', 'NODE_ENV=production', '--env', 'HOST=' + bind, '--env', 'PORT=' + str(UI_PORT),
           '--env', f'NITRO_FORGE_API=http://127.0.0.1:{API_PORT}', '--env', 'FORGE_ROOT=/app',
           NODE_IMAGE, 'node', '/app/server/index.mjs']
+    # Only the public address reaches the UI container. Identity credentials
+    # and session state stay in the controller's private state directory.
+    auth_root = root / 'state/operator-auth'
+    if (auth_root / 'auth.json').exists() or (auth_root / 'auth.initialized').exists():
+        from forge.operator_auth import OperatorAuth
+        origin = OperatorAuth(root).config()['origin']
+        from urllib.parse import urlsplit
+        ui[-3:-3] = ['--env', 'NITRO_FORGE_PUBLIC_ORIGIN=' + origin,
+                     '--env', 'NITRO_ALLOWED_HOSTS=' + urlsplit(origin).netloc]
     return {
         'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
                              python + ['FORGE_BIND_ADDRESS=127.0.0.1', 'FORGE_PORT=' + str(API_PORT),

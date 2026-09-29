@@ -11,6 +11,7 @@ Commands:
   update    Update the installed runtime from this checkout
   service   Run the setup supervisor and factory cycle (systemd entry point)
   factory   Inspect or operate the factory controller
+  operators Configure GitHub operator sign-in on this host
   settings  Inspect or synchronize GitHub App settings
 USAGE
 }
@@ -19,6 +20,7 @@ case "${1:-}" in
   update) exec /usr/bin/python3 -m forge.host_setup "$@";;
   service) shift; exec /usr/bin/python3 -m forge.setup_service "$@";;
   factory) shift; exec /usr/bin/python3 -m forge.factory.control "$@";;
+  operators) shift; exec /usr/bin/python3 -m forge.operator_auth "$@";;
   settings) shift; exec /usr/bin/python3 -m forge.settings "$@";;
   -h|--help|help) usage;;
   *) usage >&2; exit 2;;

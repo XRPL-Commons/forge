@@ -156,6 +156,22 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true })
   }
 
+  if (pathname === '/api/auth/session') {
+    record(req, pathname, query, body)
+    const enabled = scenario.startsWith('auth-')
+    const signed = enabled && (req.headers.cookie ?? '').includes('synthetic_operator=yes')
+    return send(res, 200, { ok: true, enabled, operator: signed ? { id: 123, login: 'forge-operator' } : null,
+      ...(signed ? { controls_token: 'synthetic' } : {}) })
+  }
+  if (pathname === '/api/auth/logout') {
+    record(req, pathname, query, body)
+    return send(res, 200, { ok: true }, { 'set-cookie': 'synthetic_operator=; Path=/; Max-Age=0' })
+  }
+  if (scenario === 'auth-expired' && pathname.startsWith('/api/')) {
+    record(req, pathname, query, body)
+    return send(res, 401, { ok: false, reason: 'Sign in again' })
+  }
+
   if (pathname === '/api/issues/discussion') {
     record(req, pathname, query, body)
     if (req.method === 'POST') {

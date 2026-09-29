@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import type { OnboardingView } from '~/utils/onboarding'
 const route = useRoute()
+const { session, logout } = useOperator()
+const logoutError = ref('')
+async function signOut() {
+  try { await logout() } catch { logoutError.value = 'Sign-out failed. Try again.' }
+}
 // The setup state the phase middleware already read on this navigation.
 // While Forge is not started, Activity and Settings · General redirect to
 // guided setup, so the nav offers Setup and GitHub access instead (#73).
@@ -25,6 +30,11 @@ const links = computed(() => [
     </NuxtLink>
     <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
       <ActivityPill />
+      <div v-if="session?.operator" class="flex items-center gap-2 text-sm">
+        <span>{{ session.operator.login }}</span>
+        <UButton variant="ghost" size="sm" @click="signOut">Sign out</UButton>
+        <span v-if="logoutError" role="alert">{{ logoutError }}</span>
+      </div>
       <nav aria-label="Main navigation" class="flex items-center gap-4 text-sm sm:gap-5">
         <NuxtLink
           v-for="link in links"
