@@ -3,7 +3,7 @@ import CapacityForm from '~/components/CapacityForm.vue'
 import { summarizeActivity } from '~/utils/activity'
 import { warnings, type FactoryView } from '~/utils/factory'
 import type { OnboardingView } from '~/utils/onboarding'
-import { statusRows, type SettingsSummary } from '~/utils/status'
+import { statusRows, statusSummary, type SettingsSummary } from '~/utils/status'
 
 interface Payload { settings: SettingsSummary; onboarding: OnboardingView; factory: FactoryView }
 
@@ -38,6 +38,7 @@ const onboardingView = computed(() => poll.data.value?.onboarding ?? null)
 const factoryView = computed(() => poll.data.value?.factory ?? null)
 
 const rows = computed(() => statusRows({ factory: factoryView.value, settings: settingsView.value, onboarding: onboardingView.value }, now.value))
+const summary = computed(() => statusSummary(rows.value))
 const banners = computed(() => warnings({ factory: factoryView.value, onboarding: onboardingView.value }, now.value, route.path))
 const activity = computed(() => summarizeActivity(factoryView.value, now.value))
 
@@ -80,9 +81,17 @@ function onSaved(view: FactoryView) {
 
     <section class="mt-4 rounded-xl border border-line bg-panel p-4">
       <h2 class="text-sm font-semibold text-white">Status</h2>
-      <div class="mt-2 divide-y divide-line">
-        <StatusRow v-for="entry in rows" :key="entry.id" :row="entry" />
+      <p v-if="!poll.data.value" id="status-summary" class="mt-1 text-sm text-muted">{{ poll.error.value ? 'Could not load the status: ' + poll.error.value : 'Loading status…' }}</p>
+      <p v-else id="status-summary" class="mt-1 text-sm" :class="summary.tone === 'warn' ? 'text-amber-200' : summary.tone === 'ok' ? 'text-mint-200' : 'text-muted'">{{ summary.headline }}</p>
+      <div v-if="summary.attention.length" class="mt-2 divide-y divide-line">
+        <StatusRow v-for="entry in summary.attention" :key="entry.id" :row="entry" />
       </div>
+      <details v-if="poll.data.value" class="mt-3 text-sm">
+        <summary class="cursor-pointer text-xs text-muted hover:text-white">Show details</summary>
+        <div class="mt-2 divide-y divide-line">
+          <StatusRow v-for="entry in rows" :key="entry.id" :row="entry" />
+        </div>
+      </details>
     </section>
 
     <section id="worker-capacity" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-panel p-4">
@@ -97,7 +106,7 @@ function onSaved(view: FactoryView) {
         :locked-reason="LOCKED_REASON"
         @saved="onSaved"
       />
-      <p v-else class="mt-2 text-sm text-muted">Worker capacity is not available.</p>
+      <p v-else class="mt-2 text-sm text-muted">{{ poll.data.value ? 'Worker capacity is not available.' : 'Loading…' }}</p>
     </section>
 
     <section class="mt-4 rounded-xl border border-rose-200/30 bg-panel p-4">

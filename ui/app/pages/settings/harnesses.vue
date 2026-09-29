@@ -46,7 +46,7 @@ function openDialog(harness: Harness) {
 </script>
 
 <template>
-  <div class="mx-auto max-w-[780px]">
+  <div class="max-w-[780px]">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-xs uppercase tracking-wide text-muted">Settings</p>
