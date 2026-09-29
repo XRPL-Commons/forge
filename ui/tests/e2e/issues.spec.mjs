@@ -161,7 +161,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.match(await pre.innerText(), /line one\nline <b>two<\/b>\nline three/)
   assert.equal(await pre.locator('b').count(), 0, 'captured output must be escaped, not rendered')
   const outputs = (await requests()).filter((entry) => entry.path === '/api/factory/output')
-  assert.equal(outputs.length, 1)
+  assert.equal(outputs.filter(entry => !entry.etag).length, 1, 'one initial output fetch; later polls carry a validator')
   assert.equal(outputs[0].query.id, 'attempt', 'the issue’s active job is the default selection')
 
   // An open panel stays open while its cached output is conditionally refreshed.
@@ -190,9 +190,11 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await jobs.first().getByRole('link').getAttribute('aria-current'), 'true')
   await page.getByRole('button', { name: 'Worker output' }).click()
   await waitForText(page, 'line <b>two</b>')
+  // Let a normal poll arrive: request count must not depend on assertion speed.
+  await page.waitForTimeout(650)
   const recoveryOutputs = (await requests()).filter((entry) => entry.path === '/api/factory/output')
-  assert.equal(recoveryOutputs.length, 1)
-  assert.equal(recoveryOutputs[0].query.id, RECOVERY_JOB, 'the ?job= id is what is fetched')
+  assert.equal(recoveryOutputs.filter(entry => !entry.etag).length, 1)
+  assert.ok(recoveryOutputs.every(entry => entry.query.id === RECOVERY_JOB), 'every fetch uses the ?job= id')
 
   // …and when the issue itself is gone from the inventory, the ?job= link
   // still reaches that job's output. The alert says why the rest is missing;
@@ -205,8 +207,8 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'orphan job line two')
   assert.match(await page.locator('pre').innerText(), /orphan job line one\norphan job line two/)
   const orphanOutputs = (await requests()).filter((entry) => entry.path === '/api/factory/output')
-  assert.equal(orphanOutputs.length, 1)
-  assert.equal(orphanOutputs[0].query.id, RECOVERY_JOB, 'the orphaned ?job= id is what is fetched')
+  assert.equal(orphanOutputs.filter(entry => !entry.etag).length, 1)
+  assert.ok(orphanOutputs.every(entry => entry.query.id === RECOVERY_JOB), 'every fetch uses the orphaned ?job= id')
 
   // The issue's one action bar sits under the title, above the description:
   // the decisions, then where the work lives on GitHub, then Stop. The review
