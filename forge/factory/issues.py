@@ -138,6 +138,23 @@ def why_for(case, item):
     return ''
 
 
+def ownership_summary(issue, external):
+    """Who holds this issue, named, and how to hand it to Forge."""
+    if external:
+        pr = external[0]
+        who = '@' + pr['author'] if pr.get('author') else 'Someone'
+        return {'headline': f"{who} has pull request #{pr['number']} open",
+                'plain': 'Forge stays away so nothing is done twice. Merge or close that pull request, '
+                         'or remove its link to this issue, to let Forge work on it.'}
+    assignees = issue.get('assignees') or []
+    if assignees:
+        names = ', '.join('@' + str(a) for a in assignees)
+        return {'headline': f'Assigned to {names}',
+                'plain': 'Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it.'}
+    return {'headline': 'Marked work in progress',
+            'plain': 'The issue has the wip label, so Forge stays away. Remove the label on GitHub to let Forge work on it.'}
+
+
 def summary_for(case, item, held):
     written = ((item.get('environment_hold') or {}).get('summary') if case == 'environment_hold'
                else item.get('last_summary') if case in WORKER_LED else None)
@@ -256,7 +273,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions = []
         if state not in ('completed', 'working'):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
-    return {'status': state, 'explanation': detail, 'summary': summary_for(case, item, held), 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
+    summary = ownership_summary(issue, external) if case == 'external' else summary_for(case, item, held)
+    return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'decision_request': item.get('decision_request'),
             'environment': {'choice': item.get('environment_choice'), 'override': item.get('environment_override'),

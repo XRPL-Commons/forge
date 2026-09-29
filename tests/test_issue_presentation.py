@@ -37,8 +37,19 @@ class LinkedWorkTests(unittest.TestCase):
     def test_someone_elses_claiming_pr_is_still_external_work(self):
         prs = [{'number': 700, 'title': 'mine', 'body': 'Closes #658', 'branch': 'fix-typecheck', 'author': 'someone'}]
         row = presentation(issue(labels=['ready']), {}, REPO, RUNTIME, prs)
-        self.assertEqual(row['summary']['headline'], 'Someone else is already working on this')
+        self.assertEqual(row['summary']['headline'], '@someone has pull request #700 open')
         self.assertEqual(row['pull_requests'][0]['kind'], 'external')
+
+
+class OwnershipTests(unittest.TestCase):
+    def test_an_assigned_issue_names_the_assignee_and_how_to_hand_it_over(self):
+        row = presentation(issue(612, labels=['ready'], assignees=['lucbocahut']), {}, REPO, RUNTIME)
+        self.assertEqual(row['summary']['headline'], 'Assigned to @lucbocahut')
+        self.assertIn('Unassign it', row['summary']['plain'])
+
+    def test_a_wip_label_says_so(self):
+        row = presentation(issue(639, labels=['wip']), {}, REPO, RUNTIME)
+        self.assertEqual(row['summary']['headline'], 'Marked work in progress')
 
 
 class HoldAndReviewerTests(unittest.TestCase):
