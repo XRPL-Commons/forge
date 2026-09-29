@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 403)
     return { ok: false, reason: 'Untrusted host' }
   }
-  const guard = guardAction({ method: req.method ?? 'GET', headers, contentLength: Number(headers['content-length'] ?? 0) })
+  const guard = guardAction({ method: req.method ?? 'GET', headers, contentLength: Number(headers['content-length'] ?? 0), publicOrigin: process.env.NITRO_FORGE_PUBLIC_ORIGIN })
   if (!guard.ok) { setResponseStatus(event, guard.status); return { ok: false, reason: guard.reason } }
   const config = useRuntimeConfig()
   const base = config.forgeApi.replace(/\/$/, '')

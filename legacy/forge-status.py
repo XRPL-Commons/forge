@@ -85,12 +85,14 @@ class H(BaseHTTPRequestHandler):
         except CookieError:
             return ''
 
-    def _redirect(self, target):
+    def _redirect(self, target, headers=()):
         self.send_response(303)
         self.send_header('Location',target)
         self.send_header('Cache-Control','no-store')
         self.send_header('Referrer-Policy','no-referrer')
         self.send_header('Content-Length','0')
+        for key, value in headers:
+            self.send_header(key, value)
         self.end_headers()
 
     def _upstream(self):
@@ -114,17 +116,71 @@ class H(BaseHTTPRequestHandler):
         expected=f'[{address}]:{port}' if ':' in address else f'{address}:{port}'
         return self.headers.get('Host','')==expected
 
+    def _operator(self):
+        from forge.operator_auth import OperatorAuth, read_cookie, SESSION_COOKIE
+        self._auth = OperatorAuth(WD)
+        self._auth_config = self._auth.config()
+        self._session_token = read_cookie(self.headers.get('Cookie', ''), SESSION_COOKIE)
+        self._session = self._auth.session(self._session_token) if self._auth_config else None
+        self._action_token = self._session['csrf'] if self._session else CONTROLS_TOKEN
+        if self._auth_config and self._public_host() != urlparse(self._auth_config['origin']).netloc:
+            self.send_error(403)
+            return False
+        return True
+
+    def _operator_guard(self):
+        try:
+            return self._operator()
+        except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+            self.send_error(503)
+            return False
+
+    def _signed_in(self):
+        if self._auth_config and not self._session:
+            self.send_error(401)
+            return False
+        return True
+
+    def _auth_get(self, url):
+        from forge.operator_auth import read_cookie, FLOW_COOKIE, SESSION_COOKIE, cookie
+        if url.path == '/api/auth/session':
+            self._send(json.dumps({'ok': True, 'enabled': bool(self._auth_config),
+                                  'operator': self._session['operator'] if self._session else None,
+                                  **({'controls_token': self._action_token} if self._session else {})}))
+            return True
+        if url.path not in ('/auth/github/start', '/auth/github/callback'):
+            return False
+        try:
+            if not self._auth_config:
+                self.send_error(404)
+                return True
+            if url.path == '/auth/github/start':
+                target, value = self._auth.begin()
+                self._redirect(target, [('Set-Cookie', value)])
+            else:
+                query = parse_qs(url.query, keep_blank_values=True)
+                if set(query) != {'state', 'code'} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError('Invalid callback')
+                value = self._auth.callback(query['state'][0], query['code'][0],
+                                            read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token)
+                self._redirect('/', [('Set-Cookie', value), ('Set-Cookie', cookie(FLOW_COOKIE))])
+        except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+            self._redirect('/login?error=sign_in', [('Set-Cookie', cookie(FLOW_COOKIE))])
+        return True
+
     def do_POST(self):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
-        if self.path not in {'/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
+        if not self._operator_guard() or not self._signed_in():
+            return
+        if self.path not in {'/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
         token=self.headers.get('X-Forge-Action','')
         origin=urlparse(self.headers.get('Origin',''))
         host=self.headers.get('Host','')
-        if (not hmac.compare_digest(token,CONTROLS_TOKEN) or origin.scheme!='http'
+        if (not hmac.compare_digest(token,self._action_token) or origin.scheme!='http'
                 or origin.netloc!=host or origin.path or origin.query or origin.fragment
                 or self.headers.get('Sec-Fetch-Site','same-origin')!='same-origin'):
             self.send_error(403);return
@@ -136,6 +192,15 @@ class H(BaseHTTPRequestHandler):
             maximum = 262144 if self.path == '/api/runtime' else 8192
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
+            if self._session:
+                self._auth.audit(self._session, self.path)
+            if self.path == '/api/auth/logout':
+                from forge.operator_auth import cookie, SESSION_COOKIE
+                if value != {} or not self._session:
+                    raise ValueError('Expected an authenticated logout request')
+                self._auth.logout(self._session_token)
+                self._send(json.dumps({'ok': True}), headers={'Set-Cookie': cookie(SESSION_COOKIE)})
+                return
             if self.path == '/api/onboarding':
                 from forge.onboarding import Onboarding
                 setup=Onboarding(WD)
@@ -145,7 +210,7 @@ class H(BaseHTTPRequestHandler):
                         'check':{'revision'},'start':{'revision'},'reset':{'generation'}}
                 if action not in fields or set(value)!=fields[action]:raise ValueError('Invalid setup action')
                 result={}
-                if action=='github':result=setup.begin(**value,origin='http://'+self._public_host(),browser=self._browser())
+                if action=='github':result=setup.begin(**value,origin=self._auth_config['origin'] if self._auth_config else 'http://'+self._public_host(),browser=self._browser())
                 elif action=='refresh':result=setup.refresh()
                 elif action=='repository':setup.select(value['repo_id'])
                 else:result={'request':setup.queue(action,**value)}
@@ -174,7 +239,7 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected issue, action, current revision, and decision')
                 identifier=decide(WD,**value)
                 result=IssueInventory(WD).view(key=value['key']) if value['action'] in IMMEDIATE else {}
-                self._send(json.dumps({'ok':True,'request':identifier,**result,'controls_token':CONTROLS_TOKEN}));return
+                self._send(json.dumps({'ok':True,'request':identifier,**result,'controls_token':self._action_token}));return
             if self.path == '/api/issues/environment':
                 from forge.factory.issue_actions import request
                 from forge.factory.environments import override
@@ -201,7 +266,7 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(value, dict) or set(value) != {'config', 'revision'}:
                     raise ValueError('Expected config and revision')
                 result=save_runtime(WD, **value)
-                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}));return
             if self.path == '/api/repositories/check':
                 from forge.repository_setup import RepositorySetup
                 if not isinstance(value,dict) or set(value)!={'repo_id','revision'} or (value['repo_id'] is not None and type(value['repo_id']) is not int):
@@ -217,7 +282,7 @@ class H(BaseHTTPRequestHandler):
                 setup=RepositorySetup(settings_service())
                 action=setup.enable if self.path.endswith('/enable') else setup.disable
                 result=action(value['repo_id'],value['revision'])
-                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}));return
             if self.path == '/api/repositories/deployment':
                 from forge.repository_setup import RepositorySetup
                 fields={'confirm':{'domain'},'reject':{'reason'},'reread':set()}
@@ -226,7 +291,7 @@ class H(BaseHTTPRequestHandler):
                         or type(value['repo_id']) is not int):
                     raise ValueError('Expected repository identity, current revision, and a deployment decision')
                 result=RepositorySetup(settings_service()).deployment(**value)
-                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}));return
             if self.path == '/api/repositories/environment':
                 from forge.repository_environments import RepositoryEnvironments
                 from forge.repository_setup import RepositorySetup
@@ -237,7 +302,7 @@ class H(BaseHTTPRequestHandler):
                 settings=settings_service()
                 RepositoryEnvironments(settings).act(**value)
                 result=RepositorySetup(settings).view(value['repo_id'])
-                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}));return
+                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}));return
             if self.path == '/api/settings/sync':
                 if value != {}:raise ValueError('Expected an empty sync request')
                 settings_service().start_refresh()
@@ -252,6 +317,12 @@ class H(BaseHTTPRequestHandler):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         u = urlparse(self.path)
+        if not self._operator_guard():
+            return
+        if self._auth_get(u):
+            return
+        if not self._signed_in():
+            return
         if u.path.startswith('/api/') and u.path!='/api/onboarding' and (Path(WD)/'state/factory-paused.json').exists():
             self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
         if u.path == '/onboarding/github/callback':
@@ -268,7 +339,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == '/api/onboarding':
             from forge.onboarding import Onboarding
             try:
-                self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':CONTROLS_TOKEN}))
+                self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':self._action_token}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Setup state is unavailable; inspect the supervisor service'}))
         elif u.path == '/api/issues/discussion':
@@ -278,7 +349,7 @@ class H(BaseHTTPRequestHandler):
                 if set(query) - {'issue', 'before'} or 'issue' not in query or any(len(v) != 1 for v in query.values()):
                     raise ValueError('Invalid conversation view')
                 result = Discussions(WD).view(query['issue'][0], int(query['before'][0]) if 'before' in query else None)
-                self._send(json.dumps({'ok': True, **result, 'controls_token': CONTROLS_TOKEN}))
+                self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
             except (ValueError, KeyError, OSError, RuntimeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Conversation unavailable. Refresh the issue and try again.'}))
         elif u.path == '/api/issues':
@@ -292,7 +363,7 @@ class H(BaseHTTPRequestHandler):
                 result=service.view(repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None,
                                     state=query.get('state',['open'])[0],query=query.get('q',[''])[0],
                                     page=int(query.get('page',['1'])[0]),key=query.get('issue',[None])[0])
-                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}))
+                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
         elif u.path == '/api/factory':
@@ -303,7 +374,7 @@ class H(BaseHTTPRequestHandler):
                 if set(query)-{'section','issue'} or any(len(v)!=1 or not v[0] for v in query.values()):
                     raise ValueError('Invalid factory view')
                 result=select_view(view(WD), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0])
-                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}))
+                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
         elif u.path == '/api/factory/output':
@@ -329,7 +400,7 @@ class H(BaseHTTPRequestHandler):
                     if repo_id is None or 'revision' not in query:raise ValueError('Select and check a repository first')
                     rules,filename=service.download(repo_id,query['revision'][0])
                     self._send(json.dumps(rules,indent=2)+'\n','application/json',{'Content-Disposition':'attachment; filename="'+filename+'"'})
-                else:self._send(json.dumps({'ok':True,**service.view(repo_id),'controls_token':CONTROLS_TOKEN}))
+                else:self._send(json.dumps({'ok':True,**service.view(repo_id),'controls_token':self._action_token}))
             except (OSError,ValueError,TypeError,KeyError):
                 self._send(json.dumps({'ok':False,'reason':'Repository setup changed or is unavailable. Check again.'}))
         elif u.path == '/api/settings':
@@ -341,7 +412,7 @@ class H(BaseHTTPRequestHandler):
                 if query:
                     fields=('id','name','enabled','configured','access','access_ready','protection_ready','protection_status','protection_previous_status','dispatch_allowed','setup_url')
                     result['repositories']=[{key:row[key] for key in fields if key in row} for row in result['repositories']]
-                result.update(ok=True,controls_token=CONTROLS_TOKEN)
+                result.update(ok=True,controls_token=self._action_token)
                 self._send(json.dumps(result))
             except (OSError,ValueError,TypeError,KeyError):
                 self._send(json.dumps({'ok':False,'reason':'Settings unavailable. Validate factory.json on the server.'}))

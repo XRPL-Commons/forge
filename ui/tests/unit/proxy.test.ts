@@ -194,3 +194,19 @@ describe('readCapped', () => {
     expect(result).toEqual({ tooLarge: true })
   })
 })
+
+describe('operator HTTPS origin', () => {
+  const secure = { ...base, publicOrigin: 'https://forge.example', headers: { ...base.headers, host: 'forge.example', origin: 'https://forge.example' } }
+  it('accepts the explicitly configured HTTPS origin', () => expect(guardAction(secure)).toEqual({ ok: true }))
+  it('rejects HTTP downgrade and spoofed forwarded protocol', () => {
+    expect(guardAction({ ...secure, headers: { ...secure.headers, origin: 'http://forge.example', 'x-forwarded-proto': 'https' } })).toMatchObject({ ok: false })
+  })
+  it('requires the configured host as well as origin', () => {
+    expect(guardAction({ ...secure, headers: { ...secure.headers, host: 'evil.example' } })).toMatchObject({ ok: false })
+  })
+  it('forwards both sign-in endpoints to the authenticated server', () => {
+    expect(proxyPaths('/auth/github/start')).toBe(true)
+    expect(proxyPaths('/auth/github/callback?code=abc&state=def')).toBe(true)
+    expect(proxyPaths('/login')).toBe(false)
+  })
+})

@@ -1,7 +1,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+import tempfile
 
 spec = importlib.util.spec_from_file_location("forge_dashboard", Path(__file__).parents[1] / "legacy/forge-status.py")
 dashboard = importlib.util.module_from_spec(spec)
@@ -9,6 +10,13 @@ spec.loader.exec_module(dashboard)
 
 
 class HostTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        patcher = patch.object(dashboard, 'WD', temporary.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_rebound_hostname_cannot_read_token_or_post_even_with_token(self):
         import io
         handler = object.__new__(dashboard.H)

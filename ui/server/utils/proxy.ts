@@ -10,7 +10,7 @@ const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'loc
   'referrer-policy', 'x-content-type-options', 'etag']
 
 type Headers = Record<string, string | undefined>
-export interface GuardInput { method: string; headers: Headers; contentLength: number }
+export interface GuardInput { method: string; headers: Headers; contentLength: number; publicOrigin?: string }
 export type GuardResult = { ok: true } | { ok: false; status: number; reason: string }
 
 export function proxyPaths(path: string): boolean {
@@ -18,7 +18,7 @@ export function proxyPaths(path: string): boolean {
   // @nuxt/icon serves the bundled Lucide collection under /api/_nuxt_icon/…;
   // that is Nitro's own route, not the Forge status service's.
   if (clean === '/api/_nuxt_icon' || clean.startsWith('/api/_nuxt_icon/')) return false
-  return clean === '/api' || clean.startsWith('/api/') || clean === '/onboarding/github/callback'
+  return clean === '/api' || clean.startsWith('/api/') || clean === '/onboarding/github/callback' || clean === '/auth/github/start' || clean === '/auth/github/callback'
 }
 
 // DNS-rebinding defence. A page on a name the attacker controls can be made
@@ -62,10 +62,10 @@ export function allowedHosts(env: Record<string, string | undefined>, listening?
   return [...hosts]
 }
 
-export function guardAction({ method, headers, contentLength }: GuardInput): GuardResult {
+export function guardAction({ method, headers, contentLength, publicOrigin }: GuardInput): GuardResult {
   if (method !== 'POST') return { ok: true }
   const host = headers.host ?? ''
-  if (!host || headers.origin !== 'http://' + host) return { ok: false, status: 403, reason: 'Cross-origin action rejected' }
+  if (!host || headers.origin !== (publicOrigin || 'http://' + host) || (publicOrigin && new URL(publicOrigin).host !== host)) return { ok: false, status: 403, reason: 'Cross-origin action rejected' }
   // Browsers only send Sec-Fetch-* to trustworthy origins (https, localhost); the UI runs over plain
   // http on the tailnet, so an absent header is accepted and only an explicit non-same-origin value rejected.
   const site = headers['sec-fetch-site']
