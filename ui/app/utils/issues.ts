@@ -435,7 +435,7 @@ export function emptyState(list: Pick<IssueListResponse, 'issues' | 'repositorie
     return {
       title: 'Choose where Forge should work',
       text: 'Add and enable a repository to see its issues here.',
-      link: { to: '/settings/repository', label: 'Add repository →' },
+      link: { to: '/settings/repositories?add=1', label: 'Add repository →' },
     }
   }
   if (!list.complete) {

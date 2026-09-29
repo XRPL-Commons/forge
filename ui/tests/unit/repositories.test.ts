@@ -225,9 +225,9 @@ describe('repositoryRows', () => {
   const rows = [row({ id: 1, name: 'XRPL-Commons/academy', enabled: true }), row({ id: 2, enabled: true, protection_status: 'needs_setup', protection_ready: false }), row({ id: 3, name: 'XRPL-Commons/docs' })]
   it('offers Disable for a healthy enabled repository and Resolve for a broken one', () => {
     const models = repositoryRows(rows, false)
-    expect(models[0]).toMatchObject({ id: 1, name: 'XRPL-Commons/academy', to: '/settings/repository?repo_id=1', note: '', action: 'disable' })
-    expect(models[1]).toMatchObject({ action: 'disable', note: 'Needs attention', resolve: '/settings/repository?repo_id=2' })
-    expect(models[2]).toMatchObject({ action: 'setup', to: '/settings/repository?repo_id=3' })
+    expect(models[0]).toMatchObject({ id: 1, name: 'XRPL-Commons/academy', to: '/settings/repositories/1', note: '', action: 'disable' })
+    expect(models[1]).toMatchObject({ action: 'disable', note: 'Needs attention', resolve: '/settings/repositories/2?setup=1' })
+    expect(models[2]).toMatchObject({ action: 'setup', to: '/settings/repositories/3?setup=1' })
   })
   it('sends every row to setup while Forge is still being set up', () => {
     expect(repositoryRows(rows, true).map(model => model.action)).toEqual(['continue', 'continue', 'continue'])

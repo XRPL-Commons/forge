@@ -189,7 +189,7 @@ function timerEndFor(view: FactoryView | null | undefined, job: JobView | null, 
 }
 
 function footerLinkFor(issue: LedgerIssueView, job: JobView | null): CardModel['footerLink'] {
-  if (issue.prerequisite_hold) return { to: `/settings/repository?repo_id=${issue.repo_id}`, label: 'Prepare repository →' }
+  if (issue.prerequisite_hold) return { to: `/settings/repositories/${issue.repo_id}?setup=1`, label: 'Prepare repository →' }
   if (issue.reason === 'blocked_auth' && !job) return { to: '/settings/harnesses', label: 'Coding accounts →' }
   if (issue.failure_count > 0) return { to: '', label: `${issue.failure_count} / 3 attempts failed` }
   return null

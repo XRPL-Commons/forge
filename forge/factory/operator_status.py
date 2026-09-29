@@ -39,11 +39,11 @@ def overview(data, repositories, runtime, observation, active, now):
                           '/issues?issue=' + waiting['key'], 'Review environment blocker')
         if waiting.get('prerequisite_hold'):
             return result('Prepare the repository to continue', waiting['reason'],
-                          '/settings/repository?repo_id=' + str(waiting['repo_id']), 'Check repository')
+                          '/settings/repositories/' + str(waiting['repo_id']) + '?setup=1', 'Check repository')
         return result('An issue needs your attention', waiting.get('reason') or 'Review the issue before continuing.', '/issues?issue=' + waiting.get('key', str(waiting.get('repo_id', '')) + ':' + str(waiting['number'])), 'Review issue')
     repos = [r for r in repositories if r['enabled']]
     if not repos:
-        return result('Choose where Forge should work', 'No repositories are enabled.', '/settings/github', 'Choose a repository')
+        return result('Choose where Forge should work', 'No repositories are enabled.', '/settings/repositories', 'Choose a repository')
     blocked = next((r for r in repos if not r.get('access_ready') or not r.get('protection_ready')), None)
     if blocked:
         return result('Check repository setup', blocked['name'] + ' needs a current access and review-settings check.', blocked['setup_url'], 'Check repository')

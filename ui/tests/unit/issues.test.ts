@@ -171,7 +171,7 @@ describe('emptyState', () => {
     expect(emptyState(list({ repositories: [] }))).toEqual({
       title: 'Choose where Forge should work',
       text: 'Add and enable a repository to see its issues here.',
-      link: { to: '/settings/repository', label: 'Add repository →' },
+      link: { to: '/settings/repositories?add=1', label: 'Add repository →' },
     })
   })
   it('keeps received issues visible while the inventory is incomplete', () => {

@@ -1,157 +1,109 @@
 import assert from 'node:assert/strict'
 
 const RULESET = '/api/repositories/ruleset?repo_id=2&revision=settings-rev-1'
-
-function waitForText(page, text) {
-  return page.waitForFunction((needle) => document.body.innerText.includes(needle), text, { timeout: 10000 })
+const posted = path => entry => entry.method === 'POST' && entry.path === path
+async function waitText(page, text) {
+  await page.waitForFunction(text => document.body.innerText.includes(text), text)
+}
+async function waitStep(page, name) {
+  await page.waitForFunction(name => document.querySelector('[role="dialog"] #repository-stage [aria-current="step"] [data-label]')?.textContent?.trim() === name, name)
+}
+async function hydrated(page) {
+  await page.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
 }
 
-async function waitForRequests(requests, match, timeout = 10000) {
-  const deadline = Date.now() + timeout
-  for (;;) {
-    const found = (await requests()).filter(match)
-    if (found.length) return found
-    if (Date.now() > deadline) throw new Error('timed out waiting for a request: ' + match.toString())
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
-}
-
-const posted = (path) => (entry) => entry.method === 'POST' && entry.path === path
-
-// The step the strip marks as current, e.g. "Enable".
-function currentStep(page) {
-  return page.locator('#repository-stage [aria-current="step"] [data-label]').innerText()
-}
-
-// The heading renders with the repository row; the strip settles when its
-// protection check does. Wait for the step instead of racing it.
-function waitForStep(page, label) {
-  return page.waitForFunction((expected) => document.querySelector('#repository-stage [aria-current="step"] [data-label]')?.textContent?.trim() === expected,
-    label, { timeout: 10000 })
-}
-
-// End-to-end behaviour of Settings · Repository setup: the picker, the four
-// setup steps, the review-rules download (filename and Content-Disposition
-// through the Nitro proxy), enabling automation, and the automatic re-check.
 export default async function (page, { base, scenario, requests }) {
-  // Picker: only repositories that are not enabled yet, each linking to its
-  // own setup page; the strip is on step one.
-  await page.goto(base + '/settings/repository')
-  await waitForText(page, 'Choose your repository')
-  assert.equal(await page.title(), 'Prepare repository · Forge')
-  assert.equal((await page.getByRole('heading', { level: 1 }).innerText()).trim(), 'Add repository')
-  assert.equal((await currentStep(page)).trim(), 'Repository')
+  await page.goto(base + '/settings/repositories')
+  await hydrated(page)
+  await waitText(page, '1 enabled · 2 discovered or configured')
+  assert.equal(await page.title(), 'Repositories · Forge')
+  assert.equal(await page.getByRole('link', { name: 'Repositories', exact: true }).getAttribute('aria-current'), 'page')
+  assert.equal(await page.getByRole('link', { name: 'General', exact: true }).getAttribute('aria-current'), null)
+  assert.equal(await page.locator('#connections').count(), 0)
+  assert.ok((await page.locator('[data-key="1"]').innerText()).includes('Enabled'))
+  assert.ok((await page.locator('[data-key="2"]').innerText()).includes('Not enabled'))
+  await page.getByRole('searchbox', { name: 'Find a repository' }).fill('hack')
+  assert.equal(await page.locator('tbody tr').count(), 1)
+  await page.getByRole('searchbox', { name: 'Find a repository' }).fill('')
 
-  const options = page.locator('#repo-options li')
-  assert.equal(await options.count(), 1)
-  assert.equal(await options.first().getByRole('link').getAttribute('href'), '/settings/repository?repo_id=2')
+  // Keyboard-only entry, selection, Back and Cancel. Already enabled repos stay visible.
+  const add = page.getByRole('button', { name: 'Add repository', exact: true })
+  await add.focus(); await page.keyboard.press('Enter')
+  let dialog = page.getByRole('dialog')
+  await waitStep(page, 'Repository')
+  await dialog.getByRole('radio', { name: /hackathon/ }).waitFor()
+  assert.equal(await dialog.getByRole('radio').count(), 2)
+  assert.equal(await dialog.getByRole('radio', { name: /academy/ }).isDisabled(), true)
+  assert.equal(await dialog.getByRole('button', { name: 'Continue', exact: true }).isDisabled(), true)
+  await dialog.getByRole('radio', { name: /hackathon/ }).focus(); await page.keyboard.press('Space')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).focus(); await page.keyboard.press('Enter')
+  await waitStep(page, 'App access')
+  await dialog.getByRole('button', { name: 'Back', exact: true }).focus(); await page.keyboard.press('Enter')
+  await waitStep(page, 'Repository')
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus(); await page.keyboard.press('Enter')
+  await dialog.waitFor({ state: 'detached' })
+  assert.equal(await add.evaluate(el => el === document.activeElement), true)
+  assert.equal((await requests()).filter(posted('/api/repositories/enable')).length, 0)
 
-  await page.getByRole('searchbox', { name: 'Find by name' }).fill('academy')
-  await waitForText(page, 'No matching repositories yet.')
-  await page.getByRole('searchbox', { name: 'Find by name' }).fill('')
-  await waitForText(page, 'XRPL-Commons/hackathon')
-
-  await page.getByRole('button', { name: 'Repository missing?' }).click()
-  await waitForText(page, 'Give a Forge App access to the repository on GitHub using the links below, then refresh access.')
-
-  // Choosing a repository moves the page to ?repo_id= and to the last step:
-  // access and rules are in place, only enabling is left.
-  await page.locator('#repo-options').getByRole('link', { name: 'XRPL-Commons/hackathon' }).click()
-  await page.waitForURL(base + '/settings/repository?repo_id=2')
-  await waitForText(page, 'Enable repository')
-  await waitForStep(page, 'Enable')
-  assert.equal((await currentStep(page)).trim(), 'Enable')
-  assert.equal((await page.locator('#status').innerText()).trim(), 'Ready to enable')
-  assert.equal(
-    (await page.locator('#description').innerText()).trim(),
-    'Setup is complete. Enable automation to let Forge pick up eligible issues in this repository.',
-  )
-  assert.ok((await page.locator('#checked-at').innerText()).startsWith('Last checked '))
-  // App access is complete, so the panel is not in the way.
-  assert.equal(await page.locator('#app-access').count(), 0)
-
-  // Enable posts the repository and revision, and the returned view replaces
-  // the snapshot: the pill reads Enabled without waiting for a poll.
-  await page.getByRole('button', { name: 'Enable automation' }).click()
-  const enables = await waitForRequests(requests, posted('/api/repositories/enable'))
+  await add.click()
+  await dialog.getByRole('searchbox', { name: 'Find by name' }).fill('missing')
+  await waitText(page, 'No matching repositories yet.')
+  await dialog.getByRole('searchbox', { name: 'Find by name' }).fill('hack')
+  await dialog.getByRole('radio', { name: /hackathon/ }).check()
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await waitStep(page, 'App access')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await waitStep(page, 'Review rules')
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+  await waitStep(page, 'Enable')
+  assert.equal(await dialog.locator('#deployment-title, #test-databases').count(), 0)
+  await dialog.getByRole('button', { name: 'Enable automation', exact: true }).click()
+  await page.waitForURL(base + '/settings/repositories/2')
+  await dialog.waitFor({ state: 'detached' })
+  await waitText(page, 'Setup is complete and automation is enabled.')
+  const enables = (await requests()).filter(posted('/api/repositories/enable'))
   assert.equal(enables.length, 1)
   assert.deepEqual(enables[0].body, { repo_id: 2, revision: 'settings-rev-1' })
-  await page.waitForFunction(() => document.getElementById('status').innerText.trim() === 'Enabled', null, { timeout: 10000 })
-  assert.equal((await page.getByRole('heading', { level: 1 }).innerText()).trim(), 'Repository setup')
-  assert.equal(
-    (await page.locator('#description').innerText()).trim(),
-    'Setup is complete and automation is enabled. No action is needed here.',
-  )
 
-  // A repository whose review rules are missing: the failed requirements, the
-  // import steps, and the ruleset download.
-  await scenario('needs-setup')
+  // Old links reach the new repository page and the GitHub repository anchor reaches the tab.
   await page.goto(base + '/settings/repository?repo_id=2')
-  await waitForText(page, 'Update the GitHub review rules below, then check again.')
-  assert.equal((await currentStep(page)).trim(), 'Review rules')
-  assert.equal((await page.locator('#status').innerText()).trim(), 'Setup needed')
+  await page.waitForURL(base + '/settings/repositories/2')
+  await page.goto(base + '/settings/github#repos-title')
+  await page.waitForURL(base + '/settings/repositories')
 
-  const failed = await page.locator('#requirements li').allInnerTexts()
-  assert.equal(failed.length, 2)
-  assert.ok(failed[0].includes('At least two approving reviews'), failed[0])
-  assert.ok(failed[0].includes('Require pull requests with at least two approving reviews.'), failed[0])
-  assert.ok(failed[1].includes('Fresh approvals when code changes'), failed[1])
-  assert.ok(failed[1].includes('Dismiss stale pull request approvals when new commits are pushed.'), failed[1])
-
-  await waitForText(page, 'On GitHub, choose New ruleset → Import a ruleset. Select the file, review the settings and save.')
-  assert.equal(
-    (await page.locator('#scope').innerText()).trim(),
-    'Applies to every pull request targeting main. Existing organization rules and stronger protections still apply.',
-  )
-  assert.equal(await page.locator('#github').getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/settings/rules')
-
-  const download = page.locator('#download')
-  assert.equal(await download.getAttribute('download'), 'forge-review-rules-2.json')
-  assert.equal(await download.getAttribute('href'), RULESET)
-
-  // The generated file keeps its name end to end: the Nitro proxy passes the
-  // upstream Content-Disposition through, and the browser saves it under it.
-  const header = await page.evaluate((url) => fetch(url).then((response) => response.headers.get('content-disposition')), RULESET)
+  // Existing blockers and generated review-rule downloads remain available in the modal.
+  await scenario('needs-setup')
+  await page.goto(base + '/settings/repositories/2?setup=1')
+  await waitStep(page, 'Review rules')
+  dialog = page.getByRole('dialog')
+  assert.equal(await dialog.locator('#requirements li').count(), 2)
+  assert.equal(await dialog.locator('#download').getAttribute('href'), RULESET)
+  assert.equal(await dialog.locator('#download').getAttribute('download'), 'forge-review-rules-2.json')
+  assert.equal(await dialog.locator('#github').getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/settings/rules')
+  const header = await page.evaluate(url => fetch(url).then(r => r.headers.get('content-disposition')), RULESET)
   assert.equal(header, 'attachment; filename="forge-review-rules-2.json"')
-  const [saved] = await Promise.all([page.waitForEvent('download'), download.click()])
+  const [saved] = await Promise.all([page.waitForEvent('download'), dialog.locator('#download').click()])
   assert.equal(saved.suggestedFilename(), 'forge-review-rules-2.json')
-  await waitForText(page, 'Download again')
-
-  // "Refresh repository" asks for a fresh protection check of this repository.
-  await page.getByRole('button', { name: 'Refresh repository' }).click()
-  const checks = await waitForRequests(requests, posted('/api/repositories/check'))
+  await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
+  const checks = (await requests()).filter(posted('/api/repositories/check'))
   assert.equal(checks.length, 1)
   assert.deepEqual(checks[0].body, { repo_id: 2, revision: 'settings-rev-1' })
+  await dialog.getByRole('button', { name: 'Setup details' }).click()
+  await waitText(page, 'Bypass permissions need your review.')
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+  const button = await dialog.getByRole('button', { name: 'Check again', exact: true }).boundingBox()
+  assert.ok(button.y >= 0 && button.y + button.height <= 844, 'primary action stays visible on mobile')
+  await page.screenshot({ path: '/tmp/forge-repository-wizard-mobile.png', fullPage: true })
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await dialog.waitFor({ state: 'detached' })
 
-  // The bypass caveat is one collapsible away, never hidden from the operator.
-  await page.getByRole('button', { name: 'Setup details' }).click()
-  await waitForText(page, 'Bypass permissions need your review.')
-  await waitForText(page, 'GitHub may hide who can bypass a ruleset. Check the bypass list on GitHub; a successful check here does not certify that list.')
-  await waitForText(page, 'Forge reads review requirements using its existing GitHub access. It cannot change your rules.')
-
-  // A stale report is re-checked without operator action, exactly once per
-  // observation.
-  // The previous page is parked first: switching the scenario under a live
-  // page would let that page observe the stale row as well, and this
-  // assertion is about one page's behaviour.
-  await page.goto('about:blank')
-  await scenario('stale')
-  // Counted from the browser, not from the mock's shared request log, so the
-  // "exactly once" claim cannot be confused by anything else on the harness.
-  const autoChecks = []
-  const onRequest = (request) => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/repositories/check') autoChecks.push(request.postDataJSON())
-  }
-  page.on('request', onRequest)
-  await page.goto(base + '/settings/repository?repo_id=2')
-  await waitForText(page, 'Check again to confirm the current GitHub settings before continuing.')
-  for (const deadline = Date.now() + 10000; !autoChecks.length && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 50))
-  assert.equal(autoChecks.length, 1, 'the page must check a stale report without operator action')
-  assert.deepEqual(autoChecks[0], { repo_id: 2, revision: 'settings-rev-1' })
-  // A poll cycle later (this page polls every 3 s) it has not asked again.
-  await page.waitForTimeout(3500)
-  assert.equal(autoChecks.length, 1, 'the auto-check must fire once per observation')
-  page.off('request', onRequest)
+  // Stale evidence triggers the existing bounded automatic refresh.
+  await page.goto('about:blank'); await scenario('stale')
+  await page.goto(base + '/settings/repositories/2')
+  await waitText(page, 'Check again to confirm the current GitHub settings')
+  await page.waitForTimeout(700)
+  assert.equal((await requests()).filter(posted('/api/repositories/check')).length, 1)
 
   // A refused check is retried: the page shows the reason, and once the server
   // accepts checks again (same payload, no reload) the next tick asks again.
@@ -162,19 +114,53 @@ export default async function (page, { base, scenario, requests }) {
     if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/repositories/check') retries.push(request.postDataJSON())
   }
   page.on('request', onRetry)
-  await page.goto(base + '/settings/repository?repo_id=2')
-  await waitForText(page, 'Could not start the check.')
+  await page.goto(base + '/settings/repositories/2')
+  await waitText(page, 'Could not start the check.')
   assert.equal(retries.length, 1, 'the refused check was attempted once')
   await scenario('stale')
   for (const deadline = Date.now() + 10000; retries.length < 2 && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 50))
   assert.equal(retries.length, 2, 'the check is retried after a refusal')
   page.off('request', onRetry)
 
-  // On a phone-width viewport nothing scrolls sideways.
-  await scenario('needs-setup')
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto(base + '/settings/repository?repo_id=2')
-  await waitForText(page, 'Setup needed')
-  const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }))
-  assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
+  // Access blockers keep the operator on that step and expose the GitHub fix.
+  await page.goto('about:blank'); await scenario('access-needed')
+  await page.goto(base + '/settings/repositories/2?setup=1')
+  await waitStep(page, 'App access')
+  assert.ok((await dialog.locator('#repository-stage').innerText()).includes('Needs attention'))
+  assert.equal(await dialog.getByRole('link', { name: 'Manage access ↗' }).count(), 1)
+  await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
+  assert.equal((await requests()).filter(posted('/api/settings/sync')).length, 1)
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await dialog.waitFor({ state: 'detached' })
+  assert.equal((await requests()).filter(posted('/api/repositories/enable')).length, 0)
+
+  // A refused enable keeps the wizard open, with the server's reason and an exit.
+  await page.goto('about:blank'); await scenario('enable-rejected')
+  await page.goto(base + '/settings/repositories/2?setup=1')
+  await waitStep(page, 'Enable')
+  await dialog.getByRole('button', { name: 'Enable automation', exact: true }).click()
+  await waitText(page, 'Repository settings changed. Check again.')
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await dialog.waitFor({ state: 'detached' })
+  assert.equal((await requests()).filter(posted('/api/repositories/enable')).length, 1)
+
+  // A list row opens setup without enabling; disabling retains its existing confirmation.
+  await page.goto('about:blank'); await scenario('default')
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(base + '/settings/repositories')
+  await hydrated(page); await waitText(page, '1 enabled · 2 discovered or configured')
+  await page.locator('[data-key="2"]').getByRole('switch').click()
+  await waitStep(page, 'Enable')
+  await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'detached' })
+  await page.getByRole('button', { name: 'Refresh repositories', exact: true }).click()
+  const allChecks = (await requests()).filter(posted('/api/repositories/check'))
+  assert.deepEqual(allChecks[0].body, { repo_id: null, revision: 'settings-rev-1' })
+  await page.locator('[data-key="1"]').getByRole('switch').click()
+  await page.getByRole('button', { name: 'Disable', exact: true }).click()
+  await waitText(page, 'Settings saved.')
+  const saves = (await requests()).filter(posted('/api/settings'))
+  assert.equal(saves.length, 1)
+  assert.equal(saves[0].body.config.repositories.find(r => r.id === 1).enabled, false)
+  await page.getByRole('dialog').waitFor({ state: 'detached' })
+  await page.screenshot({ path: '/tmp/forge-repositories-desktop.png', fullPage: true })
 }

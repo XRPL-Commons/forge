@@ -84,8 +84,10 @@ owners choose CI checks, push restrictions, administrator enforcement and bypass
 permissions. Forge does not require exclusive Controller access, globally required
 Forge checks, or up-to-date branches as an installation prerequisite.
 
-Choose Add repository or Enable from GitHub access, or Prepare repository during
-onboarding. The download targets the default branch observed by Forge. It adds
+Open Settings → Repositories and choose Add repository, or Prepare repository
+during onboarding. The wizard guides you through Repository, App access, Review
+rules and Enable, with Back and Cancel available throughout. Deployment tracking
+and test database evidence live on the repository’s details page. The download targets the default branch observed by Forge. It adds
 only the two review requirements above, with no bypass actors. It affects every
 pull request targeting that branch, including developers' pull requests.
 
@@ -97,7 +99,7 @@ that ruleset instead. Existing classic branch protection can also satisfy the
 baseline without importing anything. If import is unavailable for your plan or
 role, a repository administrator can configure the same review requirements.
 
-Return to Forge and press Check setup. Downloading the file or opening GitHub
+Return to Forge and press Check again. Downloading the file or opening GitHub
 never counts as a successful check. Review requirements verified confirms only
 the observed baseline; review the bypass list yourself on GitHub. Organization
 rules and stronger protections remain in effect, with source links in the details.

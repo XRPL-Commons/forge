@@ -34,7 +34,8 @@ function switchLabel(row: RepositoryRowModel) {
         />
         <div class="min-w-0">
           <NuxtLink :to="row.original.to" class="break-all font-medium text-white underline-offset-4 hover:underline">{{ row.original.name }}</NuxtLink>
-          <p v-if="row.original.note" class="mt-0.5 text-xs text-amber-200">{{ row.original.note }} · <NuxtLink :to="row.original.to" class="underline underline-offset-4">Resolve</NuxtLink></p>
+          <p class="mt-0.5 text-xs text-muted">{{ row.original.state.label }}</p>
+          <p v-if="row.original.note" class="mt-0.5 text-xs text-amber-200"><NuxtLink :to="row.original.to" class="underline underline-offset-4">Resolve</NuxtLink></p>
         </div>
       </div>
     </template>

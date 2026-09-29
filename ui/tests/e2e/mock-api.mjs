@@ -214,7 +214,7 @@ const server = http.createServer(async (req, res) => {
     if (!guarded) return send(res, 403, { ok: false, reason: 'Action rejected by mock' })
     const fixture = resolvePostFixture(base, query)
     if (base === 'runtime' && fixture?.runtime) savedFactory = fixture
-    if (base === 'repositories-environment' && fixture?.repositories) savedRepositoryView = fixture
+    if (['repositories-environment', 'repositories-enable'].includes(base) && fixture?.repositories) savedRepositoryView = fixture
     if (base === 'issues-action' && fixture?.issue) savedIssue = fixture
     if (fixture !== undefined) return send(res, 200, withToken(fixture))
     return send(res, 200, { ok: true })

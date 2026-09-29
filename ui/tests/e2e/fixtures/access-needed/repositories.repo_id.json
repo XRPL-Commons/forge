@@ -1,0 +1,90 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "revision": "settings-rev-1",
+  "repositories": [
+    {
+      "id": 2,
+      "name": "XRPL-Commons/hackathon",
+      "enabled": false,
+      "configured": true,
+      "access": {
+        "build": "ready",
+        "review": "missing_access",
+        "audit": "ready",
+        "controller": "ready"
+      },
+      "access_ready": false,
+      "dispatch_allowed": false,
+      "protection_status": "access_needed",
+      "protection_ready": false,
+      "protection": null,
+      "protection_previous_status": null,
+      "protection_last_known": null,
+      "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
+      "setup_url": "/settings/repository?repo_id=2"
+    }
+  ],
+  "connections": {
+    "build": {
+      "status": "ok",
+      "missing_permissions": [],
+      "required_permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "issues": "read"
+      },
+      "reason": null,
+      "observed_at": 1790000000,
+      "installation_url": "https://github.com/organizations/XRPL-Commons/settings/installations/101",
+      "app_slug": "forge-build-xrpl-commons",
+      "install_url": null
+    },
+    "review": {
+      "status": "ok",
+      "missing_permissions": [],
+      "required_permissions": {
+        "pull_requests": "write",
+        "contents": "read"
+      },
+      "reason": null,
+      "observed_at": 1790000000,
+      "installation_url": "https://github.com/organizations/XRPL-Commons/settings/installations/102",
+      "app_slug": "forge-review-xrpl-commons",
+      "install_url": null
+    },
+    "audit": {
+      "status": "ok",
+      "missing_permissions": [],
+      "required_permissions": {
+        "pull_requests": "write",
+        "contents": "read"
+      },
+      "reason": null,
+      "observed_at": 1790000000,
+      "installation_url": "https://github.com/organizations/XRPL-Commons/settings/installations/103",
+      "app_slug": "forge-audit-xrpl-commons",
+      "install_url": null
+    },
+    "controller": {
+      "status": "ok",
+      "missing_permissions": [],
+      "required_permissions": {
+        "issues": "write",
+        "pull_requests": "write",
+        "contents": "read"
+      },
+      "reason": null,
+      "observed_at": 1790000000,
+      "installation_url": "https://github.com/organizations/XRPL-Commons/settings/installations/104",
+      "app_slug": "forge-controller-xrpl-commons",
+      "install_url": null
+    }
+  },
+  "sync": {
+    "status": "complete",
+    "finished_at": 1790000000
+  },
+  "activation_available": true,
+  "continue_url": "/factory"
+}
