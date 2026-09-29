@@ -105,7 +105,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
-        if self.path not in {'/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/refresh', '/api/issues/discussion'}:
+        if self.path not in {'/api/settings', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -160,6 +160,16 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(value,dict) or set(value)!={'key','action','revision','reason'}:
                     raise ValueError('Expected issue, action, current revision, and decision')
                 self._send(json.dumps({'ok':True,'request':request(WD,**value)}));return
+            if self.path == '/api/issues/environment':
+                from forge.factory.issue_actions import request
+                from forge.factory.environments import override
+                if not isinstance(value,dict) or set(value)!={'key','revision','environment'}:
+                    raise ValueError('Expected the issue, current revision, and environment selection.')
+                selected=override(value['environment'])
+                reason=('Supervisor chooses the environment for this issue' if selected['mode']=='automatic' else
+                        'Use '+(', '.join(selected['services']) if selected['mode']=='full' else 'the standard environment')+' for this issue')
+                identifier=request(WD,key=value['key'],revision=value['revision'],action='environment',reason=reason,environment=selected)
+                self._send(json.dumps({'ok':True,'request':identifier}));return
             if self.path == '/api/issues/refresh':
                 from forge.factory.issues import IssueInventory
                 if value!={}:raise ValueError('Expected an empty refresh request')
@@ -202,7 +212,7 @@ class H(BaseHTTPRequestHandler):
                 from forge.repository_environments import RepositoryEnvironments
                 from forge.repository_setup import RepositorySetup
                 if (not isinstance(value,dict) or set(value)!={'repo_id','revision','environment_revision','action'}
-                        or type(value['repo_id']) is not int or value['action'] not in ('scan','confirm')
+                        or type(value['repo_id']) is not int or value['action'] not in ('scan','confirm','automatic')
                         or not isinstance(value['revision'],str) or not isinstance(value['environment_revision'],str)):
                     raise ValueError('Expected repository, current requirements, and scan or confirm.')
                 settings=settings_service()

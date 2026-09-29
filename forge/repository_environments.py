@@ -1,4 +1,4 @@
-"""Repository database requirements, scanned asynchronously and saved explicitly."""
+"""Cached repository evidence and optional operator defaults."""
 import threading
 import time
 import uuid
@@ -10,6 +10,7 @@ from .settings import digest, read_json, write_json
 from .state import AtomicStore
 
 SCAN_TIMEOUT = 120
+SCAN_CACHE_AGE = 600
 
 
 def read_optional(path):
@@ -28,17 +29,35 @@ class RepositoryEnvironments:
         return (config, read_optional(self.root / 'state/environment-proposals.json'),
                 read_optional(self.root / 'state/environment-scans.json'))
 
+    def automatic(self, repo):
+        """Return cached evidence and refresh it without blocking dispatch."""
+        snapshot = self.snapshot()
+        config, proposals, scans = snapshot
+        key = str(repo['repo_id'])
+        scan = scans.get(key, {})
+        current = self.view(repo['repo_id'], snapshot)
+        age = self.settings.clock() - scan.get('started_at', 0)
+        if current['status'] != 'running' and (not scan or age >= SCAN_CACHE_AGE):
+            try:
+                self.start_scan(repo, digest(self.settings.load()), current['revision'])
+            except ValueError:
+                pass  # A concurrent operator scan owns the refresh.
+        proposal = proposals.get(key) or {**config['repository_environments'].get(key, {}), 'repo': repo['repo'], 'repo_id': repo['repo_id']}
+        return proposal if proposal.get('repo') == repo['repo'] and proposal.get('repo_id') == repo['repo_id'] else {}
+
     def view(self, repo_id, snapshot=None):
         config, proposals, scans = snapshot if snapshot is not None else self.snapshot()
         key = str(repo_id)
-        profile, proposal, scan = config['repository_environments'].get(key), proposals.get(key), scans.get(key, {})
+        stored = config['repository_environments'].get(key)
+        profile = stored if stored and stored.get('default') else None
+        proposal, scan = proposals.get(key), scans.get(key, {})
         status, error = scan.get('status', 'idle'), scan.get('error')
         if status == 'running' and self.settings.clock() - scan['started_at'] >= SCAN_TIMEOUT:
             status, error = 'failed', 'The scan did not finish. Scan requirements again.'
         same = profile and proposal and all(profile.get(k) == proposal.get(k) for k in ('head', 'services', 'evidence'))
         return {'profile': profile, 'proposal': proposal if status not in ('running', 'failed') and not same else None,
                 'status': status, 'error': error, 'full_available': 'full' in config['environment_tiers'],
-                'revision': digest({'profile': profile, 'proposal': proposal, 'scan': scan,
+                'revision': digest({'profile': stored, 'proposal': proposal, 'scan': scan,
                                     'full_available': 'full' in config['environment_tiers']})}
 
     def identity(self, repo_id, revision):
@@ -59,6 +78,13 @@ class RepositoryEnvironments:
             self.start_scan(repo, revision, environment_revision)
         elif action == 'confirm':
             self.confirm(repo, revision, environment_revision)
+        elif action == 'automatic':
+            with self.settings.locked('runtime-config'):
+                if self.view(repo_id)['revision'] != environment_revision:
+                    raise ValueError('Database requirements changed. Reload and review them again.')
+                config = load(self.root)
+                config['repository_environments'].pop(str(repo_id), None)
+                write_json(self.root / 'runtime.json', validate(config))
         else:
             raise ValueError('Choose scan or confirm for database requirements.')
 
@@ -112,5 +138,5 @@ class RepositoryEnvironments:
             if proposal['services'] and not current['full_available']:
                 raise ValueError('Database workers are unavailable on this host. Ask the Forge administrator to enable them.')
             config['repository_environments'][key] = {
-                **{k: proposal[k] for k in ('services', 'evidence', 'head')}, 'confirmed_at': self.settings.clock()}
+                **{k: proposal[k] for k in ('services', 'evidence', 'head')}, 'confirmed_at': self.settings.clock(), 'default': True}
             write_json(self.root / 'runtime.json', validate(config))

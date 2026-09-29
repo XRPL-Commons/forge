@@ -43,7 +43,7 @@ const accessNote = ref('')
 const autoCheckKey = ref('')
 const deployError = ref('')
 const environmentError = ref('')
-const environmentAction = ref<'scan' | 'confirm' | null>(null)
+const environmentAction = ref<'scan' | 'confirm' | 'automatic' | null>(null)
 const rejecting = ref(false)
 const deployments = ref<Record<string, FactoryDeployment>>({})
 let loadingDeployments = false
@@ -257,7 +257,7 @@ async function rejectDeployment(reason: string) {
   await decide('reject', { reason })
 }
 
-async function updateEnvironment(action: 'scan' | 'confirm') {
+async function updateEnvironment(action: 'scan' | 'confirm' | 'automatic') {
   const current = row.value
   if (!view.value || !current?.environment || busy.value) return
   busy.value = true
@@ -492,6 +492,7 @@ async function refreshAccess() {
         :access-ready="row.access_ready"
         @scan="updateEnvironment('scan')"
         @confirm="updateEnvironment('confirm')"
+        @automatic="updateEnvironment('automatic')"
       />
 
       <UCollapsible v-model:open="detailsOpen" class="mt-4">

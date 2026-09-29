@@ -65,7 +65,7 @@ function candidateNames(base, query) {
 function readFixtureFile(dir, name) {
   const file = path.join(FIXTURES_DIR, dir, `${name}.json`)
   if (!existsSync(file)) return undefined
-  return JSON.parse(readFileSync(file, 'utf8'))
+  return JSON.parse(readFileSync(file, 'utf8').replaceAll('http://127.0.0.1:8788', ORIGIN))
 }
 
 // GET /api/<x>: fixtures/<scenario>/<name>.json when present, else

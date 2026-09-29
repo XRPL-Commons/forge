@@ -34,7 +34,7 @@ def facts(issue):
 def revision(issue, item):
     public = {k: issue.get(k) for k in ('number', 'title', 'content_hash', 'state', 'assignees')}
     public['labels'] = sorted(l for l in labels(issue) if not l.startswith('forge:'))
-    tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request')}
+    tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request', 'environment_override', 'environment_choice', 'environment_retry')}
     return digest({'github': public, 'ledger': tracked})
 
 
@@ -259,6 +259,11 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     return {'status': state, 'explanation': detail, 'summary': summary_for(case, item, held), 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'decision_request': item.get('decision_request'),
+            'environment': {'choice': item.get('environment_choice'), 'override': item.get('environment_override'),
+                            'full_available': 'full' in runtime.get('environment_tiers', {}),
+                            'editable': bool(fresh and repo.get('enabled') and repo.get('access_ready')
+                                             and issue['state'] == 'open' and item.get('state') != 'merged'
+                                             and not item.get('active') and not cleanup and not item.get('operator_request'))},
             'pull_requests': [{'number': p['number'], 'title': p.get('title', ''), 'kind': kind(p)} for p in linked],
             'attempts': attempts(item) if attempts(item)['failed'] else None,
             'held_by': [h for h in (issue.get('label_events') or []) if h.get('label') in held] or None,

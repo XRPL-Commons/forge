@@ -5,6 +5,7 @@
 // Usage: node tests/e2e/run.mjs
 //
 // Env:
+//   FORGE_E2E_MOCK_PORT / FORGE_E2E_APP_PORT  Override ports for concurrent checkouts.
 //   FORGE_BROWSER_PATH      Chromium executable to launch, e.g. /usr/bin/chromium
 //                            in the runner image. Empty/unset falls back to
 //                            playwright-core's own bundled Chromium (CI installs
@@ -29,10 +30,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const UI_ROOT = path.resolve(__dirname, '..', '..')
 
 const MOCK_HOST = '127.0.0.1'
-const MOCK_PORT = 8788
+const MOCK_PORT = Number(process.env.FORGE_E2E_MOCK_PORT || 8788)
 const MOCK_BASE = `http://${MOCK_HOST}:${MOCK_PORT}`
 const APP_HOST = '127.0.0.1'
-const APP_PORT = 3999
+const APP_PORT = Number(process.env.FORGE_E2E_APP_PORT || 3999)
 const APP_BASE = `http://${APP_HOST}:${APP_PORT}`
 
 function log(...args) { console.log('[e2e]', ...args) }

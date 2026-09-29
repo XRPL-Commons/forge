@@ -367,27 +367,32 @@ class Ledger:
             self.remember(issue, summary)
             self.event(data, issue, 'decision_requested', attempt=identifier, decision=deepcopy(decision), reason=decision['question'])
 
-    def retry_services(self, identifier, config, required):
-        """Escalate once, only to a configured tier and operator-confirmed services."""
+    def retry_services(self, identifier, config, required, *, held=False):
+        """Adjust services once per issue, within the installed database environment."""
         with self.transaction() as data:
             job = data['jobs'][identifier]
             issue = data['issues'][job['issue_key']]
-            profile = config['repository_environments'].get(str(issue['repo_id']), {})
             choice = issue.get('environment_choice') or {}
-            if (job['outcome'] is not None or issue.get('environment_retry')
-                    or (job.get('runner_config') or {}).get('environment_tier') == 'full'
+            blocked = issue.get('environment_hold') or {}
+            eligible_hold = (held and job['outcome'] == 'blocked_environment' and job['cleanup']
+                             and blocked.get('attempt') == identifier and issue['state'] == 'hold' and not issue['active'])
+            if ((job['outcome'] is not None and not eligible_hold) or issue.get('environment_retry')
                     or 'full' not in config['environment_tiers'] or not required
-                    or not set(required) <= set(profile.get('services', []))
-                    or (choice.get('tier') == 'standard' and choice.get('automatic') is False)
-                    or issue['state'] in ('hold', 'merged', 'cancelled') or issue.get('operator_hold')):
+                    or not set(required) <= {'mongodb', 'postgres', 'redis'}
+                    or set(required) <= set((job.get('runner_config') or {}).get('services', []))
+                    or choice.get('automatic') is False or issue.get('environment_override')
+                    or (issue['state'] in ('hold', 'merged', 'cancelled') and not eligible_hold) or issue.get('operator_hold')):
                 return False
-            if job['role'] != 'recovery' and issue['active'] != identifier:
+            if job['role'] != 'recovery' and issue['active'] != identifier and not eligible_hold:
                 raise StateError('Obsolete attempt cannot change its environment')
             if job['role'] == 'recovery':
                 failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
                 failure['investigation'] = 'pending'
-            issue['environment_retry'] = {'attempt': identifier, 'services': list(required), 'branch': job['branch']}
-            issue.update(active=None, retry_after=0, reason='Retrying with the confirmed database services')
+            issue['environment_retry'] = {'attempt': identifier, 'services': sorted(set(required) | set((job.get('runner_config') or {}).get('services', []))), 'branch': job['branch']}
+            if eligible_hold:
+                issue['state'] = blocked['state']
+                issue.pop('environment_hold')
+            issue.update(active=None, retry_after=0, reason='Retrying with the required database services')
             job['outcome'] = 'services_retry'
             self.event(data, issue, 'services_retry', attempt=identifier, services=list(required), branch=job['branch'])
             return True

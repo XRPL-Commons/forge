@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-const MOCK_BASE = 'http://127.0.0.1:8788'
+const MOCK_BASE = `http://127.0.0.1:${process.env.FORGE_E2E_MOCK_PORT || 8788}`
 const LOGIN_COOKIE = /(^|;\s*)forge_setup=[A-Za-z0-9_-]{32,128}(;|$)/
 
 // textContent, not innerText: the eyebrows are styled uppercase, and these
