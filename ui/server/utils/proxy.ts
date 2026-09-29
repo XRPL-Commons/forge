@@ -7,7 +7,7 @@ export const UPSTREAM_TIMEOUT_MS = 30000
 // hardening headers; dropping them would silently weaken every proxied
 // response relative to what the Python server sends directly.
 const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'location', 'cache-control',
-  'referrer-policy', 'x-content-type-options']
+  'referrer-policy', 'x-content-type-options', 'etag']
 
 type Headers = Record<string, string | undefined>
 export interface GuardInput { method: string; headers: Headers; contentLength: number }
@@ -86,7 +86,7 @@ export function upstreamHeaders(headers: Headers, method: string, upstreamHost: 
   // read this 0600 file, so it cannot act as the operator or forge the host.
   if (secret) out['x-forge-upstream'] = secret
   if (headers.host) out['x-forwarded-host'] = headers.host
-  for (const name of ['cookie', 'content-type', 'x-forge-action', 'accept']) if (headers[name]) out[name] = headers[name]
+  for (const name of ['cookie', 'content-type', 'x-forge-action', 'accept', 'if-none-match']) if (headers[name]) out[name] = headers[name]
   if (method === 'POST') { out.origin = 'http://' + upstreamHost; out['sec-fetch-site'] = 'same-origin' }
   return out
 }

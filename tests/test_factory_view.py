@@ -9,6 +9,23 @@ from forge.factory.ledger import Ledger
 
 
 class FactoryViewTests(unittest.TestCase):
+    def test_ledger_reads_keep_validation_and_decision_fences_without_rewrites(self):
+        from forge.factory.ledger import DecisionChanged
+        from forge.state import StateError
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Ledger(directory)
+            self.assertEqual(ledger.read()['version'], 1)
+            self.assertTrue(ledger.store.marker.exists())
+            key = ledger.discover({'id': 1, 'name': 'example/project'}, 1, 'requirements')
+            before = ledger.store.path.stat()
+            ledger.read()
+            self.assertEqual(ledger.store.path.stat().st_mtime_ns, before.st_mtime_ns)
+            ledger.decision_fence = (key, -1)
+            with self.assertRaises(DecisionChanged): ledger.read()
+            ledger.decision_fence = None
+            ledger.store.path.write_text('{}')
+            with self.assertRaises(StateError): ledger.read()
+
     def test_large_reports_do_not_break_activity_or_erase_merged_counts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -43,3 +60,44 @@ class FactoryViewTests(unittest.TestCase):
             self.assertEqual(result['jobs'][0]['observed_at'], 10)
             self.assertEqual(result['jobs'][0]['started_at'], 5)
             self.assertEqual(ledger.read(), original)
+
+
+class FactorySectionsTests(unittest.TestCase):
+    def payload(self):
+        return {'issues': [
+            {'key': '1:1', 'repo_id': 1, 'state': 'ready', 'active': 'build', 'title': 'Current', 'history': []},
+            {'key': '1:2', 'repo_id': 1, 'state': 'merged', 'active': None, 'title': 'Completed', 'history': [{'kind': 'merged', 'at': 100}]},
+            {'key': '1:3', 'repo_id': 1, 'state': 'investigating', 'active': 'recovery', 'title': 'Investigation', 'history': []}],
+            'jobs': [{'id': 'build', 'issue_key': '1:1', 'role': 'build', 'phase': 'running'},
+                     {'id': 'recovery', 'issue_key': '1:3', 'role': 'recovery', 'phase': 'running'},
+                     {'id': 'orphan', 'issue_key': '1:2', 'role': 'recovery', 'phase': 'stopping'}],
+            'repositories': [{'id': 1, 'name': 'example/project', 'enabled': True,
+                              'protection': {'large': 'unneeded'}, 'environment': {'evidence': 'unneeded'},
+                              'deployment': {'profile': {'strategy': 'health'}, 'proposal': 'unneeded'}}]}
+
+    def test_board_keeps_metrics_without_loading_collapsed_cards(self):
+        from forge.factory.control import select_view
+        payload = self.payload()
+        result = select_view(payload, section='board', now=101)
+        self.assertEqual([row['key'] for row in result['issues']], ['1:1'])
+        self.assertEqual([row['id'] for row in result['jobs']], ['build'])
+        summary = result['summary']
+        self.assertEqual((summary['completed_count'], summary['runner_count']), (1, 2))
+        self.assertTrue(summary['runners_running'])
+        self.assertEqual((summary['merged_day'], summary['merged_week'], summary['waiting']), (1, 1, 1))
+        self.assertEqual(len(summary['workers']), 3)
+        self.assertNotIn('unneeded', json.dumps(result))
+        self.assertEqual(payload, self.payload(), 'projection must not mutate durable input')
+
+    def test_sections_and_issue_views_only_carry_the_requested_rows(self):
+        from forge.factory.control import select_view
+        completed = select_view(self.payload(), section='completed')
+        self.assertEqual([row['key'] for row in completed['issues']], ['1:2'])
+        self.assertEqual(completed['jobs'], [])
+        runners = select_view(self.payload(), section='runners')
+        self.assertEqual([row['key'] for row in runners['issues']], ['1:3'])
+        self.assertEqual([row['id'] for row in runners['jobs']], ['recovery', 'orphan'])
+        detail = select_view(self.payload(), issue='1:1')
+        self.assertEqual([row['id'] for row in detail['jobs']], ['build'])
+        for kwargs in ({'section': 'secret'}, {'section': 'board', 'issue': '1:1'}):
+            with self.assertRaises(ValueError): select_view(self.payload(), **kwargs)

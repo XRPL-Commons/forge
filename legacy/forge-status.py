@@ -5,6 +5,7 @@ Only the UI may call it (UPSTREAM_SECRET). Writes also require a same-origin
 JSON request and a per-process capability token. The server queues intent;
 only the locked supervisor acts on it.
 """
+import hashlib
 import json, re, subprocess, os, secrets, hmac, threading, ipaddress
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,7 +54,18 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, body, ctype="application/json", headers=None):
         data = body.encode()
+        # Validators are private to each client; no response is stored by a
+        # browser/proxy cache. Include the action token in the digest so a
+        # service restart always sends the new capability with a fresh body.
+        etag = '"' + hashlib.sha256(data).hexdigest() + '"' if self.command == 'GET' and ctype == 'application/json' else None
+        if etag and self.headers.get('If-None-Match') == etag:
+            self.send_response(304)
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', 'private, no-store')
+            self.end_headers()
+            return
         self.send_response(200)
+        if etag: self.send_header('ETag', etag)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
@@ -286,8 +298,12 @@ class H(BaseHTTPRequestHandler):
         elif u.path == '/api/factory':
             try:
                 if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
-                from forge.factory.control import view
-                self._send(json.dumps({**view(WD),'ok':True,'controls_token':CONTROLS_TOKEN}))
+                from forge.factory.control import view, select_view
+                query=parse_qs(u.query, keep_blank_values=True)
+                if set(query)-{'section','issue'} or any(len(v)!=1 or not v[0] for v in query.values()):
+                    raise ValueError('Invalid factory view')
+                result=select_view(view(WD), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0])
+                self._send(json.dumps({**result,'ok':True,'controls_token':CONTROLS_TOKEN}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
         elif u.path == '/api/factory/output':
@@ -319,7 +335,12 @@ class H(BaseHTTPRequestHandler):
         elif u.path == '/api/settings':
             try:
                 if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
+                query=parse_qs(u.query)
+                if query and query != {'summary':['1']}: raise ValueError('Invalid settings view')
                 result=settings_service().view()
+                if query:
+                    fields=('id','name','enabled','configured','access','access_ready','protection_ready','protection_status','protection_previous_status','dispatch_allowed','setup_url')
+                    result['repositories']=[{key:row[key] for key in fields if key in row} for row in result['repositories']]
                 result.update(ok=True,controls_token=CONTROLS_TOKEN)
                 self._send(json.dumps(result))
             except (OSError,ValueError,TypeError,KeyError):

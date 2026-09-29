@@ -7,14 +7,8 @@ import type { Harness, OnboardingView } from '~/utils/onboarding'
 useHead({ title: 'Coding accounts' })
 
 const api = useForgeApi()
-const state = ref<OnboardingView | null>(null)
 const selected = ref<Harness | null>(null)
 const open = ref(false)
-
-async function load() {
-  state.value = await api.get<OnboardingView>('/api/onboarding', { timeout: 30000 })
-  return state.value
-}
 
 // Contracts §4: the onboarding poll is 3 s. The e2e harness lowers the
 // shared knob to make poll-driven assertions fast; never poll slower than
@@ -22,7 +16,7 @@ async function load() {
 const interval = Math.min(3000, useRuntimeConfig().public.pollInterval)
 // A poll never lands while the dialog is open, so it cannot reset a copy
 // button under the operator's hands.
-const poll = usePoll(load, { interval, allowed: () => !open.value })
+const poll = useResource<OnboardingView>('/api/onboarding', path => api.get<OnboardingView>(path, { timeout: 30000 }), { interval, allowed: () => !open.value })
 
 onMounted(async () => {
   // The cookie POST /api/onboarding {action:'github'} needs (contracts §1):
@@ -32,6 +26,7 @@ onMounted(async () => {
   poll.start()
 })
 
+const state = poll.data
 const harnesses = computed(() => state.value?.harnesses ?? [])
 // §3.7: the error notice belongs to the page, and only to these two checks.
 const notice = computed(() => {

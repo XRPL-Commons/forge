@@ -1,17 +1,31 @@
-import { computed, onScopeDispose, toValue, watch, type MaybeRefOrGetter } from 'vue'
+import { computed, onScopeDispose, onServerPrefetch, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { Resources } from '~/utils/resources'
 
 const stores = new WeakMap<object, Resources>()
 export function useResources() {
   const app = useNuxtApp()
   let store = stores.get(app)
-  if (!store) { store = new Resources(); stores.set(app, store) }
+  if (!store) {
+    store = new Resources(); stores.set(app, store)
+    const initial = app.payload.data['forge-resources'] as Record<string, { data: unknown; at: number; error: string | null }> | undefined
+    if (initial) for (const [key, value] of Object.entries(initial)) {
+      store.replace(key, value.data)
+      store.entry(key).updatedAt.value = value.at
+      store.entry(key).error.value = value.error
+    }
+    if (import.meta.client) delete app.payload.data['forge-resources']
+    if (import.meta.server) app.hook('app:rendered', () => {
+      app.payload.data['forge-resources'] = Object.fromEntries([...store!.entries]
+        .filter(([, entry]) => entry.data.value !== null || entry.error.value !== null)
+        .map(([key, entry]) => [key, { data: entry.data.value, at: entry.updatedAt.value, error: entry.error.value }]))
+    })
+  }
   return store
 }
 
 /** One shared value and in-flight request per URL; one active poll owner per resource. */
 export function useResource<T>(key: MaybeRefOrGetter<string>, loader: (key: string) => Promise<T>,
-  options: { interval?: number; allowed?: () => boolean; maxAge?: number } = {}) {
+  options: { interval?: number; allowed?: () => boolean; maxAge?: number; server?: boolean; onChange?: (value: T) => void; onRead?: (value: T) => void } = {}) {
   const store = useResources()
   const selected = computed(() => store.entry<T>(toValue(key)))
   const interval = options.interval ?? useRuntimeConfig().public.pollInterval
@@ -27,8 +41,11 @@ export function useResource<T>(key: MaybeRefOrGetter<string>, loader: (key: stri
     if (options.allowed && !options.allowed()) { schedule(); return selected.value.data.value }
     const requested = toValue(key)
     const result = await store.load(requested, () => loader(requested), maxAge)
+    if (result !== null && requested === toValue(key)) options.onRead?.(result)
     schedule(); return result
   }
+  watch(() => selected.value.data.value, value => { if (value !== null) options.onChange?.(value) })
+  if (import.meta.server && options.server !== false) onServerPrefetch(() => refresh(options.maxAge ?? interval))
   function wake() { if (started && !hidden()) void refresh(100) }
   function visibility() { if (selected.value.listeners.values().next().value === wake) clearTimeout(selected.value.timer); if (!hidden()) wake() }
   function attach() {
@@ -52,6 +69,10 @@ export function useResource<T>(key: MaybeRefOrGetter<string>, loader: (key: stri
     const entry = store.entries.get(old)
     if (entry) detach(entry)
     if (started) attach()
+  })
+  watch(() => options.allowed?.(), allowed => {
+    if (started && allowed) wake()
+    else if (allowed === false && selected.value.listeners.values().next().value === wake) clearTimeout(selected.value.timer)
   })
   onScopeDispose(stop)
   return { data: computed(() => selected.value.data.value), error: computed(() => selected.value.error.value),

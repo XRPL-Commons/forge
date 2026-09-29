@@ -16,22 +16,17 @@ const capacityForm = ref<InstanceType<typeof CapacityForm> | null>(null)
 
 // The poll only advances while nothing is being edited or saved, so a
 // mid-cycle refresh never overwrites the operator's unsaved numbers.
-const poll = usePoll<Payload>(() => Promise.all([
-  api.get<SettingsSummary>('/api/settings', { timeout: 30000 }),
+const poll = useResource<Payload>('settings-general', () => Promise.all([
+  api.get<SettingsSummary>('/api/settings?summary=1', { timeout: 30000 }),
   api.get<OnboardingView>('/api/onboarding', { timeout: 30000 }),
-  api.get<FactoryView>('/api/factory', { timeout: 30000 }),
+  api.get<FactoryView>('/api/factory?section=board', { timeout: 30000 }),
 ]).then(([settings, onboarding, factory]) => ({ settings, onboarding, factory })), {
   interval: useRuntimeConfig().public.pollInterval,
   allowed: () => !capacityForm.value?.dirty && !capacityForm.value?.saving,
 })
 
-const now = ref(Math.floor(Date.now() / 1000))
-let ticker: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  poll.start()
-  ticker = setInterval(() => { if (!document.hidden) now.value = Math.floor(Date.now() / 1000) }, 1000)
-})
-onBeforeUnmount(() => clearInterval(ticker))
+const now = useClock()
+onMounted(poll.start)
 
 const settingsView = computed(() => poll.data.value?.settings ?? null)
 const onboardingView = computed(() => poll.data.value?.onboarding ?? null)

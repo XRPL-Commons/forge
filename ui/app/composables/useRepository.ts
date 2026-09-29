@@ -26,6 +26,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   const accessNote = ref('')
   // One auto-check per observation: `revision:protection_status:observed_at`.
   const autoCheckKey = ref('')
+  let autoCheckRetryAt = 0
   const deployError = ref('')
   const environmentError = ref('')
   const environmentAction = ref<'scan' | 'confirm' | 'automatic' | null>(null)
@@ -35,9 +36,9 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   let refreshStarted: number | null = null
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
-  const poll = usePoll<RepositoriesView>(async () => {
+  const poll = useResource<RepositoriesView>(() => '/api/repositories' + (repoId.value === null ? '' : '?repo_id=' + repoId.value), async (path) => {
     const id = repoId.value
-    const view = await api.get<RepositoriesView>('/api/repositories' + (id === null ? '' : '?repo_id=' + id), { timeout: 30000 })
+    const view = await api.get<RepositoriesView>(path, { timeout: 30000 })
     // A view without the requested repository is not a page: the operator is
     // given an error instead of an empty shell.
     if (!Array.isArray(view.repositories) || (id !== null && !view.repositories.length)) throw new ForgeApiError(200, UNAVAILABLE)
@@ -49,7 +50,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   // Repository setup wants a faster tick than the rest of the app (an access
   // check lands within seconds), but never slower than the configured one —
   // which is how the e2e harness's 300ms reaches this page too.
-  }, { interval: Math.min(3000, useRuntimeConfig().public.pollInterval), allowed: () => active.value && !busy.value, onChange: observe })
+  }, { interval: Math.min(3000, useRuntimeConfig().public.pollInterval), allowed: () => active.value && !busy.value, onRead: observe })
 
   // The observation carries an age ("deploy succeeded 12 min ago"), which the
   // server cannot know; it appears once mounted and ticks with the clock.
@@ -57,6 +58,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   let ticker: ReturnType<typeof setInterval> | undefined
   onMounted(() => {
     poll.start()
+    if (view.value) maybeAutoCheck(view.value)
     now.value = Math.floor(Date.now() / 1000)
     ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 30000)
   })
@@ -67,11 +69,12 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   watch(repoId, async () => {
     downloaded.value = false
     autoCheckKey.value = ''
+    autoCheckRetryAt = 0
     error.value = ''
     deployError.value = ''
     environmentError.value = ''
     // A refresh started before the navigation resolves with the previous
-    // route's payload (`usePoll` coalesces in-flight loads), which holds no row
+    // route's payload, which holds no row
     // for the new repository: ask once more rather than leave the page empty
     // until the next tick.
     await poll.refresh()
@@ -136,7 +139,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   // refused (its key is reset below) is retried on the next tick.
   function maybeAutoCheck(value: RepositoriesView) {
     const current = repoId.value === null ? null : value.repositories.find(candidate => candidate.id === repoId.value)
-    if (!current || !active.value) return
+    if (import.meta.server || !current || !active.value || Date.now() < autoCheckRetryAt) return
     const key = [value.revision, current.protection_status, current.protection?.observed_at].join(':')
     if (!busy.value && current.access_ready && ['unchecked', 'stale'].includes(current.protection_status) && autoCheckKey.value !== key) {
       autoCheckKey.value = key
@@ -165,6 +168,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
       error.value = actionMessage(failure, 'Could not start the check.')
       // Let the next observation try again instead of remembering a refused check.
       autoCheckKey.value = ''
+      autoCheckRetryAt = Date.now() + 3000
     } finally {
       busy.value = false
     }

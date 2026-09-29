@@ -42,12 +42,15 @@ class Ledger:
             for key in ('issues', 'jobs', 'slots'):
                 data.setdefault(key, {})
             data.setdefault('events', [])
-            if self.decision_fence:
-                key, version = self.decision_fence
-                if data['issues'].get(key, {}).get('decision_version', 0) != version:
-                    raise DecisionChanged('An operator changed this issue; observe it again.')
+            self.check_decision(data)
             yield data
             self.validate(data)
+
+    def check_decision(self, data):
+        if self.decision_fence:
+            key, version = self.decision_fence
+            if data['issues'].get(key, {}).get('decision_version', 0) != version:
+                raise DecisionChanged('An operator changed this issue; observe it again.')
 
     @staticmethod
     def validate(data):
@@ -73,8 +76,14 @@ class Ledger:
             raise StateError('Factory ownership invariants are invalid; reconcile before recovery') from None
 
     def read(self):
-        with self.transaction() as data:
-            return deepcopy(data)
+        data = self.store.read()
+        if not data or not self.store.marker.exists():
+            # Preserve first-use initialization and its durable marker.
+            with self.transaction() as data:
+                return deepcopy(data)
+        self.validate(data)
+        self.check_decision(data)
+        return data
 
     def event(self, data, issue, kind, **fields):
         data['events'].append({'sequence': len(data['events']) + 1, 'at': self.clock(),

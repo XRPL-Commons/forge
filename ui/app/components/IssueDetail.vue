@@ -29,7 +29,7 @@ const submitting = ref(false)
 const environmentOpen = ref(false)
 const environmentError = ref('')
 
-const factory = useFactory()
+const factory = useFactory(() => '/api/factory?issue=' + encodeURIComponent(props.issueKey))
 const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${encodeURIComponent(props.issueKey)}`, async (path) => {
   try { return { detail: await api.get<IssueDetailResponse>(path, { timeout: 30000 }), fence: null } }
   catch (error) {
@@ -39,8 +39,7 @@ const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${enc
   }
 }, { allowed: () => !submitting.value && !environmentOpen.value })
 // Warm detail opens synchronously; cold direct links retain SSR data.
-const { data: initial } = await useAsyncData(`issue-${props.issueKey}`, () => poll.refresh(5000))
-if (!poll.data.value && initial.value) poll.replace(initial.value)
+if (import.meta.server) await poll.refresh(5000)
 const mounted = ref(false)
 onMounted(() => { mounted.value = true; poll.start(); factory.start() })
 const loaded = computed<Loaded | null>(() => {
@@ -249,23 +248,13 @@ function jobLine(job: JobView): string {
 
 const outputOpen = ref(false)
 const activityOpen = ref(false)
-const logs = ref<string | null>(null)
-const loadedJob = ref<string | null>(null)
-
-async function loadOutput() {
-  const id = selectedJob.value
-  if (!id || loadedJob.value === id) return
-  loadedJob.value = id
-  try {
-    const result = await api.get<{ ok: true; logs: string }>(`/api/factory/output?id=${encodeURIComponent(id)}`, { timeout: 15000 })
-    logs.value = result.logs ?? ''
-  } catch {
-    logs.value = ''
-  }
-}
-
-watch(outputOpen, (open) => { if (open) void loadOutput() })
-watch(selectedJob, () => { loadedJob.value = null; logs.value = null; if (outputOpen.value) void loadOutput() })
+const output = useResource<{ ok: true; logs: string }>(
+  () => `/api/factory/output?id=${encodeURIComponent(selectedJob.value ?? '')}`,
+  path => api.get(path, { timeout: 15000 }),
+  { allowed: () => outputOpen.value && !!selectedJob.value, server: false },
+)
+onMounted(output.start)
+const logs = computed(() => output.data.value?.logs ?? null)
 
 function ask(action: IssueAction) {
   dialogError.value = null
@@ -511,6 +500,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           <SelectChevron :class="outputOpen ? 'rotate-180' : ''" />
         </UButton>
         <template #content>
+          <p v-if="output.error.value" role="status" class="mt-2 text-xs text-amber-200">{{ output.error.value }}</p>
           <pre
             v-if="logs && logs.trim()"
             class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-panel p-3 text-xs"

@@ -10,18 +10,26 @@ export interface GetOptions { timeout?: number }
 export function useForgeApi() {
   const current = token()
   const resources = useResources()
+  const forwarded = useRequestHeaders(['cookie', 'host'])
   async function get<T>(path: string, options: GetOptions = {}): Promise<T> {
+    const entry = resources.entry(path)
+    const generation = entry.generation
+    const cached = entry.response
     let response
     try {
       response = await $fetch.raw<T & { ok?: boolean; reason?: string; controls_token?: string }>(path, {
-        method: 'GET', credentials: 'same-origin', signal: AbortSignal.timeout(options.timeout ?? 15000) })
+        method: 'GET', credentials: 'same-origin',
+        headers: { ...forwarded, ...(cached ? { 'If-None-Match': cached.etag } : {}) }, signal: AbortSignal.timeout(options.timeout ?? 15000) })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason
       throw new ForgeApiError(status, reason ?? 'Request failed')
     }
-    const payload = response._data as any
+    if (response.status === 304 && !cached) throw new ForgeApiError(304, 'Refresh to reload this view.')
+    const payload = (response.status === 304 ? cached!.data : response._data) as any
+    const etag = response.headers.get('etag')
+    if (entry.generation === generation && response.status !== 304) entry.response = etag && payload?.ok !== false ? { etag, data: payload } : undefined
     checkOk(response.status, payload, 'Request failed')
-    if (payload?.controls_token) current.value = payload.controls_token
+    if (entry.generation === generation && payload?.controls_token) current.value = payload.controls_token
     return payload as T
   }
   async function act<T>(path: string, body: object): Promise<T> {

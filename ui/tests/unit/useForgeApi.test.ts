@@ -8,15 +8,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // modules the rewrite actually resolves to instead. `vi.hoisted` is required so the
 // mock factories can close over fresh fakes despite `vi.mock` calls being hoisted
 // above normal `const`/`import` statements.
-const { store, fetchRaw } = vi.hoisted(() => ({
+const { store, fetchRaw, cache } = vi.hoisted(() => ({
   store: {} as Record<string, { value: any }>,
   fetchRaw: vi.fn(),
+  cache: { value: null as any },
 }))
 
 vi.mock('#app/composables/state', () => ({
   useState: (key: string, init: () => any) => { store[key] ??= { value: init() }; return store[key] },
 }))
-vi.mock('../../app/composables/useResource', () => ({ useResources: () => ({ invalidate: vi.fn() }) }))
+vi.mock('../../app/composables/useResource', async () => {
+  const { Resources } = await import('../../app/utils/resources')
+  return { useResources: () => cache.value ??= new Resources() }
+})
 vi.mock('#build/fetch.mjs', () => ({
   $fetch: Object.assign(vi.fn(), { raw: fetchRaw }),
 }))
@@ -25,12 +29,12 @@ const { useForgeApi, ForgeApiError } = await import('../../app/composables/useFo
 
 beforeEach(() => {
   for (const key of Object.keys(store)) delete store[key]
-  fetchRaw.mockReset()
+  fetchRaw.mockReset(); cache.value = null
 })
 
 describe('useForgeApi', () => {
   it('get returns the payload and stores controls_token', async () => {
-    fetchRaw.mockResolvedValue({ status: 200, ok: true, _data: { ok: true, controls_token: 'tok-1', value: 42 } })
+    fetchRaw.mockResolvedValue({ headers: new Headers(), status: 200, ok: true, _data: { ok: true, controls_token: 'tok-1', value: 42 } })
     const api = useForgeApi()
     const payload = await api.get('/api/status')
     expect(payload).toEqual({ ok: true, controls_token: 'tok-1', value: 42 })
@@ -38,7 +42,7 @@ describe('useForgeApi', () => {
   })
 
   it('get on a 200 {ok:false} response throws ForgeApiError with status and reason', async () => {
-    fetchRaw.mockResolvedValue({ status: 200, ok: true, _data: { ok: false, reason: 'nope' } })
+    fetchRaw.mockResolvedValue({ headers: new Headers(), status: 200, ok: true, _data: { ok: false, reason: 'nope' } })
     const api = useForgeApi()
     await expect(api.get('/api/status')).rejects.toBeInstanceOf(ForgeApiError)
     await expect(api.get('/api/status')).rejects.toMatchObject({ status: 200, message: 'nope' })
@@ -53,8 +57,8 @@ describe('useForgeApi', () => {
 
   it('act sends X-Forge-Action equal to the stored token and Content-Type json', async () => {
     fetchRaw
-      .mockResolvedValueOnce({ status: 200, ok: true, _data: { ok: true, controls_token: 'secret-token' } })
-      .mockResolvedValueOnce({ status: 200, ok: true, _data: { ok: true } })
+      .mockResolvedValueOnce({ headers: new Headers(), status: 200, ok: true, _data: { ok: true, controls_token: 'secret-token' } })
+      .mockResolvedValueOnce({ headers: new Headers(), status: 200, ok: true, _data: { ok: true } })
     const api = useForgeApi()
     await api.get('/api/status')
     await api.act('/api/deploy', { thing: 1 })
@@ -76,7 +80,7 @@ describe('useForgeApi', () => {
   })
 
   it('get defaults to a 15 s abort signal', async () => {
-    fetchRaw.mockResolvedValue({ status: 200, ok: true, _data: { ok: true } })
+    fetchRaw.mockResolvedValue({ headers: new Headers(), status: 200, ok: true, _data: { ok: true } })
     const spy = vi.spyOn(AbortSignal, 'timeout')
     const api = useForgeApi()
     await api.get('/api/factory')
@@ -86,11 +90,29 @@ describe('useForgeApi', () => {
   })
 
   it('get honours an explicit timeout', async () => {
-    fetchRaw.mockResolvedValue({ status: 200, ok: true, _data: { ok: true } })
+    fetchRaw.mockResolvedValue({ headers: new Headers(), status: 200, ok: true, _data: { ok: true } })
     const spy = vi.spyOn(AbortSignal, 'timeout')
     const api = useForgeApi()
     await api.get('/api/issues?state=open', { timeout: 30000 })
     expect(spy).toHaveBeenCalledWith(30000)
     spy.mockRestore()
   })
+  it('reuses the exact payload on 304 and drops validators after an action', async () => {
+    const payload = { ok: true, controls_token: 'first', value: 42 }
+    fetchRaw.mockResolvedValueOnce({ status: 200, headers: new Headers({ etag: '"one"' }), _data: payload })
+      .mockResolvedValueOnce({ status: 304, headers: new Headers(), _data: undefined })
+      .mockResolvedValueOnce({ status: 200, headers: new Headers(), _data: { ok: true } })
+      .mockResolvedValueOnce({ status: 200, headers: new Headers({ etag: '"two"' }), _data: { ...payload, controls_token: 'second' } })
+    const api = useForgeApi()
+    expect(await api.get('/api/factory')).toBe(payload)
+    api.token.value = ''
+    expect(await api.get('/api/factory')).toBe(payload)
+    expect(fetchRaw.mock.calls[1][1].headers['If-None-Match']).toBe('"one"')
+    expect(api.token.value).toBe('first')
+    await api.act('/api/repositories/disable', { repo_id: 1, revision: 'r' })
+    await api.get('/api/factory')
+    expect(fetchRaw.mock.calls[3][1].headers['If-None-Match']).toBeUndefined()
+    expect(api.token.value).toBe('second')
+  })
+
 })

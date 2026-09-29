@@ -50,12 +50,7 @@ const poll = useResource<Loaded>(() => `/api/issues?${params.value}`, async (pat
 onMounted(() => { if (!redirecting) poll.start() })
 
 // "Updated 3 h ago" on each card; minute-level ages only need a slow tick.
-const now = ref(Math.floor(Date.now() / 1000))
-let ticker: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  now.value = Math.floor(Date.now() / 1000)
-  ticker = setInterval(() => { if (!document.hidden) now.value = Math.floor(Date.now() / 1000) }, 30000)
-})
+const now = useClock(30000)
 
 // The search box is debounced so a typed word is one request, not one per
 // keystroke, and any filter change starts again at page 1.
@@ -66,7 +61,7 @@ watch(search, (value) => {
 })
 watch([show, repoValue], () => { page.value = 1 })
 
-onBeforeUnmount(() => { clearTimeout(debounce); clearInterval(ticker) })
+onBeforeUnmount(() => { clearTimeout(debounce) })
 
 const list = computed(() => poll.data.value?.list ?? null)
 const fence = computed(() => poll.data.value?.fence ?? null)
