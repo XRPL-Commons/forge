@@ -8,6 +8,21 @@ The implementation lives in `forge/factory`; it is Forge's only operating mode. 
 API on localhost; see `docs/ui-deployment.md`. Settings edits
 `factory.json` and `runtime.json` with validation and conflict detection.
 
+Queue, Pause, Return to backlog, Release hold, Retry and Recheck readiness apply
+immediately under the issue ledger lock. The API returns the updated issue; the
+UI does not wait for a supervisor cycle. Decisions require a current revision and
+are refused while a worker or its cleanup is active. Each decision is recorded
+in issue history.
+
+The supervisor prioritizes these issues on its next observation, verifies live
+repository access, dependencies, existing work and review rules, and synchronizes
+the ready/hold labels. No worker can reserve an issue until this succeeds. A
+GitHub outage leaves the chosen state visible and prevents dispatch; a failed
+prerequisite puts the issue on hold with its reason. A decision version prevents
+older supervisor observations from overwriting a newer operator choice.
+Reviewer requests and environment overrides retain their durable external-action
+flow, as do requests queued before this update.
+
 ## Configuration
 
 Copy `examples/factory.json.example` and `examples/runtime.json.example` into your

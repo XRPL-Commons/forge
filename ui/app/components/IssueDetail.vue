@@ -299,17 +299,24 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
   const issue = detail.value
   if (!issue) return
   dialogError.value = null
+  let applied = false
   try {
     if (action === 'stop') await api.act('/api/factory/action', { action: 'stop', target: issue.active, reason })
-    else await api.act('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
+    else {
+      const result = await api.act<IssueDetailResponse>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
+      if (result.issue) {
+        poll.replace({ detail: result, fence: null })
+        applied = true
+      }
+    }
   } catch (error: unknown) {
     dialogError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
   }
   decision.value = null
   submitting.value = false
-  submitted.value = 'Decision submitted. Waiting for confirmation.'
-  await poll.refresh()
+  submitted.value = applied ? '' : 'Decision submitted. Waiting for confirmation.'
+  if (!applied) await poll.refresh()
 }
 </script>
 

@@ -35,7 +35,17 @@ def revision(issue, item):
     public = {k: issue.get(k) for k in ('number', 'title', 'content_hash', 'state', 'assignees')}
     public['labels'] = sorted(l for l in labels(issue) if not l.startswith('forge:'))
     tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request', 'environment_override', 'environment_choice', 'environment_retry')}
+    if (item or {}).get('decision_version'):
+        tracked['decision_version'] = item['decision_version']
     return digest({'github': public, 'ledger': tracked})
+
+
+def decision_labels(issue, item):
+    """Project the accepted local decision until GitHub confirms its labels."""
+    sync = (item or {}).get('operator_sync')
+    if not sync:
+        return issue
+    return {**issue, 'labels': sorted((labels(issue) | set(sync['add'])) - set(sync['remove']))}
 
 
 
@@ -193,6 +203,8 @@ def forge_branch(pr, number):
 def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     item = item or {}
     held = labels(issue).intersection(runtime['hold_labels'])
+    if item.get('operator_sync') and (item.get('operator_hold') or {}).get('kind') == 'pause':
+        held.discard('hold')  # The local pause is effective before its GitHub label exists.
     number = issue['number']
     # Work on this issue is a PR that claims it, not one that mentions it.
     linked = [p for p in prs if forge_branch(p, number) or claims_issue(p.get('body'), repo['name'], number)]
@@ -420,9 +432,10 @@ class IssueInventory:
                 observed = (item or {}).get('github_observation')
                 if observed and observed['at'] > entry.get('at', 0):
                     issue = observed['issue']
+                issue = decision_labels(issue, item)
                 # A rescan runs every minute; an issue it has not reached yet is still
                 # known from the last complete one. Actions carry the revision and are
-                # re-checked against GitHub before anything is applied.
+                # checked under the ledger lock; GitHub is verified before dispatch.
                 ready = fresh and (str(issue['number']) in entry.get('scan', {}).get('issues', {})
                                    or str(issue['number']) in entry.get('issues', {}))
                 row = {**issue, 'key': issue_key, 'repo': repo['name'], 'repo_id': repo['id'],

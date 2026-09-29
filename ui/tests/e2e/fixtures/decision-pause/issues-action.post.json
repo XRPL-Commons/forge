@@ -1,0 +1,70 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "issue": {
+    "number": 608,
+    "title": "Keep learners signed in",
+    "content_hash": "sha256:16080608",
+    "body_truncated": true,
+    "state": "open",
+    "updated_at": "2026-09-20T12:00:00Z",
+    "labels": [
+      "ready",
+      "hold"
+    ],
+    "assignees": [],
+    "key": "1:608",
+    "repo": "XRPL-Commons/academy",
+    "repo_id": 1,
+    "status": "attention",
+    "explanation": "Paused by an operator.",
+    "actions": [
+      "resume"
+    ],
+    "setup_needed": false,
+    "environment_blocker": null,
+    "pull_requests": [],
+    "dependencies": [],
+    "fresh": true,
+    "revision": "after-decision",
+    "setup_url": "/settings/repository?repo_id=1",
+    "active": null,
+    "body": "Keep a learner signed in for thirty days.\n",
+    "history": [
+      {
+        "at": 1789995000,
+        "kind": "discovered",
+        "reason": null
+      },
+      {
+        "at": 1789995400,
+        "kind": "operator_queue",
+        "reason": "Queued for Forge"
+      }
+    ],
+    "reviews": [],
+    "summary": {
+      "headline": "Paused by an operator",
+      "plain": "Paused by an operator."
+    }
+  },
+  "repositories": [
+    {
+      "id": 1,
+      "name": "XRPL-Commons/academy",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    },
+    {
+      "id": 2,
+      "name": "XRPL-Commons/hackathon",
+      "complete": true,
+      "fresh": true,
+      "at": 1790000000,
+      "error": null
+    }
+  ],
+  "actions": []
+}

@@ -262,7 +262,9 @@ export default async function (page, { base, scenario, requests }) {
   const confirmQueue = page.getByRole('dialog').getByRole('button', { name: 'Queue for Forge' })
   assert.equal(await confirmQueue.isDisabled(), false, 'a reversible decision must not demand a reason')
   await confirmQueue.click()
-  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  await waitForText(page, 'Waiting for a builder')
+  assert.equal(await page.getByRole('button', { name: 'Pause', exact: true }).count(), 1)
+  assert.equal((await page.locator('body').innerText()).includes('Applying your decision'), false)
   const queued = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
   assert.equal(queued.length, 1)
   assert.deepEqual(queued[0].body, {
@@ -283,7 +285,8 @@ export default async function (page, { base, scenario, requests }) {
   await page.getByRole('textbox', { name: 'What changed?' }).fill('Waiting for the design review')
   assert.equal(await confirmPause.isDisabled(), false)
   await confirmPause.click()
-  await waitForText(page, 'Decision submitted. Waiting for confirmation.')
+  await waitForText(page, 'Paused by an operator')
+  assert.equal((await page.locator('body').innerText()).includes('Waiting for confirmation'), false)
   const paused = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/issues/action')
   assert.equal(paused.length, 1)
   assert.deepEqual(paused[0].body, {
