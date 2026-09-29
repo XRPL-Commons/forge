@@ -35,7 +35,7 @@ export default async function (page, { base, scenario }) {
   await scenario('decision-queue')
   let actions = [{id:'old',key:'1:609',status:'applied',message:null}]
   await page.route('**/api/issues?issue=*', async route => {
-    const response = await route.fetch()
+    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
     const body = await response.json()
     body.actions = actions
     await route.fulfill({response, json:body})
@@ -69,13 +69,12 @@ export default async function (page, { base, scenario }) {
 
   // Missing App access keeps the refresh control visible, without permitting it.
   await page.route('**/api/repositories?repo_id=2', async route => {
-    const response = await route.fetch()
+    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
     const body = await response.json()
     for (const repo of body.repositories ?? []) { repo.protection_status = 'access_needed'; repo.access_ready = false }
     await route.fulfill({response,json:body})
   })
   await page.goto(base + '/settings/repository?repo_id=2')
-  await page.getByRole('button', { name: 'Repository details', exact: true }).click()
   assert.equal(await page.getByRole('button', { name: 'Refresh repository', exact: true }).isDisabled(), true)
   await page.unroute('**/api/repositories?repo_id=2')
 }

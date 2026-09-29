@@ -116,9 +116,20 @@ const assigning = ref(false)
 const assignError = ref<string | null>(null)
 const preselected = computed(() => preselectedReviewers(detail.value))
 const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
+const approvalOpen = ref(false)
+const approval = computed(() => detail.value?.approval ?? null)
+// The card opens this same dialog; no extra detail fetch or independent cache.
+watch([approval, () => route.query.approve], ([value, asked]) => {
+  if (value && asked === '1') {
+    approvalOpen.value = true
+    void navigateTo({ path: route.path, query: { ...route.query, approve: undefined } }, { replace: true })
+  }
+  if (!value) approvalOpen.value = false
+}, { immediate: true })
 const candidateUrl = computed(() => (candidatePull.value ? pullUrl(candidatePull.value.number) : issueUrl.value))
 
 function askReviewer() {
+  approvalOpen.value = false
   assignError.value = null
   assigning.value = true
   submitting.value = true
@@ -328,6 +339,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       recordDecision(reply, previous)
       if (reply.issue) {
         poll.replace({ detail: reply, fence: null })
+        submitted.value = null
         applied = true
       }
     }
@@ -367,6 +379,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <p class="text-muted">{{ detail.decision_request.evidence }}</p>
         <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
       </section>
+      <p v-if="approval" role="status" class="mt-2 text-sm text-amber-200">Waiting for your approval on GitHub</p>
+      <p v-if="detail.merge_blocker" class="mt-2 text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">
         Deployment · {{ deployment.text }}
@@ -391,6 +405,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <!-- One action bar under the title: what the operator can decide, then
            where the work lives on GitHub, then stopping the attempt. -->
       <div id="issue-actions" class="mt-4 flex flex-wrap items-center gap-2">
+        <UButton v-if="approval" size="sm" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
         <UButton
           v-for="(action, index) in decisions"
           :key="action"
@@ -403,7 +418,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <UButton
           v-if="canAssign"
           size="sm"
-          color="primary"
+          color="neutral"
+          variant="outline"
           :disabled="busy"
           @click="askReviewer"
         >{{ ACTION_LABELS.assign_reviewer }}</UButton>
@@ -414,7 +430,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           :aria-expanded="discussOpen"
           @click="discussOpen = !discussOpen"
         >Discuss blocker</UButton>
-        <UButton v-if="detail.setup_needed" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
+        <UButton v-if="detail.setup_needed || detail.merge_blocker" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
         <UButton
           :to="issueUrl"
           target="_blank"
@@ -572,6 +588,14 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         </UCollapsible>
       </section>
 
+      <LazyApprovalDialog
+        v-if="approvalOpen && approval && detail"
+        :reason="approval.reason"
+        :url="pullUrl(approval.pr) + '/files'"
+        :can-assign="canAssign"
+        @close="approvalOpen = false"
+        @assign="askReviewer"
+      />
       <ReviewerDialog
         v-if="assigning"
         :open="assigning"

@@ -58,7 +58,7 @@ const tone = computed(() => {
         </ul>
       </div>
       <UButton
-        :to="to"
+        :to="row.approval && !pending ? `${to}?approve=1` : to"
         size="sm"
         :color="action.decision ? 'primary' : 'neutral'"
         :variant="action.decision ? 'subtle' : 'outline'"

@@ -215,6 +215,34 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(len(self.ledger.read()['jobs']), 3)
         self.github.approved = True; self.cycle(); self.assertEqual(self.state(), 'merged')
 
+    def test_merge_refusal_is_bound_to_candidate_and_clears_after_retry(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit')
+        merge = self.github.merge
+        def refuse(item):
+            raise GitHubUnavailable('GitHub refused to merge: branch rules still block it', status=405)
+        self.github.merge = refuse
+        self.assertTrue(self.cycle()['errors'])
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['merge_gate']['kind'], 'refused')
+        self.assertEqual(item['merge_gate']['candidate'], item['candidate']['key'])
+        self.github.merge = merge
+        self.cycle()
+        self.assertEqual(self.state(), 'merged')
+        self.assertEqual(self.ledger.read()['issues'][self.key]['merge_gate']['kind'], 'ready')
+
+    def test_technical_gate_is_not_a_missing_human_approval(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required')
+        self.cycle()
+        self.assertEqual(self.ledger.read()['issues'][self.key]['merge_gate']['kind'], 'approval')
+        self.github.approved = True
+        self.github.native_human_gate = lambda *args: False
+        self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['merge_gate']['kind'], 'blocked')
+        self.assertIn('CODEOWNERS', item['merge_gate']['reason'])
+
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review', 'reject'); self.cycle()

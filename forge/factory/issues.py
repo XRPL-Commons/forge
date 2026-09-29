@@ -209,6 +209,11 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     # Work on this issue is a PR that claims it, not one that mentions it.
     linked = [p for p in prs if forge_branch(p, number) or claims_issue(p.get('body'), repo['name'], number)]
     owned_pr = (item.get('candidate') or {}).get('pr')
+    gate = item.get('merge_gate') or {}
+    if (not gate.get('candidate') or gate.get('candidate') != (item.get('candidate') or {}).get('key')
+            or item.get('state') not in ('audited', 'approval_needed')):
+        gate = {}
+    merge_blocked = gate.get('kind') in ('blocked', 'refused')
     # Forge's own earlier drafts are not someone else's work.
     external = [p for p in linked if p['number'] != owned_pr and not forge_branch(p, number)]
     if owned_pr and not any(p['number'] == owned_pr for p in linked):
@@ -222,7 +227,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         state, detail, case = 'completed', 'Completed and merged.' if merged else 'Closed on GitHub.', 'merged' if merged else 'closed'
     elif item.get('operator_request'):
         state, detail, case = 'waiting', 'Applying your decision. Forge will confirm it before continuing.', 'applying'
-    elif item.get('active'):
+    elif item.get('active') and not (item.get('active_role') == 'merge' and gate.get('kind') in ('approval', 'blocked', 'refused')):
         state, detail = 'working', {'build': 'Building', 'review': 'Reviewing', 'audit': 'Security review', 'merge': 'Merging', 'recovery': 'Investigating a failed attempt'}.get(item.get('active_role'), 'Working')
         case = item.get('active_role') if item.get('active_role') in SUMMARIES else 'working'
     elif cleanup:
@@ -258,6 +263,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         if item.get('reason') == APPROACH_HOLD:
             detail += ' Describe the new approach on the issue, then retry with that decision.'
             actions, case = ['retry'], 'approach_hold'
+    elif merge_blocked:
+        state, detail, case = 'attention', gate.get('reason') or 'GitHub has not allowed this merge.', 'merge_blocked'
     elif item.get('state') == 'approval_needed':
         state, detail, case = 'attention', 'The pull request needs a human review.', 'approval_needed'
         # Asking a named human for that review is the only decision on offer;
@@ -285,8 +292,12 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions = []
         if state not in ('completed', 'working'):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
-    summary = ownership_summary(issue, external) if case == 'external' else summary_for(case, item, held)
+    summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
+               else ownership_summary(issue, external) if case == 'external' else summary_for(case, item, held))
     return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
+            'approval': {'pr': owned_pr, 'reason': gate.get('reason') or 'Review the pull request changes.'}
+                        if case == 'approval_needed' and gate.get('kind') == 'approval' and 'assign_reviewer' in actions else None,
+            'merge_blocker': {'reason': detail} if case == 'merge_blocked' else None,
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'decision_request': item.get('decision_request'),
             'environment': {'choice': item.get('environment_choice'), 'override': item.get('environment_override'),

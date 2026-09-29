@@ -58,7 +58,11 @@
     "default_reviewers": [
       "maintainer"
     ],
-    "reviewers_requested": null
+    "reviewers_requested": null,
+    "approval": {
+      "pr": 31,
+      "reason": "A person must sign off on the key rotation."
+    }
   },
   "repositories": [
     {

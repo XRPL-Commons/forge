@@ -108,6 +108,31 @@ class PlainSummaryTests(unittest.TestCase):
                 self.assertNotIn('.', headline)
                 self.assertLessEqual(len([s for s in plain.split('. ') if s]), PLAIN_SENTENCES)
 
+    def test_approval_guidance_requires_current_human_gate_and_fresh_access(self):
+        issue = {'number': 1, 'state': 'open', 'labels': [], 'assignees': []}
+        item = {'state': 'approval_needed', 'candidate': {'pr': 24, 'key': 'current'},
+                'merge_gate': {'candidate': 'current', 'kind': 'approval', 'reason': 'Check the rotation.'}}
+        def project(**kwargs):
+            return presentation(issue, item, self.repo, self.runtime, **kwargs)
+        self.assertEqual(project()['approval'], {'pr': 24, 'reason': 'Check the rotation.'})
+        self.assertIsNone(project(fresh=False)['approval'])
+        item.update(active='merge-job', active_role='merge')
+        self.assertIsNotNone(project()['approval'])
+        item.update(active=None)
+        item['merge_gate']['kind'] = 'blocked'
+        self.assertIsNone(project()['approval'])
+        self.assertEqual(project()['actions'], [])
+        self.assertIsNotNone(project()['merge_blocker'])
+        item.update(active='merge-job', active_role='merge')
+        item['merge_gate']['kind'] = 'refused'
+        self.assertEqual(project()['status'], 'attention')
+        self.assertIsNone(project()['approval'])
+        item['candidate']['key'] = 'new'
+        self.assertIsNone(project()['merge_blocker'])
+        self.assertIsNone(project()['approval'])
+        item.update(state='merged', active=None)
+        self.assertIsNone(project()['merge_blocker'])
+
     def test_a_reader_never_has_to_open_details_to_learn_why(self):
         reason = ('The documentation artifact itself is accurate and low-risk to merge, but its claims '
                   'about the deployment were not verified end to end.')
