@@ -72,10 +72,11 @@ cached evidence or select **Scan again**. These scans inform issue assignment
 immediately. They do not require approval.
 
 **Optional repository default** lets an operator deliberately choose a fallback
-for issues without a specific requirement. Previously confirmed profiles become scan evidence; they no longer force a
-database worker on every issue. **Use automatic selection** removes the default while preserving scan
-evidence. Issue-specific choices take precedence. Database defaults require a
-qualified full environment on the host.
+for issues without a specific requirement. Previously confirmed profiles become
+scan evidence; they no longer force a database worker on every issue.
+**Use automatic selection** removes the default while preserving scan evidence.
+Issue-specific choices take precedence. Database defaults require a qualified
+full environment on the host.
 
 The terminal commands remain available for administrators:
 

@@ -361,7 +361,7 @@ def install_full_environment(root):
     qualify_runner(image, Path(root) / 'runner-seccomp.json', APPARMOR_PROFILE, full=True)
     switch_full_environment(root, image)
     record.save(full_image=image)
-    print('Full environment qualified. Probe and confirm repository services before use.')
+    print('Full environment qualified. The supervisor can now assign databases per issue.')
 
 
 def reachable(url):
