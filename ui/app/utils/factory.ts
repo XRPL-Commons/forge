@@ -46,7 +46,14 @@ export interface ObservationError { attempt?: string; issue?: string; phase: str
 export interface OperatorStatus { title: string; detail: string; action_url: string | null; action_label: string | null; empty?: true }
 export interface OperatorRequest { id: string; action: string; target: string; reason: string; status: 'pending' | 'applied' | 'rejected'; error?: string }
 
+export interface FactorySummary {
+  completed_count: number; runner_count: number; runners_running: boolean
+  workers: Pick<JobView, 'role' | 'phase' | 'cleanup' | 'fenced' | 'outcome' | 'observed_at' | 'last_observed'>[]
+  merged_day: number; merged_week: number; merged_total: number
+  deployed_day: number; waiting: number; deploy_failed: number
+}
 export interface FactoryView {
+  summary?: FactorySummary
   ok: true; controls_token: string; active: boolean
   operator: OperatorStatus | null
   repositories?: { id: number; name: string; enabled: boolean; deployment?: DeploymentRow }[]
@@ -115,7 +122,7 @@ export function jobFor(view: FactoryView | null | undefined, issue: LedgerIssueV
   return (view?.jobs ?? []).find(job => job.id === issue.active && !job.cleanup && !job.outcome) ?? null
 }
 
-export function isRunning(view: FactoryView | null | undefined, job: JobView | null, now: number): boolean {
+export function isRunning(view: FactoryView | null | undefined, job: FactorySummary['workers'][number] | null, now: number): boolean {
   if (!job) return false
   const seen = job.observed_at ?? job.last_observed ?? null
   return job.phase === 'running' && !job.cleanup && !job.fenced && !job.outcome
@@ -346,8 +353,8 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
   return groups
 }
 
-function runningJobs(view: FactoryView, now: number): JobView[] {
-  return (view.jobs ?? []).filter(job => isRunning(view, job, now))
+function runningJobs(view: FactoryView, now: number) {
+  return (view.summary?.workers ?? view.jobs ?? []).filter(job => isRunning(view, job, now))
 }
 
 // One row per state an issue can be in, with a count and a sentence that
@@ -409,24 +416,24 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   }
   const mergedIssues = issues.filter(issue => issue.state === 'merged')
   const mergedSince = (seconds: number) => mergedIssues.filter(issue => mergedAt(issue) >= now - seconds).length
-  const mergedDay = mergedSince(24 * 3600)
-  const mergedWeek = mergedSince(7 * 24 * 3600)
+  const mergedDay = view.summary?.merged_day ?? mergedSince(24 * 3600)
+  const mergedWeek = view.summary?.merged_week ?? mergedSince(7 * 24 * 3600)
   // Once any repository is tracked, a merge is no longer the end of the line:
   // the box counts what reached production and says what is still behind it.
   const trackedRepos = trackedRepositories(view)
   const tracked = trackedRepos.size > 0
-  const deployedDay = issues.filter(issue => issue.deployed && issue.deployed.at >= now - 24 * 3600).length
+  const deployedDay = view.summary?.deployed_day ?? issues.filter(issue => issue.deployed && issue.deployed.at >= now - 24 * 3600).length
   // Waiting is what a tracked repository merged and Forge has not seen live:
   // a failed deploy is already counted beside it, and an untracked
   // repository's merges are not part of this sentence at all.
-  const waiting = mergedIssues.filter(issue => !issue.deployed && !issue.deploy_failed && trackedRepos.has(issue.repo_id)).length
-  const deployFailed = issues.filter(issue => issue.deploy_failed && !issue.deployed).length
+  const waiting = view.summary?.waiting ?? mergedIssues.filter(issue => !issue.deployed && !issue.deploy_failed && trackedRepos.has(issue.repo_id)).length
+  const deployFailed = view.summary?.deploy_failed ?? issues.filter(issue => issue.deploy_failed && !issue.deployed).length
   const deployedRow: BreakdownRow = tracked
     ? { id: 'merged', label: 'Deployed today', value: deployedDay, detail: 'in the last 24 h',
         meaning: `${waiting} merged and waiting · ${deployFailed} deploy failed`,
         to: '#completed', tone: deployFailed ? 'warn' : 'ok' }
     : { id: 'merged', label: 'Merged today', value: mergedDay, detail: 'in the last 24 h',
-        meaning: `${mergedWeek} in the last 7 days · ${mergedIssues.length} tracked in all · deployment not tracked`,
+        meaning: `${mergedWeek} in the last 7 days · ${view.summary?.merged_total ?? mergedIssues.length} tracked in all · deployment not tracked`,
         to: '#completed', tone: 'ok' }
   const workerSlots = (['build', 'review', 'audit'] as JobRole[]).reduce((total, role) => total + (slots[role] ?? 0), 0)
   return [

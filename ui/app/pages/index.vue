@@ -18,13 +18,8 @@ const router = useRouter()
 // the payload, so the page shows the fence instead of a stale factory.
 const poll = useFactory()
 
-const now = ref(Math.floor(Date.now() / 1000))
-let ticker: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  poll.start()
-  ticker = setInterval(() => { if (!document.hidden) now.value = Math.floor(Date.now() / 1000) }, 1000)
-})
-onBeforeUnmount(() => clearInterval(ticker))
+const now = useClock()
+onMounted(poll.start)
 
 const fence = computed(() => { const payload = poll.data.value; return payload && payload.ok === false ? payload : null })
 const view = computed(() => { const payload = poll.data.value; return payload && payload.ok !== false ? payload : null })
@@ -82,13 +77,25 @@ function summary(role: ColumnRole, cards: CardModel[]): string {
 
 const attentionCount = computed(() => groups.value.attention.length + groups.value.held.length)
 
-const runnerCards = computed(() => [...groups.value.investigating, ...groups.value.internalJobs])
+const runnerCards = computed(() => [...runnerGroups.value.investigating, ...runnerGroups.value.internalJobs])
 // Expanded whenever the section holds a job the supervisor last reported as
 // running, so an active investigation is never hidden behind a disclosure.
-const runnersAuto = computed(() => runnerCards.value.some(card => card.running || card.phaseLabel === 'Last seen working'))
+const runnersAuto = computed(() => view.value?.summary?.runners_running ?? [...groups.value.investigating, ...groups.value.internalJobs].some(card => card.running || card.phaseLabel === 'Last seen working'))
 const runnersManual = ref<boolean | null>(null)
 const runnersOpen = computed(() => runnersManual.value ?? runnersAuto.value)
 const completedOpen = useState('activity-completed-open', () => false)
+
+const completedPoll = useFactory('/api/factory?section=completed', { allowed: () => completedOpen.value, server: false })
+const runnersPoll = useFactory('/api/factory?section=runners', { allowed: () => runnersOpen.value, server: false })
+onMounted(() => { completedPoll.start(); runnersPoll.start() })
+const completedGroups = computed(() => groupIssues(completedPoll.data.value?.ok === false ? null : completedPoll.data.value, now.value))
+const runnerGroups = computed(() => groupIssues(runnersPoll.data.value?.ok === false ? null : runnersPoll.data.value, now.value))
+const completedCount = computed(() => view.value?.summary?.completed_count ?? groups.value.completed.length)
+const runnerCount = computed(() => view.value?.summary?.runner_count ?? groups.value.investigating.length + groups.value.internalJobs.length)
+watch(() => route.hash, hash => {
+  if (hash === '#completed') completedOpen.value = true
+  if (hash === '#runners' || hash === '#stage-recovery') runnersManual.value = true
+}, { immediate: true })
 
 const announcement = ref('')
 let placement = new Map<string, ColumnRole>()
@@ -222,24 +229,28 @@ watch(() => panel.value.key, (key, before) => {
 
       <section id="runners" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
         <details :open="runnersOpen" @toggle="event => runnersManual = (event.target as HTMLDetailsElement).open">
-          <summary class="cursor-pointer text-sm font-semibold text-white">Investigations and cleanup · {{ runnerCards.length }}</summary>
-          <div id="stage-recovery" class="scroll-mt-32">
+          <summary class="cursor-pointer text-sm font-semibold text-white">Investigations and cleanup · {{ runnerCount }}</summary>
+          <div v-if="runnersOpen" id="stage-recovery" class="scroll-mt-32">
             <p class="mt-0.5 text-xs text-muted">Internal recovery is shown separately from productive workers.</p>
+            <p v-if="runnersPoll.error.value" role="status" class="mt-2 text-xs text-amber-200">{{ runnersPoll.error.value }}</p>
+            <p v-else-if="!runnersPoll.data.value" class="mt-2 text-xs text-muted">Loading investigations…</p>
             <div v-if="runnerCards.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
               <IssueCard v-for="card in runnerCards" :key="card.id" :card="card" @open="open(card)" />
             </div>
-            <p v-else class="mt-2 text-xs text-muted">No internal work is running.</p>
+            <p v-else-if="runnersPoll.data.value" class="mt-2 text-xs text-muted">No internal work is running.</p>
           </div>
         </details>
       </section>
 
       <section id="completed" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
         <details :open="completedOpen" @toggle="event => completedOpen = (event.target as HTMLDetailsElement).open">
-          <summary class="cursor-pointer text-sm font-semibold text-white">Completed issues · {{ groups.completed.length }}</summary>
-          <div v-if="groups.completed.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-            <IssueCard v-for="card in groups.completed" :key="card.key" :card="card" @open="open(card)" />
+          <summary class="cursor-pointer text-sm font-semibold text-white">Completed issues · {{ completedCount }}</summary>
+          <p v-if="completedOpen && completedPoll.error.value" role="status" class="mt-2 text-xs text-amber-200">{{ completedPoll.error.value }}</p>
+          <p v-else-if="completedOpen && !completedPoll.data.value" class="mt-2 text-xs text-muted">Loading completed issues…</p>
+          <div v-if="completedOpen && completedGroups.completed.length" class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+            <IssueCard v-for="card in completedGroups.completed" :key="card.key" :card="card" @open="open(card)" />
           </div>
-          <p v-else class="mt-2 text-xs text-muted">No completed issues yet.</p>
+          <p v-else-if="completedOpen && completedPoll.data.value" class="mt-2 text-xs text-muted">No completed issues yet.</p>
         </details>
       </section>
     </template>

@@ -35,6 +35,18 @@ class SettingsHTTPTests(unittest.TestCase):
         self.assertEqual(result['controls_token'],dashboard.CONTROLS_TOKEN)
         service.start_refresh.assert_not_called(); service.refresh.assert_not_called()
 
+    def test_settings_summary_retains_access_counts_without_heavy_repository_evidence(self):
+        service = Mock()
+        service.view.return_value = {'config': {}, 'revision': 'r', 'roles': {}, 'repositories': [
+            {'id': 1, 'name': 'example/project', 'enabled': True, 'access': {'build': 'ready'},
+             'protection_status': 'ready', 'protection': {'large': 'report'}, 'environment': {'large': 'probe'}}]}
+        with patch.object(dashboard, 'settings_service', return_value=service):
+            handler = self.handler('/api/settings?summary=1'); handler.do_GET()
+        result = json.loads(handler._send.call_args.args[0])
+        self.assertEqual(result['repositories'][0]['access'], {'build': 'ready'})
+        self.assertEqual(result['repositories'][0]['protection_status'], 'ready')
+        self.assertNotIn('large', json.dumps(result))
+
     def test_settings_mutations_reject_cross_origin_and_bad_token(self):
         for path in ('/api/issues/action','/api/issues/refresh','/api/repositories/disable','/api/settings/sync','/api/factory/action','/api/runtime','/api/onboarding'):
             for headers in ({'Origin':'http://attacker.example'}, {'X-Forge-Action':'bad'}, {'Sec-Fetch-Site':'cross-site'}):

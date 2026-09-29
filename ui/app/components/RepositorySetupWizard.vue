@@ -11,7 +11,7 @@ let initialized = !props.initialRepoId
 const { view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, accessNote, syncing, failed, hint, editUrl, downloadHref, downloadAriaDisabled, downloaded, busy, checking, enabling, error, query, check, enable, refreshAccess } = useRepository(repoId)
 watch(row, value => {
   if (value && !initialized) { step.value = Math.min(3, repoStage(value, live.value)) as 1 | 2 | 3; initialized = true }
-})
+}, { immediate: true })
 const blocked = computed(() => step.value === 1 ? !row.value?.access_ready : step.value === 2 ? !ready.value : false)
 const primary = computed(() => step.value === 0 ? 'Continue' : blocked.value ? 'Check again' : step.value < 3 ? 'Continue' : !live.value ? 'Continue to Forge' : row.value?.enabled ? 'Done' : 'Enable automation')
 const waiting = computed(() => busy.value || syncing.value || checking.value)

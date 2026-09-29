@@ -7,7 +7,7 @@ export function summarizeActivity(payload: any, now: number) {
   const maxAge = Math.max(120, (Number(payload?.runtime?.cycle_seconds) || 30) * 3)
   const fresh = !!payload?.observation?.at && now - payload.observation.at <= maxAge
   const working: Record<Role, number> = { build: 0, review: 0, audit: 0, merge: 0, recovery: 0 }
-  for (const job of payload?.jobs ?? []) {
+  for (const job of payload?.summary?.workers ?? payload?.jobs ?? []) {
     const seen = job.observed_at ?? job.last_observed
     if (job.cleanup || job.fenced || job.outcome || job.phase !== 'running' || !seen || now - seen > maxAge) continue
     if (job.role in working) working[job.role as Role]++

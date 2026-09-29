@@ -11,8 +11,8 @@ const noticeError = ref(false)
 const wizard = ref(route.query.add === '1')
 const wizardRepo = ref<number | null>(null)
 watch(() => route.query.add, value => { if (value === '1') { wizardRepo.value = null; wizard.value = true } })
-const poll = usePoll(async () => {
-  const [settings, onboarding] = await Promise.all([api.get<SettingsView>('/api/settings'), api.get<OnboardingSummary>('/api/onboarding')])
+const poll = useResource('settings-repositories', async () => {
+  const [settings, onboarding] = await Promise.all([api.get<SettingsView>('/api/settings?summary=1'), api.get<OnboardingSummary>('/api/onboarding')])
   return { settings, onboarding }
 }, { interval: useRuntimeConfig().public.pollInterval, allowed: () => !busy.value && !wizard.value })
 onMounted(() => poll.start())

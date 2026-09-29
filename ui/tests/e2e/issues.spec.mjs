@@ -164,11 +164,13 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(outputs.length, 1)
   assert.equal(outputs[0].query.id, 'attempt', 'the issue’s active job is the default selection')
 
-  // An open panel stays open across polls, and is not re-fetched by them.
+  // An open panel stays open while its cached output is conditionally refreshed.
   const before = issueRequests(await requests()).length
   await waitUntil(async () => issueRequests(await requests()).length > before + 1, 'two more polls')
   assert.equal(await pre.isVisible(), true, 'a poll must never collapse an open panel')
-  assert.equal((await requests()).filter((entry) => entry.path === '/api/factory/output').length, 1)
+  const outputPolls = (await requests()).filter(entry => entry.path === '/api/factory/output')
+  assert.ok(outputPolls.length > 1)
+  assert.ok(outputPolls.slice(1).every(entry => entry.etag), 'output polls carry the last validator')
 
   // The ledger is readable in the operator's words.
   await page.getByRole('button', { name: 'Recent activity' }).click()

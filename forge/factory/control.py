@@ -156,6 +156,56 @@ def view(root):
             'runtime_revision': digest(runtime), 'active': active}
 
 
+def select_view(payload, *, section=None, issue=None, now=None):
+    """Small Activity view plus independently fetched, collapsed card sections."""
+    if section not in (None, 'board', 'completed', 'runners') or (section and issue):
+        raise ValueError('Invalid factory view')
+    issues, jobs = payload['issues'], payload['jobs']
+    # Readiness is already summarized by operator_status. Detailed protection,
+    # database evidence and deployment proposals belong on repository pages.
+    repositories = [{key: row[key] for key in ('id', 'name', 'enabled', 'deployment') if key in row}
+                    for row in payload['repositories']]
+    for row in repositories:
+        if 'deployment' in row:
+            row['deployment'] = {'profile': (row['deployment'] or {}).get('profile')}
+    payload = {**payload, 'repositories': repositories}
+    if issue is not None:
+        return {**payload, 'issues': [row for row in issues if row['key'] == issue],
+                'jobs': [row for row in jobs if row['issue_key'] == issue]}
+    if section is None:
+        return payload
+    completed = [row for row in issues if row['state'] in ('merged', 'cancelled') and not row.get('active')]
+    investigating = [row for row in issues if row['state'] == 'investigating']
+    active = {row.get('active') for row in issues}
+    runner_ids = {row.get('active') for row in investigating}
+    runners = [job for job in jobs if job['id'] not in active or job['id'] in runner_ids]
+    if section == 'completed':
+        return {**payload, 'issues': completed, 'jobs': []}
+    if section == 'runners':
+        return {**payload, 'issues': investigating, 'jobs': runners}
+    now = time.time() if now is None else now
+    merged = [row for row in issues if row['state'] == 'merged']
+    tracked = {row['id'] for row in repositories if (row.get('deployment') or {}).get('profile')}
+    def merged_at(row):
+        return next((event['at'] for event in reversed(row['history']) if event['kind'] == 'merged'), 0)
+    summary = {
+        'completed_count': len(completed),
+        'runner_count': len(investigating) + sum(job['id'] not in active for job in runners),
+        'runners_running': any(job.get('phase') == 'running' for job in runners),
+        'workers': [{key: job.get(key) for key in ('role', 'phase', 'cleanup', 'fenced', 'outcome', 'observed_at', 'last_observed')} for job in jobs],
+        'merged_day': sum(merged_at(row) >= now - 86400 for row in merged),
+        'merged_week': sum(merged_at(row) >= now - 604800 for row in merged),
+        'merged_total': len(merged),
+        'deployed_day': sum(bool(row.get('deployed') and row['deployed']['at'] >= now - 86400) for row in issues),
+        'waiting': sum(not row.get('deployed') and not row.get('deploy_failed') and row['repo_id'] in tracked for row in merged),
+        'deploy_failed': sum(bool(row.get('deploy_failed') and not row.get('deployed')) for row in issues),
+    }
+    hidden = {row['key'] for row in [*completed, *investigating]}
+    visible = [row for row in issues if row['key'] not in hidden]
+    visible_jobs = {row.get('active') for row in visible}
+    return {**payload, 'issues': visible, 'jobs': [job for job in jobs if job['id'] in visible_jobs], 'summary': summary}
+
+
 def save_runtime(root, config, revision):
     config = validate(config)
     with Settings(root).locked('runtime-config'):

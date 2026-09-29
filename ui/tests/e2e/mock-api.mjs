@@ -3,6 +3,7 @@
 // switchable per-scenario, and records every request it receives so specs can
 // assert on what the app actually sent through the Nitro proxy.
 import http from 'node:http'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -109,12 +110,17 @@ function withToken(payload) {
 }
 
 function record(req, pathname, query, body) {
-  requests.push({ method: req.method, path: pathname, query, body: body ?? null, cookie: req.headers.cookie ?? null })
+  requests.push({ method: req.method, path: pathname, query, body: body ?? null, cookie: req.headers.cookie ?? null, etag: req.headers['if-none-match'] ?? null })
 }
 
 function send(res, status, payload, headers = {}) {
   const data = Buffer.from(JSON.stringify(payload))
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(data.length), ...headers })
+  if (res.req.method === 'GET' && status === 200) {
+    const etag = '"' + createHash('sha256').update(data).digest('hex') + '"'
+    headers = { ...headers, etag, 'cache-control': 'private, no-store' }
+    if (res.req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end() }
+  }
+  res.writeHead(status, { 'content-type' : 'application/json; charset=utf-8', 'content-length': String(data.length), ...headers })
   res.end(data)
 }
 
@@ -197,7 +203,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET') {
     record(req, pathname, query, body)
     const fixture = base === 'settings' && savedSettings ? savedSettings
-      : base === 'factory' && savedFactory && !Object.keys(query).length ? savedFactory
+      : base === 'factory' && savedFactory ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)

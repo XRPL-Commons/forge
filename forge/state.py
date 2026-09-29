@@ -47,21 +47,32 @@ class AtomicStore:
         self.marker = self.root / (name + ".initialized")
         self.lock_path = self.root / (name + ".lock")
 
+    def _load(self):
+        if self.path.is_symlink() or self.marker.is_symlink():
+            raise StateError("state files must not be symlinks")
+        if not self.path.exists() and self.marker.exists():
+            raise StateError("initialized state is missing; reconcile before recovery")
+        try:
+            data = json.loads(self.path.read_text()) if self.path.exists() else {}
+        except (ValueError, OSError) as error:
+            raise StateError("unreadable state; reconcile before recovery") from error
+        if not isinstance(data, dict):
+            raise StateError("invalid state object")
+        return data
+
+    def read(self):
+        """An independent snapshot under a shared lock, without a durable write."""
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            return self._load()
+
     @contextmanager
     def transaction(self):
         fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            if self.path.is_symlink() or self.marker.is_symlink():
-                raise StateError("state files must not be symlinks")
-            if not self.path.exists() and self.marker.exists():
-                raise StateError("initialized state is missing; reconcile before recovery")
-            try:
-                data = json.loads(self.path.read_text()) if self.path.exists() else {}
-            except (ValueError, OSError) as error:
-                raise StateError("unreadable state; reconcile before recovery") from error
-            if not isinstance(data, dict):
-                raise StateError("invalid state object")
+            data = self._load()
             yield data
             atomic_json(self.path, data)
             if not self.marker.exists():

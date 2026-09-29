@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { summarizeActivity, ROLE_LABELS, ROLE_TARGET, type Role } from '~/utils/activity'
-const api = useForgeApi()
-const pollInterval = useRuntimeConfig().public.pollInterval * 3
+const now = useClock()
 const poll = useFactory()
 onMounted(poll.start)
-const summary = computed(() => poll.data.value?.ok !== false && poll.data.value?.active && poll.stale.value === false ? summarizeActivity(poll.data.value, Date.now() / 1000) : null)
+const summary = computed(() => poll.data.value?.ok !== false && poll.data.value?.active && poll.stale.value === false ? summarizeActivity(poll.data.value, now.value) : null)
 const ROLE_COLOR: Record<Role, string> = { build: '#94bfff', review: '#c9a4f4', audit: '#80d7bd', merge: '#edbd77', recovery: '#c0cbcd' }
 // The queue is the one entry that is not a worker role, so the item type
 // says so rather than smuggling it past the role type.

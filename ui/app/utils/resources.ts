@@ -2,6 +2,7 @@ import { shallowRef, type ShallowRef } from 'vue'
 
 export interface Resource<T = any> {
   data: ShallowRef<T | null>; error: ShallowRef<string | null>; updatedAt: ShallowRef<number>
+  response?: { etag: string; data: unknown }
   pending: Promise<T | null> | null; generation: number; touched: number
   listeners: Set<() => void>; timer?: ReturnType<typeof setTimeout>
 }
@@ -58,7 +59,7 @@ export class Resources {
   }
   invalidate(matches: (key: string) => boolean = () => true, clear = false) {
     for (const [key, entry] of this.entries) if (matches(key)) {
-      entry.generation++; entry.updatedAt.value = 0
+      entry.generation++; entry.updatedAt.value = 0; entry.response = undefined
       if (clear) { entry.data.value = null; entry.error.value = null }
       for (const wake of entry.listeners) wake()
     }

@@ -24,9 +24,9 @@ let refreshStarted: number | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
 
-const poll = usePoll<Snapshot>(async () => {
+const poll = useResource<Snapshot>('settings-github', async () => {
   const [settings, onboarding] = await Promise.all([
-    api.get<SettingsView>('/api/settings', { timeout: 30000 }),
+    api.get<SettingsView>('/api/settings?summary=1', { timeout: 30000 }),
     api.get<OnboardingSummary>('/api/onboarding', { timeout: 30000 }),
   ])
   return { settings, onboarding }
