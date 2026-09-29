@@ -101,7 +101,8 @@ const descriptionOpen = ref(false)
 const discussOpen = ref(false)
 const attempts = computed(() => attemptsText(detail.value?.attempts))
 const holds = computed(() => heldByLines(detail.value?.held_by))
-const hasDetails = computed(() => !!summary.value?.details || reviews.value.length > 0)
+const environmentProminent = computed(() => !!(detail.value?.environment?.choice || detail.value?.environment?.override))
+const hasDetails = computed(() => !!summary.value?.details || reviews.value.length > 0 || (!!detail.value?.environment && !environmentProminent.value))
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
 function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
@@ -117,6 +118,9 @@ const assignError = ref<string | null>(null)
 const preselected = computed(() => preselectedReviewers(detail.value))
 const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
 const approvalOpen = ref(false)
+// Set once the operator went to GitHub from the dialog: only then is
+// "waiting for your approval" news rather than a repeat of the headline.
+const sentToGitHub = ref(false)
 const approval = computed(() => detail.value?.approval ?? null)
 // The card opens this same dialog; no extra detail fetch or independent cache.
 watch([approval, () => route.query.approve], ([value, asked]) => {
@@ -379,7 +383,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <p class="text-muted">{{ detail.decision_request.evidence }}</p>
         <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
       </section>
-      <p v-if="approval" role="status" class="mt-2 text-sm text-amber-200">Waiting for your approval on GitHub</p>
+      <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="mt-2 text-sm text-amber-200">Waiting for your approval on GitHub</p>
       <p v-if="detail.merge_blocker" class="mt-2 text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">
@@ -393,14 +397,6 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         >Deploy run ↗</a>
       </p>
       <p v-if="message" id="detail-message" role="status" class="mt-2 text-sm text-amber-200">{{ message }}</p>
-      <IssueEnvironmentCard
-        v-if="detail.environment"
-        v-model:open="environmentOpen"
-        :environment="detail.environment"
-        :busy="busy"
-        :error="environmentError"
-        @save="saveEnvironment"
-      />
 
       <!-- One action bar under the title: what the operator can decide, then
            where the work lives on GitHub, then stopping the attempt. -->
@@ -476,6 +472,16 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
 
       <!-- The discussion opens under the action bar that started it. -->
       <IssueConversation :key="detail.key" v-model:open="discussOpen" :issue-key="detail.key" />
+      <!-- The environment is worth the space once one is chosen or overridden;
+           before that it only says "the supervisor will choose", so it waits in Details. -->
+      <IssueEnvironmentCard
+        v-if="detail.environment && environmentProminent"
+        v-model:open="environmentOpen"
+        :environment="detail.environment"
+        :busy="busy"
+        :error="environmentError"
+        @save="saveEnvironment"
+      />
 
       <section v-if="hasDetails" id="issue-details" class="mt-4 rounded-xl border border-line bg-bg p-3">
         <UCollapsible v-model:open="detailsOpen">
@@ -504,6 +510,14 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
                 </p>
               </div>
             </div>
+            <IssueEnvironmentCard
+              v-if="detail.environment && !environmentProminent"
+              v-model:open="environmentOpen"
+              :environment="detail.environment"
+              :busy="busy"
+              :error="environmentError"
+              @save="saveEnvironment"
+            />
           </template>
         </UCollapsible>
       </section>
@@ -593,6 +607,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         :reason="approval.reason"
         :url="pullUrl(approval.pr) + '/files'"
         :can-assign="canAssign"
+        @opened="sentToGitHub = true"
         @close="approvalOpen = false"
         @assign="askReviewer"
       />
