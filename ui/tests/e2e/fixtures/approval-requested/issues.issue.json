@@ -54,6 +54,10 @@
         "maintainer"
       ],
       "at": 1790000000
+    },
+    "approval": {
+      "pr": 31,
+      "reason": "A person must sign off on the key rotation."
     }
   },
   "repositories": [

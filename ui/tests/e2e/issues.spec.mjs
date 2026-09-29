@@ -179,6 +179,10 @@ export default async function (page, { base, scenario, requests }) {
 
   // …and for a job the issue is not running: the recovery investigation of
   // 1:604 is reachable by its own link, output included.
+  // Stop the previous page's output polling before clearing the request log.
+  // Otherwise a poll between scenario reset and navigation pollutes this assertion.
+  await page.getByRole('button', { name: 'Worker output' }).click()
+  await pre.waitFor({ state: 'hidden' })
   await scenario('default')
   await page.goto(`${base}/issues/1%3A604?job=${RECOVERY_JOB}`)
   await waitForText(page, DETAIL_TITLE)
@@ -199,6 +203,8 @@ export default async function (page, { base, scenario, requests }) {
   // …and when the issue itself is gone from the inventory, the ?job= link
   // still reaches that job's output. The alert says why the rest is missing;
   // losing the log with the issue would strand the operator.
+  await page.getByRole('button', { name: 'Worker output' }).click()
+  await pre.waitFor({ state: 'hidden' })
   await scenario('orphan-job')
   await page.goto(`${base}/issues/9%3A999?job=${RECOVERY_JOB}`)
   await waitForText(page, 'This issue is not in a managed repository. Refresh the issue list.')

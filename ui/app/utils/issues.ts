@@ -41,6 +41,8 @@ export interface IssueRow {
   actions: Exclude<IssueAction, 'stop'>[]
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
+  approval?: { pr: number; reason: string } | null
+  merge_blocker?: { reason: string } | null
   environment?: IssueEnvironment
   pull_requests: PullRequestRef[]
   dependencies: number[]
@@ -366,9 +368,10 @@ const PRIMARY_DECISIONS: IssueAction[] = ['assign_reviewer', 'retry', 'recheck',
 export interface RowAction { label: string; decision: boolean }
 
 export function rowPrimary(
-  row: Pick<IssueRow, 'status' | 'actions'>, pending: IssueActionStatus | null | undefined,
+  row: Pick<IssueRow, 'status' | 'actions' | 'approval'>, pending: IssueActionStatus | null | undefined,
 ): RowAction {
   if (pending) return { label: 'Applying…', decision: false }
+  if (row.approval) return { label: 'Approve…', decision: true }
   const decision = PRIMARY_DECISIONS.find(action => (row.actions ?? []).includes(action as Exclude<IssueAction, 'stop'>))
   if (decision) return { label: ACTION_LABELS[decision], decision: true }
   if (row.status === 'working') return { label: 'View progress', decision: false }
@@ -376,7 +379,7 @@ export function rowPrimary(
   return { label: 'Open', decision: false }
 }
 
-export function rowAction(row: Pick<IssueRow, 'status' | 'actions'>, pending: IssueActionStatus | null | undefined): string {
+export function rowAction(row: Pick<IssueRow, 'status' | 'actions' | 'approval'>, pending: IssueActionStatus | null | undefined): string {
   return rowPrimary(row, pending).label
 }
 

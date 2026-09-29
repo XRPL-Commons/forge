@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
 import {
@@ -15,7 +16,6 @@ import {
 const props = defineProps<{ issueKey: string }>()
 
 const UNMANAGED = 'This issue is not in a managed repository. Refresh the issue list.'
-const STALE = 'Showing the last received issue. Refresh before making a decision.'
 const PRIMARY_ACTIONS: IssueAction[] = ['queue', 'resume', 'retry', 'recheck']
 
 const api = useForgeApi()
@@ -68,19 +68,29 @@ const { data: html } = await useAsyncData(`md-${props.issueKey}`, async () => {
   return rendered.html
 }, { watch: [() => detail.value?.body], lazy: true })
 
-const submitted = ref('')
+const submitted = ref<DecisionReceipt | null>(null)
+const workerReceipt = ref<{ id: string; before: string } | null>(null)
 const dialogError = ref<string | null>(null)
 const decision = ref<IssueAction | null>(null)
 
 // One message line, in the order the operator needs it: what Forge is doing
 // with the last decision, then whether what they are looking at is current,
 // then the receipt for what they just submitted.
-const message = computed(() => {
-  const last = detail.value ? lastAction(actions.value, detail.value.key) : null
-  if (last) return last.status === 'pending' ? 'Applying your decision…' : (last.message ?? '')
-  if (poll.stale.value) return STALE
-  return submitted.value
+const observedDecision = computed(() => workerReceipt.value ? null : receiptAction(actions.value, props.issueKey, submitted.value))
+const message = computed(() => decisionFeedback(observedDecision.value, submitted.value, poll.stale.value))
+watch([observedDecision, submitted], ([action]) => {
+  if (submitted.value && action && action.status !== 'pending') submitted.value = null
 })
+watch(() => props.issueKey, () => { submitted.value = null; workerReceipt.value = null })
+
+function previousDecision(): string | null {
+  return lastAction(actions.value, props.issueKey)?.id ?? null
+}
+function recordDecision(reply: { request?: string }, previous: string | null, message?: string) {
+  workerReceipt.value = null
+  submitted.value = { request: reply.request ?? null, previous, message }
+}
+
 
 // What the page leads with: one headline sentence, then at most three
 // sentences. Forge's own status line and the worker's prose move into Details,
@@ -106,9 +116,20 @@ const assigning = ref(false)
 const assignError = ref<string | null>(null)
 const preselected = computed(() => preselectedReviewers(detail.value))
 const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
+const approvalOpen = ref(false)
+const approval = computed(() => detail.value?.approval ?? null)
+// The card opens this same dialog; no extra detail fetch or independent cache.
+watch([approval, () => route.query.approve], ([value, asked]) => {
+  if (value && asked === '1') {
+    approvalOpen.value = true
+    void navigateTo({ path: route.path, query: { ...route.query, approve: undefined } }, { replace: true })
+  }
+  if (!value) approvalOpen.value = false
+}, { immediate: true })
 const candidateUrl = computed(() => (candidatePull.value ? pullUrl(candidatePull.value.number) : issueUrl.value))
 
 function askReviewer() {
+  approvalOpen.value = false
   assignError.value = null
   assigning.value = true
   submitting.value = true
@@ -144,13 +165,16 @@ async function assignReviewer(logins: string[]) {
   if (!issue || !reason) return
   assignError.value = null
   try {
-    await api.act('/api/issues/action', { key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason })
+    const previous = previousDecision()
+    const reply = await api.act<{ request?: string }>('/api/issues/action', {
+      key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason,
+    })
+    recordDecision(reply, previous)
   } catch (error: unknown) {
     assignError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
   }
   closeReviewer()
-  submitted.value = 'Decision submitted. Waiting for confirmation.'
   await poll.refresh()
 }
 
@@ -209,6 +233,17 @@ const internalJob = computed<JobView | null>(() => {
   return (factory?.issues ?? []).some(issue => issue.active === id) ? null : job
 })
 
+function workerState(id: string): string {
+  const job = jobs.value.find(job => job.id === id)
+  return JSON.stringify(job ? [job.phase, job.outcome, job.cleanup] : null)
+}
+watch(() => workerReceipt.value && workerState(workerReceipt.value.id), value => {
+  if (workerReceipt.value && value !== workerReceipt.value.before) {
+    workerReceipt.value = null
+    submitted.value = null
+  }
+})
+
 const RESET = {
   title: 'Reset runner?',
   text: 'This terminates the old execution and discards its disposable workspace. Capacity is released only after teardown is verified.',
@@ -231,13 +266,15 @@ async function confirmReset(reason: string) {
   if (!job) return
   resetError.value = null
   try {
+    const before = workerState(job.id)
     await api.act('/api/factory/action', { action: 'reset', target: job.id, reason })
+    submitted.value = { request: null, previous: previousDecision() }
+    workerReceipt.value = { id: job.id, before }
   } catch (error: unknown) {
     resetError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
     return
   }
   closeReset()
-  submitted.value = 'Decision submitted. Waiting for confirmation.'
   await poll.refresh()
 }
 
@@ -268,9 +305,10 @@ async function saveEnvironment(environment: IssueEnvironmentSelection) {
   submitting.value = true
   environmentError.value = ''
   try {
-    await api.act('/api/issues/environment', { key: issue.key, revision: issue.revision, environment })
+    const previous = previousDecision()
+    const reply = await api.act<{ request?: string }>('/api/issues/environment', { key: issue.key, revision: issue.revision, environment })
+    recordDecision(reply, previous, 'Environment preference submitted. Waiting for the supervisor to apply it.')
     environmentOpen.value = false
-    submitted.value = 'Environment preference submitted. Waiting for the supervisor to apply it.'
   } catch (error: unknown) {
     environmentError.value = error instanceof Error ? error.message : 'Could not save the environment.'
   } finally {
@@ -290,11 +328,18 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
   dialogError.value = null
   let applied = false
   try {
-    if (action === 'stop') await api.act('/api/factory/action', { action: 'stop', target: issue.active, reason })
-    else {
-      const result = await api.act<IssueDetailResponse>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
-      if (result.issue) {
-        poll.replace({ detail: result, fence: null })
+    const previous = previousDecision()
+    if (action === 'stop') {
+      const before = workerState(issue.active!)
+      await api.act('/api/factory/action', { action: 'stop', target: issue.active, reason })
+      submitted.value = { request: null, previous }
+      workerReceipt.value = { id: issue.active!, before }
+    } else {
+      const reply = await api.act<IssueDetailResponse & { request?: string }>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
+      recordDecision(reply, previous)
+      if (reply.issue) {
+        poll.replace({ detail: reply, fence: null })
+        submitted.value = null
         applied = true
       }
     }
@@ -304,7 +349,6 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
   }
   decision.value = null
   submitting.value = false
-  submitted.value = applied ? '' : 'Decision submitted. Waiting for confirmation.'
   if (!applied) await poll.refresh()
 }
 </script>
@@ -335,6 +379,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <p class="text-muted">{{ detail.decision_request.evidence }}</p>
         <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
       </section>
+      <p v-if="approval" role="status" class="mt-2 text-sm text-amber-200">Waiting for your approval on GitHub</p>
+      <p v-if="detail.merge_blocker" class="mt-2 text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">
         Deployment · {{ deployment.text }}
@@ -359,6 +405,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <!-- One action bar under the title: what the operator can decide, then
            where the work lives on GitHub, then stopping the attempt. -->
       <div id="issue-actions" class="mt-4 flex flex-wrap items-center gap-2">
+        <UButton v-if="approval" size="sm" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
         <UButton
           v-for="(action, index) in decisions"
           :key="action"
@@ -371,7 +418,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <UButton
           v-if="canAssign"
           size="sm"
-          color="primary"
+          color="neutral"
+          variant="outline"
           :disabled="busy"
           @click="askReviewer"
         >{{ ACTION_LABELS.assign_reviewer }}</UButton>
@@ -382,7 +430,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           :aria-expanded="discussOpen"
           @click="discussOpen = !discussOpen"
         >Discuss blocker</UButton>
-        <UButton v-if="detail.setup_needed" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
+        <UButton v-if="detail.setup_needed || detail.merge_blocker" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
         <UButton
           :to="issueUrl"
           target="_blank"
@@ -540,6 +588,14 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         </UCollapsible>
       </section>
 
+      <LazyApprovalDialog
+        v-if="approvalOpen && approval && detail"
+        :reason="approval.reason"
+        :url="pullUrl(approval.pr) + '/files'"
+        :can-assign="canAssign"
+        @close="approvalOpen = false"
+        @assign="askReviewer"
+      />
       <ReviewerDialog
         v-if="assigning"
         :open="assigning"

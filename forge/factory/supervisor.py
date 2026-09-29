@@ -608,6 +608,13 @@ class Supervisor:
                               f'Conflicts with {target}; Forge is returning it to Build to update the branch')
             self.ledger.resolve_conflict(item['key'], target)
             return
+        missing_approval = (required and not approved and not blocked
+                            and audit.get('human_required') in ('required', 'not_required'))
+        gate_kind = 'approval' if missing_approval else 'blocked' if reason else 'ready'
+        with self.ledger.transaction() as data:
+            data['issues'][item['key']]['merge_gate'] = {
+                'candidate': item['candidate']['key'], 'kind': gate_kind, 'reason': reason,
+            }
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
             with self.ledger.transaction() as data:
@@ -630,7 +637,14 @@ class Supervisor:
             self.github.check(item, 'controller', item['candidate'], external, None, 'Approval changed; waiting for current authorization')
             return
         self.merge_attempt(item)
-        self.github.merge(item)
+        try:
+            self.github.merge(item)
+        except GitHubUnavailable as error:
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['merge_gate'] = {
+                    'candidate': item['candidate']['key'], 'kind': 'refused', 'reason': str(error),
+                }
+            raise
         # Neither a successful HTTP request nor a local outcome establishes merged.
         verified = self.github.pr(item, pr['number'])
         if verified.get('merged'):

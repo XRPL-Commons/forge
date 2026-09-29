@@ -198,7 +198,7 @@ function activityFor(target: string): string | null {
       />
     </aside>
 
-    <main class="min-w-0 max-w-[760px]">
+    <div class="min-w-0 max-w-[760px]">
       <p v-if="notice" role="alert" class="mb-4 break-words text-amber-200">{{ notice }}</p>
 
       <p v-if="!state" class="text-muted">Loading setup…</p>
@@ -412,6 +412,6 @@ function activityFor(target: string): string | null {
         <NuxtLink class="underline-offset-4 hover:underline" to="/setup-help">Setup help</NuxtLink>
         <span v-if="!resetting"> · <NuxtLink class="underline-offset-4 hover:underline" to="/reset">Reset Forge</NuxtLink></span>
       </p>
-    </main>
+    </div>
   </div>
 </template>
