@@ -211,7 +211,7 @@ describe('groupIssues', () => {
       issue({ key: '2:616', number: 616, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'failed', reason: 'Two attempts failed', failure_count: 2 }),
       issue({ key: '1:617', number: 617, state: 'ready', reason: 'blocked_auth' }),
     ] }), now)
-    expect(held.columns.build[0]!.footerLink).toEqual({ to: '/settings/repository?repo_id=2', label: 'Prepare repository →' })
+    expect(held.columns.build[0]!.footerLink).toEqual({ to: '/settings/repositories/2?setup=1', label: 'Prepare repository →' })
     expect(held.attention[0]!.footerLink).toEqual({ to: '', label: '2 / 3 attempts failed' })
     expect(held.columns.build[1]!.footerLink).toEqual({ to: '/settings/harnesses', label: 'Coding accounts →' })
   })

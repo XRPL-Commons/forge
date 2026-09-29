@@ -2,15 +2,16 @@
 const route = useRoute()
 const tabs = [
   { href: '/settings', label: 'General', extra: [] as string[] },
-  { href: '/settings/github', label: 'GitHub access', extra: ['/settings/repository'] },
+  { href: '/settings/repositories', label: 'Repositories', extra: ['/settings/repository'] },
+  { href: '/settings/github', label: 'GitHub access', extra: [] as string[] },
   { href: '/settings/harnesses', label: 'Coding accounts', extra: [] as string[] },
 ]
 function isCurrent(tab: (typeof tabs)[number]) {
-  return route.path === tab.href || tab.extra.includes(route.path)
+  return route.path === tab.href || (tab.href === '/settings/repositories' && route.path.startsWith(tab.href + '/')) || tab.extra.includes(route.path)
 }
 </script>
 <template>
-  <nav aria-label="Settings navigation" class="mx-auto flex max-w-[1600px] gap-6 px-4 pb-3 text-sm sm:px-7">
+  <nav aria-label="Settings navigation" class="mx-auto flex max-w-[1600px] flex-wrap gap-x-6 gap-y-2 px-4 pb-3 text-sm sm:px-7">
     <NuxtLink
       v-for="tab in tabs"
       :key="tab.href"

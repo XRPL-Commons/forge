@@ -163,7 +163,7 @@ describe('step3', () => {
     expect(result.title).toBe('Prepare your repository')
     expect(result.intro).toBe('Check the review requirements and download a ready-to-import ruleset if anything is missing.')
     expect(result.primary).toEqual({
-      label: 'Prepare repository →', action: 'link', to: '/settings/repository?repo_id=1',
+      label: 'Prepare repository →', action: 'link', to: '/settings/repositories/1?setup=1',
       help: 'You apply the rules on GitHub. Forge only reads them.',
     })
   })
@@ -283,7 +283,7 @@ describe('repositoryProblem', () => {
     const problem = repositoryProblem(view({ error: 'x', checks: { github: 'failed' }, repository_check: report }))!
     expect(problem.title).toBe('1 repository setting needs attention')
     expect(problem.branch).toBe('Branch: main')
-    expect(problem.to).toBe('/settings/repository?repo_id=1')
+    expect(problem.to).toBe('/settings/repositories/1?setup=1')
     expect(problem.missing).toHaveLength(1)
     expect(problem.passedSummary).toBe('1 requirement already passes')
   })

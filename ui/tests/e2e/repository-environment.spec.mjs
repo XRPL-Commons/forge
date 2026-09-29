@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-const path = '/settings/repository?repo_id=2'
+const path = '/settings/repositories/2'
 const endpoint = '/api/repositories/environment'
 export default async function (page, { base, scenario, requests }) {
   await scenario('environment-idle')

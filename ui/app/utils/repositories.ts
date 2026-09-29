@@ -346,7 +346,7 @@ export function repositoryRows(rows: RepositoryRow[], settingUp: boolean): Repos
   return rows.map((row) => {
     const state = rowState(row)
     const needsAttention = state.icon === 'attention'
-    const to = '/settings/repository?repo_id=' + row.id
+    const to = '/settings/repositories/' + row.id + (needsAttention || !row.enabled ? '?setup=1' : '')
     return {
       id: row.id,
       name: row.name,

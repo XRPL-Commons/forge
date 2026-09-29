@@ -426,7 +426,7 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Choose where Forge should work')
   await waitForText(page, 'Add and enable a repository to see its issues here.')
   const addRepository = page.getByRole('link', { name: 'Add repository →' })
-  assert.equal(await addRepository.getAttribute('href'), '/settings/repository')
+  assert.equal(await addRepository.getAttribute('href'), '/settings/repositories?add=1')
   assert.equal(await page.locator('.issue-row').count(), 0)
 
   // A reset fence replaces the list on the next poll and hides every row.

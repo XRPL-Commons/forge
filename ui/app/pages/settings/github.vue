@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import {
-  actionMessage, connectionCards, lastRefreshText, repositoryRows,
+  actionMessage, connectionCards, lastRefreshText,
   type OnboardingSummary, type SettingsView,
 } from '~/utils/repositories'
 
-// Settings · GitHub access (contracts §3.5): the four Forge Apps, their
-// verified access, and the repositories they can reach. Capacity and reset
-// live on Settings · General, so nothing here is editable and the page has no
-// dirty state to guard.
+// App connections and access refresh; repository automation has its own tab.
 useHead({ title: 'GitHub access' })
 
 const REFRESH_DONE = 'Access refreshed.'
@@ -19,16 +16,10 @@ interface Snapshot { settings: SettingsView; onboarding: OnboardingSummary }
 
 const api = useForgeApi()
 
-// A POST is in flight: polling yields so the table is not re-rendered under
-// the operator's hands. Access refresh deliberately keeps polling, because
-// only the next poll can observe that the background sync finished.
-const busy = ref(false)
 const notice = ref('')
 const noticeError = ref(false)
 const refreshing = ref(false)
 const refreshNote = ref('')
-const query = ref('')
-const checkingRepositories = ref(false)
 let refreshStarted: number | null = null
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
@@ -41,7 +32,6 @@ const poll = usePoll<Snapshot>(async () => {
   return { settings, onboarding }
 }, {
   interval: useRuntimeConfig().public.pollInterval,
-  allowed: () => !busy.value,
   onChange: observeRefresh,
 })
 
@@ -54,18 +44,7 @@ const settingUp = computed(() => !!onboarding.value && onboarding.value.phase !=
 
 const syncStatus = computed(() => settings.value ? lastRefreshText(settings.value) : 'Loading settings…')
 const cards = computed(() => settings.value ? connectionCards(settings.value, onboarding.value) : [])
-const rows = computed(() => repositoryRows(settings.value?.repositories ?? [], settingUp.value))
-const visibleRows = computed(() => {
-  const needle = query.value.trim().toLowerCase()
-  return needle ? rows.value.filter(row => row.name.toLowerCase().includes(needle)) : rows.value
-})
-const enabledCount = computed(() => (settings.value?.repositories ?? []).filter(row => row.enabled).length)
-const repositoryCount = computed(() => settings.value
-  ? `${settingUp.value ? 'Setup in progress' : enabledCount.value + ' enabled'} · ${settings.value.repositories.length} discovered or configured`
-  : '')
 const syncing = computed(() => refreshing.value || settings.value?.sync.status === 'running')
-const repositoriesChecking = computed(() => checkingRepositories.value
-  || (settings.value?.repositories ?? []).some(row => row.protection_status === 'checking'))
 
 // The poll answers with the whole page, so its failure is the page's notice.
 watch(() => poll.error.value, (failure) => {
@@ -123,60 +102,6 @@ async function refreshAccess() {
   }
 }
 
-async function refreshRepositories() {
-  const current = settings.value
-  if (!current || busy.value) return
-  busy.value = true
-  checkingRepositories.value = true
-  say('')
-  try {
-    await api.act('/api/repositories/check', { repo_id: null, revision: current.revision })
-    busy.value = false
-    await poll.refresh()
-  } catch (error: unknown) {
-    say(actionMessage(error, 'Could not start the check.'), true)
-  } finally {
-    busy.value = false
-    checkingRepositories.value = false
-  }
-}
-
-const disableTarget = ref<RepositoryRowModel | null>(null)
-
-function onToggle(row: RepositoryRowModel) {
-  if (row.action === 'continue') return navigateTo('/onboarding')
-  if (row.action === 'setup') return navigateTo(row.to)
-  disableTarget.value = row
-}
-
-async function confirmDisable() {
-  const target = disableTarget.value
-  disableTarget.value = null
-  if (target) await disable(target.id)
-}
-
-async function disable(id: number) {
-  const current = settings.value
-  if (!current || busy.value) return
-  const repository = current.repositories.find(row => row.id === id)
-  if (!repository) return
-  busy.value = true
-  say('')
-  try {
-    const config = structuredClone(toRaw(current.config))
-    const entry = config.repositories.find(row => row.id === id)
-    if (entry) entry.enabled = false
-    else config.repositories.push({ id, name: repository.name, enabled: false })
-    await api.act('/api/settings', { config, revision: current.revision })
-    say('Settings saved.')
-    busy.value = false
-    await poll.refresh()
-  } catch (error: unknown) {
-    say(actionMessage(error, 'Settings unavailable'), true)
-  } finally {
-    busy.value = false
-  }
-}
 </script>
 
 <template>
@@ -230,48 +155,6 @@ async function disable(id: number) {
       </div>
     </section>
 
-    <section aria-labelledby="repos-title" class="mt-4 rounded-xl border border-line bg-bg p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="flex flex-wrap items-center gap-3">
-          <h2 id="repos-title" class="text-sm font-semibold text-white">Repositories</h2>
-          <span id="repo-count" class="text-xs text-muted">{{ repositoryCount }}</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <UButton to="/settings/repository" size="xs" color="neutral" variant="outline">Add repository</UButton>
-          <UButton
-            v-if="!settingUp"
-            color="neutral"
-            variant="ghost"
-            aria-label="Refresh repositories"
-            title="Refresh repositories"
-            :disabled="busy || !enabledCount"
-            :aria-busy="repositoriesChecking ? 'true' : undefined"
-            @click="refreshRepositories"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" :class="repositoriesChecking ? 'animate-spin' : ''" aria-hidden="true" focusable="false">
-              <path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" />
-            </svg>
-          </UButton>
-        </div>
-      </div>
-      <p class="mt-1 text-xs text-muted">Choose Enable to check a repository and finish its setup. Automation starts only after you confirm.</p>
-
-      <label for="repo-search" class="mt-3 block text-xs text-muted">Find a repository</label>
-      <UInput id="repo-search" v-model="query" type="search" placeholder="Repository name" autocomplete="off" class="mt-1 w-full max-w-sm" />
-
-      <RepositoryTable v-if="rows.length" class="mt-3" :rows="visibleRows" :busy="busy" @toggle="onToggle" />
-      <p v-else-if="settings" id="repo-empty" class="mt-3 text-xs text-muted">Connect the Forge Apps through setup, then refresh access to discover repositories.</p>
-
-      <p class="mt-3 text-xs text-muted">Forge checks existing issues and pull requests before starting work. If access is lost, new work pauses and issue history is kept.</p>
-    </section>
+    <p class="mt-4 text-sm text-muted">Manage automation, deployment tracking and test databases in <NuxtLink to="/settings/repositories" class="text-sky-200 underline">Repositories</NuxtLink>.</p>
   </div>
-  <ConfirmDialog
-    :open="disableTarget !== null"
-    :title="disableTarget ? `Disable automation for ${disableTarget.name}?` : ''"
-    text="Forge stops picking up issues in this repository. Existing pull requests, branches and issue history are kept."
-    confirm-label="Disable"
-    :require-reason="false"
-    @confirm="confirmDisable"
-    @close="disableTarget = null"
-  />
 </template>

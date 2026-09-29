@@ -67,7 +67,7 @@ same one-retry policy after cleanup completes.
 
 ## Repository evidence and optional defaults
 
-Open **Settings → GitHub access → repository → Test databases** to inspect the
+Open **Settings → Repositories → repository → Test databases** to inspect the
 cached evidence or select **Scan again**. These scans inform issue assignment
 immediately. They do not require approval.
 

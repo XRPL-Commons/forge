@@ -241,7 +241,7 @@ export function step3(view: OnboardingView, now: number): Step3View {
   } else if (ready) {
     result.primary = withHelp({ label: 'Start Forge', action: 'start' })
   } else if (needsRules) {
-    result.primary = withHelp({ label: 'Prepare repository →', action: 'link', to: `/settings/repository?repo_id=${view.selected?.id}` })
+    result.primary = withHelp({ label: 'Prepare repository →', action: 'link', to: `/settings/repositories/${view.selected?.id}?setup=1` })
   } else if (connected) {
     result.primary = withHelp({ label: failed ? 'Check again' : 'Verify repository', action: 'check' })
   } else {
@@ -298,7 +298,7 @@ export function repositoryProblem(view: OnboardingView): RepositoryProblem | nul
       ? `${missing.length} repository setting${missing.length === 1 ? ' needs attention' : 's need attention'}`
       : 'Repository protection could not be verified',
     branch: `Branch: ${report.branch}`,
-    to: `/settings/repository?repo_id=${view.selected?.id}`,
+    to: `/settings/repositories/${view.selected?.id}?setup=1`,
     missing,
     passed,
     passedSummary: passed.length

@@ -78,7 +78,7 @@ class RepositorySetup:
                            'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
                            'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
-                           'setup_url': '/settings/repository?repo_id=' + str(row['id']),
+                           'setup_url': '/settings/repositories/' + str(row['id']) + '?setup=1',
                            'deployment': {'status': entry.get('status') or ('confirmed' if profile else 'idle'),
                                           'summary': entry.get('summary'), 'proposal': entry.get('proposal'),
                                           'profile': profile, 'observation': entry.get('observation'),

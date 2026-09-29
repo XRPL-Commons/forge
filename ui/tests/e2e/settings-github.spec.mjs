@@ -23,7 +23,7 @@ const posted = (path) => (entry) => entry.method === 'POST' && entry.path === pa
 
 // End-to-end behaviour of Settings · GitHub access: one card per Forge App
 // with its badge and its single action link, the access refresh (endpoint by
-// setup phase, and its three outcomes), and the repository table.
+// setup phase, and its three outcomes), with a link to repository management.
 export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/settings/github')
   await waitForText(page, 'See the four Forge Apps')
@@ -60,46 +60,9 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok((await page.locator('#connections [data-key="controller"]').innerText()).includes('Coordinates issues and merges approved pull requests.'))
   assert.ok((await page.locator('#sync-status').innerText()).startsWith('Last refresh '))
 
-  // The repositories table: state icon, name link, and the action that suits
-  // each row. Enabling never happens from this table.
-  assert.equal((await page.locator('#repo-count').innerText()).trim(), '1 enabled · 2 discovered or configured')
-  const enabled = page.locator('[data-key="1"]')
-  assert.equal(await enabled.getByRole('switch', { name: 'Disable automation for XRPL-Commons/academy' }).getAttribute('aria-checked'), 'true')
-  assert.equal(await enabled.getByRole('link', { name: 'XRPL-Commons/academy' }).getAttribute('href'), '/settings/repository?repo_id=1')
-  const offSwitch = page.locator('[data-key="2"]').getByRole('switch', { name: 'Enable automation for XRPL-Commons/hackathon' })
-  assert.equal(await offSwitch.getAttribute('aria-checked'), 'false')
-  // Turning a repository on opens its enable flow instead of flipping the switch.
-  await offSwitch.click()
-  await page.waitForURL(base + '/settings/repository?repo_id=2')
-  await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
-  assert.equal(await page.getByRole('link', { name: 'Add repository' }).getAttribute('href'), '/settings/repository')
-
-  // The search filters the rendered rows client-side.
-  await page.getByRole('searchbox', { name: 'Find a repository' }).fill('hack')
-  await page.waitForFunction(() => document.querySelectorAll('tbody tr').length === 1, null, { timeout: 5000 })
-  assert.equal(await page.locator('[data-key="2"]').count(), 1)
-  await page.getByRole('searchbox', { name: 'Find a repository' }).fill('')
-  await page.waitForFunction(() => document.querySelectorAll('tbody tr').length === 2, null, { timeout: 5000 })
-
-  // "Refresh repositories" asks for a protection check of every enabled repo.
-  await page.getByRole('button', { name: 'Refresh repositories' }).click()
-  const checks = await waitForRequests(requests, posted('/api/repositories/check'))
-  assert.equal(checks.length, 1)
-  assert.deepEqual(checks[0].body, { repo_id: null, revision: 'settings-rev-1' })
-
-  // Turning a repository off asks first, then writes the settings back with it switched off.
-  await page.locator('[data-key="1"]').getByRole('switch').click()
-  await waitForText(page, 'Disable automation for XRPL-Commons/academy?')
-  await page.getByRole('button', { name: 'Disable', exact: true }).click()
-  const saves = await waitForRequests(requests, posted('/api/settings'))
-  assert.equal(saves.length, 1)
-  assert.equal(saves[0].body.revision, 'settings-rev-1')
-  assert.deepEqual(saves[0].body.config.repositories, [
-    { id: 1, name: 'XRPL-Commons/academy', enabled: false },
-    { id: 2, name: 'XRPL-Commons/hackathon', enabled: false },
-  ])
-  await waitForText(page, 'Settings saved.')
+  assert.equal(await page.getByRole('button', { name: 'Add repository' }).count(), 0)
+  assert.equal(await page.locator('#repo-count').count(), 0)
+  assert.equal(await page.getByRole('link', { name: 'Repositories', exact: true }).count(), 2)
 
   // Refresh on a live factory starts the background access sync, and reports
   // it finished when a newer `finished_at` arrives.
@@ -152,13 +115,6 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok((await page.locator('#connections [data-key="controller"]').innerText()).includes('No App connected'))
   assert.equal(await page.getByRole('link', { name: 'Install App ↗' }).getAttribute('href'), INSTALL_REVIEW)
   assert.equal(await page.getByRole('link', { name: 'Connect in setup →' }).getAttribute('href'), '/onboarding')
-  assert.equal((await page.locator('#repo-count').innerText()).trim(), 'Setup in progress · 2 discovered or configured')
-  assert.equal(await page.getByRole('button', { name: 'Refresh repositories' }).count(), 0)
-  await page.locator('[data-key="1"]').getByRole('switch', { name: /Continue setup for/ }).click()
-  await page.waitForURL(base + '/onboarding')
-  await page.goto(base + '/settings/github')
-  await waitForText(page, 'See the four Forge Apps')
-
   await page.getByRole('button', { name: 'Refresh GitHub access' }).click()
   const refreshes = await waitForRequests(requests, posted('/api/onboarding'))
   assert.deepEqual(refreshes[0].body, { action: 'refresh' })
@@ -168,7 +124,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('default')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/settings/github')
-  await waitForText(page, 'XRPL-Commons/academy')
+  await waitForText(page, 'See the four Forge Apps')
   const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }))
   assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
 }
