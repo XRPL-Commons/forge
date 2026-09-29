@@ -1,6 +1,7 @@
 """Bounded local GitHub broker; credential values are never sent to Forge."""
 import json
 import os
+import re
 import selectors
 import shutil
 import subprocess
@@ -89,6 +90,13 @@ class GitHub:
             return json.loads(raw) if raw else None
         except (ValueError, UnicodeError):
             raise SetupError('github_invalid_response', 'GitHub returned an unreadable response.') from None
+
+    def owner(self, login):
+        require(isinstance(login, str) and re.fullmatch(r'[A-Za-z0-9-]{1,39}', login))
+        value = self._request('GET', '/users/' + login)
+        require(isinstance(value, dict) and positive(value.get('id')) and isinstance(value.get('login'), str)
+                and value['login'].lower() == login.lower())
+        return {'id': value['id'], 'login': value['login']}
 
     def repository(self, name):
         require(isinstance(name, str) and len(name) <= 200 and NAME.fullmatch(name))

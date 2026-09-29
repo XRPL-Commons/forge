@@ -2,6 +2,7 @@
 definePageMeta({ layout: false })
 useHead({ title: 'Sign in' })
 const route = useRoute()
+const signInUrl = computed(() => '/auth/github/start' + (typeof route.query.return_to === 'string' ? '?return_to=' + encodeURIComponent(route.query.return_to) : ''))
 const { session, refresh } = useOperator()
 const unavailable = ref(!session.value)
 async function retry() {
@@ -19,7 +20,7 @@ async function retry() {
       <template v-else>
         <p class="text-muted">Use the GitHub account your Forge administrator has authorized.</p>
         <p v-if="route.query.error" role="alert">Sign-in did not complete. Your account may not have access, or the sign-in attempt may have expired.</p>
-        <UButton to="/auth/github/start" external icon="i-lucide-github">Continue with GitHub</UButton>
+        <UButton :to="signInUrl" external icon="i-lucide-github">Continue with GitHub</UButton>
       </template>
     </section>
   </main>

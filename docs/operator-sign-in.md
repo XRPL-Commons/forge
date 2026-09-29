@@ -2,7 +2,7 @@
 
 Operator sign-in is the authorization prerequisite for external agent connections
 (#15, #122). It protects dashboard data and actions; external CLI connection
-approval and scoped client tokens are still a separate implementation step.
+approval and scoped client tokens are described in [agent connections](agent-connections.md).
 
 ## Configure an existing server once
 
@@ -60,7 +60,8 @@ only the resulting ID/login, a session-token hash, expiry and CSRF value.
 Re-run `bin/forge operators` on the host to replace the operator list or identity
 app configuration and revoke every session and pending sign-in. This is also the
 recovery path for a lost operator account. Removing an operator takes effect
-without restarting Python. The host account remains the administrative recovery
+without restarting Python. Explicit sign-out also revokes client connections
+approved by that operator; automatic browser-session expiry does not. The host account remains the administrative recovery
 boundary. Back up `state/operator-auth` as private controller state. Missing or
 invalid initialized state fails closed; do not delete this directory to recover
 access. Reconfiguration deliberately replaces it.

@@ -419,6 +419,8 @@ GitHub operations run locally, and Forge independently verifies the result.
 The first implementation adds the closed requirements contract and local
 preparation engine (`forge_client/README.md`). Integration tests drive the real
 Forge verification/activation services with a separate local GitHub broker.
-Connection/authentication, durable operation journals, CLI distribution and the
-agent skill remain integration work. No external-client HTTP endpoint is enabled
-by this foundation, and #122 remains open until the full workflow is available.
+Operator sign-in and browser-approved client grants now provide a scoped HTTPS
+requirements endpoint and an installable local connection CLI; see
+[agent connections](../../agent-connections.md). Durable operation journals,
+repository write command integration and the agent skill remain work. #122 stays
+open until the full setup workflow is available.

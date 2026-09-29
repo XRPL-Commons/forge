@@ -142,15 +142,18 @@ class OperatorAuth:
     def configure(self, origin, client_id, client_secret, operators):
         config = configuration(origin, client_id, client_secret, operators)
         with self.store.transaction() as data:
+            instance = data.get('instance_id', secrets.token_urlsafe(32))
             data.clear()
-            data.update(version=1, config=config, epoch=secrets.token_urlsafe(32), sessions={}, flows={})
+            data.update(instance_id=instance, version=1, config=config, epoch=secrets.token_urlsafe(32), sessions={}, flows={})
 
     def _prune(self, data):
         now = self.clock()
         for field in ('sessions', 'flows'):
             data[field] = {key: value for key, value in data[field].items() if value['expires'] > now}
 
-    def begin(self):
+    def begin(self, return_to='/'):
+        if return_to != '/' and not re.fullmatch(r'/settings/agents(?:\?code=[A-Z2-9]{4}-[A-Z2-9]{4})?', return_to):
+            raise AuthError('Invalid sign-in destination')
         state, browser, verifier = (secrets.token_urlsafe(32) for _ in range(3))
         with self.store.transaction() as data:
             config = self._config(data)
@@ -160,7 +163,7 @@ class OperatorAuth:
             if len(data['flows']) >= 100:
                 raise AuthError('Too many sign-in attempts; try again later')
             data['flows'][digest(state)] = {'browser': digest(browser), 'verifier': verifier,
-                                           'expires': self.clock() + FLOW_SECONDS}
+                                           'expires': self.clock() + FLOW_SECONDS, 'return_to': return_to}
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
         url = 'https://github.com/login/oauth/authorize?' + urlencode({
             'client_id': config['client_id'], 'redirect_uri': config['origin'] + '/auth/github/callback',
@@ -168,7 +171,7 @@ class OperatorAuth:
             'allow_signup': 'false', 'prompt': 'select_account'})
         return url, cookie(FLOW_COOKIE, browser, FLOW_SECONDS)
 
-    def callback(self, state, code, browser, previous=''):
+    def callback(self, state, code, browser, previous='', *, with_target=False):
         if (not re.fullmatch(r'[A-Za-z0-9_-]{43}', state) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', browser)
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', code)):
             raise AuthError('Invalid sign-in callback')
@@ -199,7 +202,8 @@ class OperatorAuth:
             data['sessions'].pop(digest(previous), None)
             data['sessions'][digest(token)] = {'operator': identity, 'csrf': secrets.token_urlsafe(32),
                                               'expires': self.clock() + SESSION_SECONDS}
-        return cookie(SESSION_COOKIE, token, SESSION_SECONDS)
+        result = cookie(SESSION_COOKIE, token, SESSION_SECONDS)
+        return (result, flow.get('return_to', '/')) if with_target else result
 
     def session(self, token):
         data = self.store.read()
@@ -215,7 +219,11 @@ class OperatorAuth:
         with self.store.transaction() as data:
             if not self._config(data):
                 raise AuthError('Operator sign-in is not configured')
-            data['sessions'].pop(digest(token), None)
+            session = data['sessions'].pop(digest(token), None)
+            if session:
+                for grant in data.get('clients', {}).values():
+                    if grant['operator']['id'] == session['operator']['id']:
+                        grant['revoked'] = 'operator_signed_out'
 
     def audit(self, session, route):
         """Record admission before mutation, without request bodies or credentials.

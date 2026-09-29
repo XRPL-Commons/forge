@@ -52,19 +52,19 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
-    def _send(self, body, ctype="application/json", headers=None):
+    def _send(self, body, ctype="application/json", headers=None, status=200):
         data = body.encode()
         # Validators are private to each client; no response is stored by a
         # browser/proxy cache. Include the action token in the digest so a
         # service restart always sends the new capability with a fresh body.
-        etag = '"' + hashlib.sha256(data).hexdigest() + '"' if self.command == 'GET' and ctype == 'application/json' else None
+        etag = '"' + hashlib.sha256(data).hexdigest() + '"' if status == 200 and self.command == 'GET' and ctype == 'application/json' else None
         if etag and self.headers.get('If-None-Match') == etag:
             self.send_response(304)
             self.send_header('ETag', etag)
             self.send_header('Cache-Control', 'private, no-store')
             self.end_headers()
             return
-        self.send_response(200)
+        self.send_response(status)
         if etag: self.send_header('ETag', etag)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -155,25 +155,80 @@ class H(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return True
             if url.path == '/auth/github/start':
-                target, value = self._auth.begin()
+                query = parse_qs(url.query)
+                target, value = self._auth.begin(query.get('return_to', ['/'])[0])
                 self._redirect(target, [('Set-Cookie', value)])
             else:
                 query = parse_qs(url.query, keep_blank_values=True)
                 if set(query) != {'state', 'code'} or any(len(v) != 1 for v in query.values()):
                     raise ValueError('Invalid callback')
-                value = self._auth.callback(query['state'][0], query['code'][0],
-                                            read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token)
-                self._redirect('/', [('Set-Cookie', value), ('Set-Cookie', cookie(FLOW_COOKIE))])
+                value, target = self._auth.callback(query['state'][0], query['code'][0],
+                                            read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token, with_target=True)
+                self._redirect(target, [('Set-Cookie', value), ('Set-Cookie', cookie(FLOW_COOKIE))])
         except (ValueError, OSError, RuntimeError, KeyError, TypeError):
             self._redirect('/login?error=sign_in', [('Set-Cookie', cookie(FLOW_COOKIE))])
+        return True
+
+    def _client_post(self):
+        from forge.client_connections import ClientConnections, ConnectionError, fields, need
+        from forge.operator_auth import OperatorAuth
+        paths = {'/api/client/device', '/api/client/token', '/api/client/refresh',
+                 '/api/client/status', '/api/client/disconnect', '/api/client/requirements'}
+        if self.path not in paths:
+            return False
+        try:
+            # These routes use client credentials only. Browser cookies, UI action
+            # tokens and cross-origin fetches never authorize a client request.
+            need(not self.headers.get('Origin') and not self.headers.get('Cookie'), status=403)
+            need(self.headers.get('Content-Type', '').split(';')[0].strip() == 'application/json'
+                 and not self.headers.get('Transfer-Encoding'), status=415)
+            length = int(self.headers.get('Content-Length', '0'))
+            need(0 < length <= 16384, status=413)
+            value = json.loads(self.rfile.read(length))
+            auth = OperatorAuth(WD)
+            config = auth.config()
+            need(config and self._public_host() == urlparse(config['origin']).netloc,
+                 'sign_in_required', 'Configure HTTPS operator sign-in before connecting an agent.', 403)
+            clients = ClientConnections(WD, auth=auth)
+            authorization = self.headers.get('Authorization', '')
+            bearer = authorization[7:] if authorization.startswith('Bearer ') else ''
+            if self.path == '/api/client/device':
+                result = clients.begin(value)
+            elif self.path == '/api/client/token':
+                result = clients.poll(value)
+            elif self.path == '/api/client/refresh':
+                fields(value, ('refresh_token',))
+                result = clients.refresh(value['refresh_token'])
+            elif self.path == '/api/client/status':
+                fields(value, ())
+                result = clients.status(bearer)
+            elif self.path == '/api/client/disconnect':
+                fields(value, ())
+                clients.disconnect(bearer)
+                result = {'disconnected': True}
+            else:
+                fields(value, ('repository', 'instance', 'generation'))
+                clients.authorize(bearer, value['repository'], 'repositories:read', value['instance'], value['generation'])
+                from forge.repository_requirements import describe
+                result = describe(settings_service(), value['repository'])
+                # Recheck after collecting data, including any factory reset.
+                clients.authorize(bearer, value['repository'], 'repositories:read', value['instance'], value['generation'])
+            self._send(json.dumps({'ok': True, **result}))
+        except ConnectionError as exc:
+            self._send(json.dumps({'ok': False, 'error': exc.code, 'reason': str(exc)}), status=exc.status)
+        except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+            self._send(json.dumps({'ok': False, 'error': 'temporarily_unavailable',
+                                   'reason': 'Client connection could not be verified.'}), status=503)
         return True
 
     def do_POST(self):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
+        if self._client_post():
+            return
         if not self._operator_guard() or not self._signed_in():
             return
-        if self.path not in {'/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -194,6 +249,20 @@ class H(BaseHTTPRequestHandler):
             value=json.loads(self.rfile.read(length))
             if self._session:
                 self._auth.audit(self._session, self.path)
+            if self.path.startswith('/api/connections/'):
+                from forge.client_connections import ClientConnections, fields
+                clients = ClientConnections(WD, auth=self._auth)
+                if self.path == '/api/connections/preview':
+                    fields(value, ('code',))
+                    result = clients.preview(self._session_token, value['code'])
+                elif self.path == '/api/connections/decide':
+                    result = clients.decide(self._session_token, value)
+                else:
+                    fields(value, ('id',))
+                    clients.revoke(self._session_token, value['id'])
+                    result = {'revoked': True}
+                self._send(json.dumps({'ok': True, **result}))
+                return
             if self.path == '/api/auth/logout':
                 from forge.operator_auth import cookie, SESSION_COOKIE
                 if value != {} or not self._session:
@@ -322,6 +391,15 @@ class H(BaseHTTPRequestHandler):
         if self._auth_get(u):
             return
         if not self._signed_in():
+            return
+        if u.path == '/api/connections':
+            try:
+                from forge.client_connections import ClientConnections
+                result = ClientConnections(WD, auth=self._auth).view(self._session_token) if self._auth_config else {
+                    'enabled': False, 'connections': [], 'reason': 'Configure HTTPS and operator sign-in to connect an agent.'}
+                self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+                self._send(json.dumps({'ok': False, 'reason': 'Connections are unavailable until setup or reset has completed.'}))
             return
         if u.path.startswith('/api/') and u.path!='/api/onboarding' and (Path(WD)/'state/factory-paused.json').exists():
             self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
