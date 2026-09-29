@@ -108,14 +108,17 @@ class PlainSummaryTests(unittest.TestCase):
                 self.assertNotIn('.', headline)
                 self.assertLessEqual(len([s for s in plain.split('. ') if s]), PLAIN_SENTENCES)
 
-    def test_approval_guidance_requires_current_human_gate_and_fresh_access(self):
+    def test_approval_guidance_requires_current_human_gate(self):
         issue = {'number': 1, 'state': 'open', 'labels': [], 'assignees': []}
         item = {'state': 'approval_needed', 'candidate': {'pr': 24, 'key': 'current'},
                 'merge_gate': {'candidate': 'current', 'kind': 'approval', 'reason': 'Check the rotation.'}}
         def project(**kwargs):
             return presentation(issue, item, self.repo, self.runtime, **kwargs)
         self.assertEqual(project()['approval'], {'pr': 24, 'reason': 'Check the rotation.'})
-        self.assertIsNone(project(fresh=False)['approval'])
+        # Following a GitHub review link is read-only; stale inventory still
+        # suppresses decisions, but must not hide the way to inspect the PR.
+        self.assertIsNotNone(project(fresh=False)['approval'])
+        self.assertEqual(project(fresh=False)['actions'], [])
         item.update(active='merge-job', active_role='merge')
         self.assertIsNotNone(project()['approval'])
         item.update(active=None)
@@ -132,6 +135,26 @@ class PlainSummaryTests(unittest.TestCase):
         self.assertIsNone(project()['approval'])
         item.update(state='merged', active=None)
         self.assertIsNone(project()['merge_blocker'])
+
+    def test_existing_approval_requests_keep_the_github_link_without_new_metadata(self):
+        issue = {'number': 1, 'state': 'open', 'labels': [], 'assignees': []}
+        item = {'state': 'approval_needed', 'candidate': {'pr': 24, 'key': 'current'},
+                'reason': 'Check the key rotation.',
+                'evidence': {'audit': {'human_required': 'required', 'human_reason': 'Check the key rotation.'}}}
+        def project():
+            return presentation(issue, item, self.repo, self.runtime, fresh=False)
+        self.assertEqual(project()['approval']['pr'], 24)
+        for reason in ('A current GitHub review requests changes',
+                       'Current review and audit checks must match the accepted evidence',
+                       'Configure native human CODEOWNERS protection before automatically merging escalated changes'):
+            item['reason'] = reason
+            self.assertIsNone(project()['approval'])
+        item['reason'] = 'Check the key rotation.'
+        item['merge_gate'] = {'candidate': 'current', 'kind': 'ready', 'reason': None}
+        self.assertIsNone(project()['approval'])
+        item['merge_gate']['kind'] = 'refused'
+        self.assertIsNone(project()['approval'])
+        self.assertIsNotNone(project()['merge_blocker'])
 
     def test_a_reader_never_has_to_open_details_to_learn_why(self):
         reason = ('The documentation artifact itself is accurate and low-risk to merge, but its claims '
