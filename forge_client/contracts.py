@@ -62,12 +62,18 @@ def requirements(value):
                 ('discovered', 'enabled', 'access_ready', 'protection_ready')))
     require(value['readiness']['protection_status'] in
             ('undiscovered', 'unchecked', 'checking', 'stale', 'unknown', 'needs_setup', 'ready', 'access_needed'))
+    require(value['readiness']['access_ready'] == all(r['access'] == 'ready' for r in value['roles'].values()))
+    require(value['readiness']['protection_ready'] == (value['readiness']['protection_status'] == 'ready'))
+    require(value['readiness']['discovered'] or not any(value['readiness'][k] for k in
+            ('enabled', 'access_ready', 'protection_ready')))
     # The client understands one additive policy. It will not accept a server's
     # arbitrary ruleset body, permissions, endpoints or shell instructions.
     fields(value['baseline'], ('branch', 'required_approvals', 'dismiss_stale_reviews'))
     require(type(value['baseline']['required_approvals']) is int
             and value['baseline']['required_approvals'] == 2
             and value['baseline']['dismiss_stale_reviews'] is True)
+    if value['readiness']['protection_status'] in ('ready', 'needs_setup'):
+        require(value['baseline']['branch'] is not None)
     if value['baseline']['branch'] is not None:
         baseline(value['baseline']['branch'])
     return value

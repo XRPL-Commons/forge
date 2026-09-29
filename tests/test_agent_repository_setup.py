@@ -130,6 +130,13 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(self.github_rules, before)
         self.assertEqual(self.writes, [])
 
+    def test_contradictory_readiness_is_rejected(self):
+        value = describe(self.settings, self.target)
+        for field in ('enabled', 'access_ready', 'protection_ready'):
+            contradictory = deepcopy(value)
+            contradictory['readiness'][field] = True
+            with self.assertRaises(SetupError): requirements(contradictory)
+
     def test_changed_server_schema_cannot_supply_a_privileged_payload(self):
         original = self.remote.requirements
         for field, value in (('command', 'run something'), ('token', SECRET), ('endpoint', 'https://attacker.test')):
