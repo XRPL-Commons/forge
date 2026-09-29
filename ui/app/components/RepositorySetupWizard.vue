@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const localTime = useLocalTime()
 import { checkedAtText, repoStage, rowState } from '~/utils/repositories'
 const props = defineProps<{ initialRepoId?: number | null }>()
 const emit = defineEmits<{ close: []; enabled: [number] }>()
@@ -61,7 +62,7 @@ async function next() {
       <RepositoryAccessPanel v-else-if="step === 1" :connections="connections" :access-description="accessDescription" :access-note="accessNote" />
       <template v-else-if="row && step === 2">
         <RepositoryRulesPanel :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :download-aria-disabled="downloadAriaDisabled" :downloaded="downloaded" instructions @download="downloaded = true" />
-        <p id="checked-at" class="mt-3 text-xs text-muted">{{ checkedAtText(report) }}</p>
+        <p id="checked-at" class="mt-3 text-xs text-muted">{{ checkedAtText(report, localTime) }}</p>
       </template>
       <section v-else-if="row && step === 3" class="mt-4">
         <h2 class="break-all text-lg font-semibold">{{ row.name }}</h2>

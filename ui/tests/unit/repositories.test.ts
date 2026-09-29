@@ -155,7 +155,7 @@ describe('lastRefreshText', () => {
   })
   it('appends the interrupted suffix', () =>
     expect(lastRefreshText(settings({ status: 'interrupted', started_at: 1790000000 })))
-      .toBe('Last refresh ' + new Date(1790000000 * 1000).toLocaleString() + ' · Refresh interrupted; the previous data is shown.'))
+      .toBe('Last refresh ' + new Date(1790000000 * 1000).toISOString() + ' · Refresh interrupted; the previous data is shown.'))
   it('says so when access was never refreshed', () => {
     const never = settings({ status: 'never' })
     never.roles = { build: access({ observed_at: null }), review: access({ observed_at: null }), audit: access({ observed_at: null }), controller: access({ observed_at: null }) }
@@ -238,7 +238,7 @@ describe('checkedAtText and actionMessage', () => {
   it('formats the last check as a wall-clock time', () => {
     const text = checkedAtText({ ...row().protection!, observed_at: 1790000000 })
     expect(text.startsWith('Last checked ')).toBe(true)
-    expect(text).toContain(new Date(1790000000 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+    expect(text).toContain(new Date(1790000000 * 1000).toISOString())
   })
   it('says nothing without an observation', () => expect(checkedAtText(null)).toBe(''))
   it('prefers the reason the API gave', () =>
