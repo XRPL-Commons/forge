@@ -58,10 +58,43 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Up to date · Viewing issues never queues them for work.')
   await waitForText(page, '6 issues · Page 1 of 1')
 
-  // Each row says what opening it is for.
+  // Each issue is its own card, and its one button says what opening it is for:
+  // the decision it waits on, else its progress, else just opening it.
+  assert.equal(await page.locator('article.issue-row').count(), 6)
   assert.equal(await page.locator('[data-key="1:610"]').getByRole('link', { name: 'View progress' }).count(), 1)
-  assert.equal(await page.locator('[data-key="1:613"]').getByRole('link', { name: 'Review' }).count(), 1)
-  assert.equal(await page.locator('[data-key="1:609"]').getByRole('link', { name: 'View issue' }).count(), 1)
+  assert.equal(await page.locator('[data-key="1:613"]').getByRole('link', { name: 'Recheck readiness' }).count(), 1)
+  assert.equal(await page.locator('[data-key="1:609"]').getByRole('link', { name: 'Queue for Forge' }).count(), 1)
+  assert.equal(await page.locator('[data-key="2:585"]').getByRole('link', { name: 'Release hold' }).count(), 1)
+  assert.equal(await page.locator('[data-key="1:608"]').getByRole('link', { name: 'Open', exact: true }).count(), 1)
+  assert.equal((await page.locator('[data-key="1:613"] [data-status-chip]').innerText()).trim(), 'Needs attention')
+  assert.equal((await page.locator('[data-key="1:608"] [data-status-chip]').innerText()).trim(), 'Queued')
+
+  // The card tells the story, then only the facts the row carries.
+  const story = (await page.locator('[data-key="1:613"] [data-story]').innerText()).trim()
+  assert.ok(story.startsWith('Paused until repository setup is checked again.'), story)
+  const facts = async (key) => page.locator(`[data-key="${key}"] [data-fact]`).allInnerTexts()
+  const redact = await facts('1:613')
+  assert.deepEqual(redact.slice(0, 3), ['PR #88', 'Earlier Forge draft #71', '1 of 3 attempts failed'])
+  assert.match(redact[3], /^Updated /)
+  const held = await facts('2:585')
+  assert.deepEqual(held.slice(0, 2), ['Depends on #584', 'On hold: hold'])
+  assert.equal(await page.locator('[data-key="1:609"] [data-fact^="pr-"]').count(), 0, 'no pull request fact without a pull request')
+
+  // The whole card opens the issue: a click on its story lands on the issue,
+  // and the title link carries a visible focus ring for the keyboard.
+  const storyText = page.locator('[data-key="1:609"] [data-story]')
+  await storyText.scrollIntoViewIfNeeded()
+  const cardBox = await storyText.boundingBox()
+  await page.mouse.click(cardBox.x + 4, cardBox.y + 4)
+  await page.waitForURL(base + '/issues/1%3A609')
+  await page.goBack()
+  await waitForText(page, 'Redact credential values at the logging boundary')
+  const titleLink = page.locator('[data-key="1:613"] a.issue-link')
+  await titleLink.focus()
+  await page.keyboard.press('Shift+Tab')
+  await page.keyboard.press('Tab')
+  const ring = await titleLink.evaluate((el) => getComputedStyle(el, '::after').outlineStyle)
+  assert.equal(ring, 'solid', 'a keyboard-focused card shows a focus ring')
 
   // The Show filter asks the API for that view.
   await page.getByRole('button', { name: 'Show' }).click()
@@ -416,5 +449,11 @@ export default async function (page, { base, scenario, requests }) {
       scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
     }))
     assert.ok(overflow.scrollWidth <= overflow.innerWidth, `${path} scrolls sideways: ${JSON.stringify(overflow)}`)
+    if (path === '/issues') {
+      // On a phone the card's button sits below its text, not beside it.
+      const facts = await page.locator('[data-key="1:613"] ul').boundingBox()
+      const button = await page.locator('[data-key="1:613"]').getByRole('link', { name: 'Recheck readiness' }).boundingBox()
+      assert.ok(button.y >= facts.y + facts.height, `the action stacks below the text: ${JSON.stringify({ facts, button })}`)
+    }
   }
 }

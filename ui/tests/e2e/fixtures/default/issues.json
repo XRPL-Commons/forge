@@ -23,12 +23,31 @@
       ],
       "setup_needed": true,
       "environment_blocker": null,
-      "pull_requests": [],
+      "pull_requests": [
+        {
+          "number": 88,
+          "title": "Redact credentials",
+          "kind": "candidate"
+        },
+        {
+          "number": 71,
+          "title": "Earlier redaction",
+          "kind": "forge_attempt"
+        }
+      ],
       "dependencies": [],
       "fresh": true,
       "revision": "current",
       "setup_url": "/settings/repository?repo_id=1",
-      "active": null
+      "active": null,
+      "summary": {
+        "headline": "Paused until repository setup is checked again.",
+        "plain": "Repository setup now passes. Recheck the issue and Forge will pick the work back up with the same pull request."
+      },
+      "attempts": {
+        "failed": 1,
+        "limit": 3
+      }
     },
     {
       "number": 585,
@@ -58,7 +77,14 @@
       "fresh": true,
       "revision": "current",
       "setup_url": "/settings/repository?repo_id=2",
-      "active": null
+      "active": null,
+      "held_by": [
+        {
+          "label": "hold",
+          "login": "maintainer",
+          "at": "2026-09-19T10:00:00Z"
+        }
+      ]
     },
     {
       "number": 610,
@@ -158,7 +184,13 @@
       "actions": [],
       "setup_needed": false,
       "environment_blocker": null,
-      "pull_requests": [],
+      "pull_requests": [
+        {
+          "number": 41,
+          "title": "Repair links",
+          "kind": "external"
+        }
+      ],
       "dependencies": [],
       "fresh": true,
       "revision": "current",

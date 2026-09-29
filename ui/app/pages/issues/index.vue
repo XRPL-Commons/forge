@@ -49,6 +49,14 @@ const poll = useResource<Loaded>(() => `/api/issues?${params.value}`, async (pat
 
 onMounted(() => { if (!redirecting) poll.start() })
 
+// "Updated 3 h ago" on each card; minute-level ages only need a slow tick.
+const now = ref(Math.floor(Date.now() / 1000))
+let ticker: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  now.value = Math.floor(Date.now() / 1000)
+  ticker = setInterval(() => { if (!document.hidden) now.value = Math.floor(Date.now() / 1000) }, 30000)
+})
+
 // The search box is debounced so a typed word is one request, not one per
 // keystroke, and any filter change starts again at page 1.
 let debounce: ReturnType<typeof setTimeout> | undefined
@@ -58,7 +66,7 @@ watch(search, (value) => {
 })
 watch([show, repoValue], () => { page.value = 1 })
 
-onBeforeUnmount(() => clearTimeout(debounce))
+onBeforeUnmount(() => { clearTimeout(debounce); clearInterval(ticker) })
 
 const list = computed(() => poll.data.value?.list ?? null)
 const fence = computed(() => poll.data.value?.fence ?? null)
@@ -165,18 +173,19 @@ function goto(next: number) {
     <UAlert v-if="fence" class="mt-3" role="status" color="warning" variant="subtle" :description="fence" />
 
     <template v-else>
-      <section v-if="rows.length || empty" class="mt-3 rounded-xl border border-line bg-panel px-3 sm:px-4">
+      <section v-if="rows.length" class="mt-3 flex flex-col gap-3" aria-label="Issues">
         <IssueRow
           v-for="row in rows"
           :key="row.key"
           :row="row"
+          :now="now"
           :pending="pendingAction(list?.actions, row.key)"
         />
-        <div v-if="!rows.length && empty" class="px-1 py-8 text-center">
-          <h2 class="text-sm font-semibold text-white">{{ empty.title }}</h2>
-          <p class="mt-1 text-sm text-muted">{{ empty.text }}</p>
-          <UButton v-if="empty.link" :to="empty.link.to" size="sm" color="neutral" variant="outline" class="mt-3">{{ empty.link.label }}</UButton>
-        </div>
+      </section>
+      <section v-else-if="empty" class="mt-3 rounded-xl border border-line bg-panel px-4 py-8 text-center">
+        <h2 class="text-sm font-semibold text-white">{{ empty.title }}</h2>
+        <p class="mt-1 text-sm text-muted">{{ empty.text }}</p>
+        <UButton v-if="empty.link" :to="empty.link.to" size="sm" color="neutral" variant="outline" class="mt-3">{{ empty.link.label }}</UButton>
       </section>
 
       <div v-if="list" class="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
