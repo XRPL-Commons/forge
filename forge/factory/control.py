@@ -106,7 +106,7 @@ def view(root):
     # reports stay in the ledger and the issue/output endpoints.
     issue_fields = ('key', 'repo_id', 'repo', 'number', 'title', 'state', 'reason',
                     'active', 'last_summary', 'reviewers_requested', 'prerequisite_hold',
-                    'blocked_dependencies', 'dependency_reason', 'created_at', 'last_observed',
+                    'blocked_dependencies', 'dependency_reason', 'ownership_wait', 'created_at', 'last_observed',
                     'retry_after', 'deployed', 'deploy_failed')
     histories = {}
     for event in data['events']:

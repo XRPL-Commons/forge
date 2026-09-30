@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "controls_token": "synthetic",
+  "active": true,
+  "operator": {
+    "title": "Assigned to @lucbocahut",
+    "detail": "Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it.",
+    "action_url": "/issues?issue=1:610",
+    "action_label": "View issue"
+  },
+  "repositories": [
+    {
+      "id": 1,
+      "name": "XRPL-Commons/academy",
+      "enabled": true
+    },
+    {
+      "id": 2,
+      "name": "XRPL-Commons/hackathon",
+      "enabled": true
+    }
+  ],
+  "observation": {
+    "at": 1790000000,
+    "errors": [],
+    "capacity": null,
+    "issues": 10
+  },
+  "issues": [
+    {
+      "key": "1:610",
+      "repo_id": 1,
+      "repo": "XRPL-Commons/academy",
+      "number": 610,
+      "title": "Hand off the assigned issue",
+      "state": "ready",
+      "reason": null,
+      "active": null,
+      "failure_count": 0,
+      "ownership_wait": {
+        "headline": "Assigned to @lucbocahut",
+        "plain": "Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it."
+      },
+      "blocked_dependencies": [
+        658
+      ],
+      "dependency_reason": "Waiting for #658."
+    }
+  ],
+  "jobs": [],
+  "slots": {},
+  "runtime": {
+    "enabled": true,
+    "slots": {
+      "build": 2,
+      "review": 1,
+      "audit": 1,
+      "recovery": 1
+    },
+    "cycle_seconds": 30
+  },
+  "runtime_revision": "6f2a9c8e1d4b7035af6c2e9d10b4f7a3c5e8d1b6924a7f3c0e5b8a1d4f7c2e9b"
+}

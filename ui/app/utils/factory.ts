@@ -34,6 +34,7 @@ export interface LedgerIssueView {
   // Open issues this one depends on; the supervisor never dispatches it meanwhile.
   blocked_dependencies?: number[]
   dependency_reason?: string | null
+  ownership_wait?: IssueSummary | null
   history?: LedgerEvent[]
   // Deployment verdicts (contracts §2). Both are present and null until the
   // supervisor has evidence; `deployed` is written once, `deploy_failed` is
@@ -136,6 +137,7 @@ export function waitingOnDependencies(issue: LedgerIssueView | null | undefined)
 }
 
 export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, view: FactoryView | null | undefined, now: number): string {
+  if (!job && issue?.ownership_wait) return issue.ownership_wait.headline
   if (!job && waitingOnDependencies(issue)) return 'Waiting on ' + issue!.blocked_dependencies!.map(n => '#' + n).join(', ')
   if (job) {
     if (job.capacity_wait_since) return 'Waiting for memory'
@@ -156,6 +158,7 @@ function latestProvider(issue: LedgerIssueView | null): string | null {
 
 export function reasonText(issue: LedgerIssueView | null, job: JobView | null): string {
   if (job?.capacity_wait_since) return 'Waiting for memory. Forge will start this worker automatically when space is available.'
+  if (!job && issue?.ownership_wait) return issue.ownership_wait.plain
   if (!job && waitingOnDependencies(issue)) return issue!.dependency_reason ?? ''
   // An approval the operator already asked for: the card says who has it,
   // which is more use than repeating that a review is needed.
@@ -309,6 +312,7 @@ export interface IssueGroups {
   // read. A deliberate hold is not, so it is kept apart and stacked.
   attention: CardModel[]
   held: CardModel[]
+  owned: CardModel[]
   // Blocked by open dependencies: it resumes by itself when they close.
   waiting: CardModel[]
   finishing: CardModel[]
@@ -322,7 +326,7 @@ export interface IssueGroups {
 export function groupIssues(view: FactoryView | null | undefined, now: number): IssueGroups {
   const groups: IssueGroups = {
     columns: { build: [], review: [], audit: [] },
-    attention: [], held: [], waiting: [], finishing: [], investigating: [], internalJobs: [], completed: [],
+    attention: [], held: [], owned: [], waiting: [], finishing: [], investigating: [], internalJobs: [], completed: [],
   }
   if (!view) return groups
   const tracked = trackedRepositories(view)
@@ -331,6 +335,7 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
     const card = issueCard(issue, job, view, now, tracked)
     // An issue with a live job belongs to the column of that job's role;
     // without one it waits in the column of the stage that comes next.
+    if (!job && issue.ownership_wait && !['merged', 'cancelled', 'failed', 'hold'].includes(issue.state)) { groups.owned.push(card); continue }
     if (!job && waitingOnDependencies(issue) && NEXT_ROLE[issue.state]) { groups.waiting.push(card); continue }
     const role = job && COLUMN_ROLES.includes(job.role as ColumnRole)
       ? job.role as ColumnRole
@@ -404,8 +409,8 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   const verbs: [JobRole, string][] = [['build', 'building'], ['review', 'reviewing'], ['audit', 'auditing']]
   const workingMeaning = verbs.map(([role, verb]) => `${count(role)} of ${slots[role] ?? 0} ${verb}`).join(' · ')
     + (count('recovery') ? ` · ${count('recovery')} investigating` : '')
-  const queued = issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue)).length
-  const merging = issues.filter(issue => issue.state === 'audited').length
+  const queued = issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length
+  const merging = issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length
   const refused = (view.observation?.errors ?? []).filter(error => /refused to merge/.test(error.reason)).length
   const attention = issues.filter(issue => ATTENTION_STATES.includes(issue.state))
   // A merge count only means something over a time frame. Whether the merge

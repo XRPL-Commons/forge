@@ -222,6 +222,14 @@ watch(() => panel.value.key, (key, before) => {
         <p v-if="!attentionCount" class="mt-2 text-xs text-muted">No issues need your attention.</p>
       </section>
 
+      <section v-if="groups.owned.length" id="owned" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">
+        <h2 class="text-sm font-semibold text-white">Owned by someone else · {{ groups.owned.length }}</h2>
+        <p class="mt-0.5 text-xs text-muted">Forge checks again automatically when these issues are handed over.</p>
+        <div class="mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+          <IssueCard v-for="card in groups.owned" :key="card.key" :card="card" @open="open(card)" />
+        </div>
+      </section>
+
       <!-- Blocked by open dependencies: not queued for a worker, and back in
            its stage by itself once the issues it names are closed. -->
       <section v-if="groups.waiting.length" id="waiting" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-bg p-3">

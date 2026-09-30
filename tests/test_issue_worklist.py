@@ -435,7 +435,12 @@ class WorklistTests(unittest.TestCase):
         self.tracked(); self.ledger.hold('1:1', LEGACY_SETUP_REASON)
         self.github.value['labels'].append({'name': 'wip'})
         Supervisor(self.ledger, Engine(), self.github, self.settings, self.actions.config).reconcile(self.ledger.read()['issues']['1:1'])
-        self.assertIn('Existing work', self.ledger.read()['issues']['1:1']['reason'])
+        held = self.ledger.read()['issues']['1:1']
+        self.assertEqual(held['ownership_wait']['headline'], 'Marked work in progress')
+        self.assertTrue(held['prerequisite_hold'])
+        self.github.value['labels'] = []
+        Supervisor(self.ledger, Engine(), self.github, self.settings, self.actions.config).reconcile(held)
+        self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'ready')
 
     def test_retry_releases_only_the_approach_hold_with_a_recorded_decision(self):
         from forge.factory.ledger import APPROACH_HOLD

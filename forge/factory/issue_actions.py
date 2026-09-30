@@ -315,6 +315,7 @@ class IssueActions:
                 # The assignees this decision writes are its own effect, never
                 # a conflict when a restarted controller replays it.
                 normalized['assignees'] = before['assignees'] = []
+                normalized['assignee_types'] = before['assignee_types'] = {}
             if issue_revision(normalized, compare_item) != issue_revision(before, compare_item) or issue_revision(plan['before'], compare_item) != decision['revision']:
                 raise ValueError('Issue state changed while applying the earlier decision.')
             self.validate_action(decision['action'], plan['before'], compare_item)

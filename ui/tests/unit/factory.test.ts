@@ -417,3 +417,30 @@ describe('issues waiting on dependencies', () => {
     expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(1)
   })
 })
+
+describe('issues owned by someone else', () => {
+  const owner = { headline: 'Assigned to @lucbocahut', plain: 'Unassign it on GitHub to let Forge work on it.' }
+  const owned = issue({ ownership_wait: owner, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
+  const v = view({ issues: [owned], jobs: [] })
+
+  it('shows the owner before dependencies and excludes it from the worker queue', () => {
+    const groups = groupIssues(v, now)
+    expect(groups.owned[0]).toMatchObject({ phaseLabel: owner.headline, reason: owner.plain })
+    expect(groups.waiting).toEqual([])
+    expect(groups.columns.build).toEqual([])
+    expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(0)
+  })
+
+  it('returns to dependency waiting when ownership clears', () => {
+    const groups = groupIssues(view({ issues: [{ ...owned, ownership_wait: null }], jobs: [] }), now)
+    expect(groups.owned).toEqual([])
+    expect(groups.waiting).toHaveLength(1)
+  })
+
+  it('keeps a running worker visible until it finishes', () => {
+    const live = job()
+    const groups = groupIssues(view({ issues: [{ ...owned, active: live.id }], jobs: [live] }), now)
+    expect(groups.owned).toEqual([])
+    expect(groups.columns.build[0]?.phaseLabel).toBe('Working')
+  })
+})
