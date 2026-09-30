@@ -384,3 +384,21 @@ Exhausting a controller cycle's GitHub budget defers the existing launch intent;
 it does not create a CI or repository-protection hold. Actual CI-read failures
 retain the candidate and stage and are rechecked with the availability retry
 interval. Discovery has a bounded share of the cycle so dispatch retains time.
+
+### Issue ownership and handoff
+
+The supervisor and issue panel use the same ownership check. A human assignee,
+`wip` label, or open pull request that claims the issue (for example, `Closes #12`)
+pauses new work. A casual mention of the issue does not claim it. Bot assignees do
+not take ownership. Forge recognizes its own candidate and verifies the author
+and repository of earlier Forge drafts; a branch name alone is insufficient.
+
+Activity shows the owner and the handoff instruction before dependency waiting.
+Forge checks again automatically. Removing the assignment or `wip` label, or
+closing/unlinking the competing PR, lets the issue continue once its other gates
+pass. The wait preserves the candidate and retry budget. Already running workers
+finish their current step; the supervisor blocks the next dispatch or merge.
+
+A reviewer assigned by Forge's recorded human-review action is still a reviewer
+while that candidate awaits approval or merge. That assignment does not transfer
+implementation ownership. Other assignees continue to block new work.

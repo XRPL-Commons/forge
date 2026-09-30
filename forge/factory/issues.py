@@ -12,6 +12,7 @@ from .contracts import HEADLINE_LIMIT, MAX_FAILURES, claims_issue, clamp, digest
 from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
 from .ledger import APPROACH_HOLD
+from .ownership import forge_branch, ownership
 
 MAX_AGE = 300
 COLLABORATOR_AGE = 600
@@ -28,11 +29,12 @@ def facts(issue):
             'content_hash': digest(issue.get('body') or ''), 'body_truncated': len(issue.get('body') or '') > 16000,
             'state': issue['state'], 'updated_at': issue.get('updated_at'),
             'labels': sorted(labels(issue)),
-            'assignees': [a['login'] for a in issue.get('assignees', [])]}
+            'assignees': [a['login'] for a in issue.get('assignees', [])],
+            'assignee_types': {a['login']: a.get('type') for a in issue.get('assignees', [])}}
 
 
 def revision(issue, item):
-    public = {k: issue.get(k) for k in ('number', 'title', 'content_hash', 'state', 'assignees')}
+    public = {k: issue.get(k) for k in ('number', 'title', 'content_hash', 'state', 'assignees', 'assignee_types')}
     public['labels'] = sorted(l for l in labels(issue) if not l.startswith('forge:'))
     tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request', 'environment_override', 'environment_choice', 'environment_retry')}
     if (item or {}).get('decision_version'):
@@ -148,23 +150,6 @@ def why_for(case, item):
     return ''
 
 
-def ownership_summary(issue, external):
-    """Who holds this issue, named, and how to hand it to Forge."""
-    if external:
-        pr = external[0]
-        who = '@' + pr['author'] if pr.get('author') else 'Someone'
-        return {'headline': f"{who} has pull request #{pr['number']} open",
-                'plain': 'Forge stays away so nothing is done twice. Merge or close that pull request, '
-                         'or remove its link to this issue, to let Forge work on it.'}
-    assignees = issue.get('assignees') or []
-    if assignees:
-        names = ', '.join('@' + str(a) for a in assignees)
-        return {'headline': f'Assigned to {names}',
-                'plain': 'Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it.'}
-    return {'headline': 'Marked work in progress',
-            'plain': 'The issue has the wip label, so Forge stays away. Remove the label on GitHub to let Forge work on it.'}
-
-
 def summary_for(case, item, held):
     written = ((item.get('environment_hold') or {}).get('summary') if case == 'environment_hold'
                else item.get('last_summary') if case in WORKER_LED else None)
@@ -196,10 +181,6 @@ def attempts(item):
     return {'failed': sum(1 for f in failures[start:] if f.get('charged', True)), 'limit': MAX_FAILURES}
 
 
-def forge_branch(pr, number):
-    return str(pr.get('branch') or '').startswith(f'forge/issue-{number}-')
-
-
 def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     item = item or {}
     held = labels(issue).intersection(runtime['hold_labels'])
@@ -222,7 +203,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         or audit.get('human_required') == 'required' and item.get('reason') == audit.get('human_reason'))
     human_approval = gate.get('kind') == 'approval' or legacy_approval
     # Forge's own earlier drafts are not someone else's work.
-    external = [p for p in linked if p['number'] != owned_pr and not forge_branch(p, number)]
+    owner = ownership(issue, item, repo['name'], prs)
     if owned_pr and not any(p['number'] == owned_pr for p in linked):
         linked.append({'number': owned_pr, 'title': 'Forge pull request'})
     kind = lambda p: 'candidate' if p['number'] == owned_pr else 'forge_attempt' if forge_branch(p, number) else 'external'
@@ -234,7 +215,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         state, detail, case = 'completed', 'Completed and merged.' if merged else 'Closed on GitHub.', 'merged' if merged else 'closed'
     elif item.get('operator_request'):
         state, detail, case = 'waiting', 'Applying your decision. Forge will confirm it before continuing.', 'applying'
-    elif item.get('active') and not (item.get('active_role') == 'merge' and gate.get('kind') in ('approval', 'blocked', 'refused')):
+    elif item.get('active') and not (item.get('active_role') == 'merge' and (owner or gate.get('kind') in ('approval', 'blocked', 'refused'))):
         state, detail = 'working', {'build': 'Building', 'review': 'Reviewing', 'audit': 'Security review', 'merge': 'Merging', 'recovery': 'Investigating a failed attempt'}.get(item.get('active_role'), 'Working')
         case = item.get('active_role') if item.get('active_role') in SUMMARIES else 'working'
     elif cleanup:
@@ -257,8 +238,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions, case = (['recheck'] if ready else []), ('setup_ready' if ready else 'setup')
     elif item.get('state') == 'failed':
         state, detail, actions, case = 'attention', item.get('reason') or 'The last attempt failed.', ['retry'], 'failed'
-    elif external or (not owned_pr and (issue.get('assignees') or 'wip' in labels(issue))):
-        state, detail, case = 'attention', 'Existing work needs review before Forge starts another attempt.', 'external'
+    elif owner:
+        state, detail, case = 'waiting', owner['plain'], 'external'
     elif item.get('state') == 'cancelled':
         state, detail, actions, case = 'attention', 'The previous attempt was stopped. Review before resuming.', ['resume'], 'cancelled'
     elif item.get('operator_hold'):
@@ -300,7 +281,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         if state not in ('completed', 'working'):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
     summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
-               else ownership_summary(issue, external) if case == 'external' else summary_for(case, item, held))
+               else owner if case == 'external' else summary_for(case, item, held))
     return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
                         if case == 'approval_needed' and owned_pr and human_approval else None,
@@ -397,7 +378,8 @@ class IssueInventory:
                                     scan.update(state='closed', page=1)
                                 else:
                                     entry['pulls'] = [{'number': p['number'], 'title': p.get('title', ''), 'body': (p.get('body') or '')[:262144],
-                                                       'branch': (p.get('head') or {}).get('ref'), 'author': (p.get('user') or {}).get('login')}
+                                                       'branch': (p.get('head') or {}).get('ref'), 'author': (p.get('user') or {}).get('login'),
+                                                       'forge_owned': p.get('forge_owned', False)}
                                                       for p in self.github.pulls(item)]
                                     entry.update(issues=scan['issues'], complete=True, refreshing=False)
                                     entry.pop('scan', None)

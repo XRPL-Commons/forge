@@ -1,6 +1,7 @@
 """Role-scoped GitHub effects and authoritative evidence, never terminal inference."""
 import json
 import base64
+import re
 from datetime import datetime
 import time
 from urllib.parse import quote
@@ -197,7 +198,15 @@ class GitHub:
         return value, requirements
 
     def pulls(self, item):
-        return self.pages('controller', item, '/pulls?state=open')
+        rows = self.pages('controller', item, '/pulls?state=open')
+        publisher = None
+        for pr in rows:
+            match = re.match(r'forge/issue-(\d+)-', str((pr.get('head') or {}).get('ref') or ''))
+            pr['forge_owned'] = False
+            if match:
+                publisher = publisher or self.publisher('build')
+                pr['forge_owned'] = own_build_pr(pr, item['repo_id'], int(match[1]), publisher)
+        return rows
 
     def collaborators(self, item):
         """People who can approve here: push access, offered as reviewer choices."""

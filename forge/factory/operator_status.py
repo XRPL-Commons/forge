@@ -22,7 +22,7 @@ def overview(data, repositories, runtime, observation, active, now):
         unavailable = capacity['reason'] == 'telemetry_unavailable'
         return result('Waiting for memory checks' if unavailable else 'Waiting for available memory',
                       'Forge will retry automatically. Existing workers continue and queued issues keep their place.')
-    working = next((i for i in current if i['active']), None)
+    working = next((i for i in current if i['active'] and not (i.get('ownership_wait') and data['jobs'][i['active']]['role'] == 'merge')), None)
     if working:
         job = data['jobs'][working['active']]
         step = {'build': 'Building', 'review': 'Reviewing', 'audit': 'Auditing', 'merge': 'Merging', 'recovery': 'Investigating'}.get(job['role'], 'Working on')
@@ -54,7 +54,11 @@ def overview(data, repositories, runtime, observation, active, now):
     if current and unavailable:
         return result('Waiting for a coding account', 'A coding account is temporarily unavailable. Forge will retry when it can.', '/settings/harnesses', 'Review coding accounts')
     if current:
-        queued = next((i for i in current if NEXT_ROLE.get(i['state'])), None)
+        queued = next((i for i in current if NEXT_ROLE.get(i['state']) and not i.get('ownership_wait') and not i.get('blocked_dependencies')), None)
+        owned = next((i for i in current if i.get('ownership_wait')), None)
+        if not queued and owned:
+            return result(owned['ownership_wait']['headline'], owned['ownership_wait']['plain'],
+                          '/issues?issue=' + owned['key'], 'View issue')
         if queued and runtime['slots'][NEXT_ROLE[queued['state']]] == 0:
             return result('Worker capacity is paused', 'The next stage has no worker slots enabled.', '/settings', 'Review worker capacity')
         if queued and queued.get('retry_after', 0) > now:

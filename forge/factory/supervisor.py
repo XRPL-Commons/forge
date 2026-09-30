@@ -8,8 +8,9 @@ from pathlib import Path
 import time
 import json
 
-from .contracts import NEXT_ROLE, ROLES, dependencies, candidate, digest, result, references_issue, environment_key, summary as plain_summary
+from .contracts import NEXT_ROLE, ROLES, dependencies, candidate, digest, result, environment_key, summary as plain_summary
 from .config import policy
+from .ownership import ownership
 from .memory import allocation as memory_allocation, confirmed as memory_confirmed, pending as memory_pending
 from .capacity import memory_bytes
 from .providers import available as provider_available
@@ -43,6 +44,7 @@ class Supervisor:
         self.errors = []
         self.capacity = None
         self.environment_evidence = {}
+        self.ownership_pulls = {}
         root = self.factory_root()
         if root is not None:
             from .discussions import Discussions, reserve_logins
@@ -50,6 +52,7 @@ class Supervisor:
 
     def cycle(self):
         self.environment_evidence = {}
+        self.ownership_pulls = {}
         self.errors = []
         self.capacity = None
         budget = self.config['cycle_budget_seconds']
@@ -343,6 +346,8 @@ class Supervisor:
             return
         issue, requirements = self.github.issue(item)
         if issue['state'] != 'open':
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['ownership_wait'] = None
             self.ledger.cancel(item['key'], 'Issue closed externally; reconcile any published PR separately')
             return
         if requirements != job['requirements'] or job['policy'] != digest(policy(self.config)):
@@ -413,6 +418,22 @@ class Supervisor:
         with self.ledger.transaction() as data:
             data['issues'][key]['requirements'] = requirements
 
+    def ownership_ready(self, item, issue, pulls=None, *, fresh=False):
+        # Share a repository read within observation, but refresh at dispatch
+        # and merge boundaries. No cache survives a controller cycle.
+        key = item['repo_id']
+        if pulls is not None:
+            self.ownership_pulls[key] = pulls
+        elif fresh or key not in self.ownership_pulls:
+            self.ownership_pulls[key] = self.github.pulls(item)
+        owner = ownership(issue, item, item['repo'], self.ownership_pulls[key])
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            if current.get('ownership_wait') != owner:
+                self.ledger.event(data, current, 'ownership_changed', owner=owner)
+            current['ownership_wait'] = owner
+        return owner is None
+
     def dependency_ready(self, item, issue):
         blocked = []
         for number in dependencies(issue.get('body')):
@@ -466,15 +487,20 @@ class Supervisor:
                             job['outcome'] = 'accepted' if job['role'] == 'merge' else 'external_merge'
                             if not job['cleanup']:
                                 job.update(fenced=True, phase='stopping')
-                        current.update(state='merged', active=None, reason=None)
+                        current.update(state='merged', active=None, reason=None, ownership_wait=None)
                         self.ledger.event(data, current, 'merged', pr=pr['number'], sha=pr.get('merge_commit_sha'))
                 completed = self.ledger.read()['issues'][item['key']]
                 self.github.close_merged_issue(completed, issue)
                 self.github.labels(completed)
                 return
         if issue['state'] != 'open':
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['ownership_wait'] = None
             self.ledger.cancel(item['key'], 'Issue closed externally')
             self.github.labels(self.ledger.read()['issues'][item['key']])
+            return
+        ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
+        if not ownership_clear and not item.get('active'):
             return
         if item.get('environment_hold') and item['state'] == 'hold':
             labels = {label['name'] for label in issue.get('labels', [])}
@@ -535,12 +561,6 @@ class Supervisor:
             if labels.intersection(self.config['hold_labels']):
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
-            if item['prerequisite_hold'].get('legacy'):
-                if (issue.get('assignees') or 'wip' in labels
-                        or any(references_issue(p.get('body'), item['repo'], item['number'])
-                               for p in self.github.pulls(item))):
-                    self.ledger.hold(item['key'], 'Existing work needs review before Forge starts another attempt')
-                    return
             if self.settings.admission(item['repo'])['allowed'] and self.github.protections(item, {'base_ref': self.github.target(item)}):
                 self.ledger.resume_protection(item['key'])
                 item = self.ledger.read()['issues'][item['key']]
@@ -575,7 +595,7 @@ class Supervisor:
                 return
         if item['active'] and self.ledger.read()['jobs'][item['active']]['role'] != 'merge':
             return
-        if item['state'] in ('audited', 'approval_needed'):
+        if ownership_clear and item['state'] in ('audited', 'approval_needed'):
             self.merge(item, pr)
         self.github.labels(self.ledger.read()['issues'][item['key']])
 
@@ -717,7 +737,7 @@ class Supervisor:
 
     def memory_priority(self, data):
         return next((item for item in memory_pending(data, self.config)
-                     if not item.get('operator_sync') and not item.get('operator_hold') and not item.get('blocked_dependencies')
+                     if not item.get('operator_sync') and not item.get('operator_hold') and not item.get('blocked_dependencies') and not item.get('ownership_wait')
                      and item.get('retry_after', 0) <= self.clock()
                      and self.settings.admission(item['repo'])['allowed']), None)
 
@@ -780,6 +800,8 @@ class Supervisor:
                             # Re-read at the launch boundary, including newly discovered
                             # issues that have not entered the observation rotation yet.
                             issue, requirements = self.github.issue(item)
+                            if not self.ownership_ready(item, issue, fresh=True):
+                                continue
                             if item.get('decision_version'):
                                 from .issue_actions import IssueActions
                                 root = self.factory_root() or self.ledger.store.root.parent.parent
@@ -841,7 +863,7 @@ class Supervisor:
             failure = next((f for f in priority['failures'] if f['investigation'] == 'pending'), None) if role == 'recovery' else None
             return priority, failure
         for item in sorted(data['issues'].values(), key=lambda i: (i['created_at'], i['repo_id'], i['number'])):
-            if item.get('operator_request') or item.get('operator_sync') or item.get('operator_hold') or item.get('environment_hold') or item.get('blocked_dependencies'):
+            if item.get('operator_request') or item.get('operator_sync') or item.get('operator_hold') or item.get('environment_hold') or item.get('blocked_dependencies') or item.get('ownership_wait'):
                 continue
             if not self.settings.admission(item['repo'])['allowed'] or item.get('retry_after', 0) > self.clock():
                 continue
@@ -876,8 +898,7 @@ class Supervisor:
                 continue
             item = {'repo': repo['name'], 'repo_id': repo['id']}
             try:
-                # Existing PRs on first encounter are held for explicit adoption.
-                # Never guess legacy ownership from titles or conversational links.
+                # Claiming PRs wait for handoff and are checked again on observation.
                 pulls = self.github.pulls(item)
                 known = self.ledger.read()['issues']
                 for issue in sorted(self.github.issues(item), key=lambda i: i['number']):
@@ -885,11 +906,9 @@ class Supervisor:
                         continue  # Existing issues already have their own reconciliation rotation.
                     labels = {l['name'] for l in issue.get('labels', [])}
                     hold = 'Issue carries a hold or dependency label' if labels.intersection(self.config['hold_labels']) else None
-                    associated = any(references_issue(p.get('body'), repo['name'], issue['number']) for p in pulls)
-                    if associated:
-                        hold = 'Existing PR requires explicit assignment adoption before automation'
                     _, requirements = self.github.issue({**item, 'number': issue['number']})
-                    self.ledger.discover(repo, issue['number'], requirements, hold=hold, title=issue.get('title'))
+                    key = self.ledger.discover(repo, issue['number'], requirements, hold=hold, title=issue.get('title'))
+                    self.ownership_ready(self.ledger.read()['issues'][key], issue, pulls)
             except GitHubBudgetExhausted:
                 # Interrupted mid-repository: leave it unstamped so it is the
                 # first repository read next cycle, resuming where it stopped.

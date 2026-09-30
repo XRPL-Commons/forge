@@ -14,6 +14,6 @@ export function summarizeActivity(payload: any, now: number) {
   }
   const repositories = Array.isArray(payload?.repositories) ? payload.repositories : []
   const enabled = new Set(repositories.filter((r: any) => r.enabled).map((r: any) => r.name))
-  const queued = (payload?.issues ?? []).filter((i: any) => !i.active && ['ready', 'built', 'reviewed'].includes(i.state) && !i.blocked_dependencies?.length && (!Array.isArray(payload?.repositories) || enabled.has(i.repo))).length
+  const queued = (payload?.issues ?? []).filter((i: any) => !i.active && ['ready', 'built', 'reviewed'].includes(i.state) && !i.blocked_dependencies?.length && !i.ownership_wait && (!Array.isArray(payload?.repositories) || enabled.has(i.repo))).length
   return { working, queued, fresh }
 }
