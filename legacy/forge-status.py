@@ -142,7 +142,7 @@ class H(BaseHTTPRequestHandler):
         return True
 
     def _auth_get(self, url):
-        from forge.operator_auth import read_cookie, FLOW_COOKIE, SESSION_COOKIE, cookie
+        from forge.operator_auth import read_cookie, FLOW_COOKIE, SESSION_COOKIE, cookie, failure_reason
         if url.path == '/api/auth/session':
             self._send(json.dumps({'ok': True, 'enabled': bool(self._auth_config),
                                   'operator': self._session['operator'] if self._session else None,
@@ -160,12 +160,15 @@ class H(BaseHTTPRequestHandler):
                 self._redirect(target, [('Set-Cookie', value)])
             else:
                 query = parse_qs(url.query, keep_blank_values=True)
-                if set(query) != {'state', 'code'} or any(len(v) != 1 for v in query.values()):
+                if set(query) not in ({'state', 'code'}, {'state', 'code', 'iss'}) or any(len(v) != 1 for v in query.values()):
                     raise ValueError('Invalid callback')
+                if 'iss' in query and query['iss'] != ['https://github.com']:
+                    raise ValueError('Invalid callback issuer')
                 value, target = self._auth.callback(query['state'][0], query['code'][0],
                                             read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token, with_target=True)
                 self._redirect(target, [('Set-Cookie', value), ('Set-Cookie', cookie(FLOW_COOKIE))])
-        except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+        except (ValueError, OSError, RuntimeError, KeyError, TypeError) as error:
+            print(json.dumps({'event': 'operator_sign_in_failed', 'reason': failure_reason(error)}), flush=True)
             self._redirect('/login?error=sign_in', [('Set-Cookie', cookie(FLOW_COOKIE))])
         return True
 

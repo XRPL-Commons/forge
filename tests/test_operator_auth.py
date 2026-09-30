@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlsplit, parse_qs
 
 from forge.operator_auth import (OperatorAuth, AuthError, SESSION_COOKIE, FLOW_COOKIE,
-                                 read_cookie, digest, SESSION_SECONDS, github_identity)
+                                 read_cookie, digest, SESSION_SECONDS, github_identity, failure_reason)
 from forge.state import StateError
 from tests import test_settings_http
 from tests.test_dashboard import dashboard
@@ -164,6 +164,7 @@ class OperatorAuthTests(unittest.TestCase):
         with patch('forge.operator_auth.build_opener', return_value=opener):
             with self.assertRaises(AuthError):
                 github_identity(self.auth.config(), 'code', 'verifier')
+
         self.assertEqual(opener.open.call_count, 1)
         request = opener.open.call_args.args[0]
         self.assertEqual(request.full_url, 'https://github.com/login/oauth/access_token')
@@ -171,6 +172,11 @@ class OperatorAuthTests(unittest.TestCase):
         with patch('forge.operator_auth.build_opener', return_value=opener):
             with self.assertRaisesRegex(AuthError, '^GitHub identity verification failed$'):
                 github_identity(self.auth.config(), 'code', 'verifier')
+
+
+    def test_failure_diagnostics_have_a_closed_vocabulary(self):
+        self.assertEqual(failure_reason(AuthError('Missing or invalid sign-in cookie')), 'missing_flow_cookie')
+        self.assertEqual(failure_reason(RuntimeError('credential-in-upstream-error')), 'internal_error')
 
 
 class OperatorHTTPTests(unittest.TestCase):
@@ -194,6 +200,9 @@ class OperatorHTTPTests(unittest.TestCase):
             headers.update(Cookie=SESSION_COOKIE + '=' + self.token)
             headers.setdefault('X-Forge-Action', self.session['csrf'])
         handler = self.handler(path, body, **headers)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
         getattr(handler, 'do_POST' if body is not None else 'do_GET')()
         return handler
 
@@ -211,6 +220,35 @@ class OperatorHTTPTests(unittest.TestCase):
         self.assertEqual(result, {'ok': True, 'enabled': True, 'operator': None})
         handler = self.request('/api/auth/session', signed=True)
         self.assertEqual(json.loads(handler._send.call_args.args[0])['controls_token'], self.session['csrf'])
+
+    def test_github_callback_accepts_optional_matching_issuer(self):
+        from urllib.parse import urlencode
+        original = OperatorAuth.callback
+        def callback(auth, *args, **kwargs):
+            auth.identity = lambda *args: {'id': 123, 'login': 'operator'}
+            return original(auth, *args, **kwargs)
+        for issuer in ({}, {'iss': 'https://github.com'}):
+            url, cookie = self.auth.begin()
+            query = {'state': parse_qs(urlsplit(url).query)['state'][0], 'code': 'code', **issuer}
+            with patch.object(OperatorAuth, 'callback', autospec=True, side_effect=callback):
+                handler = self.request('/auth/github/callback?' + urlencode(query),
+                                       Cookie=FLOW_COOKIE + '=' + read_cookie(cookie, FLOW_COOKIE))
+            handler.send_header.assert_any_call('Location', '/')
+            cookies = [call.args[1] for call in handler.send_header.call_args_list if call.args[0] == 'Set-Cookie']
+            token = next(read_cookie(value, SESSION_COOKIE) for value in cookies if value.startswith(SESSION_COOKIE + '='))
+            self.assertEqual(self.auth.session(token)['operator']['id'], 123)
+
+    def test_callback_rejects_wrong_duplicate_or_empty_issuer_before_exchange(self):
+        suffixes = ('&iss=https%3A%2F%2Fevil.example', '&iss=',
+                    '&iss=https%3A%2F%2Fgithub.com&iss=https%3A%2F%2Fgithub.com',
+                    '&unexpected=value', '&code=duplicate')
+        for suffix in suffixes:
+            with patch.object(OperatorAuth, 'callback') as callback, patch('sys.stdout', new_callable=io.StringIO) as output:
+                handler = self.request('/auth/github/callback?state=' + 's' * 43 + '&code=private-code' + suffix)
+            callback.assert_not_called()
+            handler.send_header.assert_any_call('Location', '/login?error=sign_in')
+            self.assertNotIn('private-code', output.getvalue())
+            self.assertIn('operator_sign_in_failed', output.getvalue())
 
     def test_session_csrf_replaces_global_capability(self):
         with patch.object(dashboard, 'settings_service') as service:
