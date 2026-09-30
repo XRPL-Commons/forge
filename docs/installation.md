@@ -141,8 +141,11 @@ If none pass, the factory stays stopped. Cleanup intent is always retained.
 Open `http://127.0.0.1:8787/onboarding` to configure GitHub Apps, choose repositories,
 verify repository protection, and explicitly start Forge. From your computer,
 forward the port with `ssh -L 8787:127.0.0.1:8787 <you>@<vm>` (any account you can SSH into; the service account needs no SSH login).
-The UI has no per-user authentication: bind only to loopback or your trusted
-tailnet (`--bind <tailnet-address>`).
+Before [operator sign-in](operator-sign-in.md) is configured, bind the UI only to
+loopback or your trusted tailnet (`--bind <tailnet-address>`). The local
+[`forge server setup` command](cli-server-setup.md) configures sign-in and private
+HTTPS on an existing Tailscale host. Sign-in is required for external agent
+connections.
 
 Port 8787 is served by the Nuxt/Nitro operator UI (`ui/`). It proxies the Python
 status API, which listens only on `127.0.0.1:8788`. Update keeps the `--bind`
