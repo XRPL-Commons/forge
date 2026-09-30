@@ -12,12 +12,12 @@ from .contracts import NAME, SetupError, baseline, positive, require
 LIMIT = 4 * 1024 * 1024
 
 
-def run_bounded(argv, *, payload=None, environ=None, timeout=30):
+def run_bounded(argv, *, payload=None, environ=None, timeout=30, allowed_codes=(0,)):
     """Drain both pipes with a total cap. Never echo a child's diagnostics."""
     env = {k: v for k, v in (os.environ if environ is None else environ).items()
            if k in {'PATH', 'HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'GH_CONFIG_DIR',
                     'GH_TOKEN', 'GITHUB_TOKEN', 'LANG', 'LC_ALL', 'TMPDIR',
-                    'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'}}
+                    'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK'}}
     env.update(GH_HOST='github.com', GH_PROMPT_DISABLED='1', GH_PAGER='cat', GH_DEBUG='')
     data = None if payload is None else json.dumps(payload, allow_nan=False).encode()
     require(data is None or len(data) <= 65536)
@@ -56,7 +56,7 @@ def run_bounded(argv, *, payload=None, environ=None, timeout=30):
                     if key.data == 'stdout':
                         output.extend(chunk)
             code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
-        if code:
+        if code not in allowed_codes:
             raise SetupError('github_request_failed', 'GitHub request failed; check local login, permissions and the requested operation.')
         return bytes(output)
     except (OSError, subprocess.SubprocessError):

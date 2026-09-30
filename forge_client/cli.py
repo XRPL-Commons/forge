@@ -26,14 +26,31 @@ def parser():
     sub.add_parser('disconnect').add_argument('server')
     requirements = sub.add_parser('requirements')
     requirements.add_argument('server'); requirements.add_argument('repository')
+    server = sub.add_parser('server').add_subparsers(dest='server_command', required=True)
+    setup = server.add_parser('setup', help='Bootstrap operator sign-in on an existing host over SSH')
+    setup.add_argument('--ssh', required=True, help='Explicit SSH host alias or user@hostname; known host key required')
+    setup.add_argument('--source', required=True, help='Absolute Forge source directory on that host')
+    setup.add_argument('--root', required=True, help='Absolute private Forge runtime directory on that host')
+    setup.add_argument('--origin', required=True, help='This host’s private Tailscale HTTPS origin')
+    setup.add_argument('--operator', action='append', required=True, help='GitHub login to authorize; resolved locally to an immutable ID')
+    setup.add_argument('--client-id', help='Dedicated identity-only GitHub OAuth App client ID')
+    mode = setup.add_mutually_exclusive_group()
+    mode.add_argument('--apply', action='store_true', help='Configure the selected host')
+    mode.add_argument('--resume', action='store_true', help='Finish an interrupted setup without another secret')
+    setup.add_argument('--secret-stdin', action='store_true', help='Read the identity-app secret from stdin; never a command argument')
     sub.add_parser('commands')
     return p
 
 
 def execute(args):
+    if args.command == 'server':
+        from .bootstrap import setup
+        return setup(args)
     if args.command == 'commands':
-        return {'commands': ['connect', 'connect --resume', 'auth status', 'disconnect', 'requirements'],
-                'credential_storage': 'OS keyring', 'transport': 'verified HTTPS'}
+        return {'commands': ['connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'server setup', 'server setup --apply', 'server setup --resume'],
+                'credential_storage': 'OS keyring', 'transport': 'verified HTTPS',
+                'server_setup': {'authority': 'explicit SSH host', 'secret_input': 'hidden prompt or stdin',
+                                 'scope': 'existing Tailscale host'}}
     client = Client(args.server)
     with connection_lock(client.key):
         if args.command == 'connect':

@@ -12,6 +12,8 @@ Use an existing, active Forge server with [operator sign-in](operator-sign-in.md
 and verified HTTPS configured. The Agent connections settings page shows the
 missing prerequisite on older private-network deployments. Client endpoints
 remain disabled there; browser action tokens cannot substitute for sign-in.
+The local [`forge server setup`](cli-server-setup.md) command can configure that
+prerequisite on an existing Tailscale host over SSH.
 
 The local client currently supports macOS and Linux with Python 3.10 or newer,
 `gh`, and an unlocked macOS Keychain or Linux Secret Service. GitHub authentication
