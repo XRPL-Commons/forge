@@ -16,8 +16,12 @@ export default async function (page, { base, scenario, requests }) {
   await page.getByRole('alert').filter({ hasText: 'Sign-in did not complete' }).waitFor()
   await page.context().addCookies([{ name: 'synthetic_operator', value: 'yes', url: base }])
   await page.goto(base + '/')
-  await page.getByText('forge-operator', { exact: true }).waitFor()
-  await page.getByRole('button', { name: 'Sign out' }).click()
+  const account = page.getByRole('button', { name: 'Account menu for forge-operator' })
+  await account.waitFor()
+  assert.equal(await page.getByText('forge-operator', { exact: true }).count(), 0)
+  await account.click()
+  await page.getByRole('menu').getByText('forge-operator', { exact: true }).waitFor()
+  await page.getByRole('menuitem', { name: 'Sign out' }).click()
   await page.waitForURL(base + '/login')
   assert.equal(await page.getByText('forge-operator', { exact: true }).count(), 0)
   reads = await requests()
@@ -26,8 +30,10 @@ export default async function (page, { base, scenario, requests }) {
   // Expiry during an active page clears cached private responses and signs out.
   await page.context().addCookies([{ name: 'synthetic_operator', value: 'yes', url: base }])
   await page.goto(base + '/')
-  await page.getByText('forge-operator', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Account menu for forge-operator' }).waitFor()
   await page.context().clearCookies()
   await scenario('auth-expired')
-  await page.waitForURL(base + '/login', { timeout: 15000 })
+  // Concurrent expired reads can replace an in-flight login navigation.
+  await page.getByRole('link', { name: 'Continue with GitHub' }).waitFor({ timeout: 15000 })
+  assert.equal(page.url(), base + '/login')
 }

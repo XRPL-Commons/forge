@@ -1,11 +1,17 @@
 <script setup lang="ts">
+import type { DropdownMenuItem } from '@nuxt/ui'
 import type { OnboardingView } from '~/utils/onboarding'
 const route = useRoute()
 const { session, logout } = useOperator()
 const logoutError = ref('')
 async function signOut() {
+  logoutError.value = ''
   try { await logout() } catch { logoutError.value = 'Sign-out failed. Try again.' }
 }
+const accountItems = computed<DropdownMenuItem[][]>(() => [
+  [{ label: session.value?.operator?.login, type: 'label' }],
+  [{ label: 'Sign out', icon: 'i-lucide-log-out', onSelect: signOut }],
+])
 // The setup state the phase middleware already read on this navigation.
 // While Forge is not started, Activity and Settings · General redirect to
 // guided setup, so the nav offers Setup and GitHub access instead (#73).
@@ -30,11 +36,6 @@ const links = computed(() => [
     </NuxtLink>
     <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
       <ActivityPill />
-      <div v-if="session?.operator" class="flex items-center gap-2 text-sm">
-        <span>{{ session.operator.login }}</span>
-        <UButton variant="ghost" size="sm" @click="signOut">Sign out</UButton>
-        <span v-if="logoutError" role="alert">{{ logoutError }}</span>
-      </div>
       <nav aria-label="Main navigation" class="flex items-center gap-4 text-sm sm:gap-5">
         <NuxtLink
           v-for="link in links"
@@ -47,6 +48,16 @@ const links = computed(() => [
           <UIcon name="i-lucide-circle-help" class="size-5" aria-hidden="true" />
         </NuxtLink>
       </nav>
+      <UDropdownMenu v-if="session?.operator" :items="accountItems" :content="{ align: 'end' }">
+        <UButton
+          icon="i-lucide-circle-user-round"
+          color="neutral"
+          variant="ghost"
+          :aria-label="`Account menu for ${session.operator.login}`"
+          title="Account"
+        />
+      </UDropdownMenu>
+      <span v-if="logoutError" role="alert" class="text-sm">{{ logoutError }}</span>
     </div>
   </header>
 </template>

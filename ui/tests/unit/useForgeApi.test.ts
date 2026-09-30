@@ -55,6 +55,19 @@ describe('useForgeApi', () => {
     await expect(api.get('/api/status')).rejects.toMatchObject({ status: 503, message: 'down' })
   })
 
+  it('redirects once when requests in several components expire together', async () => {
+    const replace = vi.spyOn(window.location, 'replace').mockImplementation(() => {})
+    try {
+      fetchRaw.mockRejectedValue({ response: { status: 401, _data: { reason: 'Sign in again' } } })
+      const first = useForgeApi(), second = useForgeApi()
+      const results = await Promise.allSettled([
+        first.get('/api/factory'), second.get('/api/issues'), second.act('/api/settings/sync', {}),
+      ])
+      expect(results.every(result => result.status === 'rejected')).toBe(true)
+      expect(replace).toHaveBeenCalledExactlyOnceWith('/login')
+    } finally { replace.mockRestore() }
+  })
+
   it('act sends X-Forge-Action equal to the stored token and Content-Type json', async () => {
     fetchRaw
       .mockResolvedValueOnce({ headers: new Headers(), status: 200, ok: true, _data: { ok: true, controls_token: 'secret-token' } })
