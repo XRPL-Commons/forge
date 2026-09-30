@@ -227,7 +227,7 @@ class OperatorHTTPTests(unittest.TestCase):
         def callback(auth, *args, **kwargs):
             auth.identity = lambda *args: {'id': 123, 'login': 'operator'}
             return original(auth, *args, **kwargs)
-        for issuer in ({}, {'iss': 'https://github.com'}):
+        for issuer in ({}, {'iss': 'https://github.com/login/oauth'}):
             url, cookie = self.auth.begin()
             query = {'state': parse_qs(urlsplit(url).query)['state'][0], 'code': 'code', **issuer}
             with patch.object(OperatorAuth, 'callback', autospec=True, side_effect=callback):
@@ -239,8 +239,8 @@ class OperatorHTTPTests(unittest.TestCase):
             self.assertEqual(self.auth.session(token)['operator']['id'], 123)
 
     def test_callback_rejects_wrong_duplicate_or_empty_issuer_before_exchange(self):
-        suffixes = ('&iss=https%3A%2F%2Fevil.example', '&iss=',
-                    '&iss=https%3A%2F%2Fgithub.com&iss=https%3A%2F%2Fgithub.com',
+        suffixes = ('&iss=https%3A%2F%2Fevil.example', '&iss=', '&iss=https%3A%2F%2Fgithub.com',
+                    '&iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth&iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth',
                     '&unexpected=value', '&code=duplicate')
         for suffix in suffixes:
             with patch.object(OperatorAuth, 'callback') as callback, patch('sys.stdout', new_callable=io.StringIO) as output:

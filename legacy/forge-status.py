@@ -162,7 +162,7 @@ class H(BaseHTTPRequestHandler):
                 query = parse_qs(url.query, keep_blank_values=True)
                 if set(query) not in ({'state', 'code'}, {'state', 'code', 'iss'}) or any(len(v) != 1 for v in query.values()):
                     raise ValueError('Invalid callback')
-                if 'iss' in query and query['iss'] != ['https://github.com']:
+                if 'iss' in query and query['iss'] != ['https://github.com/login/oauth']:
                     raise ValueError('Invalid callback issuer')
                 value, target = self._auth.callback(query['state'][0], query['code'][0],
                                             read_cookie(self.headers.get('Cookie', ''), FLOW_COOKIE), self._session_token, with_target=True)
