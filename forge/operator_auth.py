@@ -32,6 +32,22 @@ class AuthError(ValueError):
     pass
 
 
+def failure_reason(error):
+    """A closed diagnostic vocabulary: never log upstream errors or credentials."""
+    return {
+        'Invalid callback': 'invalid_callback_parameters',
+        'Invalid callback issuer': 'issuer_mismatch',
+        'Invalid sign-in state': 'invalid_state',
+        'Invalid sign-in code': 'invalid_code',
+        'Missing or invalid sign-in cookie': 'missing_flow_cookie',
+        'Sign-in expired or belongs to another browser': 'expired_or_mismatched_flow',
+        'GitHub identity verification failed': 'github_exchange_failed',
+        'Use a dedicated GitHub OAuth App with no requested scopes': 'github_token_rejected',
+        'This GitHub account is not an authorized Forge operator': 'operator_not_authorized',
+        'Operator authorization changed; sign in again': 'configuration_changed',
+    }.get(str(error), 'internal_error')
+
+
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -174,9 +190,12 @@ class OperatorAuth:
         return url, cookie(FLOW_COOKIE, browser, FLOW_SECONDS)
 
     def callback(self, state, code, browser, previous='', *, with_target=False):
-        if (not re.fullmatch(r'[A-Za-z0-9_-]{43}', state) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', browser)
-                or not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', code)):
-            raise AuthError('Invalid sign-in callback')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', state):
+            raise AuthError('Invalid sign-in state')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', code):
+            raise AuthError('Invalid sign-in code')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', browser):
+            raise AuthError('Missing or invalid sign-in cookie')
         with self.store.transaction() as data:
             config = self._config(data)
             if not config:
