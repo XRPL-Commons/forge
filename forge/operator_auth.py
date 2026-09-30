@@ -139,9 +139,11 @@ class OperatorAuth:
     def config(self):
         return self._config(self.store.read())
 
-    def configure(self, origin, client_id, client_secret, operators):
+    def configure(self, origin, client_id, client_secret, operators, *, if_unconfigured=False):
         config = configuration(origin, client_id, client_secret, operators)
         with self.store.transaction() as data:
+            if if_unconfigured and self._config(data):
+                raise AuthError('Operator sign-in was configured concurrently')
             instance = data.get('instance_id', secrets.token_urlsafe(32))
             data.clear()
             data.update(instance_id=instance, version=1, config=config, epoch=secrets.token_urlsafe(32), sessions={}, flows={})

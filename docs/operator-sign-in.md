@@ -6,6 +6,13 @@ approval and scoped client tokens are described in [agent connections](agent-con
 
 ## Configure an existing server once
 
+For a private Tailscale host, use the local
+[`forge server setup` command](cli-server-setup.md). It resolves operator IDs,
+transfers the identity secret privately over SSH, configures services and HTTPS,
+and supports retries without revoking sessions.
+
+### Manual host configuration
+
 1. Arrange verified HTTPS for the existing Forge UI using your reverse proxy or
    private network HTTPS service. Forward to the UI, never directly to the Python
    status API. Keep the current private network restrictions during setup.
