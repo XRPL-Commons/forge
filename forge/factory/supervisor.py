@@ -44,6 +44,7 @@ class Supervisor:
         self.errors = []
         self.capacity = None
         self.environment_evidence = {}
+        self.ownership_pulls = {}
         root = self.factory_root()
         if root is not None:
             from .discussions import Discussions, reserve_logins
@@ -51,6 +52,7 @@ class Supervisor:
 
     def cycle(self):
         self.environment_evidence = {}
+        self.ownership_pulls = {}
         self.errors = []
         self.capacity = None
         budget = self.config['cycle_budget_seconds']
@@ -416,8 +418,15 @@ class Supervisor:
         with self.ledger.transaction() as data:
             data['issues'][key]['requirements'] = requirements
 
-    def ownership_ready(self, item, issue, pulls=None):
-        owner = ownership(issue, item, item['repo'], self.github.pulls(item) if pulls is None else pulls)
+    def ownership_ready(self, item, issue, pulls=None, *, fresh=False):
+        # Share a repository read within observation, but refresh at dispatch
+        # and merge boundaries. No cache survives a controller cycle.
+        key = item['repo_id']
+        if pulls is not None:
+            self.ownership_pulls[key] = pulls
+        elif fresh or key not in self.ownership_pulls:
+            self.ownership_pulls[key] = self.github.pulls(item)
+        owner = ownership(issue, item, item['repo'], self.ownership_pulls[key])
         with self.ledger.transaction() as data:
             current = data['issues'][item['key']]
             if current.get('ownership_wait') != owner:
@@ -490,7 +499,7 @@ class Supervisor:
             self.ledger.cancel(item['key'], 'Issue closed externally')
             self.github.labels(self.ledger.read()['issues'][item['key']])
             return
-        ownership_clear = self.ownership_ready(item, issue)
+        ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
         if not ownership_clear and not item.get('active'):
             return
         if item.get('environment_hold') and item['state'] == 'hold':
@@ -791,7 +800,7 @@ class Supervisor:
                             # Re-read at the launch boundary, including newly discovered
                             # issues that have not entered the observation rotation yet.
                             issue, requirements = self.github.issue(item)
-                            if not self.ownership_ready(item, issue):
+                            if not self.ownership_ready(item, issue, fresh=True):
                                 continue
                             if item.get('decision_version'):
                                 from .issue_actions import IssueActions

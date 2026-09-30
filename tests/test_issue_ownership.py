@@ -168,3 +168,16 @@ class OwnershipSchedulingTests(CycleTest):
         self.assertEqual(self.item()['state'], 'hold')
         self.assertIsNone(self.item()['active'])
         self.assertEqual(self.item()['failures'], [])
+
+    def test_dispatch_refreshes_cached_pr_ownership(self):
+        self.owned()
+        self.github.deadline = float('inf')
+        controller = Supervisor(self.ledger, self.engine, self.github, Settings(), self.config)
+        controller.reconcile(self.item())
+        controller.reconcile(self.item())
+        self.assertEqual(self.github.pulls.call_count, 1)
+        self.github.pulls.return_value = [{'number': 8, 'body': 'Closes #1', 'author': 'maintainer'}]
+        controller.dispatch(discover_missing=False)
+        self.assertEqual(self.github.pulls.call_count, 2)
+        self.assertFalse(self.engine.jobs)
+        self.assertIsNotNone(self.item()['ownership_wait'])
