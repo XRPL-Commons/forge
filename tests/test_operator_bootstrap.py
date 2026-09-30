@@ -97,7 +97,7 @@ class HostTests(unittest.TestCase):
                 raise BootstrapError('host_unavailable', 'Updater failed')
             return original(argv, **kwargs)
         self.host.command = fail_update
-        self.error('host_unavailable', self.apply)
+        self.error('host_update_failed', self.apply)
         state = self.host.auth.store.path.read_bytes()
         self.host.command = original
         result = self.request('resume', revision=self.request()['revision'])

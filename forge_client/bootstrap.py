@@ -15,7 +15,8 @@ from .github import GitHub, run_bounded
 
 ERRORS = {'invalid_root', 'installation_required', 'reset_in_progress', 'tailscale_origin_mismatch',
           'https_conflict', 'identity_conflict', 'plan_changed', 'identity_app_required', 'identity_secret_required',
-          'bootstrap_busy', 'host_unavailable', 'https_unavailable', 'bootstrap_failed', 'invalid_request'}
+          'bootstrap_busy', 'host_unavailable', 'host_update_failed', 'https_setup_failed', 'https_unavailable',
+          'bootstrap_failed', 'invalid_request'}
 MESSAGES = {
     'https_conflict': 'This host has another Tailscale Serve configuration. Reconcile it before continuing.',
     'identity_conflict': 'Existing sign-in settings differ. Bootstrap will not replace them or revoke sessions.',
@@ -23,6 +24,9 @@ MESSAGES = {
     'identity_secret_required': 'Provide the identity-app client secret using the hidden prompt or --secret-stdin.',
     'tailscale_origin_mismatch': 'Use the selected host’s own Tailscale HTTPS name without a port.',
     'installation_required': 'Install Forge on the selected host before configuring its sign-in.',
+    'host_update_failed': 'Identity is saved, but the host update failed. Reconcile services with bin/forge update on the host, then use --resume.',
+    'https_setup_failed': 'Identity is saved, but Tailscale Serve failed. Check the SSH account’s noninteractive sudo access and tailnet HTTPS, then use --resume.',
+    'https_unavailable': 'Identity is saved, but HTTPS verification failed on the host. Check Tailscale, DNS and service health, then use --resume.',
 }
 
 

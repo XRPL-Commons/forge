@@ -146,11 +146,17 @@ class Bootstrap:
             request['secret'] = None
             need(self.generation() == view['generation'], 'plan_changed', 'Forge was reset during setup. Read a new plan and resume.')
             # No git pull, factory reset/start, App permission changes or shell from a response.
-            self.command([str(SOURCE / 'bin/forge'), 'update', '--root', str(self.root), '--no-pull', '--bind', '127.0.0.1'], timeout=300)
+            try:
+                self.command([str(SOURCE / 'bin/forge'), 'update', '--root', str(self.root), '--no-pull', '--bind', '127.0.0.1'], timeout=300)
+            except BootstrapError:
+                raise BootstrapError('host_update_failed', 'Identity is saved, but service reconciliation failed. Repair the host update and use --resume.') from None
             # Recheck after the updater: never replace a foreign proxy added during it.
             current = self.snapshot(target)
             need(current['generation'] == view['generation'], 'plan_changed', 'Forge was reset during setup. Read a new plan and resume.')
-            self.command(['sudo', '-n', 'tailscale', 'serve', '--bg', '--yes', '--https=443', 'http://127.0.0.1:8787'])
+            try:
+                self.command(['sudo', '-n', 'tailscale', 'serve', '--bg', '--yes', '--https=443', 'http://127.0.0.1:8787'])
+            except BootstrapError:
+                raise BootstrapError('https_setup_failed', 'Identity is saved, but Tailscale Serve failed. Check noninteractive sudo and tailnet HTTPS, then use --resume.') from None
             self.check_https(view['origin'])
             need(self.generation() == view['generation'], 'plan_changed', 'Forge was reset during setup. Read a new plan and resume.')
             return {'status': 'ready', **self.snapshot(target)}
