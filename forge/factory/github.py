@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from ..app_access import AppClient, AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
 from .contracts import SHA, candidate, digest, submission
+from ..repository_policy import protection_ready
 
 # Ancestry between two recorded commits never changes; one process asks once.
 COMPARISONS = {}
@@ -404,7 +405,7 @@ class GitHub:
 
     def protections(self, item, candidate_value):
         report = self.protection_report(item, candidate_value)
-        return report['available'] and all(row['passed'] for row in report['requirements'])
+        return protection_ready(report)
 
     def protection_report(self, item, candidate_value):
         """Read effective GitHub rules; never confuse the baseline with a bypass audit."""
@@ -489,7 +490,8 @@ class GitHub:
         """Can the controller merge past approval rules Forge's own App reviews cannot satisfy?
 
         GitHub counts approvals only from reviewers with write access, so review and
-        audit approvals never satisfy a pull request rule. Advisory: never gates dispatch."""
+        audit approvals never satisfy a pull request rule. A confirmed missing bypass
+        blocks repository readiness; unreadable bypass details remain explicitly unknown."""
         gating = [(r, s) for r, s in reviews if r.get('required_approving_review_count', 0) > 0]
         if not gating:
             return {'status': 'ready', 'detail': 'No approval rule blocks the Forge controller.', 'sources': []}
@@ -515,8 +517,8 @@ class GitHub:
                 continue
             (missing if mode == 'never' else unknown).append(source)
         if missing:
-            return {'status': 'missing', 'sources': missing, 'detail':
-                    'Add the Forge controller App as a pull request bypass actor, or Forge cannot merge approved work.'}
+            return {'status': 'missing', 'sources': missing, 'controller_app_id': app_id, 'detail':
+                    f'Add the Forge controller App (ID {app_id}) as a pull request bypass actor, or Forge cannot merge approved work.'}
         if unknown:
             return {'status': 'operator_review', 'sources': unknown, 'detail':
                     'GitHub did not say whether the Forge controller can bypass these rules. Check the bypass list on GitHub.'}
@@ -563,7 +565,7 @@ class GitHub:
         return True
 
     MERGE_REFUSALS = {
-        405: 'branch rules still block it (approvals or checks required, and the Forge controller is not a bypass actor)',
+        405: 'branch rules still block it; check required approvals, checks, and the controller bypass in Repository setup',
         409: 'the head moved since verification',
         404: 'the controller cannot see the pull request',
     }

@@ -33,10 +33,10 @@ const bypass = computed(() => props.report?.bypass ?? null)
     <UAlert v-if="bypass?.status === 'missing'" :id="(idPrefix || '') + 'bypass-missing'" class="mt-3" role="status" color="warning" variant="subtle" title="Forge cannot merge approved work">
       <template #description>
         <p>
-          Add the Forge controller App as a “pull request” bypass actor on
+          Add the Forge controller App<template v-if="bypass.controller_app_id"> (ID {{ bypass.controller_app_id }})</template> as a “pull request” bypass actor on
           <template v-for="(source, index) in bypass.sources ?? []" :key="source.url">{{ index ? ', ' : '' }}<a :href="source.url" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">{{ source.name }} ↗</a></template><template v-if="!bypass.sources?.length">these rules</template>.
-          <template v-if="downloadHref && !editUrl">Or <a :href="downloadHref" :download="rulesetFilename(row)" class="text-sky-200 underline-offset-4 hover:underline" @click="$emit('download')">download the review rules</a> again: the current baseline includes it.</template>
-          <template v-else>Or import the current Forge review rules, which include it.</template>
+          Update each linked rule on GitHub, then return here to check. Importing another ruleset does not repair the existing one.
+          <template v-if="downloadHref">The <a :href="downloadHref" :download="rulesetFilename(row)" class="text-sky-200 underline-offset-4 hover:underline" @click="$emit('download')">current review rules</a> include the controller bypass for reference.</template>
         </p>
       </template>
     </UAlert>

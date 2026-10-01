@@ -16,8 +16,8 @@
       },
       "access_ready": true,
       "dispatch_allowed": false,
-      "protection_status": "ready",
-      "protection_ready": true,
+      "protection_status": "needs_setup",
+      "protection_ready": false,
       "protection": {
         "repo_id": 2,
         "branch": "main",
@@ -77,7 +77,8 @@
               "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
               "id": 10
             }
-          ]
+          ],
+          "controller_app_id": 4959034
         },
         "required_approvals": 2
       },

@@ -88,20 +88,24 @@ Open Settings → Repositories and choose Add repository, or Prepare repository
 during onboarding. The wizard guides you through Repository, App access, Review
 rules and Enable, with Back and Cancel available throughout. Deployment tracking
 and test database evidence live on the repository’s details page. The download targets the default branch observed by Forge. It adds
-only the two review requirements above, with no bypass actors. It affects every
-pull request targeting that branch, including developers' pull requests.
+the two review requirements above and a pull-request-only bypass for the verified
+controller App. GitHub does not count the read-only Review and Audit Apps toward
+its native approval count. Forge verifies their evidence before the controller
+merges. Developers' pull requests still need the repository's required approvals.
 
 On GitHub, open the repository's Settings → Rules → Rulesets and choose New
 ruleset → Import a ruleset. Select the downloaded JSON, review it and save. If
 GitHub's navigation differs, follow [GitHub's import guide](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository#importing-prebuilt-rulesets).
 If Forge finds an existing “Forge review baseline” ruleset, it links to editing
 that ruleset instead. Existing classic branch protection can also satisfy the
-baseline without importing anything. If import is unavailable for your plan or
+baseline without importing anything, provided its review bypass allows the controller. If import is unavailable for your plan or
 role, a repository administrator can configure the same review requirements.
 
 Return to Forge and press Check again. Downloading the file or opening GitHub
 never counts as a successful check. Review requirements verified confirms only
-the observed baseline; review the bypass list yourself on GitHub. Organization
+the observed baseline. A confirmed missing controller bypass prevents readiness.
+If GitHub hides the bypass details, Forge asks for an operator review instead of
+claiming they were verified. Organization
 rules and stronger protections remain in effect, with source links in the details.
 
 Forge still publishes its review, audit and merge-policy checks on its own PRs.
@@ -120,6 +124,46 @@ organization rules. The same review baseline is checked during setup, dispatch
 and merge. Unavailable observations never count as passing. GitHub may hide
 bypass permissions: review those on GitHub yourself. A baseline pass does not
 certify bypass permissions or waive additional repository rules.
+
+### Repair an existing controller bypass
+
+Open the rule linked by Forge, add the controller App shown in the warning to
+its bypass list, select **For pull requests only**, save, and check again in
+Forge. Update every applicable rule that blocks the controller. Importing a
+second ruleset cannot repair the first: GitHub combines applicable rules.
+Keep unrelated actors and stronger rules. If the rule also contains CI,
+CODEOWNERS, or other restrictions, review those before granting a bypass; a
+ruleset bypass applies to that entire ruleset. Prefer keeping the Forge review
+baseline separate from those restrictions.
+
+For an administrator using the GitHub CLI, these are the equivalent API calls
+(use the owner, repository and ruleset ID from Forge's link):
+
+```sh
+gh api --hostname github.com repos/OWNER/REPO/rulesets/RULESET_ID \
+  --jq '{name,target,enforcement,conditions,rules,bypass_actors}' > reviewed-ruleset.json
+```
+
+Review the saved file and add only this entry to its existing `bypass_actors`,
+replacing `12345` with the controller App ID shown by Forge:
+
+```json
+{"actor_id": 12345, "actor_type": "Integration", "bypass_mode": "pull_request"}
+```
+
+If GitHub omitted the bypass list, obtain ruleset administrator access before
+editing it. Preserve all existing actors, conditions and rules. Re-read the rule
+before submitting if someone else may have changed it. Then apply the reviewed
+file and check again in Forge:
+
+```sh
+gh api --hostname github.com --method PUT \
+  repos/OWNER/REPO/rulesets/RULESET_ID --input reviewed-ruleset.json
+```
+
+The GitHub CLI uses local administrator credentials. Forge receives none of them.
+See [GitHub's ruleset API](https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset)
+for organization rules and the permissions required to edit them.
 
 ## Deployment profile
 

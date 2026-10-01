@@ -93,7 +93,7 @@ export interface ProtectionReport {
   errors: { source?: 'classic' | 'rulesets' | 'reviews'; detail: string }[]
   additional_rules: { type: string; source?: ProtectionSource }[]
   code_owner_reviews: boolean
-  bypass: { status: 'ready' | 'missing' | 'operator_review'; detail: string; sources?: ProtectionSource[] }
+  bypass: { status: 'ready' | 'missing' | 'operator_review'; detail: string; sources?: ProtectionSource[]; controller_app_id?: number }
   required_approvals?: number
   edit_url?: string
 }

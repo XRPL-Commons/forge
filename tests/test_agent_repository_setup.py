@@ -196,7 +196,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(plan['steps'], [{'kind': 'github.ruleset.ensure_baseline'}])
         result = self.preparation.apply(plan, enable=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(self.writes[-1][2], ruleset('main'))
+        self.assertEqual(self.writes[-1][2], ruleset('main', 4))
         self.assertTrue(self.settings.view()['repositories'][0]['dispatch_allowed'])
         # A repeat does no additional GitHub administrative writes.
         repeated = self.preparation.apply(self.preparation.plan('example/project'), enable=True)
@@ -313,7 +313,7 @@ class BoundaryTests(unittest.TestCase):
 class ContractTests(unittest.TestCase):
     def test_baseline_matches_existing_server_policy(self):
         for branch in ('main', 'release/v2', 'feature.some-change'):
-            self.assertEqual(baseline(branch), ruleset(branch))
+            self.assertEqual(baseline(branch, 4), ruleset(branch, 4))
 
     def test_branch_patterns_and_bad_identifiers_are_rejected(self):
         from forge_client.contracts import repository
@@ -322,7 +322,7 @@ class ContractTests(unittest.TestCase):
         for identifier in (True, 0, -1, 2**53, '1'):
             with self.assertRaises(SetupError): repository({'id': identifier, 'name': 'o/r'})
         for branch in ('*', 'a[bc]', 'a\nb', '../main', ''):
-            with self.assertRaises(SetupError): baseline(branch)
+            with self.assertRaises(SetupError): baseline(branch, 4)
 
 
 class BrokerTests(unittest.TestCase):
@@ -360,3 +360,15 @@ class BrokerTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class ControllerBaselineTests(unittest.TestCase):
+    def test_invalid_controller_identity_cannot_produce_a_ruleset(self):
+        for app_id in (None, True, 0, -1, '4959034', 2**53):
+            with self.subTest(app_id=app_id), self.assertRaises(ValueError):
+                ruleset('main', app_id)
+
+    def test_only_pinned_controller_gets_pull_request_bypass(self):
+        for app_id in (4, 4959034):
+            value = baseline('main', app_id)
+            self.assertEqual(value, ruleset('main', app_id))
+            self.assertEqual(value['bypass_actors'], [{'actor_id': app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}])

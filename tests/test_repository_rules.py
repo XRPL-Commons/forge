@@ -7,7 +7,8 @@ from forge.factory.github import GitHub, GitHubUnavailable, GitHubBudgetExhauste
 
 def classic(count=2, stale=True, owners=False):
     return {'required_pull_request_reviews': {'required_approving_review_count': count,
-            'dismiss_stale_reviews': stale, 'require_code_owner_reviews': owners}}
+            'dismiss_stale_reviews': stale, 'require_code_owner_reviews': owners,
+            'bypass_pull_request_allowances': {'apps': [{'id': 4959034}]}}}
 
 
 # Ruleset fields follow https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset
@@ -110,3 +111,27 @@ class RepositoryRuleTests(unittest.TestCase):
     def test_other_constraints_remain_visible_not_waived(self):
         report = self.reader(None, [rule(), {'type': 'merge_queue', 'ruleset_id': 12}]).protection_report(self.item, {'base_ref': 'main'})
         self.assertEqual(report['additional_rules'][0]['type'], 'merge_queue')
+
+    def test_missing_controller_bypass_blocks_readiness_but_unknown_stays_explicit(self):
+        github = self.reader(None, [rule()], bypass='never')
+        report = github.protection_report(self.item, {'base_ref': 'main'})
+        self.assertTrue(all(r['passed'] for r in report['requirements']))
+        self.assertEqual(report['bypass']['status'], 'missing')
+        self.assertEqual(report['bypass']['controller_app_id'], 4959034)
+        self.assertFalse(github.protections(self.item, {'base_ref': 'main'}))
+        for unknown in (None, GitHubUnavailable('Hidden', status=403), 'unexpected'):
+            with self.subTest(unknown=unknown):
+                reader = self.reader(None, [rule()], bypass=unknown)
+                self.assertEqual(reader.protection_report(self.item, {'base_ref': 'main'})['bypass']['status'], 'operator_review')
+
+    def test_each_effective_review_rule_needs_controller_bypass(self):
+        protection = classic()
+        protection['required_pull_request_reviews']['bypass_pull_request_allowances']['apps'] = [{'id': 999}]
+        github = self.reader(protection, [rule()], bypass='pull_requests_only')
+        self.assertFalse(github.protections(self.item, {'base_ref': 'main'}))
+        protection['required_pull_request_reviews']['bypass_pull_request_allowances']['apps'] = [{'id': 4959034}]
+        self.assertTrue(github.protections(self.item, {'base_ref': 'main'}))
+
+    def test_bypass_observation_budget_is_not_a_missing_bypass(self):
+        with self.assertRaises(GitHubBudgetExhausted):
+            self.reader(None, [rule()], bypass=GitHubBudgetExhausted('Later')).protections(self.item, {'base_ref': 'main'})

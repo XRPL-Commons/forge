@@ -49,7 +49,7 @@ class Preparation:
                 require(value['baseline']['branch'] == target['branch'], 'default_branch_changed',
                         'Forge and GitHub observed different default branches; verify again.')
                 collisions = [r for r in self.github.rulesets(target['name'])
-                              if r['name'] == baseline(target['branch'])['name']]
+                              if r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']]
                 if collisions:
                     blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
                 else:
@@ -114,11 +114,11 @@ class Preparation:
                     # A failed/uncertain create is never blindly repeated. A
                     # same-name rule from a previous attempt becomes a conflict
                     # until Forge independently verifies its effective rules.
-                    require(not any(r['name'] == baseline(target['branch'])['name']
+                    require(not any(r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']
                                     for r in self.github.rulesets(target['name'])),
                             'ruleset_conflict', 'A baseline already exists; verify it before retrying.')
                     try:
-                        self.github.create_baseline(target['name'], target['branch'])
+                        self.github.create_baseline(target['name'], target['branch'], self.apps['controller']['app_id'])
                     except SetupError as error:
                         return {'status': 'write_unconfirmed', 'code': error.code,
                                 'completed': completed, 'next_actions': [{'kind': 'forge.repositories.verify'}]}

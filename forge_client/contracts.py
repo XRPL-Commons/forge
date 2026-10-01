@@ -75,7 +75,7 @@ def requirements(value):
     if value['readiness']['protection_status'] in ('ready', 'needs_setup'):
         require(value['baseline']['branch'] is not None)
     if value['baseline']['branch'] is not None:
-        baseline(value['baseline']['branch'])
+        validate_branch(value['baseline']['branch'])
     return value
 
 
@@ -86,13 +86,20 @@ def connection_identity(value):
             for role, data in value['roles'].items()}
 
 
-def baseline(branch):
+def validate_branch(branch):
     require(isinstance(branch, str) and 0 < len(branch) <= 255
             and not any(ord(c) < 32 or c in '*?[\\' for c in branch)
             and not branch.startswith('-') and not branch.endswith('/')
             and '..' not in branch and '@{' not in branch)
+
+
+def baseline(branch, controller_app_id):
+    validate_branch(branch)
+    require(positive(controller_app_id), 'controller_identity_required',
+            'Verify the controller App before preparing repository rules.')
     return {'name': 'Forge review baseline', 'target': 'branch', 'enforcement': 'active',
-            'bypass_actors': [], 'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
+            'bypass_actors': [{'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}],
+            'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
             'rules': [{'type': 'pull_request', 'parameters': {
                 'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
                 'require_code_owner_review': False, 'require_last_push_approval': False,

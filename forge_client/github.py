@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 
-from .contracts import NAME, SetupError, baseline, positive, require
+from .contracts import NAME, SetupError, baseline, positive, require, validate_branch
 
 LIMIT = 4 * 1024 * 1024
 
@@ -110,7 +110,7 @@ class GitHub:
                 and owner.get('type') in ('User', 'Organization'), 'repository_identity_changed',
                 'GitHub repository identity changed; resolve the intended repository again.')
         branch = value.get('default_branch')
-        baseline(branch)  # Validate exact branch matching before considering rule writes.
+        validate_branch(branch)  # Validate exact branch matching before considering rule writes.
         require(value.get('archived') is False and value.get('disabled') is False,
                 'repository_unavailable', 'The repository is archived or disabled.')
         permissions = value.get('permissions') or {}
@@ -134,9 +134,9 @@ class GitHub:
                 return result
         raise SetupError('github_inventory_limit', 'Too many rulesets to plan safely.')
 
-    def create_baseline(self, name, branch):
+    def create_baseline(self, name, branch, controller_app_id):
         require(isinstance(name, str) and NAME.fullmatch(name))
-        value = self._request('POST', '/repos/' + name + '/rulesets', baseline(branch))
+        value = self._request('POST', '/repos/' + name + '/rulesets', baseline(branch, controller_app_id))
         require(isinstance(value, dict) and positive(value.get('id')), 'github_write_unconfirmed',
                 'The rule write is unconfirmed; inspect GitHub before retrying.')
         return {'id': value['id']}

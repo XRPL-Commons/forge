@@ -208,7 +208,9 @@ read-only tokens; the supervisor publishes reviews/checks using the correspondin
 role App after validating the result. No worker receives the controller's token.
 
 Forge operates alongside developers. The default branch baseline requires two
-approving reviews and stale-approval dismissal. Repository owners choose all
+approving reviews, stale-approval dismissal, and a controller App bypass through
+pull requests. A known missing controller bypass blocks setup and dispatch.
+Repository owners choose all
 other protection settings, including required CI, administrator enforcement,
 bypass actors and push permissions. No exclusive Controller access, global
 Forge status-check requirement or strict/up-to-date setting is required.
@@ -247,7 +249,8 @@ Human approval must follow acceptance of the current candidate and still be
 approved on its exact head. Bots and the PR author do not count. Head, base,
 requirements or policy changes invalidate earlier candidate evidence. GitHub's
 own protections make the final decision; the merge request includes the expected
-head SHA and never requests a bypass.
+head SHA through GitHub's ordinary merge API, using the controller's configured
+pull-request bypass for the review baseline.
 
 ## Deployment observation
 
