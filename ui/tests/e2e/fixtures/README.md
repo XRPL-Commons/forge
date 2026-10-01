@@ -140,6 +140,12 @@ issue and a merged issue.
   re-check, which must fire exactly once per
   `revision:protection_status:observed_at` observation (Task 9).
 
+## bypass-missing/, bypass-ready/
+
+- `repositories.repo_id.json` — `default/repositories.repo_id.json` with
+  `protection.bypass.status` `missing` (naming the Forge review baseline
+  ruleset) or `ready`. Exercises the controller bypass line in Setup details.
+
 ## setup/
 
 - `onboarding.json` — phase `setup`, Step 1 (GitHub) state: build/review
