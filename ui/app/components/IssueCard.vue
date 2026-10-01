@@ -2,8 +2,7 @@
 import { elapsed, type CardModel } from '~/utils/factory'
 
 const props = defineProps<{ card: CardModel; role?: 'build' | 'review' | 'audit' | 'recovery' | 'merge' }>()
-const ROLE_COLORS = { build: '#94bfff', review: '#c9a4f4', audit: '#80d7bd', recovery: '#c0cbcd', merge: '#edbd77' } as const
-const roleColor = computed(() => ROLE_COLORS[props.role ?? 'build'])
+const roleColor = computed(() => `var(--color-role-${props.role ?? 'build'})`)
 // The whole card is the control: clicking it (or Enter / Space on it) opens
 // the issue's detail panel. No card carries a button of its own any more —
 // every action lives in that panel.
@@ -67,11 +66,11 @@ const note = computed(() => props.card.deployment || props.card.footerLink?.labe
 
 <style scoped>
 /* A working card carries a light wave along its top and bottom edges, in its role's colour. */
-.issue-card.is-working { border-color: var(--role-color, #94bfff); }
+.issue-card.is-working { border-color: var(--role-color, var(--color-role-build)); }
 .work-wave { position: absolute; left: 0; width: 100%; height: 3px; pointer-events: none; opacity: 0; overflow: hidden; }
 .work-wave.top { top: 0; }
 .work-wave.bottom { bottom: 0; }
-.work-wave::after { content: ""; position: absolute; height: 100%; width: 55%; left: -55%; background: linear-gradient(90deg, transparent, var(--role-color, #94bfff), transparent); animation: work-wave 3s linear infinite; animation-play-state: paused; }
+.work-wave::after { content: ""; position: absolute; height: 100%; width: 55%; left: -55%; background: linear-gradient(90deg, transparent, var(--role-color, var(--color-role-build)), transparent); animation: work-wave 3s linear infinite; animation-play-state: paused; }
 .work-wave.bottom::after { animation-delay: -1.5s; animation-direction: reverse; }
 .is-working .work-wave { opacity: 1; }
 .is-working .work-wave::after { animation-play-state: running; }

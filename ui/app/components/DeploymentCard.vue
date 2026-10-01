@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DeploymentCardModel } from '~/utils/repositories'
+import { TONE_BADGE } from '~/utils/tones'
 
 // The Deployment card on Settings · Repository setup (spec "Operator UI").
 // Every sentence comes from `deploymentCard()`; this only lays them out and
@@ -21,7 +22,7 @@ watch(() => props.card.domain, (value) => { domain.value = value })
         <h2 class="text-sm font-semibold text-white">Deployment</h2>
         <p class="mt-0.5 text-xs text-muted">Forge follows a merge until it reaches production. It only reads; it never deploys.</p>
       </div>
-      <UBadge id="deployment-status" :color="card.state === 'confirmed' ? 'primary' : card.state === 'failed' ? 'warning' : 'neutral'" variant="subtle">{{ card.status }}</UBadge>
+      <UBadge id="deployment-status" :color="TONE_BADGE[card.state === 'confirmed' ? 'ok' : card.state === 'failed' ? 'warn' : 'muted']" variant="subtle">{{ card.status }}</UBadge>
     </div>
 
     <p v-if="card.sentence" id="deployment-sentence" class="mt-3 text-sm text-muted">{{ card.sentence }}</p>

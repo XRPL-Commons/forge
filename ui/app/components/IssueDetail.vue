@@ -2,6 +2,7 @@
 import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
+import { statusTone } from '~/utils/tones'
 import {
   ACTION_LABELS, STATUS_NAMES, attemptsText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
@@ -366,7 +367,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <p class="text-xs text-muted">{{ detail.repo }} · #{{ detail.number }}</p>
       <div class="mt-1 flex flex-wrap items-center gap-3">
         <h1 id="issue-title" class="text-2xl font-semibold text-white">{{ detail.title }}</h1>
-        <UBadge color="neutral" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
+        <UBadge :color="statusTone(detail.status)" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
       </div>
       <p v-if="attempts" id="issue-attempts" class="mt-1 text-xs text-amber-200">{{ attempts }}</p>
       <ul v-if="holds.length" id="issue-held-by" class="mt-1 text-xs text-muted">

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { branchText, statusPillText, repoDescription, rulesetFilename, scopeText, requirements, otherRulesText, type RepositoryRow, type ProtectionReport } from '~/utils/repositories'
+import { TONE_BADGE } from '~/utils/tones'
 defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; shown: string | undefined; failed: ReturnType<typeof requirements>; hint: string; prepared: boolean; editUrl: string; downloadHref?: string; downloadAriaDisabled: 'true' | 'false'; downloaded: boolean; instructions?: boolean; idPrefix?: string }>()
 defineEmits<{ download: [] }>()
 const detailsOpen = ref(false)
@@ -12,7 +13,7 @@ const detailsOpen = ref(false)
         <p class="mt-0.5 text-xs text-muted">{{ branchText(report) }}</p>
       </div>
       <div class="flex items-center gap-3">
-        <UBadge :id="(idPrefix || '') + 'status'" tabindex="-1" :color="displayReady ? 'primary' : 'warning'" variant="subtle">{{ statusPillText(row, live) }}</UBadge>
+        <UBadge :id="(idPrefix || '') + 'status'" tabindex="-1" :color="TONE_BADGE[displayReady ? 'ok' : 'warn']" variant="subtle">{{ statusPillText(row, live) }}</UBadge>
       </div>
     </div>
     <p :id="(idPrefix || '') + 'description'" class="mt-2 text-sm text-muted">{{ repoDescription(row, live) }}</p>
