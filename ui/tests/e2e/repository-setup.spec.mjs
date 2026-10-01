@@ -8,6 +8,18 @@ async function waitText(page, text) {
 async function waitStep(page, name) {
   await page.waitForFunction(name => document.querySelector('[role="dialog"] #repository-stage [aria-current="step"] [data-label]')?.textContent?.trim() === name, name)
 }
+// A click returns before the request it sends is recorded, so anything read
+// after one is polled until it settles (10 s), never read once.
+async function until(read, done) {
+  for (const deadline = Date.now() + 10000; ;) {
+    const value = await read()
+    if (done(value) || Date.now() > deadline) return value
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+function posts(requests, path, count = 1) {
+  return until(async () => (await requests()).filter(posted(path)), list => list.length >= count)
+}
 async function hydrated(page) {
   await page.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
 }
@@ -23,7 +35,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok((await page.locator('[data-key="1"]').innerText()).includes('Enabled'))
   assert.ok((await page.locator('[data-key="2"]').innerText()).includes('Not enabled'))
   await page.getByRole('searchbox', { name: 'Find a repository' }).fill('hack')
-  assert.equal(await page.locator('tbody tr').count(), 1)
+  assert.equal(await until(() => page.locator('tbody tr').count(), count => count === 1), 1)
   await page.getByRole('searchbox', { name: 'Find a repository' }).fill('')
 
   // Keyboard-only entry, selection, Back and Cancel. Already enabled repos stay visible.
@@ -61,7 +73,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.waitForURL(base + '/settings/repositories/2')
   await dialog.waitFor({ state: 'detached' })
   await waitText(page, 'Setup is complete and automation is enabled.')
-  const enables = (await requests()).filter(posted('/api/repositories/enable'))
+  const enables = await posts(requests, '/api/repositories/enable')
   assert.equal(enables.length, 1)
   assert.deepEqual(enables[0].body, { repo_id: 2, revision: 'settings-rev-1' })
 
@@ -85,7 +97,7 @@ export default async function (page, { base, scenario, requests }) {
   const [saved] = await Promise.all([page.waitForEvent('download'), dialog.locator('#download').click()])
   assert.equal(saved.suggestedFilename(), 'forge-review-rules-2.json')
   await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
-  const checks = (await requests()).filter(posted('/api/repositories/check'))
+  const checks = await posts(requests, '/api/repositories/check')
   assert.equal(checks.length, 1)
   assert.deepEqual(checks[0].body, { repo_id: 2, revision: 'settings-rev-1' })
   await dialog.getByRole('button', { name: 'Setup details' }).click()
@@ -102,6 +114,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto('about:blank'); await scenario('stale')
   await page.goto(base + '/settings/repositories/2')
   await waitText(page, 'Check again to confirm the current GitHub settings')
+  await posts(requests, '/api/repositories/check')
   await page.waitForTimeout(700)
   assert.equal((await requests()).filter(posted('/api/repositories/check')).length, 1)
 
@@ -146,7 +159,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok((await dialog.locator('#repository-stage').innerText()).includes('Needs attention'))
   assert.equal(await dialog.getByRole('link', { name: 'Manage access ↗' }).count(), 1)
   await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
-  assert.equal((await requests()).filter(posted('/api/settings/sync')).length, 1)
+  assert.equal((await posts(requests, '/api/settings/sync')).length, 1)
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
   await dialog.waitFor({ state: 'detached' })
   assert.equal((await requests()).filter(posted('/api/repositories/enable')).length, 0)
@@ -159,7 +172,7 @@ export default async function (page, { base, scenario, requests }) {
   await waitText(page, 'Repository settings changed. Check again.')
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
   await dialog.waitFor({ state: 'detached' })
-  assert.equal((await requests()).filter(posted('/api/repositories/enable')).length, 1)
+  assert.equal((await posts(requests, '/api/repositories/enable')).length, 1)
 
   // A list row opens setup without enabling; disabling retains its existing confirmation.
   await page.goto('about:blank'); await scenario('default')
@@ -170,7 +183,7 @@ export default async function (page, { base, scenario, requests }) {
   await waitStep(page, 'Enable')
   await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Refresh repositories', exact: true }).click()
-  const allChecks = (await requests()).filter(posted('/api/repositories/check'))
+  const allChecks = await posts(requests, '/api/repositories/check')
   assert.deepEqual(allChecks[0].body, { repo_id: null, revision: 'settings-rev-1' })
   await page.locator('[data-key="1"]').getByRole('switch').click()
   await page.getByRole('button', { name: 'Close', exact: true }).click()
@@ -179,13 +192,14 @@ export default async function (page, { base, scenario, requests }) {
   await page.locator('[data-key="1"]').getByRole('switch').click()
   await page.getByRole('button', { name: 'Disable', exact: true }).click()
   await waitText(page, 'Settings saved.')
-  const saves = (await requests()).filter(posted('/api/repositories/disable'))
+  const saves = await posts(requests, '/api/repositories/disable')
   assert.equal(saves.length, 1)
   assert.deepEqual(saves[0].body, { repo_id: 1, revision: 'settings-rev-1' })
   assert.equal((await requests()).filter(posted('/api/settings')).length, 0)
   await page.getByRole('dialog').waitFor({ state: 'detached' })
   await waitText(page, '0 enabled · 2 discovered or configured')
-  assert.equal(await page.locator('[data-key="1"]').getByRole('switch').getAttribute('aria-checked'), 'false')
+  const switchState = () => page.locator('[data-key="1"]').getByRole('switch').getAttribute('aria-checked')
+  assert.equal(await until(switchState, state => state === 'false'), 'false')
   await page.screenshot({ path: '/tmp/forge-repositories-desktop.png', fullPage: true })
 
   await page.goto('about:blank'); await scenario('disable-rejected')
@@ -194,7 +208,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.locator('[data-key="1"]').getByRole('switch').click()
   await page.getByRole('button', { name: 'Disable', exact: true }).click()
   await waitText(page, 'Repository settings changed. Reload before disabling.')
-  assert.equal(await page.locator('[data-key="1"]').getByRole('switch').getAttribute('aria-checked'), 'true')
+  assert.equal(await until(switchState, state => state === 'true'), 'true')
   assert.equal((await requests()).filter(posted('/api/settings')).length, 0)
 
 }
