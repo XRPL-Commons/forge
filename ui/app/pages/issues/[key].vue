@@ -11,5 +11,8 @@ useHead({ title: () => `Issue #${number.value}` })
 </script>
 
 <template>
-  <IssueDetail :key="issueKey" :issue-key="issueKey" />
+  <div>
+    <UButton id="issue-back" to="/issues" size="xs" color="neutral" variant="link" icon="i-lucide-arrow-left" class="mb-3 px-0">All issues</UButton>
+    <IssueDetail :key="issueKey" :issue-key="issueKey" />
+  </div>
 </template>

@@ -8,6 +8,11 @@ const roleColor = computed(() => ROLE_COLORS[props.role ?? 'build'])
 // the issue's detail panel. No card carries a button of its own any more —
 // every action lives in that panel.
 const emit = defineEmits<{ open: [] }>()
+// A modified or middle click opens the issue's own page in a new tab instead.
+function activate(event: MouseEvent) {
+  if (event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey) window.open(props.card.to, '_blank', 'noopener')
+  else if (event.button === 0) emit('open')
+}
 const label = computed(() => `Open ${props.card.repo}${props.card.number === null ? '' : ` #${props.card.number}`}`)
 
 // Every card renders the same fixed set of rows — never a conditional tree —
@@ -36,7 +41,9 @@ const note = computed(() => props.card.deployment || props.card.footerLink?.labe
     class="issue-card relative flex h-[104px] cursor-pointer flex-col overflow-hidden rounded-xl border border-line bg-panel px-3 py-2 transition hover:-translate-y-0.5 hover:border-white/40 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-200"
     :class="card.running ? 'is-working' : ''"
     :style="{ '--role-color': roleColor }"
-    @click="emit('open')"
+    @click="activate"
+    @auxclick="activate"
+    @mousedown.middle.prevent
     @keydown.enter.prevent="emit('open')"
     @keydown.space.prevent="emit('open')"
   >
@@ -57,7 +64,7 @@ const note = computed(() => props.card.deployment || props.card.footerLink?.labe
         <span v-if="card.running" class="inline-block size-2.5 shrink-0 rounded-full border border-current border-r-transparent text-mint-200 motion-safe:animate-spin" aria-hidden="true" />
         <span v-if="progress" class="truncate">{{ progress }}</span>
         <span v-if="progress && note" class="shrink-0">·</span>
-        <NuxtLink v-if="!card.deployment && card.footerLink && card.footerLink.to" :to="card.footerLink.to" class="truncate text-sky-200 hover:underline" @click.stop>{{ card.footerLink.label }}</NuxtLink>
+        <NuxtLink v-if="!card.deployment && card.footerLink && card.footerLink.to" :to="card.footerLink.to" class="truncate text-sky-200 hover:underline" @click.stop @auxclick.stop>{{ card.footerLink.label }}</NuxtLink>
         <span v-else-if="note" class="truncate" :class="card.footerLink && !card.deployment ? 'text-amber-200' : ''">{{ note }}</span>
       </p>
       <UIcon name="i-lucide-arrow-up-right" class="shrink-0 text-muted" aria-hidden="true" />

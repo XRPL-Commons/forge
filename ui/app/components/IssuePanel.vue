@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { issuePath } from '~/utils/issues'
+import { panelState } from '~/utils/panel'
+
 // The board's detail panel: the same IssueDetail the /issues/<key> route
 // renders, slid in over the right of the board. The board keeps polling
 // behind it, and the panel is the issue's control centre — every decision,
@@ -12,6 +15,8 @@ const title = computed(() => {
   const number = props.issueKey.split(':')[1]
   return number ? `Issue #${number}` : props.issueKey
 })
+const route = useRoute()
+const fullPage = computed(() => issuePath(props.issueKey, panelState(route.query).job))
 </script>
 
 <template>
@@ -21,6 +26,9 @@ const title = computed(() => {
     :title="title"
     :ui="{ content: 'max-w-[560px]' }"
   >
+    <template #actions>
+      <UButton id="issue-full-page" :to="fullPage" size="xs" color="neutral" variant="ghost" trailing-icon="i-lucide-maximize-2">Open full page</UButton>
+    </template>
     <template #body>
       <!-- Keyed by the issue, so opening another card starts from a clean
            panel instead of inheriting the previous issue's state. Its own

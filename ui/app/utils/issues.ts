@@ -334,6 +334,33 @@ export function issuePath(key: string, job?: string | null): string {
   return `/issues/${encodeURIComponent(key)}${job ? `?job=${encodeURIComponent(job)}` : ''}`
 }
 
+// The list's filters live in the URL (`?show=&repo=&q=&page=`), so a filtered
+// view reloads and shares as itself. Defaults are left out.
+export interface FilterState { show: string; repo: string; q: string; page: number }
+
+export function filtersFromQuery(query: Record<string, unknown>): Partial<FilterState> {
+  const one = (value: unknown) => { const found = Array.isArray(value) ? value[0] : value; return typeof found === 'string' && found ? found : undefined }
+  const out: Partial<FilterState> = {}
+  const show = one(query.show)
+  if (show && SHOW_OPTIONS.some(option => option.value === show)) out.show = show
+  const repo = one(query.repo)
+  if (repo && /^\d+$/.test(repo)) out.repo = repo
+  const q = one(query.q)?.trim()
+  if (q) out.q = q
+  const page = Number(one(query.page))
+  if (Number.isSafeInteger(page) && page > 1) out.page = page
+  return out
+}
+
+export function filterQuery({ show, repo, q, page }: FilterState): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (show !== 'open') out.show = show
+  if (repo) out.repo = repo
+  if (q) out.q = q
+  if (page > 1) out.page = String(page)
+  return out
+}
+
 export interface ListFilters { state: string; repoId: number | null; q: string; page: number }
 
 export function listParams({ state, repoId, q, page }: ListFilters): string {
