@@ -19,7 +19,8 @@ class FeedbackTests(unittest.TestCase):
     def test_report_lists_only_actual_gaps_and_preserves_the_gate(self):
         github=GitHub(Mock(), {})
         github.connection=lambda role:{'app_id':{'review':2,'audit':3,'controller':4}[role]}
-        protection={'required_pull_request_reviews':{'required_approving_review_count':2,'dismiss_stale_reviews':True},'allow_force_pushes':{'enabled':False}}
+        protection={'required_pull_request_reviews':{'required_approving_review_count':2,'dismiss_stale_reviews':True,
+            'bypass_pull_request_allowances':{'apps':[{'id':4}]}},'allow_force_pushes':{'enabled':False}}
         github.call=Mock(return_value=protection)
         github.pages=Mock(return_value=[])
         report=github.protection_report({}, {'base_ref':'main'})

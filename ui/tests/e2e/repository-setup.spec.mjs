@@ -128,6 +128,11 @@ export default async function (page, { base, scenario, requests }) {
   assert.match(await missing.innerText(), /ID 4959034/)
   assert.match(await missing.innerText(), /Importing another ruleset does not repair/)
   assert.ok(!(await page.locator('#repo-status').innerText()).includes('verified'))
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 })
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    await page.screenshot({ path: `/tmp/forge-140-bypass-${width}.png`, fullPage: true, animations: 'disabled' })
+  }
   assert.equal(await missing.getByRole('link', { name: 'Forge review baseline ↗' }).getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/rules/10')
   await page.getByRole('button', { name: 'Setup details' }).click()
   await waitText(page, 'The Forge controller is not a bypass actor.')
