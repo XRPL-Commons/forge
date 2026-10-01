@@ -10,10 +10,14 @@ RULESET_NAME = 'Forge review baseline'
 DEPLOYMENT_LABEL = 'forge:deployment'
 
 
-def ruleset(branch):
+def ruleset(branch, controller_app_id=None):
     if not isinstance(branch, str) or not branch or any(c in branch for c in '\r\n\x00'):
         raise ValueError('Verify the repository branch before downloading rules')
-    return {'name': RULESET_NAME, 'target': 'branch', 'enforcement': 'active', 'bypass_actors': [],
+    # Forge's review and audit Apps cannot count as approvals (GitHub requires write
+    # access), so the controller merges approved work through a pull request bypass.
+    bypass = ([{'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}]
+              if type(controller_app_id) is int else [])
+    return {'name': RULESET_NAME, 'target': 'branch', 'enforcement': 'active', 'bypass_actors': bypass,
             'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
             'rules': [{'type': 'pull_request', 'parameters': {
                 'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
@@ -274,4 +278,5 @@ class RepositorySetup:
         report = row.get('protection') or {}
         if row['protection_status'] not in ('ready', 'needs_setup') or not report.get('branch'):
             raise ValueError('Check this repository before downloading its rules.')
-        return ruleset(report['branch']), 'forge-review-rules-' + str(repo_id) + '.json'
+        controller = self.settings.load()['connections'].get('controller', {})
+        return ruleset(report['branch'], controller.get('app_id')), 'forge-review-rules-' + str(repo_id) + '.json'

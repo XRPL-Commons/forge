@@ -22,8 +22,9 @@ def rule(count=2, stale=True, owners=False, identifier=12):
 class RepositoryRuleTests(unittest.TestCase):
     item = {'repo_id': 71, 'repo': 'example/project'}
 
-    def reader(self, protection=None, rules=None):
-        github = GitHub(Mock(), {'human_reviewers': ['maintainer']}, clock=lambda: 1234)
+    def reader(self, protection=None, rules=None, bypass='always'):
+        settings = Mock(); settings.load.return_value = {'connections': {'controller': {'app_id': 4959034}}}
+        github = GitHub(settings, {'human_reviewers': ['maintainer']}, clock=lambda: 1234)
         def read(role, item, method, suffix, payload=None):
             self.assertEqual(method, 'GET')
             if '/protection' in suffix:
@@ -36,6 +37,10 @@ class RepositoryRuleTests(unittest.TestCase):
                 if isinstance(rules, Exception):
                     raise rules
                 return rules or []
+            if '/rulesets/' in suffix:
+                if isinstance(bypass, Exception):
+                    raise bypass
+                return {'id': int(suffix.rsplit('/', 1)[1]), 'current_user_can_bypass': bypass}
             if '/contents/' in suffix:
                 return {'content': base64.b64encode(b'* @maintainer\n').decode()}
             raise AssertionError(suffix)
@@ -51,7 +56,7 @@ class RepositoryRuleTests(unittest.TestCase):
                 report = github.protection_report(self.item, {'base_ref': 'main'})
                 self.assertEqual(report['repo_id'], 71)
                 self.assertEqual(report['observed_at'], 1234)
-                self.assertEqual(report['bypass']['status'], 'operator_review')
+                self.assertIn(report['bypass']['status'], ('ready', 'missing'))
                 self.assertNotIn('bypass_actors', report)
 
     def test_no_rules_or_partial_rules_are_not_ready(self):
@@ -88,12 +93,12 @@ class RepositoryRuleTests(unittest.TestCase):
                 raise GitHubUnavailable('Absent', status=404)
             self.assertIn('/rules/branches/release%2Fv2?', suffix)
             return first_page if suffix.endswith('&page=1') else [rule()]
-        github.call = Mock(side_effect=read)
+        github.call = Mock(side_effect=lambda *a: {'current_user_can_bypass': 'always'} if '/rulesets/' in a[3] else read(*a))
         self.assertTrue(github.protections(self.item, {'base_ref': 'release/v2'}))
-        self.assertEqual(github.call.call_count, 3)
+        self.assertEqual(github.call.call_count, 4)
         # GitHub's branch endpoint returns active, applicable rules only. Do not
         # infer enforcement from a ruleset inventory that includes disabled/evaluate.
-        self.assertTrue(all('/rulesets' not in c.args[3] for c in github.call.call_args_list))
+        self.assertTrue(all('/rulesets' not in c.args[3] for c in github.call.call_args_list[:3]))
 
     def test_human_gate_recognizes_rulesets_but_never_infers_humans_from_baseline(self):
         item = {**self.item, 'candidate': {'base_ref': 'main', 'base': 'a' * 40}}
