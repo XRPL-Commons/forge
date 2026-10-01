@@ -32,7 +32,7 @@ function submit() {
     @update:open="value => !value && emit('close')"
   >
     <template #body>
-      <p v-if="error" class="mb-3 rounded-lg border border-rose-200/40 px-3 py-2 text-sm text-rose-200" role="alert">{{ error }}</p>
+      <UAlert v-if="error" class="mb-3" role="alert" color="error" variant="subtle" :description="error" />
       <label :for="'confirm-reason'" class="block text-sm text-muted">{{ reasonLabel }}</label>
       <UTextarea
         id="confirm-reason"

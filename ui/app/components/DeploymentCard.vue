@@ -49,7 +49,7 @@ watch(() => props.card.domain, (value) => { domain.value = value })
     <p v-if="card.observation" id="deployment-observation" class="mt-3 break-words text-xs text-muted">{{ card.observation }}</p>
     <p v-if="card.note" id="deployment-note" class="mt-1 text-xs text-sky-200">{{ card.note }}</p>
     <p v-if="card.error" id="deployment-error" role="alert" class="mt-2 break-words text-xs text-amber-200">{{ card.error }}</p>
-    <p v-if="error" id="deployment-failure" role="alert" class="mt-2 text-xs text-rose-200">{{ error }}</p>
+    <UAlert v-if="error" id="deployment-failure" class="mt-2" role="alert" color="error" variant="subtle" :description="error" />
 
     <div class="mt-3 flex flex-wrap items-center gap-2">
       <UButton v-if="card.actions.confirm" id="deployment-confirm" size="sm" color="primary" :disabled="busy" @click="emit('confirm', domain.trim())">Confirm</UButton>

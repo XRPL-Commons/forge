@@ -52,7 +52,7 @@ const unavailable = computed(() => !!props.environment.proposal?.services.length
       <p v-else class="mt-2">No supported database references found in the scanned files.</p>
     </details>
 
-    <p v-if="error || environment.error" role="alert" class="mt-3 text-sm text-rose-200">{{ error || environment.error }}</p>
+    <UAlert v-if="error || environment.error" class="mt-3" role="alert" color="error" variant="subtle" :description="error || environment.error || ''" />
     <p v-if="!accessReady" class="mt-3 text-sm text-amber-200">Refresh GitHub access to scan or save database requirements.</p>
     <UButton class="mt-3" color="neutral" variant="outline" :disabled="busy || scanning || !accessReady" :loading="scanning" @click="$emit('scan')">
       {{ environment.profile || environment.proposal || environment.status === 'failed' ? 'Scan again' : 'Scan requirements' }}

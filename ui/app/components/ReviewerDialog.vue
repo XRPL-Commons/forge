@@ -34,7 +34,7 @@ watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselect
     @update:open="value => !value && emit('close')"
   >
     <template #body>
-      <p v-if="error" class="mb-3 rounded-lg border border-rose-200/40 px-3 py-2 text-sm text-rose-200" role="alert">{{ error }}</p>
+      <UAlert v-if="error" class="mb-3" role="alert" color="error" variant="subtle" :description="error" />
       <template v-if="options.length">
         <label for="reviewer-select" class="block text-sm text-muted">Reviewers</label>
         <USelectMenu
@@ -46,9 +46,7 @@ watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselect
           aria-label="Reviewers"
           placeholder="Choose reviewers"
           class="mt-1 w-full"
-        >
-          <template #trailing><SelectChevron /></template>
-        </USelectMenu>
+        />
       </template>
       <div v-else id="reviewer-none" class="text-sm text-muted">
         <p>Forge could not find any known reviewers for this repository.</p>
