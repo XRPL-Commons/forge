@@ -482,7 +482,45 @@ class GitHub:
              'detail': 'Approvals are dismissed when new commits are pushed.' if stale else
                        'Dismiss stale pull request approvals when new commits are pushed.',
              'sources': [s for _, s in stale]}]
+        report['bypass'] = self.controller_bypass(item, reviews)
         return report
+
+    def controller_bypass(self, item, reviews):
+        """Can the controller merge past approval rules Forge's own App reviews cannot satisfy?
+
+        GitHub counts approvals only from reviewers with write access, so review and
+        audit approvals never satisfy a pull request rule. Advisory: never gates dispatch."""
+        gating = [(r, s) for r, s in reviews if r.get('required_approving_review_count', 0) > 0]
+        if not gating:
+            return {'status': 'ready', 'detail': 'No approval rule blocks the Forge controller.', 'sources': []}
+        app_id = self.connection('controller').get('app_id')
+        missing, unknown, seen = [], [], set()
+        for review, source in gating:
+            if source['kind'] == 'classic':
+                apps = (review.get('bypass_pull_request_allowances') or {}).get('apps') or []
+                if not any(isinstance(a, dict) and a.get('id') == app_id for a in apps):
+                    missing.append(source)
+                continue
+            if source.get('id') in seen:
+                continue
+            seen.add(source.get('id'))
+            try:
+                found = self.call('controller', item, 'GET', '/rulesets/' + str(int(source['id'])))
+                mode = found.get('current_user_can_bypass') if isinstance(found, dict) else None
+            except GitHubBudgetExhausted:
+                raise
+            except (GitHubUnavailable, TypeError, ValueError):
+                mode = None
+            if mode in ('always', 'pull_requests_only', 'exempt'):
+                continue
+            (missing if mode == 'never' else unknown).append(source)
+        if missing:
+            return {'status': 'missing', 'sources': missing, 'detail':
+                    'Add the Forge controller App as a pull request bypass actor, or Forge cannot merge approved work.'}
+        if unknown:
+            return {'status': 'operator_review', 'sources': unknown, 'detail':
+                    'GitHub did not say whether the Forge controller can bypass these rules. Check the bypass list on GitHub.'}
+        return {'status': 'ready', 'sources': [], 'detail': 'The Forge controller can merge past approval rules.'}
 
     def native_human_gate(self, item):
         """Require GitHub to enforce human ownership atomically for escalated merges.
