@@ -12,7 +12,7 @@ that file contains placeholder paths only. Real `factory.json`, credential envir
 files, PEM files, and state are ignored by Git. See [GitHub settings](github-settings.md)
 for setup order and the boundary between access readiness and live execution.
 
-The public auditor template grants no administrative merge bypass. NORMAL and CRITICAL work must satisfy repository-required approvals and all other protections; CRITICAL work additionally needs a qualifying human review of the current candidate. Role instructions remain cooperative operating policy, not credential isolation.
+The public auditor template grants no administrative merge bypass. The generated repository ruleset gives the controller App a pull-request-only bypass of the Forge review baseline, because the read-only review Apps cannot satisfy GitHub’s native approval count. Forge still verifies its technical reviews and configured human approval policy before merging. Role instructions remain cooperative operating policy, not credential isolation.
 
 `bin/forge setup` writes the user services for the checkout and runtime root it is given (default `~/.local/share/forge`); cloning the source alone installs nothing. The operator UI binds to loopback unless `--bind` names a private tailnet address, and requires a trusted private network.
 

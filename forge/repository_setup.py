@@ -4,25 +4,17 @@ import time
 
 from .settings import digest, read_json, write_json
 from .factory.github import GitHub, GitHubUnavailable
+from .repository_policy import protection_ready
 
 MAX_AGE = 300
 RULESET_NAME = 'Forge review baseline'
 DEPLOYMENT_LABEL = 'forge:deployment'
 
 
-def ruleset(branch, controller_app_id=None):
-    if not isinstance(branch, str) or not branch or any(c in branch for c in '\r\n\x00'):
-        raise ValueError('Verify the repository branch before downloading rules')
-    # Forge's review and audit Apps cannot count as approvals (GitHub requires write
-    # access), so the controller merges approved work through a pull request bypass.
-    bypass = ([{'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}]
-              if type(controller_app_id) is int else [])
-    return {'name': RULESET_NAME, 'target': 'branch', 'enforcement': 'active', 'bypass_actors': bypass,
-            'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
-            'rules': [{'type': 'pull_request', 'parameters': {
-                'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
-                'require_code_owner_review': False, 'require_last_push_approval': False,
-                'required_review_thread_resolution': False}}]}
+def ruleset(branch, controller_app_id):
+    # The standalone client and server download must produce the same policy.
+    from forge_client.contracts import baseline
+    return baseline(branch, controller_app_id)
 
 
 def observation_key(config, row):
@@ -75,6 +67,8 @@ class RepositorySetup:
                 status = 'unknown'
             elif status != 'checking' and not fresh:
                 status = 'stale' if report else 'unchecked'
+            if status == 'ready' and not protection_ready(report):
+                status = 'needs_setup'
             if not row.get('access_ready'):
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
@@ -227,7 +221,7 @@ class RepositorySetup:
                     same = prior.get('revision') == observation_key(config, row)
                     known = (prior.get('report') if (prior.get('report') or {}).get('available') else prior.get('last_known')) if same else None
                     data['repositories'][str(row['id'])] = {'report': known, 'last_known': known,
-                        'previous_status': ('ready' if known.get('requirements') and all(r['passed'] for r in known['requirements']) else 'needs_setup') if known else None, 'revision': observation_key(config, row), 'name': row['name'],
+                        'previous_status': ('ready' if protection_ready(known) else 'needs_setup') if known else None, 'revision': observation_key(config, row), 'name': row['name'],
                         'status': 'checking', 'started_at': self.settings.clock()}
                     write_json(self.path, data)
                     report = {'repo_id': row['id'], 'branch': None, 'available': False,
@@ -252,7 +246,7 @@ class RepositorySetup:
                         report['errors'] = [{'detail': 'Could not check this repository. Refresh GitHub access and try again.'}]
                     report['observed_at'] = self.settings.clock()
                     status = ('unknown' if not report['available'] else
-                              'ready' if report['requirements'] and all(r['passed'] for r in report['requirements']) else 'needs_setup')
+                              'ready' if protection_ready(report) else 'needs_setup')
                     data['repositories'][str(row['id'])].update(status=status, report=report)
                     write_json(self.path, data)
                 return True

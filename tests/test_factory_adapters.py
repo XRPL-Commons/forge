@@ -148,7 +148,7 @@ class AdapterTests(unittest.TestCase):
     def test_shared_repository_allows_human_access_and_owner_chosen_checks(self):
         github, _, _ = self.github()
         protection = {'required_pull_request_reviews': {'dismiss_stale_reviews':True,
-            'required_approving_review_count':2, 'bypass_pull_request_allowances':{'users':[{'login':'maintainer'}]}},
+            'required_approving_review_count':2, 'bypass_pull_request_allowances':{'users':[{'login':'maintainer'}], 'apps':[{'id':4}]}},
             'enforce_admins':{'enabled':False}, 'restrictions': {'apps':[{'id':4},{'id':9}], 'users':[{'login':'developer'}], 'teams':[{'id':12}]},
             'required_status_checks':{'strict':False,'checks':[{'context':'project-ci','app_id':99}]}}
         github.call = Mock(return_value=protection)

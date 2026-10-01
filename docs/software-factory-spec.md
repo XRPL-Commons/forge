@@ -133,7 +133,9 @@ requirements/policy changes cannot inherit an old human decision.
 Head changes invalidate prior approvals; require GitHub stale-approval dismissal.
 Before merge, verify current named-check producers/results, exact head/base,
 requirements, policy, and native protections again. Merge with an expected head
-and no bypass; only a verified GitHub merge establishes `merged`.
+through the normal merge endpoint. The generated review baseline permits the
+controller App to bypass its two-review rule through pull requests only; Forge's
+technical and human gates still apply. Only a verified GitHub merge establishes `merged`.
 
 For human-escalated automatic merges, the first adapter additionally requires a
 native wildcard CODEOWNERS rule containing only configured humans and required
