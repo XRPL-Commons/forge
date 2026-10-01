@@ -105,6 +105,23 @@ export default async function (page, { base, scenario, requests }) {
   await page.waitForTimeout(700)
   assert.equal((await requests()).filter(posted('/api/repositories/check')).length, 1)
 
+  // The controller bypass line says what GitHub reported, and a missing
+  // bypass names the rules to fix.
+  await page.goto('about:blank'); await scenario('bypass-missing')
+  await page.goto(base + '/settings/repositories/2')
+  const missing = page.locator('#repo-bypass-missing')
+  await missing.waitFor()
+  assert.match(await missing.innerText(), /“pull request” bypass actor/)
+  assert.equal(await missing.getByRole('link', { name: 'Forge review baseline ↗' }).getAttribute('href'), 'https://github.com/XRPL-Commons/hackathon/rules/10')
+  await page.getByRole('button', { name: 'Setup details' }).click()
+  await waitText(page, 'The Forge controller is not a bypass actor.')
+  await page.goto('about:blank'); await scenario('bypass-ready')
+  await page.goto(base + '/settings/repositories/2')
+  await page.getByRole('button', { name: 'Setup details' }).click()
+  await waitText(page, 'The Forge controller can merge approved work past these rules.')
+  assert.equal(await page.locator('#repo-bypass-missing').count(), 0)
+  assert.ok(!(await page.locator('body').innerText()).includes('Bypass permissions need your review.'))
+
   // A refused check is retried: the page shows the reason, and once the server
   // accepts checks again (same payload, no reload) the next tick asks again.
   await page.goto('about:blank')
