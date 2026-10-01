@@ -190,7 +190,7 @@ export default async function (page, { base, scenario, requests }) {
   // The job list fills in from client data after the title renders.
   await jobs.first().waitFor()
   assert.equal(await jobs.count(), 1, 'the issue lists its own jobs')
-  assert.match(await jobs.first().innerText(), /^recovery · running/)
+  assert.match(await jobs.first().innerText(), /^Investigation · Running/)
   assert.equal(await jobs.first().getByRole('link').getAttribute('aria-current'), 'true')
   await page.getByRole('button', { name: 'Worker output' }).click()
   await waitForText(page, 'line <b>two</b>')
