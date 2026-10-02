@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ForgeApiError } from '~/composables/useForgeApi'
 import {
-  SHOW_OPTIONS, countText, emptyState, freshnessText, issuePath, listParams, pendingAction,
+  SHOW_OPTIONS, countText, emptyState, filterQuery, filtersFromQuery, freshnessText, issuePath, listParams, pendingAction,
   type IssueListResponse,
 } from '~/utils/issues'
 
@@ -19,11 +19,24 @@ if (redirecting) await navigateTo(issuePath(asked as string), { redirectCode: 30
 
 interface Loaded { list: IssueListResponse | null; fence: string | null }
 
+// The filters outlive a visit to another page, and the URL carries them, so a
+// filtered view reloads and shares as itself. A URL that names filters wins.
 const show = useState('issues-show', () => 'open')
 const repoValue = useState('issues-repoValue', () => '')
 const search = useState('issues-search', () => '')
 const query = useState('issues-query', () => '')
 const page = useState('issues-page', () => 1)
+const linked = filtersFromQuery(route.query)
+if (Object.keys(linked).length) {
+  show.value = linked.show ?? 'open'
+  repoValue.value = linked.repo ?? ''
+  search.value = query.value = linked.q ?? ''
+  page.value = linked.page ?? 1
+}
+const router = useRouter()
+watch(() => filterQuery({ show: show.value, repo: repoValue.value, q: query.value, page: page.value }), (next) => {
+  void router.replace({ query: next })
+}, { immediate: import.meta.client && !redirecting, deep: true })
 
 const repoId = computed(() => (repoValue.value ? Number(repoValue.value) : null))
 const params = computed(() => listParams({ state: show.value, repoId: repoId.value, q: query.value, page: page.value }))

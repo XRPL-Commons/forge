@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
-  decisionNeedsReason, emptyState, freshnessText, listParams, preselectedReviewers,
+  decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   activityAge, rowFacts, rowPrimary, rowStory,
   type IssueListResponse, type IssueRow,
@@ -385,5 +385,23 @@ describe('rowNote', () => {
     expect(rowNote(row({ summary: { headline: 'Built and waiting for review', plain: 'x' } }))).toBe('Built and waiting for review')
     expect(rowNote(row())).toBe('Not queued for Forge.')
     expect(rowNote(row({ summary: { headline: 'w'.repeat(200), plain: '' } })).length).toBeLessThanOrEqual(97)
+  })
+})
+
+describe('list filters in the URL', () => {
+  it('reads only valid filters', () => {
+    expect(filtersFromQuery({ show: 'completed', repo: '3', q: ' nav ', page: '2' })).toEqual({ show: 'completed', repo: '3', q: 'nav', page: 2 })
+    expect(filtersFromQuery({ show: 'nonsense', repo: 'x', q: '', page: '0' })).toEqual({})
+    expect(filtersFromQuery({})).toEqual({})
+  })
+
+  it('writes only what differs from the defaults', () => {
+    expect(filterQuery({ show: 'open', repo: '', q: '', page: 1 })).toEqual({})
+    expect(filterQuery({ show: 'completed', repo: '3', q: 'nav', page: 2 })).toEqual({ show: 'completed', repo: '3', q: 'nav', page: '2' })
+  })
+
+  it('round-trips', () => {
+    const state = { show: 'attention', repo: '7', q: 'login', page: 4 }
+    expect(filtersFromQuery(filterQuery(state))).toEqual(state)
   })
 })

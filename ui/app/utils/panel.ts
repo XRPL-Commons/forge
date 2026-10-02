@@ -42,3 +42,10 @@ export function panelQuery(query: PanelQuery | null | undefined, panel: { key: s
 export function panelTarget(card: Pick<CardModel, 'key' | 'id' | 'jobId'>): { key: string; job: string | null } {
   return { key: card.key, job: card.id.startsWith('job-') ? card.jobId : null }
 }
+
+// The API names an issue as `/issues?issue=<key>` in `operator.action_url`.
+// On the board that link opens the same panel a card does, and stays on `/`.
+export function boardLink(url: string): string {
+  const match = /^\/issues\?issue=([^&#]+)$/.exec(url)
+  return match ? `/?issue=${match[1]}` : url
+}
