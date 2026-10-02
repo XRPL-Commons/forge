@@ -130,6 +130,11 @@ def view(root):
         row.setdefault('last_summary', None)
         candidate = item.get('candidate')
         row['candidate'] = {key: candidate[key] for key in ('pr', 'head', 'merge_commit') if key in candidate} if candidate else None
+        # Stable codes, so clients never have to match the prose in `reason`.
+        row['hold_kind'] = ((item.get('environment_hold') or {}).get('blocker')
+                            or ((item.get('operator_hold') or {}).get('kind'))
+                            or ('prerequisite' if item.get('prerequisite_hold') else None))
+        row['merge_gate_kind'] = (item.get('merge_gate') or {}).get('kind')
         history = histories.get(item['key'], [])
         recent = history[-3:]
         done = next((event for event in reversed(history) if event['kind'] in ('merged', 'cancelled')), None)
@@ -152,8 +157,9 @@ def view(root):
         observed = data['jobs'][job['id']].get('observation') or {}
         job['observed_at'] = observed.get('at')
         job['started_at'] = (observed.get('execution') or {}).get('started_at')
-    with AtomicStore(Path(root) / 'state' / 'factory', 'operator-requests').transaction() as requests_data:
-        actions = [{'id': key, **value} for key, value in list(requests_data.items())[-10:]]
+    # A read must never rewrite state: the supervisor holds this lock while it applies requests.
+    requests_data = AtomicStore(Path(root) / 'state' / 'factory', 'operator-requests').read()
+    actions = [{'id': key, **value} for key, value in list(requests_data.items())[-10:]]
     try:
         observation = read_json(Path(root) / 'state' / 'factory' / 'supervisor.json')
     except (OSError, ValueError):

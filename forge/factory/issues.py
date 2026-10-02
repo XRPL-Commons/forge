@@ -284,7 +284,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     closable = fresh and state != 'completed' and case not in ('applying', 'repo_blocked')
     summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
                else owner if case == 'external' else summary_for(case, item, held))
-    return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'closable': closable, 'setup_needed': setup or not repo.get('access_ready'),
+    return {'status': state, 'reason_code': case, 'ledger_state': item.get('state'),
+            'explanation': detail, 'summary': summary, 'actions': actions, 'closable': closable, 'setup_needed': setup or not repo.get('access_ready'),
             'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
                         if case == 'approval_needed' and owned_pr and human_approval else None,
             'approvals': [{k: a.get(k) for k in ('login', 'state', 'at', 'counted', 'why')} for a in gate.get('approvals') or []],
@@ -397,7 +398,14 @@ class IssueInventory:
         except BlockingIOError:
             pass
 
+    REFRESH_SPACING = 30
+    _refresh_started = 0.0  # per process: every GET used to start a thread
+
     def start_refresh(self, force=False):
+        now = time.monotonic()
+        if not force and now - IssueInventory._refresh_started < self.REFRESH_SPACING:
+            return
+        IssueInventory._refresh_started = now
         threading.Thread(target=self.refresh, args=(force,), daemon=True).start()
 
     def view(self, *, repo_id=None, state='open', query='', page=1, key=None):
@@ -478,9 +486,9 @@ class IssueInventory:
                 'complete': all(r['complete'] and r['fresh'] for r in scopes if repo_id is None or r['id'] == repo_id), 'actions': self.action_statuses()}
 
     def action_statuses(self):
-        with AtomicStore(self.root / 'state/issues', 'actions').transaction() as data:
-            ordered = sorted(data.items(), key=lambda pair: pair[1]['created_at'])
-            recent = {key for key, value in ordered[-20:]}
-            return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message'),
-                     'at': value.get('created_at')}
-                    for key, value in ordered if value['status'] == 'pending' or key in recent]
+        data = AtomicStore(self.root / 'state/issues', 'actions').read()
+        ordered = sorted(data.items(), key=lambda pair: pair[1]['created_at'])
+        recent = {key for key, value in ordered[-20:]}
+        return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message'),
+                 'at': value.get('created_at')}
+                for key, value in ordered if value['status'] == 'pending' or key in recent]

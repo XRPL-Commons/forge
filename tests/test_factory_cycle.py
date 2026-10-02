@@ -266,6 +266,13 @@ class CycleTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             request_check(self.temp.name + '/host', 'unknown#1')
 
+    def test_entering_approval_is_recorded_once(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required')
+        self.cycle(); self.cycle()
+        changes = [e for e in self.ledger.read()['events'] if e['kind'] == 'state_changed']
+        self.assertEqual([(e['previous'], e['state']) for e in changes], [('audited', 'approval_needed')])
+
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review', 'reject'); self.cycle()
