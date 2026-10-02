@@ -60,7 +60,7 @@ export default async function (page, { base, scenario, requests }) {
 
   // Each issue is its own card, and its one button says what opening it is for:
   // the decision it waits on, else its progress, else just opening it.
-  assert.equal(await page.locator('article.issue-row').count(), 6)
+  assert.equal(await page.locator('article.issue-card').count(), 6)
   assert.equal(await page.locator('[data-key="1:610"]').getByRole('link', { name: 'View progress' }).count(), 1)
   assert.equal(await page.locator('[data-key="1:613"]').getByRole('link', { name: 'Recheck readiness' }).count(), 1)
   assert.equal(await page.locator('[data-key="1:609"]').getByRole('link', { name: 'Queue for Forge' }).count(), 1)
@@ -79,6 +79,18 @@ export default async function (page, { base, scenario, requests }) {
   const held = await facts('2:585')
   assert.deepEqual(held.slice(0, 2), ['Depends on #584', 'On hold: hold'])
   assert.equal(await page.locator('[data-key="1:609"] [data-fact^="pr-"]').count(), 0, 'no pull request fact without a pull request')
+
+  // Each card leads with the issue's cube, the same character as its
+  // workbench: decorative, so hidden from assistive technology. Failed
+  // attempts read as hearts beside the words, and a hold sleeps.
+  const cube = page.locator('[data-key="1:613"] canvas.cube-portrait')
+  assert.equal(await cube.getAttribute('aria-hidden'), 'true')
+  assert.match(await cube.getAttribute('data-look'), /beacon/)
+  assert.match(await cube.getAttribute('data-look'), /scorch-1/)
+  assert.equal(await page.locator('[data-key="1:613"] [data-fact="attempts"] [data-heart="lost"]').count(), 1)
+  assert.equal(await page.locator('[data-key="1:613"] [data-fact="attempts"] [data-heart="left"]').count(), 2)
+  assert.match(await page.locator('[data-key="2:585"] canvas').getAttribute('data-look'), / sleep .*zzz/)
+  assert.match(await page.locator('[data-key="1:610"] canvas').getAttribute('data-look'), /^build busy hat/)
 
   // The whole card opens the issue: a click on its story lands on the issue,
   // and the title link carries a visible focus ring for the keyboard.
@@ -472,13 +484,13 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Add and enable a repository to see its issues here.')
   const addRepository = page.getByRole('link', { name: 'Add repository →' })
   assert.equal(await addRepository.getAttribute('href'), '/settings/repositories?add=1')
-  assert.equal(await page.locator('.issue-row').count(), 0)
+  assert.equal(await page.locator('.issue-card').count(), 0)
 
   // A reset fence replaces the list on the next poll and hides every row.
   await scenario('paused')
   await page.goto(base + '/issues')
   await waitForText(page, 'Factory reset is in progress')
-  assert.equal(await page.locator('.issue-row').count(), 0)
+  assert.equal(await page.locator('.issue-card').count(), 0)
   assert.equal(
     await page.evaluate(() => document.body.innerText.split('Factory reset is in progress').length - 1), 1,
     'the fence is stated once',

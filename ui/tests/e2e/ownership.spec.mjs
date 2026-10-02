@@ -7,7 +7,7 @@ export default async function (page, { base, scenario }) {
   await section.waitFor()
   assert.match(await section.innerText(), /Assigned to @lucbocahut/)
   assert.equal(await page.locator('#waiting').count(), 0)
-  assert.equal(await page.locator('#columns [data-key="1:610"]').count(), 0)
+  assert.equal(await page.locator('#needs-attention [data-key="1:610"]').count(), 0)
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 1000 })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))

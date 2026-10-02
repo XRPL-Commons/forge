@@ -4,7 +4,8 @@
 // with the stage from the pipeline mapping (pipeline.ts).
 import type { IssueRow } from './issues'
 import { STAGES, issuePipeline, type PipelineRow, type StageId } from './pipeline'
-import type { BenchScene, CubeAccessory, CubeMood } from './cube'
+import type { BenchScene, CubeAccessory, CubeMood, PortraitLook } from './cube'
+import type { IssueState, JobRole } from './factory'
 
 export type WorkbenchRow = PipelineRow & Pick<IssueRow, 'number' | 'dependencies'> & Partial<Pick<IssueRow, 'held_by'>>
 
@@ -25,7 +26,7 @@ export interface WorkbenchLook {
   attempts: AttemptLives | null
 }
 
-const ACCESSORY: Partial<Record<StageId, CubeAccessory>> = { build: 'hat', review: 'magnifier', approval: 'badge', merged: 'bow' }
+export const ACCESSORY: Partial<Record<StageId, CubeAccessory>> = { build: 'hat', review: 'magnifier', approval: 'badge', merged: 'bow' }
 // The stage names the operator reads on the badges and in the label.
 export const STAGE_SHORT: Record<StageId, string> = Object.fromEntries(STAGES.map(stage => [stage.id, stage.short])) as Record<StageId, string>
 // The badges a cube earns: every stage after the queue.
@@ -87,5 +88,38 @@ export function workbenchLook(row: WorkbenchRow): WorkbenchLook {
   return {
     stage, mood, needsYou, scene, badges, attempts,
     label: `Cube for #${row.number}, ${STAGE_SHORT[stage]} stage, ${phrase}`,
+  }
+}
+
+// The lighter look an Activity card draws from the factory ledger, which has
+// no reviews or pull request list: the stage comes from the ledger state and
+// the job working on it, the props from the same rules as the workbench.
+const JOB_STAGE: Partial<Record<JobRole, StageId>> = { build: 'build', review: 'review', audit: 'audit', merge: 'approval' }
+const STATE_STAGE: Partial<Record<IssueState, StageId>> = {
+  ready: 'queued', built: 'review', reviewed: 'audit', audited: 'approval', approval_needed: 'approval', merged: 'merged', cancelled: 'queued',
+}
+
+export interface LedgerLookIssue { state: IssueState; failure_count?: number; candidate?: { pr?: number } | null }
+
+export function ledgerLook(issue: LedgerLookIssue, job: { role: JobRole } | null, running: boolean): PortraitLook {
+  const state = issue.state
+  const failures = Math.max(0, Number(issue.failure_count) || 0)
+  const stage: StageId = state === 'merged' ? 'merged'
+    : (job && JOB_STAGE[job.role]) || STATE_STAGE[state]
+      // Held, failed or under investigation: as far as the evidence shows.
+      || (issue.candidate?.pr ? 'review' : failures ? 'build' : 'queued')
+  let mood: CubeMood = 'open'
+  if (state === 'merged') mood = 'happy'
+  else if (running) mood = 'busy'
+  else if (state === 'approval_needed') mood = 'hopeful'
+  else if (state === 'failed') mood = 'worried'
+  else if (state === 'hold') mood = 'sleep'
+  return {
+    stage, mood,
+    accessory: state === 'cancelled' ? null : ACCESSORY[stage] ?? null,
+    beacon: state === 'failed' || state === 'approval_needed',
+    zzz: mood === 'sleep',
+    scorches: Math.min(3, failures),
+    confetti: state === 'merged',
   }
 }

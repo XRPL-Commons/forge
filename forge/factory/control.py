@@ -132,11 +132,12 @@ def view(root):
         row['candidate'] = {key: candidate[key] for key in ('pr', 'head', 'merge_commit') if key in candidate} if candidate else None
         history = histories.get(item['key'], [])
         recent = history[-3:]
-        merged = next((event for event in reversed(history) if event['kind'] == 'merged'), None)
-        # Merge timestamps drive the dashboard's last-day/week counts, even
-        # when later deployment events have pushed the merge out of the tail.
-        if merged is not None and merged not in recent:
-            recent = [merged, *recent]
+        done = next((event for event in reversed(history) if event['kind'] in ('merged', 'cancelled')), None)
+        # Merge timestamps drive the dashboard's last-day/week counts, and the
+        # completion time orders Recently completed, even when later
+        # deployment events have pushed it out of the tail.
+        if done is not None and done not in recent:
+            recent = [done, *recent]
         row['history'] = [{key: event[key] for key in ('at', 'kind', 'provider', 'model') if key in event}
                           for event in recent]
         row.setdefault('deployed', None)
@@ -167,9 +168,51 @@ def view(root):
             'runtime_revision': digest(runtime), 'active': active}
 
 
-def select_view(payload, *, section=None, issue=None, now=None):
-    """Small Activity view plus independently fetched, collapsed card sections."""
+COMPLETED_PAGE_MAX = 50
+
+
+def completed_at(row):
+    """When the issue left the line: its last merge or cancellation, else 0."""
+    return next((event['at'] for event in reversed(row.get('history') or [])
+                 if event.get('kind') in ('merged', 'cancelled')), 0)
+
+
+def completed_page(rows, limit, before=None):
+    """One page of completed issues, newest first, and the cursor after it.
+
+    The cursor names the last row returned (`<completed at>:<key>`), so the
+    next page stays the same while newer issues complete above it."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        raise ValueError('Invalid factory view') from None
+    if not 1 <= limit <= COMPLETED_PAGE_MAX:
+        raise ValueError('Invalid factory view')
+    order = sorted(rows, key=lambda row: (completed_at(row), row['key']), reverse=True)
+    if before is not None:
+        at, _, key = str(before).partition(':')
+        try:
+            at = float(at)
+        except ValueError:
+            raise ValueError('Invalid factory view') from None
+        if not key:
+            raise ValueError('Invalid factory view')
+        order = [row for row in order if (completed_at(row), row['key']) < (at, key)]
+    page = [{**row, 'completed_at': completed_at(row) or None} for row in order[:limit]]
+    last = page[-1] if len(order) > limit else None
+    return page, (f"{completed_at(last)!r}:{last['key']}" if last else None)
+
+
+def select_view(payload, *, section=None, issue=None, now=None, limit=None, before=None):
+    """Small Activity view plus independently fetched card sections.
+
+    `section='completed'` with `limit` (and `before`, the previous page's
+    `next`) returns one page of completed issues, newest first, and `next`,
+    the cursor of the following page or None. Without `limit` it still
+    returns every completed issue."""
     if section not in (None, 'board', 'completed', 'runners') or (section and issue):
+        raise ValueError('Invalid factory view')
+    if (limit is not None or before is not None) and (section != 'completed' or limit is None):
         raise ValueError('Invalid factory view')
     issues, jobs = payload['issues'], payload['jobs']
     # Readiness is already summarized by operator_status. Detailed protection,
@@ -191,7 +234,10 @@ def select_view(payload, *, section=None, issue=None, now=None):
     runner_ids = {row.get('active') for row in investigating}
     runners = [job for job in jobs if job['id'] not in active or job['id'] in runner_ids]
     if section == 'completed':
-        return {**payload, 'issues': completed, 'jobs': []}
+        if limit is None:
+            return {**payload, 'issues': completed, 'jobs': []}
+        page, cursor = completed_page(completed, limit, before)
+        return {**payload, 'issues': page, 'jobs': [], 'next': cursor}
     if section == 'runners':
         return {**payload, 'issues': investigating, 'jobs': runners}
     now = time.time() if now is None else now

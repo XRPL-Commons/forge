@@ -110,6 +110,28 @@ function withToken(payload) {
   return payload
 }
 
+// /api/factory?section=completed&limit=N&before=<cursor>: one page of the
+// fixture's completed issues, as forge/factory/control.py completed_page()
+// answers it — newest first by completion time, then key; the cursor names
+// the last row returned (`<at>:<key>`), and `next` is null on the last page.
+function completedAt(issue) {
+  const events = (issue.history ?? []).filter(event => event.kind === 'merged' || event.kind === 'cancelled')
+  return events.length ? events[events.length - 1].at : 0
+}
+function completedPage(fixture, query) {
+  const limit = Number(query.limit)
+  const later = (a, b) => (completedAt(b) - completedAt(a)) || (a.key < b.key ? 1 : a.key > b.key ? -1 : 0)
+  let rows = (fixture.issues ?? []).filter(issue => ['merged', 'cancelled'].includes(issue.state) && !issue.active).sort(later)
+  if (query.before) {
+    const split = query.before.indexOf(':')
+    const at = Number(query.before.slice(0, split)), key = query.before.slice(split + 1)
+    rows = rows.filter(issue => completedAt(issue) < at || (completedAt(issue) === at && issue.key < key))
+  }
+  const page = rows.slice(0, limit).map(issue => ({ ...issue, completed_at: completedAt(issue) || null }))
+  const last = page[page.length - 1]
+  return { ...fixture, issues: page, jobs: [], next: rows.length > limit ? `${completedAt(last)}:${last.key}` : null }
+}
+
 function record(req, pathname, query, body) {
   requests.push({ method: req.method, path: pathname, query, body: body ?? null, cookie: req.headers.cookie ?? null, etag: req.headers['if-none-match'] ?? null })
 }
@@ -249,6 +271,9 @@ const server = http.createServer(async (req, res) => {
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
+    if (base === 'factory' && query.section === 'completed' && query.limit && fixture.ok !== false) {
+      return send(res, 200, withToken(completedPage(fixture, query)))
+    }
     const headers = {}
     if (base === 'repositories-ruleset') {
       headers['content-disposition'] = `attachment; filename="forge-review-rules-${query.repo_id ?? ''}.json"`

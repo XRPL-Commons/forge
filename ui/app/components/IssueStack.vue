@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import type { CardModel } from '~/utils/factory'
+import { modelCardView } from '~/utils/issueCard'
 
-// One deck of cards the operator does not have to read right now: queued work
-// in a stage column, or issues deliberately on hold. The deck keeps the board
-// compact — clicking it opens the cards in a modal instead of pushing the
-// sections below it down the page.
+// One deck of cards the operator does not have to read right now: issues
+// deliberately on hold. The deck keeps the page compact — clicking it opens
+// the cards in a modal instead of pushing the sections below it down the page.
 const props = defineProps<{
   cards: CardModel[]
-  // What the cards are, read after the count: "11 queued", "3 on hold".
+  // What the cards are, read after the count: "3 on hold".
   noun: string
-  // The board section the deck belongs to, appended to the modal title.
+  // The page section the deck belongs to, appended to the modal title.
   section?: string
-  role?: 'build' | 'review' | 'audit' | 'recovery' | 'merge'
+  // For the cards' "Updated 3 h ago"; 0 leaves the age out.
+  now?: number
 }>()
 // A card opened from the deck replaces the deck: the detail panel is the one
 // overlay on screen, so the modal closes before the panel opens.
@@ -57,7 +58,7 @@ const next = computed(() => props.cards[0] ?? null)
     <UModal v-model:open="open" :title="title" :ui="{ content: 'max-w-[min(64rem,92vw)]' }">
       <template #body>
         <div class="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
-          <IssueCard v-for="card in cards" :key="card.key" :card="card" :role="role" @open="openCard(card)" />
+          <IssueCard v-for="card in cards" :key="card.key" :view="modelCardView(card, now ?? 0)" compact @open="openCard(card)" />
         </div>
       </template>
     </UModal>

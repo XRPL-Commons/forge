@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
-  breakdown, deploymentLine, isProgressStatus, jobSummary, phaseLabel, reasonText, toCard, warnings,
+  readout, deploymentLine, isProgressStatus, jobSummary, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
+import { lineAnalyse, lineState } from '../../app/utils/factoryLine'
 
 const now = 1_000_000
 
@@ -194,11 +195,6 @@ describe('groupIssues', () => {
     expect(split.attention.map(c => c.key)).toEqual(['1:622', '1:623'])
     expect(split.held.map(c => c.key)).toEqual(['1:620', '1:621'])
     expect(split.held[0]!.phaseLabel).toBe('On hold')
-    // The breakdown row still counts every state that needs the operator.
-    expect(breakdown(view({ issues: [
-      issue({ key: '1:620', number: 620, state: 'hold', reason: 'Paused by an operator' }),
-      issue({ key: '1:622', number: 622, state: 'approval_needed' }),
-    ] }), now).find(row => row.id === 'attention')!.value).toBe(2)
   })
 
   it('leaves the held group empty when nothing is on hold', () => {
@@ -217,7 +213,7 @@ describe('groupIssues', () => {
   })
 })
 
-describe('breakdown', () => {
+describe('readout', () => {
   const running = job()
   const recovery = job({ id: 'rec-fresh', issue_key: '3:900', role: 'recovery', slot: 'recovery-1', model: null })
   const v = view({
@@ -236,27 +232,20 @@ describe('breakdown', () => {
     observation: { at: now, errors: [{ phase: 'github', reason: 'GitHub refused to merge x/y#1: branch rules still block it' }] },
   })
 
-  it('returns one row per state with a meaning derived from the ledger', () => {
-    const rows = breakdown(v, now)
-    expect(rows.map(r => r.id)).toEqual(['working', 'queued', 'merging', 'attention', 'merged'])
-    const byId = Object.fromEntries(rows.map(r => [r.id, r]))
-    expect(byId.working).toMatchObject({ value: 1, detail: 'of 4 slots', meaning: '1 of 2 building · 0 of 1 reviewing · 0 of 1 auditing · 1 investigating', to: '#columns' })
-    expect(byId.queued).toMatchObject({ value: 1, detail: 'waiting for a worker', meaning: 'Waiting for a free worker' })
-    expect(byId.merging).toMatchObject({ value: 1, detail: 'approved, not merged', meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
-    expect(byId.attention).toMatchObject({ value: 3, detail: 'awaiting you', meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
-    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, detail: 'in the last 24 h', meaning: '2 in the last 7 days · 3 tracked in all · deployment not tracked', to: '#completed' })
+  it('counts working slots, the queue, merges waiting and merged today', () => {
+    // The recovery job is not a worker slot; the merges are 1 h, 3 d and 30 d old.
+    expect(readout(v, now)).toEqual({ working: 1, slots: 4, queued: 1, merging: 1, merged: 1 })
   })
 
-  it('keeps the inline detail of every box a fixed phrase', () => {
-    const empty = breakdown(view(), now)
-    expect(empty.map(r => r.detail)).toEqual(
-      ['of 4 slots', 'waiting for a worker', 'approved, not merged', 'awaiting you', 'in the last 24 h'])
-    expect(empty.map(r => r.detail)).toEqual(breakdown(v, now).map(r => r.detail))
+  it('reads zero everywhere on an empty factory, and nothing before the first snapshot', () => {
+    expect(readout(view(), now)).toEqual({ working: 0, slots: 4, queued: 0, merging: 0, merged: 0 })
+    expect(readout(null, now)).toBeNull()
   })
 
-  it('reports a paused dispatch on the queued row', () => {
-    const paused = breakdown(view({ ...v, runtime: { ...v.runtime, enabled: false } }), now)
-    expect(paused[1]).toMatchObject({ id: 'queued', detail: 'dispatch is paused', meaning: 'Dispatch is paused', tone: 'muted' })
+  it('agrees with the strip on how many issues need the operator', () => {
+    const state = lineState(v, now)!
+    // 1:604 failed, 1:605 and 1:607 held for a reason the strip names.
+    expect(lineAnalyse(state).attention).toBe(3)
   })
 })
 
@@ -364,20 +353,9 @@ describe('deployment verdicts', () => {
     deployments: { 1: { name: 'XRPL-Commons/academy', live: { commit: 'abc1234def', at: now - 60 }, deploy: null, error: null } },
   })
 
-  it('turns the merged box into a deployed box once a profile is confirmed', () => {
-    const row = breakdown(tracked, now).find(entry => entry.id === 'merged')!
-    expect(row).toMatchObject({
-      label: 'Deployed today', value: 1, detail: 'in the last 24 h',
-      // 1:702 alone is waiting: 1:701 is live, 1:703 is counted as failed
-      // beside it, and 2:704 belongs to a repository nobody tracks.
-      meaning: '1 merged and waiting · 1 deploy failed', to: '#completed', tone: 'warn',
-    })
-  })
-
-  it('keeps the merged box, and says so, while nothing is tracked', () => {
-    const row = breakdown(view({ repositories: repositories([]), issues: tracked.issues }), now).find(entry => entry.id === 'merged')!
-    expect(row).toMatchObject({ label: 'Merged today', value: 4, detail: 'in the last 24 h' })
-    expect(row.meaning.endsWith(' · deployment not tracked')).toBe(true)
+  it('counts every merge of the day in the readout, deployed or not', () => {
+    expect(readout(tracked, now)!.merged).toBe(4)
+    expect(readout(view({ repositories: repositories([]), issues: tracked.issues }), now)!.merged).toBe(4)
   })
 
   it('notes the deployment on completed cards, and only for a tracked repository', () => {
@@ -414,7 +392,7 @@ describe('issues waiting on dependencies', () => {
   })
 
   it('are not counted as queued for a worker', () => {
-    expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(1)
+    expect(readout(v, now)!.queued).toBe(1)
   })
 })
 
@@ -428,7 +406,7 @@ describe('issues owned by someone else', () => {
     expect(groups.owned[0]).toMatchObject({ phaseLabel: owner.headline, reason: owner.plain })
     expect(groups.waiting).toEqual([])
     expect(groups.columns.build).toEqual([])
-    expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(0)
+    expect(readout(v, now)!.queued).toBe(0)
   })
 
   it('returns to dependency waiting when ownership clears', () => {

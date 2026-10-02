@@ -298,3 +298,60 @@ export function drawBench(ctx: CanvasRenderingContext2D, W: number, H: number, s
   if (scene.zzz) drawZzz(ctx, cx + c * 0.5, gy - c - 4, 1.2, t, still)
   if (scene.confetti) drawConfetti(ctx, W, gy, t, still)
 }
+
+// ---------------------------------------------------------------------------
+// The card portrait: the issue's cube alone in a small square, with only the
+// light props a list can carry. One still frame; `blink` closes open eyes.
+// ---------------------------------------------------------------------------
+export interface PortraitLook {
+  stage: StageId
+  mood: CubeMood
+  accessory: CubeAccessory | null
+  // Waits for the operator: an amber glow and a beacon dot.
+  beacon: boolean
+  zzz: boolean
+  // Failed attempts, drawn as up to three scorch dots on the floor.
+  scorches: number
+  // Merged: a confetti tint behind the cube.
+  confetti: boolean
+}
+
+export function portraitFromScene(scene: BenchScene): PortraitLook {
+  const { stage, mood, accessory, beacon, zzz, scorches, confetti } = scene
+  return { stage, mood, accessory, beacon, zzz, scorches, confetti }
+}
+
+// A stable name for a portrait, so a card redraws only when its look changes.
+export function portraitKey(look: PortraitLook): string {
+  return [look.stage, look.mood, look.accessory ?? 'plain', look.beacon ? 'beacon' : '', look.zzz ? 'zzz' : '',
+    look.scorches > 0 ? `scorch-${Math.min(look.scorches, 3)}` : '', look.confetti ? 'confetti' : ''].filter(Boolean).join(' ')
+}
+
+export function drawPortrait(ctx: CanvasRenderingContext2D, S: number, look: PortraitLook, blink = false) {
+  ctx.clearRect(0, 0, S, S)
+  ctx.save()
+  roundRect(ctx, 0.5, 0.5, S - 1, S - 1, S * 0.22)
+  ctx.fillStyle = look.confetti ? '#18241d' : '#16191f'; ctx.fill(); ctx.clip()
+  const floor = Math.round(S * 0.84), c = Math.round(S * 0.44)
+  const cx = S / 2 - (look.accessory === 'magnifier' ? S * 0.07 : 0)
+  if (look.beacon) drawAmberGlow(ctx, cx, floor - c * 0.5, c * 1.3, 0, true)
+  if (look.confetti) {
+    const cols = [STAGE_FILL.merged, STAGE_FILL.approval, STAGE_FILL.build, STAGE_FILL.audit, '#f08bb0']
+    for (let i = 0; i < 7; i++) {
+      ctx.save(); ctx.translate((i * 17.3 + 6) % (S - 8) + 4, (i * 11.7 + 5) % (S * 0.4) + 4); ctx.rotate(i * 1.3)
+      ctx.globalAlpha = 0.75; ctx.fillStyle = cols[i % cols.length]!; ctx.fillRect(-2, -1, 4, 2); ctx.restore()
+    }
+  }
+  ctx.fillStyle = '#23272e'; ctx.fillRect(0, floor, S, S - floor)
+  const marks = [-0.8, 0.82, -1.08]
+  for (let k = 0; k < Math.min(look.scorches, marks.length); k++) drawScorch(ctx, cx + marks[k]! * c, floor + 2, 2.6, k + 2)
+  ctx.beginPath(); ctx.ellipse(cx, floor + 0.5, c * 0.55, 2, 0, 0, TAU); ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fill()
+  drawCube(ctx, cx, floor, c, STAGE_FILL[look.stage], { ...moodFace(look.mood, c), accessory: look.accessory, blink })
+  if (look.zzz) drawZzz(ctx, cx + c * 0.4, floor - c - 1, 0.7, 0, true)
+  ctx.restore()
+  if (look.beacon) {
+    const r = Math.max(3, S * 0.065)
+    ctx.beginPath(); ctx.arc(S - r - 4, r + 4, r, 0, TAU); ctx.fillStyle = '#ffd27a'; ctx.fill()
+    ctx.lineWidth = 1.2; ctx.strokeStyle = CUBE_INK; ctx.stroke()
+  }
+}

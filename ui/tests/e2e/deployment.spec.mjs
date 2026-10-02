@@ -79,22 +79,13 @@ export default async function (page, { base, scenario, requests }) {
   const controller = page.locator('#connections [data-key="controller"]')
   assert.equal((await controller.locator('[data-badge]').innerText()).trim(), 'Connected')
 
-  // Activity: the merged box becomes the deployed box, and says what is still
-  // waiting behind it.
+  // Activity: each Recently completed card carries its deployment verdict in
+  // a word, and only for a tracked repository.
   await page.goto(base + '/')
-  const box = page.locator('[data-breakdown="merged"]')
-  await page.waitForFunction(
-    () => document.querySelector('[data-breakdown="merged"]')?.innerText.includes('Deployed today'),
-    null,
-    { timeout: 10000 },
-  )
-  // Only the tracked repository's merge with no verdict is waiting: the
-  // failed one is counted beside it, the untracked repository's is not counted.
-  assert.equal(await box.getAttribute('title'), '1 merged and waiting · 1 deploy failed')
-
-  // The completed card carries the same verdict in one word.
-  await page.locator('#completed summary').click()
-  await waitForText(page, 'deployed')
+  await page.locator('#completed [data-key="2:606"] [data-fact="deployment"]').waitFor({ timeout: 10000 })
+  const verdicts = await page.locator('#completed .issue-card').evaluateAll(cards => Object.fromEntries(
+    cards.map(card => [card.dataset.key, card.querySelector('[data-fact="deployment"]')?.textContent.trim() ?? ''])))
+  assert.deepEqual(verdicts, { '2:606': 'deployed', '2:607': 'waiting for deploy', '2:608': 'deploy failed' })
 
   // Issue page: one Deployment line, in the words of the verdict.
   await page.goto(base + '/issues/2%3A606')

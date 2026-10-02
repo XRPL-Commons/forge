@@ -468,9 +468,10 @@ class H(BaseHTTPRequestHandler):
                 if (Path(WD)/'state/factory-paused.json').exists():raise ValueError('Resetting')
                 from forge.factory.control import view, select_view
                 query=parse_qs(u.query, keep_blank_values=True)
-                if set(query)-{'section','issue'} or any(len(v)!=1 or not v[0] for v in query.values()):
+                if set(query)-{'section','issue','limit','before'} or any(len(v)!=1 or not v[0] for v in query.values()):
                     raise ValueError('Invalid factory view')
-                result=select_view(view(WD), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0])
+                result=select_view(view(WD), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0],
+                                   limit=query.get('limit',[None])[0], before=query.get('before',[None])[0])
                 self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
