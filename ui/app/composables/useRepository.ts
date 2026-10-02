@@ -109,9 +109,6 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   const editUrl = computed(() => report.value?.edit_url ?? '')
   const canDownload = computed(() => ['ready', 'needs_setup'].includes(row.value?.protection_status ?? '') && !busy.value)
   const downloadHref = computed(() => row.value && view.value && canDownload.value ? rulesetHref(row.value, view.value.revision) : undefined)
-  // A plain boolean would be typed as a real disabled state; this link is
-  // never disabled, it only says so to assistive technology.
-  const downloadAriaDisabled = computed<'true' | 'false'>(() => (canDownload.value ? 'false' : 'true'))
   const checking = computed(() => row.value?.protection_status === 'checking')
   const syncing = computed(() => refreshing.value || view.value?.sync.status === 'running')
   const hint = computed(() => row.value ? hintText(row.value) : '')
@@ -278,5 +275,5 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
-  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, downloadAriaDisabled, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, refreshAccess }
+  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, refreshAccess }
 }
