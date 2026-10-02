@@ -324,7 +324,10 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,'request':identifier}));return
             if self.path == '/api/issues/refresh':
                 from forge.factory.issues import IssueInventory
-                if value!={}:raise ValueError('Expected an empty refresh request')
+                if value!={} and (not isinstance(value,dict) or set(value)!={'key'}):raise ValueError('Expected an empty refresh request or an issue key')
+                if value:
+                    from forge.factory.control import request_check
+                    request_check(WD, value['key'])
                 IssueInventory(WD).start_refresh(force=True)
                 self._send(json.dumps({'ok':True}));return
             if self.path == '/api/factory/action':

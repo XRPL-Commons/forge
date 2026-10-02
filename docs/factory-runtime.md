@@ -230,20 +230,11 @@ contributor's changes without charging a failed attempt or dispatching a builder
 over that work. Existing developer PRs require explicit adoption; Forge does not
 claim them by matching a title or a conversational link.
 
-For automatically merging **escalated** changes, configure native required
-code-owner reviews and a `.github/CODEOWNERS` file with one wildcard rule listing
-only humans in `human_reviewers`, for example:
-
-```text
-* @example-maintainer
-```
-
-This is deliberately conservative: code-owner protection is repository-wide, so
-it can also require humans on ordinary PRs. It closes the race in which a custom
-merge-policy check remains successful after a human approval is dismissed.
-Without verifiable native human protection, Forge holds an escalated PR instead of
-using the earlier approval as permission. More selective CODEOWNERS/team patterns
-need a separately verified policy adapter; they are not guessed.
+**Who can approve.** By default, any person with write access to the repository
+can approve an escalated change, as on GitHub. Settings can restrict approvals to a
+list of GitHub logins (`human_reviewers`). The issue panel lists each review Forge
+found and whether it counted. Forge re-reads approvals immediately before merging,
+and the merge is pinned to the approved head commit.
 
 Human approval must follow acceptance of the current candidate and still be
 approved on its exact head. Bots and the PR author do not count. Head, base,

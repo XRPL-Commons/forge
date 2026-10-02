@@ -17,7 +17,7 @@ from .providers import available as provider_available
 from .github import GitHubUnavailable, GitHubBudgetExhausted
 from .ledger import DecisionChanged
 from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
-from ..state import StateError
+from ..state import AtomicStore, StateError
 
 
 def classify_error(text: str) -> str:
@@ -86,7 +86,9 @@ class Supervisor:
                     self.errors.append({'attempt': job['id'], 'phase': 'reconciliation', 'reason': str(error)})
                 finally:
                     self.ledger.job_update(job['id'], last_observed=self.clock())
-        for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: (not bool(i.get('operator_sync')), i.get('last_observed', 0))):
+        requested = self.check_requests()
+        for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: (
+                not bool(i.get('operator_sync')), i['key'] not in requested, i.get('last_observed', 0))):
             if time.monotonic() >= observe_until:
                 break
             # Merged and cancelled issues change rarely (a reopen); observing them
@@ -123,6 +125,8 @@ class Supervisor:
                     data['issues'][item['key']]['settled_observed'] = True
                 else:
                     data['issues'][item['key']].pop('settled_observed', None)
+            if item['key'] in requested:
+                self.check_requests(done=(item['key'], requested[item['key']]))
         self.observe_deployments(observe_until)
         # Launching gets at least half the budget even when observation ran
         # over: otherwise a long launch path (academy #640: 17 dependency
@@ -602,7 +606,9 @@ class Supervisor:
     def merge(self, item, pr):
         audit = item['evidence'].get('audit', {})
         required = self.config['human_required'] or audit.get('human_required') == 'required'
-        approved, blocked = self.github.human(item, pr)
+        approvals = self.github.approvals(item, pr)
+        blocked = any(a['state'] == 'CHANGES_REQUESTED' for a in approvals)
+        approved = any(a['counted'] for a in approvals) and not blocked
         reason = None
         if audit.get('human_required') not in ('required', 'not_required'):
             reason = 'Audit did not resolve the human approval requirement'
@@ -610,8 +616,6 @@ class Supervisor:
             reason = 'A current GitHub review requests changes'
         elif required and not approved:
             reason = audit.get('human_reason') or 'An authorized human must approve the current candidate'
-        elif required and not self.github.native_human_gate(item):
-            reason = 'Configure native human CODEOWNERS protection before automatically merging escalated changes'
         elif not self.github.gates(item):
             reason = 'Current review and audit checks must match the accepted evidence'
         elif not self.github.protections(item, item['candidate']):
@@ -634,6 +638,7 @@ class Supervisor:
         with self.ledger.transaction() as data:
             data['issues'][item['key']]['merge_gate'] = {
                 'candidate': item['candidate']['key'], 'kind': gate_kind, 'reason': reason,
+                'approvals': approvals,
             }
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
@@ -650,8 +655,8 @@ class Supervisor:
         if fresh.get('mergeable') is not True:
             return  # GitHub is still computing mergeability; no failed attempt.
         self.github.check(item, 'controller', item['candidate'], external, 'success', 'Technical and human gates verified for this candidate')
-        # Re-read approvals immediately before requesting a merge. Native branch
-        # protections handle new commits/requests for changes racing this request.
+        # Re-read approvals immediately before requesting a merge; the merge is
+        # pinned to the candidate head, so a new commit racing it fails.
         approved, blocked = self.github.human(item, fresh)
         if blocked or required and not approved:
             self.github.check(item, 'controller', item['candidate'], external, None, 'Approval changed; waiting for current authorization')
@@ -670,6 +675,16 @@ class Supervisor:
         if verified.get('merged'):
             current = self.ledger.read()['issues'][item['key']]
             self.ledger.accept(current['active'], evidence={'pr': pr['number'], 'sha': verified.get('merge_commit_sha')})
+
+    def check_requests(self, done=None):
+        """Issues the operator asked to check now (after approving on GitHub, say)."""
+        store = getattr(self.ledger, 'store', None)
+        if store is None:
+            return {}
+        with AtomicStore(store.root, 'check-requests').transaction() as data:
+            if done and data.get(done[0]) == done[1]:
+                del data[done[0]]  # A newer request for the same issue stays queued.
+            return dict(data)
 
     def merge_attempt(self, item):
         import uuid

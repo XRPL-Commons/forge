@@ -57,9 +57,10 @@ class GitHubFacts:
     def check(self, *args): self.checks.append(args); return len(self.checks)
     def verdict(self, job, report): return self.check(job, report)
     def human(self, *args): return self.approved, False
+    def approvals(self, *args):
+        return [{'login': 'maintainer', 'state': 'APPROVED', 'at': 1, 'counted': True, 'why': None}] if self.approved else []
     def gates(self, item): return set(item['evidence']) >= {'review', 'audit'}
     def protections(self, *args): return True
-    def native_human_gate(self, *args): return True
     def merge(self, item): self.pull['merged'] = True; self.pull['merge_commit_sha'] = 'c'*40
     def close_merged_issue(self, item, issue):
         assert self.pull['merged']
@@ -238,11 +239,32 @@ class CycleTest(unittest.TestCase):
         self.cycle()
         self.assertEqual(self.ledger.read()['issues'][self.key]['merge_gate']['kind'], 'approval')
         self.github.approved = True
-        self.github.native_human_gate = lambda *args: False
+        self.github.gates = lambda item: False
         self.cycle()
         item = self.ledger.read()['issues'][self.key]
         self.assertEqual(item['merge_gate']['kind'], 'blocked')
-        self.assertIn('CODEOWNERS', item['merge_gate']['reason'])
+        self.assertIn('review and audit checks', item['merge_gate']['reason'])
+        self.assertEqual(item['merge_gate']['approvals'][0]['login'], 'maintainer')
+
+    def test_an_escalated_change_merges_on_a_counted_approval_without_codeowners(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required')
+        self.cycle()
+        self.assertEqual(self.ledger.read()['issues'][self.key]['merge_gate']['approvals'], [])
+        self.github.approved = True
+        self.cycle()
+        self.assertTrue(self.github.pull['merged'])
+
+    def test_a_check_request_is_observed_first_and_then_cleared(self):
+        from forge.state import AtomicStore
+        from forge.factory.control import request_check
+        self.cycle()
+        with AtomicStore(self.temp.name, 'check-requests').transaction() as data:
+            data[self.key] = 5.0
+        self.cycle()
+        self.assertEqual(AtomicStore(self.temp.name, 'check-requests').read(), {})
+        with self.assertRaises(ValueError):
+            request_check(self.temp.name + '/host', 'unknown#1')
 
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()

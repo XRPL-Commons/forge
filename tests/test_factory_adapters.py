@@ -145,6 +145,26 @@ class AdapterTests(unittest.TestCase):
         github.pages.return_value = [review(1,'human','APPROVED'),review(2,'colleague','CHANGES_REQUESTED')]
         self.assertEqual(github.human({},pr),(False,True))
 
+    def test_without_an_allowlist_any_person_with_write_access_approves(self):
+        github, _, _ = self.github(); github.runtime['human_reviewers'] = []
+        pr = {'number': 2, 'head': {'sha': 'a'*40}, 'user': {'login': 'author'}}
+        github.pages = Mock(return_value=[{'id': 1, 'user': {'login': 'Maintainer', 'type': 'User'}, 'state': 'APPROVED',
+                                           'commit_id': 'a'*40, 'submitted_at': '2026-10-01T16:03:21Z'}])
+        for permission, counted in (('write', True), ('admin', True), ('read', False), ('none', False)):
+            github.call = Mock(return_value={'permission': permission})
+            row = github.approvals({}, pr)[0]
+            self.assertEqual((row['counted'], github.human({}, pr)[0]), (counted, counted))
+            self.assertIn('/collaborators/Maintainer/permission', github.call.call_args.args[3])
+        self.assertEqual(row['why'], 'No write access to the repository')
+        github.call = Mock(side_effect=GitHubUnavailable('Hidden', status=404))
+        self.assertFalse(github.human({}, pr)[0])
+        github.runtime['human_reviewers'] = ['someone-else']
+        github.call = Mock()
+        self.assertEqual(github.approvals({}, pr)[0]['why'], 'Not on the approver list in Settings')
+        github.call.assert_not_called()
+        github.runtime['human_reviewers'] = ['maintainer']
+        self.assertTrue(github.human({}, pr)[0])
+
     def test_shared_repository_allows_human_access_and_owner_chosen_checks(self):
         github, _, _ = self.github()
         protection = {'required_pull_request_reviews': {'dismiss_stale_reviews':True,
@@ -235,19 +255,6 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(github.human(item,pr)[0])
         github.pages.return_value[0]['submitted_at'] = '2026-09-11T11:00:00Z'
         self.assertTrue(github.human(item,pr)[0])
-
-    def test_native_human_gate_rejects_unknown_codeowner_patterns(self):
-        import base64
-        github, _, _ = self.github(); github.runtime['human_reviewers'] = ['human']
-        protection = {'required_pull_request_reviews':{'require_code_owner_reviews':True}}
-        github.pages = Mock(return_value=[])
-        def evaluate(body):
-            github.call = Mock(side_effect=[protection, {'content':base64.b64encode(body.encode()).decode()}])
-            return github.native_human_gate({'candidate':{'base_ref':'main','base':'a'*40}})
-        self.assertTrue(evaluate('* @human'))
-        self.assertFalse(evaluate('* @someone-else'))
-        self.assertFalse(evaluate('* @human\n/private/ @someone-else'))
-        self.assertFalse(evaluate('* @organization/team'))
 
     def test_evidence_capture_has_a_hard_streaming_bound(self):
         import sys
