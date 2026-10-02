@@ -150,6 +150,27 @@ export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, v
   return STATE_LABELS[issue?.state ?? ''] ?? 'Waiting'
 }
 
+const JOB_ROLE_LABELS: Record<JobRole, string> = { build: 'Build', review: 'Review', audit: 'Security audit', recovery: 'Investigation', merge: 'Merge' }
+const OUTCOME_LABELS: Record<string, string> = {
+  accepted: 'Finished', pass: 'Passed', reject: 'Changes requested', failed: 'Failed', cancelled: 'Stopped',
+  superseded: 'Replaced by a newer attempt', held: 'Put on hold', needs_decision: 'Needs your decision',
+  blocked_environment: 'Environment blocked', waiting: 'Waiting', wait: 'Waiting', services_retry: 'Retrying services',
+  memory_retry: 'Retrying with more memory', investigated: 'Investigated',
+}
+
+// One line per job in an issue's history: what the job was and where it got
+// to, in operator words. Never the raw phase, and never the phase twice.
+export function jobSummary(job: Pick<JobView, 'role' | 'phase' | 'outcome' | 'cleanup' | 'capacity_wait_since'>): string {
+  const role = JOB_ROLE_LABELS[job.role] ?? job.role
+  let state: string
+  if (job.outcome) state = OUTCOME_LABELS[job.outcome] ?? job.outcome.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
+  else if (job.capacity_wait_since) state = 'Waiting for memory'
+  else if (job.phase === 'external') state = 'Merging on GitHub'
+  else if (job.cleanup) state = 'Cleaning up'
+  else state = { reserved: 'Starting', created: 'Starting', launching: 'Starting', running: 'Running', stopping: 'Stopping', cleaned: 'Finished' }[job.phase] ?? 'Starting'
+  return `${role} · ${state}`
+}
+
 function latestProvider(issue: LedgerIssueView | null): string | null {
   let provider: string | null = null
   for (const event of issue?.history ?? []) if (event.kind === 'availability_wait' && event.provider) provider = event.provider

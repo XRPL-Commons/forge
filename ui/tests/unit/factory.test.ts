@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
-  breakdown, deploymentLine, isProgressStatus, phaseLabel, reasonText, toCard, warnings,
+  breakdown, deploymentLine, isProgressStatus, jobSummary, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
 
 const now = 1_000_000
@@ -442,5 +442,38 @@ describe('issues owned by someone else', () => {
     const groups = groupIssues(view({ issues: [{ ...owned, active: live.id }], jobs: [live] }), now)
     expect(groups.owned).toEqual([])
     expect(groups.columns.build[0]?.phaseLabel).toBe('Working')
+  })
+})
+
+describe('jobSummary', () => {
+  const line = (over: Record<string, unknown>) => jobSummary({ role: 'build', phase: 'running', outcome: null, cleanup: false, ...over } as any)
+
+  it('says what a running or starting job is doing', () => {
+    expect(line({ role: 'recovery' })).toBe('Investigation · Running')
+    expect(line({ phase: 'reserved' })).toBe('Build · Starting')
+    expect(line({ phase: 'launching', capacity_wait_since: 5 })).toBe('Build · Waiting for memory')
+  })
+
+  it('says a job is cleaning up, and a merge is on GitHub', () => {
+    expect(line({ phase: 'stopping', cleanup: true })).toBe('Build · Cleaning up')
+    expect(line({ role: 'merge', phase: 'external', cleanup: true })).toBe('Merge · Merging on GitHub')
+  })
+
+  it('names a finished job by its outcome, never its phase', () => {
+    expect(line({ role: 'audit', phase: 'cleaned', outcome: 'pass' })).toBe('Security audit · Passed')
+    expect(line({ role: 'review', phase: 'cleaned', outcome: 'reject' })).toBe('Review · Changes requested')
+    expect(line({ phase: 'cleaned', outcome: 'some_new_outcome' })).toBe('Build · Some new outcome')
+    expect(line({ phase: 'cleaned' })).toBe('Build · Finished')
+  })
+
+  it('never shows a raw phase or role', () => {
+    for (const phase of ['reserved', 'created', 'launching', 'running', 'stopping', 'cleaned', 'external']) {
+      for (const role of ['build', 'review', 'audit', 'recovery', 'merge']) {
+        const [shownRole, shownState] = line({ role, phase }).split(' · ')
+        expect(shownRole).not.toBe(role)
+        expect(shownState).toMatch(/^[A-Z][^_]*$/)
+        expect(['reserved', 'created', 'launching', 'external', 'cleaned']).not.toContain(shownState?.toLowerCase())
+      }
+    }
   })
 })
