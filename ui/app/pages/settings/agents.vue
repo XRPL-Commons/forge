@@ -10,6 +10,8 @@ const selectedRepositories = ref<number[]>([])
 const selectedOwners = ref<number[]>([])
 const confirmed = ref(false)
 const busy = ref(false)
+const mounted = ref(false)
+onMounted(() => { mounted.value = true })
 const message = ref('')
 const error = ref('')
 const localTime = useLocalTime()
@@ -62,8 +64,8 @@ async function revoke(id: string) {
         <h2 id="review-title" class="text-xl font-semibold">Review a connection request</h2>
         <p class="text-sm text-muted">Enter the code shown by your local Forge client. Only approve a connection you started.</p>
         <form class="flex flex-wrap items-end gap-3" @submit.prevent="review">
-          <div class="space-y-1"><label for="connection-code" class="block text-sm font-medium">Connection code</label><UInput id="connection-code" v-model="code" placeholder="BCDF-2345" autocomplete="off" maxlength="9" /></div>
-          <UButton type="submit" :disabled="busy || !code.trim()" :loading="busy">Review request</UButton>
+          <div class="space-y-1"><label for="connection-code" class="block text-sm font-medium">Connection code</label><UInput id="connection-code" v-model="code" :disabled="!mounted" placeholder="BCDF-2345" autocomplete="off" maxlength="9" /></div>
+          <UButton type="submit" :disabled="!mounted || busy || !code.trim()" :loading="busy">Review request</UButton>
         </form>
         <div v-if="request" class="space-y-4 border-t border-line pt-4">
           <h3 class="text-lg font-semibold">{{ request.name }}</h3>
@@ -92,7 +94,7 @@ async function revoke(id: string) {
         <p v-if="!connections.data.value.connections.length" class="text-muted">No agents connected yet.</p>
         <article v-for="client in connections.data.value.connections" :key="client.id" class="space-y-2 rounded-xl border border-line p-5">
           <div class="flex items-center justify-between gap-4"><h3 class="font-semibold">{{ client.name }} · {{ client.status }}</h3>
-            <UButton v-if="client.status === 'active'" color="error" variant="outline" :disabled="busy" @click="revoke(client.id)">Revoke access</UButton></div>
+            <UButton v-if="client.status === 'active'" color="error" variant="outline" :disabled="!mounted || busy" @click="revoke(client.id)">Revoke access</UButton></div>
           <p class="text-sm text-muted">Approved by {{ client.operator.login }} · {{ localTime(client.created) }}</p>
           <ul class="list-inside list-disc text-sm"><li v-for="cap in client.capabilities" :key="cap">{{ labels[cap] || cap }}</li></ul>
           <p v-for="repo in client.scope.repositories" :key="repo.id" class="text-sm">{{ repo.name }} · repository {{ repo.id }}</p>
