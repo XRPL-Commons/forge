@@ -143,7 +143,7 @@ class GitHub:
 
     def grant_repository(self, installation_id, repository_id):
         require(positive(installation_id) and positive(repository_id))
-        # GitHub supports this operation only with a suitable local classic PAT.
+        # GitHub requires repository administration and supported local grants.
         # Caller handles a refused grant as a browser handoff, never token upload.
         self._request('PUT', f'/user/installations/{installation_id}/repositories/{repository_id}')
 

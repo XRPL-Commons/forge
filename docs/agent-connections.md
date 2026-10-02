@@ -130,7 +130,10 @@ unrelated rules and stronger policy. App identities are pinned on the connection
 first requirements read and checked on subsequent repositories and token refreshes.
 
 GitHub's [installation grant endpoint](https://docs.github.com/en/rest/apps/installations#add-a-repository-to-an-app-installation)
-requires supported local credentials. If GitHub refuses the grant, the client
+requires repository administration. GitHub currently documents fine-grained
+tokens with the “GitHub App installation repository access” write permission
+for this operation. The client uses the existing local credential and never
+expands it automatically. If GitHub refuses the grant, the client
 returns an installation settings URL and `needs_user_action`; grant access in the
 browser and resume. No administrative token is sent to Forge.
 
