@@ -1,10 +1,9 @@
-# Local Forge client foundation
+# Local Forge client
 
-This package implements the repository preparation engine for #122. It is a
-library with an installable connection CLI, authenticated HTTPS transport and
-browser approval/revocation. See [agent connections](../docs/agent-connections.md)
-for installation and supported commands. Repository write commands, durable
-operations and the agent skill remain integration work.
+This standalone package connects an external agent to Forge, prepares repositories
+using local GitHub credentials, and verifies/enables them through scoped server
+operations. See [agent connections](../docs/agent-connections.md) for installation,
+supported commands and resumption. `forge skill` prints the bundled agent skill.
 Fresh-host installation is tracked in #136.
 
 ## Credential boundary
@@ -51,16 +50,15 @@ The transport must filter response schemas, bound request/response sizes and
 supply pinned App identities from an approved connection. The requirements
 helper is not an authentication gate and must not be exposed unauthenticated.
 
-Operator sign-in (#15), TLS, connection approval/revocation and local credential
-storage now support the connection and requirements commands. Server operation
-journaling and repository write command integration remain prerequisites for
-enabling the complete preparation workflow against a live remote instance. Browser action tokens
-and the UI upstream secret are not substitutes for client authentication.
+`Workflow` supplies that interface through the authenticated `Client`, with a
+private local journal and durable server operations. Browser action tokens and
+the UI upstream secret are not substitutes for client authentication. Forge uses
+its own App observations and the existing settings/readiness gates at activation.
 
 ## Verification
 
 ```sh
-python3 -m unittest tests.test_agent_repository_setup -v
+python3 -m unittest tests.test_agent_repository_setup tests.test_client_repository_workflow tests.test_client_connections -v
 ```
 
 The integration fixture runs the real settings/requirements/activation services

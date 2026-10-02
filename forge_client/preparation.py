@@ -11,9 +11,10 @@ from .contracts import SetupError, baseline, connection_identity, digest, fields
 
 
 class Preparation:
-    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time):
+    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None):
         self.github, self.forge, self.clock = github, forge, clock
         self.instance, self.generation, self.apps = instance, generation, deepcopy(apps)
+        self.progress = progress or (lambda phase, step: None)
 
     def _authorize(self, target, capability):
         self.forge.authorize(self.instance, self.generation,
@@ -100,6 +101,7 @@ class Preparation:
             if step['kind'] == 'github.installation.add_repository':
                 if fresh['roles'][step['role']]['access'] != 'ready':
                     try:
+                        self.progress('started', step)
                         self.github.grant_repository(step['installation_id'], target['id'])
                     except SetupError as error:
                         return {'status': 'needs_user_action', 'completed': completed,
@@ -118,11 +120,13 @@ class Preparation:
                                     for r in self.github.rulesets(target['name'])),
                             'ruleset_conflict', 'A baseline already exists; verify it before retrying.')
                     try:
+                        self.progress('started', step)
                         self.github.create_baseline(target['name'], target['branch'], self.apps['controller']['app_id'])
                     except SetupError as error:
                         return {'status': 'write_unconfirmed', 'code': error.code,
                                 'completed': completed, 'next_actions': [{'kind': 'forge.repositories.verify'}]}
             completed.append(deepcopy(step))
+            self.progress('completed', step)
         # No raw GitHub result or local authentication data crosses this boundary.
         self._authorize(target, 'repositories:prepare')
         self.forge.verify({'id': target['id'], 'name': target['name']}, plan['revision'])

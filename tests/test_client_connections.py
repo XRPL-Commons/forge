@@ -306,3 +306,30 @@ class ClientHTTPTests(Fixture):
                 'instance': token['connection']['instance'], 'generation': self.generation}, token['access_token'])
             self.assertEqual(handler._send.call_args.kwargs['status'], 403)
             settings.assert_not_called()
+
+    def test_repository_routes_fence_scope_before_state_and_never_accept_cookies(self):
+        token = self.token()
+        common = {'repository': {'id': 999, 'name': 'other/private'},
+                  'instance': token['connection']['instance'], 'generation': self.generation}
+        payloads = {
+            'authorize': {**common, 'capability': 'repositories:prepare'},
+            'read': {**common, 'section': 'repository', 'number': None, 'page': 1},
+            'operation': {**common, 'id': 'a' * 32, 'revision': '0' * 64, 'action': 'enable'},
+        }
+        for route, value in payloads.items():
+            with self.subTest(route=route), patch.object(dashboard, 'settings_service') as settings:
+                handler = self.client_request('/api/client/' + route, value, token['access_token'])
+                self.assertEqual(handler._send.call_args.kwargs['status'], 403)
+                settings.assert_not_called()
+                handler = self.client_request('/api/client/' + route, value, token['access_token'], Cookie='ambient')
+                self.assertEqual(handler._send.call_args.kwargs['status'], 403)
+
+    def test_repository_read_dispatches_only_after_authorization(self):
+        token = self.token()
+        value = {'repository': self.target, 'instance': token['connection']['instance'],
+                 'generation': self.generation, 'section': 'repository', 'number': None, 'page': 1}
+        with patch('forge.client_repositories.ClientRepositories') as service:
+            service.return_value.read.return_value = {'repository': self.target}
+            handler = self.client_request('/api/client/read', value, token['access_token'])
+            self.assertEqual(json.loads(handler._send.call_args.args[0]), {'ok': True, 'repository': self.target})
+            service.return_value.read.assert_called_once_with(token['access_token'], value)

@@ -42,9 +42,17 @@ macOS Keychain or Linux Secret Service for local credential storage.
 
 The local CLI currently configures sign-in and HTTPS on an **existing server**.
 Complete fresh-server installation and onboarding through this entry point remain
-in [#136](https://github.com/XRPL-Commons/forge/issues/136). Repository preparation
-and activation through the client remain in
-[#122](https://github.com/XRPL-Commons/forge/issues/122).
+in [#136](https://github.com/XRPL-Commons/forge/issues/136).
+For repository setup on an existing server:
+
+```sh
+forge repo setup OWNER/REPO --server https://forge.example --apply --enable --json
+```
+
+This uses the approved client connection, keeps GitHub administration local, and
+asks Forge to verify readiness before enabling automation. Omit `--enable` to stop
+at readiness, or `--apply` to return a plan. See [repository operations](docs/agent-connections.md#repository-operations)
+and the bundled [agent skill](forge_client/skills/forge-repositories/SKILL.md).
 
 ### Forge server
 

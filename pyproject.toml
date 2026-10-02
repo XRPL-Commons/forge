@@ -14,3 +14,6 @@ forge = "forge_client.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["forge_client*"]
+
+[tool.setuptools.package-data]
+forge_client = ["skills/*/SKILL.md"]

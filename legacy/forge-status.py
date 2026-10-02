@@ -176,7 +176,8 @@ class H(BaseHTTPRequestHandler):
         from forge.client_connections import ClientConnections, ConnectionError, fields, need
         from forge.operator_auth import OperatorAuth
         paths = {'/api/client/device', '/api/client/token', '/api/client/refresh',
-                 '/api/client/status', '/api/client/disconnect', '/api/client/requirements'}
+                 '/api/client/status', '/api/client/disconnect', '/api/client/requirements',
+                 '/api/client/authorize', '/api/client/read', '/api/client/operation'}
         if self.path not in paths:
             return False
         try:
@@ -209,6 +210,18 @@ class H(BaseHTTPRequestHandler):
                 fields(value, ())
                 clients.disconnect(bearer)
                 result = {'disconnected': True}
+            elif self.path == '/api/client/authorize':
+                fields(value, ('repository', 'instance', 'generation', 'capability'))
+                clients.authorize(bearer, value['repository'], value['capability'], value['instance'], value['generation'])
+                result = {'authorized': True}
+            elif self.path in ('/api/client/read', '/api/client/operation'):
+                from forge.client_repositories import ClientRepositories, OPERATIONS
+                # Fence before opening repository state, including malformed or
+                # out-of-scope requests. Service methods repeat the check.
+                capability = OPERATIONS.get(value.get('action'), 'repositories:read') if isinstance(value, dict) else 'repositories:read'
+                clients.authorize(bearer, value['repository'], capability, value['instance'], value['generation'])
+                service = ClientRepositories(settings_service(), clients)
+                result = service.read(bearer, value) if self.path.endswith('/read') else service.operation(bearer, value)
             else:
                 fields(value, ('repository', 'instance', 'generation'))
                 clients.authorize(bearer, value['repository'], 'repositories:read', value['instance'], value['generation'])
