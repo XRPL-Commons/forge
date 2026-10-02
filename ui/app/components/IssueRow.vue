@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { STATUS_NAMES, issuePath, rowFacts, rowPrimary, rowStory, type IssueActionStatus, type IssueRow } from '~/utils/issues'
+import { statusTone } from '~/utils/tones'
 
 // One issue on the Issues page, as its own card: a piece of work, with where
 // it stands, why, and the one thing to do about it. The whole card opens the
@@ -11,12 +12,6 @@ const to = computed(() => issuePath(props.row.key))
 const action = computed(() => rowPrimary(props.row, props.pending))
 const story = computed(() => rowStory(props.row))
 const facts = computed(() => rowFacts(props.row, props.now))
-const tone = computed(() => {
-  if (props.row.status === 'attention') return 'text-amber-200'
-  if (props.row.status === 'working' || props.row.status === 'completed') return 'text-mint-200'
-  if (props.row.status === 'queued') return 'text-sky-200'
-  return 'text-muted'
-})
 </script>
 
 <template>
@@ -27,13 +22,7 @@ const tone = computed(() => {
   >
     <div class="flex items-start justify-between gap-3">
       <p class="flex min-w-0 text-xs text-muted"><span class="truncate">{{ row.repo }}</span><span class="shrink-0 whitespace-pre">{{ ` · #${row.number}` }}</span></p>
-      <span
-        :class="tone"
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-current/10 px-2 py-0.5 text-xs font-medium ring-1 ring-current/25 ring-inset"
-        data-status-chip
-      >
-        <span class="inline-block size-1.5 rounded-full bg-current" aria-hidden="true" />{{ STATUS_NAMES[row.status] }}
-      </span>
+      <UBadge :color="statusTone(row.status)" variant="subtle" class="shrink-0 rounded-full" data-status-chip>{{ STATUS_NAMES[row.status] }}</UBadge>
     </div>
 
     <div class="mt-2 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">

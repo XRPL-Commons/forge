@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RepositoryRowModel } from '~/utils/repositories'
+import { TONE_BADGE } from '~/utils/tones'
 
 defineProps<{ rows: RepositoryRowModel[]; busy?: boolean }>()
 const emit = defineEmits<{ toggle: [row: RepositoryRowModel] }>()
@@ -28,7 +29,7 @@ function switchLabel(row: RepositoryRowModel) {
           :model-value="row.original.action === 'disable'"
           :disabled="busy"
           :aria-label="switchLabel(row.original)"
-          :color="row.original.state.icon === 'attention' ? 'warning' : 'primary'"
+          :color="TONE_BADGE[row.original.state.icon === 'attention' ? 'warn' : 'ok']"
           size="md"
           @update:model-value="emit('toggle', row.original)"
         />

@@ -59,8 +59,8 @@ defineProps<{ role: string; github?: boolean }>()
 </template>
 
 <style scoped>
-.role-illustration[data-role="build"] { color: #94bfff; }
-.role-illustration[data-role="review"] { color: #c9a4f4; }
-.role-illustration[data-role="audit"] { color: #80d7bd; }
-.role-illustration[data-role="controller"] { color: #edbd77; }
+.role-illustration[data-role="build"] { color: var(--color-role-build); }
+.role-illustration[data-role="review"] { color: var(--color-role-review); }
+.role-illustration[data-role="audit"] { color: var(--color-role-audit); }
+.role-illustration[data-role="controller"] { color: var(--color-role-controller); }
 </style>

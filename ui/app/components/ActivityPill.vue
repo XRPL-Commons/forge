@@ -4,10 +4,11 @@ const now = useClock()
 const poll = useFactory()
 onMounted(poll.start)
 const summary = computed(() => poll.data.value?.ok !== false && poll.data.value?.active && poll.stale.value === false ? summarizeActivity(poll.data.value, now.value) : null)
-const ROLE_COLOR: Record<Role, string> = { build: '#94bfff', review: '#c9a4f4', audit: '#80d7bd', merge: '#edbd77', recovery: '#c0cbcd' }
 // The queue is the one entry that is not a worker role, so the item type
 // says so rather than smuggling it past the role type.
 type PillRole = Role | 'queued'
+// Each count carries a visible word, so roles never rely on colour alone.
+const WORD: Record<PillRole, string> = { build: 'building', review: 'reviewing', audit: 'auditing', merge: 'merging', recovery: 'investigating', queued: 'queued' }
 interface Pill { role: PillRole; count: number; label: string; to: string }
 const items = computed<Pill[]>(() => {
   if (!summary.value || !summary.value.fresh) return []
@@ -26,10 +27,10 @@ const items = computed<Pill[]>(() => {
       :aria-label="item.label"
       class="inline-flex items-center gap-1"
       :class="item.role === 'queued' ? 'text-muted hover:text-white' : ''"
-      :style="item.role !== 'queued' ? { color: ROLE_COLOR[item.role as Role] } : undefined"
+      :style="item.role !== 'queued' ? { color: `var(--color-role-${item.role})` } : undefined"
       :data-role="item.role"
     >
-      <span v-if="item.role !== 'queued'" class="size-3 rounded-full border border-current border-r-transparent animate-spin motion-reduce:animate-none" aria-hidden="true" />{{ item.count }}<span v-if="item.role === 'queued'">&nbsp;queued</span>
+      <span v-if="item.role !== 'queued'" class="size-3 rounded-full border border-current border-r-transparent animate-spin motion-reduce:animate-none" aria-hidden="true" />{{ item.count }}&nbsp;{{ WORD[item.role] }}
     </NuxtLink>
   </span>
 </template>
