@@ -59,6 +59,8 @@ export default async function (page, { base, scenario, requests }) {
   await card.getByRole('alert').waitFor()
   assert.ok((await card.innerText()).includes('No supported databases detected'))
   assert.ok((await card.innerText()).includes('Reload and review them again'))
+  // Error recovery refreshes the observation before releasing the loading state.
+  await page.waitForFunction(() => [...document.querySelectorAll('#test-databases button')].some(button => button.textContent.includes('Save repository default') && !button.disabled))
   assert.equal(await card.getByRole('button', { name: 'Save repository default' }).isDisabled(), false)
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
   await page.screenshot({ path: '/tmp/forge-environment-ui-mobile.png', fullPage: true })
