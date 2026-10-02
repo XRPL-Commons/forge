@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { panelQuery, panelState, panelTarget } from '../../app/utils/panel'
+import { boardLink, panelQuery, panelState, panelTarget } from '../../app/utils/panel'
 import type { CardModel } from '../../app/utils/factory'
 
 function card(over: Partial<CardModel> = {}): Pick<CardModel, 'key' | 'id' | 'jobId'> {
@@ -59,5 +59,18 @@ describe('panelTarget', () => {
 
   it('opens an internal job card at its own run', () => {
     expect(panelTarget(card({ key: '3:900', id: 'job-33', jobId: 'job-33' }))).toEqual({ key: '3:900', job: 'job-33' })
+  })
+})
+
+describe('boardLink', () => {
+  it('turns the API issue link into the board panel', () => {
+    expect(boardLink('/issues?issue=1:601')).toBe('/?issue=1:601')
+    expect(boardLink('/issues?issue=1%3A601')).toBe('/?issue=1%3A601')
+  })
+
+  it('leaves every other link alone', () => {
+    expect(boardLink('/settings/harnesses')).toBe('/settings/harnesses')
+    expect(boardLink('https://github.com/settings/apps')).toBe('https://github.com/settings/apps')
+    expect(boardLink('/issues?issue=1:601&job=a')).toBe('/issues?issue=1:601&job=a')
   })
 })

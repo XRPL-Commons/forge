@@ -118,6 +118,14 @@ export default async function (page, { base, scenario, requests }) {
     'a debounced search must never request a half-typed word')
   assert.deepEqual([...new Set(searched.map((entry) => entry.query.page))], ['1'], 'a new search starts at page 1')
 
+  // The filters live in the URL, so a filtered view reloads as itself.
+  await page.waitForURL(base + '/issues?q=logging')
+  await scenario('default')
+  await page.goto(base + '/issues?show=completed&q=logging&page=2')
+  await waitForRequest(requests, (entry) => entry.path === '/api/issues' && entry.query.state === 'completed' && entry.query.q === 'logging' && entry.query.page === '2')
+  assert.equal(await page.getByRole('textbox', { name: 'Find an issue' }).inputValue(), 'logging')
+  assert.equal(new URL(page.url()).search, '?show=completed&q=logging&page=2')
+
   // A row is a link to the issue's own route.
   await scenario('default')
   await page.goto(base + '/issues')
@@ -128,6 +136,7 @@ export default async function (page, { base, scenario, requests }) {
   await page.waitForURL(base + '/issues/1%3A613')
   await waitForText(page, DETAIL_TITLE)
   assert.equal((await page.locator('#issue-title').innerText()).trim(), DETAIL_TITLE)
+  assert.equal(await page.locator('#issue-back').getAttribute('href'), '/issues')
 
   // The old `/issues?issue=<key>` shape — still handed to the UI in
   // `operator.action_url` — lands on that one route.

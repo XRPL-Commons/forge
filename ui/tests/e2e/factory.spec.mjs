@@ -145,6 +145,7 @@ export default async function (page, { base, scenario, requests }) {
   let panel = await openPanel(page, card)
   await waitForText(page, DETAIL_TITLE)
   assert.equal(query(page, 'issue'), '1:601', 'the open panel is carried by the URL')
+  assert.equal(await panel.locator('#issue-full-page').getAttribute('href'), '/issues/1%3A601')
   // Escape closes it and leaves the URL clean.
   await closePanel(page)
   assert.equal(new URL(page.url()).search, '', `the closed panel left the URL dirty: ${page.url()}`)
@@ -153,6 +154,13 @@ export default async function (page, { base, scenario, requests }) {
     () => document.activeElement?.getAttribute('data-key') === '1:601',
     null, { timeout: 5000 },
   )
+
+  // A modified click opens the issue's own page in a new tab, not the panel.
+  const [tab] = await Promise.all([page.context().waitForEvent('page'), card.click({ modifiers: ['ControlOrMeta'] })])
+  await tab.waitForLoadState()
+  assert.equal(new URL(tab.url()).pathname, '/issues/1%3A601')
+  await tab.close()
+  assert.equal(query(page, 'issue'), null, 'a modified click leaves the panel closed')
 
   // …so a reload of that URL opens the same panel, and the board keeps
   // polling behind it.

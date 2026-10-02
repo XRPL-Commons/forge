@@ -4,7 +4,7 @@ import {
   COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, breakdown, isProgressStatus, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
-import { panelQuery, panelState, panelTarget } from '~/utils/panel'
+import { boardLink, panelQuery, panelState, panelTarget } from '~/utils/panel'
 
 interface Fence { ok: false; reason: string }
 
@@ -185,7 +185,7 @@ watch(() => panel.value.key, (key, before) => {
       <p class="mt-0.5 text-sm text-muted">{{ operator!.detail }}</p>
       <UButton
         v-if="operator!.action_url && operator!.action_label"
-        :to="operator!.action_url"
+        :to="boardLink(operator!.action_url)"
         :target="isExternal(operator!.action_url) ? '_blank' : undefined"
         :rel="isExternal(operator!.action_url) ? 'noopener noreferrer' : undefined"
         :external="isExternal(operator!.action_url) || undefined"
