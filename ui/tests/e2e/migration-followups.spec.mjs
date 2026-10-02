@@ -5,13 +5,11 @@ const noOverflow = page => page.evaluate(() => document.documentElement.scrollWi
 
 export default async function (page, { base, scenario }) {
   await page.goto(base + '/')
-  await page.locator('#stage-build').waitFor()
-  assert.match(await page.locator('#stage-build').innerText(), /last observed/)
-  assert.doesNotMatch(await page.locator('#stage-build').innerText(), /starting \/ finishing/)
+  await page.locator('#factory-line').waitFor()
 
-  // A hash can target a manually collapsed disclosure on the current page.
-  await page.locator('#runners summary').click()
-  await page.waitForFunction(() => !document.querySelector('#runners details').open)
+  // A hash can target the collapsed investigations line on the current page.
+  await page.locator('#runners details').waitFor()
+  assert.equal(await page.locator('#runners details').evaluate(details => details.open), false)
   await page.evaluate(() => { location.hash = '#stage-recovery' })
   await page.waitForFunction(() => document.querySelector('#runners details').open)
   await page.waitForFunction(() => document.querySelector('#stage-recovery').getBoundingClientRect().top < innerHeight)
@@ -23,7 +21,7 @@ export default async function (page, { base, scenario }) {
   await waitText(page, 'Factory reset is in progress')
   await scenario('down')
   await waitText(page, 'Reconnecting · last known state')
-  assert.equal(await page.locator('#columns').count(), 0, 'a failed poll cannot revive the fenced board')
+  assert.equal(await page.locator('#factory-line').count(), 0, 'a failed poll cannot revive the fenced board')
   assert.ok(!(await page.locator('body').innerText()).includes('Factory reset is in progress'), 'an old fence is not a fresh observation')
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({width,height:900})

@@ -402,3 +402,13 @@ factory line strip. Issue `1:617` holds the second build slot (job
 Build; `1:619` waits on `#601`; `1:720` is paused (asleep on the shelf);
 `1:721` (environment), `1:722` (change of approach) and `1:730` (approval
 needed) join the two failed issues, so five issues need the operator.
+
+## completed-many/
+
+`factory.json` only: the default factory with `2:606` replaced by 25 completed
+issues, `1:801`–`1:825` ("Completed issue 01"–"25"), one minute apart and
+stored oldest first; every seventh is cancelled rather than merged. The mock
+answers `GET /api/factory?section=completed&limit=N&before=<cursor>` with one
+page of them, newest first, plus `next` (see `completedPage()` in
+`mock-api.mjs`), so `completed.spec.mjs` can check the Recently completed lazy
+load page by page.

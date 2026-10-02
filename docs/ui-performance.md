@@ -29,9 +29,17 @@ visible with an error when a refresh fails.
 ## Smaller and deferred reads
 
 - `/api/factory?section=board` contains active cards and small counts/worker
-  summaries. Completed and investigation cards use `section=completed` and
-  `section=runners`, fetched when their sections open. Active investigations still
-  open automatically. Header counts use the board summary.
+  summaries. Investigation cards use `section=runners`, fetched when their line
+  is opened. Recently completed reads
+  `section=completed&limit=10&before=<cursor>` a page at a time, newest first by
+  merge or close time, as the operator scrolls; the answer carries `next`, the
+  cursor of the following page, or null after the last. Without `limit` the
+  section still returns every completed issue. Header counts use the board
+  summary.
+- Issue cards draw their cube as one still frame per card, only once the card
+  is on screen (one shared IntersectionObserver), and redraw only when its look
+  changes. The only motion is an occasional blink of one visible cube from one
+  shared timer, and none with reduced motion or a hidden tab.
 - `/api/factory?issue=<key>` returns only that issue's factory rows. Reports and
   captured output stay out of every factory projection.
 - `/api/settings?summary=1` preserves repository state and per-App access counts,

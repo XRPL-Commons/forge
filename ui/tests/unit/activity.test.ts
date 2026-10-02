@@ -19,17 +19,16 @@ describe('summarizeActivity', () => {
 })
 
 describe('ROLE_TARGET', () => {
-  it('sends merge workers to Finishing, where merge cards are grouped', () => {
-    expect(ROLE_TARGET.merge).toBe('/#finishing')
+  it('sends the working roles to the factory line, which draws every stage', () => {
+    for (const role of ['build', 'review', 'audit', 'merge'] as const) expect(ROLE_TARGET[role]).toBe('/#factory-line')
+    expect(ROLE_TARGET.recovery).toBe('/#runners')
   })
   it('points every role at a section the Activity page renders', async () => {
     const { readFileSync } = await import('node:fs')
     const page = readFileSync(`${process.cwd()}/app/pages/index.vue`, 'utf8')
     for (const target of Object.values(ROLE_TARGET)) {
       const id = target.split('#')[1]
-      // Stage columns render as :id="`stage-${role}`"; the other sections have literal ids.
-      const rendered = page.includes(`id="${id}"`) || (/^stage-(build|review|audit)$/.test(id) && page.includes(':id="`stage-${role}`"'))
-      expect(rendered, `${id} is rendered`).toBe(true)
+      expect(page.includes(`id="${id}"`), `${id} is rendered`).toBe(true)
     }
   })
 })

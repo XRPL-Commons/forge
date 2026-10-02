@@ -9,7 +9,7 @@ async function headline(page) {
   return canvas.getAttribute('aria-label')
 }
 
-// The factory line strip above the stat boxes: its accessible name is the
+// The factory line strip at the top of Activity: its accessible name is the
 // headline it draws, it fits a phone, and a cube opens its issue.
 export default async function (page, { base, scenario }) {
   await page.setViewportSize({ width: 1280, height: 900 })

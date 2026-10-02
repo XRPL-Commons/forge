@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ForgeApiError } from '~/composables/useForgeApi'
 import {
-  SHOW_OPTIONS, countText, emptyState, filterQuery, filtersFromQuery, freshnessText, issuePath, listParams, pendingAction,
-  type IssueListResponse,
+  SHOW_OPTIONS, countText, emptyState, filterQuery, filtersFromQuery, freshnessText, issuePath, listParams, pendingAction, rowPrimary,
+  type IssueListResponse, type IssueRow,
 } from '~/utils/issues'
+import { rowCardView } from '~/utils/issueCard'
 
 useHead({ title: 'Issues' })
 
@@ -109,6 +110,14 @@ async function refreshInventory() {
   await poll.refresh()
 }
 
+// The one thing to do about an issue, beside its card: an approval opens the
+// issue ready to approve, everything else opens the issue.
+function rowAction(row: IssueRow) {
+  const pending = pendingAction(list.value?.actions, row.key)
+  const to = issuePath(row.key)
+  return { ...rowPrimary(row, pending), to: row.approval && !pending ? `${to}?approve=1` : to }
+}
+
 function goto(next: number) {
   const pages = Math.max(list.value?.pages ?? 1, 1)
   page.value = Math.min(Math.max(next, 1), pages)
@@ -175,12 +184,14 @@ function goto(next: number) {
 
     <template v-else>
       <section v-if="rows.length" class="mt-3 flex flex-col gap-3" aria-label="Issues">
-        <IssueRow
+        <IssueCard
           v-for="row in rows"
           :key="row.key"
-          :row="row"
-          :now="now"
-          :pending="pendingAction(list?.actions, row.key)"
+          :view="rowCardView(row, now)"
+          :data-status="row.status"
+          mode="link"
+          heading="h2"
+          :action="rowAction(row)"
         />
       </section>
       <section v-else-if="empty" class="mt-3 rounded-xl border border-line bg-panel px-4 py-8 text-center">

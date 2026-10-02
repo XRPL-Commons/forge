@@ -13,7 +13,7 @@ interface Pill { role: PillRole; count: number; label: string; to: string }
 const items = computed<Pill[]>(() => {
   if (!summary.value || !summary.value.fresh) return []
   const out: Pill[] = (Object.keys(ROLE_LABELS) as Role[]).filter(r => summary.value!.working[r]).map(r => ({ role: r, count: summary.value!.working[r], label: `${summary.value!.working[r]} ${ROLE_LABELS[r][summary.value!.working[r] === 1 ? 0 : 1]} working`, to: ROLE_TARGET[r] }))
-  if (summary.value.queued) out.push({ role: 'queued', count: summary.value.queued, label: `${summary.value.queued} queued`, to: '/#columns' })
+  if (summary.value.queued) out.push({ role: 'queued', count: summary.value.queued, label: `${summary.value.queued} queued`, to: '/#factory-line' })
   return out
 })
 </script>

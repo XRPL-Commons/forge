@@ -3,6 +3,8 @@
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
 import { ago, clampTitle, reviewerMentions, shortCommit } from './format'
+import type { PortraitLook } from './cube'
+import { ledgerLook } from './workbench'
 import type { OnboardingView } from './onboarding'
 import type { IssueSummary } from './issues'
 import type { DeploymentRow, FactoryDeployment } from './repositories'
@@ -41,6 +43,8 @@ export interface LedgerIssueView {
   // cleared when the merge finally reaches production.
   deployed?: { commit: string; at: number; via: 'live' | 'github' } | null
   deploy_failed?: { sha: string; at: number; run_url: string | null } | null
+  // Only on a paged `section=completed` read: when it was merged or closed.
+  completed_at?: number | null
 }
 
 export interface ObservationError { attempt?: string; issue?: string; phase: string; reason: string }
@@ -92,6 +96,17 @@ export interface CardModel {
   // "deployed" / "waiting for deploy" / "deploy failed" on a completed card,
   // '' when this repository's deployments are not tracked.
   deployment: string
+  // What the card's cube portrait shows, and the facts its meta line reads.
+  // `state` is null for an internal job, which has no issue row.
+  state: IssueState | null
+  look: PortraitLook
+  summary: string
+  pr: number | null
+  failures: number
+  // Unix seconds: the last thing the ledger recorded, and when the issue was
+  // merged or closed (null while it is open).
+  updatedAt: number | null
+  doneAt: number | null
 }
 
 
@@ -292,7 +307,28 @@ function issueCard(issue: LedgerIssueView, job: JobView | null, view: FactoryVie
     jobId: job?.id ?? null,
     footerLink: footerLinkFor(issue, job),
     deployment: deploymentNote(issue, tracked),
+    state: issue.state,
+    look: ledgerLook(issue, job, running),
+    summary: (issue.last_summary?.headline ?? '').trim(),
+    pr: issue.candidate?.pr ?? null,
+    failures: issue.failure_count ?? 0,
+    updatedAt: lastEventAt(issue),
+    doneAt: doneAt(issue),
   }
+}
+
+function lastEventAt(issue: LedgerIssueView): number | null {
+  const at = (issue.history ?? []).reduce((latest, event) => Math.max(latest, Number(event.at) || 0), 0)
+  return at || null
+}
+
+// When a completed issue left the line: the server's `completed_at` on a
+// paged read, else its last merge or cancellation in the history tail.
+export function doneAt(issue: LedgerIssueView): number | null {
+  if (issue.state !== 'merged' && issue.state !== 'cancelled') return null
+  if (issue.completed_at) return issue.completed_at
+  const events = (issue.history ?? []).filter(event => event.kind === 'merged' || event.kind === 'cancelled')
+  return Number(events[events.length - 1]?.at) || null
 }
 
 // Adapter for an internal job (recovery, cleanup or an orphaned attempt) that
@@ -317,6 +353,13 @@ export function toCard(job: JobView, view: FactoryView, now: number): CardModel 
     jobId: job.id,
     footerLink: null,
     deployment: '',
+    state: null,
+    look: { stage: 'queued', mood: running ? 'busy' : 'open', accessory: null, beacon: false, zzz: false, scorches: 0, confetti: false },
+    summary: '',
+    pr: null,
+    failures: 0,
+    updatedAt: job.observed_at ?? job.last_observed ?? job.created_at ?? null,
+    doneAt: null,
   }
 }
 
@@ -383,42 +426,6 @@ function runningJobs(view: FactoryView, now: number) {
   return (view.summary?.workers ?? view.jobs ?? []).filter(job => isRunning(view, job, now))
 }
 
-// One row per state an issue can be in, with a count and a sentence that
-// says what the count means right now, derived from the reasons the ledger
-// records. This replaces per-role tiles: the operator reads why work is not
-// moving, not how many slots exist.
-// `detail` is the fixed phrase printed under the number, so a box reads the
-// same from one poll to the next; `meaning` is the derived sentence, shown on
-// hover and to a screen reader through aria-describedby.
-export interface BreakdownRow {
-  id: 'working' | 'queued' | 'merging' | 'attention' | 'merged'
-  label: string; value: number; detail: string; meaning: string; to: string; tone: 'ok' | 'warn' | 'muted'
-}
-
-const HOLD_REASONS: [RegExp, string][] = [
-  [/environment needs attention \(toolchain\)/, 'toolchain'],
-  [/environment needs attention \(resources\)/, 'memory'],
-  [/environment needs attention \(sandbox\)/, 'sandbox'],
-  [/environment needs attention/, 'environment'],
-  [/change of approach/, 'retry limit'],
-  [/hold or dependency label/, 'label'],
-  [/Paused by an operator|Not queued/, 'paused'],
-  [/approving reviews|protection|branch rules/, 'branch rules'],
-]
-
-function holdReason(issue: LedgerIssueView): string {
-  if (issue.state === 'approval_needed') return 'approval'
-  if (issue.state === 'failed') return 'failed'
-  const reason = issue.reason ?? ''
-  return HOLD_REASONS.find(([pattern]) => pattern.test(reason))?.[1] ?? 'decision'
-}
-
-function tally(items: string[]): string {
-  const counts = new Map<string, number>()
-  for (const item of items) counts.set(item, (counts.get(item) ?? 0) + 1)
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${n} ${name}`).join(' · ')
-}
-
 // A merge count only means something over a time frame. Whether the merge
 // reached production is not tracked here, so a count never claims it.
 function mergedSince(view: FactoryView, now: number, seconds: number): number {
@@ -434,56 +441,24 @@ export function mergedToday(view: FactoryView | null | undefined, now: number): 
   return view.summary?.merged_day ?? mergedSince(view, now, 24 * 3600)
 }
 
-export function breakdown(view: FactoryView | null | undefined, now: number): BreakdownRow[] {
-  if (!view) return []
+// The one-line readout under the factory line: how many workers are busy out
+// of the slots there are, what is queued, what waits to merge and what merged
+// today. "Needs you" is not counted here: it is the strip's crate, so the two
+// always agree (factoryLine.ts lineAnalyse().attention).
+export interface Readout { working: number; slots: number; queued: number; merging: number; merged: number }
+
+export function readout(view: FactoryView | null | undefined, now: number): Readout | null {
+  if (!view) return null
   const slots = view.runtime?.slots ?? {}
+  const roles: JobRole[] = ['build', 'review', 'audit']
   const issues = view.issues ?? []
-  const running = runningJobs(view, now)
-  const count = (role: JobRole) => running.filter(job => job.role === role).length
-  const enabled = view.runtime?.enabled !== false
-  const working = count('build') + count('review') + count('audit')
-  const verbs: [JobRole, string][] = [['build', 'building'], ['review', 'reviewing'], ['audit', 'auditing']]
-  const workingMeaning = verbs.map(([role, verb]) => `${count(role)} of ${slots[role] ?? 0} ${verb}`).join(' · ')
-    + (count('recovery') ? ` · ${count('recovery')} investigating` : '')
-  const queued = issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length
-  const merging = issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length
-  const refused = (view.observation?.errors ?? []).filter(error => /refused to merge/.test(error.reason)).length
-  const attention = issues.filter(issue => ATTENTION_STATES.includes(issue.state))
-  const mergedIssues = issues.filter(issue => issue.state === 'merged')
-  const mergedDay = mergedToday(view, now)
-  const mergedWeek = view.summary?.merged_week ?? mergedSince(view, now, 7 * 24 * 3600)
-  // Once any repository is tracked, a merge is no longer the end of the line:
-  // the box counts what reached production and says what is still behind it.
-  const trackedRepos = trackedRepositories(view)
-  const tracked = trackedRepos.size > 0
-  const deployedDay = view.summary?.deployed_day ?? issues.filter(issue => issue.deployed && issue.deployed.at >= now - 24 * 3600).length
-  // Waiting is what a tracked repository merged and Forge has not seen live:
-  // a failed deploy is already counted beside it, and an untracked
-  // repository's merges are not part of this sentence at all.
-  const waiting = view.summary?.waiting ?? mergedIssues.filter(issue => !issue.deployed && !issue.deploy_failed && trackedRepos.has(issue.repo_id)).length
-  const deployFailed = view.summary?.deploy_failed ?? issues.filter(issue => issue.deploy_failed && !issue.deployed).length
-  const deployedRow: BreakdownRow = tracked
-    ? { id: 'merged', label: 'Deployed today', value: deployedDay, detail: 'in the last 24 h',
-        meaning: `${waiting} merged and waiting · ${deployFailed} deploy failed`,
-        to: '#completed', tone: deployFailed ? 'warn' : 'ok' }
-    : { id: 'merged', label: 'Merged today', value: mergedDay, detail: 'in the last 24 h',
-        meaning: `${mergedWeek} in the last 7 days · ${view.summary?.merged_total ?? mergedIssues.length} tracked in all · deployment not tracked`,
-        to: '#completed', tone: 'ok' }
-  const workerSlots = (['build', 'review', 'audit'] as JobRole[]).reduce((total, role) => total + (slots[role] ?? 0), 0)
-  return [
-    { id: 'working', label: 'Working', value: working, detail: `of ${workerSlots} slots`,
-      meaning: workingMeaning, to: '#columns', tone: 'ok' },
-    { id: 'queued', label: 'Queued', value: queued, detail: enabled ? 'waiting for a worker' : 'dispatch is paused',
-      meaning: !enabled ? 'Dispatch is paused' : queued ? 'Waiting for a free worker' : 'Nothing waiting',
-      to: '#columns', tone: enabled ? 'ok' : 'muted' },
-    { id: 'merging', label: 'Waiting to merge', value: merging, detail: 'approved, not merged',
-      meaning: refused ? `${refused} refused by branch rules` : merging ? 'Checking merge requirements' : 'Nothing approved yet',
-      to: '#finishing', tone: refused ? 'warn' : 'ok' },
-    { id: 'attention', label: 'Needs a decision', value: attention.length, detail: 'awaiting you',
-      meaning: attention.length ? tally(attention.map(holdReason)) : 'Nothing needs you',
-      to: '#needs-attention', tone: attention.length ? 'warn' : 'ok' },
-    deployedRow,
-  ]
+  return {
+    working: runningJobs(view, now).filter(job => roles.includes(job.role)).length,
+    slots: roles.reduce((total, role) => total + (Number(slots[role]) || 0), 0),
+    queued: issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length,
+    merging: issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length,
+    merged: mergedToday(view, now),
+  }
 }
 
 export type WarningKind = 'github' | 'capacity' | 'runner' | 'reconciliation' | 'other'
