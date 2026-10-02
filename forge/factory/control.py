@@ -55,6 +55,17 @@ def queue(root, action, target, reason):
     return identifier
 
 
+def request_check(root, key, clock=time.time):
+    """Ask the supervisor to observe one issue first in its next cycle, e.g. right after
+    the operator approved on GitHub. Only reorders observation; changes no state."""
+    if not isinstance(key, str) or not key or len(key) > 256:
+        raise ValueError('Issue identity is required')
+    if key not in Ledger(Path(root) / 'state' / 'factory').read()['issues']:
+        raise ValueError('Forge is not tracking this issue yet')
+    with AtomicStore(Path(root) / 'state' / 'factory', 'check-requests').transaction() as data:
+        data[key] = clock()
+
+
 def requests(root, ledger):
     store = AtomicStore(Path(root) / 'state' / 'factory', 'operator-requests')
     with store.transaction() as data:

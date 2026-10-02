@@ -383,25 +383,58 @@ class GitHub:
                           'success' if report['outcome'] == 'pass' else 'failure', report['summary'])
 
     def human(self, item, pr):
+        approvals = self.approvals(item, pr)
+        blocked = any(a['state'] == 'CHANGES_REQUESTED' for a in approvals)
+        return any(a['counted'] for a in approvals) and not blocked, blocked
+
+    def approvals(self, item, pr):
+        """Each reviewer's latest decision on the PR, and whether it authorizes this candidate.
+
+        `human_reviewers` is an optional allowlist. Without one, any person with
+        write access counts, as on GitHub; a public repository's visitors cannot approve."""
         reviews = self.pages('controller', item, f"/pulls/{pr['number']}/reviews")
         latest = {}
         for review in sorted(reviews, key=lambda r: r['id']):
             if review['state'] in ('APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'):
                 latest[review['user']['login'].lower()] = review
-        blocked = any(r['state'] == 'CHANGES_REQUESTED' for r in latest.values())
-        authorized = set(n.lower() for n in self.runtime['human_reviewers'])
+        allowlist = {n.lower() for n in self.runtime['human_reviewers']}
         after = (item.get('candidate') or {}).get('accepted_at', 0)
-        def fresh(review):
-            if not after:
-                return True
+        def submitted(review):
             try:
-                return datetime.fromisoformat(review['submitted_at'].replace('Z', '+00:00')).timestamp() > int(after)
-            except (ValueError, KeyError, TypeError):
-                return False
-        approved = [r for name, r in latest.items() if name in authorized and r['state'] == 'APPROVED'
-                    and r['user'].get('type') == 'User' and r['commit_id'] == pr['head']['sha']
-                    and name != pr['user']['login'].lower() and fresh(r)]
-        return bool(approved) and not blocked, blocked
+                return datetime.fromisoformat(review['submitted_at'].replace('Z', '+00:00')).timestamp()
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return None
+        rows = []
+        for name, review in latest.items():
+            at = submitted(review)
+            if review['user'].get('type') != 'User':
+                why = 'Bot reviews do not count'
+            elif review['state'] != 'APPROVED':
+                why = 'Requested changes' if review['state'] == 'CHANGES_REQUESTED' else 'Approval was dismissed'
+            elif name == pr['user']['login'].lower():
+                why = 'The pull request author cannot approve it'
+            elif review['commit_id'] != pr['head']['sha']:
+                why = 'Approved an earlier commit'
+            elif after and (at is None or at <= int(after)):
+                why = 'Approved before the current change was accepted'
+            elif allowlist and name not in allowlist:
+                why = 'Not on the approver list in Settings'
+            elif not allowlist and not self.can_write(item, review['user']['login']):
+                why = 'No write access to the repository'
+            else:
+                why = None
+            rows.append({'login': review['user']['login'], 'state': review['state'], 'at': at,
+                         'counted': why is None, 'why': why})
+        return rows
+
+    def can_write(self, item, login):
+        try:
+            found = self.call('controller', item, 'GET', '/collaborators/' + quote(login, safe='') + '/permission')
+        except GitHubBudgetExhausted:
+            raise
+        except GitHubUnavailable:
+            return False
+        return isinstance(found, dict) and found.get('permission') in ('admin', 'write')
 
     def protections(self, item, candidate_value):
         report = self.protection_report(item, candidate_value)
@@ -523,29 +556,6 @@ class GitHub:
             return {'status': 'operator_review', 'sources': unknown, 'detail':
                     'GitHub did not say whether the Forge controller can bypass these rules. Check the bypass list on GitHub.'}
         return {'status': 'ready', 'sources': [], 'detail': 'The Forge controller can merge past approval rules.'}
-
-    def native_human_gate(self, item):
-        """Require GitHub to enforce human ownership atomically for escalated merges.
-
-        Custom check success alone cannot retract an approval racing a merge.
-        The supported first version uses one wildcard CODEOWNERS rule containing
-        only configured humans, plus native required code-owner reviews.
-        """
-        candidate_value = item['candidate']
-        report = self.protection_report(item, candidate_value)
-        if not report['available'] or not report['code_owner_reviews']:
-            return False
-        document = self.call('controller', item, 'GET', '/contents/.github/CODEOWNERS?ref=' + candidate_value['base'])
-        try:
-            body = base64.b64decode(document['content'], validate=False).decode()
-            rules = [line.split('#', 1)[0].split() for line in body.splitlines() if line.split('#', 1)[0].strip()]
-        except (ValueError, KeyError, UnicodeError):
-            return False
-        if len(rules) != 1 or rules[0][0] != '*' or len(rules[0]) < 2:
-            return False
-        owners = set(rules[0][1:])
-        authorized = {'@' + name.lower() for name in self.runtime['human_reviewers']}
-        return bool(owners) and {name.lower() for name in owners}.issubset(authorized)
 
     def gates(self, item):
         candidate_value = item['candidate']

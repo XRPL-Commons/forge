@@ -285,6 +285,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
             'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
                         if case == 'approval_needed' and owned_pr and human_approval else None,
+            'approvals': [{k: a.get(k) for k in ('login', 'state', 'at', 'counted', 'why')} for a in gate.get('approvals') or []],
+            'last_checked': item.get('last_observed'),
             'merge_blocker': {'reason': detail} if case == 'merge_blocked' else None,
             'environment_blocker': (item.get('environment_hold') or {}).get('detail'),
             'decision_request': item.get('decision_request'),

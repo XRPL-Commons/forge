@@ -101,13 +101,6 @@ class RepositoryRuleTests(unittest.TestCase):
         # infer enforcement from a ruleset inventory that includes disabled/evaluate.
         self.assertTrue(all('/rulesets' not in c.args[3] for c in github.call.call_args_list[:3]))
 
-    def test_human_gate_recognizes_rulesets_but_never_infers_humans_from_baseline(self):
-        item = {**self.item, 'candidate': {'base_ref': 'main', 'base': 'a' * 40}}
-        self.assertTrue(self.reader(None, [rule(owners=True)]).native_human_gate(item))
-        self.assertTrue(self.reader(classic(owners=True), []).native_human_gate(item))
-        self.assertFalse(self.reader(None, [rule()]).native_human_gate(item))
-        self.assertFalse(self.reader(None, GitHubUnavailable('Unavailable')).native_human_gate(item))
-
     def test_other_constraints_remain_visible_not_waived(self):
         report = self.reader(None, [rule(), {'type': 'merge_queue', 'ruleset_id': 12}]).protection_report(self.item, {'base_ref': 'main'})
         self.assertEqual(report['additional_rules'][0]['type'], 'merge_queue')

@@ -35,6 +35,7 @@ class FactoryTest(unittest.TestCase):
         self.github.pr.return_value = {'number': 2, 'head': {'sha': 'a'*40}, 'base': {'sha': 'b'*40},
                                       'draft': False, 'state': 'open', 'merged': False, 'mergeable': True}
         self.github.human.return_value = (True, False)
+        self.github.approvals.return_value = [{'login': 'maintainer', 'state': 'APPROVED', 'at': 1, 'counted': True, 'why': None}]
         self.github.gates.return_value = True
         self.github.protections.return_value = True
         self.runner = Mock()
@@ -474,6 +475,7 @@ class FactoryTest(unittest.TestCase):
         review = self.job('review'); self.ledger.accept(review['id'], evidence={'check_id': 1}); self.clean(review)
         audit = self.job('audit'); self.ledger.accept(audit['id'], evidence={**self.report(audit), 'check_id': 2}); self.clean(audit)
         self.github.human.return_value = (False, False)
+        self.github.approvals.return_value = []
         self.supervisor.merge(self.item(), self.github.pr.return_value)
         self.assertEqual(self.item()['state'], 'approval_needed')
         self.assertFalse(self.ledger.read()['slots'])
