@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
 describe('theme', () => {
   it('declares the Forge tokens', () => {
@@ -16,5 +16,19 @@ describe('theme', () => {
     const base = import.meta.url
     const css = readFileSync(new URL(cssPath, base), 'utf8')
     expect(css).toContain('--ui-primary: var(--color-mint-200)')
+  })
+
+  it('keeps role colours in main.css only', () => {
+    const base = import.meta.url
+    const css = readFileSync(new URL('../../app/assets/css/main.css', base), 'utf8')
+    const roles = ['#94bfff', '#c9a4f4', '#80d7bd', '#edbd77', '#c0cbcd']
+    for (const role of ['build', 'review', 'audit', 'merge', 'controller', 'recovery']) expect(css).toContain(`--color-role-${role}:`)
+    for (const dir of ['../../app/components/', '../../app/pages/', '../../app/pages/settings/', '../../app/pages/issues/']) {
+      const url = new URL(dir, base)
+      for (const name of readdirSync(url).filter(file => file.endsWith('.vue'))) {
+        const source = readFileSync(new URL(name, url), 'utf8').toLowerCase()
+        for (const hex of roles) expect(source, `${dir}${name}`).not.toContain(hex)
+      }
+    }
   })
 })

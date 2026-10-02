@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ConnectionCardModel } from '~/utils/repositories'
+import { TONE_BADGE } from '~/utils/tones'
 
 // Every sentence comes from `connectionCards()`; the card only lays them out,
 // so GitHub access and repository setup cannot drift apart.
@@ -18,7 +19,7 @@ defineProps<{ card: ConnectionCardModel }>()
       </div>
     </div>
     <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
-      <span data-badge><UBadge :color="card.ready ? 'primary' : 'warning'" variant="subtle" size="sm">{{ card.status }}</UBadge></span>
+      <span data-badge><UBadge :color="TONE_BADGE[card.ready ? 'ok' : 'warn']" variant="subtle" size="sm">{{ card.status }}</UBadge></span>
       <p class="text-muted">{{ card.observation }}</p>
       <NuxtLink
         v-if="card.action"
