@@ -14,7 +14,7 @@ from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision as issue_revision, decision_labels, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD, Ledger
 
-ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer', 'environment'}
+ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer', 'environment', 'close'}
 IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck'}
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
@@ -134,7 +134,8 @@ def request(root, *, key, action, revision: str, reason, request_id=None, enviro
                 return request_id
     inventory = IssueInventory(root)
     row = inventory.view(key=key)['issue']
-    allowed = row.get('environment', {}).get('editable', False) if action == 'environment' else action in row['actions']
+    allowed = (row.get('environment', {}).get('editable', False) if action == 'environment'
+               else row.get('closable', False) if action == 'close' else action in row['actions'])
     if row['revision'] != revision or not allowed:
         raise ValueError('This issue changed or needs a fresh check. Review it again before continuing.')
     store = AtomicStore(Path(root) / 'state/issues', 'actions')
@@ -266,10 +267,16 @@ class IssueActions:
         if not repo or not repo.get('access_ready'):
             raise ValueError('Repository identity or access changed.')
         item = data['issues'].get(decision['key'])
-        if item and (item['active'] or any(j['issue_key'] == decision['key'] and not j['cleanup'] for j in data['jobs'].values())):
+        if decision['action'] != 'close' and item and (item['active'] or any(j['issue_key'] == decision['key'] and not j['cleanup'] for j in data['jobs'].values())):
             raise ValueError('Wait for the active attempt and its cleanup before changing the queue.')
         value, requirements = self.github.issue(decision)
         issue = facts(value)
+        if decision['action'] == 'close':
+            # Replay-safe: a restarted controller finds the issue already closed and finishes.
+            if issue['state'] == 'open' and issue_revision(issue, item) != decision['revision']:
+                raise ValueError('This issue changed. Refresh it before applying the decision.')
+            self.close(identifier, decision, item, issue['state'] == 'open')
+            return
         if issue['state'] != 'open':
             raise ValueError('This issue is closed.')
         plan = decision.get('plan')
@@ -397,6 +404,29 @@ class IssueActions:
             current.pop('operator_request', None)
             current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
             self.ledger.event(state, current, 'operator_' + decision['action'], reason=decision['reason'], request=identifier)
+
+    def close(self, identifier, decision, item, open_issue):
+        """Drop the issue: close Forge's pull request, then the issue as not planned.
+
+        Stops a running attempt; the next cycle cleans up its runner. Branches are kept."""
+        pull = ((item or {}).get('candidate') or {}).get('pr')
+        if pull:
+            current = self.github.call('controller', decision, 'GET', f'/pulls/{pull}')
+            if isinstance(current, dict) and current.get('state') == 'open' and not current.get('merged'):
+                self.github.call('controller', decision, 'PATCH', f'/pulls/{pull}', {'state': 'closed'})
+        if open_issue:
+            self.github.call('controller', decision, 'POST', f"/issues/{decision['number']}/comments",
+                             {'body': 'Closed from Forge as not planned: ' + decision['reason']})
+            self.github.call('controller', decision, 'PATCH', f"/issues/{decision['number']}",
+                             {'state': 'closed', 'state_reason': 'not_planned'})
+        if item is None:
+            return
+        self.ledger.cancel(decision['key'], 'Closed as not planned: ' + decision['reason'])
+        with self.ledger.transaction() as state:
+            current = state['issues'][decision['key']]
+            current.pop('operator_request', None)
+            current['ownership_wait'] = None
+            self.ledger.event(state, current, 'operator_close', reason=decision['reason'], request=identifier)
 
     def assign_reviewer(self, identifier, decision, item):
         """Hand the candidate to a human through GitHub's own review request.

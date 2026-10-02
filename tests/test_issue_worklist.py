@@ -65,6 +65,7 @@ class GitHub:
             if self.lose_response:
                 self.lose_response = False
                 raise GitHubUnavailable('Connection lost after commit')
+        if method == 'PATCH' and path == '/issues/1': self.value['state'] = 'closed'
         if method == 'DELETE': self.value['labels'] = [l for l in self.value['labels'] if l['name'] != unquote(path.split('/')[-1])]
         return {}
 
@@ -566,6 +567,29 @@ class WorklistTests(unittest.TestCase):
         self.github.available=True; self.inventory.refresh()
         self.assertTrue(self.inventory.view()['complete'])
         self.assertIsNone(self.inventory.view()['repositories'][0]['error'])
+
+    def test_close_drops_the_issue_and_its_pull_request(self):
+        self.awaiting_approval(); self.refresh()
+        self.assertTrue(self.inventory.view(key='1:1')['issue']['closable'])
+        identifier, decision = self.decision('close', reason='Superseded by #9')
+        self.actions.apply(identifier, decision)
+        self.assertEqual([c for c in self.github.calls if c[0] in ('POST', 'PATCH')], [
+            ('PATCH', '/pulls/30', {'state': 'closed'}),
+            ('POST', '/issues/1/comments', {'body': 'Closed from Forge as not planned: Superseded by #9'}),
+            ('PATCH', '/issues/1', {'state': 'closed', 'state_reason': 'not_planned'})])
+        data = self.ledger.read()
+        self.assertEqual(data['issues']['1:1']['state'], 'cancelled')
+        # A restarted controller replays the decision without commenting twice.
+        self.actions.apply(identifier, decision)
+        self.assertEqual(len([c for c in self.github.calls if c[0] in ('POST', 'PATCH')]), 3)
+        self.refresh()
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'completed')
+
+    def test_close_works_for_an_issue_forge_never_tracked(self):
+        identifier, decision = self.decision('close', reason='Not needed')
+        self.actions.apply(identifier, decision)
+        self.assertEqual(self.github.value['state'], 'closed')
+        self.assertNotIn('1:1', self.ledger.read()['issues'])
 
     def test_assign_reviewer_requests_the_review_and_assigns_the_issue(self):
         self.awaiting_approval()

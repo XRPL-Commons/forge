@@ -280,9 +280,11 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions = []
         if state not in ('completed', 'working'):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
+    # Dropping the issue is always the alternative to finishing it, never the next step.
+    closable = fresh and state != 'completed' and case not in ('applying', 'repo_blocked')
     summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
                else owner if case == 'external' else summary_for(case, item, held))
-    return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
+    return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'closable': closable, 'setup_needed': setup or not repo.get('access_ready'),
             'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
                         if case == 'approval_needed' and owned_pr and human_approval else None,
             'approvals': [{k: a.get(k) for k in ('login', 'state', 'at', 'counted', 'why')} for a in gate.get('approvals') or []],
