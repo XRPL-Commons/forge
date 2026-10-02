@@ -3,7 +3,8 @@ import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/d
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, jobSummary, type FactoryView, type JobView } from '~/utils/factory'
 import { statusTone } from '~/utils/tones'
-import { issuePipeline } from '~/utils/pipeline'
+import { issuePipeline, type PipelineView } from '~/utils/pipeline'
+import { workbenchLook } from '~/utils/workbench'
 import {
   ACTION_LABELS, STATUS_NAMES, approvalLines, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
@@ -95,12 +96,19 @@ function recordDecision(reply: { request?: string }, previous: string | null, me
 }
 
 
-// What the page leads with: where the issue is in the pipeline, then the next
-// step — one headline sentence, at most three plain sentences and the one way
-// forward. Forge's status line and the worker's prose wait in Review findings,
-// so nobody has to open it to learn where this issue stands or why.
+// What the page leads with: the issue's cube on its workbench, saying Forge's
+// summary — one headline sentence, at most three plain sentences — then the
+// one way forward. Forge's status line and the worker's prose wait in Review
+// findings, so nobody has to open it to learn where this issue stands or why.
 const summary = computed(() => summaryBlock(detail.value))
 const pipeline = computed(() => (detail.value ? issuePipeline(detail.value) : null))
+// The workbench: the issue's cube, its mood and props, the stages it earned
+// and the attempts it has left — all from the same payload.
+const look = computed(() => (detail.value ? workbenchLook(detail.value) : null))
+const NOTE_TONE: Record<PipelineView['state'], string> = {
+  done: 'text-mint-200', active: 'text-sky-200', waiting: 'text-sky-200', failed: 'text-rose-200',
+  blocked: 'text-amber-200', upcoming: 'text-muted', closed: 'text-muted',
+}
 const detailsOpen = useState(`issue-details-${props.issueKey}`, () => false)
 const descriptionOpen = ref(false)
 const environmentSectionOpen = ref(false)
@@ -426,151 +434,193 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
     <p v-else-if="!detail" role="status" class="text-sm text-muted">Loading issue…</p>
 
     <template v-if="detail">
-      <!-- Header: where the issue lives, what it is, and its status. -->
+      <!-- Header: where the issue lives, what it is, its status and attempts. -->
       <p class="text-xs text-muted">{{ detail.repo }} · #{{ detail.number }}</p>
       <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
         <h1 id="issue-title" class="text-xl font-semibold text-white">{{ detail.title }}</h1>
         <UBadge :color="statusTone(detail.status)" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
       </div>
+      <p v-if="pipeline" id="issue-attempt-line" class="mt-1 text-xs" :class="NOTE_TONE[pipeline.state]">
+        <span id="issue-stage-note">{{ pipeline.note }}</span>
+        <template v-if="pipeline.attempts">
+          <span class="text-muted" aria-hidden="true"> · </span>
+          <span id="issue-attempts" class="text-muted">{{ pipeline.attempts }}</span>
+        </template>
+      </p>
 
-      <IssuePipeline v-if="pipeline" :view="pipeline" />
-
-      <!-- The next step: what is going on, and how to move the issue on —
-           to completion, or out of Forge with Close issue. -->
-      <section id="issue-next" class="mt-4 rounded-xl border border-line bg-panel p-4" aria-labelledby="issue-next-title">
+      <!-- The next step: the cube on its workbench says what is going on;
+           directly under it, how to move the issue on — to completion, or
+           out of Forge with Close issue. -->
+      <section id="issue-next" class="mt-4 flex flex-col gap-3" aria-labelledby="issue-next-title">
         <h2 id="issue-next-title" class="sr-only">Next step</h2>
-        <p v-if="summary?.headline" id="issue-headline" class="text-base font-semibold text-white">{{ summary.headline }}</p>
-        <p
-          v-if="summary?.plain"
-          id="issue-plain"
-          class="mt-1 text-sm text-muted"
-          :class="plainLong && !plainOpen ? 'line-clamp-3' : ''"
-        >{{ summary.plain }}</p>
-        <UButton
-          v-if="plainLong"
-          size="xs"
-          color="neutral"
-          variant="link"
-          class="px-0"
-          :aria-expanded="plainOpen"
-          @click="plainOpen = !plainOpen"
-        >{{ plainOpen ? 'less' : 'more' }}</UButton>
-        <ul v-if="holds.length" id="issue-held-by" class="mt-1 text-xs text-muted">
-          <li v-for="line in holds" :key="line">{{ line }}</li>
-        </ul>
-
-        <section v-if="detail.decision_request" id="issue-decision" class="mt-3 space-y-2 text-sm" aria-labelledby="decision-question">
-          <h3 id="decision-question" class="font-semibold">{{ detail.decision_request.question }}</h3>
-          <ul class="list-disc space-y-1 pl-5">
-            <li v-for="option in detail.decision_request.options" :key="option">{{ option }}</li>
+        <IssueWorkbench v-if="look" :look="look">
+          <p v-if="summary?.headline" id="issue-headline" class="text-[15px] leading-snug font-semibold text-balance text-white">{{ summary.headline }}</p>
+          <p
+            v-if="summary?.plain"
+            id="issue-plain"
+            class="text-sm text-[#c5cad1] wrap-anywhere"
+            :class="[summary?.headline ? 'mt-1.5' : '', plainLong && !plainOpen ? 'line-clamp-3' : '']"
+          >{{ summary.plain }}</p>
+          <UButton
+            v-if="plainLong"
+            size="xs"
+            color="neutral"
+            variant="link"
+            class="px-0"
+            :aria-expanded="plainOpen"
+            @click="plainOpen = !plainOpen"
+          >{{ plainOpen ? 'less' : 'more' }}</UButton>
+          <ul v-if="holds.length" id="issue-held-by" class="mt-1.5 text-xs text-muted">
+            <li v-for="line in holds" :key="line">{{ line }}</li>
           </ul>
-          <p><strong>Recommendation:</strong> {{ detail.decision_request.recommendation }}</p>
-          <p class="text-muted">{{ detail.decision_request.evidence }}</p>
-          <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
-        </section>
-        <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="mt-2 text-sm text-amber-200">Waiting for your approval on GitHub</p>
-        <ul v-if="approvals.length" id="issue-approvals" class="mt-2 flex flex-col gap-1 text-sm" aria-label="Reviews Forge found on GitHub">
-          <li v-for="line in approvals" :key="line.login" class="flex items-start gap-1.5" :class="line.counted ? 'text-mint-200' : 'text-muted'">
-            <UIcon :name="line.icon" class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <span>{{ line.text }}</span>
-          </li>
-        </ul>
-        <p v-else-if="approval" id="issue-approvals-empty" class="mt-2 text-sm text-muted">No approval found on the pull request yet.</p>
-        <p v-if="detail.merge_blocker" class="mt-2 text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
-        <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
-        <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">
-          Deployment · {{ deployment.text }}
-          <a
-            v-if="deployment.runUrl"
-            :href="deployment.runUrl"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="ml-1 text-sky-200 underline-offset-4 hover:underline"
-          >Deploy run ↗</a>
-        </p>
+          <p v-if="!summary && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
+        </IssueWorkbench>
 
-        <!-- Only when the environment is what stopped the issue does it
-             belong here; otherwise it waits in its own section below. -->
-        <IssueEnvironmentCard
-          v-if="detail.environment && environmentBlocking"
-          v-model:open="environmentOpen"
-          :environment="detail.environment"
-          :busy="busy"
-          :error="environmentError"
-          @save="saveEnvironment"
-        />
+        <div id="issue-action-block" class="flex flex-col gap-2.5">
+          <section v-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
+            <h3 id="decision-question" class="font-semibold">{{ detail.decision_request.question }}</h3>
+            <ul class="list-disc space-y-1 pl-5">
+              <li v-for="option in detail.decision_request.options" :key="option">{{ option }}</li>
+            </ul>
+            <p><strong>Recommendation:</strong> {{ detail.decision_request.recommendation }}</p>
+            <p class="text-muted">{{ detail.decision_request.evidence }}</p>
+            <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
+          </section>
+          <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
+          <ul
+            v-if="approvals.length"
+            id="issue-approvals"
+            class="flex flex-col gap-1 rounded-lg border border-line bg-panel px-2.5 py-2 text-sm"
+            aria-label="Reviews Forge found on GitHub"
+          >
+            <li v-for="line in approvals" :key="line.login" class="flex items-start gap-1.5" :class="line.counted ? 'text-mint-200' : 'text-muted'">
+              <UIcon :name="line.icon" class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <span>{{ line.text }}</span>
+            </li>
+          </ul>
+          <p v-else-if="approval" id="issue-approvals-empty" class="text-sm text-muted">No approval found on the pull request yet.</p>
+          <p v-if="detail.merge_blocker" class="text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
+          <p v-if="reviewRequested" id="review-requested" class="text-sm text-muted">{{ reviewRequested }}</p>
+          <p v-if="deployment" id="issue-deployment" class="text-sm text-muted">
+            Deployment · {{ deployment.text }}
+            <a
+              v-if="deployment.runUrl"
+              :href="deployment.runUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="ml-1 text-sky-200 underline-offset-4 hover:underline"
+            >Deploy run ↗</a>
+          </p>
 
-        <p v-if="message" id="detail-message" role="status" class="mt-3 text-sm text-amber-200">{{ message }}</p>
+          <!-- What this issue waits for: one chip per dependency. -->
+          <div v-if="detail.dependencies.length" id="issue-dependencies" class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+            <span>Depends on</span>
+            <NuxtLink
+              v-for="number in detail.dependencies"
+              :key="number"
+              :to="issuePath(`${detail.repo_id}:${number}`)"
+              class="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel py-0.5 pr-2.5 pl-1.5 text-white hover:border-muted"
+            >
+              <span aria-hidden="true" class="size-3 rounded-[3px] border-[1.5px] border-[#0a0c0f] bg-[#59606b]" />
+              <span class="font-mono">#{{ number }}</span>
+            </NuxtLink>
+          </div>
 
-        <!-- One primary way forward, smaller secondary decisions, then the
-             quiet ways out: stopping the attempt, closing the issue. -->
-        <div id="issue-actions" class="mt-4 flex flex-wrap items-center gap-2">
-          <UButton v-if="primary === 'approve'" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
-          <UButton v-else-if="primary === 'assign_reviewer'" color="primary" :disabled="busy" @click="askReviewer">{{ ACTION_LABELS.assign_reviewer }}</UButton>
-          <UButton v-else-if="primary === 'setup'" :to="detail.setup_url" color="primary">Repository setup →</UButton>
-          <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ ACTION_LABELS[primary] }}</UButton>
-          <UButton
-            v-for="action in secondary"
-            :key="action"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            :disabled="busy"
-            @click="ask(action)"
-          >{{ ACTION_LABELS[action] }}</UButton>
-          <UButton
-            v-if="canAssign && primary !== 'assign_reviewer'"
-            size="sm"
-            color="neutral"
-            variant="outline"
-            :disabled="busy"
-            @click="askReviewer"
-          >{{ ACTION_LABELS.assign_reviewer }}</UButton>
-          <UButton
-            size="sm"
-            color="neutral"
-            variant="outline"
-            :aria-expanded="discussOpen"
-            @click="discussOpen = !discussOpen"
-          >Discuss blocker</UButton>
-          <UButton v-if="setupNeeded && primary !== 'setup'" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
-          <span class="ml-auto flex flex-wrap items-center gap-1">
+          <!-- Only when the environment is what stopped the issue does it
+               belong here; otherwise it waits in its own section below. -->
+          <IssueEnvironmentCard
+            v-if="detail.environment && environmentBlocking"
+            v-model:open="environmentOpen"
+            :environment="detail.environment"
+            :busy="busy"
+            :error="environmentError"
+            @save="saveEnvironment"
+          />
+
+          <p v-if="message" id="detail-message" role="status" class="text-sm text-amber-200">{{ message }}</p>
+
+          <!-- One primary way forward (or a calm line when there is none),
+               smaller secondary decisions, then stopping the attempt. -->
+          <div id="issue-actions" class="flex flex-wrap items-center gap-2">
+            <UButton v-if="primary === 'approve'" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
+            <UButton v-else-if="primary === 'assign_reviewer'" color="primary" :disabled="busy" @click="askReviewer">{{ ACTION_LABELS.assign_reviewer }}</UButton>
+            <UButton v-else-if="primary === 'setup'" :to="detail.setup_url" color="primary">Repository setup →</UButton>
+            <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ ACTION_LABELS[primary] }}</UButton>
+            <span v-else id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
+              <span aria-hidden="true" class="size-2 rounded-full bg-mint-400" />
+              {{ look?.mood === 'happy' ? 'Done. Nothing left to do.' : 'Nothing needed from you right now.' }}
+            </span>
             <UButton
-              v-if="detail.active && detail.status === 'working'"
+              v-for="action in secondary"
+              :key="action"
+              color="neutral"
+              variant="outline"
               size="sm"
-              color="error"
-              variant="ghost"
               :disabled="busy"
-              @click="ask('stop')"
-            >{{ ACTION_LABELS.stop }}</UButton>
+              @click="ask(action)"
+            >{{ ACTION_LABELS[action] }}</UButton>
             <UButton
-              v-if="internalJob"
+              v-if="canAssign && primary !== 'assign_reviewer'"
               size="sm"
-              color="error"
-              variant="ghost"
+              color="neutral"
+              variant="outline"
               :disabled="busy"
-              @click="askReset"
-            >Reset runner</UButton>
+              @click="askReviewer"
+            >{{ ACTION_LABELS.assign_reviewer }}</UButton>
+            <UButton
+              size="sm"
+              color="neutral"
+              variant="outline"
+              :aria-expanded="discussOpen"
+              @click="discussOpen = !discussOpen"
+            >Discuss blocker</UButton>
+            <UButton v-if="setupNeeded && primary !== 'setup'" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
+            <span v-if="(detail.active && detail.status === 'working') || internalJob" class="ml-auto flex flex-wrap items-center gap-1">
+              <UButton
+                v-if="detail.active && detail.status === 'working'"
+                size="sm"
+                color="error"
+                variant="ghost"
+                :disabled="busy"
+                @click="ask('stop')"
+              >{{ ACTION_LABELS.stop }}</UButton>
+              <UButton
+                v-if="internalJob"
+                size="sm"
+                color="error"
+                variant="ghost"
+                :disabled="busy"
+                @click="askReset"
+              >Reset runner</UButton>
+            </span>
+          </div>
+
+          <!-- The quiet way out, and how fresh this is. -->
+          <div id="issue-meta" class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-dashed border-line pt-2 text-xs text-muted">
             <UButton
               v-if="detail.closable"
               id="issue-close"
-              size="sm"
+              size="xs"
               color="error"
               variant="ghost"
               icon="i-lucide-circle-x"
+              class="-ml-2"
               :disabled="busy"
               @click="ask('close')"
             >Close issue…</UButton>
-          </span>
-        </div>
-
-        <div id="issue-checked" class="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-          <span v-if="checkingSince" role="status">Checking GitHub…</span>
-          <span v-else>{{ checked }}</span>
-          <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-refresh-cw" :loading="!!checkingSince" :disabled="!!checkingSince" @click="checkNow">Check now</UButton>
-          <span v-if="checkNote" role="status">{{ checkNote }}</span>
+            <span v-else />
+            <div id="issue-checked" class="flex flex-wrap items-center gap-1">
+              <span v-if="checkingSince" role="status">Checking GitHub…</span>
+              <span v-else-if="checked">{{ checked }}</span>
+              <span v-if="checked || checkingSince" aria-hidden="true">·</span>
+              <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-refresh-cw" class="-mx-1" :loading="!!checkingSince" :disabled="!!checkingSince" @click="checkNow">Check now</UButton>
+              <span v-if="checkNote" role="status" class="basis-full">{{ checkNote }}</span>
+            </div>
+          </div>
         </div>
       </section>
+
+      <IssueStats v-if="look" :look="look" class="mt-4" />
 
       <!-- The discussion opens under the next step that started it. -->
       <IssueConversation :key="detail.key" v-model:open="discussOpen" :issue-key="detail.key" />
@@ -588,12 +638,6 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           rel="noopener noreferrer"
           class="text-sky-200 underline-offset-4 hover:underline"
         >{{ pullLabel(pull) }} ↗</a>
-      </p>
-      <p v-if="detail.dependencies.length" class="mt-1 text-sm text-muted">
-        Depends on
-        <template v-for="(number, index) in detail.dependencies" :key="number">
-          <NuxtLink :to="issuePath(`${detail.repo_id}:${number}`)" class="text-sky-200 hover:underline">#{{ number }}</NuxtLink>{{ index < detail.dependencies.length - 1 ? ', ' : '' }}
-        </template>
       </p>
 
       <div class="mt-3">

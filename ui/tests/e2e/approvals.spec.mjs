@@ -33,6 +33,14 @@ export default async function (page, { base, scenario, requests }) {
   })
   await page.goto(base + '/issues/1%3A614')
   await waitForText(page, '@x approved · not counted: No write access to the repository')
+  // The cube waits hopefully at Approval, wearing the rosette it earned.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #614, Approval stage, waiting for your approval')
+  assert.equal(await page.locator('#issue-workbench').getAttribute('data-mood'), 'hopeful')
+  // The reviews sit in the action block, under the bench and above the Approve button.
+  const benchBox = await page.locator('#issue-workbench').boundingBox()
+  const listBox = await page.locator('#issue-approvals').boundingBox()
+  const approveBox = await page.locator('#issue-actions').getByRole('button', { name: 'Approve…', exact: true }).boundingBox()
+  assert.ok(benchBox.y + benchBox.height <= listBox.y && listBox.y + listBox.height <= approveBox.y, 'bench, then reviews, then Approve')
   const list = await page.locator('#issue-approvals').innerText()
   assert.match(list, /@lucbocahut approved · \d{1,2}:\d{2}[^·]* · counted/)
   // Not colour alone: every row carries an icon next to its words.

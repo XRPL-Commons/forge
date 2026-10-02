@@ -1,5 +1,5 @@
-// Where an issue is in Forge's pipeline, for the strip at the top of the issue
-// page: Queued → Build → Review → Security review → Approval → Merged. The API
+// Where an issue is in Forge's pipeline, for the workbench at the top of the
+// issue page (utils/workbench.ts) and its attempt line: Queued → Build → Review → Security review → Approval → Merged. The API
 // does not send a stage, so it is derived here from what the row already
 // carries: the status, Forge's own status line, the reviews, the pull request,
 // the approval and the blockers. A failure or a hold is shown on the stage

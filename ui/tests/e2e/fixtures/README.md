@@ -324,7 +324,8 @@ output has not.
   "PR #30" / "Earlier Forge draft #26" / "Other PR #25" chips. Exercises Issue #47: the headline
   and description above the action bar, and the worker's full text in
   "Review findings" (collapsed) below it. The failed `audit` puts the
-  pipeline strip's failure on "Security review", with "attempt 3 of 3 failed".
+  workbench cube at Security, worried, with "attempt 3 of 3 failed" and no
+  attempts left.
 
 ## close-issue/
 
@@ -364,7 +365,8 @@ tracked repository (Task 5).
   clock — the spec asserts the label and the meaning, not the number.
 - `issues.issue.json` — `GET /api/issues?issue=2:606`, the completed detail
   behind the deployed verdict, so `/issues/2:606` renders its own page and the
-  Deployment line under the title.
+  Deployment line under the title. Its explanation is the server's
+  "Completed and merged.", so the workbench shows the merged cube.
 
 ## down (not a fixture directory)
 

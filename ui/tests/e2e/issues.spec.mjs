@@ -239,9 +239,14 @@ export default async function (page, { base, scenario, requests }) {
     'https://github.com/XRPL-Commons/academy/pull/30')
   assert.equal(await actionBar.getByRole('link').count(), 0, 'GitHub links are not action buttons')
   assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
-  // A running build sits on Build in the pipeline strip.
-  assert.equal(await page.locator('#issue-pipeline [aria-current="step"]').getAttribute('data-stage'), 'build')
-  assert.equal(await page.locator('#issue-pipeline [aria-current="step"]').getAttribute('data-state'), 'active')
+  // A running build: the cube works at Build, which is its current badge,
+  // and nothing is needed from the operator.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #610, Build stage, working')
+  assert.equal(await page.locator('#issue-workbench').getAttribute('role'), 'img')
+  assert.equal(await page.locator('#issue-stages [aria-current="step"]').getAttribute('data-stage'), 'build')
+  assert.equal(await page.locator('#issue-stages li').count(), 5)
+  assert.equal(await page.locator('#issue-pipeline').count(), 0, 'the workbench replaces the pipeline stepper')
+  assert.equal((await page.locator('#issue-nothing-needed').innerText()).trim(), 'Nothing needed from you right now.')
   // Discussing the blocker is one more button in the same bar.
   assert.equal(await actionBar.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 1)
   await page.getByRole('button', { name: 'Description' }).click()
@@ -288,10 +293,16 @@ export default async function (page, { base, scenario, requests }) {
   // The way forward is one primary button; the technical text stays collapsed.
   assert.equal(await actionBar.getByRole('button', { name: 'Retry attempt' }).count(), 1)
   assert.equal(await page.locator('#issue-explanation').count(), 0, 'the worker’s full text starts collapsed')
-  // The security review that could not finish is where the pipeline stopped.
-  const failedStage = page.locator('#issue-pipeline [aria-current="step"]')
-  assert.equal(await failedStage.getAttribute('data-stage'), 'audit')
-  assert.equal(await failedStage.getAttribute('data-state'), 'failed')
+  // The security review that could not finish is where the cube stopped: it
+  // worries at Security, lit amber, with every life spent.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #620, Security stage, needs attention')
+  assert.equal(await page.locator('#issue-workbench').getAttribute('data-mood'), 'worried')
+  assert.match(await page.locator('#issue-bubble').getAttribute('class'), /attention/)
+  assert.equal(await page.locator('#issue-stages [aria-current="step"]').getAttribute('data-stage'), 'audit')
+  assert.deepEqual(await page.locator('#issue-stages li').evaluateAll(items => items.map(item => item.dataset.state)),
+    ['done', 'done', 'current', 'future', 'future'])
+  assert.equal((await page.locator('#issue-lives-text').innerText()).trim(), '0 of 3 left')
+  assert.equal(await page.locator('#issue-lives svg[data-lost]').count(), 3)
   assert.equal((await page.locator('#issue-stage-note').innerText()).trim(), 'Failed')
 
   await page.getByRole('button', { name: 'Review findings' }).click()
@@ -307,7 +318,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal((await verdicts.first().innerText()).includes('PASS.'), false)
   assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
 
-  // Three failed attempts out of three, beside the pipeline stage.
+  // Three failed attempts out of three, in the header's attempt line.
   assert.equal((await page.locator('#issue-attempts').innerText()).trim(), 'attempt 3 of 3 failed')
   // …and the label that paused it, with who applied it and when.
   assert.equal((await page.locator('#issue-held-by').innerText()).trim(), 'Labelled forge:hold by @maintainer on Sep 21')

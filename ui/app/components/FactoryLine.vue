@@ -6,6 +6,7 @@ import {
   type AttentionReason, type HeadlinePart, type LineInfo, type LineItem, type LineStage, type LineState,
 } from '~/utils/factoryLine'
 import { panelQuery, panelTarget } from '~/utils/panel'
+import { CUBE_INK as INK, drawCube, roundRect as rr, type CubeOptions } from '~/utils/cube'
 
 // The factory line: a 200px strip that draws the board as a toy factory.
 // Every cube is an issue from the last poll; a cube moves only when a poll
@@ -63,7 +64,6 @@ const COL = { text: '#edf1ee', muted: '#acb7b9', dim: '#565d67', green: '#7fcc9d
 let SANS = 'system-ui, -apple-system, sans-serif'
 const MONO = 'ui-monospace, "SF Mono", Menlo, monospace'
 const FONT = (w: number, px: number, fam?: 'mono') => `${w} ${px}px ${fam === 'mono' ? MONO : SANS}`
-const INK = '#0a0c0f'
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v))
 const ease = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
@@ -112,12 +112,8 @@ function apply(next: LineState | null) {
 watch(state, apply)
 
 // ---------------------------------------------------------------------------
-// Drawing helpers (from the prototype)
+// Drawing helpers (from the prototype; the cube itself is utils/cube.ts)
 // ---------------------------------------------------------------------------
-function rr(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  r = Math.max(0, Math.min(r, w / 2, h / 2))
-  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath()
-}
 function spacing(ctx: CanvasRenderingContext2D, v: string) { if ('letterSpacing' in ctx) (ctx as unknown as { letterSpacing: string }).letterSpacing = v }
 function drawHeadline(ctx: CanvasRenderingContext2D, x: number, y: number, size: number) {
   ctx.font = FONT(500, size); spacing(ctx, '0px'); ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left'
@@ -137,26 +133,6 @@ function tether(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: numbe
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(x1, y1 - 24, x2, y2 + 30, x2, y2); ctx.stroke()
   ctx.restore()
 }
-interface CubeOptions { alpha?: number; sx?: number; sy?: number; glow?: string | null; glowBlur?: number; look?: number; lookY?: number; eyeCol?: string; eyes?: 'open' | 'closed' | 'worried' | 'none' }
-function toyCube(ctx: CanvasRenderingContext2D, x: number, y: number, c: number, fill: string, o: CubeOptions = {}) {
-  ctx.save(); ctx.globalAlpha = o.alpha == null ? 1 : o.alpha
-  ctx.translate(x, y); ctx.scale(o.sx || 1, o.sy || 1)
-  if (o.glow) { ctx.shadowColor = o.glow; ctx.shadowBlur = o.glowBlur || 10 }
-  rr(ctx, -c / 2, -c, c, c, c * 0.24); ctx.fillStyle = fill; ctx.fill(); ctx.shadowBlur = 0
-  ctx.lineWidth = 1.6; ctx.strokeStyle = INK; ctx.stroke()
-  rr(ctx, -c / 2 + 2.5, -c + 2.5, c - 5, c * 0.26, c * 0.12); ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.fill()
-  const ex = c * 0.19, ey = -c * 0.46, er = Math.max(1.2, c * 0.075), look = o.look || 0, lookY = o.lookY || 0
-  ctx.fillStyle = o.eyeCol || '#12151a'; ctx.strokeStyle = o.eyeCol || '#12151a'; ctx.lineWidth = Math.max(1, c * 0.07); ctx.lineCap = 'round'
-  if (o.eyes === 'closed') {
-    ctx.beginPath(); ctx.moveTo(-ex - er * 1.4, ey + 1); ctx.lineTo(-ex + er * 1.4, ey + 1); ctx.moveTo(ex - er * 1.4, ey + 1); ctx.lineTo(ex + er * 1.4, ey + 1); ctx.stroke()
-  }
-  else if (o.eyes !== 'none') {
-    ctx.beginPath(); ctx.arc(-ex + look, ey + lookY, er, 0, Math.PI * 2); ctx.arc(ex + look, ey + lookY, er, 0, Math.PI * 2); ctx.fill()
-    if (o.eyes === 'worried') { ctx.beginPath(); ctx.moveTo(-ex - er * 1.8, ey - er * 2.2); ctx.lineTo(-ex + er * 1.2, ey - er * 3.4); ctx.moveTo(ex + er * 1.8, ey - er * 2.2); ctx.lineTo(ex - er * 1.2, ey - er * 3.4); ctx.stroke() }
-  }
-  ctx.restore()
-}
-
 // ---------------------------------------------------------------------------
 // Layout: where every station and cube sits for a given width.
 // ---------------------------------------------------------------------------
@@ -459,7 +435,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     let x = v.x, y = v.y, sy = 1, sx = 1
     if (v.k < 1 && v.hop) { y -= Math.sin(Math.PI * v.k) * clamp(v.dist * 0.25, 16, 44); sy = 1 + 0.12 * Math.sin(Math.PI * v.k); sx = 1 / sy }
     else { if (v.loaded && now - v.loaded > 1100) continue; x += dx; y = tyb }
-    toyCube(ctx, x, y, c, v.col, { eyes: 'open', look: c * 0.06, sx, sy })
+    drawCube(ctx, x, y, c, v.col, { eyes: 'open', look: c * 0.06, sx, sy })
   }
   rr(ctx, T, tyb - c * 0.45, bedW, c * 0.45 + 5 * s, 3); ctx.fillStyle = '#4fa877'; ctx.fill(); ctx.lineWidth = 1.6; ctx.stroke()
   rr(ctx, T + bedW + 2, tyb - c - 6 * s, cabW, c + 11 * s, 5 * s); ctx.fillStyle = '#5cbf89'; ctx.fill(); ctx.stroke()
@@ -488,7 +464,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     else if (is.stage === 'approval') { o.look = c * 0.09; o.lookY = -c * 0.04 }
     else if (is.running) { o.lookY = c * 0.07; o.look = 0; if (is.stage === 'build' && motion) x += Math.sin(at * 14 + is.order) * 0.5 }
     else o.look = c * 0.09
-    toyCube(ctx, x, y, c, v.col, { ...o, sx, sy })
+    drawCube(ctx, x, y, c, v.col, { ...o, sx, sy })
     if (blockerHover(is)) { ctx.strokeStyle = COL.text; ctx.lineWidth = 1; rr(ctx, x - c / 2 - 3, y - c - 3, c + 6, c + 6, 5); ctx.stroke() }
     hits.push({ kind: 'issue', id: is.id, x: x - c / 2, y: y - c, w: c, h: c })
   }
@@ -527,7 +503,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     const x = v.x; let y = v.y
     if (v.k < 1 && v.hop) y -= Math.sin(Math.PI * v.k) * clamp(v.dist * 0.2, 16, 40)
     else if (motion) y += -Math.pow(Math.max(0, Math.sin(at * 2.2 - wi * 0.55)), 10) * 3 * s
-    toyCube(ctx, x, y, cb, v.col, { eyes: 'worried', alpha: a, look: 0, lookY: -cb * 0.04, glow: a === 1 ? 'rgba(240,180,76,.5)' : null, glowBlur: 4 + 6 * pulse })
+    drawCube(ctx, x, y, cb, v.col, { eyes: 'worried', alpha: a, look: 0, lookY: -cb * 0.04, glow: a === 1 ? 'rgba(240,180,76,.5)' : null, glowBlur: 4 + 6 * pulse })
     if (blockerHover(is)) { ctx.strokeStyle = COL.text; ctx.lineWidth = 1; rr(ctx, x - cb / 2 - 3, y - cb - 3, cb + 6, cb + 6, 4); ctx.stroke() }
     wi++
   }
@@ -569,7 +545,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
       const v = vis.get(is.id); if (!v) continue
       let y = v.y
       if (v.k < 1 && v.hop) y -= Math.sin(Math.PI * v.k) * clamp(v.dist * 0.2, 16, 40)
-      toyCube(ctx, v.x, y, cb, v.col, st === 'waiting' ? { eyes: 'open', look: cb * 0.1, lookY: -cb * 0.05, eyeCol: '#14171b' } : { eyes: 'closed', eyeCol: '#1a1d22' })
+      drawCube(ctx, v.x, y, cb, v.col, st === 'waiting' ? { eyes: 'open', look: cb * 0.1, lookY: -cb * 0.05, eyeCol: '#14171b' } : { eyes: 'closed', eyeCol: '#1a1d22' })
       if (blockerHover(is)) { ctx.strokeStyle = COL.text; ctx.lineWidth = 1; rr(ctx, v.x - cb / 2 - 3, y - cb - 3, cb + 6, cb + 6, 4); ctx.stroke() }
       hits.push({ kind: 'issue', id: is.id, x: v.x - cb / 2, y: y - cb, w: cb, h: cb })
     }
@@ -585,7 +561,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
   for (let i = ghosts.length - 1; i >= 0; i--) {
     const gh = ghosts[i]!, k = (now - gh.t0) / 600
     if (k >= 1) { ghosts.splice(i, 1); continue }
-    toyCube(ctx, gh.x, gh.y + k * 4, gh.size, gh.fill, { eyes: 'closed', alpha: 1 - k })
+    drawCube(ctx, gh.x, gh.y + k * 4, gh.size, gh.fill, { eyes: 'closed', alpha: 1 - k })
   }
   // particles
   for (let i = toy.parts.length - 1; i >= 0; i--) {

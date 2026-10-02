@@ -20,19 +20,28 @@ export default async function (page, { base, scenario, requests }) {
   await page.setViewportSize({ width: 390, height: 900 })
   await page.goto(base + '/issues/1:620')
   await hydrated(page)
-  await page.locator('#issue-pipeline').waitFor()
+  await page.locator('#issue-workbench').waitFor()
 
-  // The narrow drawer never scrolls sideways, and the strip keeps its six steps.
+  // The narrow page never scrolls sideways: the workbench stacks its cube
+  // over the speech bubble, and the stage badges keep all five stages.
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal scroll at 390px')
-  assert.equal(await page.locator('#issue-pipeline li').count(), 6)
-  const strip = await page.locator('#issue-pipeline').boundingBox()
-  assert.ok(strip.x >= 0 && strip.x + strip.width <= 390, 'the pipeline strip fits the narrow width')
-  // One primary button for the way forward; Close is a quiet ghost button.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #620, Security stage, needs attention')
+  const bench = await page.locator('#issue-workbench').boundingBox()
+  const bubble = await page.locator('#issue-bubble').boundingBox()
+  assert.ok(bench.x >= 0 && bench.x + bench.width <= 390, 'the workbench fits the narrow width')
+  assert.ok(bench.y + bench.height <= bubble.y, 'the bubble stacks under the cube')
+  assert.equal(await page.locator('#issue-stages li').count(), 5)
+  const stats = await page.locator('#issue-stats').boundingBox()
+  assert.ok(stats.x >= 0 && stats.x + stats.width <= 390, 'the stats strip fits the narrow width')
+  // One primary button for the way forward, directly under the bench; Close
+  // is a quiet ghost button in the meta row under it.
   const actions = page.locator('#issue-actions')
   assert.equal(await actions.getByRole('button', { name: 'Retry attempt' }).count(), 1)
+  const actionsBox = await actions.boundingBox()
+  assert.ok(bubble.y + bubble.height <= actionsBox.y, 'the actions sit under the workbench')
   if (SCREENSHOT) await page.screenshot({ path: SCREENSHOT, fullPage: true })
 
-  await actions.getByRole('button', { name: 'Close issue…' }).click()
+  await page.locator('#issue-meta').getByRole('button', { name: 'Close issue…' }).click()
   const dialog = page.getByRole('dialog', { name: 'Close issue #620?' })
   await dialog.waitFor()
   const text = await dialog.innerText()
@@ -60,7 +69,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('close-issue')
   await page.goto(base + '/issues/1:620')
   await hydrated(page)
-  await page.locator('#issue-actions').getByRole('button', { name: 'Close issue…' }).click()
+  await page.locator('#issue-meta').getByRole('button', { name: 'Close issue…' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
   await page.getByRole('dialog').waitFor({ state: 'detached' })
   assert.equal((await requests()).filter(entry => entry.method === 'POST').length, 0)
