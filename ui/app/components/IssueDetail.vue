@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
-import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
+import { deploymentLine, jobSummary, type FactoryView, type JobView } from '~/utils/factory'
 import {
   ACTION_LABELS, STATUS_NAMES, approvalLines, attemptsText, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
@@ -329,11 +329,6 @@ async function confirmReset(reason: string) {
   await poll.refresh()
 }
 
-function jobLine(job: JobView): string {
-  const outcome = job.outcome ?? (job.cleanup ? 'cleanup' : job.phase)
-  return `${job.role} · ${job.phase} · ${outcome}`
-}
-
 const outputOpen = ref(false)
 const activityOpen = ref(false)
 const output = useResource<{ ok: true; logs: string }>(
@@ -637,7 +632,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
             :aria-current="job.id === selectedJob ? 'true' : undefined"
             class="hover:underline"
             :class="job.id === selectedJob ? 'text-mint-200' : 'text-muted'"
-          >{{ jobLine(job) }}<span v-if="job.started_at"> · <time :datetime="isoTime(job.started_at)">{{ localTime(job.started_at) }}</time></span></NuxtLink>
+          >{{ jobSummary(job) }}<span v-if="job.started_at"> · <time :datetime="isoTime(job.started_at)">{{ localTime(job.started_at) }}</time></span></NuxtLink>
         </li>
       </ul>
     </section>
