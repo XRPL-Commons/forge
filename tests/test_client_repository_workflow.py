@@ -276,6 +276,11 @@ class WorkflowTests(unittest.TestCase):
             result = self.client.read(target, 'activity')
         self.assertEqual(result['jobs'], [{'repo_id': 10, 'id': 'safe'}])
         self.assertNotIn('private', json.dumps(result))
+        state['observation'] = {}
+        with patch('forge.factory.control.view', return_value=state):
+            result = self.client.read(target, 'activity')
+        self.assertFalse(result['fresh'])
+        self.assertIsNone(result['healthy'])
         inventory = {'issues': [{'repo_id': 10}], 'repositories': [{'id': 10}, {'id': 999}],
                      'actions': [{'key': '10:1'}, {'key': '999:1'}]}
         with patch('forge.factory.issues.IssueInventory') as service:

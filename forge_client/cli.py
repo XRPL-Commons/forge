@@ -9,6 +9,30 @@ from .contracts import SetupError, require
 from .github import GitHub
 
 
+def repository_commands():
+    commands = {}
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue'):
+        properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
+                      'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
+        required = ['repository', 'server']
+        if action in ('setup', 'verify', 'enable', 'disable'):
+            properties.update(resume={'type': 'boolean', 'default': False},
+                              wait={'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 120})
+        if action == 'setup':
+            properties.update(apply={'type': 'boolean', 'default': False}, enable={'type': 'boolean', 'default': False})
+        if action == 'issues':
+            properties['page'] = {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 1}
+        if action == 'issue':
+            properties['number'] = {'type': 'integer', 'minimum': 1}
+            required.append('number')
+        commands[action] = {
+            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action == 'issue' else '') + ' --server HTTPS_ORIGIN --json',
+            'capability': 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
+            'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
+        }
+    return commands
+
+
 def parser():
     p = argparse.ArgumentParser(prog='forge', description='Connect a local agent to an existing Forge server.')
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
@@ -68,12 +92,9 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         return {'commands': ['connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
-                'repository_commands': {action: {'usage': 'forge repo ' + action + ' OWNER/REPO --server HTTPS_ORIGIN --json',
-                    'capability': 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
-                    'options': ['--apply', '--enable', '--resume', '--wait'] if action == 'setup' else
-                               ['--resume', '--wait'] if action in ('verify', 'enable', 'disable') else
-                               ['--page'] if action == 'issues' else ['NUMBER'] if action == 'issue' else []}
-                    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue')},
+                'schema_version': 1, 'repository_commands': repository_commands(),
+                'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
+                                   'operation_pending', 'verification_pending', 'write_unconfirmed'],
                 'credential_storage': 'OS keyring', 'transport': 'verified HTTPS',
                 'server_setup': {'authority': 'explicit SSH host', 'secret_input': 'hidden prompt or stdin',
                                  'scope': 'existing Tailscale host'}}

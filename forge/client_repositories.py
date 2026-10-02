@@ -45,8 +45,12 @@ class ClientRepositories:
             # Global overview, actions, slots and deployments can identify other
             # repositories. Return only health timing and this target's state.
             observation = state['observation']
+            at = observation.get('at')
+            fresh = type(at) in (int, float) and 0 <= self.settings.clock() - at <= max(120, state['runtime'].get('cycle_seconds', 30) * 3)
             result = {'active': state['active'], 'observed_at': observation.get('at'),
-                      'healthy': not bool(observation.get('errors')),
+                      'fresh': fresh, 'healthy': not bool(observation.get('errors')) if fresh else None,
+                      'enabled': state['runtime'].get('enabled', False),
+                      'merge_enabled': state['runtime'].get('merge_enabled', False),
                       'issues': [r for r in state['issues'] if r['repo_id'] == target['id']],
                       'jobs': [r for r in state['jobs'] if r['repo_id'] == target['id']]}
         else:
