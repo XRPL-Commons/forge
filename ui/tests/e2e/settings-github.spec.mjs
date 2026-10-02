@@ -98,7 +98,7 @@ export default async function (page, { base, scenario, requests }) {
   const failure = page.locator('#notice')
   assert.equal((await failure.innerText()).trim(), 'Could not refresh access. Try again.')
   assert.equal(await failure.getAttribute('role'), 'alert')
-  assert.ok((await failure.getAttribute('class')).includes('text-rose-200'), await failure.getAttribute('class'))
+  assert.ok((await failure.getAttribute('class')).includes('text-error'), await failure.getAttribute('class'))
   assert.equal(await page.locator('#refresh-result').count(), 0)
 
   // While Forge is still being set up: the badges tell credentials from

@@ -543,7 +543,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <UCollapsible v-model:open="detailsOpen">
           <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
             Details
-            <SelectChevron :class="detailsOpen ? 'rotate-180' : ''" />
+            <UIcon name="i-lucide-chevron-down" class="size-4 transition-transform" :class="detailsOpen ? 'rotate-180' : ''" />
           </UButton>
           <template #content>
             <p v-if="summary?.details" id="issue-explanation" class="mt-2 text-sm text-muted">{{ summary.details }}</p>
@@ -584,7 +584,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <UCollapsible v-model:open="descriptionOpen" :unmount-on-hide="false">
           <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
             Description
-            <SelectChevron :class="descriptionOpen ? 'rotate-180' : ''" />
+            <UIcon name="i-lucide-chevron-down" class="size-4 transition-transform" :class="descriptionOpen ? 'rotate-180' : ''" />
           </UButton>
           <template #content>
             <div class="mt-2 rounded-xl border border-line bg-panel p-4">
@@ -615,7 +615,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <UCollapsible v-model:open="outputOpen">
         <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
           Worker output
-          <SelectChevron :class="outputOpen ? 'rotate-180' : ''" />
+          <UIcon name="i-lucide-chevron-down" class="size-4 transition-transform" :class="outputOpen ? 'rotate-180' : ''" />
         </UButton>
         <template #content>
           <p v-if="output.error.value" role="status" class="mt-2 text-xs text-amber-200">{{ output.error.value }}</p>
@@ -643,7 +643,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <UCollapsible v-model:open="activityOpen">
           <UButton color="neutral" variant="ghost" size="sm" class="w-full justify-between">
             Recent activity
-            <SelectChevron :class="activityOpen ? 'rotate-180' : ''" />
+            <UIcon name="i-lucide-chevron-down" class="size-4 transition-transform" :class="activityOpen ? 'rotate-180' : ''" />
           </UButton>
           <template #content>
             <ul v-if="detail.history.length" class="mt-2 flex flex-col gap-2 text-xs">
