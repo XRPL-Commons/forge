@@ -101,4 +101,9 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Normalize webhook signature verification')
   const line = (await page.locator('#issue-deployment').innerText()).trim()
   assert.ok(line.startsWith('Deployment · Deployed · commit abc1234 read from the live site'), line)
+  // A merged issue: the cube is done, every stage earned, nothing left to do.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #606, Merged stage, merged')
+  assert.deepEqual(await page.locator('#issue-stages li').evaluateAll(items => items.map(item => item.dataset.state)),
+    ['done', 'done', 'done', 'done', 'done'])
+  assert.equal((await page.locator('#issue-nothing-needed').innerText()).trim(), 'Done. Nothing left to do.')
 }
