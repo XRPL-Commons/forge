@@ -91,6 +91,12 @@ class WorkflowTests(unittest.TestCase):
         with patch('sys.stdout', output): self.assertEqual(main([]), 0)
         self.assertIn('repo', output.getvalue())
 
+    def test_verify_reports_unready_repository_as_blocked(self):
+        result = self.workflow().execute('verify')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertFalse(result['requirements']['readiness']['access_ready'])
+        self.assertTrue(result['next_actions'])
+
     def test_cli_drives_actual_workflow_and_json_does_not_open_browser(self):
         with patch('forge_client.cli.Client', return_value=self.client), patch('forge_client.cli.GitHub', return_value=self.boundary.broker), \
              patch('forge_client.cli.connection_lock') as lock, patch('forge_client.workflow.Journal', return_value=self.journal), \

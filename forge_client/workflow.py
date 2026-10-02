@@ -150,7 +150,10 @@ class Workflow:
             if action == 'setup':
                 result = preparation.setup(self.target['name'], apply=True, enable=enable)
             elif action == 'verify':
-                result = {'status': 'verified', 'requirements': observed}
+                readiness = observed['readiness']
+                ready = readiness['access_ready'] and readiness['protection_ready']
+                result = {'status': ('enabled' if readiness['enabled'] else 'ready') if ready else 'blocked',
+                          'requirements': observed}
             else:
                 observed = self.operation(action, self.target, self.requirements(self.target)['revision'])
                 result = {'status': 'enabled' if observed['readiness']['enabled'] else 'disabled', 'requirements': observed}
