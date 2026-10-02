@@ -304,8 +304,8 @@ output has not.
   with a pull request (`#30`, `kind:"candidate"`), a Forge-authored `summary` (headline "Writing
   the change") and two reviews carrying the worker contract's own outcomes: a
   `pass` `review` whose summary runs past its lead sentence, and a `reject`
-  `audit`. Exercises the issue detail's action bar ("GitHub ↗", "PR #30 ↗")
-  and, inside "Details" (open by default), its clamped review rows with the "More" toggle and
+  `audit`. Exercises the issue detail's links ("GitHub issue ↗", "PR #30 ↗")
+  and, inside "Review findings" (collapsed by default), its clamped review rows with the "More" toggle and
   the per-verdict chips ("Passed" / "Rejected").
 
 ## summarised/
@@ -318,12 +318,22 @@ output has not.
   `human_required:true` and a `human_reason` (the "Passed · needs a person"
   chip, whose text is the reason, not the summary's "PASS.") and an `unable`
   `audit`, for the "Could not review" chip. `attempts:{failed:3,limit:3}`
-  drives the "3 of 3 attempts failed" line, `held_by` (`forge:hold` by
+  drives the "attempt 3 of 3 failed" note, `held_by` (`forge:hold` by
   `maintainer`) the "Labelled forge:hold by @maintainer on Sep 21" line, and `pull_requests` carries one of
   each `kind` (`#30` candidate, `#26` forge_attempt, `#25` external) for the
   "PR #30" / "Earlier Forge draft #26" / "Other PR #25" chips. Exercises Issue #47: the headline
   and description above the action bar, and the worker's full text in
-  "Details" below it.
+  "Review findings" (collapsed) below it. The failed `audit` puts the
+  pipeline strip's failure on "Security review", with "attempt 3 of 3 failed".
+
+## close-issue/
+
+- `issues.issue.json` — the `summarised` issue (`1:620`, failed, three of
+  three attempts) with `closable:true` and no label hold: the "Close issue…"
+  action and its dialog, and the narrow-width screenshot of the panel.
+- `issues-action.post.json` — the accepted close decision
+  (`{ok:true, request:"close-request-1"}`, no `issue`), so the page shows
+  "Decision submitted. Waiting for confirmation."
 
 ## deployment/
 

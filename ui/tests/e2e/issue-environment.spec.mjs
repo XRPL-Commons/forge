@@ -1,8 +1,22 @@
 import assert from 'node:assert/strict'
 
+// The environment is not the blocker in these issues, so it waits in a
+// collapsed section under the next step.
+async function openEnvironment(page) {
+  const toggle = page.locator('#issue-environment-section').getByRole('button', { name: 'Worker environment' })
+  await toggle.waitFor()
+  assert.equal(await page.locator('#issue-environment').count(), 0, 'the worker environment starts collapsed')
+  await page.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
+  await toggle.click()
+  await page.locator('#issue-environment').waitFor()
+  // Let the section finish opening, so the select's menu anchors to where it stays.
+  await page.waitForFunction(() => document.getAnimations().every(animation => animation.playState !== 'running'))
+}
+
 export default async function (page, { base, scenario, requests }) {
   await scenario('issue-environment')
   await page.goto(base + '/issues/1:610')
+  await openEnvironment(page)
   const card = page.locator('#issue-environment')
   await card.getByRole('button', { name: 'Change environment' }).waitFor()
   assert.ok((await card.innerText()).includes('MongoDB'))
@@ -19,6 +33,7 @@ export default async function (page, { base, scenario, requests }) {
 
   await scenario('issue-environment-standard')
   await page.goto(base + '/issues/1:610')
+  await openEnvironment(page)
   await card.getByRole('button', { name: 'Change environment' }).click()
   await card.getByRole('combobox').click()
   await page.getByRole('option', { name: 'Automatic', exact: true }).click()
@@ -29,12 +44,14 @@ export default async function (page, { base, scenario, requests }) {
 
   await scenario('issue-environment-busy')
   await page.goto(base + '/issues/1:610')
+  await openEnvironment(page)
   await card.waitFor()
   assert.equal(await card.getByRole('button', { name: 'Change environment' }).count(), 0)
 
   await scenario('issue-environment-conflict')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/issues/1:610')
+  await openEnvironment(page)
   await card.getByRole('button', { name: 'Change environment' }).click()
   await card.getByRole('button', { name: 'Save for this issue' }).click()
   await card.getByRole('alert').waitFor()
