@@ -129,13 +129,10 @@ function goto(next: number) {
         variant="outline"
         size="sm"
         :aria-busy="submitting"
-        :disabled="submitting"
+        icon="i-lucide-refresh-cw"
+        :loading="submitting"
         @click="refreshInventory"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" focusable="false">
-          <path d="M20.5 12a8.5 8.5 0 1 1-2.5-6" /><path d="M20.5 3.5v5h-5" />
-        </svg>
-      </UButton>
+      />
     </div>
 
     <div class="mt-5 flex flex-wrap items-end gap-3">
@@ -157,9 +154,7 @@ function goto(next: number) {
           aria-label="Repository"
           aria-labelledby="filter-repo-label"
           class="mt-1 w-full"
-        >
-          <template #trailing><SelectChevron /></template>
-        </USelectMenu>
+        />
       </div>
       <div class="min-w-[160px]">
         <span id="filter-show-label" class="block text-xs text-muted">Show</span>
@@ -170,9 +165,7 @@ function goto(next: number) {
           aria-label="Show"
           aria-labelledby="filter-show-label"
           class="mt-1 w-full"
-        >
-          <template #trailing><SelectChevron /></template>
-        </USelectMenu>
+        />
       </div>
     </div>
 

@@ -144,7 +144,7 @@ function discard() {
 
     <p v-if="locked" role="status" class="mt-3 text-sm text-amber-200">{{ lockedReason }}</p>
 
-    <p v-if="error" role="alert" class="mt-3 text-sm text-rose-200">{{ error }}</p>
+    <UAlert v-if="error" class="mt-3" role="alert" color="error" variant="subtle" :description="error" />
     <p v-else-if="message" role="status" class="mt-3 text-sm text-mint-200">{{ message }}</p>
 
     <div v-if="dirty && !locked" class="mt-3 flex gap-2">

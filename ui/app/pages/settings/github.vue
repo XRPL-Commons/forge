@@ -118,13 +118,8 @@ async function refreshAccess() {
       <p class="mt-1 text-sm text-muted">See the four Forge Apps, their verified permissions, and repository access. Refresh after changing access on GitHub.</p>
     </div>
 
-    <p
-      v-if="notice"
-      id="notice"
-      :role="noticeError ? 'alert' : 'status'"
-      class="mt-4 rounded-xl border px-4 py-3 text-sm"
-      :class="noticeError ? 'border-rose-200/40 text-rose-200' : 'border-line bg-panel text-white'"
-    >{{ notice }}</p>
+    <UAlert v-if="notice && noticeError" id="notice" class="mt-4" role="alert" color="error" variant="subtle" :description="notice" />
+    <p v-else-if="notice" id="notice" role="status" class="mt-4 rounded-xl border border-line bg-panel px-4 py-3 text-sm text-white">{{ notice }}</p>
 
     <section aria-labelledby="github-title" class="mt-5 rounded-xl border border-line bg-bg p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -136,12 +131,10 @@ async function refreshAccess() {
           title="Refresh GitHub access"
           :disabled="!settings"
           :aria-busy="syncing ? 'true' : undefined"
+          icon="i-lucide-refresh-cw"
+          :ui="{ leadingIcon: syncing ? 'animate-spin' : '' }"
           @click="refreshAccess"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" :class="syncing ? 'animate-spin' : ''" aria-hidden="true" focusable="false">
-            <path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" />
-          </svg>
-        </UButton>
+        />
       </div>
       <p id="sync-status" class="mt-1 text-xs text-muted">{{ syncStatus }}</p>
       <p v-if="refreshNote" id="refresh-result" role="status" class="mt-1 text-xs text-sky-200">{{ refreshNote }}</p>
