@@ -8,7 +8,26 @@ description: Set up repositories on an existing Forge server through the local F
 Use the local `forge` executable on the operator's computer. Install with
 `uv tool install 'git+https://github.com/XRPL-Commons/forge.git'` if needed.
 The package includes only the local client. Existing-host operator sign-in uses
-`forge server setup --help`; fresh server installation is a separate workflow.
+`forge server setup --help`.
+
+## Fresh hosts
+
+For an explicitly requested fresh VM, use `forge setup new --ssh USER@HOST
+--name NAME --json` to plan, `forge setup apply --ssh USER@HOST --json` to install,
+and `forge setup status` / `forge setup resume` with the same destination to observe
+or resume. Discover schemas through `forge --json commands`. Without JSON, `forge
+setup new` offers the human wizard over these operations.
+
+Require a verified SSH host key. `forge setup host-key --ssh USER@HOST --json`
+only discovers a fingerprint; obtain verification before passing `--host-key`.
+The saved plan pins the source commit and destination. Never reset either to
+work around a conflict. `--new-run` is for an explicitly rebuilt disposable VM;
+it archives local measurements and never wipes the host.
+
+This increment ends at host installation. `installed` does not certify operator
+sign-in, GitHub Apps, coding accounts, activation, or a first merge. Report those
+as outstanding until observed. The full #136 workflow is still in development.
+Do not treat host-stage elapsed time as time to first merge.
 
 ## Connection and intent
 

@@ -20,6 +20,7 @@ On macOS or Linux with Python 3.10+, Git and
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
 forge --help
+forge setup new --help
 forge server setup --help
 ```
 
@@ -31,6 +32,7 @@ not install or start the Forge server. No PyPI release is currently published.
 
 | Command | Run it on | Purpose |
 | --- | --- | --- |
+| `forge setup new` | Your computer or the external agent's computer | Wizard or JSON plan for a fresh Ubuntu 24.04 host; apply/status/resume use the same installation workflow |
 | `forge server setup` | Your computer or the external agent's computer | Configure operator sign-in and private HTTPS on an existing Tailscale host over SSH |
 | `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
 | `bin/forge update` | The Forge server, from its source checkout | Update the source and reconcile the installed services |
@@ -40,9 +42,11 @@ GitHub CLI prerequisites, then [agent connections](docs/agent-connections.md) to
 approve a scoped external agent connection. Connections require an unlocked
 macOS Keychain or Linux Secret Service for local credential storage.
 
-The local CLI currently configures sign-in and HTTPS on an **existing server**.
-Complete fresh-server installation and onboarding through this entry point remain
-in [#136](https://github.com/XRPL-Commons/forge/issues/136).
+The CLI also supports [fresh-host installation](docs/cli-fresh-host.md), including
+a local installer script, a wizard, and resumable JSON operations. This first
+increment installs and qualifies the host. Completing all onboarding stages and
+validating a first merged issue through this entry point remain in
+[#136](https://github.com/XRPL-Commons/forge/issues/136).
 For repository setup on an existing server:
 
 ```sh
