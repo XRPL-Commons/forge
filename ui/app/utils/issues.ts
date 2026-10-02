@@ -42,6 +42,10 @@ export interface IssueRow {
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null
+  // Each reviewer's latest review on the candidate pull request as Forge last
+  // read it, and when Forge last read GitHub for this issue. Older payloads omit them.
+  approvals?: IssueApproval[]
+  last_checked?: number | null
   merge_blocker?: { reason: string } | null
   environment?: IssueEnvironment
   pull_requests: PullRequestRef[]
@@ -50,6 +54,12 @@ export interface IssueRow {
   // Sent on list rows and the detail alike; older payloads omit them.
   attempts?: IssueAttempts | null
   held_by?: IssueLabelHold[] | null
+}
+
+// `at` is unix seconds; `why` says why a review did not count (null when it did).
+export interface IssueApproval {
+  login: string; state: 'APPROVED' | 'CHANGES_REQUESTED' | 'DISMISSED'
+  at: number | null; counted: boolean; why: string | null
 }
 
 // Who was asked for the human approval, and when. Set by the assign_reviewer
@@ -291,6 +301,34 @@ export function reviewRequestText(request: ReviewRequest | null | undefined, now
   const line = `Review requested from ${reviewerMentions(request.logins)}`
   const age = now - (request.at ?? 0)
   return request.at && age >= 0 ? `${line} · ${elapsed(age)} ago` : line
+}
+
+// One line per review Forge found, in words and an icon, never colour alone:
+// "@lucbocahut approved · 16:03 · counted". `time` formats `at`; pass nothing
+// before mount, when the operator's time zone is not known yet.
+export interface ApprovalLine { login: string; text: string; counted: boolean; icon: string }
+export function approvalLines(approvals: IssueApproval[] | null | undefined, time?: (at: number) => string): ApprovalLine[] {
+  return (approvals ?? []).map((review) => {
+    const who = '@' + review.login
+    const verb = review.state === 'APPROVED' ? 'approved'
+      : review.state === 'CHANGES_REQUESTED' ? 'requested changes' : 'approval dismissed'
+    const parts = [`${who} ${verb}`]
+    if (review.at && time) parts.push(time(review.at))
+    if (review.counted) parts.push('counted')
+    else if (review.state === 'CHANGES_REQUESTED') parts.push('blocks the merge')
+    else if (review.state === 'DISMISSED') parts.push('not counted')
+    else parts.push(review.why ? `not counted: ${review.why}` : 'not counted')
+    return { login: review.login, text: parts.join(' · '), counted: review.counted,
+      icon: review.counted ? 'i-lucide-circle-check' : 'i-lucide-circle-x' }
+  })
+}
+
+// "Checked on GitHub 20 s ago": seconds matter here, because the operator is
+// waiting for Forge to see an approval they just gave.
+export function checkedText(lastChecked: number | null | undefined, now: number): string {
+  if (!lastChecked) return 'Not checked on GitHub yet'
+  if (!now) return 'Checked on GitHub'
+  return `Checked on GitHub ${elapsed(now - lastChecked)} ago`
 }
 
 // The pull request a review is requested on: the candidate Forge carries,
