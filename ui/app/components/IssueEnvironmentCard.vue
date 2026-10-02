@@ -47,7 +47,7 @@ function toggle(service: string, checked: boolean | 'indeterminate') {
         <UCheckbox v-for="service in services" :key="service.value" :label="service.label" :model-value="selected.includes(service.value)" :disabled="busy" @update:model-value="toggle(service.value, $event)" />
       </fieldset>
       <p v-if="!environment.full_available" class="text-xs text-amber-200">Database workers are unavailable on this host.</p>
-      <p v-if="error" role="alert" class="text-sm text-rose-200">{{ error }}</p>
+      <UAlert v-if="error" role="alert" color="error" variant="subtle" :description="error" />
       <div class="flex flex-wrap gap-2">
         <UButton type="submit" :loading="busy" :disabled="busy || (mode === 'full' && (!selected.length || !environment.full_available))">Save for this issue</UButton>
         <UButton color="neutral" variant="outline" :disabled="busy" @click="emit('update:open', false)">Cancel</UButton>

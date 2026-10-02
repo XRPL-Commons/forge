@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { branchText, statusPillText, repoDescription, rulesetFilename, scopeText, requirements, otherRulesText, type RepositoryRow, type ProtectionReport } from '~/utils/repositories'
 import { TONE_BADGE } from '~/utils/tones'
-const props = defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; shown: string | undefined; failed: ReturnType<typeof requirements>; hint: string; prepared: boolean; editUrl: string; downloadHref?: string; downloadAriaDisabled: 'true' | 'false'; downloaded: boolean; instructions?: boolean; idPrefix?: string }>()
+const props = defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; shown: string | undefined; failed: ReturnType<typeof requirements>; hint: string; prepared: boolean; editUrl: string; downloadHref?: string; downloaded: boolean; instructions?: boolean; idPrefix?: string }>()
 defineEmits<{ download: [] }>()
 const detailsOpen = ref(false)
 const bypass = computed(() => props.report?.bypass ?? null)
@@ -49,14 +49,17 @@ const bypass = computed(() => props.report?.bypass ?? null)
       <li v-if="!editUrl" :id="(idPrefix || '') + 'download-step'">
         <h3 class="text-sm font-semibold text-white">Download the review rules</h3>
         <p class="mt-0.5 text-xs text-muted">A ready-to-import file. No editing or administrator token needed.</p>
-        <a
+        <UButton
           :id="(idPrefix || '') + 'download'"
-          class="mt-2 inline-block rounded-full border border-mint-200 px-3 py-1 text-xs text-mint-200"
-          :href="downloadHref"
+          :to="downloadHref"
           :download="rulesetFilename(row)"
-          :aria-disabled="downloadAriaDisabled"
+          :disabled="!downloadHref"
+          external
+          size="xs"
+          variant="outline"
+          class="mt-2"
           @click="$emit('download')"
-        >{{ downloaded ? 'Download again' : 'Download ruleset' }}</a>
+        >{{ downloaded ? 'Download again' : 'Download ruleset' }}</UButton>
       </li>
       <li>
         <h3 :id="(idPrefix || '') + 'import-title'" class="text-sm font-semibold text-white">{{ editUrl ? 'Update the existing ruleset' : 'Import on GitHub' }}</h3>
@@ -65,13 +68,16 @@ const bypass = computed(() => props.report?.bypass ?? null)
             ? 'A Forge review ruleset already exists. Update its review settings using the requirements above.'
             : 'On GitHub, choose New ruleset → Import a ruleset. Select the file, review the settings and save.' }}
         </p>
-        <a
+        <UButton
           :id="(idPrefix || '') + 'github'"
-          class="mt-2 inline-block rounded-full border border-line px-3 py-1 text-xs text-sky-200"
-          :href="editUrl || row.rules_url"
+          :to="editUrl || row.rules_url"
           target="_blank"
           rel="noopener noreferrer"
-        >{{ editUrl ? 'Edit ruleset on GitHub ↗' : 'Open GitHub settings ↗' }}</a>
+          size="xs"
+          color="neutral"
+          variant="outline"
+          class="mt-2"
+        >{{ editUrl ? 'Edit ruleset on GitHub ↗' : 'Open GitHub settings ↗' }}</UButton>
         <p :id="(idPrefix || '') + 'scope'" class="mt-2 text-xs text-muted">{{ scopeText(report) }}</p>
       </li>
       <li>

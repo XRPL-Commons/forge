@@ -9,7 +9,7 @@ const step = ref<0 | 1 | 2 | 3>(0)
 let closed = false
 function close() { closed = true; emit('close') }
 let initialized = !props.initialRepoId
-const { view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, accessNote, syncing, failed, hint, editUrl, downloadHref, downloadAriaDisabled, downloaded, busy, checking, enabling, error, query, check, enable, refreshAccess } = useRepository(repoId)
+const { view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, accessNote, syncing, failed, hint, editUrl, downloadHref, downloaded, busy, checking, enabling, error, query, check, enable, refreshAccess } = useRepository(repoId)
 watch(row, value => {
   if (value && !initialized) { step.value = Math.min(3, repoStage(value, live.value)) as 1 | 2 | 3; initialized = true }
 }, { immediate: true })
@@ -37,7 +37,7 @@ async function next() {
   <UModal :open="true" title="Set up a repository" description="Check access and review rules, then enable automation." :ui="{ content: 'max-w-2xl max-h-[90dvh]', body: 'overflow-y-auto', footer: 'shrink-0' }" @update:open="value => !value && close()">
     <template #body>
       <RepositoryStage :stage="step" :activation-available="live" :blocked="blocked" />
-      <p v-if="error" id="error" role="alert" class="mt-3 text-sm text-rose-200">{{ error }}</p>
+      <UAlert v-if="error" id="error" class="mt-3" role="alert" color="error" variant="subtle" :description="error" />
       <section v-if="step === 0" class="mt-4">
         <h2 class="font-semibold text-white">Choose your repository</h2>
         <label for="wizard-repo-search" class="mt-3 block text-sm">Find by name</label>
@@ -61,7 +61,7 @@ async function next() {
       </section>
       <RepositoryAccessPanel v-else-if="step === 1" :connections="connections" :access-description="accessDescription" :access-note="accessNote" />
       <template v-else-if="row && step === 2">
-        <RepositoryRulesPanel :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :download-aria-disabled="downloadAriaDisabled" :downloaded="downloaded" instructions @download="downloaded = true" />
+        <RepositoryRulesPanel :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" instructions @download="downloaded = true" />
         <p id="checked-at" class="mt-3 text-xs text-muted">{{ checkedAtText(report, localTime) }}</p>
       </template>
       <section v-else-if="row && step === 3" class="mt-4">
