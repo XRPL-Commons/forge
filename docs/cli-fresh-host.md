@@ -2,8 +2,9 @@
 
 This is the first implementation increment of
 [#136](https://github.com/XRPL-Commons/forge/issues/136). It installs and qualifies
-the host. The complete wizard through operator sign-in, private HTTPS, GitHub
-Apps, coding accounts, activation, and first merge is still in development.
+the host, joins its private network, and configures operator sign-in and HTTPS.
+GitHub role Apps, coding accounts, activation, and first-merge integration are
+still in development.
 `installed` means host installation succeeded; it does not mean a factory is
 ready to process issues. See the [full acceptance specification](superpowers/specs/2026-10-02-fresh-factory-cli.md).
 
@@ -19,12 +20,10 @@ sh install-cli.sh --local
 forge setup new
 ```
 
-Once this installer is published on main, the equivalent one-line installation
-will be:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/XRPL-Commons/forge/main/install-cli.sh | sh
-```
+The repository is currently private, so cloning requires your local GitHub
+access. An anonymous curl installer requires a separately published installer
+and client distribution; changing the server repository's visibility is not
+part of setup. Do not put a GitHub token into a curl command or shell history.
 
 The script installs only the local client into an isolated Python environment
 under `~/.local/share/forge-cli`. It links `~/.local/bin/forge`, reports how to use
@@ -56,11 +55,14 @@ configuration can be used. Forwarding is disabled in both cases.
 
 The plan shows the host, source commit, and effects:
 
-- Install Ubuntu's Docker Engine and Compose plugin, Git, Python, and AppArmor
+- Install Ubuntu's Docker Engine, Buildx and Compose plugins, Git, Python, and AppArmor
   tools using the host's package repositories.
 - Create the dedicated non-root `forge` account, Docker group membership, and
   lingering user service manager.
-- Check out the chosen Forge commit at `/home/forge/forge`.
+- Fetch the chosen Forge commit locally, transfer its commit and tree as a Git
+  object pack, and check it out at `/home/forge/forge`. Local Git configuration,
+  credentials, and older source history are excluded. The VM does not need a
+  GitHub administrator token to obtain the private source.
 - Install the matching runner AppArmor policy.
 - Invoke the existing `bin/forge setup install`, which builds the UI and worker
   image, runs runner qualification, and starts loopback services.
@@ -68,6 +70,67 @@ The plan shows the host, source commit, and effects:
 The runtime is `/home/forge/.local/share/forge`. Host installation does not start
 issue processing. An existing `forge` account or source without matching installer
 state is a conflict; this command does not adopt it or wipe the VM.
+
+After host installation, the wizard continues into private network access and
+operator sign-in. Closing the wizard preserves progress; run `forge setup new
+--ssh USER@HOST` to continue.
+
+## Private network and operator sign-in
+
+These stages also have noninteractive commands:
+
+```sh
+forge setup network --ssh USER@HOST --json
+forge setup network --ssh USER@HOST --apply --wait 60 --json
+forge setup identity --ssh USER@HOST --operator GITHUB_LOGIN --json
+forge setup identity --ssh USER@HOST --client-id PUBLIC_CLIENT_ID --json
+forge setup identity --ssh USER@HOST --apply
+```
+
+Network setup installs Tailscale from its signed Ubuntu repository and returns
+a browser link for joining your tailnet. Approve the VM, then run `forge setup
+network --ssh USER@HOST --json` again. `network_ready` confirms its private HTTPS
+name; the UI still listens on loopback. Hostname defaults to the factory name
+and is retained across retries. Use `--hostname` on the first network operation
+to choose another name.
+
+Identity setup resolves operator GitHub logins locally and returns the exact
+registration fields for a dedicated GitHub OAuth App. Create the App through
+the returned browser link, then supply its public client ID. The client remembers
+the operator, client ID, and verified network origin. It prompts privately for
+the identity App secret when applying. Agents can instead use `--apply
+--secret-stdin --json` with a private secret source; never put the secret in shell
+arguments, agent messages, or a setup journal.
+
+The CLI invokes the existing sign-in bootstrap as the installed `forge` account.
+It configures the authorized operator IDs, reconciles loopback services, enables
+private Tailscale HTTPS, and verifies HTTPS from both computers. The secret is
+sent only through encrypted SSH stdin and stored in Forge's private runtime.
+Local GitHub administrative credentials are not transferred.
+
+| Status | Meaning and next action |
+| --- | --- |
+| `network_required` | Review and apply private network setup. |
+| `network_installing` | The durable network job is running; poll the same command. |
+| `tailnet_authorization_required` | Open the returned link, approve the VM, then poll. |
+| `tailnet_approval_required` | Approve the VM in the returned Tailscale admin page, then poll. |
+| `network_interrupted` | Correct the reported prerequisite and retry with `--apply`. |
+| `network_ready` | The VM has a private network address; continue to identity setup. |
+| `identity_app_required` | Register the identity App using the returned fields. |
+| `identity_secret_required` | Supply the App secret through the private input method. |
+| `planned` | Review the identity plan and apply it. |
+| `sign_in_required` | HTTPS is verified; open the returned login page and sign in. |
+
+After an interrupted identity apply, use `forge setup identity --ssh USER@HOST
+--resume --json`. Existing identity settings, sessions, and grants are preserved.
+Different operator or App settings produce a conflict rather than replacing
+them. A stopped network installer can be repaired explicitly with `forge setup
+network --ssh USER@HOST --apply --upgrade-installer`; the source commit and setup
+identity remain pinned.
+
+`sign_in_required` confirms configuration, not a completed browser sign-in or a
+working factory. Role Apps, coding accounts, repository readiness, explicit
+activation, and an issue merged through Forge remain acceptance requirements.
 
 ## Noninteractive operations
 
@@ -107,6 +170,12 @@ are private under `/var/lib/forge-install` on the VM. Retrying reuses the setup
 identity, skips completed stages, and reruns an interrupted stage idempotently.
 Status does not resume or start an installation. The original client installer
 payload is pinned too; use that client version to resume an interrupted run.
+
+When an installer defect is fixed, `forge setup resume --ssh USER@HOST
+--upgrade-installer` explicitly replaces the stopped installer implementation.
+It preserves the setup ID, pinned server source, start time and completed
+stages. Changed package prerequisites are reconciled again. It cannot replace a running job and does not upgrade the Forge server
+source. Ordinary resume never changes the installer implementation silently.
 
 After deliberately rebuilding the disposable VM, verify its new host identity
 and start a new measurement run:

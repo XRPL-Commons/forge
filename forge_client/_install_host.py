@@ -4,6 +4,7 @@ Keep this file importable without Forge: the local client sends its own copy to
 the selected host before any server checkout exists. No HTTP endpoint runs it.
 """
 from contextlib import contextmanager
+import base64
 import fcntl
 import hashlib
 import json
@@ -22,6 +23,9 @@ SOURCE = HOME / 'forge'
 ROOT = HOME / '.local/share/forge'
 REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 STEPS = ('packages', 'account', 'source', 'isolation', 'host')
+PACKAGES = ('ca-certificates', 'git', 'sudo', 'apparmor', 'apparmor-utils',
+            'docker.io', 'docker-buildx', 'docker-compose-v2', 'python3')
+PACKAGE_REVISION = hashlib.sha256(json.dumps(PACKAGES).encode()).hexdigest()
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8',
        'DEBIAN_FRONTEND': 'noninteractive', 'GIT_TERMINAL_PROMPT': '0'}
 
@@ -35,8 +39,8 @@ def need(value, code):
         raise InstallError(code)
 
 
-def run(argv, *, capture=False, timeout=1800):
-    result = subprocess.run(argv, check=True, stdin=subprocess.DEVNULL,
+def run(argv, *, capture=False, timeout=1800, input_file=None):
+    result = subprocess.run(argv, check=True, stdin=subprocess.DEVNULL if input_file is None else input_file,
                             stdout=subprocess.PIPE if capture else None,
                             stderr=subprocess.DEVNULL if capture else None,
                             env=ENV, timeout=timeout)
@@ -128,13 +132,13 @@ def check_new_host():
     need(not Path('/etc/sudoers.d/forge-installer').exists(), 'existing_installation')
 
 
-def service(argv, *, capture=False):
+def service(argv, *, capture=False, input_file=None):
     account = pwd.getpwnam('forge')
     need(account.pw_uid > 0 and account.pw_dir == str(HOME) and HOME.resolve() == HOME
          and HOME.stat().st_uid == account.pw_uid, 'existing_installation')
     return run(['runuser', '-u', 'forge', '--', 'env', '-i',
                 'PATH=/usr/sbin:/usr/bin:/sbin:/bin', 'HOME=' + str(HOME), 'LANG=C.UTF-8',
-                'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid), *argv], capture=capture)
+                'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid), *argv], capture=capture, input_file=input_file)
 
 
 def unit(data):
@@ -147,6 +151,13 @@ def running(data):
     return result.stdout.strip() in (b'active', b'activating', b'deactivating', b'reloading')
 
 
+def source_present(data):
+    path = STATE / 'source.pack'
+    return bool(data and data.get('source_sha256') and path.is_file() and not path.is_symlink()
+                and path.stat().st_size <= 32 * 1024 * 1024
+                and hashlib.sha256(path.read_bytes()).hexdigest() == data['source_sha256'])
+
+
 def view(data, host):
     return {'intent': data['intent'] if data else None, 'host': host,
             'status': ('installed' if data['step'] == 'complete' else
@@ -154,14 +165,17 @@ def view(data, host):
             'step': data['step'] if data else None,
             'completed': data['completed'] if data else [],
             'error': data.get('error') if data else None,
+            'source_received': source_present(data),
             'source': str(SOURCE), 'root': str(ROOT), 'account': 'forge'}
 
 
 def dispatch(request, payload):
-    need(isinstance(request, dict) and set(request) == {'version', 'action', 'intent'}, 'invalid_request')
+    need(isinstance(request, dict) and set(request) == {'version', 'action', 'intent', 'source', 'upgrade_installer'}, 'invalid_request')
     need(type(request['version']) is int and request['version'] == 1
          and request['action'] in ('plan', 'apply', 'status', 'resume'), 'invalid_request')
     intent = validate_intent(request['intent'])
+    need(type(request['upgrade_installer']) is bool and (not request['upgrade_installer'] or request['action'] == 'resume'), 'invalid_request')
+    need(request['action'] in ('apply', 'resume') or request['source'] is None, 'invalid_request')
     host = facts()
     data = read()
     if data:
@@ -183,11 +197,37 @@ def dispatch(request, payload):
                     'started_at': time.time(), 'error': None,
                     'payload': hashlib.sha256(payload.encode()).hexdigest()}
             write(data)
-        # Resume the same installer implementation, not a changed client payload.
-        need(data['payload'] == hashlib.sha256(payload.encode()).hexdigest(), 'installer_changed')
-        worker = STATE / 'worker.py'
-        need(not worker.is_symlink(), 'unsafe_install_state')
-        worker.write_text(payload); worker.chmod(0o600)
+        # Replacing a stopped installer is a separate, explicit repair action.
+        # Keep its destination, source commit, completed stages, and start time.
+        payload_digest = hashlib.sha256(payload.encode()).hexdigest()
+        need(data['payload'] == payload_digest or request['upgrade_installer'], 'installer_changed')
+        with locked('work'):
+            if not source_present(data):
+                source = request['source']
+                need(isinstance(source, dict) and set(source) == {'sha256', 'data'}
+                     and isinstance(source['sha256'], str) and re.fullmatch('[a-f0-9]{64}', source['sha256'])
+                     and isinstance(source['data'], str) and len(source['data']) <= 45 * 1024 * 1024, 'source_required')
+                pack = base64.b64decode(source['data'], validate=True)
+                need(len(pack) <= 32 * 1024 * 1024 and pack.startswith(b'PACK')
+                     and hashlib.sha256(pack).hexdigest() == source['sha256'], 'invalid_source')
+                fd, temporary = tempfile.mkstemp(prefix='.source-', dir=STATE)
+                try:
+                    with os.fdopen(fd, 'wb') as stream:
+                        stream.write(pack); stream.flush(); os.fsync(stream.fileno())
+                    os.replace(temporary, STATE / 'source.pack')
+                finally:
+                    if os.path.exists(temporary): os.unlink(temporary)
+                data['source_sha256'] = source['sha256']
+            data['payload'] = payload_digest
+            data['error'] = None
+            if request['upgrade_installer'] and data.get('package_revision') != PACKAGE_REVISION:
+                # A repaired installer can add a missing prerequisite. Reconcile
+                # that stage; leave unrelated completed stages and state intact.
+                data['completed'] = [step for step in data['completed'] if step != 'packages']
+            write(data)
+            worker = STATE / 'worker.py'
+            need(not worker.is_symlink(), 'unsafe_install_state')
+            worker.write_text(payload); worker.chmod(0o600)
         log = STATE / 'install.log'
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         os.close(fd)
@@ -203,9 +243,10 @@ def dispatch(request, payload):
 def install_step(step, data):
     if step == 'packages':
         run(['apt-get', 'update'])
-        run(['apt-get', 'install', '-y', 'ca-certificates', 'git', 'sudo', 'apparmor',
-             'apparmor-utils', 'docker.io', 'docker-compose-v2', 'python3'])
+        run(['apt-get', 'install', '-y', *PACKAGES])
         run(['systemctl', 'enable', '--now', 'docker'])
+        run(['docker', 'buildx', 'version'], capture=True)
+        data['package_revision'] = PACKAGE_REVISION
     elif step == 'account':
         try:
             account = pwd.getpwnam('forge')
@@ -228,7 +269,19 @@ def install_step(step, data):
             service(git + ['remote', 'add', 'origin', REPOSITORY])
         need(service(git + ['remote', 'get-url', 'origin'], capture=True) == REPOSITORY, 'source_conflict')
         need(not service(git + ['status', '--porcelain'], capture=True), 'source_conflict')
-        service(git + ['fetch', '--depth=1', 'origin', revision])
+        pack = STATE / 'source.pack'
+        need(source_present(data), 'invalid_source')
+        with pack.open('rb') as stream:
+            service(git + ['index-pack', '--stdin'], input_file=stream)
+        # Only this commit and its complete tree are transferred, with no
+        # operator Git config, authentication, or older source history.
+        shallow = SOURCE / '.git/shallow'
+        fd = os.open(shallow, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(revision + '\n')
+            account = pwd.getpwnam('forge')
+            os.fchown(stream.fileno(), account.pw_uid, account.pw_gid)
+        need(service(git + ['cat-file', '-t', revision], capture=True) == 'commit', 'invalid_source')
         service(git + ['checkout', '--detach', revision])
         need(service(git + ['rev-parse', 'HEAD'], capture=True) == revision, 'source_conflict')
     elif step == 'isolation':
@@ -258,6 +311,7 @@ def work():
                 data.update(step=step, error=None); write(data)
                 install_step(step, data)
                 data['completed'].append(step)
+                data['completed'] = [item for item in STEPS if item in data['completed']]
                 write(data)
             data.update(step='complete', error=None, finished_at=time.time()); write(data)
         except Exception as error:
@@ -272,8 +326,8 @@ def main(payload=None):
     if sys.argv[1:] == ['--worker']:
         return work()
     try:
-        raw = sys.stdin.buffer.read(8193)
-        need(len(raw) <= 8192, 'invalid_request')
+        raw = sys.stdin.buffer.read(46 * 1024 * 1024 + 1)
+        need(len(raw) <= 46 * 1024 * 1024, 'invalid_request')
         result = dispatch(json.loads(raw), payload)
         print(json.dumps({'ok': True, **result}, sort_keys=True))
         return 0

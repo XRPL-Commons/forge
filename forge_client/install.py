@@ -8,12 +8,13 @@ import shutil
 import time
 import uuid
 
-from .bootstrap import Host
+from .bootstrap import Host, ERRORS as BOOTSTRAP_ERRORS, MESSAGES as BOOTSTRAP_MESSAGES
 from .connection import connection_lock
 from .contracts import SetupError, require
 from .github import run_bounded
 from .workflow import Journal
 from .ssh_host import discover, environment, pinned_options
+from .source import export as export_source
 
 SOURCE = '/home/forge/forge'
 ROOT = '/home/forge/.local/share/forge'
@@ -27,6 +28,8 @@ ERRORS = {
     'existing_installation': 'This host already has a forge account or installation. Use the existing-server commands or select a fresh VM.',
     'installation_conflict': 'This VM belongs to a different saved setup. Resume that setup or select another VM.',
     'installer_changed': 'Resume with the client version that started this installation.',
+    'source_required': 'The host needs the pinned source. Use forge setup resume with local GitHub access available.',
+    'invalid_source': 'The transferred source failed validation. Preserve the installation and inspect the source before retrying.',
     'installation_busy': 'Another installation request is running. Use forge setup status, then resume.',
     'source_conflict': 'The managed source has changed. Installation stopped to preserve it; select a fresh VM or reconcile the source before resuming.',
     'policy_conflict': 'An existing AppArmor policy differs. Installation stopped to preserve it; use a fresh VM or reconcile the policy before resuming.',
@@ -35,7 +38,14 @@ ERRORS = {
     'install_state_missing': 'Installer state is missing. Inspect the host before starting another installation.',
     'host_command_failed': 'A host installation step failed. Check its stage with forge setup status, then use forge setup resume to retry.',
     'invalid_request': 'The installer protocol did not match. Use the client version that started setup.',
+    'installation_required': 'Finish host installation before configuring private network access.',
+    'network_conflict': 'Existing network settings differ. Preserve them and review the selected host or hostname before continuing.',
+    'network_download_failed': 'The Tailscale package key could not be downloaded securely. Retry network setup after checking connectivity.',
+    'network_not_ready': 'Private network access is not ready. Resume network setup and complete its browser approval.',
+    'network_failed': 'Network setup did not finish. Retry forge setup network with --apply; existing settings are preserved.',
 }
+ERRORS.update({code: BOOTSTRAP_MESSAGES.get(code, 'Operator sign-in setup could not complete. Resume after correcting the reported prerequisite.')
+               for code in BOOTSTRAP_ERRORS if code not in ERRORS})
 
 
 def schemas():
@@ -44,6 +54,8 @@ def schemas():
         properties = {'ssh': {'type': 'string', 'description': 'Explicit SSH account and destination'},
                       'wait': {'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 0}}
         required = ['ssh']
+        if action == 'resume':
+            properties['upgrade_installer'] = {'type': 'boolean', 'default': False}
         if action in ('new', 'plan'):
             properties.update(name={'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$'},
                               revision={'type': 'string', 'pattern': '^[a-f0-9]{40}$'},
@@ -60,6 +72,24 @@ def schemas():
         'input_schema': {'type': 'object', 'additionalProperties': False,
                          'properties': {'ssh': {'type': 'string'}}, 'required': ['ssh']},
         'result_statuses': ['unverified_host_key']}
+    commands['network'] = {'usage': 'forge setup network --ssh USER@HOST --json',
+        'authority': 'explicit administrative SSH destination',
+        'input_schema': {'type': 'object', 'additionalProperties': False,
+                         'properties': {'ssh': {'type': 'string'}, 'hostname': {'type': 'string'},
+                                        'apply': {'type': 'boolean', 'default': False},
+                                        'upgrade_installer': {'type': 'boolean', 'default': False},
+                                        'wait': {'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 0}},
+                         'required': ['ssh']},
+        'result_statuses': ['network_required', 'network_installing', 'tailnet_authorization_required',
+                            'tailnet_approval_required', 'network_interrupted', 'network_ready']}
+    commands['identity'] = {'usage': 'forge setup identity --ssh USER@HOST --operator LOGIN --json',
+        'authority': 'explicit administrative SSH destination; GitHub identity lookup stays local',
+        'input_schema': {'type': 'object', 'additionalProperties': False,
+                         'properties': {'ssh': {'type': 'string'}, 'operator': {'type': 'array', 'items': {'type': 'string'}},
+                                        'client_id': {'type': 'string'}, 'apply': {'type': 'boolean', 'default': False},
+                                        'resume': {'type': 'boolean', 'default': False},
+                                        'secret_stdin': {'type': 'boolean', 'default': False}}, 'required': ['ssh']},
+        'result_statuses': ['identity_app_required', 'identity_secret_required', 'planned', 'sign_in_required']}
     return commands
 
 
@@ -71,7 +101,7 @@ def revision(value=None, *, run=run_bounded):
     executable = shutil.which('git')
     require(executable, 'git_missing', 'Install Git on this computer before setting up Forge.')
     try:
-        raw = run([executable, 'ls-remote', REPOSITORY, 'refs/heads/main'], environ=environment()).decode().strip()
+        raw = run([executable, 'ls-remote', REPOSITORY, 'refs/heads/main']).decode().strip()
         require(re.fullmatch('[a-f0-9]{40}\trefs/heads/main', raw), 'source_unavailable',
                 'Could not resolve the Forge release. Retry or supply --revision with a full commit SHA.')
         return raw.split()[0]
@@ -86,9 +116,19 @@ class InstallerHost:
         self.ssh, self.run, self.fingerprint = ssh, run, fingerprint
 
     def call(self, action, intent):
+        payload = files('forge_client').joinpath('_install_host.py').read_text()
+        source = None
+        if action in ('apply', 'resume'):
+            observed = self.call('status', intent)
+            if observed['status'] in ('not_installed', 'interrupted') and not observed['source_received']:
+                source = export_source(intent['revision'])
+        result = self.rpc(payload, {'version': 1, 'action': action, 'intent': intent, 'source': source,
+                                   'upgrade_installer': bool(getattr(self, 'upgrade_installer', False) and action == 'resume')})
+        return self.validate(result, intent)
+
+    def rpc(self, payload, request, *, timeout=180):
         executable = shutil.which('ssh')
         require(executable, 'ssh_missing', 'Install the OpenSSH client on this computer.')
-        payload = files('forge_client').joinpath('_install_host.py').read_text()
         code = 'import sys; payload=' + repr(payload) + '; ns={"__name__":"forge_installer"}; exec(compile(payload,"<forge-installer>","exec"),ns); sys.exit(ns["main"](payload))'
         python = '/usr/bin/python3 -c ' + shlex.quote(code)
         remote = 'if [ "$(id -u)" = 0 ]; then exec ' + python + '; else exec sudo -n ' + python + '; fi'
@@ -97,8 +137,9 @@ class InstallerHost:
                 '-o', 'PermitLocalCommand=no']
         try:
             with pinned_options(self.ssh, self.fingerprint) as options:
-                raw = self.run(argv + options + [self.ssh, remote], payload={'version': 1, 'action': action, 'intent': intent},
-                               environ=environment(), timeout=60, allowed_codes=(0, 1))
+                raw = self.run(argv + options + [self.ssh, remote],
+                               payload=request,
+                               input_limit=46 * 1024 * 1024, environ=environment(), timeout=timeout, allowed_codes=(0, 1))
                 result = json.loads(raw)
         except SetupError as error:
             if error.code in ('host_key_changed', 'invalid_host_key', 'host_key_unavailable'):
@@ -111,13 +152,18 @@ class InstallerHost:
             code = result.get('error')
             code = code if isinstance(code, str) and code in ERRORS else 'host_command_failed'
             raise SetupError(code, ERRORS[code])
-        require(set(result) == {'ok', 'intent', 'host', 'status', 'step', 'completed', 'error', 'source', 'root', 'account'}
+        return result
+
+    @staticmethod
+    def validate(result, intent):
+        require(set(result) == {'ok', 'intent', 'host', 'status', 'step', 'completed', 'error', 'source', 'root', 'account', 'source_received'}
                 and result['intent'] in (None, intent)
                 and result['status'] in ('not_installed', 'installing', 'interrupted', 'installed')
                 and result['step'] in (None, *STEPS, 'complete')
                 and isinstance(result['completed'], list) and all(s in STEPS for s in result['completed'])
                 and result['error'] in (None, *ERRORS)
-                and result['source'] == SOURCE and result['root'] == ROOT and result['account'] == 'forge',
+                and result['source'] == SOURCE and result['root'] == ROOT and result['account'] == 'forge'
+                and type(result['source_received']) is bool,
                 'invalid_host_response', 'The host returned a mismatched installation response.')
         host = result['host']
         require(isinstance(host, dict) and set(host) == {'os', 'version', 'cpus', 'memory_mib', 'free_disk_mib'}
@@ -137,10 +183,11 @@ class Installation:
         self.key = 'setup-' + hashlib.sha256(ssh.encode()).hexdigest()
         self.journal = storage or Journal('fresh-host', ssh)
 
-    def execute(self, action, *, name=None, commit=None, fingerprint=None, wait=0, new_run=False):
+    def execute(self, action, *, name=None, commit=None, fingerprint=None, wait=0, new_run=False, upgrade_installer=False):
         require(action in ('plan', 'apply', 'status', 'resume'), 'invalid_action', 'Choose plan, apply, status or resume.')
         require(type(wait) is int and 0 <= wait <= 600, 'invalid_wait', 'Use --wait between 0 and 600 seconds.')
         require(type(new_run) is bool and (not new_run or action == 'plan'), 'invalid_action', '--new-run is only for a new plan after rebuilding the VM.')
+        require(type(upgrade_installer) is bool and (not upgrade_installer or action == 'resume'), 'invalid_action', 'Only resume may explicitly upgrade a stopped installer.')
         with connection_lock(self.key, self.journal.root):
             state = self.journal.read()
             previous = state if new_run else None
@@ -172,6 +219,7 @@ class Installation:
                 # Save the selected revision and identity before any remote mutation.
                 self.journal.save(state)
             self.host.fingerprint = state.get('host_key')
+            self.host.upgrade_installer = upgrade_installer
             response = self.host.call(action, state['intent'])
             deadline = time.monotonic() + wait
             while response['status'] == 'installing' and time.monotonic() < deadline:
@@ -192,15 +240,17 @@ class Installation:
                            'instruction': 'Installation continues on the VM. Check progress or resume watching.'},
             'interrupted': {'command': ['forge', 'setup', 'resume', '--ssh', self.ssh],
                             'instruction': ERRORS.get(response['error'], 'Resume the saved installation; completed steps are retained.')},
-            'installed': {'instruction': 'Host installation passed. Operator sign-in, GitHub Apps, coding accounts and first-merge validation are still required.'},
+            'installed': {'command': ['forge', 'setup', 'network', '--ssh', self.ssh],
+                          'instruction': 'Host installation passed. Private network access, operator sign-in, GitHub Apps, coding accounts and first-merge validation are still required.'},
         }[status]
         return {'status': 'planned' if status == 'not_installed' else status,
                 'setup_id': state['intent']['id'], 'name': state['intent']['name'], 'ssh': self.ssh,
                 'revision': state['intent']['revision'], 'host': response['host'], 'step': response['step'],
                 'completed': response['completed'], 'error': response['error'],
                 'source': SOURCE, 'root': ROOT, 'service_account': 'forge',
-                'plan': ['Install Ubuntu host packages and Docker Compose', 'Create the dedicated forge service account',
-                         'Fetch the selected Forge commit', 'Install the runner AppArmor policy',
+                'plan': ['Export and transfer the selected Forge commit using local GitHub access',
+                         'Install Ubuntu host packages and Docker Compose', 'Create the dedicated forge service account',
+                         'Check out the transferred source', 'Install the runner AppArmor policy',
                          'Build and qualify workers and UI; start loopback services'],
                 'setup_elapsed_seconds': max(0, self.clock() - state['started_at']),
                 'milestones': state['milestones'], 'next_action': next_action}
@@ -208,6 +258,12 @@ class Installation:
 
 def execute(args):
     require(args.ssh, 'ssh_required', 'Provide --ssh with the intended SSH account and host, or run forge setup new interactively.')
+    if args.setup_command == 'network':
+        from .network import execute as network
+        return network(args)
+    if args.setup_command == 'identity':
+        from .identity import execute as identity
+        return identity(args)
     if args.setup_command == 'host-key':
         observed = discover(args.ssh)
         return {k: v for k, v in observed.items() if k != 'key'} | {'status': 'unverified_host_key',
@@ -215,10 +271,11 @@ def execute(args):
     return Installation(args.ssh).execute('plan' if args.setup_command == 'new' else args.setup_command,
                                          name=getattr(args, 'name', None), commit=getattr(args, 'revision', None),
                                          fingerprint=getattr(args, 'host_key', None), wait=args.wait,
-                                         new_run=getattr(args, 'new_run', False))
+                                         new_run=getattr(args, 'new_run', False),
+                                         upgrade_installer=getattr(args, 'upgrade_installer', False))
 
 
-def wizard(args, *, ask=input, tell=print, installation=Installation):
+def wizard(args, *, ask=input, tell=print, installation=Installation, network_wizard=None):
     """Presentation only. Every state change is an ordinary Installation operation."""
     tell('Set up a new Forge factory')
     ssh = args.ssh or ask('SSH account and host (for example root@203.0.113.10): ').strip()
@@ -240,8 +297,9 @@ def wizard(args, *, ask=input, tell=print, installation=Installation):
     for step in result['plan']:
         tell('  • ' + step)
     if result['status'] == 'installed':
-        tell(result['next_action']['instruction'])
-        return result
+        if network_wizard is None:
+            from .network import wizard as network_wizard
+        return network_wizard(workflow, ask=ask, tell=tell)
     if result['status'] != 'installing':
         if ask('Install on this VM? [y/N] ').strip().lower() not in ('y', 'yes'):
             return result
@@ -254,4 +312,8 @@ def wizard(args, *, ask=input, tell=print, installation=Installation):
         tell('Installation continues. Run forge setup resume --ssh ' + shlex.quote(ssh) + ' to check progress.')
         return {'status': 'installing', 'next_action': {'command': ['forge', 'setup', 'resume', '--ssh', ssh]}}
     tell(result['next_action']['instruction'])
+    if result['status'] == 'installed':
+        if network_wizard is None:
+            from .network import wizard as network_wizard
+        return network_wizard(workflow, ask=ask, tell=tell)
     return result

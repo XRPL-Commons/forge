@@ -1,6 +1,7 @@
 """Fresh-host tests never use a live VM, GitHub mutation, or system installer."""
 from copy import deepcopy
 import base64
+import hashlib
 import io
 import json
 import os
@@ -21,11 +22,13 @@ from forge_client.ssh_host import discover, pinned_options
 COMMIT = 'a' * 40
 INTENT = {'id': '1' * 32, 'name': 'Anvil', 'revision': COMMIT}
 FACTS = {'os': 'ubuntu', 'version': '24.04', 'cpus': 4, 'memory_mib': 8192, 'free_disk_mib': 40000}
+PACK = {'sha256': hashlib.sha256(b'PACKfixture').hexdigest(), 'data': base64.b64encode(b'PACKfixture').decode()}
 
 
 def response(intent=None, status='not_installed', step=None, completed=None):
     return {'ok': True, 'intent': intent, 'host': FACTS, 'status': status, 'step': step,
-            'completed': completed or [], 'error': None, 'source': SOURCE, 'root': ROOT, 'account': 'forge'}
+            'completed': completed or [], 'error': None, 'source': SOURCE, 'root': ROOT, 'account': 'forge',
+            'source_received': intent is not None}
 
 
 class LocalWorkflowTests(unittest.TestCase):
@@ -130,7 +133,8 @@ class LocalWorkflowTests(unittest.TestCase):
             return response() if action == 'plan' else response(intent, 'installed', 'complete', STEPS)
         self.host.call.side_effect = call
         args = SimpleNamespace(ssh='root@anvil.example', name='Anvil', revision=COMMIT)
-        result = wizard(args, ask=lambda _: 'yes', tell=lambda _: None, installation=lambda _: self.workflow)
+        result = wizard(args, ask=lambda _: 'yes', tell=lambda _: None, installation=lambda _: self.workflow,
+                        network_wizard=lambda *a, **kw: {'status': 'installed'})
         self.assertEqual(result['status'], 'installed')
         self.assertEqual([c.args[0] for c in self.host.call.call_args_list], ['plan', 'apply'])
 
@@ -152,7 +156,8 @@ class TransportTests(unittest.TestCase):
             self.assertNotIn(secret, json.dumps([argv, kwargs]))
             self.assertIn('StrictHostKeyChecking=yes', argv)
             self.assertIn('BatchMode=yes', argv)
-            self.assertEqual(kwargs['payload'], {'version': 1, 'action': 'plan', 'intent': INTENT})
+            self.assertEqual(kwargs['payload'], {'version': 1, 'action': 'plan', 'intent': INTENT,
+                                                'source': None, 'upgrade_installer': False})
             # The transmitted Python payload is syntactically valid and bundled.
             command = argv[-1].split('then exec ', 1)[1].split('; else exec ', 1)[0]
             code = shlex.split(command)[2]
@@ -237,8 +242,10 @@ class RemoteInstallerTests(unittest.TestCase):
         context = patch.object(remote, 'run', lambda argv, **kwargs: self.commands.append(argv))
         context.start(); self.addCleanup(context.stop)
 
-    def call(self, action='plan', intent=None, payload='payload'):
-        return remote.dispatch({'version': 1, 'action': action, 'intent': intent or INTENT}, payload)
+    def call(self, action='plan', intent=None, payload='payload', source=PACK, upgrade=False):
+        return remote.dispatch({'version': 1, 'action': action, 'intent': intent or INTENT,
+                                'source': source if action in ('apply', 'resume') else None,
+                                'upgrade_installer': upgrade}, payload)
 
     def test_plan_has_no_host_writes_and_apply_launches_durable_work(self):
         self.assertEqual(self.call()['status'], 'not_installed')
@@ -265,6 +272,36 @@ class RemoteInstallerTests(unittest.TestCase):
             with self.assertRaises(remote.InstallError): self.call('resume', **kwargs)
         self.assertEqual((self.state / 'installation.json').read_bytes(), original)
         self.assertEqual(len(self.commands), 1)
+
+    def test_explicit_installer_upgrade_keeps_identity_source_and_completed_steps(self):
+        self.call('apply')
+        data = remote.read()
+        data.update(step='source', completed=['packages', 'account'], package_revision=remote.PACKAGE_REVISION)
+        remote.write(data)
+        self.call('resume', payload='repaired-installer', upgrade=True)
+        result = remote.read()
+        for key in ('intent', 'started_at', 'completed', 'source_sha256'):
+            self.assertEqual(result[key], data[key])
+        self.assertEqual(result['payload'], hashlib.sha256(b'repaired-installer').hexdigest())
+
+    def test_repaired_package_plan_rechecks_only_changed_prerequisites(self):
+        self.call('apply')
+        data = remote.read()
+        data.update(step='host', completed=list(remote.STEPS[:-1]), package_revision='older-package-plan')
+        remote.write(data)
+        self.call('resume', payload='new-installer', upgrade=True)
+        self.assertEqual(remote.read()['completed'], ['account', 'source', 'isolation'])
+        done = []
+        with patch.object(remote, 'install_step', side_effect=lambda step, data: done.append(step)):
+            remote.work()
+        self.assertEqual(done, ['packages', 'host'])
+        self.assertEqual(remote.read()['completed'], list(remote.STEPS))
+
+    def test_source_pack_digest_is_checked_before_job_launch(self):
+        with self.assertRaises(remote.InstallError):
+            self.call('apply', source={**PACK, 'sha256': '0' * 64})
+        self.assertFalse(self.commands)
+        self.assertFalse((self.state / 'source.pack').exists())
 
     def test_interrupted_step_replays_without_repeating_completed_steps(self):
         self.call('apply')

@@ -38,11 +38,23 @@ def parser():
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
     sub = p.add_subparsers(dest='command', required=True)
     fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
-    for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key'):
+    for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
         command = fresh.add_parser(action, help='Guided fresh-host installation' if action == 'new' else action.capitalize() + ' a saved host installation')
         command.add_argument('--ssh', help='SSH account and destination; verified host key and root or noninteractive sudo required')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
         command.add_argument('--wait', type=int, default=0, help='Watch progress for at most 0–600 seconds')
+        if action in ('resume', 'network'):
+            command.add_argument('--upgrade-installer', action='store_true', help='Explicitly repair a stopped installation with this client implementation; keeps the pinned server source and completed stages')
+        if action == 'network':
+            command.add_argument('--apply', action='store_true', help='Install and initialize private Tailscale access')
+            command.add_argument('--hostname', help='Tailscale hostname; defaults to the factory name')
+        if action == 'identity':
+            command.add_argument('--operator', action='append', help='GitHub operator login; repeat for multiple accounts')
+            command.add_argument('--client-id', help='Dedicated identity OAuth App client ID')
+            mode = command.add_mutually_exclusive_group()
+            mode.add_argument('--apply', action='store_true')
+            mode.add_argument('--resume', action='store_true')
+            command.add_argument('--secret-stdin', action='store_true', help='Read the identity App secret privately from stdin')
         if action in ('new', 'plan'):
             command.add_argument('--name', help='Factory display name')
             command.add_argument('--revision', help='Full Forge commit SHA; default main is resolved once and saved')
@@ -108,7 +120,7 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],

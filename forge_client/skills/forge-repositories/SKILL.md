@@ -24,9 +24,22 @@ The saved plan pins the source commit and destination. Never reset either to
 work around a conflict. `--new-run` is for an explicitly rebuilt disposable VM;
 it archives local measurements and never wipes the host.
 
-This increment ends at host installation. `installed` does not certify operator
-sign-in, GitHub Apps, coding accounts, activation, or a first merge. Report those
-as outstanding until observed. The full #136 workflow is still in development.
+After `installed`, run `forge setup network --ssh USER@HOST --json` to inspect,
+then add `--apply` to configure private Tailscale access. Relay its browser approval
+link. After approval, poll the same command until `network_ready`; do not claim
+approval or invent an HTTPS name before that result.
+
+Use `forge setup identity --ssh USER@HOST --operator LOGIN --json` next. It returns
+exact identity OAuth App registration fields. Supply its public `--client-id`,
+review the plan, then use `--apply --secret-stdin --json` with private secret input
+or let the operator use the hidden interactive prompt. Never request secrets in
+agent messages. Resume with `--resume`; source/root/origin are derived from the
+saved installation. `sign_in_required` means verified HTTPS is ready for browser
+sign-in; it does not confirm that the operator signed in.
+
+`installed` does not certify operator sign-in, role Apps, coding accounts,
+activation, or a first merge. Report each as outstanding until observed.
+The complete #136 workflow is still in development.
 Do not treat host-stage elapsed time as time to first merge.
 
 ## Connection and intent

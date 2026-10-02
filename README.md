@@ -44,7 +44,8 @@ macOS Keychain or Linux Secret Service for local credential storage.
 
 The CLI also supports [fresh-host installation](docs/cli-fresh-host.md), including
 a local installer script, a wizard, and resumable JSON operations. This first
-increment installs and qualifies the host. Completing all onboarding stages and
+increment installs and qualifies the host, joins its private network, and
+configures operator sign-in and HTTPS. Completing the remaining onboarding stages and
 validating a first merged issue through this entry point remain in
 [#136](https://github.com/XRPL-Commons/forge/issues/136).
 For repository setup on an existing server:

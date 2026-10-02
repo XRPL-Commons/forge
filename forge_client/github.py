@@ -12,15 +12,19 @@ from .contracts import NAME, SetupError, baseline, positive, require, validate_b
 LIMIT = 4 * 1024 * 1024
 
 
-def run_bounded(argv, *, payload=None, environ=None, timeout=30, allowed_codes=(0,)):
+def run_bounded(argv, *, payload=None, input_bytes=None, input_limit=65536, output_limit=LIMIT,
+                environ=None, timeout=30, allowed_codes=(0,)):
     """Drain both pipes with a total cap. Never echo a child's diagnostics."""
     env = {k: v for k, v in (os.environ if environ is None else environ).items()
            if k in {'PATH', 'HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'GH_CONFIG_DIR',
                     'GH_TOKEN', 'GITHUB_TOKEN', 'LANG', 'LC_ALL', 'TMPDIR',
                     'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK'}}
     env.update(GH_HOST='github.com', GH_PROMPT_DISABLED='1', GH_PAGER='cat', GH_DEBUG='')
-    data = None if payload is None else json.dumps(payload, allow_nan=False).encode()
-    require(data is None or len(data) <= 65536)
+    require(payload is None or input_bytes is None)
+    require(type(input_limit) is int and 0 < input_limit <= 64 * 1024 * 1024
+            and type(output_limit) is int and 0 < output_limit <= 64 * 1024 * 1024)
+    data = input_bytes if input_bytes is not None else None if payload is None else json.dumps(payload, allow_nan=False).encode()
+    require(data is None or isinstance(data, bytes) and len(data) <= input_limit)
     process = None
     try:
         process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
@@ -51,7 +55,7 @@ def run_bounded(argv, *, payload=None, environ=None, timeout=30, allowed_codes=(
                     if not chunk:
                         selector.unregister(key.fileobj); key.fileobj.close(); continue
                     total += len(chunk)
-                    if total > LIMIT:
+                    if total > output_limit:
                         raise SetupError('github_response_too_large', 'GitHub response exceeded the size limit.')
                     if key.data == 'stdout':
                         output.extend(chunk)

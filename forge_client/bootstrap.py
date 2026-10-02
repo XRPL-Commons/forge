@@ -60,9 +60,14 @@ class Host:
             result = json.loads(raw)
         except Exception:
             raise SetupError('host_unavailable', 'Could not run bootstrap over SSH. Verify the host key, local SSH login and Forge source version. If setup was interrupted, use --resume.') from None
+        return self.validate(result, target)
+
+    @staticmethod
+    def validate(result, target):
         require(isinstance(result, dict), 'invalid_host_response', 'The host returned an invalid bootstrap response.')
         if result.get('ok') is not True:
-            code = result.get('error') if result.get('error') in ERRORS else 'bootstrap_failed'
+            code = result.get('error')
+            code = code if isinstance(code, str) and code in ERRORS else 'bootstrap_failed'
             # A remote message could contain anything, including the submitted secret.
             raise SetupError(code, MESSAGES.get(code, 'Host setup could not complete. Repair the selected host and use --resume.'))
         require(set(result) == {'ok', 'status', 'origin', 'client_id', 'operators', 'generation', 'configured', 'revision'}
