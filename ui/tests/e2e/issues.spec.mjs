@@ -225,19 +225,23 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(orphanOutputs.filter(entry => !entry.etag).length, 1)
   assert.ok(orphanOutputs.every(entry => entry.query.id === RECOVERY_JOB), 'every fetch uses the orphaned ?job= id')
 
-  // The issue's one action bar sits under the title, above the description:
-  // the decisions, then where the work lives on GitHub, then Stop. The review
-  // summaries below it are clamped until "More" is pressed.
+  // The issue's one action bar sits in the next step, above the description:
+  // the decisions, then Stop. Where the work lives on GitHub is a row of small
+  // links under it. The review summaries below are clamped until "More" is pressed.
   await scenario('reviewed')
   await page.goto(base + '/issues/1%3A610')
   await waitForText(page, DETAIL_TITLE)
   const actionBar = page.locator('#issue-actions')
-  assert.equal(await actionBar.getByRole('link', { name: 'GitHub' }).getAttribute('href'),
+  const links = page.locator('#issue-links')
+  assert.equal(await links.getByRole('link', { name: 'GitHub issue ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/issues/610')
-  assert.equal(await actionBar.getByRole('link', { name: 'PR #30' }).getAttribute('href'),
+  assert.equal(await links.getByRole('link', { name: 'PR #30 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/30')
+  assert.equal(await actionBar.getByRole('link').count(), 0, 'GitHub links are not action buttons')
   assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
-  assert.equal(await page.getByRole('link', { name: 'Open on GitHub ↗' }).count(), 0, 'the links row at the bottom is gone')
+  // A running build sits on Build in the pipeline strip.
+  assert.equal(await page.locator('#issue-pipeline [aria-current="step"]').getAttribute('data-stage'), 'build')
+  assert.equal(await page.locator('#issue-pipeline [aria-current="step"]').getAttribute('data-state'), 'active')
   // Discussing the blocker is one more button in the same bar.
   assert.equal(await actionBar.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 1)
   await page.getByRole('button', { name: 'Description' }).click()
@@ -246,9 +250,11 @@ export default async function (page, { base, scenario, requests }) {
   const bodyBox = await page.locator('.forge-markdown').boundingBox()
   assert.ok(barBox.y + barBox.height <= bodyBox.y, 'the action bar must sit above the description')
 
-  // The review rows live inside Details, open from the start, and each chip is
-  // that reviewer's own verdict — a passed review reads "Passed" whatever the
-  // issue's status is.
+  // The review rows live inside Review findings, collapsed at first, and each
+  // chip is that reviewer's own verdict — a passed review reads "Passed"
+  // whatever the issue's status is.
+  assert.equal(await page.locator('#issue-reviews').count(), 0, 'review findings start collapsed')
+  await page.getByRole('button', { name: 'Review findings' }).click()
   await waitForText(page, 'The change is correct')
   const reviewRows = page.locator('#issue-reviews > div')
   assert.equal(await reviewRows.count(), 2)
@@ -279,7 +285,16 @@ export default async function (page, { base, scenario, requests }) {
   const summaryBox = await page.locator('#issue-plain').boundingBox()
   const actionsBox = await page.locator('#issue-actions').boundingBox()
   assert.ok(summaryBox.y + summaryBox.height <= actionsBox.y, 'the summary must sit above the action bar')
+  // The way forward is one primary button; the technical text stays collapsed.
+  assert.equal(await actionBar.getByRole('button', { name: 'Retry attempt' }).count(), 1)
+  assert.equal(await page.locator('#issue-explanation').count(), 0, 'the worker’s full text starts collapsed')
+  // The security review that could not finish is where the pipeline stopped.
+  const failedStage = page.locator('#issue-pipeline [aria-current="step"]')
+  assert.equal(await failedStage.getAttribute('data-stage'), 'audit')
+  assert.equal(await failedStage.getAttribute('data-state'), 'failed')
+  assert.equal((await page.locator('#issue-stage-note').innerText()).trim(), 'Failed')
 
+  await page.getByRole('button', { name: 'Review findings' }).click()
   await waitForText(page, 'ENEEDAUTH')
   assert.match(await page.locator('#issue-explanation').innerText(), /pipeline\.ts/)
   const detailsBox = await page.locator('#issue-details').boundingBox()
@@ -292,17 +307,17 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal((await verdicts.first().innerText()).includes('PASS.'), false)
   assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
 
-  // Three failed attempts out of three, under the status badge.
-  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), '3 of 3 attempts failed')
+  // Three failed attempts out of three, beside the pipeline stage.
+  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), 'attempt 3 of 3 failed')
   // …and the label that paused it, with who applied it and when.
   assert.equal((await page.locator('#issue-held-by').innerText()).trim(), 'Labelled forge:hold by @maintainer on Sep 21')
 
   // Each pull request is named for what it is to the issue.
-  const pulls = page.locator('#issue-actions')
-  assert.equal(await pulls.getByRole('link', { name: 'PR #30' }).count(), 1)
-  assert.equal(await pulls.getByRole('link', { name: 'Earlier Forge draft #26' }).getAttribute('href'),
+  const pulls = page.locator('#issue-links')
+  assert.equal(await pulls.getByRole('link', { name: 'PR #30 ↗' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Earlier Forge draft #26 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/26')
-  assert.equal(await pulls.getByRole('link', { name: 'Other PR #25' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Other PR #25 ↗' }).count(), 1)
 
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')

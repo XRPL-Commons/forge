@@ -7,7 +7,7 @@ import { elapsed } from './factory'
 import { ago, clampTitle, reviewerMentions } from './format'
 
 export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed'
-export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop'
+export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop' | 'close'
 
 // Which pull request this is to the issue: the one Forge is carrying now, an
 // earlier Forge draft it moved on from, or someone else's. Older payloads omit it.
@@ -38,7 +38,10 @@ export interface IssueRow {
   status: IssueStatus; summary: IssueSummary | null; explanation: string
   // The server sends the decisions this issue accepts; 'stop' is never one of
   // them (it targets the job, not the issue) and is offered separately.
-  actions: Exclude<IssueAction, 'stop'>[]
+  actions: Exclude<IssueAction, 'stop' | 'close'>[]
+  // Whether Forge can drop this issue: close its pull request and close the
+  // issue as not planned. Never one of `actions`; older payloads omit it.
+  closable?: boolean
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null
@@ -112,6 +115,7 @@ export const ACTION_LABELS: Record<IssueAction, string> = {
   recheck: 'Recheck readiness',
   assign_reviewer: 'Assign reviewer',
   stop: 'Stop attempt',
+  close: 'Close issue',
 }
 
 export const ACTION_EFFECTS: Record<IssueAction, string> = {
@@ -123,6 +127,7 @@ export const ACTION_EFFECTS: Record<IssueAction, string> = {
   recheck: 'Forge will recheck readiness and resume the held stage. The existing pull request and failure budget are preserved. Confirm that the reported blocker has been addressed.',
   assign_reviewer: 'Forge asks GitHub for a review from these people and assigns them to the issue. The approval still has to come from a reviewer with write access who did not write the code.',
   stop: 'This stops the active attempt and discards its unfinished workspace changes. Published pull requests are preserved.',
+  close: 'Forge stops any running work, closes its pull request and closes the issue on GitHub as not planned, with your reason as a comment.',
 }
 
 export const EVENT_LABELS: Record<string, string> = {
@@ -149,6 +154,7 @@ export const EVENT_LABELS: Record<string, string> = {
   reserved: 'Attempt prepared',
   merged: 'Pull request merged',
   cancelled: 'Attempt stopped',
+  operator_close: 'Closed as not planned',
 }
 
 export const SHOW_OPTIONS: { value: string; label: string }[] = [
@@ -163,7 +169,7 @@ export const SHOW_OPTIONS: { value: string; label: string }[] = [
 
 // Decisions that change what Forge does next are recorded with the operator's
 // own words; the reversible ones default to "<label> confirmed by operator".
-const REASON_REQUIRED: IssueAction[] = ['pause', 'resume', 'retry', 'stop']
+const REASON_REQUIRED: IssueAction[] = ['pause', 'resume', 'retry', 'stop', 'close']
 
 export function decisionNeedsReason(action: IssueAction): boolean {
   return REASON_REQUIRED.includes(action)
@@ -437,7 +443,7 @@ export function rowPrimary(
 ): RowAction {
   if (pending) return { label: 'Applying…', decision: false }
   if (row.approval) return { label: 'Approve…', decision: true }
-  const decision = PRIMARY_DECISIONS.find(action => (row.actions ?? []).includes(action as Exclude<IssueAction, 'stop'>))
+  const decision = PRIMARY_DECISIONS.find(action => (row.actions ?? []).includes(action as IssueRow['actions'][number]))
   if (decision) return { label: ACTION_LABELS[decision], decision: true }
   if (row.status === 'working') return { label: 'View progress', decision: false }
   if (row.status === 'attention') return { label: 'Review', decision: false }
