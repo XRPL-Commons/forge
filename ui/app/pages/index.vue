@@ -140,6 +140,10 @@ const panelOpen = computed({
 function open(card: CardModel) {
   void router.replace({ query: panelQuery(route.query, panelTarget(card)) })
 }
+// The factory line's crate is a shortcut to the section that lists it.
+function showAttention() {
+  document.getElementById('needs-attention')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 function close() {
   void router.replace({ query: panelQuery(route.query, null) })
 }
@@ -197,7 +201,8 @@ watch(() => panel.value.key, (key, before) => {
     </div>
 
     <template v-if="view">
-      <PipelineBreakdown class="mt-5" :rows="rows" />
+      <FactoryLine class="mt-5" :view="view" :now="now" :groups="groups" @open="open" @attention="showAttention" />
+      <PipelineBreakdown class="mt-3" :rows="rows" />
 
       <section id="columns" class="mt-6 grid scroll-mt-32 gap-3 lg:grid-cols-3">
         <StageColumn

@@ -419,6 +419,21 @@ function tally(items: string[]): string {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${n} ${name}`).join(' · ')
 }
 
+// A merge count only means something over a time frame. Whether the merge
+// reached production is not tracked here, so a count never claims it.
+function mergedSince(view: FactoryView, now: number, seconds: number): number {
+  const mergedAt = (issue: LedgerIssueView): number => {
+    const events = (issue.history ?? []).filter(event => event.kind === 'merged')
+    return Number(events[events.length - 1]?.at ?? 0)
+  }
+  return (view.issues ?? []).filter(issue => issue.state === 'merged' && mergedAt(issue) >= now - seconds).length
+}
+
+export function mergedToday(view: FactoryView | null | undefined, now: number): number {
+  if (!view) return 0
+  return view.summary?.merged_day ?? mergedSince(view, now, 24 * 3600)
+}
+
 export function breakdown(view: FactoryView | null | undefined, now: number): BreakdownRow[] {
   if (!view) return []
   const slots = view.runtime?.slots ?? {}
@@ -434,16 +449,9 @@ export function breakdown(view: FactoryView | null | undefined, now: number): Br
   const merging = issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length
   const refused = (view.observation?.errors ?? []).filter(error => /refused to merge/.test(error.reason)).length
   const attention = issues.filter(issue => ATTENTION_STATES.includes(issue.state))
-  // A merge count only means something over a time frame. Whether the merge
-  // reached production is not tracked here, so the row never claims it.
-  const mergedAt = (issue: LedgerIssueView): number => {
-    const events = (issue.history ?? []).filter(event => event.kind === 'merged')
-    return Number(events[events.length - 1]?.at ?? 0)
-  }
   const mergedIssues = issues.filter(issue => issue.state === 'merged')
-  const mergedSince = (seconds: number) => mergedIssues.filter(issue => mergedAt(issue) >= now - seconds).length
-  const mergedDay = view.summary?.merged_day ?? mergedSince(24 * 3600)
-  const mergedWeek = view.summary?.merged_week ?? mergedSince(7 * 24 * 3600)
+  const mergedDay = mergedToday(view, now)
+  const mergedWeek = view.summary?.merged_week ?? mergedSince(view, now, 7 * 24 * 3600)
   // Once any repository is tracked, a merge is no longer the end of the line:
   // the box counts what reached production and says what is still behind it.
   const trackedRepos = trackedRepositories(view)

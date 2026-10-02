@@ -12,6 +12,7 @@
   --color-sky-200: #abcfff;
   --color-amber-200: #ecc486;
   --color-rose-200: #f0a6a6;
+  --color-coral: #ef7d64;
   --color-role-build: #94bfff; --color-role-review: #c9a4f4; --color-role-audit: #80d7bd;
   --color-role-merge: #edbd77; --color-role-controller: #edbd77; --color-role-recovery: #c0cbcd;
 }
