@@ -3,7 +3,7 @@ import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/d
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
 import {
-  ACTION_LABELS, STATUS_NAMES, attemptsText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
+  ACTION_LABELS, STATUS_NAMES, approvalLines, attemptsText, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
   type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
   type IssueEnvironmentSelection,
@@ -150,10 +150,57 @@ const now = ref(0)
 let ticker: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
   now.value = Math.floor(Date.now() / 1000)
-  ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 30000)
+  ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 5000)
 })
 onBeforeUnmount(() => clearInterval(ticker))
 const reviewRequested = computed(() => reviewRequestText(detail.value?.reviewers_requested, now.value))
+
+// The reviews Forge found on GitHub and when it last looked, so an approval
+// that did not count says why instead of being silently ignored.
+function shortTime(at: number): string {
+  const date = new Date(at * 1000)
+  const today = new Date().toDateString() === date.toDateString()
+  return date.toLocaleString([], today ? { hour: '2-digit', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+const approvals = computed(() => approvalLines(detail.value?.approvals, mounted.value ? shortTime : undefined))
+const checked = computed(() => checkedText(detail.value?.last_checked, now.value))
+
+// "Check now" asks the supervisor to read this issue first next cycle, then
+// polls the detail until `last_checked` moves past the click.
+const CHECK_POLL_MS = 4000
+const CHECK_GIVE_UP_S = 90
+const checkingSince = ref<number | null>(null)
+const checkNote = ref('')
+let checkTimer: ReturnType<typeof setInterval> | undefined
+function stopChecking(note = '') {
+  clearInterval(checkTimer)
+  checkingSince.value = null
+  checkNote.value = note
+}
+async function checkNow() {
+  const issue = detail.value
+  if (!issue || checkingSince.value) return
+  checkNote.value = ''
+  const since = Math.floor(Date.now() / 1000)
+  try {
+    await api.act('/api/issues/refresh', { key: issue.key })
+  } catch (error: unknown) {
+    checkNote.value = error instanceof Error ? error.message : 'Forge did not accept the request.'
+    return
+  }
+  checkingSince.value = since
+  clearInterval(checkTimer)
+  checkTimer = setInterval(() => {
+    if (Date.now() / 1000 - since > CHECK_GIVE_UP_S) stopChecking('Still checking. Forge reads GitHub every cycle, so this page will update on its own.')
+    else void poll.refresh()
+  }, CHECK_POLL_MS)
+  void poll.refresh()
+}
+watch(() => detail.value?.last_checked, (value) => {
+  if (checkingSince.value && value && value > checkingSince.value) stopChecking()
+})
+watch(() => props.issueKey, () => stopChecking())
+onBeforeUnmount(() => clearInterval(checkTimer))
 
 // Whether the merge reached production is the ledger's verdict, which travels
 // on the factory view rather than on the issue payload — the same view this
@@ -384,6 +431,19 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
       </section>
       <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="mt-2 text-sm text-amber-200">Waiting for your approval on GitHub</p>
+      <ul v-if="approvals.length" id="issue-approvals" class="mt-2 flex flex-col gap-1 text-sm" aria-label="Reviews Forge found on GitHub">
+        <li v-for="line in approvals" :key="line.login" class="flex items-start gap-1.5" :class="line.counted ? 'text-mint-200' : 'text-muted'">
+          <UIcon :name="line.icon" class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>{{ line.text }}</span>
+        </li>
+      </ul>
+      <p v-else-if="approval" id="issue-approvals-empty" class="mt-2 text-sm text-muted">No approval found on the pull request yet.</p>
+      <div id="issue-checked" class="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+        <span v-if="checkingSince" role="status">Checking GitHub…</span>
+        <span v-else>{{ checked }}</span>
+        <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-refresh-cw" :loading="!!checkingSince" :disabled="!!checkingSince" @click="checkNow">Check now</UButton>
+        <span v-if="checkNote" role="status">{{ checkNote }}</span>
+      </div>
       <p v-if="detail.merge_blocker" class="mt-2 text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
       <p v-if="reviewRequested" id="review-requested" class="mt-1 text-sm text-muted">{{ reviewRequested }}</p>
       <p v-if="deployment" id="issue-deployment" class="mt-1 text-sm text-muted">

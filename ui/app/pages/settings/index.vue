@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ApproversForm from '~/components/ApproversForm.vue'
 import CapacityForm from '~/components/CapacityForm.vue'
 import { summarizeActivity } from '~/utils/activity'
 import { warnings, type FactoryView } from '~/utils/factory'
@@ -13,6 +14,7 @@ const api = useForgeApi()
 const route = useRoute()
 
 const capacityForm = ref<InstanceType<typeof CapacityForm> | null>(null)
+const approversForm = ref<InstanceType<typeof ApproversForm> | null>(null)
 
 // The poll only advances while nothing is being edited or saved, so a
 // mid-cycle refresh never overwrites the operator's unsaved numbers.
@@ -22,7 +24,8 @@ const poll = useResource<Payload>('settings-general', () => Promise.all([
   api.get<FactoryView>('/api/factory?section=board', { timeout: 30000 }),
 ]).then(([settings, onboarding, factory]) => ({ settings, onboarding, factory })), {
   interval: useRuntimeConfig().public.pollInterval,
-  allowed: () => !capacityForm.value?.dirty && !capacityForm.value?.saving,
+  allowed: () => !capacityForm.value?.dirty && !capacityForm.value?.saving
+    && !approversForm.value?.dirty && !approversForm.value?.saving,
 })
 
 const now = useClock()
@@ -102,6 +105,20 @@ function onSaved(view: FactoryView) {
         @saved="onSaved"
       />
       <p v-else class="mt-2 text-sm text-muted">{{ poll.data.value ? 'Worker capacity is not available.' : 'Loading…' }}</p>
+    </section>
+
+    <section id="approvers" class="mt-4 scroll-mt-32 rounded-xl border border-line bg-panel p-4">
+      <h2 class="text-sm font-semibold text-white">Who can approve</h2>
+      <ApproversForm
+        v-if="factoryView"
+        ref="approversForm"
+        :runtime="factoryView.runtime"
+        :revision="factoryView.runtime_revision"
+        :locked="locked"
+        :locked-reason="LOCKED_REASON"
+        @saved="onSaved"
+      />
+      <p v-else class="mt-2 text-sm text-muted">{{ poll.data.value ? 'The approver list is not available.' : 'Loading…' }}</p>
     </section>
 
     <section class="mt-4 rounded-xl border border-rose-200/30 bg-panel p-4">
