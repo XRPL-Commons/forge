@@ -142,7 +142,8 @@ export function readUpstreamSecret(path: string, read: (path: string) => string)
 // credentials and Origin are rejected; the Python service verifies client grants.
 export function clientPath(path: string): boolean {
   return ['/api/client/device', '/api/client/token', '/api/client/refresh', '/api/client/status',
-    '/api/client/disconnect', '/api/client/requirements'].includes(path)
+    '/api/client/disconnect', '/api/client/requirements', '/api/client/authorize',
+    '/api/client/read', '/api/client/operation'].includes(path)
 }
 export function guardClient({ method, headers, contentLength }: GuardInput): GuardResult {
   if (method !== 'POST') return { ok: false, status: 405, reason: 'Client requests use POST' }

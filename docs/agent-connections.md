@@ -1,10 +1,9 @@
 # Connect an external agent
 
-This implements the connection step of #122: browser approval, repository/owner
-scope, short-lived credentials, revocation, and a local client. The client can
-connect, inspect its grant, disconnect and read repository requirements.
-Repository apply/verify/enable commands, durable operations and the shared agent
-skill remain the next step. Fresh Forge installation stays in #136.
+The local client connects once, prepares repositories with local GitHub authority,
+and asks Forge to verify and enable them through the same services used by the UI.
+Connections have explicit scope, short-lived credentials and revocation.
+Fresh Forge installation stays in #136.
 
 ## Prerequisites
 
@@ -49,8 +48,9 @@ repository scope can cover several repositories: repeat `--repo OWNER/REPO`.
 `--read-only` requests only repository reads. An owner transfer is checked from
 fresh GitHub metadata before each scoped repository read. If Forge cannot verify
 that metadata, it refuses the read. An initially private repository invisible to
-Forge's Apps therefore needs its App access established locally first; this
-connection release does not yet automate that preparation workflow.
+Forge's Apps therefore needs an explicit `--repo OWNER/REPO` connection selection
+or its App access established locally first. Explicit repository selections let
+the CLI prepare a repository even when no Forge App can initially see it.
 
 The client name and requested repository labels come from the requesting client.
 Check the displayed IDs and scope. Forge verifies owner IDs independently at
@@ -100,7 +100,7 @@ host commands, control workers, reset Forge, or use generic operator APIs.
 
 ## Protocol and implementation boundary
 
-`/api/client/{device,token,refresh,status,disconnect,requirements}` are closed JSON
+`/api/client/{device,token,refresh,status,disconnect,requirements,authorize,read,operation}` are closed JSON
 POST endpoints. Device polling uses the pending, slow-down, denial and expiry
 semantics of [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628); this is a Forge JSON
 protocol, not a general-purpose OAuth server. Cookies and browser Origin headers
@@ -109,7 +109,76 @@ signed-in session and CSRF checks. Authorization headers are forwarded only for
 the explicit client routes. All transport uses verified HTTPS with redirects
 rejected; remote responses cannot choose another credential destination.
 
-Prepare/activate capabilities record the approved future workflow scope. This
-release exposes repository requirements only; those capabilities do not unlock
-any existing browser action route. The write endpoints must independently check
-the same grant, target, revision and reset generation when added.
+Prepare/activate capabilities authorize verification and activation operations.
+Each endpoint checks the grant, target and reset generation itself. Configuration
+writes also check the current revision and fresh readiness. These capabilities
+do not unlock browser action routes.
+
+## Repository operations
+
+```sh
+forge repo inspect OWNER/REPO --server https://forge.example --json
+forge repo plan OWNER/REPO --server https://forge.example --json
+forge repo setup OWNER/REPO --server https://forge.example --apply --enable --json
+```
+
+`--apply` allows local App repository grants and the additive Forge review
+baseline. `--enable` explicitly allows starting automation after verification;
+without it setup stops at readiness. Setup without `--apply` only plans.
+The local broker uses fixed GitHub operations and preserves existing grants,
+unrelated rules and stronger policy. App identities are pinned on the connection's
+first requirements read and checked on subsequent repositories and token refreshes.
+
+GitHub's [installation grant endpoint](https://docs.github.com/en/rest/apps/installations#add-a-repository-to-an-app-installation)
+requires repository administration. GitHub currently documents fine-grained
+tokens with the “GitHub App installation repository access” write permission
+for this operation. The client uses the existing local credential and never
+expands it automatically. If GitHub refuses the grant, the client
+returns an installation settings URL and `needs_user_action`; grant access in the
+browser and resume. No administrative token is sent to Forge.
+
+```sh
+forge repo setup OWNER/REPO --server https://forge.example --apply --enable --resume --json
+```
+
+Resume uses the same activation intent and pinned identity. A private, secret-free
+journal under `~/.local/state/forge-client` records workflow IDs, local write
+progress and outstanding server operations. Server records under
+`state/client-operations` bind operation IDs to the approved client, operator,
+target, action, revision, instance and generation. They contain no credentials.
+Polling an ID after a server restart resumes verification. Duplicate IDs cannot
+change their binding, and interrupted activation reconciles the exact expected
+configuration revision. Concurrent changes return a conflict.
+
+`--wait` bounds each operation's wait (default 120 seconds, maximum 600); `--wait 0`
+returns immediately. A pending result includes an operation ID and can be resumed.
+An uncertain ruleset create is independently verified before proceeding. If it
+cannot be verified, `write_unconfirmed` links to GitHub for inspection; the CLI
+does not create a duplicate. Do not delete the journal to retry uncertain writes.
+
+`ok: true` means a valid result, which can still be pending or blocked. Check
+`status`: `ready` and `enabled` are the successful setup outcomes. Errors include
+a safe reason; browser handoffs and blockers include next actions. JSON mode
+never prompts or opens a browser.
+
+Other scoped commands:
+
+| Command | Result |
+| --- | --- |
+| `repo verify` | Refresh App access and effective protection |
+| `repo enable` / `repo disable` | Explicitly change repository activation |
+| `repo activity` | Factory health timing and this repository's issue/job state |
+| `repo issues --page N` | Paginated observed issues |
+| `repo issue OWNER/REPO NUMBER` | Observed issue detail and decisions |
+
+All take `OWNER/REPO`, `--server HTTPS_ORIGIN` and `--json`. Reads reuse UI services
+and expose observation freshness. Verification refreshes observations; cached
+issue reads do not launch work. Results omit other repositories and raw worker
+logs. The API does not expose host administration or generic worker controls.
+
+## Shared agent skill
+
+The package includes [forge-repositories/SKILL.md](../forge_client/skills/forge-repositories/SKILL.md).
+Use `forge skill` to print it or `forge --json skill` for structured output, then
+install that file in your agent's skill directory. It covers connection approval,
+setup intent, JSON statuses, observation and resumption.

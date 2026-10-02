@@ -215,6 +215,8 @@ describe('local client routes', () => {
   it('only bypasses browser CSRF for a fixed client endpoint with no ambient browser credentials', async () => {
     const { clientPath, guardClient } = await import('../../server/utils/proxy')
     expect(clientPath('/api/client/device')).toBe(true)
+    for (const operation of ['authorize', 'read', 'operation']) expect(clientPath(`/api/client/${operation}`)).toBe(true)
+    expect(clientPath('/api/client/reset')).toBe(false)
     expect(clientPath('/api/client/device?bypass=1')).toBe(false)
     expect(clientPath('/api/settings')).toBe(false)
     const input = { method: 'POST', contentLength: 42, headers: { 'content-type': 'application/json' } }

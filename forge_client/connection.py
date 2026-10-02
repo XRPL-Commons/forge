@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 
 from .contracts import SetupError, require, repository, positive
 
-PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements'}
+PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements', 'authorize', 'read', 'operation'}
 CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate')
 TOKEN = re.compile(r'[A-Za-z0-9_-]{43}')
 
@@ -60,7 +60,8 @@ class Transport:
                 if response.status != 200 or result.get('ok') is not True:
                     code = result.get('error')
                     allowed = {'authorization_pending', 'slow_down', 'access_denied', 'expired_token', 'invalid_grant',
-                               'invalid_token', 'sign_in_required', 'setup_required', 'insufficient_scope', 'scope_changed'}
+                               'invalid_token', 'sign_in_required', 'setup_required', 'insufficient_scope', 'scope_changed',
+                               'connection_changed', 'operation_conflict', 'operation_capacity'}
                     raise SetupError(code if code in allowed else 'connection_failed', 'Forge did not authorize this client request.')
                 return result
         except SetupError:
@@ -196,6 +197,8 @@ class Client:
         value = {'state': 'connected', 'base': self.base, 'instance': saved['instance'], 'generation': saved['generation'],
                  'access_token': result['access_token'], 'refresh_token': result['refresh_token'],
                  'access_expires': self.clock() + result['expires_in'], 'connection': connection}
+        if 'apps' in saved:
+            value['apps'] = saved['apps']
         self.vault.set(self.key, value)
         return value
 
@@ -258,9 +261,35 @@ class Client:
         return {'status': 'disconnected'}
 
     def requirements(self, target):
-        from .contracts import requirements
+        from .contracts import requirements, connection_identity
         repository(target)
         saved = self._credential()
         value = self.transport.call('requirements', {'repository': target, 'instance': saved['instance'], 'generation': saved['generation']}, saved['access_token'])
         require(value.pop('ok', None) is True)
-        return requirements(value)
+        value = requirements(value)
+        require(value['repository']['id'] == target['id'] and value['repository']['name'].lower() == target['name'].lower(),
+                'repository_identity_changed', 'Forge returned a different repository. Resolve the target again.')
+        apps = connection_identity(value)
+        require('apps' not in saved or saved['apps'] == apps, 'app_identity_changed',
+                'Forge App identities changed. Review the server configuration and reconnect before granting access.')
+        if 'apps' not in saved:
+            saved['apps'] = apps
+            self.vault.set(self.key, saved)
+        return value
+
+    def request(self, operation, target, **extra):
+        repository(target)
+        saved = self._credential()
+        value = self.transport.call(operation, {'repository': target, 'instance': saved['instance'],
+            'generation': saved['generation'], **extra}, saved['access_token'])
+        require(value.pop('ok', None) is True)
+        return value
+
+    def authorize(self, instance, generation, target, capability):
+        saved = self._saved()
+        require((instance, generation) == (saved['instance'], saved['generation']),
+                'connection_changed', 'Connect to the current Forge instance again.')
+        require(self.request('authorize', target, capability=capability) == {'authorized': True})
+
+    def read(self, target, section='repository', number=None, page=1):
+        return self.request('read', target, section=section, number=number, page=page)

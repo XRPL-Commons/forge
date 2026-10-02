@@ -1,6 +1,10 @@
 # External agents and repository setup
 
-Status: credential boundary and first-release scope agreed, 2026-09-29.
+Status: existing-server workflow implemented, 2026-10-02. This document preserves
+the original design discussion; use [agent connections](../../agent-connections.md)
+for the implemented command syntax, supported operations and recovery behavior.
+
+Credential boundary and first-release scope agreed, 2026-09-29.
 Repository setup targets an existing Forge server. Fresh installation belongs in
 a separate follow-up issue. Interfaces and connection details remain proposed. Related:
 [#122](https://github.com/XRPL-Commons/forge/issues/122) (existing-server setup),

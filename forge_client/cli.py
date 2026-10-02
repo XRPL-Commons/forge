@@ -9,6 +9,30 @@ from .contracts import SetupError, require
 from .github import GitHub
 
 
+def repository_commands():
+    commands = {}
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue'):
+        properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
+                      'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
+        required = ['repository', 'server']
+        if action in ('setup', 'verify', 'enable', 'disable'):
+            properties.update(resume={'type': 'boolean', 'default': False},
+                              wait={'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 120})
+        if action == 'setup':
+            properties.update(apply={'type': 'boolean', 'default': False}, enable={'type': 'boolean', 'default': False})
+        if action == 'issues':
+            properties['page'] = {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 1}
+        if action == 'issue':
+            properties['number'] = {'type': 'integer', 'minimum': 1}
+            required.append('number')
+        commands[action] = {
+            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action == 'issue' else '') + ' --server HTTPS_ORIGIN --json',
+            'capability': 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
+            'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
+        }
+    return commands
+
+
 def parser():
     p = argparse.ArgumentParser(prog='forge', description='Connect a local agent to an existing Forge server.')
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
@@ -26,6 +50,22 @@ def parser():
     sub.add_parser('disconnect').add_argument('server')
     requirements = sub.add_parser('requirements')
     requirements.add_argument('server'); requirements.add_argument('repository')
+    repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue'):
+        command = repo.add_parser(action)
+        command.add_argument('repository', help='GitHub OWNER/REPO')
+        command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
+        command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+        if action == 'issue':
+            command.add_argument('number', type=int)
+        if action == 'issues':
+            command.add_argument('--page', type=int, default=1)
+        if action in ('setup', 'verify', 'enable', 'disable'):
+            command.add_argument('--resume', action='store_true', help='Resume the saved operation with the same options')
+            command.add_argument('--wait', type=int, default=120, help='Bounded wait for each Forge operation (0–600 seconds)')
+        if action == 'setup':
+            command.add_argument('--apply', action='store_true', help='Apply the local preparation plan')
+            command.add_argument('--enable', action='store_true', help='Enable automation after verification')
     server = sub.add_parser('server').add_subparsers(dest='server_command', required=True)
     setup = server.add_parser('setup', help='Bootstrap operator sign-in on an existing host over SSH')
     setup.add_argument('--ssh', required=True, help='Explicit SSH host alias or user@hostname; known host key required')
@@ -39,15 +79,22 @@ def parser():
     mode.add_argument('--resume', action='store_true', help='Finish an interrupted setup without another secret')
     setup.add_argument('--secret-stdin', action='store_true', help='Read the identity-app secret from stdin; never a command argument')
     sub.add_parser('commands')
+    sub.add_parser('skill', help='Print the bundled Forge repository agent skill')
     return p
 
 
 def execute(args):
+    if args.command == 'skill':
+        from importlib.resources import files
+        return {'skill': files('forge_client').joinpath('skills/forge-repositories/SKILL.md').read_text()}
     if args.command == 'server':
         from .bootstrap import setup
         return setup(args)
     if args.command == 'commands':
-        return {'commands': ['connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+                'schema_version': 1, 'repository_commands': repository_commands(),
+                'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
+                                   'operation_pending', 'verification_pending', 'write_unconfirmed'],
                 'credential_storage': 'OS keyring', 'transport': 'verified HTTPS',
                 'server_setup': {'authority': 'explicit SSH host', 'secret_input': 'hidden prompt or stdin',
                                  'scope': 'existing Tailscale host'}}
@@ -74,14 +121,32 @@ def execute(args):
             return client.status()
         if args.command == 'disconnect':
             return client.disconnect()
+        if args.command == 'repo':
+            from .workflow import Workflow
+            github = GitHub()
+            target = {k: v for k, v in github.repository(args.repository).items() if k in ('id', 'name')}
+            if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
+                return client.read(target, 'repository' if args.repo_command == 'inspect' else args.repo_command,
+                                   getattr(args, 'number', None), getattr(args, 'page', 1))
+            workflow = Workflow(client, github, target, wait=getattr(args, 'wait', 120))
+            return workflow.execute('setup' if args.repo_command == 'plan' else args.repo_command,
+                                    apply=getattr(args, 'apply', False), enable=getattr(args, 'enable', False),
+                                    resume=getattr(args, 'resume', False))
         repo = GitHub().repository(args.repository)
         return client.requirements({k: repo[k] for k in ('id', 'name')})
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        parser().print_help()
+        return 0
     args = parser().parse_args(argv)
     try:
         result = execute(args)
+        if args.command == 'skill' and not args.json:
+            print(result['skill'])
+            return 0
         print(json.dumps({'ok': True, **result}, sort_keys=True))
         return 0
     except SetupError as error:
