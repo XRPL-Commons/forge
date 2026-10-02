@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-export default async function(page, { base }) {
+export default async function(page, { base, scenario }) {
   // Exercise a browser locale/timezone different from the server's defaults.
   const context = await page.context().browser().newContext({ locale: 'fr-FR', timezoneId: 'Pacific/Honolulu' })
   try {
@@ -18,4 +18,18 @@ export default async function(page, { base }) {
       await view.close()
     }
   } finally { await context.close() }
+
+  // Server-rendered controls must not accept edits or submit native forms
+  // before Vue installs their handlers (also covers unavailable JavaScript).
+  const pending = await page.context().browser().newContext({ javaScriptEnabled: false })
+  try {
+    const view = await pending.newPage()
+    await view.goto(base + '/settings')
+    assert.equal(await view.locator('#approvers-logins').isDisabled(), true)
+    await scenario('auth-agents')
+    await pending.addCookies([{ name: 'synthetic_operator', value: 'yes', url: base }])
+    await view.goto(base + '/settings/agents?code=BCDF-2345')
+    assert.equal(await view.getByLabel('Connection code').isDisabled(), true)
+    assert.equal(await view.getByRole('button', { name: 'Review request' }).isDisabled(), true)
+  } finally { await pending.close() }
 }

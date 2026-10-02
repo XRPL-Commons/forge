@@ -9,6 +9,8 @@ const props = defineProps<{ runtime: Runtime; revision: string; locked: boolean;
 const emit = defineEmits<{ saved: [view: FactoryView] }>()
 
 const api = useForgeApi()
+const mounted = ref(false)
+onMounted(() => { mounted.value = true })
 
 const MODES = [
   { label: 'Anyone with write access to the repository', value: 'anyone' },
@@ -88,7 +90,7 @@ function discard() {
       id="approvers-mode"
       v-model="mode"
       :items="MODES"
-      :disabled="locked || saving"
+      :disabled="!mounted || locked || saving"
       class="mt-3"
     />
 
@@ -98,7 +100,7 @@ function discard() {
         id="approvers-logins"
         v-model="text"
         placeholder="octocat, hubot"
-        :disabled="locked || saving"
+        :disabled="!mounted || locked || saving"
         class="mt-1 w-full"
       />
       <p v-if="draft.error" id="approvers-invalid" class="mt-1 text-xs text-amber-200">{{ draft.error }}</p>
