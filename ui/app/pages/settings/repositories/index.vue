@@ -99,12 +99,10 @@ async function disable(id: number) {
             title="Refresh repositories"
             :disabled="busy || !enabledCount"
             :aria-busy="repositoriesChecking ? 'true' : undefined"
+            icon="i-lucide-refresh-cw"
+            :ui="{ leadingIcon: repositoriesChecking ? 'animate-spin' : '' }"
             @click="refreshRepositories"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" :class="repositoriesChecking ? 'animate-spin' : ''" aria-hidden="true" focusable="false">
-              <path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9" />
-            </svg>
-          </UButton>
+          />
         </div>
       </div>
       <p class="mt-1 text-xs text-muted">Choose Enable to check a repository and finish its setup. Automation starts only after you confirm.</p>
