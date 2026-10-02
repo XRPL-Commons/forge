@@ -391,3 +391,12 @@ node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" <file>
 ```
 
 - `check-rejected/` — `stale` row plus a refused `POST /api/repositories/check` (`{ok:false}`); repository-setup asserts the auto-check is retried once checks are accepted again.
+
+## factory-line/
+
+`factory.json` only: the default factory plus a full Build stage for the
+factory line strip. Issue `1:617` holds the second build slot (job
+`44444444-…`), so `1:611`, `1:615` and `1:618` wait in front of a full
+Build; `1:619` waits on `#601`; `1:720` is paused (asleep on the shelf);
+`1:721` (environment), `1:722` (change of approach) and `1:730` (approval
+needed) join the two failed issues, so five issues need the operator.
