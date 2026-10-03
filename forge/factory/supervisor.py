@@ -87,8 +87,13 @@ class Supervisor:
                 finally:
                     self.ledger.job_update(job['id'], last_observed=self.clock())
         requested = self.check_requests()
+        # Issues waiting for a human are observed first, at most every 45 s so they
+        # cannot starve the rotation: an approval given on GitHub otherwise waited
+        # minutes for the rotation to come round.
+        now = self.clock()
+        awaiting = lambda i: i['state'] in ('approval_needed', 'audited') and now - i.get('last_observed', 0) >= 45
         for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: (
-                not bool(i.get('operator_sync')), i['key'] not in requested, i.get('last_observed', 0))):
+                not bool(i.get('operator_sync')), i['key'] not in requested, not awaiting(i), i.get('last_observed', 0))):
             if time.monotonic() >= observe_until:
                 break
             # Merged and cancelled issues change rarely (a reopen); observing them
@@ -643,7 +648,10 @@ class Supervisor:
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
             with self.ledger.transaction() as data:
-                data['issues'][item['key']].update(state='approval_needed', reason=reason)
+                current = data['issues'][item['key']]
+                if current['state'] != 'approval_needed':
+                    self.ledger.event(data, current, 'state_changed', previous=current['state'], state='approval_needed')
+                current.update(state='approval_needed', reason=reason)
             return
         if not self.config['merge_enabled'] or not self.config['enabled'] or not self.settings.admission(item['repo'])['allowed']:
             self.github.check(item, 'controller', item['candidate'], external, None, 'Automatic merge is paused by configuration')

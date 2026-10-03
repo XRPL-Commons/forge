@@ -14,6 +14,8 @@ from urllib.parse import urlparse, parse_qs
 PORT = 8787
 HOME = str(Path.home())
 WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
+from forge.view_cache import ViewCache
+VIEWS = ViewCache()
 CONTROLS_TOKEN = secrets.token_urlsafe(32)
 # Proof that a request came through the operator UI, not from another local
 # process: a 0600 file only this account (and the UI container, read-only) can
@@ -457,9 +459,10 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Invalid issue view')
                 service=IssueInventory(WD)
                 service.start_refresh()
-                result=service.view(repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None,
-                                    state=query.get('state',['open'])[0],query=query.get('q',[''])[0],
-                                    page=int(query.get('page',['1'])[0]),key=query.get('issue',[None])[0])
+                args=dict(repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None,
+                          state=query.get('state',['open'])[0],query=query.get('q',[''])[0],
+                          page=int(query.get('page',['1'])[0]),key=query.get('issue',[None])[0])
+                result=VIEWS.get(WD,('issues',)+tuple(sorted(args.items())),lambda:service.view(**args))
                 self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
@@ -470,7 +473,7 @@ class H(BaseHTTPRequestHandler):
                 query=parse_qs(u.query, keep_blank_values=True)
                 if set(query)-{'section','issue','limit','before'} or any(len(v)!=1 or not v[0] for v in query.values()):
                     raise ValueError('Invalid factory view')
-                result=select_view(view(WD), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0],
+                result=select_view(VIEWS.get(WD,'factory',lambda:view(WD)), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0],
                                    limit=query.get('limit',[None])[0], before=query.get('before',[None])[0])
                 self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
             except (ValueError,OSError,RuntimeError):
