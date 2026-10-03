@@ -573,9 +573,11 @@ class Ledger:
             issue.pop('prerequisite_hold', None)
             self.event(data, issue, 'protection_restored')
 
-    def cancel(self, key, reason):
+    def cancel(self, key, reason, *, closed_as=None):
         with self.transaction() as data:
             issue = data['issues'][key]
+            if closed_as and issue['state'] != 'merged':
+                issue['closed_as'] = closed_as  # GitHub's state_reason: completed, not_planned, duplicate
             if issue['state'] in ('cancelled', 'merged'):
                 return
             if issue['active']:

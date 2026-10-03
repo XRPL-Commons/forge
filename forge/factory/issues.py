@@ -27,7 +27,7 @@ def facts(issue):
     return {'number': issue['number'], 'title': issue.get('title', ''),
             'body': (issue.get('body') or '')[:16000],
             'content_hash': digest(issue.get('body') or ''), 'body_truncated': len(issue.get('body') or '') > 16000,
-            'state': issue['state'], 'updated_at': issue.get('updated_at'),
+            'state': issue['state'], 'state_reason': issue.get('state_reason'), 'updated_at': issue.get('updated_at'),
             'labels': sorted(labels(issue)),
             'assignees': [a['login'] for a in issue.get('assignees', [])],
             'assignee_types': {a['login']: a.get('type') for a in issue.get('assignees', [])}}
@@ -62,6 +62,8 @@ SUMMARIES = {
                'The pull request was merged and the issue is closed. Nothing more is needed here.'),
     'closed': ('The issue is closed on GitHub',
                'This issue was closed outside Forge. Forge is not working on it.'),
+    'dropped': ('No longer needed',
+                'This issue was closed as not planned or as a duplicate. Forge is not working on it, and reopening it on GitHub brings it back.'),
     'applying': ('Applying your decision',
                  'Forge has your decision and is confirming it on GitHub. It carries on by itself once that is done.'),
     'build': ('Writing the change',
@@ -212,7 +214,13 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     cleanup = bool(item.get('cleanup_pending'))
     if issue['state'] == 'closed' or item.get('state') == 'merged':
         merged = item.get('state') == 'merged'
-        state, detail, case = 'completed', 'Completed and merged.' if merged else 'Closed on GitHub.', 'merged' if merged else 'closed'
+        closed_as = issue.get('state_reason') or item.get('closed_as')
+        if not merged and closed_as in ('not_planned', 'duplicate'):
+            # Dropped work is not finished work: keep it out of "completed".
+            state, case = 'dropped', 'dropped'
+            detail = 'No longer needed: closed as a duplicate.' if closed_as == 'duplicate' else 'No longer needed: closed as not planned.'
+        else:
+            state, detail, case = 'completed', 'Completed and merged.' if merged else 'Closed on GitHub.', 'merged' if merged else 'closed'
     elif item.get('operator_request'):
         state, detail, case = 'waiting', 'Applying your decision. Forge will confirm it before continuing.', 'applying'
     elif item.get('active') and not (item.get('active_role') == 'merge' and (owner or gate.get('kind') in ('approval', 'blocked', 'refused'))):
@@ -278,10 +286,10 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions = []
     if not repo.get('enabled') or not repo.get('access_ready'):
         actions = []
-        if state not in ('completed', 'working'):
+        if state not in ('completed', 'dropped', 'working'):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
     # Dropping the issue is always the alternative to finishing it, never the next step.
-    closable = fresh and state != 'completed' and case not in ('applying', 'repo_blocked')
+    closable = fresh and state not in ('completed', 'dropped') and case not in ('applying', 'repo_blocked')
     summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
                else owner if case == 'external' else summary_for(case, item, held))
     return {'status': state, 'reason_code': case, 'ledger_state': item.get('state'),
@@ -409,7 +417,7 @@ class IssueInventory:
         threading.Thread(target=self.refresh, args=(force,), daemon=True).start()
 
     def view(self, *, repo_id=None, state='open', query='', page=1, key=None):
-        if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting', 'blocked') or type(page) is not int or page < 1:
+        if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting', 'blocked', 'dropped') or type(page) is not int or page < 1:
             raise ValueError('Choose a valid issue view')
         data = self.read()
         ledger = Ledger(self.root / 'state/factory').read()
@@ -470,7 +478,7 @@ class IssueInventory:
                                    or (a.get('at') or 0) >= latest]
                         return {'issue': row, 'repositories': scopes, 'actions': actions}
                     continue
-                if state == 'open' and row['status'] == 'completed' or state == 'completed' and row['status'] != 'completed':
+                if state == 'open' and row['status'] in ('completed', 'dropped') or state == 'completed' and row['status'] != 'completed':
                     continue
                 if state not in ('open', 'completed', 'all') and row['status'] != state:
                     continue
@@ -479,7 +487,7 @@ class IssueInventory:
                 rows.append(row)
         if key is not None:
             raise ValueError('This issue is not in a managed repository. Refresh the issue list.')
-        order = {'attention': 0, 'working': 1, 'waiting': 2, 'blocked': 3, 'queued': 4, 'backlog': 5, 'completed': 6}
+        order = {'attention': 0, 'working': 1, 'waiting': 2, 'blocked': 3, 'queued': 4, 'backlog': 5, 'completed': 6, 'dropped': 7}
         rows.sort(key=lambda r: (order[r['status']], r['repo'].lower(), r['number']))
         return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history', 'reviews', 'reviewers', 'default_reviewers', 'reviewers_requested')} for r in rows[(page-1)*50:page*50]],
                 'total': len(rows), 'page': page, 'pages': max(1, (len(rows)+49)//50), 'repositories': scopes,

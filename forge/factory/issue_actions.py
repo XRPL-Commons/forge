@@ -421,7 +421,7 @@ class IssueActions:
                              {'state': 'closed', 'state_reason': 'not_planned'})
         if item is None:
             return
-        self.ledger.cancel(decision['key'], 'Closed as not planned: ' + decision['reason'])
+        self.ledger.cancel(decision['key'], 'Closed as not planned: ' + decision['reason'], closed_as='not_planned')
         with self.ledger.transaction() as state:
             current = state['issues'][decision['key']]
             current.pop('operator_request', None)
