@@ -46,6 +46,24 @@ class DependencySchedulingTests(CycleTest):
         self.assertEqual(item['blocked_dependencies'], [2])
         self.assertIsNone(item['active'])
 
+    def test_a_question_about_named_prerequisites_is_answered_by_the_wait(self):
+        self.cycle()
+        job = self.active()
+        decision = {'question': 'Should issue #1 wait until #2 is closed?', 'options': ['Wait', 'Proceed'],
+                    'recommendation': 'Defer until #2 is closed.', 'evidence': 'The issue says to wait for #2.'}
+        self.engine.finish(job, {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'needs_decision',
+                                 'summary': 'Prerequisite open', 'decision': decision,
+                                 'headline': 'Stopped: prerequisite open', 'plain': 'The issue says to wait for #2.'})
+        self.cycle()
+        self.assertTrue(self.ledger.read()['issues'][self.key].get('decision_request'))
+        self.github.issue = Mock(return_value=({'number': 1, 'state': 'open', 'labels': [],
+            'body': 'Prerequisites: #2.'}, 'requirements'))
+        self.github.call = Mock(return_value={'number': 2, 'state': 'open'})
+        self.assertFalse(self.cycle()['errors'])
+        item = self.ledger.read()['issues'][self.key]
+        self.assertNotIn('decision_request', item)
+        self.assertEqual((item['state'], item['blocked_dependencies'], item['active']), ('ready', [2], None))
+
     def test_open_dependency_waits_and_closure_starts_without_retry(self):
         self.dependency()
         self.assertFalse(self.cycle()['errors'])

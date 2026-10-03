@@ -102,8 +102,8 @@ def dependencies(body):
             continue
         if fenced:
             continue
-        for match in re.finditer(START, line, re.I):
-            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
+        for match in [*re.finditer(START, line, re.I), *re.finditer(r'^[\W_]*follows\b', line, re.I)]:
+            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
                               maxsplit=1, flags=re.I)[0]
             numbers.update(int(n) for n in re.findall(r'(?<![\w/])#([1-9]\d*)\b', clause))
         numbers.update(int(n) for n in re.findall(FIRST, line, re.I))

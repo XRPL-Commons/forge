@@ -5,6 +5,7 @@ has a preceding durable intent; ambiguous responses are reconciled on later cycl
 """
 from copy import deepcopy
 from pathlib import Path
+import re
 import time
 import json
 
@@ -511,6 +512,17 @@ class Supervisor:
         ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
         if not ownership_clear and not item.get('active'):
             return
+        if item['state'] == 'hold' and item.get('decision_request') and not item.get('active'):
+            # A worker that asked "should this wait for #90?" when the issue itself
+            # names #90 as a prerequisite: Forge's own dependency wait answers it.
+            asked = item['decision_request']
+            text = ' '.join(str(asked.get(k) or '') for k in ('question', 'recommendation', 'evidence'))
+            named = [n for n in dependencies(issue.get('body')) if re.search(rf'(?<![\w/])#{n}\b', text)]
+            if named:
+                self.ledger.retry(item['key'], 'Waits for prerequisites named in the issue: '
+                                  + ', '.join('#' + str(n) for n in named))
+                self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
         if item.get('environment_hold') and item['state'] == 'hold':
             labels = {label['name'] for label in issue.get('labels', [])}
             if labels.intersection(self.config['hold_labels']):
