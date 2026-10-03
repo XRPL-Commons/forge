@@ -517,6 +517,12 @@ class Supervisor:
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
             held = item['environment_hold']
+            if held['blocker'] == 'dependency_access' and dependencies(issue.get('body')):
+                # Workers reported "wait for #N" as an access problem. Once Forge can
+                # read the prerequisites itself, the ordinary dependency wait applies.
+                if self.ledger.resume_environment(item['key'], 'The issue names prerequisite issues; waiting on them instead'):
+                    self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
             if held['blocker'] == 'services':
                 # Older installations held missing databases for manual approval.
                 # Resume once under the same bounded policy as a new blocker.

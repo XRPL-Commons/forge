@@ -259,7 +259,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         # the approval itself still has to reach Forge through GitHub.
         actions = ['assign_reviewer'] if owned_pr else []
     elif item.get('blocked_dependencies'):
-        state, detail, case = 'waiting', item.get('dependency_reason'), 'dependencies'
+        state, detail, case = 'blocked', item.get('dependency_reason'), 'dependencies'
     elif item.get('state') in ('built', 'reviewed', 'audited', 'investigating'):
         state, detail = 'queued', {'built': 'Waiting for review.', 'reviewed': 'Waiting for security review.', 'audited': 'Checking merge requirements.', 'investigating': 'Waiting for a failure investigation.'}[item['state']]
         actions, case = (['pause'] if item['state'] != 'investigating' else []), item['state']
@@ -409,7 +409,7 @@ class IssueInventory:
         threading.Thread(target=self.refresh, args=(force,), daemon=True).start()
 
     def view(self, *, repo_id=None, state='open', query='', page=1, key=None):
-        if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting') or type(page) is not int or page < 1:
+        if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting', 'blocked') or type(page) is not int or page < 1:
             raise ValueError('Choose a valid issue view')
         data = self.read()
         ledger = Ledger(self.root / 'state/factory').read()
@@ -479,7 +479,7 @@ class IssueInventory:
                 rows.append(row)
         if key is not None:
             raise ValueError('This issue is not in a managed repository. Refresh the issue list.')
-        order = {'attention': 0, 'working': 1, 'waiting': 2, 'queued': 3, 'backlog': 4, 'completed': 5}
+        order = {'attention': 0, 'working': 1, 'waiting': 2, 'blocked': 3, 'queued': 4, 'backlog': 5, 'completed': 6}
         rows.sort(key=lambda r: (order[r['status']], r['repo'].lower(), r['number']))
         return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history', 'reviews', 'reviewers', 'default_reviewers', 'reviewers_requested')} for r in rows[(page-1)*50:page*50]],
                 'total': len(rows), 'page': page, 'pages': max(1, (len(rows)+49)//50), 'repositories': scopes,
