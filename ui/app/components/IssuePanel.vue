@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { issuePath } from '~/utils/issues'
 import { panelState } from '~/utils/panel'
+import { issueTab } from '~/utils/discussion'
 
 // The board's detail panel: the same IssueDetail the /issues/<key> route
 // renders, slid in over the right of the board. The board keeps polling
@@ -16,7 +17,7 @@ const title = computed(() => {
   return number ? `Issue #${number}` : props.issueKey
 })
 const route = useRoute()
-const fullPage = computed(() => issuePath(props.issueKey, panelState(route.query).job))
+const fullPage = computed(() => issuePath(props.issueKey, panelState(route.query).job, issueTab(route.query)))
 </script>
 
 <template>
@@ -34,7 +35,7 @@ const fullPage = computed(() => issuePath(props.issueKey, panelState(route.query
            panel instead of inheriting the previous issue's state. Its own
            Suspense boundary keeps the detail's first load off the board. -->
       <Suspense>
-        <IssueDetail :key="issueKey" :issue-key="issueKey" />
+        <IssueDetail :key="issueKey" :issue-key="issueKey" fill="container" />
         <template #fallback>
           <p role="status" class="text-sm text-muted">Loading issue…</p>
         </template>

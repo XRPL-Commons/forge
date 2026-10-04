@@ -30,6 +30,8 @@ let savedRepositoryView = null
 let savedIssue = null
 let connectedAgents = []
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
+// Questions whose first reply already failed: "(fail)" fails once, then answers.
+let failedQuestions = new Set()
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -178,6 +180,7 @@ const server = http.createServer(async (req, res) => {
     savedIssue = null
     connectedAgents = []
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
+    failedQuestions = new Set()
     return send(res, 200, { ok: true })
   }
 
@@ -227,10 +230,15 @@ const server = http.createServer(async (req, res) => {
         conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text: body.message })
         // A message containing "(hold)" leaves the reply in progress so a
         // spec can exercise stopping it; anything else is answered at once.
+        // A first "(fail)" ends the way a worker that ran out of time does.
         if (body.message.includes('(hold)')) Object.assign(conversation, { status: 'running', reason: 'Agent is reading the saved evidence', partial: 'Reading the saved evidence' })
-        else conversation.messages.push({ id: '11111111-2222-4333-8444-555555555555', sequence: conversation.messages.length + 1, role: 'assistant',
+        else if (body.message.includes('(fail)') && !failedQuestions.has(body.message)) {
+          failedQuestions.add(body.message)
+          Object.assign(conversation, { status: 'unavailable', reason: 'Discussion stopped or exceeded its time limit', partial: '' })
+        } else conversation.messages.push({ id: `11111111-2222-4333-8444-${555555555555 + conversation.messages.filter(m => m.role === 'assistant').length}`, sequence: conversation.messages.length + 1, role: 'assistant',
           text: 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)',
           proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
+        if (!body.message.includes('(hold)') && conversation.messages.at(-1).role === 'assistant') Object.assign(conversation, { status: 'idle', reason: null, partial: '' })
       } else if (body.action === 'cancel') Object.assign(conversation, { status: 'cancelled', reason: 'Reply stopped', partial: '' })
       else if (body.action === 'apply') conversation.messages.find(m => m.id === body.message_id).receipt = 'discussion-decision'
       return send(res, 200, withToken({ ok: true, request: 'discussion-decision' }))

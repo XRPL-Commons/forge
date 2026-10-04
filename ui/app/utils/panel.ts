@@ -26,11 +26,13 @@ export function panelState(query: PanelQuery | null | undefined): PanelState {
 
 // The query that opens `panel` (or closes the panel, for null), keeping every
 // other parameter the page carries. Both keys are always rewritten, so
-// switching issues never leaves the previous issue's run behind.
+// switching issues never leaves the previous issue's run behind; the tab
+// (`?tab=discussion`) belongs to the issue it was opened on, so it goes too.
 export function panelQuery(query: PanelQuery | null | undefined, panel: { key: string; job?: string | null } | null): PanelQuery {
   const next: PanelQuery = { ...(query ?? {}) }
   delete next.issue
   delete next.job
+  delete next.tab
   if (!panel?.key) return next
   next.issue = panel.key
   if (panel.job) next.job = panel.job
