@@ -424,8 +424,9 @@ export function eventLabel(kind: string): string {
   return EVENT_LABELS[kind] ?? kind.replace(/_/g, ' ')
 }
 
-export function issuePath(key: string, job?: string | null): string {
-  return `/issues/${encodeURIComponent(key)}${job ? `?job=${encodeURIComponent(job)}` : ''}`
+export function issuePath(key: string, job?: string | null, tab?: 'details' | 'discussion' | null): string {
+  const params = [job ? `job=${encodeURIComponent(job)}` : '', tab === 'discussion' ? 'tab=discussion' : ''].filter(Boolean)
+  return `/issues/${encodeURIComponent(key)}${params.length ? `?${params.join('&')}` : ''}`
 }
 
 // The list's filters live in the URL (`?show=&repo=&q=&page=`), so a filtered

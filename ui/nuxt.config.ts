@@ -18,6 +18,9 @@ export default defineNuxtConfig({
   app: {
     head: {
       titleTemplate: '%s · Forge',
+      // The issue chat's prompt sits at the bottom of a 100dvh pane: let the
+      // on-screen keyboard shrink the layout instead of covering it.
+      viewport: 'width=device-width, initial-scale=1, interactive-widget=resizes-content',
       htmlAttrs: { lang: 'en', class: 'dark' },
       link: [{ rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
     },
