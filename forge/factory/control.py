@@ -215,8 +215,13 @@ def view(root):
     repositories = Settings(root).view()['repositories']
     runtime = load(root)
     active = (Path(root) / 'state' / 'factory-v2.enabled').exists()
-    operator = overview(data, repositories, runtime, observation, active, time.time())
-    return {'operator': operator, 'repositories': repositories, 'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': runtime,
+    now = time.time()
+    operator = overview(data, repositories, runtime, observation, active, now)
+    from ..harnesses.registry import manifests
+    from .accounts import health
+    names = {key: item.get('name') for key, item in manifests().items()}
+    coding_accounts = health(data, runtime, now, names) if active else []
+    return {'operator': operator, 'coding_accounts': coding_accounts, 'repositories': repositories, 'observation': observation, 'actions': actions, 'issues': issues, 'jobs': jobs, 'slots': data['slots'], 'runtime': runtime,
             'deployments': deployments(root),
             'runtime_revision': digest(runtime), 'active': active}
 

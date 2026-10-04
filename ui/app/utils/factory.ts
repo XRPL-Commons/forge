@@ -2,6 +2,7 @@
 // renders a CardModel, every banner is produced by warnings(), so no component
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
+import type { CodingAccount } from './accounts'
 import { ago, clampTitle, reviewerMentions, shortCommit } from './format'
 import type { PortraitLook } from './cube'
 import { isDropped, ledgerLook, type ClosedAs } from './workbench'
@@ -80,6 +81,8 @@ export interface FactoryView {
   runtime: { enabled: boolean; slots: Record<string, number>; cycle_seconds: number; [key: string]: unknown }
   // The digest CapacityForm sends back on POST /api/runtime (contracts §2).
   runtime_revision: string
+  // One row per coding account in the pool (utils/accounts.ts).
+  coding_accounts?: CodingAccount[]
 }
 
 export interface CardModel {

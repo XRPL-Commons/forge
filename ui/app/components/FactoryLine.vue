@@ -6,6 +6,7 @@ import {
   type AttentionReason, type HeadlinePart, type LineInfo, type LineItem, type LineStage, type LineState,
 } from '~/utils/factoryLine'
 import { panelQuery, panelTarget } from '~/utils/panel'
+import { accountsHeadline } from '~/utils/accounts'
 import { lineBayCard, lineIssueCard, lineListCard, placeCard, type LineCard, type Rect } from '~/utils/lineCard'
 import { needsYouRows, type NeedsFilter } from '~/utils/needsYou'
 import { unblockCounts } from '~/utils/unblocks'
@@ -27,7 +28,8 @@ const router = useRouter()
 
 const state = computed(() => lineState(props.view, props.now, props.groups))
 const info = computed(() => state.value ? lineAnalyse(state.value) : null)
-const parts = computed<HeadlinePart[]>(() => info.value ? lineHeadline(info.value) : [])
+const { accounts } = useCodingAccounts()
+const parts = computed<HeadlinePart[]>(() => info.value ? lineHeadline(info.value, accountsHeadline(accounts.value)) : [])
 const label = computed(() => lineHeadlineText(parts.value))
 const summary = computed(() => state.value && info.value ? lineSummary(state.value, info.value) : '')
 const links = computed(() => (state.value?.items ?? []).map(item => ({

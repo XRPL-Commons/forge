@@ -36,6 +36,7 @@ const links = computed(() => [
     </NuxtLink>
     <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
       <ActivityPill />
+      <AccountsPill />
       <nav aria-label="Main navigation" class="flex items-center gap-4 text-sm sm:gap-5">
         <NuxtLink
           v-for="link in links"

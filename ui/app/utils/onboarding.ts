@@ -14,7 +14,7 @@ export type CheckStatus = 'checking' | 'passed' | 'failed'
 export type CheckKey = 'github' | 'provider' | 'runner'
 
 export type HarnessStatus = 'connected' | 'passed' | 'failed' | 'unknown'
-  | 'sign in again' | 'usage limit; retry pending' | 'verification required'
+  | 'sign in again' | 'usage limit; retry pending' | 'unavailable; retry pending' | 'verification required'
 // auth: how the account is held. A browser login rotates and runs one job at a
 // time; an API key or long-lived token is shared, so its jobs run in parallel.
 export type HarnessAuth = 'login' | 'api_key' | 'token'

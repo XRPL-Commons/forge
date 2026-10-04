@@ -31,6 +31,7 @@ const fullPage = computed(() => issuePath(props.issueKey, panelState(route.query
       <UButton id="issue-full-page" :to="fullPage" size="xs" color="neutral" variant="ghost" trailing-icon="i-lucide-maximize-2">Open full page</UButton>
     </template>
     <template #body>
+      <AccountAlertBar inset />
       <!-- Keyed by the issue, so opening another card starts from a clean
            panel instead of inheriting the previous issue's state. Its own
            Suspense boundary keeps the detail's first load off the board. -->

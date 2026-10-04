@@ -34,6 +34,23 @@ const notice = computed(() => {
   return checks.provider === 'failed' || checks.runner === 'failed' ? state.value?.error ?? '' : ''
 })
 
+// Live account health (the same rows the global alert bar reads). A
+// signed-out account leads the page with its reconnect action.
+const route = useRoute()
+const { alerts } = useCodingAccounts()
+const alertFor = (id: string) => alerts.value.find(alert => alert.provider === id) ?? null
+function reconnect(provider: string) {
+  const harness = harnesses.value.find(item => item.id === provider)
+  if (harness) openDialog(harness)
+}
+// The alert bar deep-links to #account-<provider>; the rows render after
+// the first poll, so scroll once they exist.
+watch(() => harnesses.value.length, async (count) => {
+  if (import.meta.server || !count || !route.hash) return
+  await nextTick()
+  document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'center' })
+}, { immediate: true })
+
 function openDialog(harness: Harness) {
   selected.value = harness
   open.value = true
@@ -51,6 +68,19 @@ function openDialog(harness: Harness) {
     </div>
     <p class="mt-2 text-muted">Manage sign-in from the Forge VM terminal.</p>
 
+    <UAlert
+      v-for="alert in alerts"
+      :key="alert.provider"
+      class="mt-5"
+      :color="alert.color"
+      variant="subtle"
+      :icon="alert.status === 'sign_in_expired' ? 'i-lucide-key-round' : 'i-lucide-triangle-alert'"
+      :title="alert.title"
+      :description="alert.description"
+      :data-settings-account-alert="alert.provider"
+      :actions="[{ label: alert.actionLabel, color: alert.color, variant: 'solid', onClick: () => reconnect(alert.provider) }]"
+    />
+
     <UAlert v-if="notice" class="mt-5" color="warning" variant="subtle" :description="notice" />
 
     <p v-if="!state" class="mt-6 text-muted">{{ poll.error.value || 'Loading setup…' }}</p>
@@ -62,6 +92,7 @@ function openDialog(harness: Harness) {
           :key="harness.id"
           :harness="harness"
           :activity="state.activity"
+          :alert="alertFor(harness.id)"
           @open="openDialog"
         />
       </div>
