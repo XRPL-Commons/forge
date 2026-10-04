@@ -290,6 +290,11 @@ def assignment_note(job):
         'the command and stops the servers. Run servers and tests in the same tool invocation. '
         'Use MONGODB_URI, DATABASE_URL, REDIS_URL and MONGOMS_SYSTEM_BINARY supplied for those services. '
         'Do not download servers, use Docker, or connect to another job or production database.')
+    base['instructions'] += (
+        ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
+        'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
+        'Do everything else you can verify, then state the exact remaining check a person must run: commands, inputs '
+        'and the expected result. Never return blocked_environment or reject only because such a check cannot run here.')
     if job['role'] == 'build':
         base['instructions'] += (
             ' If the requirements cannot be met by changing code, or the outcome is an approval, exception '
@@ -313,10 +318,14 @@ def assignment_note(job):
             ' Evaluate only the assigned head and base. Do not edit or push code. Return pass, reject '
             'with actionable findings, or unable. Include the assigned candidate key in your result. '
             'The supervisor publishes the verified verdict under your role App identity. '
-            'For audit, report human_required separately as required, not_required, or unknown, with a reason.')
+            'For audit, report human_required separately as required, not_required, or unknown, with a reason. '
+            'When the code is sound but a required check needs a person (see above), pass, and in audit set '
+            'human_required to required with human_reason giving the exact verification steps.')
     else:
         base['instructions'] += (
             ' Investigate the failed attempt using the included evidence and lifecycle history. '
+            'If attempts failed only because a required check needs a person (see above), say so and propose '
+            'delivering the change with those exact verification steps for a human, not an environment repair. '
             'Read only: no edits, comments, labels, merges, or launches. State the underlying pattern, '
             'evidence, remaining uncertainty, and a concrete alternative with its justification, if any. '
             'A fresh session or reworded prompt is not a different approach.')

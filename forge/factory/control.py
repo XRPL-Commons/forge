@@ -114,6 +114,7 @@ def attention_kind(item):
     """Why an issue waits for the operator, as one stable code (None when it doesn't).
 
     approve: a pull request waits for a human approval
+    verify: a pull request waits for a person to run a check workers cannot (then approve)
     question: the worker asked the operator something
     approach: attempts ran out; a different approach is needed before retrying
     failed: an attempt failed and can be retried
@@ -125,7 +126,11 @@ def attention_kind(item):
     if item.get('blocked_dependencies') or state in ('merged', 'cancelled'):
         return None
     if state == 'approval_needed':
-        return 'approve' if (item.get('merge_gate') or {}).get('kind') in ('approval', None) else 'review'
+        if (item.get('merge_gate') or {}).get('kind') not in ('approval', None):
+            return 'review'
+        # The audit asked a person to check something workers cannot run.
+        audit = (item.get('evidence') or {}).get('audit') or {}
+        return 'verify' if audit.get('human_required') == 'required' and audit.get('human_reason') else 'approve'
     if state == 'failed':
         return 'failed'
     if state != 'hold':

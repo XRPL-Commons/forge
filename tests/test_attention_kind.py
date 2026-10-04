@@ -9,6 +9,8 @@ class AttentionKindTests(unittest.TestCase):
         cases = [
             ({'state': 'approval_needed', 'merge_gate': {'kind': 'approval'}}, 'approve'),
             ({'state': 'approval_needed', 'merge_gate': {'kind': 'blocked'}}, 'review'),
+            ({'state': 'approval_needed', 'merge_gate': {'kind': 'approval'},
+              'evidence': {'audit': {'human_required': 'required', 'human_reason': 'Build the image and check the PDF'}}}, 'verify'),
             ({'state': 'failed'}, 'failed'),
             ({'state': 'hold', 'decision_request': {'question': 'Wait for #87?'}}, 'question'),
             ({'state': 'hold', 'reason': APPROACH_HOLD}, 'approach'),
