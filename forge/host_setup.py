@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -141,6 +142,47 @@ def cleanup_login(name):
         command(['docker', 'rm', '--force', name], stdout=subprocess.DEVNULL)
 
 
+def login_sandbox(root, item, config):
+    """Grok enforces its managed deny list even during device sign-in."""
+    if not item.get('login_sandbox'):
+        return []
+    from .factory.runner import process_isolation, RunnerError
+    repair = shlex.join([str(SOURCE / 'bin/forge'), 'update', '--root', str(root)])
+    seccomp = Path(root) / 'runner-seccomp.json'
+    try:
+        isolation = process_isolation({**config, 'provider': item['id']})
+        if not seccomp.is_file():
+            raise RunnerError('Runner seccomp policy is missing')
+    except RunnerError as error:
+        raise ValueError(f'{item["name"]} sign-in needs the installed runner isolation policies. Run {repair}, then retry.') from error
+    # The image keeps bubblewrap outside the default PATH. Login and the native
+    # Grok harness must use the same tool path.
+    extra = [*isolation, '--security-opt', 'seccomp=' + str(seccomp),
+             '--env', 'PATH=/opt/forge/claude-tools:/usr/local/bin:/usr/bin:/bin']
+    probe = '''import shutil, subprocess, sys
+if not all(shutil.which(p) for p in (sys.argv[1], "bwrap")):
+    sys.exit(10)
+check = subprocess.run(["bwrap", "--unshare-user", "--unshare-pid", "--ro-bind", "/", "/",
+                        "--proc", "/proc", "--dev", "/dev", "/bin/true"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+sys.exit(11 if check.returncode else 0)
+'''
+    print(f'Checking {item["name"]} sign-in tools and sandbox in the runner image…', flush=True)
+    try:
+        command(['docker', 'run', '--rm', '--network', 'none', '--log-driver', 'none', '--read-only',
+                 '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                 '--user', str(os.getuid()) + ':' + str(os.getgid()), '--pids-limit', '128', '--memory', '1g',
+                 '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m', *extra,
+                 '--entrypoint', 'python3', config['image'], '-c', probe, item['command']],
+                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        detail = ('The runner image is missing a required sign-in tool.'
+                  if isinstance(error, subprocess.CalledProcessError) and error.returncode == 10
+                  else 'The runner could not start the sign-in sandbox.')
+        raise ValueError(f'{detail} Run {repair}, then retry. Browser sign-in has not started.') from error
+    return extra
+
+
 def connect_login(root, provider, *, api_key=False, token=False, import_login=None, models=None):
     item = manifest(provider)
     if token and not item.get('token_env'):
@@ -174,6 +216,7 @@ def connect_login(root, provider, *, api_key=False, token=False, import_login=No
         config = setup.runtime()
         if not config['image']:
             raise ValueError('Install the runner image first: bin/forge setup install --root ' + str(root))
+        isolation = login_sandbox(root, item, config)
         name = 'forge-login-' + login_owner(root) + '-' + provider
         old = subprocess.run(['docker', 'inspect', '--format', '{{index .Config.Labels "forge.login"}}', name],
                              capture_output=True, text=True)
@@ -199,6 +242,7 @@ def connect_login(root, provider, *, api_key=False, token=False, import_login=No
                     '--user', str(os.getuid()) + ':' + str(os.getgid()), '--pids-limit', '128', '--memory', '1g',
                     '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m', '--mount', 'type=bind,source=' + temporary + ',target=/work/home',
                     '--env', 'HOME=/work/home', '--env', 'DISABLE_AUTOUPDATER=1',
+                    *isolation,
                     '--entrypoint', item['command'], config['image'], *item['login']]
             try:
                 # Creation is serialized with reset intent; attachment does not
