@@ -486,6 +486,15 @@ class Supervisor:
         if item.get('operator_request'):
             return  # An interrupted decision must finish before observing new eligibility.
         issue, requirements = self.github.issue(item)
+        candidate_value = item.get('candidate')
+        if (candidate_value and candidate_value.get('pr') and not item.get('active')
+                and item['state'] in ('hold', 'failed', 'cancelled')
+                and item.get('checks_settled') != candidate_value.get('key')):
+            reason = item.get('reason') or 'Forge stopped working on this candidate.'
+            self.github.settle_checks(item, candidate_value, 'Forge is not working on this pull request right now: '
+                                      + str(reason)[:500] + ' A new attempt publishes fresh checks.')
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['checks_settled'] = candidate_value.get('key')
         held_by = sorted({l['name'] for l in issue.get('labels', [])}.intersection(self.config['hold_labels']))
         if held_by != item.get('label_hold', []):
             # Recorded so views without GitHub access (the Activity strip) know a pause is deliberate.
