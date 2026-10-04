@@ -30,6 +30,9 @@ BUTTONS = {
     "assign_reviewer": ("Assign reviewer", "Requests a GitHub review from the named people; the reason must be only their GitHub logins."),
     "close": ("Close issue", "Stops any work, closes Forge's pull request and closes the issue as not planned, with the reason as a comment."),
 }
+# Answers took 100-150 s, and container start plus reading the repository can
+# take longer; 300 s timed out with nothing streamed (tokenlab #7).
+DISCUSSION_SECONDS = 600
 KEY = re.compile(r"[1-9][0-9]*:[1-9][0-9]*")
 
 
@@ -221,7 +224,7 @@ class Discussions:
             worker = {**config, **{k: v for k, v in entry.items() if k != "id"}}
             job = {"id": str(uuid.uuid4()), "slot": "issue-discussion", "role": "discussion", "issue_key": key,
                 "repo": row["repo"], "repo_id": row["repo_id"], "issue_number": row["number"],
-                "candidate": context["candidate"], "deadline": self.clock() + 300, "fenced": False,
+                "candidate": context["candidate"], "deadline": self.clock() + DISCUSSION_SECONDS, "fenced": False,
                 "runner_config": worker, "cleanup": False, "context": context,
                 "messages": [{"role": m["role"], "text": m["text"]} for m in thread["messages"][-12:]]}
             self.save(key, job=job, origin=origin, revision=row["revision"], reason="Preparing a discussion using saved issue evidence")

@@ -123,8 +123,8 @@ def attention_kind(item):
     """
     from .ledger import APPROACH_HOLD
     state = item.get('state')
-    if item.get('blocked_dependencies') or state in ('merged', 'cancelled'):
-        return None
+    if item.get('blocked_dependencies') or state in ('merged', 'cancelled') or 'hold' in item.get('label_hold', []):
+        return None  # Waiting on other issues, finished, or deliberately paused with the hold label.
     if state == 'approval_needed':
         if (item.get('merge_gate') or {}).get('kind') not in ('approval', None):
             return 'review'
@@ -154,7 +154,7 @@ def view(root):
     issue_fields = ('key', 'repo_id', 'repo', 'number', 'title', 'state', 'reason',
                     'active', 'last_summary', 'reviewers_requested', 'prerequisite_hold',
                     'blocked_dependencies', 'dependency_reason', 'ownership_wait', 'created_at', 'last_observed',
-                    'retry_after', 'deployed', 'deploy_failed', 'closed_as')
+                    'retry_after', 'deployed', 'deploy_failed', 'closed_as', 'label_hold')
     histories = {}
     for event in data['events']:
         histories.setdefault(event['issue'], []).append(event)

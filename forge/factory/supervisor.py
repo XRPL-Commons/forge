@@ -485,6 +485,11 @@ class Supervisor:
         if item.get('operator_request'):
             return  # An interrupted decision must finish before observing new eligibility.
         issue, requirements = self.github.issue(item)
+        held_by = sorted({l['name'] for l in issue.get('labels', [])}.intersection(self.config['hold_labels']))
+        if held_by != item.get('label_hold', []):
+            # Recorded so views without GitHub access (the Activity strip) know a pause is deliberate.
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['label_hold'] = held_by
         if self.ledger.migrate_protection_hold(item['key']):
             item = self.ledger.read()['issues'][item['key']]
         candidate_value = item['candidate']
