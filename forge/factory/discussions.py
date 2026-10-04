@@ -17,7 +17,19 @@ from .runner import ContainerRunner, RunnerError, RunnerCapacity, RunnerUnavaila
 from .providers import available
 from .github import GitHubUnavailable
 
-ACTIONS = {"retry", "resume", "recheck", "queue", "pause", "backlog"}
+ACTIONS = {"retry", "resume", "recheck", "queue", "pause", "backlog", "close", "assign_reviewer"}
+# The operator's own buttons for these actions (ui/app/utils/issues.ts), so the
+# agent names exactly what the operator can click.
+BUTTONS = {
+    "queue": ("Queue for Forge", "Forge checks setup, dependencies and existing work, then starts when capacity allows."),
+    "backlog": ("Return to backlog", "Removes the issue from Forge's queue; the GitHub issue stays open."),
+    "pause": ("Pause", "Forge leaves the issue on hold until the operator resumes it."),
+    "resume": ("Release hold", "Releases a deliberate hold; Forge rechecks dependencies and existing work first."),
+    "retry": ("Retry attempt", "Grants a new three-attempt budget and returns the issue to Build, with the reason as guidance."),
+    "recheck": ("Recheck readiness", "Rechecks the reported blocker and resumes the held stage, keeping the pull request and budget."),
+    "assign_reviewer": ("Assign reviewer", "Requests a GitHub review from the named people; the reason must be only their GitHub logins."),
+    "close": ("Close issue", "Stops any work, closes Forge's pull request and closes the issue as not planned, with the reason as a comment."),
+}
 KEY = re.compile(r"[1-9][0-9]*:[1-9][0-9]*")
 
 
@@ -35,11 +47,25 @@ def note(job):
                 "You may propose ONE of the currently available actions listed in context, with a concrete reason/changed approach "
                 "of at most 2000 characters. Set proposal to null if more evidence, a scope edit, or a different external action "
                 "is needed; explain that next step instead. The operator must explicitly Apply any proposal. "
+                "End every answer with a short section titled 'What you can do', listing only the buttons in "
+                "available_actions by their exact button name, what each would do for this issue, and which one you "
+                "recommend; then the steps in operator_only that only the operator can take outside Forge. If no button "
+                "helps, say so and say what would. Never offer anything not listed there. "
                 "Use summary as your full answer, headline and plain for a brief synopsis. Keep summary under 12000 characters. "
                 "Return outcome pass for a completed discussion, even if the underlying issue remains blocked; blocker null. "
                 "Return the final structured response. The trusted harness writes /work/result.json; do not write it yourself. "
                 "Never include credentials.")}
 
+
+
+def operator_only(row):
+    """Steps no Forge button takes, so the agent can name them without overstating Forge's reach."""
+    steps = ["Check now: re-read the issue and its pull request from GitHub."]
+    approval = row.get("approval")
+    if approval and approval.get("pr"):
+        steps.append(f"Approve pull request #{approval['pr']} on GitHub; Forge cannot approve on the operator's behalf.")
+    steps.append("Edit the issue on GitHub to change its requirements or prerequisites; Forge reads the new text.")
+    return steps
 
 
 class Discussions:
@@ -152,9 +178,11 @@ class Discussions:
                 "summary": scrub(str(result.get("summary", "")))[:10000],
                 "link": "/issues/" + key + "?job=" + job["id"]})
         row = {**row, "body": str(row.get("body", ""))[:24000]}
+        actions = [a for a in row["actions"] if a in ACTIONS] + (["close"] if row.get("closable") else [])
         return {"issue": {k: row.get(k) for k in ("key", "repo", "number", "title", "body", "status", "reason", "dependencies", "pull_requests")},
                 "issue_url": "https://github.com/" + row["repo"] + "/issues/" + str(row["number"]),
-                "actions": [a for a in row["actions"] if a in ACTIONS], "revision": row["revision"],
+                "actions": actions, "available_actions": [{"action": a, "button": BUTTONS[a][0], "effect": BUTTONS[a][1]} for a in actions],
+                "operator_only": operator_only(row), "revision": row["revision"],
                 "candidate": item.get("candidate"), "attempts": evidence,
                 "decision_request": item.get("decision_request"),
                 "history": [{"at": e.get("at"), "kind": e.get("kind"), "reason": scrub(str(e.get("reason") or ""))[:2000]} for e in item.get("history", [])[-10:]], "observed_at": self.clock()}, evidence[0] if evidence else None

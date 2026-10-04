@@ -61,6 +61,15 @@ class DiscussionsTest(unittest.TestCase):
         self.assertIn('NOT a resumed', note(job)['instructions'])
         self.assertEqual(self.service.view('1:2')['status'], 'running')
 
+    def test_the_agent_sees_the_operators_own_buttons(self):
+        self.row.update(actions=['retry', 'assign_reviewer'], closable=True, approval={'pr': 31, 'reason': 'Verify the image'})
+        job = self.start()
+        context = note(job)['context']
+        self.assertEqual(context['actions'], ['retry', 'assign_reviewer', 'close'])
+        self.assertEqual([a['button'] for a in context['available_actions']], ['Retry attempt', 'Assign reviewer', 'Close issue'])
+        self.assertTrue(any('Approve pull request #31 on GitHub' in step for step in context['operator_only']))
+        self.assertIn("What you can do", note(job)['instructions'])
+
     def test_complete_then_apply_requires_explicit_operator_and_is_idempotent(self):
         job = self.start(); self.finish(job)
         view = self.service.view('1:2')
