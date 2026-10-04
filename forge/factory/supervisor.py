@@ -16,7 +16,7 @@ from .memory import allocation as memory_allocation, confirmed as memory_confirm
 from .capacity import memory_bytes
 from .providers import available as provider_available
 from .github import GitHubUnavailable, GitHubBudgetExhausted
-from .ledger import DecisionChanged
+from .ledger import APPROACH_HOLD, DecisionChanged
 from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
 from ..state import AtomicStore, StateError
 
@@ -529,6 +529,21 @@ class Supervisor:
         ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
         if not ownership_clear and not item.get('active'):
             return
+        if item['state'] == 'hold' and item.get('reason') == APPROACH_HOLD and not item.get('active'):
+            # Attempts that stopped only because the issue's own prerequisites were
+            # open are not failures of approach (thegame #99, #104): wait for them,
+            # with a fresh budget, instead of asking for a new approach.
+            findings = ' '.join(str(((j.get('capture') or {}).get('result') or {}).get(k) or '')
+                                for j in self.ledger.read()['jobs'].values()
+                                if j['issue_key'] == item['key'] and j['role'] == 'recovery'
+                                and isinstance((j.get('capture') or {}).get('result'), dict)
+                                for k in ('headline', 'summary'))
+            named = [n for n in dependencies(issue.get('body')) if re.search(rf'(?<![\w/])#{n}\b', findings)]
+            if named and re.search(r'prerequisite|depend|wait', findings, re.I):
+                self.ledger.retry(item['key'], 'Earlier attempts stopped for open prerequisites; waiting for '
+                                  + ', '.join('#' + str(n) for n in named))
+                self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
         if item['state'] == 'hold' and item.get('decision_request') and not item.get('active'):
             # A worker that asked "should this wait for #90?" when the issue itself
             # names #90 as a prerequisite: Forge's own dependency wait answers it.
