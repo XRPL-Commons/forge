@@ -93,7 +93,7 @@ def harness_environment(env):
     """Only the harness process sees provider credentials; repository tools do not."""
     home = Path('/work/home')
     return {**env, 'HOME': str(home), 'GROK_HOME': str(home / '.grok'),
-            'PATH': '/usr/local/bin:/usr/bin:/bin',
+            'PATH': '/opt/forge/claude-tools:/usr/local/bin:/usr/bin:/bin',
             'GROK_DISABLE_AUTOUPDATER': '1', 'GROK_TELEMETRY_ENABLED': '0', 'GROK_FEEDBACK_ENABLED': '0',
             'GROK_WORKFLOWS': '0'}
 

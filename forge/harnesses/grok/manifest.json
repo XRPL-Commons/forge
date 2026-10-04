@@ -15,6 +15,7 @@
   "api_key_env": "XAI_API_KEY",
   "auth_reference": "FORGE_SETUP_GROK_AUTH",
   "private_proc": true,
+  "login_sandbox": true,
   "managed_files": {
     "requirements.toml": "/etc/grok/requirements.toml",
     "managed_config.toml": "/etc/grok/managed_config.toml"
