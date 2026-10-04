@@ -233,6 +233,22 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.state(), 'merged')
         self.assertEqual(self.ledger.read()['issues'][self.key]['merge_gate']['kind'], 'ready')
 
+    def test_a_refused_merge_does_not_pin_a_later_conflict(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit')
+        def refuse(item):
+            raise GitHubUnavailable('GitHub refused to merge: branch rules still block it', status=405)
+        self.github.merge = refuse
+        self.cycle()
+        merge_job = self.ledger.read()['issues'][self.key]['active']
+        self.assertEqual(self.ledger.read()['jobs'][merge_job]['role'], 'merge')
+        self.github.pull['mergeable'] = False
+        self.cycle()
+        data = self.ledger.read()
+        self.assertEqual(data['jobs'][merge_job]['outcome'], 'superseded')
+        self.assertEqual(self.active()['role'], 'build')
+        self.assertEqual(self.ledger.failure_count(data['issues'][self.key]), 0)
+
     def test_technical_gate_is_not_a_missing_human_approval(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review'); self.cycle(); self.finish('audit', human='required')
