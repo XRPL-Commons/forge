@@ -325,6 +325,12 @@ class ContainerRunner:
                 raise ValueError('Invalid refreshed authentication')
             if hashlib.sha256(value.encode()).hexdigest() == expected:
                 return 'unchanged'
+            if self.config.get('provider', 'codex') == 'codex':
+                from .codex_auth import renewable
+                if renewable(json.loads(value)):
+                    # An access-only worker copy (e.g. launched while parallel auth was on)
+                    # must never replace the managed login it was cut from.
+                    return 'access_only'
             return 'saved' if Credentials(root).refresh(ref, expected, value) else 'superseded'
         except (RunnerError, OSError, ValueError, tarfile.TarError, UnicodeError):
             # Lost credentials must never block capacity cleanup. A later login

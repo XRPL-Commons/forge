@@ -61,6 +61,7 @@ class Supervisor:
         # Enforce the observation deadline at the API boundary, not just
         # between issues: one slow reconciliation must not spend launch time.
         cycle_deadline = self.github.deadline
+        self.check_logins()
         observe_until = cycle_deadline - budget / 2
         # Even paused/disabled factories must finish teardown and reconciliation.
         for job in self.ledger.read()['jobs'].values():
@@ -708,6 +709,34 @@ class Supervisor:
         if verified.get('merged'):
             current = self.ledger.read()['issues'][item['key']]
             self.ledger.accept(current['active'], evidence={'pr': pr['number'], 'sha': verified.get('merge_commit_sha')})
+
+    def check_logins(self):
+        """Stop dispatching to a Codex login that can no longer renew, and say so.
+
+        Without this, workers discovered it one 401 at a time while the operator
+        saw only a quiet cooldown."""
+        root = getattr(self.settings, 'root', None)
+        if root is None:
+            return
+        from ..credentials import Credentials
+        from .codex_auth import renewable
+        pool = self.config.get('provider_pool') or [{k: self.config.get(k) for k in ('provider', 'provider_auth_file_env')}]
+        for entry in pool:
+            reference = entry.get('provider_auth_file_env')
+            if entry.get('provider') != 'codex' or not reference:
+                continue
+            try:
+                path = Credentials(root).environment(only=[reference]).get(reference)
+                problem = renewable(json.loads(Path(path).read_text())) if path else 'missing'
+            except (OSError, ValueError):
+                problem = 'unreadable'
+            if not problem:
+                continue
+            with self.ledger.transaction() as data:
+                cooldowns = data.setdefault('provider_cooldowns', {})
+                current = cooldowns.get('codex') or {}
+                cooldowns['codex'] = {**current, 'reason': 'blocked_auth', 'detail': 'login_' + problem,
+                                      'until': max(current.get('until', 0), self.clock() + self.config['availability_retry_seconds'])}
 
     def check_requests(self, done=None):
         """Issues the operator asked to check now (after approving on GitHub, say)."""
