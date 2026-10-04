@@ -732,10 +732,12 @@ class Supervisor:
                 problem = 'unreadable'
             if not problem:
                 continue
+            from .accounts import cooldown_since
             with self.ledger.transaction() as data:
                 cooldowns = data.setdefault('provider_cooldowns', {})
                 current = cooldowns.get('codex') or {}
-                cooldowns['codex'] = {**current, 'reason': 'blocked_auth', 'detail': 'login_' + problem,
+                since = cooldown_since(data, 'codex', 'blocked_auth', self.clock())
+                cooldowns['codex'] = {**current, 'reason': 'blocked_auth', 'detail': 'login_' + problem, 'since': since,
                                       'until': max(current.get('until', 0), self.clock() + self.config['availability_retry_seconds'])}
 
     def check_requests(self, done=None):
