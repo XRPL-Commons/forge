@@ -32,7 +32,9 @@ interface Loaded { detail: IssueDetailResponse | null; fence: string | null; fac
 // never re-render the issue under the operator's hands.
 const submitting = ref(false)
 const environmentOpen = ref(false)
-const environmentError = ref('')
+// Each request the page sends has one submission: its spinner, its double
+// submit guard and the error its dialog shows.
+const environmentRequest = useSubmission('Could not save the environment.')
 
 const factory = useFactory(() => '/api/factory?issue=' + encodeURIComponent(props.issueKey))
 const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${encodeURIComponent(props.issueKey)}`, async (path) => {
@@ -75,7 +77,7 @@ const { data: html } = await useAsyncData(`md-${props.issueKey}`, async () => {
 
 const submitted = ref<DecisionReceipt | null>(null)
 const workerReceipt = ref<{ id: string; before: string } | null>(null)
-const dialogError = ref<string | null>(null)
+const decisionRequest = useSubmission()
 const decision = ref<IssueAction | null>(null)
 
 // One message line, in the order the operator needs it: what Forge is doing
@@ -154,7 +156,7 @@ const primary = computed<'approve' | 'setup' | IssueAction | null>(() => {
 const secondary = computed(() => decisions.value.filter(action => action !== primary.value))
 const closeOpen = computed(() => decision.value === 'close')
 const assigning = ref(false)
-const assignError = ref<string | null>(null)
+const assignRequest = useSubmission()
 const preselected = computed(() => preselectedReviewers(detail.value))
 const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
 const approvalOpen = ref(false)
@@ -174,13 +176,14 @@ const candidateUrl = computed(() => (candidatePull.value ? pullUrl(candidatePull
 
 function askReviewer() {
   approvalOpen.value = false
-  assignError.value = null
+  assignRequest.reset()
   assigning.value = true
   submitting.value = true
 }
 function closeReviewer() {
+  if (assignRequest.pending.value) return
   assigning.value = false
-  assignError.value = null
+  assignRequest.reset()
   submitting.value = false
 }
 
@@ -211,6 +214,7 @@ const CHECK_POLL_MS = 4000
 const CHECK_GIVE_UP_S = 90
 const checkingSince = ref<number | null>(null)
 const checkNote = ref('')
+const checkRequest = useSubmission('Forge did not accept the request.')
 let checkTimer: ReturnType<typeof setInterval> | undefined
 function stopChecking(note = '') {
   clearInterval(checkTimer)
@@ -219,13 +223,11 @@ function stopChecking(note = '') {
 }
 async function checkNow() {
   const issue = detail.value
-  if (!issue || checkingSince.value) return
+  if (!issue || checkingSince.value || checkRequest.pending.value) return
   checkNote.value = ''
   const since = Math.floor(Date.now() / 1000)
-  try {
-    await api.act('/api/issues/refresh', { key: issue.key })
-  } catch (error: unknown) {
-    checkNote.value = error instanceof Error ? error.message : 'Forge did not accept the request.'
+  if (!await checkRequest.run(() => api.act('/api/issues/refresh', { key: issue.key }))) {
+    checkNote.value = checkRequest.error.value ?? ''
     return
   }
   checkingSince.value = since
@@ -254,17 +256,14 @@ async function assignReviewer(logins: string[]) {
   const issue = detail.value
   const reason = reviewerReason(logins)
   if (!issue || !reason) return
-  assignError.value = null
-  try {
+  const done = await assignRequest.run(async () => {
     const previous = previousDecision()
     const reply = await api.act<{ request?: string }>('/api/issues/action', {
       key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason,
     })
     recordDecision(reply, previous)
-  } catch (error: unknown) {
-    assignError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
-    return
-  }
+  })
+  if (!done) return
   closeReviewer()
   await poll.refresh()
 }
@@ -341,30 +340,28 @@ const RESET = {
   confirmLabel: 'Reset runner',
 }
 const resetting = ref(false)
-const resetError = ref<string | null>(null)
+const resetRequest = useSubmission()
 
 function askReset() {
-  resetError.value = null
+  resetRequest.reset()
   resetting.value = true
   submitting.value = true
 }
 function closeReset() {
+  if (resetRequest.pending.value) return
   resetting.value = false
   submitting.value = false
 }
 async function confirmReset(reason: string) {
   const job = internalJob.value
   if (!job) return
-  resetError.value = null
-  try {
+  const done = await resetRequest.run(async () => {
     const before = workerState(job.id)
     await api.act('/api/factory/action', { action: 'reset', target: job.id, reason })
     submitted.value = { request: null, previous: previousDecision() }
     workerReceipt.value = { id: job.id, before }
-  } catch (error: unknown) {
-    resetError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
-    return
-  }
+  })
+  if (!done) return
   closeReset()
   await poll.refresh()
 }
@@ -382,7 +379,7 @@ const logs = computed(() => output.data.value?.logs ?? null)
 // `reason` prefills the dialog, e.g. with what a discussion proposed.
 const decisionReason = ref('')
 function ask(action: IssueAction, reason = '') {
-  dialogError.value = null
+  decisionRequest.reset()
   decisionReason.value = reason
   decision.value = action
   submitting.value = true
@@ -392,31 +389,27 @@ async function saveEnvironment(environment: IssueEnvironmentSelection) {
   const issue = detail.value
   if (!issue || busy.value) return
   submitting.value = true
-  environmentError.value = ''
-  try {
+  await environmentRequest.run(async () => {
     const previous = previousDecision()
     const reply = await api.act<{ request?: string }>('/api/issues/environment', { key: issue.key, revision: issue.revision, environment })
     recordDecision(reply, previous, 'Environment preference submitted. Waiting for the supervisor to apply it.')
     environmentOpen.value = false
-  } catch (error: unknown) {
-    environmentError.value = error instanceof Error ? error.message : 'Could not save the environment.'
-  } finally {
-    submitting.value = false
-    if (!environmentOpen.value) await poll.refresh()
-  }
+  })
+  submitting.value = false
+  if (!environmentOpen.value) await poll.refresh()
 }
 function closeDecision() {
+  if (decisionRequest.pending.value) return
   decision.value = null
-  dialogError.value = null
+  decisionRequest.reset()
   submitting.value = false
 }
 
 async function submit({ action, reason }: { action: IssueAction; reason: string }) {
   const issue = detail.value
   if (!issue) return
-  dialogError.value = null
   let applied = false
-  try {
+  const done = await decisionRequest.run(async () => {
     const previous = previousDecision()
     if (action === 'stop') {
       const before = workerState(issue.active!)
@@ -432,10 +425,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         applied = true
       }
     }
-  } catch (error: unknown) {
-    dialogError.value = error instanceof Error ? error.message : 'Forge did not accept the action.'
-    return
-  }
+  })
+  if (!done) return
   decision.value = null
   submitting.value = false
   if (!applied) await poll.refresh()
@@ -659,7 +650,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
               <span v-if="checkingSince" role="status">Checking GitHub…</span>
               <span v-else-if="checked">{{ checked }}</span>
               <span v-if="checked || checkingSince" aria-hidden="true">·</span>
-              <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-refresh-cw" class="-mx-1" :loading="!!checkingSince" :disabled="!!checkingSince" @click="checkNow">Check now</UButton>
+              <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-refresh-cw" class="-mx-1" :loading="checkRequest.pending.value || !!checkingSince" :disabled="checkRequest.pending.value || !!checkingSince" @click="checkNow">Check now</UButton>
               <span v-if="checkNote" role="status" class="basis-full">{{ checkNote }}</span>
             </div>
           </div>
@@ -724,7 +715,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
             v-model:open="environmentOpen"
             :environment="detail.environment"
             :busy="busy"
-            :error="environmentError"
+            :error="environmentRequest.error.value ?? ''"
             @save="saveEnvironment"
           />
         </IssueSection>
@@ -803,7 +794,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         :preselected="preselected"
         :pull="candidatePull"
         :pull-url="candidateUrl"
-        :error="assignError"
+        :error="assignRequest.error.value"
+        :pending="assignRequest.pending.value"
         @submit="assignReviewer"
         @close="closeReviewer"
       />
@@ -814,7 +806,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         :issue-key="detail.key"
         :number="detail.number"
         :pull="candidatePull?.number ?? null"
-        :error="dialogError"
+        :error="decisionRequest.error.value"
+        :pending="decisionRequest.pending.value"
         @submit="submit"
         @close="closeDecision"
       />
@@ -823,7 +816,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         :open="!!decision"
         :action="decision"
         :detail="detail"
-        :error="dialogError"
+        :error="decisionRequest.error.value"
+        :pending="decisionRequest.pending.value"
         :reason="decisionReason"
         @submit="submit"
         @close="closeDecision"
@@ -838,7 +832,9 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       :title="RESET.title"
       :text="RESET.text"
       :confirm-label="RESET.confirmLabel"
-      :error="resetError"
+      :error="resetRequest.error.value"
+      :pending="resetRequest.pending.value"
+      pending-label="Resetting…"
       @confirm="confirmReset"
       @close="closeReset"
     />
