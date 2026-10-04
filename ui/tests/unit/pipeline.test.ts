@@ -22,6 +22,17 @@ describe('issuePipeline', () => {
     expect(at({ status: 'backlog', explanation: 'Not queued for Forge.', actions: ['queue'] })).toEqual(['queued', 'upcoming', 'Not queued'])
   })
 
+  it('takes an issue that is no longer needed off the line, with nothing earned', () => {
+    const view = issuePipeline(row({ status: 'dropped', explanation: 'No longer needed: closed as not planned.', pull_requests: candidate }))
+    expect([view.current, view.state, view.note]).toEqual([null, 'closed', 'No longer needed'])
+    expect(view.steps.some(step => step.state === 'done')).toBe(false)
+  })
+
+  it('waits calmly where it stands when blocked on other issues, never as needing attention', () => {
+    expect(at({ status: 'blocked', explanation: 'Waiting for #90.' })).toEqual(['queued', 'waiting', 'Waiting on other issues'])
+    expect(at({ status: 'blocked', explanation: 'Waiting for #90.', pull_requests: candidate })).toEqual(['review', 'waiting', 'Waiting on other issues'])
+  })
+
   it('follows the running worker’s role', () => {
     expect(at({ status: 'working', explanation: 'Building' })).toEqual(['build', 'active', 'In progress'])
     expect(at({ status: 'working', explanation: 'Reviewing' })[0]).toBe('review')

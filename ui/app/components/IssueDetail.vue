@@ -2,11 +2,12 @@
 import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, jobSummary, type FactoryView, type JobView } from '~/utils/factory'
-import { statusTone } from '~/utils/tones'
+import { statusBadge } from '~/utils/tones'
 import { issuePipeline, type PipelineView } from '~/utils/pipeline'
 import { workbenchLook } from '~/utils/workbench'
+import { panelQuery } from '~/utils/panel'
 import {
-  ACTION_LABELS, STATUS_NAMES, approvalLines, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
+  ACTION_LABELS, approvalLines, blockingIssues, statusLabel, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
   type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
   type IssueEnvironmentSelection,
@@ -105,6 +106,16 @@ const pipeline = computed(() => (detail.value ? issuePipeline(detail.value) : nu
 // The workbench: the issue's cube, its mood and props, the stages it earned
 // and the attempts it has left — all from the same payload.
 const look = computed(() => (detail.value ? workbenchLook(detail.value) : null))
+const badge = computed(() => statusBadge(detail.value?.status ?? 'queued'))
+// The open prerequisites a blocked issue waits on: the action area names each
+// one, and each opens that issue.
+const blocking = computed(() => (detail.value ? blockingIssues(detail.value) : []))
+// Another issue of the same repository: in the board's panel it opens in the
+// panel (and the back button returns here); on the issue route, as a page.
+function siblingLink(number: number) {
+  const key = `${detail.value?.repo_id}:${number}`
+  return route.path === '/' ? { path: '/', query: panelQuery(route.query, { key }) } : issuePath(key)
+}
 const NOTE_TONE: Record<PipelineView['state'], string> = {
   done: 'text-mint-200', active: 'text-sky-200', waiting: 'text-sky-200', failed: 'text-rose-200',
   blocked: 'text-amber-200', upcoming: 'text-muted', closed: 'text-muted',
@@ -438,7 +449,14 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
       <p class="text-xs text-muted">{{ detail.repo }} · #{{ detail.number }}</p>
       <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
         <h1 id="issue-title" class="text-xl font-semibold text-white">{{ detail.title }}</h1>
-        <UBadge :color="statusTone(detail.status)" variant="subtle">{{ STATUS_NAMES[detail.status] }}</UBadge>
+        <UBadge
+          id="issue-status"
+          :color="badge.color"
+          :variant="badge.dim ? 'outline' : 'subtle'"
+          :icon="badge.icon ?? undefined"
+          :class="badge.dim ? 'text-muted' : ''"
+          :data-tone="badge.dim ? 'calm' : undefined"
+        >{{ statusLabel(detail) }}</UBadge>
       </div>
       <p v-if="pipeline" id="issue-attempt-line" class="mt-1 text-xs" :class="NOTE_TONE[pipeline.state]">
         <span id="issue-stage-note">{{ pipeline.note }}</span>
@@ -518,7 +536,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
             <NuxtLink
               v-for="number in detail.dependencies"
               :key="number"
-              :to="issuePath(`${detail.repo_id}:${number}`)"
+              :to="siblingLink(number)"
               class="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel py-0.5 pr-2.5 pl-1.5 text-white hover:border-muted"
             >
               <span aria-hidden="true" class="size-3 rounded-[3px] border-[1.5px] border-[#0a0c0f] bg-[#59606b]" />
@@ -541,11 +559,42 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
 
           <!-- One primary way forward (or a calm line when there is none),
                smaller secondary decisions, then stopping the attempt. -->
-          <div id="issue-actions" class="flex flex-wrap items-center gap-2">
+          <!-- Dropped work asks nothing: the only way back is on GitHub. -->
+          <div v-if="detail.status === 'dropped'" id="issue-actions" class="flex flex-wrap items-center gap-2">
+            <span id="issue-nothing-needed" data-dropped class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
+              <UIcon name="i-lucide-archive" class="size-4 shrink-0" aria-hidden="true" />
+              <span>Nothing needed from you.</span>
+              <a
+                id="issue-reopen"
+                :href="issueUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-sky-200 underline-offset-4 hover:underline"
+              >Reopen it on GitHub to bring it back ↗</a>
+            </span>
+          </div>
+          <div v-else id="issue-actions" class="flex flex-wrap items-center gap-2">
             <UButton v-if="primary === 'approve'" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
             <UButton v-else-if="primary === 'assign_reviewer'" color="primary" :disabled="busy" @click="askReviewer">{{ ACTION_LABELS.assign_reviewer }}</UButton>
             <UButton v-else-if="primary === 'setup'" :to="detail.setup_url" color="primary">Repository setup →</UButton>
             <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ ACTION_LABELS[primary] }}</UButton>
+            <span v-else-if="detail.status === 'blocked'" id="issue-nothing-needed" data-blocked class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-1 gap-y-0.5 text-sm text-muted">
+              <UIcon name="i-lucide-link-2" class="mr-1 size-4 shrink-0" aria-hidden="true" />
+              <span>Nothing needed from you.</span>
+              <template v-if="blocking.length">
+                <span>Starts by itself when</span>
+                <template v-for="(number, index) in blocking" :key="number">
+                  <span class="whitespace-nowrap"><NuxtLink
+                    :to="siblingLink(number)"
+                    :data-blocking="number"
+                    class="font-mono text-white underline-offset-4 hover:underline"
+                  >#{{ number }}</NuxtLink>{{ index < blocking.length - 2 ? ',' : '' }}</span>
+                  <span v-if="index === blocking.length - 2">and</span>
+                </template>
+                <span>{{ blocking.length === 1 ? 'closes.' : 'close.' }}</span>
+              </template>
+              <span v-else>Starts by itself when the issues it waits on close.</span>
+            </span>
             <span v-else id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
               <span aria-hidden="true" class="size-2 rounded-full bg-mint-400" />
               {{ look?.mood === 'happy' ? 'Done. Nothing left to do.' : 'Nothing needed from you right now.' }}

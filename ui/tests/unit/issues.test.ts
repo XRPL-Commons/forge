@@ -3,7 +3,7 @@ import {
   ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
-  activityAge, rowFacts, rowPrimary, rowStory,
+  activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -25,6 +25,7 @@ describe('copy maps', () => {
     expect(STATUS_NAMES).toEqual({
       backlog: 'Backlog', queued: 'Queued', working: 'Working',
       attention: 'Needs attention', completed: 'Completed', waiting: 'Waiting',
+      blocked: 'Waiting on other issues', dropped: 'No longer needed',
     })
   })
   it('labels every decision, including stop', () => {
@@ -54,7 +55,9 @@ describe('copy maps', () => {
       { value: 'queued', label: 'Queued' },
       { value: 'working', label: 'Working' },
       { value: 'waiting', label: 'Waiting' },
+      { value: 'blocked', label: 'Waiting on other issues' },
       { value: 'completed', label: 'Completed' },
+      { value: 'dropped', label: 'No longer needed' },
     ])
   })
 })
@@ -403,5 +406,27 @@ describe('list filters in the URL', () => {
   it('round-trips', () => {
     const state = { show: 'attention', repo: '7', q: 'login', page: 4 }
     expect(filtersFromQuery(filterQuery(state))).toEqual(state)
+  })
+})
+
+describe('waiting on other issues', () => {
+  const blocked = { status: 'blocked' as const, explanation: 'Waiting for #90, #101.', dependencies: [85, 90, 101] }
+  it('names the open prerequisites, from the explanation first, then the body', () => {
+    expect(blockingIssues(blocked)).toEqual([90, 101])
+    expect(blockingIssues({ ...blocked, explanation: '' })).toEqual([85, 90, 101])
+    expect(blockingIssues({ ...blocked, status: 'queued' })).toEqual([])
+  })
+  it('says what it waits on in the status chip, else waits on other issues', () => {
+    expect(statusLabel(blocked)).toBe('Waiting on #90, #101')
+    expect(statusLabel({ ...blocked, explanation: '', dependencies: [] })).toBe('Waiting on other issues')
+    expect(STATUS_NAMES.blocked).toBe('Waiting on other issues')
+    expect(statusLabel({ status: 'waiting', explanation: 'Waiting for #9.', dependencies: [9] })).toBe('Waiting')
+  })
+  it('sorts after other waits and before queued work, as the server does', () => {
+    expect(STATUS_ORDER).toEqual(['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped'])
+    expect([...STATUS_ORDER].sort()).toEqual(Object.keys(STATUS_NAMES).sort())
+  })
+  it('is only opened, never asked to decide anything', () => {
+    expect(rowAction({ status: 'blocked', actions: [], approval: null } as any, null)).toBe('Open')
   })
 })

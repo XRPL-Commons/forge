@@ -4,7 +4,7 @@
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
 import { ago, clampTitle, reviewerMentions, shortCommit } from './format'
 import type { PortraitLook } from './cube'
-import { ledgerLook } from './workbench'
+import { isDropped, ledgerLook, type ClosedAs } from './workbench'
 import type { OnboardingView } from './onboarding'
 import type { IssueSummary } from './issues'
 import type { DeploymentRow, FactoryDeployment } from './repositories'
@@ -36,6 +36,9 @@ export interface LedgerIssueView {
   // Open issues this one depends on; the supervisor never dispatches it meanwhile.
   blocked_dependencies?: number[]
   dependency_reason?: string | null
+  // GitHub's reason the issue closed; not_planned and duplicate read as
+  // "No longer needed" (workbench.ts isDropped). Older payloads omit it.
+  closed_as?: ClosedAs | null
   ownership_wait?: IssueSummary | null
   history?: LedgerEvent[]
   // Deployment verdicts (contracts §2). Both are present and null until the
@@ -153,6 +156,7 @@ export function waitingOnDependencies(issue: LedgerIssueView | null | undefined)
 
 export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, view: FactoryView | null | undefined, now: number): string {
   if (!job && issue?.ownership_wait) return issue.ownership_wait.headline
+  if (!job && issue && isDropped(issue)) return 'No longer needed'
   if (!job && waitingOnDependencies(issue)) return 'Waiting on ' + issue!.blocked_dependencies!.map(n => '#' + n).join(', ')
   if (job) {
     if (job.capacity_wait_since) return 'Waiting for memory'

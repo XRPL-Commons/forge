@@ -55,6 +55,48 @@ describe('ledgerLook', () => {
   })
 })
 
+describe('waiting on other issues', () => {
+  it('reads as a calm patient cube with a linked chip, never as needing you', () => {
+    const card = rowCardView(row({
+      status: 'blocked', explanation: 'Waiting for #90, #101.', summary: null, actions: [], dependencies: [90, 101], attempts: null, pull_requests: [],
+    }), now)
+    expect(card.status).toEqual({ label: 'Waiting on #90, #101', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
+    expect(card.look).toMatchObject({ mood: 'patient', beacon: false, zzz: false })
+    expect(portraitKey(card.look)).not.toMatch(/beacon/)
+  })
+
+  it('gives an Activity card waiting on dependencies the same calm look', () => {
+    expect(ledgerLook({ state: 'ready', blocked_dependencies: [658] }, null, false)).toMatchObject({ mood: 'patient', beacon: false })
+    const blocked = ledger({ key: '1:612', number: 612, state: 'ready', failure_count: 0, candidate: null, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
+    const card = groupIssues(view([blocked]), now).waiting[0]!
+    expect(modelCardView(card, now).status).toEqual({ label: 'Waiting on #658', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
+    // A failed issue that also names prerequisites still needs you.
+    expect(ledgerLook({ state: 'failed', blocked_dependencies: [658] }, null, false)).toMatchObject({ mood: 'worried', beacon: true })
+  })
+})
+
+describe('no longer needed', () => {
+  it('reads as grey and resting on the Issues page, with an archive chip', () => {
+    const card = rowCardView(row({ status: 'dropped', explanation: 'No longer needed: closed as not planned.', summary: null, actions: [], attempts: null }), now)
+    expect(card.status).toEqual({ label: 'No longer needed', color: 'neutral', icon: 'i-lucide-archive', dim: true })
+    expect(card.look).toMatchObject({ stage: 'queued', mood: 'rest', accessory: null, beacon: false, confetti: false })
+  })
+
+  it('shows in Recently completed as No longer needed, not Cancelled or Merged', () => {
+    const history = [{ kind: 'cancelled', at: now - 600 }]
+    for (const closed_as of ['not_planned', 'duplicate']) {
+      const dropped = ledger({ state: 'cancelled', closed_as, candidate: { pr: 71 }, failure_count: 0, history })
+      const card = groupIssues(view([dropped]), now).completed[0]!
+      expect(card.look).toMatchObject({ stage: 'queued', mood: 'rest', accessory: null, confetti: false, beacon: false })
+      expect(modelCardView(card, now).status).toEqual({ label: 'No longer needed', color: 'neutral', icon: 'i-lucide-archive', dim: true })
+    }
+    const cancelled = groupIssues(view([ledger({ state: 'cancelled', closed_as: 'completed', failure_count: 0, history })]), now).completed[0]!
+    expect(modelCardView(cancelled, now).status).toEqual({ label: 'Cancelled', color: 'neutral' })
+    // A merge is never dropped, whatever GitHub says about the close.
+    expect(ledgerLook({ state: 'merged', closed_as: 'not_planned' }, null, false)).toMatchObject({ mood: 'happy', confetti: true })
+  })
+})
+
 describe('portraitKey', () => {
   it('names every prop the frame draws, so a card redraws only when one changes', () => {
     const look: PortraitLook = { stage: 'review', mood: 'worried', accessory: 'magnifier', beacon: true, zzz: false, scorches: 5, confetti: false }
@@ -95,7 +137,7 @@ describe('drawPortrait', () => {
 describe('rowCardView', () => {
   it('keeps the Issues page facts and badge, and adds hearts and the cube', () => {
     const card = rowCardView(row(), now)
-    expect(card.status).toEqual({ label: 'Needs attention', color: 'warning' })
+    expect(card.status).toEqual({ label: 'Needs attention', color: 'warning', icon: null, dim: false })
     expect([card.headline, card.plain]).toEqual(['The last attempt failed.', 'Tests timed out.'])
     expect(card.facts.map(fact => [fact.key, fact.text, fact.tone])).toEqual([
       ['pr-70', 'PR #70', 'link'], ['attempts', '2 of 3 attempts failed', 'warn'], ['age', 'Updated 3 d ago', 'muted'],
