@@ -55,6 +55,7 @@ class GitHubFacts:
         return value
     def pr(self, item, number): return copy.deepcopy(self.pull)
     def check(self, *args): self.checks.append(args); return len(self.checks)
+    def settle_checks(self, item, candidate, summary): self.settled = getattr(self, 'settled', []) + [candidate['key']]; return 1
     def verdict(self, job, report): return self.check(job, report)
     def human(self, *args): return self.approved, False
     def approvals(self, *args):
@@ -292,6 +293,16 @@ class CycleTest(unittest.TestCase):
     def test_approval_priority_cannot_starve_the_rotation(self):
         from forge.factory.supervisor import Supervisor
         self.assertGreater(Supervisor.PRIORITY_OBSERVE_SECONDS, 2 * 84)  # longer than two measured cycles
+
+    def test_a_stopped_candidate_settles_its_checks_once(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        with self.ledger.transaction() as data:
+            data['issues'][self.key]['active'] = None
+        self.ledger.hold(self.key, 'Paused by an operator')
+        self.cycle(); self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(getattr(self.github, 'settled', []), [item['candidate']['key']])
+        self.assertEqual(item['checks_settled'], item['candidate']['key'])
 
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()

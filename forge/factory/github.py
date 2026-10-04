@@ -363,6 +363,25 @@ class GitHub:
             raise GitHubUnavailable('Published check has not been verified')
         return verified[0]['id']
 
+    def settle_checks(self, item, candidate_value, summary):
+        """Conclude Forge's still-running checks on a candidate that stopped moving.
+
+        A held or failed issue otherwise left forge/audit and forge/merge-policy
+        'in progress' for weeks (tokenlab PR #28). 'cancelled' still blocks a
+        required check, unlike 'neutral'; a resumed attempt publishes afresh."""
+        roles = {'forge/review': 'review', 'forge/audit': 'audit', 'forge/merge-policy': 'controller'}
+        runs = self.pages('controller', item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
+        settled = 0
+        for run in runs:
+            role = roles.get(run.get('name'))
+            if not role or run.get('status') == 'completed' or run.get('app', {}).get('id') != self.connection(role)['app_id']:
+                continue
+            self.call(role, item, 'PATCH', '/check-runs/' + str(run['id']), {
+                'status': 'completed', 'conclusion': 'cancelled',
+                'output': {'title': run['name'] + ': stopped', 'summary': summary[:60000]}})
+            settled += 1
+        return settled
+
     def verdict(self, job, report):
         candidate_value = job['candidate']
         marker = '<!-- forge-verdict ' + job['id'] + ' -->'
