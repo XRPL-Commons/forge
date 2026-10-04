@@ -273,6 +273,10 @@ class CycleTest(unittest.TestCase):
         changes = [e for e in self.ledger.read()['events'] if e['kind'] == 'state_changed']
         self.assertEqual([(e['previous'], e['state']) for e in changes], [('audited', 'approval_needed')])
 
+    def test_approval_priority_cannot_starve_the_rotation(self):
+        from forge.factory.supervisor import Supervisor
+        self.assertGreater(Supervisor.PRIORITY_OBSERVE_SECONDS, 2 * 84)  # longer than two measured cycles
+
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review', 'reject'); self.cycle()

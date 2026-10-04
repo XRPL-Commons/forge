@@ -88,11 +88,12 @@ class Supervisor:
                 finally:
                     self.ledger.job_update(job['id'], last_observed=self.clock())
         requested = self.check_requests()
-        # Issues waiting for a human are observed first, at most every 45 s so they
-        # cannot starve the rotation: an approval given on GitHub otherwise waited
-        # minutes for the rotation to come round.
+        # Issues waiting for a human jump the queue at most every PRIORITY_OBSERVE_SECONDS.
+        # Each costs a dozen GitHub reads, and at 45 s (shorter than a cycle) three of
+        # them used the whole observation budget every cycle and starved the rotation.
         now = self.clock()
-        awaiting = lambda i: i['state'] in ('approval_needed', 'audited') and now - i.get('last_observed', 0) >= 45
+        awaiting = lambda i: (i['state'] in ('approval_needed', 'audited')
+                              and now - i.get('last_observed', 0) >= self.PRIORITY_OBSERVE_SECONDS)
         for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: (
                 not bool(i.get('operator_sync')), i['key'] not in requested, not awaiting(i), i.get('last_observed', 0))):
             if time.monotonic() >= observe_until:
@@ -922,6 +923,7 @@ class Supervisor:
 
     DISCOVERY_INTERVAL = 300
     SETTLED_STATES = ('merged', 'cancelled')
+    PRIORITY_OBSERVE_SECONDS = 300
     SETTLED_OBSERVE_SECONDS = 3600
 
     def discovery_due(self):
