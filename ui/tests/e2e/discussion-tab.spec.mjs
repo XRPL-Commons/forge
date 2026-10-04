@@ -38,27 +38,55 @@ export default async function (page, { base }) {
   assert.equal(await discussionTab.getAttribute('aria-selected'), 'true')
   await page.waitForFunction(focusedInChat, null, { timeout: 5000 })
 
-  // A reply that fails or runs out of time is said inline, with Try again.
+  // A reply that runs out of time: the agent leaves, says why, and offers Try again.
   await prompt.fill('What changed? (fail)')
   await prompt.press('Enter')
-  const failure = page.locator('[data-discussion-error]')
-  await failure.waitFor()
-  assert.match(await failure.innerText(), /exceeded its time limit/)
-  assert.equal(await failure.getAttribute('role'), 'alert')
-  await failure.getByRole('button', { name: 'Try again' }).click()
+  const left = page.locator('[data-left][data-reason="timeout"]')
+  await left.waitFor()
+  assert.match(await left.innerText(), /Ember ran out of time after 10 min/)
+  await left.getByRole('button', { name: 'Try again' }).click()
+  await page.locator('[data-presence]').waitFor()
   await page.locator('[data-proposal-action]').waitFor()
-  await failure.waitFor({ state: 'detached' })
+  assert.equal(await left.getByRole('button', { name: 'Try again' }).count(), 0)
+  assert.equal(await page.locator('[data-role="user"]').filter({ hasText: 'What changed? (fail)' }).count(), 1)
+
+  // The same words again after a failure are Try again, never a second copy.
+  await prompt.fill('And now? (fail)')
+  await prompt.press('Enter')
+  await page.locator('[data-left][data-reason="timeout"]').nth(1).waitFor()
+  await prompt.fill('And now? (fail)')
+  await prompt.press('Enter')
+  await page.locator('[data-presence]').waitFor()
+  assert.equal(await page.locator('[data-role="user"]').filter({ hasText: 'And now? (fail)' }).count(), 1)
+  await page.locator('[data-proposal-action]').nth(1).waitFor()
+  assert.equal(await prompt.inputValue(), '')
+
+  // A provider that cannot sign in says so truthfully, and someone else joins.
+  await prompt.fill('Who is answering? (auth)')
+  await prompt.press('Enter')
+  const auth = page.locator('[data-left][data-reason="auth"]')
+  await auth.waitFor({ timeout: 15000 })
+  assert.match(await auth.innerText(), /Bolt can't sign in: the Codex login expired\. Reconnect it in Settings → Coding accounts\. · finding someone else/)
+  assert.doesNotMatch(await auth.innerText(), /quota|usage limit/i)
+  assert.equal(await auth.getByRole('link', { name: 'Settings → Coding accounts' }).getAttribute('href'), '/settings/harnesses')
+  assert.equal(await auth.getByRole('button', { name: 'Try again' }).count(), 0)
+  assert.equal(await auth.locator('canvas[data-persona="Bolt"]').count(), 1)
+  await page.locator('[data-proposal-action]').nth(2).waitFor({ timeout: 20000 })
+  assert.equal((await page.locator('[data-joined]').last().innerText()).trim(), 'Ember joined instead · Claude Sonnet 4.6')
+  assert.equal((await page.locator('[data-role="assistant"]').last().locator('[data-persona-name]').innerText()).trim(), 'Ember')
 
   // A reply in progress shows on the tab while the operator is on Details.
+  // With reduced motion the avatars hold still and the chat still works.
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   await prompt.fill('Keep looking (hold)')
   await prompt.press('Enter')
-  await page.locator('[data-streaming]').first().waitFor()
+  await page.locator('[data-presence][data-phase="joined"]').waitFor()
   await detailsTab.click()
   await page.locator('#discussion-tab-dot').getByText('(reply in progress)').waitFor()
   await discussionTab.click()
   assert.equal(await page.locator('#discussion-tab-dot').count(), 0)
   await page.getByRole('button', { name: 'Stop reply', exact: true }).click()
-  await page.getByText('Reply stopped').waitFor()
+  await page.getByText('You stopped Ember').waitFor()
 
   // The board's drawer on a phone: the same tabs, a chat that fills the
   // drawer, the prompt on screen and nothing scrolling sideways.

@@ -41,11 +41,21 @@ def probe_failure_reason(answer, failure, proof, nonce):
     return None
 
 
+
+def announcer():
+    """Tool calls as small live inspection events; never fails a run."""
+    try:
+        return runpy.run_path(str(Path(__file__).resolve().parent.parent / 'activity.py'))['Announcer']()
+    except Exception:
+        return None
+
+
 def collect(args, directory, env):
     """Drain output with a hard bound; the outer runner owns the deadline."""
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, cwd=directory, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
     chunks, size = [], 0
+    announce = announcer()
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(child.stdout, selectors.EVENT_READ)
@@ -58,6 +68,8 @@ def collect(args, directory, env):
                 if size > 2 * 1024 * 1024:
                     raise RuntimeError('Grok output exceeded its size limit')
                 chunks.append(block)
+                if announce:
+                    announce.feed(block)
         return child.wait(), b''.join(chunks).decode(errors='replace')
     finally:
         if child.poll() is None:

@@ -16,6 +16,8 @@ from .issues import IssueInventory
 from .runner import ContainerRunner, RunnerError, RunnerCapacity, RunnerUnavailable, scrub
 from .providers import available
 from .github import GitHubUnavailable
+from .activity import merge, public, started
+from .personas import persona
 
 ACTIONS = {"retry", "resume", "recheck", "queue", "pause", "backlog", "close", "assign_reviewer"}
 # The operator's own buttons for these actions (ui/app/utils/issues.ts), so the
@@ -71,9 +73,74 @@ def operator_only(row):
     return steps
 
 
+FINDING_SECONDS = 600
+ACCOUNTS = {"to": "/settings/harnesses", "label": "Settings → Coding accounts"}
+ASKING = "Looking for someone available"
+
+
+def agent(job):
+    config = (job or {}).get("runner_config") or {}
+    found = persona(config.get("provider"))
+    return {"provider": config.get("provider"), "model": config.get("model"), "name": found["name"], "label": found["provider_label"]}
+
+
+def unavailable(provider, code):
+    """Why a provider cannot take a conversation, in the persona's name. Never guess the cause."""
+    who = persona(provider)
+    if code == "blocked_auth":
+        return f"{who['name']} can't sign in: the {who['provider_label']} login expired. Reconnect it in {ACCOUNTS['label']}.", ACCOUNTS
+    if code == "blocked_quota":
+        return f"{who['name']} is out of quota", None
+    return f"{who['name']} is unavailable" + (f" ({str(code)[:40]})" if code else ""), None
+
+
+def minutes(seconds):
+    return max(1, round(seconds / 60))
+
+
+def last_question(thread):
+    """The operator's latest message while nothing has answered it."""
+    for message in reversed(thread.get("messages", [])):
+        if message["role"] == "assistant": return None
+        if message["role"] == "user": return message
+    return None
+
+
+def ended(capture, job, now):
+    """Why a worker exited without an answer: (reason, detail, until)."""
+    from .supervisor import classify_error
+    for line in (capture.get("logs") or "").splitlines():
+        try: event = json.loads(line)
+        except ValueError: continue
+        if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"): continue
+        error = event.get("error") or event
+        kind = classify_error(error.get("message", "") if isinstance(error, dict) else "")
+        if kind == "blocked_quota":
+            return "quota", None, now + ((job.get("runner_config") or {}).get("availability_retry_seconds") or 300)
+        if kind == "blocked_auth":
+            return "auth", None, now + ((job.get("runner_config") or {}).get("availability_retry_seconds") or 300)
+    execution = capture.get("execution") or {}
+    if execution.get("exit_code") == 124 or now >= job["deadline"]:
+        return "timeout", None, None
+    if execution.get("oom_killed"):
+        return "error", "its worker ran out of memory", None
+    started = job.get("joined_at") or job.get("created_at")
+    after = f" after {minutes(now - started)} min" if started else ""
+    code = execution.get("exit_code")
+    return "error", f"its worker stopped{after} without an answer" + (f" (exit code {code})" if code not in (None, 0) else ""), None
+
+
+def excerpt(logs):
+    """The worker's last words for diagnosis: no heartbeats, short lines, scrubbed."""
+    lines = [line for line in (logs or "").splitlines() if line.strip() and '"runner": "alive"' not in line]
+    return scrub("\n".join(line[:300] for line in lines[-20:]))
+
+
 class Discussions:
-    def __init__(self, root, *, runner=ContainerRunner, inventory=None, clock=time.time):
-        self.root, self.runner, self.clock = Path(root), runner, clock
+    def __init__(self, root, *, runner=ContainerRunner, inventory=None, clock=time.time, boot=None):
+        # `boot` names this service process: a job from an earlier one whose
+        # worker is gone was orphaned by a restart.
+        self.root, self.runner, self.clock, self.boot = Path(root), runner, clock, boot
         self.store = AtomicStore(self.root / "state/issues", "discussions")
         self.inventory = inventory or IssueInventory(root)
 
@@ -100,7 +167,9 @@ class Discussions:
         return {"messages": page, "before": page[0]["sequence"] if len(messages) > 20 else None,
                 "status": thread.get("status", "idle"), "reason": thread.get("reason"),
                 "origin": thread.get("origin"), "partial": thread.get("partial", ""),
-                "request": (thread.get("job") or {}).get("id"), "mode": "reconstructed", "provider": ((thread.get("job") or {}).get("runner_config") or {}).get("provider")}
+                "request": (thread.get("job") or {}).get("id"), "mode": "reconstructed",
+                "provider": ((thread.get("job") or {}).get("runner_config") or {}).get("provider"),
+                "presence": presence(thread)}
 
     def send(self, key, message, request_id):
         row = self.issue(key)
@@ -111,15 +180,31 @@ class Discussions:
         with self.store.transaction() as data:
             thread = data.setdefault(key, {"messages": []})
             if any(m["id"] == request_id for m in thread["messages"]): return request_id
-            if thread.get("status") in ("queued", "running", "cancelling") or (thread.get("job") and not thread["job"]["cleanup"]):
+            job = thread.get("job")
+            working = thread.get("status") in ("queued", "running", "cancelling") or (job and not job["cleanup"] and not job.get("ended") and not job.get("completed"))
+            asked = last_question(thread)
+            if asked and asked["text"] == message.strip():
+                # The same words again: never a second copy. While the reply is on
+                # its way this is a no-op; after it failed, it is Try again.
+                if not working:
+                    self.queue(thread, row)
+                return asked["id"]
+            if working:
                 raise ValueError("Wait for this reply or cancel it before sending another question")
             if len(thread["messages"]) >= 1000:
                 raise ValueError("This conversation has reached its retained message limit")
             thread["messages"].append({"id": request_id, "sequence": len(thread["messages"]) + 1,
                 "role": "user", "text": message.strip(), "at": self.clock()})
-            thread.update(status="queued", reason="Waiting for an available discussion worker", partial="",
-                          requested_at=self.clock(), revision=row["revision"], job=None, cancel_requested=False)
+            self.queue(thread, row)
         return request_id
+
+    def queue(self, thread, row):
+        now = self.clock()
+        job = thread.get("job")
+        # A fenced worker not yet torn down keeps its lease until cleanup.
+        thread.update(status="queued", reason=ASKING, partial="", requested_at=now, revision=row["revision"],
+                      job=job if job and not job["cleanup"] else None, cancel_requested=False,
+                      presence={"phase": "finding", "waiting_since": now, "code": "waiting", "reason": ASKING})
 
     def cancel(self, key):
         self.issue(key)
@@ -127,12 +212,12 @@ class Discussions:
             thread = data.get(key)
             if not thread or thread.get("status") not in ("queued", "running", "cancelling"): return
             job = thread.get("job")
-            if job and not job["cleanup"]:
+            if job and not job["cleanup"] and not job.get("ended"):
                 job.update(fenced=True, cancelled=True)
                 thread["cancel_requested"] = True
                 thread.update(status="cancelling", reason="Stopping the discussion worker")
             else:
-                thread.update(status="cancelled", reason="Discussion cancelled")
+                self.leave(thread, None, "cancelled")
 
     def apply(self, key, message_id):
         row = self.issue(key)
@@ -154,10 +239,12 @@ class Discussions:
             for thread in data.values():
                 job = thread.get("job")
                 if job and not job["cleanup"]:
+                    if not job.get("ended") and not job.get("completed"):
+                        self.leave(thread, job, "cancelled", "Forge setup or reset stopped")
                     job.update(fenced=True, cancelled=True)
                     thread.update(cancel_requested=True, status="cancelling")
                 elif thread.get("status") == "queued":
-                    thread.update(status="cancelled", reason="Forge setup or reset cancelled this discussion")
+                    self.leave(thread, None, "cancelled", "Forge setup or reset stopped")
 
     def save(self, key, **fields):
         with self.store.transaction() as data:
@@ -166,6 +253,66 @@ class Discussions:
                 fields["job"].update(fenced=True, cancelled=True)
                 fields["status"] = "cancelled" if fields["job"]["cleanup"] else "cancelling"
             thread.update(fields)
+
+    def left(self, key, job, reason, detail=None, until=None):
+        with self.store.transaction() as data:
+            self.leave(data[key], job, reason, detail, until)
+
+    def leave(self, thread, job, reason, detail=None, until=None):
+        """The worker left without answering: say why, in the thread, exactly once.
+
+        Every unanswered question ends in an answer or one of these. A worker
+        that could not sign in or ran out of quota is replaced once by another
+        ready provider; the same provider is avoided until it frees up.
+        """
+        now = self.clock()
+        who = agent(job) if job else None
+        name = who["name"] if who else "No one"
+        link = None
+        if job:
+            job["ended"] = reason
+            thread["job"] = job
+        if reason == "timeout":
+            text = (f"{name} ran out of time after {minutes(DISCUSSION_SECONDS)} min" if who and job.get("joined_at")
+                    else f"No one became available within {minutes(FINDING_SECONDS)} min" + (f": {detail}" if detail else ""))
+        elif reason == "restart":
+            text = f"{name} left: Forge restarted before the answer was ready"
+        elif reason == "cancelled":
+            text = f"{detail or 'You stopped'} {name if who and job.get('joined_at') else 'the request'}"
+        elif reason in ("auth", "quota"):
+            text, link = unavailable(who["provider"] if who else None, "blocked_" + reason)
+        else:
+            text = f"{name} left: {detail}" if detail else f"{name} left before answering"
+        asked = last_question(thread)
+        retry = bool(reason in ("auth", "quota") and asked and thread.get("auto_retry") != asked["id"])
+        entry = {"id": "left-" + (job["id"] if job else str(uuid.uuid4())), "role": "system", "event": "left",
+                 "reason": reason, "text": scrub(text)[:300], "until": until if reason == "quota" else None, "link": link,
+                 "agent": who, "reply_to": asked["id"] if asked else None, "retrying": retry, "at": now}
+        if asked and not any(m["id"] == entry["id"] for m in thread["messages"]):
+            entry["sequence"] = len(thread["messages"]) + 1
+            thread["messages"].append(entry)
+        if retry:
+            avoid = thread.setdefault("avoid", {})
+            # Discussion-local, never the factory ledger: why and until when.
+            avoid[who["provider"]] = {"until": until or now + 300, "reason": "blocked_" + reason}
+            thread.update(auto_retry=asked["id"], status="queued", requested_at=now, cancel_requested=False, partial="",
+                          reason=entry["text"], presence={"phase": "finding", "waiting_since": now, "code": "switching",
+                          "reason": "Finding someone else to answer", "instead_of": who})
+            return
+        thread.update(status="cancelled" if reason == "cancelled" else "unavailable", reason=entry["text"], partial="",
+                      presence={"phase": "left", "reason": reason, "text": entry["text"], "until": entry["until"],
+                                "link": link, "agent": who, "at": now})
+
+    def waiting(self, code, reason, *, until=None, link=None, skip=None):
+        """Every queued conversation's honest reason for still looking."""
+        with self.store.transaction() as data:
+            for key, thread in data.items():
+                if key == skip or thread.get("status") != "queued": continue
+                current = thread.get("presence") or {}
+                found = {"phase": "finding", "waiting_since": current.get("waiting_since") or thread.get("requested_at"),
+                         "code": code, "reason": reason, "until": until, "link": link, "instead_of": current.get("instead_of")}
+                if current != found:
+                    thread.update(presence=found, reason=reason)
 
     def context(self, key, row):
         state = Ledger(self.root / "state/factory").read()
@@ -196,21 +343,29 @@ class Discussions:
         active = self.active_jobs()
         if active:
             self.drive(active[0], github)
+            if launch:
+                self.waiting("busy", "Another conversation is using the discussion worker; one runs at a time", skip=active[0]["issue_key"])
             return
-        if not launch or not config.get("enabled") or settings.paused(): return
+        if not launch: return
+        if not config.get("enabled"):
+            return self.waiting("disabled", "Forge's agents are switched off")
+        if settings.paused():
+            return self.waiting("paused", "Forge is paused")
         state = Ledger(self.root / "state/factory").read()
         from .memory import pending
-        if pending(state, config): return
+        if pending(state, config):
+            return self.waiting("pipeline", "Waiting for pipeline work to launch first")
         threads = self.read()
         for key, thread in sorted(threads.items(), key=lambda pair: pair[1].get("requested_at", 0)):
             if thread.get("status") != "queued": continue
-            if self.clock() - thread["requested_at"] > 600:
-                self.save(key, status="unavailable", reason="No discussion worker became available. Try again when capacity or the coding account is available.")
+            if self.clock() - thread["requested_at"] > FINDING_SECONDS:
+                looking = thread.get("presence") or {}
+                self.left(key, None, "timeout", looking.get("reason") if looking.get("code") not in (None, "waiting", "switching") else None)
                 continue
             try:
                 row = self.issue(key)
             except (KeyError, ValueError):
-                self.save(key, status="unavailable", reason="This issue is no longer available in a managed repository")
+                self.left(key, None, "error", "This issue is no longer available in a managed repository")
                 continue
             context, origin = self.context(key, row)
             pool = config.get("provider_pool") or [{"id": "default", **{k: config.get(k) for k in ("provider", "model", "provider_environment", "provider_auth_file_env")}}]
@@ -219,14 +374,18 @@ class Discussions:
             with AtomicStore(self.root / "state", "deployments").transaction() as deployments:
                 external = [deepcopy(e["job"]) for e in deployments.get("repositories", {}).values() if e.get("job") and not e["job"]["cleanup"]]
             state["jobs"].update({j["id"]: j for j in external})
-            entry = next((e for e in pool if (ready is None or e["id"] in ready) and available(e, state, self.clock())), None)
-            if not entry: return
+            now, avoid = self.clock(), thread.get("avoid") or {}
+            entry = next((e for e in pool if (ready is None or e["id"] in ready) and (avoid.get(e["provider"]) or {}).get("until", 0) <= now
+                          and available(e, state, now)), None)
+            if not entry:
+                code, reason, until, link = blocked(pool, ready, state, avoid, now)
+                return self.waiting(code, reason, until=until, link=link)
             worker = {**config, **{k: v for k, v in entry.items() if k != "id"}}
             job = {"id": str(uuid.uuid4()), "slot": "issue-discussion", "role": "discussion", "issue_key": key,
                 "repo": row["repo"], "repo_id": row["repo_id"], "issue_number": row["number"],
-                "candidate": context["candidate"], "deadline": self.clock() + DISCUSSION_SECONDS, "fenced": False,
-                "runner_config": worker, "cleanup": False, "context": context,
-                "messages": [{"role": m["role"], "text": m["text"]} for m in thread["messages"][-12:]]}
+                "candidate": context["candidate"], "deadline": now + DISCUSSION_SECONDS, "fenced": False,
+                "runner_config": worker, "cleanup": False, "context": context, "boot": self.boot, "created_at": now,
+                "messages": [{"role": m["role"], "text": m["text"]} for m in thread["messages"] if m["role"] in ("user", "assistant")][-12:]}
             self.save(key, job=job, origin=origin, revision=row["revision"], reason="Preparing a discussion using saved issue evidence")
             self.drive(job, github)
             return
@@ -234,57 +393,153 @@ class Discussions:
     def drive(self, job, github):
         key, runner = job["issue_key"], self.runner(job["runner_config"])
         try:
-            if job["fenced"] or self.clock() >= job["deadline"]:
+            now = self.clock()
+            if job["fenced"] or now >= job["deadline"]:
+                if not job.get("completed") and not job.get("ended"):
+                    if job["fenced"]:
+                        self.left(key, job, "cancelled", None if job.get("cancelled") else "Forge stopped")
+                    else:
+                        # Out of time: keep the worker's last words for diagnosis.
+                        try: job["excerpt"] = excerpt(runner.capture(job).get("logs"))
+                        except (RunnerError, RunnerUnavailable): pass
+                        job["fenced"] = True
+                        self.left(key, job, "timeout")
+                job["fenced"] = True
                 runner.reset(job)
-                job.update(cleanup=True, fenced=True)
-                self.save(key, job=job, status="idle" if job.get("completed") else ("cancelled" if job.get("cancelled") else "unavailable"),
-                          reason=None if job.get("completed") else "Discussion stopped or exceeded its time limit")
+                job["cleanup"] = True
+                with self.store.transaction() as data:
+                    thread = data[key]
+                    thread["job"] = job
+                    if job.get("completed"): thread.update(status="idle", reason=None)
+                    elif thread.get("status") == "cancelling": thread["status"] = "cancelled"
+                    elif thread.get("status") == "running": thread["status"] = "unavailable"
                 return
             current = runner.inspect(job)
+            orphaned = self.boot is not None and job.get("boot") != self.boot
             if current is None:
                 if job.get("container_id"):
-                    raise RunnerError("Discussion worker disappeared; start a new conversation turn")
+                    job["fenced"] = True
+                    self.left(key, job, "restart" if orphaned else "error", None if orphaned else "its worker container disappeared")
+                    return
                 job["container_id"] = runner.create(job)
                 self.save(key, job=job)
                 current = runner.inspect(job)
+            if orphaned and current["running"]:
+                job["boot"] = self.boot  # Still working after the restart: carry on.
+                self.save(key, job=job)
             if current["status"] == "created":
                 runner.prepare(job, github.token("recovery", job["repo_id"], worker=True))
                 runner.start(job)
-                self.save(key, status="running", reason="Agent is reading the saved evidence", job=job)
+                now = self.clock()
+                job["joined_at"] = now
+                with self.store.transaction() as data:
+                    thread = data[key]
+                    instead = (thread.get("presence") or {}).get("instead_of")
+                    thread.update(status="running", reason="Agent is reading the saved evidence", job=job,
+                                  presence={"phase": "joined", "agent": agent(job), "joined_at": now, "instead_of": instead,
+                                            "activity": started(now), "seen": []})
+                    if thread.get("cancel_requested"):
+                        job.update(fenced=True, cancelled=True); thread["status"] = "cancelling"
                 return
             if current["running"]:
                 observation = runner.observe(job, current)
-                self.save(key, partial=partial_text(observation.get("logs", "")))
+                logs = observation.get("logs", "")
+                with self.store.transaction() as data:
+                    thread = data[key]
+                    here = thread.get("presence") or {}
+                    if here.get("phase") == "joined":
+                        here["activity"], here["seen"] = merge(here.get("activity"), here.get("seen"), logs, self.clock(), here.get("joined_at"))
+                    thread["partial"] = partial_text(logs)
                 return
             capture = runner.capture(job)
             result = capture.get("result")
             if not isinstance(result, dict) or result.get("attempt") != job["id"] or result.get("role") != "discussion" or result.get("outcome") != "pass":
-                raise RunnerError("The discussion did not return a complete answer. Check the coding account or try another question")
+                job["excerpt"] = excerpt(capture.get("logs"))
+                reason, detail, until = ended(capture, job, self.clock())
+                if reason == "error" and orphaned: reason, detail = "restart", None
+                job["fenced"] = True
+                self.left(key, job, reason, detail, until)
+                return
             answer = result.get("summary")
-            if not isinstance(answer, str) or not answer.strip() or len(answer) > 12000: raise RunnerError("Discussion answer exceeded its limit")
+            if not isinstance(answer, str) or not answer.strip() or len(answer) > 12000:
+                raise RunnerError("its answer was empty or longer than the limit")
             proposal = result.get("proposal")
             if proposal is not None:
                 if (not isinstance(proposal, dict) or set(proposal) != {"action", "reason"}
                     or proposal["action"] not in job["context"]["actions"] or not isinstance(proposal["reason"], str)
                     or not 1 <= len(proposal["reason"].strip()) <= 2000):
-                    raise RunnerError("The agent proposed an unavailable decision; ask it to reconsider")
+                    raise RunnerError("it proposed a decision that is not available; ask it to reconsider")
             # Persist reply before cleanup. Restart never duplicates a completed message.
             with self.store.transaction() as data:
                 thread = data[key]
+                here = thread.get("presence") or {}
                 if not any(m["id"] == job["id"] for m in thread["messages"]):
+                    activity, _ = merge(here.get("activity"), here.get("seen"), capture.get("logs", ""), self.clock(), here.get("joined_at"))
                     thread["messages"].append({"id": job["id"], "sequence": len(thread["messages"]) + 1,
                         "role": "assistant", "text": scrub(answer), "proposal": proposal,
-                        "revision": job["context"]["revision"], "at": self.clock()})
+                        "revision": job["context"]["revision"], "at": self.clock(),
+                        "agent": agent(job), "joined_at": job.get("joined_at"), "instead_of": here.get("instead_of"),
+                        "activity": public(activity)})
                 job.update(fenced=True, completed=True)
-                thread.update(job=job, partial="", status="running", reason="Finishing the discussion")
+                thread.update(job=job, partial="", status="running", reason="Finishing the discussion",
+                              presence={"phase": "answered", "agent": agent(job), "at": self.clock()})
             runner.reset(job)
             job["cleanup"] = True
             self.save(key, job=job, status="idle", reason=None)
         except RunnerCapacity:
-            self.save(key, reason="Waiting for available memory; pipeline workers have priority")
+            with self.store.transaction() as data:
+                data[key]["reason"] = "Waiting for available memory; pipeline workers have priority"
+                here = data[key].get("presence") or {}
+                if here.get("phase") == "finding":
+                    here.update(code="capacity", reason="Waiting for memory; pipeline workers have priority", until=None, link=None)
         except (RunnerError, RunnerUnavailable, GitHubUnavailable) as error:
             job["fenced"] = True
-            self.save(key, job=job, status="unavailable", reason="The discussion worker could not complete. Check the coding account, repository access or worker capacity, then retry.")
+            if job.get("completed") or job.get("ended"):
+                self.save(key, job=job)  # Cleanup failed: the lease stays until it succeeds.
+                return
+            if isinstance(error, GitHubUnavailable): detail = "GitHub did not grant a read-only repository token"
+            elif isinstance(error, RunnerUnavailable): detail = "the container engine is unavailable"
+            else: detail = scrub(str(error))[:200] or "its worker could not complete"
+            self.left(key, job, "error", detail)
+
+
+def blocked(pool, ready, state, avoid, now):
+    """No provider can join: (code, reason, until, link), naming each one's reason."""
+    parts, codes, untils, link = [], [], [], None
+    for entry in pool:
+        provider, who = entry["provider"], persona(entry["provider"])
+        cooldown = (state.get("provider_cooldowns") or {}).get(provider) or {}
+        if (avoid.get(provider) or {}).get("until", 0) > cooldown.get("until", 0):
+            cooldown = avoid[provider]
+        until = cooldown.get("until", 0)
+        if ready is not None and entry["id"] not in ready:
+            parts.append(f"{who['name']} is not signed in and ready"); codes.append("not_ready"); link = link or ACCOUNTS
+        elif until > now:
+            text, found = unavailable(provider, cooldown.get("reason"))
+            parts.append(text); codes.append(cooldown.get("reason") or "cooldown"); untils.append(until); link = link or found
+        else:
+            parts.append(f"{who['name']} is busy with pipeline work"); codes.append("busy")
+    unique = list(dict.fromkeys(parts)) or ["No coding account is configured"]
+    return (codes[0] if len(set(codes)) == 1 else "mixed") if codes else "none", " · ".join(unique)[:400], min(untils) if untils else None, link
+
+
+def presence(thread):
+    """Who is in the conversation right now, for the operator; no internal fields."""
+    here = thread.get("presence")
+    if here:
+        found = {k: v for k, v in here.items() if k != "seen"}
+        if "activity" in found: found["activity"] = public(found["activity"])
+        return found
+    # Conversations from before presence was recorded.
+    status = thread.get("status", "idle")
+    if status == "queued": return {"phase": "finding", "waiting_since": thread.get("requested_at"), "code": "waiting", "reason": ASKING}
+    if status in ("running", "cancelling"):
+        return {"phase": "joined", "agent": agent(thread.get("job")), "joined_at": thread.get("requested_at"), "activity": []}
+    if status in ("unavailable", "cancelled") and last_question(thread):
+        return {"phase": "left", "reason": "cancelled" if status == "cancelled" else "error",
+                "text": thread.get("reason") or "The reply did not finish", "agent": agent(thread.get("job")) if thread.get("job") else None}
+    messages = thread.get("messages") or []
+    return {"phase": "answered"} if messages and messages[-1]["role"] == "assistant" else {"phase": "idle"}
 
 
 def partial_text(logs):

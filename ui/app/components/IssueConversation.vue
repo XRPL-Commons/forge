@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { requestId } from '~/utils/requestId'
 import { ACTION_LABELS, type IssueAction } from '~/utils/issues'
-import { SUGGESTED_PROMPTS, nearBottom, replyState, unansweredQuestion, unreadReply } from '~/utils/discussion'
-interface Message { id: string; sequence: number; role: 'user' | 'assistant'; text: string; proposal?: { action: IssueAction; reason: string } | null; receipt?: string }
-interface Conversation { messages: Message[]; before: number | null; status: string; provider?: string; reason: string | null; partial: string; origin: { role: string; provider: string; link: string } | null }
-interface ChatEntry { id: string; role: 'user' | 'assistant'; parts: { type: 'text'; text: string }[] }
+import { SUGGESTED_PROMPTS, clockTime, elapsedLabel, findingDetail, joinedLine, leftLine, nearBottom, presenceMood, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
+import { persona, personaSays } from '~/utils/personas'
+interface Message extends ThreadMessage { proposal?: { action: IssueAction; reason: string } | null; receipt?: string }
+interface Conversation { messages: Message[]; before: number | null; status: string; provider?: string; reason: string | null; partial: string; origin: { role: string; provider: string; link: string } | null; presence?: Presence | null }
+interface ChatEntry { id: string; role: ChatRole; parts: { type: 'text'; text: string }[]; ui?: Record<string, string> }
 // The issue panel's Discussion tab: a full-height chat about this issue. The
 // thread scrolls, the prompt stays pinned at the bottom. It stays mounted
 // while the operator is on Details, so an unsent draft and the scroll
@@ -30,29 +31,61 @@ const byId = computed(() => new Map(messages.value.map(m => [m.id, m])))
 const state = computed(() => replyState(poll.data.value?.status))
 const busy = computed(() => state.value === 'replying' || state.value === 'stopping')
 const partial = computed(() => busy.value ? poll.data.value?.partial ?? '' : '')
-// The worker's own words for what it is doing ("Preparing a discussion using
-// saved issue evidence", "Agent is reading the saved evidence", …).
+// Who is in the conversation: Forge looking for someone available, an agent
+// that joined and what it is doing, or why it left.
+const presence = computed<Presence | null>(() => poll.data.value?.presence ?? null)
+const now = useClock(1000)
+const live = computed(() => busy.value && (presence.value?.phase === 'finding' || presence.value?.phase === 'joined') ? presence.value : null)
+const liveAgent = computed(() => live.value?.phase === 'joined' ? persona(live.value.agent?.provider) : null)
+const activity = computed(() => live.value?.phase === 'joined' ? live.value.activity ?? [] : [])
+const waitedFor = computed(() => {
+  const since = live.value?.phase === 'joined' ? live.value.joined_at : live.value?.waiting_since
+  return since ? elapsedLabel(now.value - since) : ''
+})
+// One line for what is happening now: the shimmer and the screen reader say it.
 const statusLine = computed(() => {
   if (sending.value) return 'Sending…'
-  return poll.data.value?.reason || (state.value === 'stopping' ? 'Stopping the reply…' : 'Thinking…')
+  if (state.value === 'stopping') return `Stopping ${liveAgent.value?.name ?? 'the reply'}…`
+  if (liveAgent.value) {
+    const current = activity.value[activity.value.length - 1]
+    return current ? personaSays(liveAgent.value.name, current.text) : `${liveAgent.value.name} joined`
+  }
+  if (live.value?.phase === 'finding') return 'Looking for someone available…'
+  return poll.data.value?.reason || 'Thinking…'
 })
-// The thread in Nuxt UI's chat message shape. While a reply is on its way, a
-// trailing assistant entry carries the streamed text; with no text yet it has
-// no parts, and UChatMessages shows its typing indicator in its place.
+// The thread in Nuxt UI's chat message shape. Who joined and who left are
+// system lines, not bubbles; while a reply is on its way, a trailing system
+// entry shows the live presence.
 const PENDING_ID = 'forge-pending-reply'
 const pending = computed(() => busy.value || sending.value)
+const entries = computed(() => threadEntries(messages.value, pending.value))
+const entryById = computed(() => new Map<string, ThreadEntry>(entries.value.map(e => [e.id, e])))
+const SYSTEM_UI = { leading: 'hidden', container: 'w-full justify-center', body: 'w-full' }
 const chatMessages = computed<ChatEntry[]>(() => {
-  const thread: ChatEntry[] = messages.value.map(m => ({ id: m.id, role: m.role, parts: [{ type: 'text', text: m.text }] }))
-  if (pending.value) thread.push({ id: PENDING_ID, role: 'assistant', parts: partial.value ? [{ type: 'text', text: partial.value }] : [] })
+  const thread: ChatEntry[] = entries.value.map((entry) => {
+    if (entry.kind === 'user') return { id: entry.id, role: 'user', parts: [{ type: 'text', text: entry.message.text }], ui: { leading: 'hidden' } }
+    if (entry.kind === 'answer') return { id: entry.id, role: 'assistant', parts: [{ type: 'text', text: entry.message.text }] }
+    return { id: entry.id, role: 'system', parts: [{ type: 'text', text: entry.kind === 'left' ? entry.message.text : joinedLine(entry.agent, entry.instead) }], ui: SYSTEM_UI }
+  })
+  if (pending.value) thread.push({ id: PENDING_ID, role: 'system', parts: [{ type: 'text', text: statusLine.value }], ui: SYSTEM_UI })
   return thread
 })
+// The conversation's subtitle names who answers here.
+const speaker = computed(() => {
+  const agent = live.value?.agent ?? messages.value.findLast(m => m.role === 'assistant' && m.agent)?.agent
+  const provider = agent?.provider ?? poll.data.value?.provider
+  return provider ? persona(provider) : null
+})
+const lastLeft = computed(() => messages.value.findLast(m => m.role === 'system') ?? null)
+const actionable = (id: string) => { const entry = entryById.value.get(id); return entry?.kind === 'left' && entry.actionable }
 // What went wrong, shown inline at the end of the thread with a way to try
 // again: the send itself, the reply (the worker stopped or ran out of time),
 // or reading the conversation at all.
 const unanswered = computed(() => unansweredQuestion(messages.value))
 const failure = computed<{ text: string; retry: () => void } | null>(() => {
   if (sendError.value) return { text: sendError.value, retry: () => void send() }
-  if (state.value === 'failed') return { text: poll.data.value?.reason || 'The reply did not finish.', retry: () => void retryReply() }
+  // A conversation from before presence: no left line says why, so say it here.
+  if (state.value === 'failed' && !lastLeft.value) return { text: poll.data.value?.reason || 'The reply did not finish.', retry: () => void retryReply() }
   if (poll.error.value) return { text: `Could not load the conversation. ${poll.error.value}`, retry: () => void poll.refresh() }
   return null
 })
@@ -105,7 +138,7 @@ function toBottom(smooth = false) {
   atBottom.value = true
   unseenBelow.value = false
 }
-const signature = computed(() => [messages.value.length, latestReply.value, partial.value.length, pending.value, state.value, !!failure.value].join(':'))
+const signature = computed(() => [messages.value.length, latestReply.value, partial.value.length, pending.value, state.value, !!failure.value, live.value?.phase, activity.value.length].join(':'))
 watch(signature, async () => {
   if (!props.active) { if (!atBottom.value) unseenBelow.value = true; return }
   const follow = atBottom.value
@@ -182,7 +215,7 @@ async function loadOlder() {
   <section id="issue-discussion" ref="root" class="flex h-full min-h-0 min-w-0 flex-col" aria-label="Discussion">
     <!-- Where the answers come from, as the chat's subtitle. -->
     <p id="discussion-context" class="shrink-0 border-b border-line pb-2 text-xs text-muted wrap-anywhere">
-      New conversation using saved issue evidence.<span v-if="poll.data.value?.provider"> Replying with {{ poll.data.value.provider }}.</span><template v-if="poll.data.value?.origin"> Latest context: {{ poll.data.value.origin.provider }} · {{ poll.data.value.origin.role }}. <NuxtLink :to="poll.data.value.origin.link" class="underline">View attempt</NuxtLink></template>
+      New conversation using saved issue evidence.<span v-if="speaker" data-speaker>{{ ` ${speaker.name} answers here, via ${speaker.providerLabel}.` }}</span><template v-if="poll.data.value?.origin"> Latest context: {{ poll.data.value.origin.provider }} · {{ poll.data.value.origin.role }}. <NuxtLink :to="poll.data.value.origin.link" class="underline">View attempt</NuxtLink></template>
     </p>
 
     <div class="relative min-h-0 flex-1">
@@ -230,13 +263,50 @@ async function loadOlder() {
             compact
             :ui="{ root: 'min-w-0 gap-3 px-0' }"
           >
+            <!-- An answer carries its agent's face. -->
+            <template #leading="{ message }">
+              <AgentAvatar v-if="entryById.get(message.id)?.kind === 'answer'" :provider="byId.get(message.id)?.agent?.provider ?? null" mood="happy" :size="28" />
+            </template>
             <template #content="{ message }">
-              <p class="text-xs font-semibold text-muted">{{ message.role === 'user' ? 'You' : 'Forge agent' }}</p>
-              <div v-if="message.id === PENDING_ID" data-streaming class="mt-1">
-                <UChatShimmer :text="statusLine" class="text-sm" />
-                <p class="mt-1 whitespace-pre-wrap break-words text-sm text-muted">{{ partial }}</p>
+              <!-- Live: Forge looking for someone available, or who joined and what it is doing. -->
+              <div v-if="message.id === PENDING_ID" data-streaming data-presence :data-phase="live?.phase ?? 'sending'" class="mx-auto flex w-full max-w-xl items-start gap-3 rounded-lg border border-line/70 px-3 py-2.5">
+                <AgentAvatar :provider="liveAgent?.provider ?? null" :mood="live ? presenceMood(live.phase) : 'looking'" :size="40" />
+                <div class="min-w-0 flex-1">
+                  <template v-if="liveAgent && live">
+                    <p class="text-sm text-white" data-presence-title>{{ joinedLine(live.agent, live.instead_of) }}<span v-if="waitedFor" class="text-muted"> · {{ waitedFor }}</span></p>
+                    <ol class="mt-1.5 space-y-0.5" data-activity aria-label="What the agent is doing">
+                      <li v-for="(line, index) in activity" :key="`${line.at}-${index}`" class="text-sm wrap-anywhere">
+                        <UChatShimmer v-if="index === activity.length - 1 && state !== 'stopping'" :text="personaSays(liveAgent.name, line.text)" data-current />
+                        <span v-else class="text-muted">{{ personaSays(liveAgent.name, line.text) }}</span>
+                      </li>
+                    </ol>
+                    <p v-if="state === 'stopping'" class="mt-1 text-sm text-muted">{{ statusLine }}</p>
+                  </template>
+                  <template v-else>
+                    <UChatShimmer :text="live?.phase === 'finding' ? 'Looking for someone available…' : statusLine" class="text-sm" data-presence-title />
+                    <p v-if="live?.phase === 'finding'" class="mt-1 text-xs text-muted wrap-anywhere" data-finding-reason>
+                      <template v-if="live.instead_of">{{ persona(live.instead_of.provider).name }} left · </template>{{ findingDetail(live) }}<span v-if="waitedFor"> · waiting {{ waitedFor }}</span>
+                      <NuxtLink v-if="live.link" :to="live.link.to" class="ml-1 underline">{{ live.link.label }}</NuxtLink>
+                    </p>
+                  </template>
+                  <p v-if="partial" class="mt-1 whitespace-pre-wrap break-words text-sm text-muted">{{ partial }}</p>
+                </div>
+              </div>
+              <!-- Who joined to answer: a system line, not a bubble. -->
+              <p v-else-if="entryById.get(message.id)?.kind === 'joined'" class="text-center text-xs text-muted" data-joined>{{ message.parts[0]?.text }}</p>
+              <!-- Who left without answering, and why. -->
+              <div v-else-if="entryById.get(message.id)?.kind === 'left'" data-left :data-reason="byId.get(message.id)?.reason" class="mx-auto flex max-w-xl flex-wrap items-center justify-center gap-2 text-center text-sm text-muted">
+                <AgentAvatar v-if="byId.get(message.id)?.agent" :provider="byId.get(message.id)!.agent!.provider" mood="left" :size="28" />
+                <span class="min-w-0 wrap-anywhere">{{ leftLine(byId.get(message.id)!) }}<template v-if="byId.get(message.id)!.retrying"> · finding someone else</template></span>
+                <NuxtLink v-if="byId.get(message.id)!.link" :to="byId.get(message.id)!.link!.to" class="underline">{{ byId.get(message.id)!.link!.label }}</NuxtLink>
+                <UButton v-if="actionable(message.id)" size="xs" color="neutral" variant="outline" icon="i-lucide-rotate-ccw" data-try-again @click="retryReply">Try again</UButton>
               </div>
               <template v-else-if="byId.get(message.id)">
+                <p class="text-xs font-semibold text-muted">
+                  <template v-if="message.role === 'user'">You</template>
+                  <template v-else-if="byId.get(message.id)!.agent"><span class="text-white/85" data-persona-name>{{ persona(byId.get(message.id)!.agent!.provider).name }}</span> <span class="font-normal">via {{ persona(byId.get(message.id)!.agent!.provider).providerLabel }}</span></template>
+                  <template v-else>Forge agent</template>
+                </p>
                 <Suspense v-if="message.role === 'assistant'"><ConversationMessage :id="message.id" :text="byId.get(message.id)!.text" /><template #fallback><p class="mt-1 whitespace-pre-wrap break-words text-sm">{{ byId.get(message.id)!.text }}</p></template></Suspense>
                 <p v-else class="mt-1 whitespace-pre-wrap break-words text-sm text-white">{{ byId.get(message.id)!.text }}</p>
                 <div v-if="byId.get(message.id)!.proposal" class="mt-3 rounded-lg border border-line p-3" data-proposal>
@@ -267,18 +337,18 @@ async function loadOlder() {
                     @click="emit('act', action, '')"
                   >{{ ACTION_LABELS[action] }}</UButton>
                 </div>
+                <!-- What the agent did on the way to this answer, folded away. -->
+                <details v-if="message.role === 'assistant' && byId.get(message.id)!.activity?.length" class="mt-2 text-xs text-muted" data-agent-did>
+                  <summary class="cursor-pointer select-none">What {{ persona(byId.get(message.id)!.agent?.provider).name }} did</summary>
+                  <ol class="mt-1 space-y-0.5 pl-1">
+                    <li v-for="(line, index) in byId.get(message.id)!.activity" :key="index" class="wrap-anywhere"><span class="tabular-nums">{{ clockTime(line.at) }}</span> · {{ line.text }}</li>
+                  </ol>
+                </details>
               </template>
-            </template>
-            <!-- No streamed text yet: the typing dots, with what the worker is doing. -->
-            <template #indicator="{ ui }">
-              <div data-streaming class="flex flex-col gap-1">
-                <div :class="ui.indicator()"><span /><span /><span /></div>
-                <UChatShimmer :text="statusLine" class="text-sm" />
-              </div>
             </template>
           </UChatMessages>
 
-          <p v-if="state === 'stopped' && !pending" class="mt-2 text-sm text-muted" data-stopped>{{ poll.data.value?.reason || 'Reply stopped' }}</p>
+          <p v-if="state === 'stopped' && !pending && !lastLeft" class="mt-2 text-sm text-muted" data-stopped>{{ poll.data.value?.reason || 'Reply stopped' }}</p>
           <div v-if="failure && !pending" role="alert" data-discussion-error class="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200/30 bg-amber-200/5 px-3 py-2 text-sm text-amber-200">
             <UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" aria-hidden="true" />
             <span class="min-w-0 flex-1 wrap-anywhere">{{ failure.text }}</span>

@@ -386,3 +386,55 @@ export function drawPortrait(ctx: CanvasRenderingContext2D, S: number, look: Por
     ctx.lineWidth = 1.2; ctx.strokeStyle = CUBE_INK; ctx.stroke()
   }
 }
+
+// ---------------------------------------------------------------------------
+// The discussion agent's avatar: the same cube in its persona's colour with a
+// small mark above it, whose face follows the conversation. Looking around
+// while Forge finds someone, focused while it works, happy with an answer,
+// eyes shut once it has left. `t` animates; `still` is the reduced-motion frame.
+// ---------------------------------------------------------------------------
+export type AgentMood = 'looking' | 'busy' | 'happy' | 'left'
+export type AgentMark = 'spark' | 'bolt' | 'star' | null
+
+export function agentFace(mood: AgentMood, c: number, t: number, still: boolean): Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth'> & { dx: number; dy: number } {
+  switch (mood) {
+    // Peeking left and right, as if looking for someone.
+    case 'looking': return { eyes: 'open', look: still ? c * 0.09 : Math.sin(t / 650) * c * 0.11, lookY: -c * 0.02, mouth: 'o', dx: 0, dy: still ? 0 : -Math.max(0, Math.sin(t / 325)) * c * 0.04 }
+    case 'busy': return { ...moodFace('busy', c), dx: still ? 0 : Math.sin(t / 70) * c * 0.012, dy: 0 }
+    case 'happy': return { ...moodFace('happy', c), dx: 0, dy: 0 }
+    default: return { ...moodFace('rest', c), mouth: 'flat', dx: 0, dy: 0 }
+  }
+}
+
+function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
+  if (!mark) return
+  ctx.save(); ctx.translate(x, y)
+  ctx.lineWidth = Math.max(1, s * 0.14); ctx.strokeStyle = CUBE_INK; ctx.lineJoin = 'round'
+  ctx.beginPath()
+  if (mark === 'bolt') {
+    // A little lightning-bolt antenna.
+    ctx.moveTo(s * 0.15, -s); ctx.lineTo(-s * 0.35, -s * 0.05); ctx.lineTo(s * 0.05, -s * 0.05)
+    ctx.lineTo(-s * 0.2, s * 0.75); ctx.lineTo(s * 0.45, -s * 0.3); ctx.lineTo(s * 0.02, -s * 0.3); ctx.closePath()
+  } else {
+    const points = mark === 'star' ? 5 : 4, outer = s * 0.8, inner = mark === 'star' ? s * 0.36 : s * 0.22
+    for (let i = 0; i < points * 2; i++) {
+      const r = i % 2 ? inner : outer, a = -Math.PI / 2 + (i * Math.PI) / points
+      if (i) ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r)
+      else ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r)
+    }
+    ctx.closePath()
+  }
+  ctx.fillStyle = mark === 'spark' ? '#ffe2b8' : mark === 'star' ? '#e6e3ff' : fill
+  ctx.fill(); ctx.stroke(); ctx.restore()
+}
+
+export function drawAgent(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, mood: AgentMood, t = 0, still = true) {
+  ctx.clearRect(0, 0, S, S)
+  const c = Math.round(S * 0.66), floor = Math.round(S * 0.95), cx = S / 2 - S * 0.05
+  const face = agentFace(mood, c, t, still)
+  ctx.save()
+  ctx.globalAlpha = mood === 'left' ? 0.7 : 1
+  drawCube(ctx, cx + face.dx, floor + face.dy, c, fill, { eyes: face.eyes, look: face.look, lookY: face.lookY, mouth: face.mouth })
+  drawMark(ctx, mark, cx + c * 0.42 + face.dx, floor - c - S * 0.08 + face.dy, S * 0.17, fill)
+  ctx.restore()
+}

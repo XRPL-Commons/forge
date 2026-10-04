@@ -34,6 +34,15 @@ def probe_failure_reason(answer, failure, proof, nonce):
     return None
 
 
+
+def announcer():
+    """Tool calls as small live inspection events; never fails a run."""
+    try:
+        return runpy.run_path(str(Path(__file__).resolve().parent.parent / 'activity.py'))['Announcer']()
+    except Exception:
+        return None
+
+
 def collect(args, prompt, directory, env):
     """Drain an unlimited transcript into a bounded tail; keep its final result."""
     with tempfile.TemporaryFile(mode='w+', dir='/work/home') as source:
@@ -41,6 +50,7 @@ def collect(args, prompt, directory, env):
         child = subprocess.Popen(args, stdin=source, cwd=directory, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
         chunks, size = deque(), 0
+        announce = announcer()
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(child.stdout, selectors.EVENT_READ)
@@ -51,6 +61,8 @@ def collect(args, prompt, directory, env):
                         break
                     size += len(block)
                     chunks.append(block)
+                    if announce:
+                        announce.feed(block)
                     # Tool-heavy work can emit much more than 2 MiB over its
                     # lifetime. Bound retained memory, not completed work. The
                     # CLI's terminal result is at the end; incomplete leading
