@@ -93,7 +93,7 @@ def verify_https(base):
         raise SetupError('https_unavailable', 'The host was configured, but verified HTTPS is not reachable from this computer. Check Tailscale and DNS, then use --resume.') from None
 
 
-def setup(args, *, host_factory=Host, github_factory=GitHub, verify=verify_https, prompt=getpass.getpass, stdin=None):
+def setup(args, *, host_factory=Host, github_factory=GitHub, verify=verify_https, prompt=getpass.getpass, stdin=None, tell=print):
     base = origin(args.origin)
     require(not args.secret_stdin or args.apply, 'invalid_request', '--secret-stdin requires --apply.')
     require(not args.client_id or re.fullmatch('[A-Za-z0-9_.-]{5,100}', args.client_id), 'invalid_request', 'Supply the identity-only OAuth App client ID.')
@@ -126,6 +126,13 @@ def setup(args, *, host_factory=Host, github_factory=GitHub, verify=verify_https
                     'next_action': 'Supply the OAuth App client secret on stdin with --apply --secret-stdin, or use the interactive hidden prompt.'}
         else:
             require(sys.stdin.isatty(), 'identity_secret_required', 'Use --secret-stdin for non-interactive secret input.')
+            tell('\nGitHub client secret for ' + base)
+            tell('1. Open https://github.com/settings/developers and select the OAuth App with client ID ' + plan['client_id'] + '.')
+            tell('2. Under Client secrets, click Generate a new client secret. Complete GitHub’s passkey check if asked.')
+            tell('   If you already generated a secret and it is still visible, use that one.')
+            tell('3. Click Copy token beside the client secret, then paste it at the prompt below and press Enter.')
+            tell('   Nothing appears while you paste. Use the client secret, not the client ID or a personal access token.')
+            tell('The CLI sends this App secret over SSH to the selected host and stores it in Forge’s private runtime.\n')
             secret = prompt('GitHub OAuth client secret (identity app only): ')
         require(isinstance(secret, str) and re.fullmatch('[a-fA-F0-9]{40}', secret), 'invalid_identity_secret',
                 'Use the OAuth App’s 40-character client secret, not a GitHub personal access token.')

@@ -77,6 +77,24 @@ operator sign-in. Closing the wizard preserves progress; run `forge setup new
 
 ## Private network and operator sign-in
 
+For a human operator, continue sign-in with:
+
+```sh
+forge setup sign-in --ssh USER@HOST
+```
+
+The wizard explains which steps happen in GitHub and which the CLI performs.
+It opens the registration page, prints the exact App name and callback fields,
+asks for the public client ID, and explains how to generate and copy the client
+secret before showing a hidden prompt. It also explains passkey verification,
+which credential to use, where the secret is stored, and how to resume. You do
+not need an agent to fill the GitHub form. GitHub registration and passkey checks
+remain human browser steps; the CLI does not create the App automatically.
+
+The command uses your saved factory settings, so it skips registration when the
+client ID is already known. Terminal output is readable text. `--json` retains
+the noninteractive protocol, and `identity` remains an alias-compatible command.
+
 These stages also have noninteractive commands:
 
 ```sh
@@ -123,6 +141,9 @@ Local GitHub administrative credentials are not transferred.
 
 After an interrupted identity apply, use `forge setup identity --ssh USER@HOST
 --resume --json`. Existing identity settings, sessions, and grants are preserved.
+For humans, `forge setup sign-in --ssh USER@HOST --resume` prints the result and
+next step in plain language. If settings were saved before an HTTPS check failed,
+the CLI says that the secret is saved and gives this exact recovery command.
 Different operator or App settings produce a conflict rather than replacing
 them. A stopped network installer can be repaired explicitly with `forge setup
 network --ssh USER@HOST --apply --upgrade-installer`; the source commit and setup

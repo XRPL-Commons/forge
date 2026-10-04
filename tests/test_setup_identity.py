@@ -1,4 +1,5 @@
 import io
+from contextlib import redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge_client import _identity_host as remote, bootstrap, identity
-from forge_client.cli import parser
+from forge_client.cli import parser, main
 from forge_client.contracts import SetupError
 from forge_client.install import Installation
 from forge_client.network import payload
@@ -143,6 +144,56 @@ class IdentityClientTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'network_not_ready')
         self.host.rpc.assert_not_called()
         self.github.owner.assert_not_called()
+
+
+class SignInGuideTests(unittest.TestCase):
+    def test_friendly_command_runs_wizard_but_json_never_prompts(self):
+        result = {'status': 'planned', 'server': ORIGIN, 'client_id': TARGET['client_id'], 'steps': ['Configure sign-in']}
+        with patch('sys.stdin.isatty', return_value=True), patch.object(identity, 'wizard', return_value=result) as wizard, \
+                patch.object(identity, 'execute', return_value=result) as execute, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(main(['setup', 'sign-in', '--ssh', 'anvil']), 0)
+            wizard.assert_called_once()
+            self.assertIn('GitHub sign-in setup', output.getvalue())
+            self.assertNotIn('"ok"', output.getvalue())
+            wizard.reset_mock()
+            output.seek(0); output.truncate()
+            self.assertEqual(main(['setup', 'sign-in', '--ssh', 'anvil', '--json']), 0)
+            self.assertEqual(json.loads(output.getvalue())['status'], 'planned')
+            wizard.assert_not_called()
+            execute.assert_called_once()
+
+    def test_error_explains_saved_secret_and_exact_resume_command(self):
+        with patch.object(identity, 'execute', side_effect=SetupError('https_unavailable', 'HTTPS check failed.')), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(main(['setup', 'sign-in', '--ssh', 'anvil', '--resume']), 1)
+        self.assertIn('do not need to enter the secret again', output.getvalue())
+        self.assertIn('forge setup sign-in --ssh anvil --resume', output.getvalue())
+
+    def test_registration_explains_manual_github_actions_and_exact_fields(self):
+        output = []
+        identity.registration({'next_action': {'url': 'https://github.com/settings/applications/new',
+            'application_name': 'Anvil — Forge operator sign-in', 'homepage_url': ORIGIN,
+            'callback_url': ORIGIN + '/auth/github/callback'}}, tell=output.append)
+        text = '\n'.join(output)
+        for expected in ('you register it on GitHub', 'Register application', 'Client ID',
+                         'Anvil — Forge operator sign-in', ORIGIN + '/auth/github/callback', 'Device Flow off'):
+            self.assertIn(expected, text)
+
+    def test_wizard_resumes_existing_app_without_asking_for_registration_again(self):
+        workflow = Mock(ssh='anvil')
+        workflow.journal.read.return_value = {'operators': ['operator']}
+        planned = {'status': 'planned', 'server': ORIGIN, 'operators': [{'login': 'operator'}]}
+        ready = {'status': 'sign_in_required', 'next_action': {'url': ORIGIN + '/login'}}
+        calls = []
+        def execute(args, **kwargs):
+            calls.append((args.apply, args.client_id))
+            return ready if args.apply else planned
+        ask, browser = Mock(return_value='yes'), Mock()
+        with patch.object(identity, 'execute', side_effect=execute):
+            self.assertEqual(identity.wizard(workflow, ask=ask, tell=Mock(), open_browser=browser), ready)
+        self.assertEqual(calls, [(False, None), (True, None)])
+        ask.assert_called_once_with('Continue with these settings? [y/N] ')
+        browser.assert_called_once_with(ORIGIN + '/login')
 
 
 if __name__ == '__main__':

@@ -39,7 +39,9 @@ def parser():
     sub = p.add_subparsers(dest='command', required=True)
     fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
     for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
-        command = fresh.add_parser(action, help='Guided fresh-host installation' if action == 'new' else action.capitalize() + ' a saved host installation')
+        command = fresh.add_parser(action, aliases=['sign-in'] if action == 'identity' else [],
+                                   help='Walk through GitHub sign-in setup' if action == 'identity' else
+                                   'Guided fresh-host installation' if action == 'new' else action.capitalize() + ' a saved host installation')
         command.add_argument('--ssh', help='SSH account and destination; verified host key and root or noninteractive sudo required')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
         command.add_argument('--wait', type=int, default=0, help='Watch progress for at most 0–600 seconds')
@@ -109,6 +111,13 @@ def parser():
 def execute(args):
     if args.command == 'setup':
         from .install import execute as install, wizard
+        if args.setup_command == 'sign-in':
+            args.setup_command = 'identity'
+        if args.setup_command == 'identity' and not args.json and sys.stdin.isatty() and not (args.apply or args.resume or args.secret_stdin):
+            from .identity import wizard as sign_in
+            from .install import Installation
+            require(args.ssh, 'ssh_required', 'Run forge setup sign-in --ssh HOST with your saved SSH destination.')
+            return sign_in(Installation(args.ssh), operator=args.operator, client_id=args.client_id)
         if args.setup_command == 'new' and not args.json and sys.stdin.isatty():
             return wizard(args)
         return install(args)
@@ -120,7 +129,7 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],
@@ -176,9 +185,17 @@ def main(argv=None):
         if args.command == 'skill' and not args.json:
             print(result['skill'])
             return 0
+        if args.command == 'setup' and not args.json:
+            from .identity import display
+            if display(result, args.ssh):
+                return 0
         print(json.dumps({'ok': True, **result}, sort_keys=True))
         return 0
     except SetupError as error:
+        if args.command == 'setup' and args.setup_command in ('identity', 'sign-in') and not args.json:
+            from .identity import display_error
+            display_error(error, args.ssh)
+            return 1
         print(json.dumps({'ok': False, 'error': error.code, 'reason': str(error)}))
         return 1
     except (Exception, KeyboardInterrupt):

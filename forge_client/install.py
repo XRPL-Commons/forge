@@ -90,6 +90,7 @@ def schemas():
                                         'resume': {'type': 'boolean', 'default': False},
                                         'secret_stdin': {'type': 'boolean', 'default': False}}, 'required': ['ssh']},
         'result_statuses': ['identity_app_required', 'identity_secret_required', 'planned', 'sign_in_required']}
+    commands['sign-in'] = {**commands['identity'], 'usage': 'forge setup sign-in --ssh USER@HOST --json', 'alias_for': 'identity'}
     return commands
 
 

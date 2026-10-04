@@ -1,5 +1,6 @@
 """Fresh-host adapter over the existing identity bootstrap; no new sign-in logic."""
 from types import SimpleNamespace
+import shlex
 import webbrowser
 
 from . import bootstrap
@@ -46,27 +47,77 @@ def execute(args, *, workflow=None, setup=bootstrap.setup):
         return result
 
 
-def wizard(workflow, *, ask=input, tell=print, open_browser=webbrowser.open):
+def registration(result, *, tell=print):
+    action = result['next_action']
+    tell('GitHub sign-in needs a dedicated OAuth App. The CLI provides its settings; you register it on GitHub.')
+    tell('1. Open ' + action['url'])
+    tell('2. Enter these fields exactly:')
+    for key, label in (('application_name', 'Application name'), ('homepage_url', 'Homepage URL'), ('callback_url', 'Redirect URI / Authorization callback URL')):
+        tell('   ' + label + ': ' + action[key])
+    tell('   Leave wildcard matching and Device Flow off. This sign-in flow requests no repository or admin scopes.')
+    tell('3. Click Register application, then copy the Client ID from the App settings page.')
+    tell('   Keep that page open. The next step explains how to generate and enter the client secret.')
+
+
+def display(result, ssh, *, tell=print):
+    """Human output for the same structured sign-in results used by agents."""
+    status = result.get('status')
+    if status not in ('identity_app_required', 'identity_secret_required', 'planned', 'sign_in_required'):
+        return False
+    # Other setup stages also use "planned".
+    if status == 'planned' and 'client_id' not in result:
+        return False
+    command = 'forge setup sign-in' + (' --ssh ' + shlex.quote(ssh) if ssh else '')
+    if status == 'identity_app_required':
+        registration(result, tell=tell)
+        tell('\nContinue the guided setup: ' + command)
+    elif status == 'planned':
+        tell('GitHub sign-in setup for ' + result['server'])
+        tell('Client ID: ' + result['client_id'])
+        for step in result['steps']:
+            tell('  • ' + step)
+        tell('\nContinue the guided setup: ' + command)
+    elif status == 'identity_secret_required':
+        tell('The GitHub App client secret is still needed. Use the hidden prompt: ' + command)
+    else:
+        tell('Sign-in configuration and HTTPS checks passed.')
+        tell('Open ' + result['next_action']['url'] + ' and choose Continue with GitHub.')
+        tell('Sign in with the authorized account: ' + ', '.join(o['login'] for o in result['operators']) + '.')
+        tell('Role Apps, coding accounts, repository activation and first-merge validation are still required.')
+    return True
+
+
+def display_error(error, ssh, *, tell=print):
+    tell('Setup could not finish: ' + str(error))
+    if error.code in ('https_unavailable', 'https_setup_failed', 'host_update_failed'):
+        tell('Your sign-in settings are saved. You do not need to enter the secret again.')
+        tell('Retry the remaining checks: forge setup sign-in --ssh ' + shlex.quote(ssh) + ' --resume')
+
+
+def wizard(workflow, *, ask=input, tell=print, open_browser=webbrowser.open, operator=None, client_id=None):
+    tell('\nSet up GitHub sign-in')
+    tell('Progress is saved. You can close this wizard and run forge setup sign-in --ssh ' + workflow.ssh + ' to continue.')
     state = workflow.journal.read()
-    operators = state.get('operators') or [ask('GitHub operator login: ').strip()]
-    args = SimpleNamespace(ssh=workflow.ssh, operator=operators, client_id=None,
+    require(state, 'setup_not_found', 'Start with forge setup new --ssh ' + workflow.ssh + '.')
+    operators = operator or state.get('operators') or [ask('GitHub username allowed to sign in: ').strip()]
+    args = SimpleNamespace(ssh=workflow.ssh, operator=operators, client_id=client_id,
                            apply=False, resume=False, secret_stdin=False, json=False)
     result = execute(args, workflow=workflow)
     if result['status'] == 'identity_app_required':
         action = result['next_action']
-        tell('Create a dedicated identity-only GitHub OAuth App:')
-        for key in ('application_name', 'homepage_url', 'callback_url'):
-            tell('  ' + key.replace('_', ' ') + ': ' + action[key])
+        registration(result, tell=tell)
         open_browser(action['url'])
         args.client_id = ask('OAuth App client ID (public): ').strip()
         result = execute(args, workflow=workflow)
     if result['status'] == 'planned':
-        if ask('Configure operator sign-in and private HTTPS? [y/N] ').strip().lower() not in ('y', 'yes'):
+        tell('\nSelected server: ' + result['server'])
+        tell('Allowed GitHub account(s): ' + ', '.join(o['login'] for o in result['operators']))
+        tell('The CLI will configure sign-in, update the services, and verify private HTTPS.')
+        if ask('Continue with these settings? [y/N] ').strip().lower() not in ('y', 'yes'):
             return result
         args.apply = True
         # Existing bootstrap owns the hidden secret prompt and validates input.
         result = execute(args, workflow=workflow)
     if result['status'] == 'sign_in_required':
-        tell(result['next_action']['instruction'])
         open_browser(result['next_action']['url'])
     return result

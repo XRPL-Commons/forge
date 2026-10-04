@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+from urllib.error import URLError, HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 
@@ -47,15 +49,26 @@ class NoRedirect(HTTPRedirectHandler):
         raise BootstrapError('https_unavailable', 'The configured HTTPS endpoint redirected unexpectedly.')
 
 
-def verify(origin):
+def verify(origin, *, sleep=time.sleep):
+    # Service restart and first Tailscale certificate issuance may still be in
+    # progress. Retry transport failures briefly, keeping TLS verification on.
     try:
         opener = build_opener(ProxyHandler({}), NoRedirect())
-        with opener.open(Request(origin + '/api/auth/session', headers={'Accept': 'application/json'}), timeout=15) as response:
-            raw = response.read(4097)
-            need(response.status == 200 and len(raw) <= 4096, 'https_unavailable', 'Could not verify the HTTPS sign-in endpoint.')
-            value = json.loads(raw)
-            need(value.get('ok') is True and value.get('enabled') is True and value.get('operator') is None,
-                 'https_unavailable', 'The HTTPS endpoint has not confirmed operator sign-in.')
+        for attempt in range(3):
+            try:
+                with opener.open(Request(origin + '/api/auth/session', headers={'Accept': 'application/json'}), timeout=5) as response:
+                    raw = response.read(4097)
+                    need(response.status == 200 and len(raw) <= 4096, 'https_unavailable', 'Could not verify the HTTPS sign-in endpoint.')
+                    value = json.loads(raw)
+                    need(value.get('ok') is True and value.get('enabled') is True and value.get('operator') is None,
+                         'https_unavailable', 'The HTTPS endpoint has not confirmed operator sign-in.')
+                return
+            except HTTPError:
+                raise
+            except (URLError, TimeoutError, ConnectionError):
+                if attempt == 2:
+                    raise
+                sleep(2)
     except BootstrapError:
         raise
     except Exception:
