@@ -304,6 +304,28 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(getattr(self.github, 'settled', []), [item['candidate']['key']])
         self.assertEqual(item['checks_settled'], item['candidate']['key'])
 
+    def test_an_unreadable_pull_request_preserves_open_work(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
+        def gone(item, number): raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=404)
+        before = self.ledger.read()['issues'][self.key]
+        self.github.pr = gone
+        self.assertTrue(self.cycle()['errors'])
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual((item['state'], item['candidate'], item['evidence']),
+                         (before['state'], before['candidate'], before['evidence']))
+
+    def test_a_closed_issue_whose_pull_request_is_gone_is_cancelled(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
+        def gone(item, number): raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=404)
+        self.github.pr = gone; self.github.closed = True
+        self.assertFalse(self.cycle()['errors'])
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['state'], 'cancelled')
+        self.assertIsNone(item['candidate'])
+        self.assertFalse(self.cycle()['errors'])
+
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review', 'reject'); self.cycle()

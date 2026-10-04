@@ -495,6 +495,14 @@ class Supervisor:
             self.github.check(item, 'controller', gate, gate['key'], None, reason)
         self.ledger.invalidate(key, reason, candidate=candidate, hold=hold)
 
+    def closed_issue_with_unreadable_candidate(self, item, issue):
+        self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            current['candidate'] = None
+            current['evidence'] = {}
+        self.github.labels(self.ledger.read()['issues'][item['key']])
+
     def pause_external_change(self, item, reason):
         self.invalidate(item['key'], reason, hold=True)
 
@@ -582,7 +590,15 @@ class Supervisor:
             item = self.ledger.read()['issues'][item['key']]
         candidate_value = item['candidate']
         if candidate_value:
-            pr = self.github.pr(item, candidate_value['pr'])
+            try:
+                pr = self.github.pr(item, candidate_value['pr'])
+            except GitHubUnavailable as error:
+                if getattr(error, 'status', None) != 404 or issue['state'] != 'closed':
+                    raise
+                # A 404 can also mean lost App access. Only confirmed issue
+                # closure lets us discard the candidate; open work stays intact.
+                self.closed_issue_with_unreadable_candidate(item, issue)
+                return
             if pr.get('merged'):
                 with self.ledger.transaction() as data:
                     current = data['issues'][item['key']]
