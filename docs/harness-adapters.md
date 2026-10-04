@@ -61,3 +61,22 @@ the API-key path uses `XAI_API_KEY`. It is dispatched only once `setup check` pa
 its authenticated sandbox probe, which fails closed when the strict sandbox, the
 private-file denial or the structured result cannot be verified. OpenCode remains a
 follow-up adapter.
+
+### Grok device sign-in
+
+Run `bin/forge setup login grok --root <runtime-root>` as the Forge service account.
+Forge runs the pinned Grok CLI inside its installed runner image. Bubblewrap is
+already in that image; installing it on the host does not repair the login container.
+
+Before browser authorization, Forge checks that the image contains Grok and
+bubblewrap and can create the native sandbox under the installed runner seccomp
+and AppArmor policies. The check has no network access or credentials. A failed
+check gives the exact `bin/forge update --root ...` command to repair the image or
+policies before retrying. API-key entry and importing a login file do not need this
+device-login check; normal authenticated `setup check` verification still applies.
+
+The sign-in container uses the same namespace policies and bubblewrap path as the
+Grok worker, with a read-only root, no added capabilities, and only a temporary
+private login directory mounted. The managed Grok deny rules remain enforced.
+After sign-in, run `bin/forge setup check --root <runtime-root>` to verify the account
+and its native tool isolation before Forge dispatches work to it.

@@ -9,7 +9,7 @@ import re
 import time
 import json
 
-from .contracts import NEXT_ROLE, ROLES, dependencies, candidate, digest, result, environment_key, summary as plain_summary
+from .contracts import NEXT_ROLE, ROLES, dependencies, issue_dependencies, candidate, digest, result, environment_key, summary as plain_summary
 from .config import policy
 from .ownership import ownership
 from .memory import allocation as memory_allocation, confirmed as memory_confirmed, pending as memory_pending
@@ -380,6 +380,18 @@ class Supervisor:
             self.update_requirements(item['key'], requirements)
             return
         if job['role'] == 'build':
+            if report and report['outcome'] == 'waiting_on_issues':
+                body = issue.get('body') or ''
+                evidence = report['evidence'].strip()
+                if evidence in body and all(re.search(rf'(?<![\w/])#{n}\b', evidence) for n in report['issues']):
+                    numbers = sorted(set(issue_dependencies(body, item)) | set(report['issues']))
+                    blocked = self.blocked_dependencies(item, numbers)
+                    self.ledger.wait_on_issues(job['id'], report['issues'], evidence, body, blocked,
+                                              summary=self.card(report, job))
+                    return
+                # Ungrounded claims cannot install a durable dependency wait.
+                self.ledger.fail(job['id'], 'Dependency evidence must quote the issue requirements and name each prerequisite')
+                return
             if report and report['outcome'] == 'needs_decision':
                 self.ledger.request_decision(job['id'], report['decision'], summary=self.card(report, job))
                 return
@@ -506,17 +518,24 @@ class Supervisor:
             current['ownership_wait'] = owner
         return owner is None
 
-    def dependency_ready(self, item, issue):
+    def blocked_dependencies(self, item, numbers):
         blocked = []
-        for number in dependencies(issue.get('body')):
+        for number in numbers:
             value = self.github.call('controller', item, 'GET', f'/issues/{number}')
             if (not isinstance(value, dict) or value.get('number') != number
                     or 'pull_request' in value or value.get('state') not in ('open', 'closed')):
                 raise GitHubUnavailable('Prerequisite issue could not be verified')
             if value['state'] != 'closed':
                 blocked.append(number)
+        return blocked
+
+    def dependency_ready(self, item, issue):
+        blocked = self.blocked_dependencies(item, issue_dependencies(issue.get('body'), item))
         with self.ledger.transaction() as data:
             current = data['issues'][item['key']]
+            if current.get('dependency_body') != digest(issue.get('body') or ''):
+                for field in ('declared_dependencies', 'dependency_body', 'dependency_evidence'):
+                    current.pop(field, None)
             if current.get('blocked_dependencies', []) != blocked:
                 self.ledger.event(data, current, 'dependencies_checked', blocked=blocked)
             current['blocked_dependencies'] = blocked

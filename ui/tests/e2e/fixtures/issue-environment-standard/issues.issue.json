@@ -16,6 +16,7 @@
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
     "status": "queued",
+    "reason_code": "build",
     "explanation": "Building",
     "actions": [
       "pause",

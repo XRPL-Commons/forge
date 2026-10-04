@@ -98,7 +98,12 @@ def baseline(branch, controller_app_id):
     require(positive(controller_app_id), 'controller_identity_required',
             'Verify the controller App before preparing repository rules.')
     return {'name': 'Forge review baseline', 'target': 'branch', 'enforcement': 'active',
-            'bypass_actors': [{'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}],
+            # RepositoryRole 5 is GitHub's administrator role. Keep operators
+            # able to bypass this additive baseline independently of the App.
+            'bypass_actors': [
+                {'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'},
+                {'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
+            ],
             'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
             'rules': [{'type': 'pull_request', 'parameters': {
                 'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,

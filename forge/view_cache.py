@@ -5,6 +5,9 @@ when a file under the runtime root changes, or after a short age so clock-based
 fields (freshness, "merged today") stay current.
 """
 import os
+import hashlib
+import json
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -32,18 +35,39 @@ class ViewCache:
     def __init__(self, *, clock=time.monotonic, max_age=MAX_AGE):
         self.clock, self.max_age = clock, max_age
         self.entries = {}
-        self.lock = threading.Lock()
+        self.generation = secrets.token_hex(16)
+        self.lock = threading.RLock()
 
     def get(self, root, key, build):
-        stamp = fingerprint(root)
-        now = self.clock()
         with self.lock:
+            key = (str(Path(root).resolve()), key)
+            stamp = fingerprint(root)
+            now = self.clock()
             hit = self.entries.get(key)
-            if hit and hit[0] == stamp and now - hit[1] < self.max_age:
+            if (hit and hit[0] == stamp and 0 <= now - hit[1] < self.max_age
+                    and int(now // self.max_age) == int(hit[1] // self.max_age)):
                 return hit[2]
-        value = build()
-        with self.lock:
+            # One builder per process. Concurrent polls must not each parse the
+            # same large ledger; nested section views reuse this reentrant lock.
+            value = build()
             if len(self.entries) >= MAX_ENTRIES and key not in self.entries:
                 self.entries.pop(min(self.entries, key=lambda k: self.entries[k][1]))
             self.entries[key] = (stamp, now, value)
-        return value
+            return value
+
+    def response(self, root, key, build, token, validator=None):
+        """Validate before projection/serialization, including after eviction.
+
+        A short clock bucket bounds freshness of time-derived fields. Session
+        capabilities and query arguments are part of the validator, and guards
+        must run before calling this method. Weak tags allow proxy compression.
+        """
+        with self.lock:
+            stamp = (self.generation, str(Path(root).resolve()), key, fingerprint(root),
+                     int(self.clock() // self.max_age), token)
+            etag = 'W/"' + hashlib.sha256(repr(stamp).encode()).hexdigest() + '"'
+            if validator == etag:
+                return etag, None
+            body = self.get(root, ('response', etag),
+                            lambda: json.dumps({**build(), 'ok': True, 'controls_token': token}).encode())
+            return etag, body

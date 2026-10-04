@@ -30,6 +30,8 @@ export interface LedgerIssueView {
   key: string; repo_id: number; repo: string; number: number; title: string
   attempts?: Array<Pick<JobView, 'id' | 'role' | 'outcome' | 'phase' | 'created_at' | 'started_at'>>
   state: IssueState; reason: string | null; active: string | null; failure_count: number
+  hold_kind?: string | null
+  merge_gate_kind?: string | null
   candidate?: { pr?: number } | null
   // The plain-language card of the last outcome (contracts §2, LedgerIssueView).
   last_summary?: IssueSummary | null
@@ -182,6 +184,7 @@ const OUTCOME_LABELS: Record<string, string> = {
   superseded: 'Replaced by a newer attempt', held: 'Put on hold', needs_decision: 'Needs your decision',
   blocked_environment: 'Environment blocked', waiting: 'Waiting', wait: 'Waiting', services_retry: 'Retrying services',
   needs_human_verification: 'Waiting for verification',
+  waiting_on_issues: 'Waiting for prerequisite issues',
   memory_retry: 'Retrying with more memory', investigated: 'Investigated',
 }
 

@@ -1,7 +1,9 @@
 import io
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+import tempfile
+from forge.view_cache import ViewCache
 from tests.test_dashboard import dashboard
 
 
@@ -32,3 +34,26 @@ class ConditionalHTTPTests(unittest.TestCase):
         handler = self.handler('anything', command='POST'); handler._send('{"ok":true}')
         handler.send_response.assert_called_once_with(200)
         self.assertFalse(any(call.args[0] == 'ETag' for call in handler.send_header.call_args_list))
+
+    def test_factory_validator_skips_projection_but_never_skips_authentication(self):
+        def handler(etag=None):
+            value = self.handler(etag)
+            value.path = '/api/factory'
+            value._action_token = 'session-a'
+            for method in ('_trusted_host', '_upstream', '_operator_guard', '_signed_in'):
+                setattr(value, method, Mock(return_value=True))
+            value._auth_get = Mock(return_value=False)
+            return value
+        with tempfile.TemporaryDirectory() as root, patch.object(dashboard, 'WD', root), \
+                patch.object(dashboard, 'VIEWS', ViewCache(clock=lambda: 1)), \
+                patch('forge.factory.control.view', return_value={'issues': [], 'jobs': [], 'repositories': []}) as build:
+            first = handler(); first.do_GET()
+            tag = next(c.args[1] for c in first.send_header.call_args_list if c.args[0] == 'ETag')
+            dashboard.VIEWS.entries.clear()
+            same = handler(tag); same.do_GET()
+            same.send_response.assert_called_once_with(304)
+            self.assertEqual(same.wfile.getvalue(), b'')
+            build.assert_called_once()
+            denied = handler(tag); denied._signed_in.return_value = False; denied.do_GET()
+            denied.send_response.assert_not_called()
+            build.assert_called_once()

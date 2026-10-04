@@ -11,7 +11,7 @@ import { ago, clampTitle, reviewerMentions } from './format'
 // `dropped`: closed on GitHub as not planned or as a duplicate. It is no
 // longer needed, which is not the same as finished.
 export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'blocked' | 'completed' | 'dropped'
-export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop' | 'close'
+export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'start_anyway' | 'assign_reviewer' | 'stop' | 'close'
 
 // Which pull request this is to the issue: the one Forge is carrying now, an
 // earlier Forge draft it moved on from, or someone else's. Older payloads omit it.
@@ -40,6 +40,8 @@ export interface IssueRow {
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
   updated_at: string | null; labels: string[]; assignees: string[]
   status: IssueStatus; summary: IssueSummary | null; explanation: string
+  ledger_state?: import('./factory').IssueState | null
+  reason_code?: string
   // The server sends the decisions this issue accepts; 'stop' is never one of
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop' | 'close'>[]
@@ -141,6 +143,7 @@ export const ACTION_LABELS: Record<IssueAction, string> = {
   resume: 'Release hold',
   retry: 'Retry attempt',
   recheck: 'Recheck readiness',
+  start_anyway: 'Start anyway…',
   assign_reviewer: 'Assign reviewer',
   stop: 'Stop attempt',
   close: 'Close issue',
@@ -154,6 +157,7 @@ export const ACTION_PENDING_LABELS: Record<IssueAction, string> = {
   resume: 'Releasing…',
   retry: 'Retrying…',
   recheck: 'Rechecking…',
+  start_anyway: 'Clearing dependency wait…',
   assign_reviewer: 'Assigning…',
   stop: 'Stopping…',
   close: 'Closing…',
@@ -166,6 +170,7 @@ export const ACTION_EFFECTS: Record<IssueAction, string> = {
   resume: 'This releases the deliberate hold. Confirm that the prerequisite work is complete. Forge will check dependencies and existing work before continuing.',
   retry: 'This grants a new three-attempt budget and returns the issue to Build. Existing history is preserved.',
   recheck: 'Forge will recheck readiness and resume the held stage. The existing pull request and failure budget are preserved. Confirm that the reported blocker has been addressed.',
+  start_anyway: 'This clears the prerequisites reported by the worker for the next attempt. Explain why work can proceed. Dependencies written explicitly in the GitHub issue still apply; edit its description to change them.',
   assign_reviewer: 'Forge asks GitHub for a review from these people and assigns them to the issue. The approval still has to come from a reviewer with write access who did not write the code.',
   stop: 'This stops the active attempt and discards its unfinished workspace changes. Published pull requests are preserved.',
   close: 'Forge stops any running work, closes its pull request and closes the issue on GitHub as not planned, with your reason as a comment.',
@@ -191,6 +196,8 @@ export const EVENT_LABELS: Record<string, string> = {
   operator_pause: 'Paused by an operator',
   operator_resume: 'Hold released',
   operator_recheck: 'Repository setup checked',
+  dependencies_declared: 'Worker reported prerequisite issues',
+  operator_start_anyway: 'Worker dependency wait cleared by an operator',
   reviewer_requested: 'Review requested',
   operator_conflict: 'Decision needs another review',
   operator_synced: 'GitHub labels confirmed',
@@ -214,7 +221,7 @@ export const SHOW_OPTIONS: { value: string; label: string }[] = [
 
 // Decisions that change what Forge does next are recorded with the operator's
 // own words; the reversible ones default to "<label> confirmed by operator".
-const REASON_REQUIRED: IssueAction[] = ['pause', 'resume', 'retry', 'stop', 'close']
+const REASON_REQUIRED: IssueAction[] = ['pause', 'resume', 'retry', 'start_anyway', 'stop', 'close']
 
 export function decisionNeedsReason(action: IssueAction): boolean {
   return REASON_REQUIRED.includes(action)

@@ -26,7 +26,9 @@ export default async function(page, { base, requests }) {
   const completed = reads.filter(r => r.path === '/api/factory' && r.query.section === 'completed')
   assert.ok(completed.length >= 1)
   assert.ok(completed.every(r => r.query.limit === '10'), 'completed issues are only ever read a page at a time')
-  await page.waitForTimeout(1000)
+  if (!unchanged.some(url => url.includes('/api/factory'))) {
+    await page.waitForResponse(response => response.status() === 304 && new URL(response.url()).pathname === '/api/factory', { timeout: 10000 })
+  }
   assert.ok(unchanged.some(url => url.includes('/api/factory')), 'unchanged polls use bodyless 304 responses')
   // The pages are read once each, not polled.
   const settled = (await requests()).filter(r => r.path === '/api/factory' && r.query.section === 'completed').length

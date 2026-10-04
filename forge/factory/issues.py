@@ -8,7 +8,7 @@ import time
 from ..settings import Settings, read_json, write_json
 from ..state import AtomicStore
 from .config import load
-from .contracts import HEADLINE_LIMIT, MAX_FAILURES, claims_issue, clamp, digest, plain_text, dependencies
+from .contracts import HEADLINE_LIMIT, MAX_FAILURES, claims_issue, clamp, digest, plain_text, dependencies, issue_dependencies
 from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
 from .ledger import APPROACH_HOLD
@@ -40,6 +40,7 @@ def revision(issue, item):
     if (item or {}).get('decision_version'):
         tracked['decision_version'] = item['decision_version']
     tracked['verification_request'] = (item or {}).get('verification_request')
+    tracked.update({k: (item or {}).get(k) for k in ('declared_dependencies', 'dependency_body', 'blocked_dependencies')})
     return digest({'github': public, 'ledger': tracked})
 
 
@@ -278,6 +279,11 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions = ['assign_reviewer'] if owned_pr else []
     elif item.get('blocked_dependencies'):
         state, detail, case = 'blocked', item.get('dependency_reason'), 'dependencies'
+        if (item.get('state') == 'ready' and item.get('declared_dependencies')
+                and item.get('dependency_body') == (issue.get('content_hash') or digest(issue.get('body') or ''))
+                and not issue.get('body_truncated')
+                and not set(dependencies(issue.get('body'))) & set(item['blocked_dependencies'])):
+            actions = ['start_anyway']
     elif item.get('state') in ('built', 'reviewed', 'audited', 'investigating'):
         state, detail = 'queued', {'built': 'Waiting for review.', 'reviewed': 'Waiting for security review.', 'audited': 'Checking merge requirements.', 'investigating': 'Waiting for a failure investigation.'}[item['state']]
         actions, case = (['pause'] if item['state'] != 'investigating' else []), item['state']
@@ -321,7 +327,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             'pull_requests': [{'number': p['number'], 'title': p.get('title', ''), 'kind': kind(p)} for p in linked],
             'attempts': attempts(item) if attempts(item)['failed'] else None,
             'held_by': [h for h in (issue.get('label_events') or []) if h.get('label') in held] or None,
-            'dependencies': dependencies(issue.get('body')), 'fresh': fresh,
+            'dependencies': issue_dependencies(issue.get('body'), item, content_hash=issue.get('content_hash')), 'fresh': fresh,
             'reviewers_requested': {k: v for k, v in (item.get('reviewers_requested') or {}).items()
                                     if k in ('logins', 'at')} or None}
 
@@ -420,12 +426,14 @@ class IssueInventory:
 
     REFRESH_SPACING = 30
     _refresh_started = 0.0  # per process: every GET used to start a thread
+    _refresh_lock = threading.Lock()
 
     def start_refresh(self, force=False):
         now = time.monotonic()
-        if not force and now - IssueInventory._refresh_started < self.REFRESH_SPACING:
-            return
-        IssueInventory._refresh_started = now
+        with IssueInventory._refresh_lock:
+            if not force and now - IssueInventory._refresh_started < self.REFRESH_SPACING:
+                return
+            IssueInventory._refresh_started = now
         threading.Thread(target=self.refresh, args=(force,), daemon=True).start()
 
     def view(self, *, repo_id=None, state='open', query='', page=1, key=None):

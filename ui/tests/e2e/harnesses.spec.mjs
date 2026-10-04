@@ -43,6 +43,8 @@ export default async function (page, { base, scenario }) {
   // Connect opens the dialog with both commands.
   await page.locator('[data-harness="grok"]').getByRole('button', { name: 'Connect' }).click()
   await waitForText(page, 'Connect Grok')
+  await waitForText(page, 'Sign-in requires Forge’s installed runner image and Docker access for the Forge service account.')
+  await waitForText(page, 'Forge checks Grok’s sign-in sandbox before browser authorization')
   const dialog = await text(page)
   assert.ok(dialog.includes('Run this command in a terminal on the Forge VM, as the Forge service account. Follow the harness’s sign-in instructions.'), dialog)
   assert.ok(dialog.includes(GROK_LOGIN))

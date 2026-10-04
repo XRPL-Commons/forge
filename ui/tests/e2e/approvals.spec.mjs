@@ -4,14 +4,14 @@ function waitForText(page, text, timeout = 10000) {
   return page.waitForFunction((needle) => document.body.innerText.includes(needle), text, { timeout })
 }
 
-async function waitForRequest(requests, predicate) {
+async function waitForRequest(requests, predicate, count = 1) {
   const until = Date.now() + 10000
   while (Date.now() < until) {
     const found = (await requests()).filter(predicate)
-    if (found.length) return found
+    if (found.length >= count) return found
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  throw new Error('timed out waiting for a recorded request')
+  throw new Error(`timed out waiting for ${count} recorded requests`)
 }
 
 // The reviews Forge found on GitHub, when it last looked, "Check now", and the
@@ -65,8 +65,12 @@ export default async function (page, { base, scenario, requests }) {
   // sends the whole runtime with only human_reviewers emptied.
   await scenario('default')
   let reject = false
+  let saves = 0
   await page.route('**/api/runtime', async route => {
     if (reject) return route.fulfill({ json: { ok: false, reason: 'Runtime settings changed; reload before saving' } })
+    // Keep the first save's toast visible while the second save is in flight.
+    // Waiting for that reused text alone must not count as completion.
+    if (++saves === 2) await new Promise(resolve => setTimeout(resolve, 300))
     const posted = route.request().postDataJSON()
     const response = await route.fetch()
     const body = await response.json()
@@ -84,7 +88,7 @@ export default async function (page, { base, scenario, requests }) {
   await logins.fill('@octocat, hubot')
   await page.getByRole('button', { name: 'Save approvers' }).click()
   await waitForText(page, 'Approver list saved.')
-  let posted = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/runtime')
+  let posted = await waitForRequest(requests, entry => entry.method === 'POST' && entry.path === '/api/runtime')
   assert.equal(posted.length, 1)
   assert.deepEqual(posted[0].body.config.human_reviewers, ['octocat', 'hubot'])
   assert.equal(posted[0].body.config.slots.build, 2)
@@ -94,8 +98,10 @@ export default async function (page, { base, scenario, requests }) {
 
   await page.getByRole('radio', { name: 'Anyone with write access to the repository' }).click()
   await page.getByRole('button', { name: 'Save approvers' }).click()
+  posted = await waitForRequest(requests, entry => entry.method === 'POST' && entry.path === '/api/runtime', 2)
+  // The completed save resets the dirty draft and removes its Save button.
+  await page.getByRole('button', { name: 'Save approvers' }).waitFor({ state: 'detached' })
   await waitForText(page, 'Approver list saved.')
-  posted = (await requests()).filter((entry) => entry.method === 'POST' && entry.path === '/api/runtime')
   assert.equal(posted.length, 2)
   assert.deepEqual(posted[1].body.config.human_reviewers, [])
   assert.equal(posted[1].body.revision, 'runtime-rev-2')

@@ -54,12 +54,12 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
-    def _send(self, body, ctype="application/json", headers=None, status=200):
-        data = body.encode()
+    def _send(self, body, ctype="application/json", headers=None, status=200, etag=None):
+        data = body if isinstance(body, bytes) else body.encode()
         # Validators are private to each client; no response is stored by a
         # browser/proxy cache. Include the action token in the digest so a
         # service restart always sends the new capability with a fresh body.
-        etag = '"' + hashlib.sha256(data).hexdigest() + '"' if status == 200 and self.command == 'GET' and ctype == 'application/json' else None
+        etag = etag or ('W/"' + hashlib.sha256(data).hexdigest() + '"' if status == 200 and self.command == 'GET' and ctype == 'application/json' else None)
         if etag and self.headers.get('If-None-Match') == etag:
             self.send_response(304)
             self.send_header('ETag', etag)
@@ -77,6 +77,10 @@ class H(BaseHTTPRequestHandler):
             self.send_header(key,value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _cached(self, key, build):
+        etag, body = VIEWS.response(WD, key, build, self._action_token, self.headers.get('If-None-Match'))
+        self._send(body or b'', etag=etag)
 
     def _browser(self):
         from http.cookies import SimpleCookie, CookieError
@@ -462,8 +466,7 @@ class H(BaseHTTPRequestHandler):
                 args=dict(repo_id=int(query['repo_id'][0]) if 'repo_id' in query else None,
                           state=query.get('state',['open'])[0],query=query.get('q',[''])[0],
                           page=int(query.get('page',['1'])[0]),key=query.get('issue',[None])[0])
-                result=VIEWS.get(WD,('issues',)+tuple(sorted(args.items())),lambda:service.view(**args))
-                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
+                self._cached(('issues',)+tuple(sorted(args.items())), lambda: service.view(**args))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
         elif u.path == '/api/factory':
@@ -473,9 +476,9 @@ class H(BaseHTTPRequestHandler):
                 query=parse_qs(u.query, keep_blank_values=True)
                 if set(query)-{'section','issue','limit','before'} or any(len(v)!=1 or not v[0] for v in query.values()):
                     raise ValueError('Invalid factory view')
-                result=select_view(VIEWS.get(WD,'factory',lambda:view(WD)), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0],
-                                   limit=query.get('limit',[None])[0], before=query.get('before',[None])[0])
-                self._send(json.dumps({**result,'ok':True,'controls_token':self._action_token}))
+                self._cached(('factory',)+tuple(sorted((k, v[0]) for k, v in query.items())),
+                             lambda: select_view(VIEWS.get(WD,'factory',lambda:view(WD)), section=query.get('section',[None])[0], issue=query.get('issue',[None])[0],
+                                                 limit=query.get('limit',[None])[0], before=query.get('before',[None])[0]))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
         elif u.path == '/api/factory/output':

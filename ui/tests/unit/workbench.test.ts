@@ -21,7 +21,7 @@ describe('workbenchLook', () => {
   })
 
   it('puts a hard hat on a running build, with smoke from the bench', () => {
-    const view = look({ status: 'working', explanation: 'Building', attempts: { failed: 0, limit: 3 } })
+    const view = look({ status: 'working', reason_code: 'build', explanation: 'Building', attempts: { failed: 0, limit: 3 } })
     expect([view.stage, view.mood, view.scene.accessory]).toEqual(['build', 'busy', 'hat'])
     expect(view.scene.smoke).toBe(true)
     expect(view.scene.beacon).toBe(false)
@@ -31,7 +31,7 @@ describe('workbenchLook', () => {
   })
 
   it('gives a reviewer a magnifier and no smoke', () => {
-    const view = look({ status: 'working', explanation: 'Reviewing', pull_requests: candidate })
+    const view = look({ status: 'working', reason_code: 'review', explanation: 'Reviewing', pull_requests: candidate })
     expect([view.stage, view.scene.accessory, view.scene.smoke]).toEqual(['review', 'magnifier', false])
     expect(view.badges.map(badge => badge.state)).toEqual(['done', 'current', 'future', 'future', 'future'])
   })
@@ -102,14 +102,14 @@ describe('workbenchLook', () => {
   })
 
   it('celebrates a merge with a bow, confetti and every badge earned', () => {
-    const view = look({ status: 'completed', explanation: 'Completed and merged.', pull_requests: candidate })
+    const view = look({ status: 'completed', reason_code: 'merged', explanation: 'Completed and merged.', pull_requests: candidate })
     expect([view.stage, view.mood, view.scene.accessory, view.scene.confetti]).toEqual(['merged', 'happy', 'bow', true])
     expect(view.badges.every(badge => badge.state === 'done')).toBe(true)
     expect(view.label).toBe('Cube for #50, Merged stage, merged')
   })
 
   it('leaves an issue closed without merging grey and at rest', () => {
-    const view = look({ status: 'completed', explanation: 'Closed on GitHub.' })
+    const view = look({ status: 'completed', reason_code: 'closed', explanation: 'Closed on GitHub.' })
     expect([view.stage, view.mood, view.scene.confetti]).toEqual(['queued', 'open', false])
     expect(view.label).toBe('Cube for #50, Queue stage, closed')
   })

@@ -235,6 +235,7 @@ async function checkNow() {
   checkingSince.value = since
   clearInterval(checkTimer)
   checkTimer = setInterval(() => {
+    if (document.hidden) return
     if (Date.now() / 1000 - since > CHECK_GIVE_UP_S) stopChecking('Still checking. Forge reads GitHub every cycle, so this page will update on its own.')
     else void poll.refresh()
   }, CHECK_POLL_MS)
@@ -633,6 +634,7 @@ const rootClass = computed(() => {
                   <span aria-hidden="true" class="size-3 rounded-[3px] border-[1.5px] border-[#0a0c0f] bg-[#59606b]" />
                   <span class="font-mono">#{{ number }}</span>
                 </NuxtLink>
+                <a :href="issueUrl" target="_blank" rel="noopener noreferrer" class="ml-1 underline underline-offset-4">Edit dependencies on GitHub ↗</a>
               </div>
 
               <p v-if="message" id="detail-message" role="status" class="text-sm text-amber-200">{{ message }}</p>

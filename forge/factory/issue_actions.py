@@ -9,13 +9,13 @@ import uuid
 from ..settings import Settings
 from ..state import AtomicStore, StateError
 from .config import load
-from .contracts import claims_issue
+from .contracts import claims_issue, issue_dependencies, digest
 from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision as issue_revision, decision_labels, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD, Ledger
 
-ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer', 'environment', 'close'}
-IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck'}
+ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway', 'assign_reviewer', 'environment', 'close'}
+IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway'}
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
@@ -67,7 +67,7 @@ def decide(root, *, key, action, revision: str, reason, request_id=None):
             add = ['hold']
         elif action == 'backlog':
             remove = [service.config['ready_label']]
-        elif action in ('queue', 'resume', 'retry'):
+        elif action in ('queue', 'resume', 'retry', 'start_anyway'):
             add = [service.config['ready_label']]
             if action == 'resume':
                 remove = ['hold']
@@ -92,12 +92,17 @@ def decide(root, *, key, action, revision: str, reason, request_id=None):
             answer = item.pop('decision_request', None)
             if answer:
                 ledger.event(data, item, 'decision_answered', decision=answer, reason=reason.strip())
+        if action == 'start_anyway':
+            cleared_dependencies = item['declared_dependencies'][:]
+            for field in ('declared_dependencies', 'dependency_body', 'dependency_evidence', 'dependencies_checked_at'):
+                item.pop(field, None)
         for field in ('prerequisite_hold', 'environment_hold', 'blocked_dependencies', 'dependency_reason'):
             item.pop(field, None)
         item.update(retry_after=0, last_observed=0, decision_version=item.get('decision_version', 0) + 1,
                     operator_sync={'request': identifier, 'action': action, 'add': sorted(adds), 'remove': sorted(removes)})
         ledger.event(data, item, 'human_retry' if action == 'retry' else 'operator_' + action,
-                     reason=reason.strip(), request=identifier, decision=decision)
+                     reason=reason.strip(), request=identifier, decision=decision,
+                     **({'issues': cleared_dependencies} if action == 'start_anyway' else {}))
     return identifier
 
 
@@ -118,6 +123,8 @@ def reviewer_logins(reason):
 
 
 def request(root, *, key, action, revision: str, reason, request_id=None, environment=None):
+    if action == 'start_anyway' and environment is None:
+        return decide(root, key=key, action=action, revision=revision, reason=reason, request_id=request_id)
     if not isinstance(action, str) or action not in ACTIONS or not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
         raise ValueError('Choose an issue action and record the decision.')
     if action == 'environment':
@@ -174,7 +181,7 @@ class IssueActions:
             repo = next((r for r in self.settings.view()['repositories'] if r['id'] == item['repo_id'] and r['name'] == item['repo']), None)
             if not repo or not repo.get('enabled') or not repo.get('access_ready'):
                 raise ValueError('Repository identity or access changed.')
-            if pending['action'] in ('queue', 'resume', 'retry', 'recheck'):
+            if pending['action'] in ('queue', 'resume', 'retry', 'recheck', 'start_anyway'):
                 self.prerequisites(item, decision_labels(issue, item), item)
             for name in pending['add']:
                 if name not in labels(issue):
@@ -187,7 +194,7 @@ class IssueActions:
                 raise GitHubUnavailable('GitHub has not confirmed the issue labels.')
             if confirmed['state'] != 'open':
                 raise ValueError('Issue closed on GitHub.')
-            if pending['action'] in ('queue', 'resume', 'retry', 'recheck'):
+            if pending['action'] in ('queue', 'resume', 'retry', 'recheck', 'start_anyway'):
                 self.prerequisites(item, confirmed, item)
         except ValueError as error:
             with self.ledger.transaction() as data:
@@ -240,7 +247,7 @@ class IssueActions:
         held = labels(issue).intersection(self.config['hold_labels'])
         if held - {'hold'}:
             raise ValueError('Resolve the dependency label before releasing this hold.')
-        for number in dependencies(issue.get('body')):
+        for number in issue_dependencies(issue.get('body'), item):
             related = self.github.call('controller', decision, 'GET', f'/issues/{number}')
             if related.get('number') != number or related.get('state') != 'closed':
                 raise ValueError(f'Issue #{number} must be completed first.')
@@ -459,6 +466,12 @@ class IssueActions:
     def validate_action(self, action, issue, item):
         state = (item or {}).get('state')
         held = labels(issue).intersection(self.config['hold_labels'])
+        if action == 'start_anyway' and (not item or state != 'ready' or held
+                or not item.get('declared_dependencies') or not item.get('blocked_dependencies')
+                or issue.get('body_truncated')
+                or item.get('dependency_body') != (issue.get('content_hash') or digest(issue.get('body') or ''))
+                or set(dependencies(issue.get('body'))) & set(item['blocked_dependencies'])):
+            raise ValueError('Only worker-declared prerequisites can be cleared here. Edit explicit dependencies on GitHub.')
         if action == 'retry' and not ((state == 'approval_needed' and (item or {}).get('verification_request')) or state == 'failed' or (state == 'hold' and (
                 (item or {}).get('reason') == APPROACH_HOLD or (item or {}).get('decision_request')))):
             raise ValueError('Retry is only for failed attempts or a hold that waits for a new approach.')
