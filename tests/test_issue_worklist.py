@@ -470,8 +470,11 @@ class WorklistTests(unittest.TestCase):
         identifier, decision = self.decision('retry', 'Continue the existing draft')
         item = self.ledger.read()['issues']['1:1']
         self.github.prs[0]['user']['login'] = 'another[bot]'
-        with self.assertRaisesRegex(ValueError, 'existing pull request'):
+        with self.assertRaisesRegex(ValueError, 'Pull request #22 says it resolves this issue'):
             self.actions.prerequisites(decision, self.github.value, item)
+        self.github.prs[0]['body'] = 'Phase 1 no longer waits on #1; only phase 3 does.'
+        self.actions.prerequisites(decision, self.github.value, item)  # a mention is not a claim
+        self.github.prs[0].update(body='Fixes #1')
         self.github.prs[0]['user']['login'] = 'build[bot]'
         self.actions.apply(identifier, decision)
         self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'ready')
