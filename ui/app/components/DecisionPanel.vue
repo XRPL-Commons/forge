@@ -7,7 +7,7 @@ import {
 // The confirmation step of a decision: it derives every string from the copy
 // maps and knows no endpoints. The detail route owns both POSTs, so this
 // component only reports what the operator confirmed.
-const props = defineProps<{ open: boolean; action: IssueAction; detail: IssueDetail; error?: string | null }>()
+const props = defineProps<{ open: boolean; action: IssueAction; detail: IssueDetail; error?: string | null; reason?: string }>()
 const emit = defineEmits<{ submit: [decision: { action: IssueAction; reason: string }]; close: [] }>()
 
 const needsReason = computed(() => decisionNeedsReason(props.action))
@@ -30,6 +30,7 @@ function confirm(reason: string) {
     :confirm-label="ACTION_LABELS[action]"
     reason-label="What changed?"
     :require-reason="needsReason"
+    :initial-reason="reason ?? ''"
     :error="error"
     @confirm="confirm"
     @close="emit('close')"

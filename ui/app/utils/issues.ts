@@ -224,6 +224,14 @@ export function summaryBlock(
   return { headline, plain, details }
 }
 
+// An issue that needs a person but offers no button: say so, and point at
+// the note that explains what (the summary above the action bar), instead
+// of claiming nothing is needed.
+export function attentionNote(issue: Pick<IssueDetail, 'summary' | 'explanation' | 'environment_blocker'> | null | undefined): string {
+  const what = issue?.environment_blocker ? 'verify this' : 'look at this'
+  return summaryBlock(issue) ? `A person needs to ${what}. See the note above.` : `A person needs to ${what}. Discuss the blocker to work out what.`
+}
+
 // Cards and list rows carry the headline when Forge has one; the older
 // explanation line is the fallback, never both.
 export function rowNote(row: Pick<IssueRow, 'summary' | 'explanation'>, max = 96): string {

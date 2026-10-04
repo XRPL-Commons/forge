@@ -9,13 +9,15 @@ const props = withDefaults(defineProps<{
   // Shown inside the dialog when the action was refused, so the operator can
   // correct it without losing what they typed.
   error?: string | null
-}>(), { reasonLabel: 'Decision or reason', requireReason: true, error: null })
+  // Prefills the reason, e.g. with the reason a discussion proposed.
+  initialReason?: string
+}>(), { reasonLabel: 'Decision or reason', requireReason: true, error: null, initialReason: '' })
 
 const emit = defineEmits<{ confirm: [reason: string]; close: [] }>()
-const reason = ref('')
+const reason = ref(props.initialReason)
 const ready = computed(() => !props.requireReason || reason.value.trim().length > 0)
 
-watch(() => props.open, (open) => { if (open) reason.value = '' })
+watch(() => props.open, (open) => { if (open) reason.value = props.initialReason })
 
 function submit() {
   if (!ready.value) return

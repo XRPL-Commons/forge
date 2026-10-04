@@ -4,6 +4,14 @@ export default async function (page, { base, requests }) {
   await page.goto(base + '/issues/1:610')
   await page.getByRole('button', { name: 'Discuss blocker', exact: true }).click()
   const prompt = page.getByRole('textbox', { name: 'Ask about this issue' })
+  // The conversation opens where the operator is: the caret waits in the
+  // message box, on screen.
+  await page.waitForFunction(() => {
+    const box = document.activeElement
+    if (!box || box.tagName !== 'TEXTAREA' || !box.closest('#issue-discussion')) return false
+    const r = box.getBoundingClientRect()
+    return r.top >= 0 && r.bottom <= innerHeight
+  }, null, { timeout: 5000 })
   const discussionPosts = async () => (await requests()).filter(r => r.method === 'POST' && r.path === '/api/issues/discussion')
   assert.equal(await prompt.getAttribute('placeholder'), 'Why did the last attempt fail? What would unblock it?')
   // The small submit is disabled until there is something to send.
@@ -34,20 +42,30 @@ export default async function (page, { base, requests }) {
   assert.equal(await page.getByRole('button', { name: 'Cancel reply' }).count(), 0)
   await prompt.fill('Why did the last attempt fail?')
   await prompt.press('Enter')
-  await page.getByRole('button', { name: 'Apply this decision' }).waitFor()
+  await page.locator('[data-proposal-action]').waitFor()
+  assert.equal((await page.locator('[data-proposal-action]').innerText()).trim(), 'Retry attempt')
   assert.equal(await prompt.inputValue(), '')
   assert.match(await page.locator('body').innerText(), /new conversation using saved issue evidence/i)
   assert.match(await page.locator('body').innerText(), /shared type is incorrect/)
   assert.equal((await requests()).filter(r => r.method === 'POST' && r.path === '/api/issues/action').length, 0)
-  await page.getByRole('button', { name: 'Apply this decision' }).click()
-  await page.getByText('Decision submitted. The issue status above shows whether Forge accepted it.').waitFor()
+  // The proposal is the panel's own button: same label, same confirm
+  // dialog, with the agent's reason already filled in.
+  await page.locator('[data-proposal-action]').click()
+  const dialog = page.getByRole('dialog', { name: 'Retry attempt?' })
+  await dialog.waitFor()
+  assert.equal(await dialog.getByRole('textbox').inputValue(), 'Correct the shared producer type before updating consumers.')
+  await dialog.getByRole('button', { name: 'Retry attempt', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  const decided = (await requests()).filter(r => r.method === 'POST' && r.path === '/api/issues/action')
+  assert.equal(decided.length, 1)
+  assert.deepEqual([decided[0].body.action, decided[0].body.reason], ['retry', 'Correct the shared producer type before updating consumers.'])
   const actions = await discussionPosts()
-  assert.deepEqual(actions.map(r => r.body.action), ['send', 'cancel', 'send', 'apply'])
+  assert.deepEqual(actions.map(r => r.body.action), ['send', 'cancel', 'send'])
   assert.deepEqual(actions.filter(r => r.body.action === 'send').map(r => r.body.message), ['Look again (hold)', 'Why did the last attempt fail?'])
   assert.ok(actions.filter(r => r.body.action === 'send').every(r => typeof r.body.request_id === 'string' && r.body.request_id))
   await page.reload()
   await page.getByRole('button', { name: 'Discuss blocker', exact: true }).click()
-  await page.getByText('Decision submitted. The issue status above shows whether Forge accepted it.').waitFor()
+  await page.locator('[data-proposal-action]').waitFor()
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 1000 })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no overflow at ${width}`)

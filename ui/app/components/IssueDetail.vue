@@ -7,7 +7,7 @@ import { issuePipeline, type PipelineView } from '~/utils/pipeline'
 import { workbenchLook } from '~/utils/workbench'
 import { panelQuery } from '~/utils/panel'
 import {
-  ACTION_LABELS, approvalLines, blockingIssues, statusLabel, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
+  ACTION_LABELS, approvalLines, attentionNote, blockingIssues, statusLabel, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
   type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
   type IssueEnvironmentSelection,
@@ -124,13 +124,13 @@ const detailsOpen = useState(`issue-details-${props.issueKey}`, () => false)
 const descriptionOpen = ref(false)
 const environmentSectionOpen = ref(false)
 const discussOpen = ref(false)
+const conversation = ref<{ reveal: () => Promise<void> } | null>(null)
 const plainOpen = ref(false)
 const PLAIN_CLAMP = 220
 const plainLong = computed(() => (summary.value?.plain ?? '').length > PLAIN_CLAMP)
 const holds = computed(() => heldByLines(detail.value?.held_by))
-// The environment earns a place in the next step only when it is what stopped
-// the issue; otherwise it is one more collapsed section.
-const environmentBlocking = computed(() => !!detail.value?.environment_blocker)
+// The worker environment is always one of the collapsed sections: when it is
+// what stopped the issue, the summary above already says so.
 const hasFindings = computed(() => !!summary.value?.details || reviews.value.length > 0)
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
@@ -379,8 +379,11 @@ const output = useResource<{ ok: true; logs: string }>(
 onMounted(output.start)
 const logs = computed(() => output.data.value?.logs ?? null)
 
-function ask(action: IssueAction) {
+// `reason` prefills the dialog, e.g. with what a discussion proposed.
+const decisionReason = ref('')
+function ask(action: IssueAction, reason = '') {
   dialogError.value = null
+  decisionReason.value = reason
   decision.value = action
   submitting.value = true
 }
@@ -544,17 +547,6 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
             </NuxtLink>
           </div>
 
-          <!-- Only when the environment is what stopped the issue does it
-               belong here; otherwise it waits in its own section below. -->
-          <IssueEnvironmentCard
-            v-if="detail.environment && environmentBlocking"
-            v-model:open="environmentOpen"
-            :environment="detail.environment"
-            :busy="busy"
-            :error="environmentError"
-            @save="saveEnvironment"
-          />
-
           <p v-if="message" id="detail-message" role="status" class="text-sm text-amber-200">{{ message }}</p>
 
           <!-- One primary way forward (or a calm line when there is none),
@@ -595,6 +587,10 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
               </template>
               <span v-else>Starts by itself when the issues it waits on close.</span>
             </span>
+            <span v-else-if="detail.status === 'attention'" id="issue-needs-person" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-amber-200">
+              <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
+              {{ attentionNote(detail) }}
+            </span>
             <span v-else id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
               <span aria-hidden="true" class="size-2 rounded-full bg-mint-400" />
               {{ look?.mood === 'happy' ? 'Done. Nothing left to do.' : 'Nothing needed from you right now.' }}
@@ -621,7 +617,8 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
               color="neutral"
               variant="outline"
               :aria-expanded="discussOpen"
-              @click="discussOpen = !discussOpen"
+              aria-controls="issue-discussion"
+              @click="conversation?.reveal()"
             >Discuss blocker</UButton>
             <UButton v-if="setupNeeded && primary !== 'setup'" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
             <span v-if="(detail.active && detail.status === 'working') || internalJob" class="ml-auto flex flex-wrap items-center gap-1">
@@ -669,10 +666,19 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         </div>
       </section>
 
-      <IssueStats v-if="look" :look="look" class="mt-4" />
+      <!-- The discussion opens right under the next step that started it. -->
+      <IssueConversation
+        ref="conversation"
+        :key="detail.key"
+        v-model:open="discussOpen"
+        :issue-key="detail.key"
+        :actions="decisions"
+        :primary="typeof primary === 'string' && primary !== 'approve' && primary !== 'setup' ? primary : null"
+        :disabled="busy"
+        @act="(action, reason) => action === 'assign_reviewer' ? askReviewer() : ask(action, reason)"
+      />
 
-      <!-- The discussion opens under the next step that started it. -->
-      <IssueConversation :key="detail.key" v-model:open="discussOpen" :issue-key="detail.key" />
+      <IssueStats v-if="look" :look="look" class="mt-4" />
 
       <!-- Everything else, quieter: where the work lives on GitHub, then
            collapsed sections. -->
@@ -713,7 +719,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
           </div>
         </IssueSection>
 
-        <IssueSection v-if="detail.environment && !environmentBlocking" id="issue-environment-section" v-model:open="environmentSectionOpen" title="Worker environment">
+        <IssueSection v-if="detail.environment" id="issue-environment-section" v-model:open="environmentSectionOpen" title="Worker environment">
           <IssueEnvironmentCard
             v-model:open="environmentOpen"
             :environment="detail.environment"
@@ -818,6 +824,7 @@ async function submit({ action, reason }: { action: IssueAction; reason: string 
         :action="decision"
         :detail="detail"
         :error="dialogError"
+        :reason="decisionReason"
         @submit="submit"
         @close="closeDecision"
       />

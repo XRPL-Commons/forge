@@ -5,6 +5,7 @@ import {
 } from '~/utils/factory'
 import { lineAnalyse, lineState } from '~/utils/factoryLine'
 import { completedPath, mergeCompleted, modelCardView } from '~/utils/issueCard'
+import type { NeedsFilter } from '~/utils/needsYou'
 import { boardLink, panelQuery, panelState, panelTarget } from '~/utils/panel'
 
 useHead({ title: 'Activity' })
@@ -72,8 +73,6 @@ const needsYou = computed(() => {
   const state = lineState(view.value, now.value, groups.value)
   return state ? lineAnalyse(state).attention : 0
 })
-
-const attentionCount = computed(() => groups.value.attention.length + groups.value.held.length)
 
 // Investigations and cleanup runs are drawn nowhere else, so they keep one
 // collapsed line here; their cards load only when it is opened.
@@ -145,7 +144,8 @@ async function revealSection() {
   if (!view.value) return
   const hash = route.hash
   if (hash === '#stage-recovery' || hash === '#runners') runnersOpen.value = true
-  else if (hash !== '#completed' && hash !== '#needs-attention' && hash !== '#factory-line') return
+  else if (hash === '#needs-attention') { showAttention('all'); return }
+  else if (hash !== '#completed' && hash !== '#factory-line') return
   await nextTick()
   document.getElementById(hash.slice(1))?.scrollIntoView({ block: 'start' })
 }
@@ -183,9 +183,13 @@ const panelOpen = computed({
 function open(card: CardModel) {
   void router.replace({ query: panelQuery(route.query, panelTarget(card)) })
 }
-// The factory line's crate is a shortcut to the section that lists it.
-function showAttention() {
-  document.getElementById('needs-attention')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+// The issues that need the operator live in the factory line's crate; the
+// crate, its bays and the "Needs you" count open them as a list.
+const needsOpen = ref(false)
+const needsFilter = ref<NeedsFilter>('all')
+function showAttention(filter: NeedsFilter = 'all') {
+  needsFilter.value = filter
+  needsOpen.value = true
 }
 function close() {
   void router.replace({ query: panelQuery(route.query, null) })
@@ -194,6 +198,8 @@ function close() {
 // Closing the panel hands focus back to the card that opened it, when that
 // card is still on the page (a card opened from inside a stack is not).
 watch(() => panel.value.key, (key, before) => {
+  // An issue opened from the list (its card or its action) replaces the list.
+  if (key) needsOpen.value = false
   if (key || !before) return
   const opener = before
   nextTick(() => requestAnimationFrame(() => {
@@ -250,28 +256,9 @@ watch(() => panel.value.key, (key, before) => {
         <span data-readout="working">Working <NuxtLink to="/issues?show=working" class="font-semibold text-white hover:underline" :aria-label="`${counts.working} of ${counts.slots} slots working`">{{ counts.working }}</NuxtLink> of {{ counts.slots }}</span>
         <span data-readout="queued">Queued <NuxtLink to="/issues?show=queued" class="font-semibold text-white hover:underline" :aria-label="`${counts.queued} queued`">{{ counts.queued }}</NuxtLink></span>
         <span data-readout="merging">Waiting to merge <b class="font-semibold text-white">{{ counts.merging }}</b></span>
-        <span data-readout="attention">Needs you <a href="#needs-attention" class="font-semibold hover:underline" :class="needsYou ? 'text-amber-200' : 'text-white'" :aria-label="`${needsYou} need you, go to Needs attention`" @click.prevent="showAttention">{{ needsYou }}</a></span>
+        <span data-readout="attention">Needs you <button type="button" class="cursor-pointer font-semibold hover:underline focus-visible:outline-2 focus-visible:outline-sky-200" :class="needsYou ? 'text-amber-200' : 'text-white'" aria-haspopup="dialog" :aria-label="`Show the ${needsYou} issue${needsYou === 1 ? '' : 's'} that need${needsYou === 1 ? 's' : ''} you`" @click="showAttention('all')">{{ needsYou }}</button></span>
         <span data-readout="merged">Merged today <a href="#completed" class="font-semibold text-white hover:underline" :aria-label="`${counts.merged} merged today, go to Recently completed`">{{ counts.merged }}</a></span>
       </p>
-
-      <!-- Issues waiting on a decision stay expanded; a deliberate hold waits
-           as one stack, although the header counts both. -->
-      <section id="needs-attention" class="mt-6 scroll-mt-32">
-        <h2 class="text-sm font-semibold text-white">Needs attention · {{ attentionCount }}</h2>
-        <div v-if="groups.attention.length" class="mt-3 grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
-          <IssueCard v-for="card in groups.attention" :key="card.key" :view="modelCardView(card, now)" compact @open="open(card)" />
-        </div>
-        <IssueStack v-if="groups.held.length" class="mt-3" :cards="groups.held" noun="on hold" :now="now" @open="open" />
-        <p v-if="!attentionCount" class="mt-2 text-xs text-muted">No issues need your attention.</p>
-      </section>
-
-      <section v-if="groups.owned.length" id="owned" class="mt-6 scroll-mt-32">
-        <h2 class="text-sm font-semibold text-white">Owned by someone else · {{ groups.owned.length }}</h2>
-        <p class="mt-0.5 text-xs text-muted">Forge checks again automatically when these issues are handed over.</p>
-        <div class="mt-3 grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
-          <IssueCard v-for="card in groups.owned" :key="card.key" :view="modelCardView(card, now)" compact @open="open(card)" />
-        </div>
-      </section>
 
       <!-- Investigations and cleanup runs are drawn nowhere else: one line,
            opened on demand, so an internal run can still be reset. -->
@@ -305,6 +292,8 @@ watch(() => panel.value.key, (key, before) => {
     </template>
 
     <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
+
+    <NeedsYouModal v-if="view" v-model:open="needsOpen" v-model:filter="needsFilter" :view="view" :now="now" :groups="groups" @open="open" />
 
     <!-- The panel is an overlay teleported to the body: it belongs to the
          browser, not to the first paint. -->

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
+  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
@@ -428,5 +428,17 @@ describe('waiting on other issues', () => {
   })
   it('is only opened, never asked to decide anything', () => {
     expect(rowAction({ status: 'blocked', actions: [], approval: null } as any, null)).toBe('Open')
+  })
+})
+
+describe('attentionNote', () => {
+  it('says a person is needed and points at the note, never "nothing needed"', () => {
+    const summary = { headline: 'Held until a person verifies the release image', plain: '' }
+    expect(attentionNote({ summary, explanation: null, environment_blocker: 'Verify the release image' } as any))
+      .toBe('A person needs to verify this. See the note above.')
+    expect(attentionNote({ summary, explanation: null, environment_blocker: null } as any))
+      .toBe('A person needs to look at this. See the note above.')
+    expect(attentionNote({ summary: null, explanation: null, environment_blocker: null } as any))
+      .toBe('A person needs to look at this. Discuss the blocker to work out what.')
   })
 })

@@ -22,7 +22,8 @@ export const STAGE_FILL: Record<StageId, string> = {
   merged: LINE_LOOKS.merged.fill,
 }
 
-export type CubeEyes = 'open' | 'closed' | 'worried' | 'happy' | 'none'
+// `puzzled`: one brow up; `grumpy`: brows knitted down toward the middle.
+export type CubeEyes = 'open' | 'closed' | 'worried' | 'happy' | 'puzzled' | 'grumpy' | 'none'
 export type CubeMouth = 'smile' | 'flat' | 'wobble' | 'o'
 // Earned along the way: a hard hat while building, a magnifier in review, a
 // rosette once the security review passed, a bow when merged.
@@ -40,6 +41,9 @@ export interface CubeOptions {
   // Drawn only on cubes big enough to read it (22px and up).
   mouth?: CubeMouth | null
   accessory?: CubeAccessory | null
+  // A sticking plaster on the corner, and soot smudges after a failed run.
+  bandage?: boolean
+  soot?: boolean
 }
 
 export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -80,6 +84,28 @@ export function drawCube(ctx: CanvasRenderingContext2D, x: number, y: number, c:
     ctx.moveTo(-ex - er * 1.8, ey - er * 2.2); ctx.lineTo(-ex + er * 1.2, ey - er * 3.4)
     ctx.moveTo(ex + er * 1.8, ey - er * 2.2); ctx.lineTo(ex - er * 1.2, ey - er * 3.4)
     ctx.stroke()
+  }
+  if (eyes === 'puzzled' || eyes === 'grumpy') {
+    ctx.beginPath()
+    if (eyes === 'puzzled') {
+      ctx.moveTo(-ex - er * 1.5, ey - er * 2.6); ctx.lineTo(-ex + er * 1.3, ey - er * 3.6)
+      ctx.moveTo(ex - er * 1.4, ey - er * 2.3); ctx.lineTo(ex + er * 1.4, ey - er * 2.3)
+    } else {
+      ctx.moveTo(-ex - er * 1.6, ey - er * 3.3); ctx.lineTo(-ex + er * 1.4, ey - er * 2.1)
+      ctx.moveTo(ex + er * 1.6, ey - er * 3.3); ctx.lineTo(ex - er * 1.4, ey - er * 2.1)
+    }
+    ctx.stroke()
+  }
+  if (o.soot) {
+    ctx.fillStyle = 'rgba(16,14,12,.55)'
+    for (const [px, py, pr] of [[-0.28, -0.14, 0.07], [-0.12, -0.08, 0.05], [0.24, -0.2, 0.06]] as const) { ctx.beginPath(); ctx.arc(c * px, c * py, c * pr, 0, TAU); ctx.fill() }
+  }
+  if (o.bandage) {
+    ctx.save(); ctx.translate(c * 0.24, -c * 0.8); ctx.rotate(-0.7)
+    roundRect(ctx, -c * 0.2, -c * 0.07, c * 0.4, c * 0.14, c * 0.05); ctx.fillStyle = '#efe3c8'; ctx.fill()
+    ctx.lineWidth = Math.max(0.8, c * 0.03); ctx.strokeStyle = CUBE_INK; ctx.stroke()
+    ctx.fillStyle = 'rgba(10,12,15,.45)'; ctx.fillRect(-c * 0.05, -c * 0.05, c * 0.1, c * 0.1)
+    ctx.restore()
   }
   if (c >= 22 && o.mouth) {
     const my = -c * 0.25, mx = look * 0.5

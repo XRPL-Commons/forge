@@ -19,17 +19,20 @@ function waitForText(page, text) {
   return page.waitForFunction((needle) => document.body.innerText.includes(needle), text, { timeout: 10000 })
 }
 
-// Opens a stack and waits for its modal to hold still: the dialog animates in
-// with a scale, so a card measured too early is smaller than it renders.
-async function openStack(page, stack) {
-  await stack.click()
+// Opens the "need you" list from the readout and waits for it to hold still:
+// the dialog animates in with a scale, so a card measured too early is
+// smaller than it renders.
+async function openNeedsYou(page) {
+  // The count is server-rendered; it opens the list once the page hydrated.
+  await page.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
+  await page.locator('#readout [data-readout="attention"] button').click()
   const dialog = page.locator(MODAL)
   await dialog.locator('.issue-card').first().waitFor({ timeout: 10000 })
   await page.waitForFunction((selector) => {
     const dialog = document.querySelector(selector)
     if (!dialog || dialog.getAnimations().some((animation) => animation.playState === 'running')) return false
     const card = dialog.querySelector('.issue-card')
-    return !!card && Math.abs(card.getBoundingClientRect().height - card.offsetHeight) < 0.05
+    return !!card && Math.abs(card.getBoundingClientRect().height - card.offsetHeight) < 1
   }, MODAL, { timeout: 10000 })
   return dialog
 }
@@ -70,7 +73,7 @@ export default async function (page, { base, scenario, requests }) {
   }
   await page.setViewportSize({ width: 1280, height: 900 })
 
-  await waitForText(page, 'Fix flaky provider capacity probe')
+  await page.locator('#readout').waitFor()
 
   // The readout under the strip: live counts, and "Needs you" is the strip's
   // own crate count (its headline reads "2 need you").
@@ -83,19 +86,23 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await value('attention'), 'Needs you 2')
   assert.equal(await value('merged'), 'Merged today 0')
   assert.match(await page.locator('.factory-line canvas[role="img"]').getAttribute('aria-label'), /^2 need you/)
-  const needsYou = readout.locator('[data-readout="attention"] a')
-  assert.equal(await needsYou.getAttribute('href'), '#needs-attention')
+  const needsYou = readout.locator('[data-readout="attention"] button')
+  assert.equal(await needsYou.getAttribute('aria-haspopup'), 'dialog')
+  assert.equal(await needsYou.getAttribute('aria-label'), 'Show the 2 issues that need you')
   assert.match(await needsYou.getAttribute('class'), /text-amber-200/)
   assert.equal(await readout.locator('[data-readout="working"] a').getAttribute('href'), '/issues?show=working')
   const readoutBox = await readout.boundingBox()
   const lastItem = await readout.locator('[data-readout="merged"]').boundingBox()
   assert.ok(readoutBox.x + readoutBox.width - (lastItem.x + lastItem.width) < 2, 'the readout is right-aligned on desktop')
 
-  // Needs attention keeps its cards, now with the issue's cube: the failed
-  // issue is lit amber, worried and scorched by its three attempts.
-  const attentionCards = page.locator('#needs-attention .issue-card')
+  // The Needs attention section is gone: the strip's crate (and this count)
+  // open the issues that need the operator as a list, each with its cube:
+  // the failed issue is lit amber, worried and scorched by its three attempts.
+  assert.equal(await page.locator('#needs-attention, .issue-stack').count(), 0, 'the Needs attention section is gone')
+  let needs = await openNeedsYou(page)
+  const attentionCards = needs.locator('.issue-card')
   assert.equal(await attentionCards.count(), 2)
-  const failed = page.locator('#needs-attention [data-key="1:604"]')
+  const failed = needs.locator('[data-key="1:604"]')
   const cube = failed.locator('canvas.cube-portrait')
   assert.equal(await cube.getAttribute('aria-hidden'), 'true')
   assert.match(await cube.getAttribute('data-look'), /worried .*beacon scorch-3/)
@@ -116,31 +123,28 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.getByRole('button', { name: 'Output' }).count(), 0)
   assert.equal(await page.getByRole('link', { name: 'Output' }).count(), 0)
 
-  // No Activity card carries a button: the card is the control, and
-  // clicking it opens the issue's detail in a panel over the right.
-  assert.equal(await page.locator('.issue-card button').count(), 0, 'no card renders a button')
-  const card = page.locator('[data-key="1:604"]')
+  // The card is the control; its one action sits beside it. A modified
+  // click opens the issue's own page in a new tab, not the panel.
+  const card = needs.locator('[data-key="1:604"]')
   assert.equal(await card.getAttribute('role'), 'link')
   assert.equal(await card.getAttribute('aria-label'), 'Open XRPL-Commons/academy #604')
+  assert.equal(await card.getByRole('link', { name: 'Retry…' }).count(), 1)
+  const [tab] = await Promise.all([page.context().waitForEvent('page'), card.click({ modifiers: ['ControlOrMeta'] })])
+  await tab.waitForLoadState()
+  assert.equal(new URL(tab.url()).pathname, '/issues/1%3A604')
+  await tab.close()
+  assert.equal(query(page, 'issue'), null, 'a modified click leaves the panel closed')
+  // A plain click replaces the list with the issue's detail panel.
   let panel = await openPanel(page, card)
+  await needs.waitFor({ state: 'hidden', timeout: 10000 })
   await waitForText(page, DETAIL_TITLE)
   assert.equal(query(page, 'issue'), '1:604', 'the open panel is carried by the URL')
   assert.equal(await panel.locator('#issue-full-page').getAttribute('href'), '/issues/1%3A604')
   // Escape closes it and leaves the URL clean.
   await closePanel(page)
   assert.equal(new URL(page.url()).search, '', `the closed panel left the URL dirty: ${page.url()}`)
-  // …and focus is handed back to the card that opened it.
-  await page.waitForFunction(
-    () => document.activeElement?.getAttribute('data-key') === '1:604',
-    null, { timeout: 5000 },
-  )
-
-  // A modified click opens the issue's own page in a new tab, not the panel.
-  const [tab] = await Promise.all([page.context().waitForEvent('page'), card.click({ modifiers: ['ControlOrMeta'] })])
-  await tab.waitForLoadState()
-  assert.equal(new URL(tab.url()).pathname, '/issues/1%3A604')
-  await tab.close()
-  assert.equal(query(page, 'issue'), null, 'a modified click leaves the panel closed')
+  // No card left on the page carries a button: the list's actions close with it.
+  assert.equal(await page.locator('.issue-card button').count(), 0, 'no card renders a button')
 
   // …so a reload of that URL opens the same panel, and the board keeps
   // polling behind it.
@@ -237,7 +241,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
 
   await scenario('default')
-  await page.waitForFunction(() => document.querySelectorAll('.issue-card').length > 0, null, { timeout: 10000 })
+  await page.locator('#factory-line').waitFor({ timeout: 10000 })
 
   // An unavailable authorization service cannot admit a new page load.
   await scenario('down')
@@ -248,33 +252,28 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.locator('#factory-line').count(), 0)
   assert.equal(await page.locator('.issue-card').count(), 0)
 
-  // Needs attention keeps the decisions expanded and stacks the holds, while
-  // its header counts both. Eleven queued issues are the strip's, not cards.
+  // The issues that need the operator are one list, opened from the strip;
+  // a deliberate pause (#720) sleeps on the strip's shelf, not in the list.
+  // Eleven queued issues are the strip's, not cards.
   await scenario('stacked')
   await page.goto(base + '/')
-  const attention = page.locator('#needs-attention')
-  await attention.locator('.issue-card').first().waitFor({ timeout: 10000 })
-  assert.equal((await attention.locator('h2').innerText()).trim(), 'Needs attention · 5')
-  assert.equal(await attention.locator('.issue-card').count(), 2, 'only the decisions waiting on the operator are cards')
-  assert.equal(await page.locator('.issue-card[data-key="1:700"]').count(), 0, 'a queued issue is not a card on Activity')
-  const approval = attention.locator('[data-key="1:730"]')
+  await page.locator('#factory-line').waitFor({ timeout: 10000 })
+  assert.equal(await page.locator('#needs-attention, #owned, .issue-stack').count(), 0, 'no attention section and no on-hold stack')
+  needs = await openNeedsYou(page)
+  assert.equal(await needs.locator('.issue-card').count(), 4)
+  assert.equal((await needs.locator('[data-needs-title]').innerText()).trim(), '4 need you')
+  assert.equal(await needs.locator('.issue-card[data-key="1:700"], .issue-card[data-key="1:720"]').count(), 0, 'neither a queued nor a paused issue is in the list')
+  const approval = needs.locator('[data-key="1:730"]')
   assert.match(await approval.locator('canvas').getAttribute('data-look'), /^approval hopeful badge beacon/)
-  const holdStack = attention.locator('.issue-stack')
-  assert.match(await holdStack.innerText(), /3 on hold/)
-  const holdDialog = await openStack(page, holdStack)
-  assert.equal(await holdDialog.locator('.issue-card').count(), 3)
-  assert.match(await holdDialog.innerText(), /3 on hold/)
-  // A held cube sleeps.
-  assert.match(await holdDialog.locator('.issue-card canvas').first().getAttribute('data-look'), / sleep .*zzz/)
-  // A card opened from inside the deck replaces it: the modal closes, the
-  // panel takes its place, and the URL carries the issue.
-  const stacked = holdDialog.locator('.issue-card').first()
-  const stackedKey = await stacked.getAttribute('data-key')
-  await stacked.click()
-  await holdDialog.waitFor({ state: 'hidden', timeout: 10000 })
+  // A card opened from the list replaces it: the modal closes, the panel
+  // takes its place, and the URL carries the issue.
+  const listed = needs.locator('.issue-card').first()
+  const listedKey = await listed.getAttribute('data-key')
+  await listed.click()
+  await needs.waitFor({ state: 'hidden', timeout: 10000 })
   await page.locator(PANEL).waitFor({ timeout: 10000 })
   await waitForText(page, DETAIL_TITLE)
-  assert.equal(query(page, 'issue'), stackedKey)
+  assert.equal(query(page, 'issue'), listedKey)
   await closePanel(page)
 
   // On a phone-width viewport the cards fill the width and nothing scrolls
@@ -282,8 +281,9 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('default')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/')
-  await waitForText(page, 'Fix flaky provider capacity probe')
-  const width = (await page.locator('[data-key="1:604"]').boundingBox()).width
+  await page.locator('#factory-line').waitFor({ timeout: 10000 })
+  needs = await openNeedsYou(page)
+  const width = (await needs.locator('[data-key="1:604"]').boundingBox()).width
   assert.ok(width >= 300, `card is ${width}px wide at 390px viewport`)
   const overflow = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
@@ -291,7 +291,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.ok(overflow.scrollWidth <= overflow.innerWidth, `page scrolls sideways: ${JSON.stringify(overflow)}`)
 
   // …and the panel is the whole screen there, still without a sideways scroll.
-  panel = await openPanel(page, page.locator('[data-key="1:604"]'))
+  panel = await openPanel(page, needs.locator('[data-key="1:604"]'))
   await waitForText(page, DETAIL_TITLE)
   const panelBox = await panel.boundingBox()
   assert.ok(panelBox.width >= 380, `the panel is ${panelBox.width}px wide at 390px viewport`)

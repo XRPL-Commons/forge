@@ -220,9 +220,9 @@ describe('readout', () => {
     issues: [
       issue({ key: '1:601', number: 601, active: running.id }),
       issue({ key: '1:602', number: 602, state: 'built' }),
-      issue({ key: '1:604', number: 604, state: 'failed' }),
-      issue({ key: '1:605', number: 605, state: 'hold', reason: 'Forge environment needs attention (resources)' }),
-      issue({ key: '1:607', number: 607, state: 'hold', reason: 'Repeated failure requires a supported change of approach' }),
+      issue({ key: '1:604', number: 604, state: 'failed', attention_kind: 'failed' }),
+      issue({ key: '1:605', number: 605, state: 'hold', reason: 'Forge environment needs attention (resources)', attention_kind: 'env' }),
+      issue({ key: '1:607', number: 607, state: 'hold', reason: 'Repeated failure requires a supported change of approach', attention_kind: 'approach' }),
       issue({ key: '1:608', number: 608, state: 'audited' }),
       issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 3600 }] }),
       issue({ key: '2:609', number: 609, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 3 * 86400 }] }),
