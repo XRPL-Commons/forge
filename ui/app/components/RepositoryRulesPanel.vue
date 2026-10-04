@@ -1,10 +1,42 @@
 <script setup lang="ts">
-import { branchText, statusPillText, repoDescription, rulesetFilename, scopeText, requirements, otherRulesText, type RepositoryRow, type ProtectionReport } from '~/utils/repositories'
+import { branchText, statusPillText, repoDescription, rulesetFilename, scopeText, requirements, otherRulesText, bypassFix, bypassSourceLabel, classicBypassCommand, type RepositoryRow, type ProtectionReport, type ProtectionSource } from '~/utils/repositories'
 import { TONE_BADGE } from '~/utils/tones'
-const props = defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; shown: string | undefined; failed: ReturnType<typeof requirements>; hint: string; prepared: boolean; editUrl: string; downloadHref?: string; downloaded: boolean; instructions?: boolean; idPrefix?: string }>()
+const props = defineProps<{ row: RepositoryRow; live: boolean; report: ProtectionReport | null; displayReady: boolean; shown: string | undefined; failed: ReturnType<typeof requirements>; hint: string; prepared: boolean; editUrl: string; downloadHref?: string; downloaded: boolean; instructions?: boolean; idPrefix?: string; controllerSlug?: string | null }>()
 defineEmits<{ download: [] }>()
 const detailsOpen = ref(false)
 const bypass = computed(() => props.report?.bypass ?? null)
+const fix = computed(() => bypassFix(props.report))
+const branch = computed(() => props.report?.branch || 'main')
+const appName = computed(() => props.controllerSlug || (bypass.value?.controller_app_id ? `ID ${bypass.value.controller_app_id}` : 'Forge controller'))
+const classicSettings = computed(() => `https://github.com/${props.row.name}/settings/branches`)
+const classicSource = computed<ProtectionSource | undefined>(() => fix.value?.classic[0])
+const command = computed(() => props.controllerSlug ? classicBypassCommand(props.row.name, branch.value, props.controllerSlug, classicSource.value?.bypass_allowances) : '')
+const keptAllowances = computed(() => {
+  const current = classicSource.value?.bypass_allowances
+  return current ? [...current.users, ...current.teams, ...current.apps] : []
+})
+
+// The UI is often served over plain HTTP, where `navigator.clipboard` is
+// missing: selecting the command is then the normal path.
+const COPY = 'Copy command'
+const copyLabel = ref(COPY)
+const commandBlock = useTemplateRef<HTMLElement>('commandBlock')
+watch(command, () => { copyLabel.value = COPY })
+async function copy() {
+  try {
+    await navigator.clipboard.writeText(command.value)
+    copyLabel.value = 'Copied'
+  } catch {
+    copyLabel.value = 'Select and copy the command above'
+    const element = commandBlock.value
+    if (!element) return
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  }
+}
 </script>
 <template>
   <section :id="(idPrefix || '') + 'repository-summary'" class="mt-4 rounded-xl border border-line bg-panel p-4">
@@ -31,20 +63,57 @@ const bypass = computed(() => props.report?.bypass ?? null)
 
     <p v-if="hint" :id="(idPrefix || '') + 'hint'" class="mt-3 text-xs text-amber-200">{{ hint }}</p>
 
-    <UAlert v-if="bypass?.status === 'missing'" :id="(idPrefix || '') + 'bypass-missing'" class="mt-3" role="status" color="warning" variant="subtle" title="Forge cannot merge approved work">
+    <UAlert v-if="fix" :id="(idPrefix || '') + 'bypass-missing'" class="mt-3" role="status" color="warning" variant="subtle" title="Forge cannot merge approved work">
       <template #description>
-        <p>
-          Add the Forge controller App<template v-if="bypass.controller_app_id"> (ID {{ bypass.controller_app_id }})</template> as a “pull request” bypass actor on
-          <template v-for="(source, index) in bypass.sources ?? []" :key="source.url">{{ index ? ', ' : '' }}<a :href="source.url" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">{{ source.name }} ↗</a></template><template v-if="!bypass.sources?.length">these rules</template>.
-          Update each linked rule on GitHub, then return here to check. Importing another ruleset does not repair the existing one.
-          <template v-if="downloadHref">The <a :href="downloadHref" :download="rulesetFilename(row)" class="text-sky-200 underline-offset-4 hover:underline" @click="$emit('download')">current review rules</a> include the controller bypass for reference.</template>
+        <ul class="flex flex-col gap-1">
+          <li v-for="source in bypass?.sources ?? []" :key="source.url">
+            <a :href="source.url" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">{{ bypassSourceLabel(source, report?.branch) }} ↗</a>
+            has no bypass for the Forge controller.
+          </li>
+          <li v-if="!bypass?.sources?.length">These rules have no bypass for the Forge controller.</li>
+        </ul>
+        <p class="mt-1">
+          The controller App<template v-if="bypass?.controller_app_id"> (ID {{ bypass.controller_app_id }})</template> must be allowed to bypass required pull request reviews on each of them. Classic branch protection and rulesets apply together, so each one needs it.
+          <template v-if="fix.rulesets.length">Importing another ruleset does not repair an existing one.</template>
         </p>
       </template>
     </UAlert>
+
+    <div v-if="fix" :id="(idPrefix || '') + 'bypass-steps'" class="mt-3 flex flex-col gap-3">
+      <div v-if="fix.classic.length" :id="(idPrefix || '') + 'bypass-classic'" class="rounded-lg border border-line bg-bg p-3">
+        <h3 class="text-sm font-semibold text-white">Let Forge bypass the branch protection rule</h3>
+        <ol class="mt-1 list-decimal pl-5 text-xs text-muted">
+          <li>Open <a :href="classicSettings" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">Branch protection settings ↗</a> and edit the <strong class="text-white">{{ branch }}</strong> rule.</li>
+          <li>Under “Require a pull request before merging”, tick “Allow specified actors to bypass required pull requests”.</li>
+          <li>Add the App <strong class="text-white">{{ appName }}</strong>, then save.</li>
+        </ol>
+        <template v-if="command">
+          <p class="mt-3 text-xs text-muted">Or run this with the GitHub CLI as a repository administrator:</p>
+          <pre ref="commandBlock" :id="(idPrefix || '') + 'bypass-command'" class="mt-1 rounded-lg border border-line bg-panel p-3 text-[12px] whitespace-pre-wrap break-all">{{ command }}</pre>
+          <UButton :id="(idPrefix || '') + 'bypass-copy'" size="xs" variant="outline" class="mt-2" @click="copy">{{ copyLabel }}</UButton>
+          <p :id="(idPrefix || '') + 'bypass-command-note'" class="mt-2 text-xs text-muted">
+            <template v-if="classicSource?.bypass_allowances">This replaces the rule’s bypass list. It keeps the actors already allowed<template v-if="keptAllowances.length"> ({{ keptAllowances.join(', ') }})</template>.</template>
+            <template v-else>This replaces the rule’s list of bypassing Apps. If other Apps are already listed there, add their slugs to the command too.</template>
+          </p>
+        </template>
+        <p v-else class="mt-2 text-xs text-muted">Refresh App access to show an equivalent GitHub CLI command.</p>
+        <p class="mt-2 text-xs text-muted">If your rulesets already cover the same requirements, you can delete the classic rule instead.</p>
+      </div>
+      <div v-if="fix.rulesets.length" :id="(idPrefix || '') + 'bypass-rulesets'" class="rounded-lg border border-line bg-bg p-3">
+        <h3 class="text-sm font-semibold text-white">Let Forge bypass {{ fix.rulesets.length > 1 ? 'the rulesets' : 'the ruleset' }}</h3>
+        <p class="mt-1 text-xs text-muted">
+          Edit <template v-for="(source, index) in fix.rulesets" :key="source.url">{{ index ? ', ' : '' }}<a :href="source.url" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">“{{ source.name }}” ↗</a></template>
+          on GitHub and add the App <strong class="text-white">{{ appName }}</strong> as a “pull request” bypass actor: under “Bypass list”, choose “For pull requests only”, then save.
+          <template v-if="downloadHref">The <a :href="downloadHref" :download="rulesetFilename(row)" class="text-sky-200 underline-offset-4 hover:underline" @click="$emit('download')">current review rules</a> include the controller bypass for reference.</template>
+        </p>
+        <UButton v-if="fix.rulesets.length === 1" :id="(idPrefix || '') + 'bypass-edit'" :to="fix.rulesets[0]!.url" target="_blank" rel="noopener noreferrer" size="xs" color="neutral" variant="outline" class="mt-2">Edit ruleset on GitHub ↗</UButton>
+      </div>
+      <p class="text-xs text-muted"><template v-if="failed.length">Also apply the requirements listed above. </template>After saving on GitHub, check again here.</p>
+    </div>
   </section>
 
   <!-- Applying the review rules on GitHub. -->
-  <section v-if="instructions && !displayReady && prepared" :id="(idPrefix || '') + 'steps'" class="mt-4 rounded-xl border border-line bg-bg p-4">
+  <section v-if="instructions && !displayReady && prepared && !fix" :id="(idPrefix || '') + 'steps'" class="mt-4 rounded-xl border border-line bg-bg p-4">
     <ol class="flex flex-col gap-4">
       <li v-if="!editUrl" :id="(idPrefix || '') + 'download-step'">
         <h3 class="text-sm font-semibold text-white">Download the review rules</h3>

@@ -146,6 +146,13 @@ issue and a merged issue.
   `protection.bypass.status` `missing` (naming the Forge review baseline
   ruleset) or `ready`. Exercises the controller bypass line in Setup details.
 
+## bypass-classic/
+
+- `repositories.repo_id.json` — `bypass-missing/` with the missing bypass on
+  classic branch protection only (current bypass list: the `release-bot` App)
+  and the controller slug `forge-controller-2d9a0cef`. Exercises the classic
+  branch protection instructions and copyable `gh api` command.
+
 ## setup/
 
 - `onboarding.json` — phase `setup`, Step 1 (GitHub) state: build/review

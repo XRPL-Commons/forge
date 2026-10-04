@@ -84,7 +84,12 @@ export interface FactoryDeployment {
   error: string | null
 }
 
-export interface ProtectionSource { kind: 'classic' | 'ruleset'; name: string; url: string; id?: number | null; source_type?: string | null }
+export interface BypassAllowances { users: string[]; teams: string[]; apps: string[] }
+export interface ProtectionSource {
+  kind: 'classic' | 'ruleset'; name: string; url: string; id?: number | null; source_type?: string | null
+  // Classic sources missing the controller bypass carry the current bypass list, when GitHub exposed it.
+  bypass_allowances?: BypassAllowances | null
+}
 export interface ProtectionRequirement { id: 'readable' | 'reviews' | 'stale'; label: string; passed: boolean; detail: string; sources: ProtectionSource[] }
 export interface ProtectionReport {
   repo_id: number; branch: string | null; observed_at: number; available: boolean
@@ -395,6 +400,36 @@ export function otherRulesText(report: ProtectionReport | null): string {
 // hint and the errors, never as a review requirement (§3.6).
 export function requirements(report: ProtectionReport | null): ProtectionRequirement[] {
   return (report?.requirements ?? []).filter(requirement => requirement.id !== 'readable')
+}
+
+// The controller bypass is fixed differently per kind of rule: classic branch
+// protection has its own bypass list, and a new ruleset never repairs it.
+export interface BypassFix {
+  classic: ProtectionSource[]
+  rulesets: ProtectionSource[]
+}
+export function bypassFix(report: ProtectionReport | null | undefined): BypassFix | null {
+  const bypass = report?.bypass
+  if (bypass?.status !== 'missing') return null
+  const sources = bypass.sources ?? []
+  return {
+    classic: sources.filter(source => source.kind === 'classic'),
+    rulesets: sources.filter(source => source.kind !== 'classic'),
+  }
+}
+
+export function bypassSourceLabel(source: ProtectionSource, branch: string | null | undefined): string {
+  if (source.kind === 'classic') return `Branch protection (classic)${branch ? ` on ${branch}` : ''}`
+  return `Ruleset “${source.name}”`
+}
+
+// Replacing `bypass_pull_request_allowances` replaces the whole list, so the
+// command keeps whoever GitHub reported as already allowed.
+export function classicBypassCommand(repo: string, branch: string, slug: string, allowances?: BypassAllowances | null): string {
+  const apps = [...new Set([...(allowances?.apps ?? []), slug])]
+  const value = allowances ? { users: allowances.users, teams: allowances.teams, apps } : { apps }
+  const body = JSON.stringify({ bypass_pull_request_allowances: value }).replaceAll("'", "'\\''")
+  return `gh api -X PATCH repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_pull_request_reviews --input - <<< '${body}'`
 }
 
 export function rulesetHref(row: RepositoryRow, revision: string): string {

@@ -3,9 +3,9 @@ import {
   ACCESS_LABELS, ACCESS_STATUS_NAMES, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES,
   actionMessage, checkedAtText, connectionAction, connectionCards, hintText,
   lastRefreshText, repoDescription, repoHeading, repoStage, repositoryRows, rowState,
-  statusPillText, deploymentCard,
+  statusPillText, deploymentCard, bypassFix, bypassSourceLabel, classicBypassCommand,
   type DeploymentProfile, type DeploymentProposal, type DeploymentRow, type FactoryDeployment,
-  type RepositoryRow, type RoleAccess, type SettingsView,
+  type ProtectionReport, type ProtectionSource, type RepositoryRow, type RoleAccess, type SettingsView,
 } from '../../app/utils/repositories'
 
 function row(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
@@ -398,5 +398,32 @@ describe('connectionCards recommendations', () => {
     expect(controller.errors).toEqual([])
     expect(controller.recommendation).toBe('Recommended deployments: read')
     expect(cards.find(card => card.role === 'build')!.recommendation).toBe('')
+  })
+})
+
+describe('controller bypass guidance', () => {
+  const classic: ProtectionSource = { kind: 'classic', name: 'Branch protection', url: 'https://github.com/XRPL-Commons/hackathon/settings/branches' }
+  const ruleset: ProtectionSource = { kind: 'ruleset', name: 'Forge review baseline', url: 'https://github.com/XRPL-Commons/hackathon/rules/10', id: 10 }
+  const report = (bypass: ProtectionReport['bypass']): ProtectionReport => ({ ...row().protection!, bypass })
+
+  it('splits missing bypass sources by kind', () => {
+    expect(bypassFix(report({ status: 'missing', detail: '', sources: [classic] }))).toEqual({ classic: [classic], rulesets: [] })
+    expect(bypassFix(report({ status: 'missing', detail: '', sources: [ruleset] }))).toEqual({ classic: [], rulesets: [ruleset] })
+    expect(bypassFix(report({ status: 'missing', detail: '', sources: [ruleset, classic] }))).toEqual({ classic: [classic], rulesets: [ruleset] })
+    expect(bypassFix(report({ status: 'ready', detail: '', sources: [] }))).toBeNull()
+    expect(bypassFix(report({ status: 'operator_review', detail: '', sources: [ruleset] }))).toBeNull()
+    expect(bypassFix(null)).toBeNull()
+  })
+
+  it('names each source with its kind', () => {
+    expect(bypassSourceLabel(classic, 'main')).toBe('Branch protection (classic) on main')
+    expect(bypassSourceLabel(ruleset, 'main')).toBe('Ruleset “Forge review baseline”')
+  })
+
+  it('builds a classic bypass command that keeps the reported allowances', () => {
+    expect(classicBypassCommand('XRPL-Commons/hackathon', 'main', 'forge-controller-2d9a0cef')).toBe(
+      `gh api -X PATCH repos/XRPL-Commons/hackathon/branches/main/protection/required_pull_request_reviews --input - <<< '{"bypass_pull_request_allowances":{"apps":["forge-controller-2d9a0cef"]}}'`)
+    expect(classicBypassCommand('o/r', 'release/1', 'forge', { users: ['maintainer'], teams: ['core'], apps: ['other', 'forge'] })).toBe(
+      `gh api -X PATCH repos/o/r/branches/release%2F1/protection/required_pull_request_reviews --input - <<< '{"bypass_pull_request_allowances":{"users":["maintainer"],"teams":["core"],"apps":["other","forge"]}}'`)
   })
 })
