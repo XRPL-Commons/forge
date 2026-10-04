@@ -40,6 +40,8 @@ export interface IssueRow {
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
   updated_at: string | null; labels: string[]; assignees: string[]
   status: IssueStatus; summary: IssueSummary | null; explanation: string
+  ledger_state?: import('./factory').IssueState | null
+  reason_code?: string
   // The server sends the decisions this issue accepts; 'stop' is never one of
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop' | 'close'>[]

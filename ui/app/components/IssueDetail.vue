@@ -235,6 +235,7 @@ async function checkNow() {
   checkingSince.value = since
   clearInterval(checkTimer)
   checkTimer = setInterval(() => {
+    if (document.hidden) return
     if (Date.now() / 1000 - since > CHECK_GIVE_UP_S) stopChecking('Still checking. Forge reads GitHub every cycle, so this page will update on its own.')
     else void poll.refresh()
   }, CHECK_POLL_MS)

@@ -16,6 +16,7 @@
   "repo": "XRPL-Commons/hackathon",
   "repo_id": 2,
   "status": "completed",
+  "reason_code": "merged",
   "explanation": "Completed and merged.",
   "actions": [],
   "setup_needed": false,

@@ -1,7 +1,6 @@
 // Where an issue is in Forge's pipeline, for the workbench at the top of the
 // issue page (utils/workbench.ts) and its attempt line: Queued → Build → Review → Security review → Approval → Merged. The API
-// does not send a stage, so it is derived here from what the row already
-// carries: the status, Forge's own status line, the reviews, the pull request,
+// sends state and reason codes, mapped here alongside the reviews, pull request,
 // the approval and the blockers. A failure or a hold is shown on the stage
 // where it happened.
 import type { IssueReview, IssueRow } from './issues'
@@ -33,16 +32,16 @@ export const STAGES: { id: StageId; label: string; short: string }[] = [
 ]
 
 export type PipelineRow = Pick<IssueRow, 'status' | 'explanation' | 'actions' | 'pull_requests'>
-  & Partial<Pick<IssueRow, 'summary' | 'attempts' | 'approval' | 'merge_blocker' | 'environment_blocker' | 'decision_request'>>
+  & Partial<Pick<IssueRow, 'summary' | 'attempts' | 'approval' | 'merge_blocker' | 'environment_blocker' | 'decision_request' | 'ledger_state' | 'reason_code'>>
   & { reviews?: IssueReview[] | null }
 
-// Forge's status line for a running worker names its role (issues.py presentation()).
+// Codes from issues.py presentation(); human-readable explanations can change.
 const WORKING: Record<string, StageId> = {
-  'Building': 'build', 'Reviewing': 'review', 'Security review': 'audit', 'Merging': 'merged',
+  build: 'build', review: 'review', audit: 'audit', merge: 'merged',
 }
 // …and for an issue between two stages, the stage it waits for.
 const QUEUED: Record<string, StageId> = {
-  'Waiting for review.': 'review', 'Waiting for security review.': 'audit', 'Checking merge requirements.': 'approval',
+  built: 'review', reviewed: 'audit', audited: 'approval',
 }
 
 type Verdict = 'passed' | 'stopped' | null
@@ -74,20 +73,20 @@ function stoppedAt(row: PipelineRow): StageId {
 }
 
 function locate(row: PipelineRow): { at: StageId | null; state: PipelineView['state']; note: string } {
-  const explanation = (row.explanation ?? '').trim()
+  const code = row.reason_code ?? ''
   const actions = row.actions ?? []
   const failures = row.attempts?.failed ?? 0
   switch (row.status) {
     case 'completed':
-      return explanation.startsWith('Completed and merged') || /merged/i.test(row.summary?.headline ?? '')
+      return row.ledger_state === 'merged' || code === 'merged'
         ? { at: 'merged', state: 'done', note: 'Merged' }
         : { at: null, state: 'closed', note: 'Closed on GitHub' }
     case 'working':
-      if (explanation === 'Investigating a failed attempt') return { at: stoppedAt(row), state: 'active', note: 'Looking into the failure' }
-      return { at: WORKING[explanation] ?? reached(row, true), state: 'active', note: 'In progress' }
+      if (code === 'recovery') return { at: stoppedAt(row), state: 'active', note: 'Looking into the failure' }
+      return { at: WORKING[code] ?? reached(row, true), state: 'active', note: 'In progress' }
     case 'queued':
-      if (QUEUED[explanation]) return { at: QUEUED[explanation]!, state: 'waiting', note: 'Waiting' }
-      if (explanation === 'Waiting for a failure investigation.') return { at: stoppedAt(row), state: 'failed', note: 'Failed, being looked into' }
+      if (code === 'investigating' || row.ledger_state === 'investigating') return { at: stoppedAt(row), state: 'failed', note: 'Failed, being looked into' }
+      if (QUEUED[row.ledger_state ?? code]) return { at: QUEUED[row.ledger_state ?? code]!, state: 'waiting', note: 'Waiting' }
       return { at: reached(row, false), state: 'waiting', note: 'Waiting' }
     case 'backlog':
       return { at: 'queued', state: 'upcoming', note: 'Not queued' }

@@ -11,6 +11,13 @@ const at = (over: Partial<PipelineRow>) => {
 const states = (over: Partial<PipelineRow>) => issuePipeline(row(over)).steps.map(step => step.state)
 
 describe('issuePipeline', () => {
+  it('uses server codes even when prose contradicts them', () => {
+    expect(at({ status: 'working', reason_code: 'audit', explanation: 'Building' })[0]).toBe('audit')
+    expect(at({ status: 'queued', reason_code: 'waiting_account', ledger_state: 'reviewed', explanation: 'Queued for Forge.' })[0]).toBe('audit')
+    expect(at({ status: 'completed', reason_code: 'closed', explanation: 'Completed and merged.', summary: { headline: 'Merged', plain: '' } })[0]).toBeNull()
+    expect(at({ status: 'completed', ledger_state: 'merged', explanation: 'Different words' })[0]).toBe('merged')
+    expect(at({ status: 'working', reason_code: 'recovery', explanation: 'Different words', pull_requests: candidate })[2]).toBe('Looking into the failure')
+  })
   it('lists the six stages in order with compact labels', () => {
     const view = issuePipeline(base)
     expect(view.steps.map(step => step.label)).toEqual(['Queued', 'Build', 'Review', 'Security review', 'Approval', 'Merged'])
@@ -34,17 +41,17 @@ describe('issuePipeline', () => {
   })
 
   it('follows the running worker’s role', () => {
-    expect(at({ status: 'working', explanation: 'Building' })).toEqual(['build', 'active', 'In progress'])
-    expect(at({ status: 'working', explanation: 'Reviewing' })[0]).toBe('review')
-    expect(at({ status: 'working', explanation: 'Security review' })[0]).toBe('audit')
-    expect(at({ status: 'working', explanation: 'Merging' })[0]).toBe('merged')
-    expect(states({ status: 'working', explanation: 'Reviewing' })).toEqual(['done', 'done', 'active', 'upcoming', 'upcoming', 'upcoming'])
+    expect(at({ status: 'working', reason_code: 'build', explanation: 'Building' })).toEqual(['build', 'active', 'In progress'])
+    expect(at({ status: 'working', reason_code: 'review', explanation: 'Reviewing' })[0]).toBe('review')
+    expect(at({ status: 'working', reason_code: 'audit', explanation: 'Security review' })[0]).toBe('audit')
+    expect(at({ status: 'working', reason_code: 'merge', explanation: 'Merging' })[0]).toBe('merged')
+    expect(states({ status: 'working', reason_code: 'review', explanation: 'Reviewing' })).toEqual(['done', 'done', 'active', 'upcoming', 'upcoming', 'upcoming'])
   })
 
   it('places an issue between stages on the one it waits for', () => {
-    expect(at({ explanation: 'Waiting for review.' })[0]).toBe('review')
-    expect(at({ explanation: 'Waiting for security review.' })[0]).toBe('audit')
-    expect(at({ explanation: 'Checking merge requirements.' })[0]).toBe('approval')
+    expect(at({ reason_code: 'built', explanation: 'Waiting for review.' })[0]).toBe('review')
+    expect(at({ reason_code: 'reviewed', explanation: 'Waiting for security review.' })[0]).toBe('audit')
+    expect(at({ reason_code: 'audited', explanation: 'Checking merge requirements.' })[0]).toBe('approval')
     // A coding-account wait replaces the line; the pull request still says how far it got.
     expect(at({ explanation: 'Waiting for a coding account. Forge will retry automatically.', pull_requests: candidate })[0]).toBe('review')
   })
@@ -78,10 +85,10 @@ describe('issuePipeline', () => {
   })
 
   it('ends on Merged, or off the strip when closed without merging', () => {
-    expect(at({ status: 'completed', explanation: 'Completed and merged.' })).toEqual(['merged', 'done', 'Merged'])
-    expect(states({ status: 'completed', explanation: 'Completed and merged.' }).every(state => state === 'done')).toBe(true)
-    expect(at({ status: 'completed', explanation: 'Closed on GitHub.' })).toEqual([null, 'closed', 'Closed on GitHub'])
-    expect(states({ status: 'completed', explanation: 'Closed on GitHub.' }).every(state => state === 'upcoming')).toBe(true)
+    expect(at({ status: 'completed', reason_code: 'merged', explanation: 'Completed and merged.' })).toEqual(['merged', 'done', 'Merged'])
+    expect(states({ status: 'completed', reason_code: 'merged', explanation: 'Completed and merged.' }).every(state => state === 'done')).toBe(true)
+    expect(at({ status: 'completed', reason_code: 'closed', explanation: 'Closed on GitHub.' })).toEqual([null, 'closed', 'Closed on GitHub'])
+    expect(states({ status: 'completed', reason_code: 'closed', explanation: 'Closed on GitHub.' }).every(state => state === 'upcoming')).toBe(true)
   })
 })
 
