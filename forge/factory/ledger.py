@@ -284,6 +284,12 @@ class Ledger:
         charged. Review and audit run again on the updated head."""
         with self.transaction() as data:
             issue = data['issues'][key]
+            job = data['jobs'].get(issue['active']) if issue['active'] else None
+            if job and job['role'] == 'merge' and job['outcome'] is None:
+                # A merge request GitHub refused leaves its job open; nothing merged, so
+                # it must not pin a conflicted candidate forever (thegame #53/#57/#64).
+                job.update(outcome='superseded', fenced=True)
+                issue['active'] = None
             if issue['active'] or not issue['candidate']:
                 return False
             plan = (f'The pull request now conflicts with the latest {target}. Update the existing branch from {target}, '
