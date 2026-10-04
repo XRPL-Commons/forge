@@ -6,7 +6,7 @@ const repoId = computed(() => props.repoId)
 const route = useRoute()
 const wizard = ref(route.query.setup === '1')
 watch(() => route.query.setup, value => { if (value === '1') wizard.value = true })
-const { poll, live, row, report, shown, displayReady, ready, prepared, failed, hint, editUrl, downloadHref, downloaded, busy, checking, error, deployment, deployError, environmentError, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment } = useRepository(repoId, computed(() => !wizard.value))
+const { poll, view, live, row, report, shown, displayReady, ready, prepared, failed, hint, editUrl, downloadHref, downloaded, busy, checking, error, deployment, deployError, environmentError, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment } = useRepository(repoId, computed(() => !wizard.value))
 async function closed() { wizard.value = false; await navigateTo(`/settings/repositories/${props.repoId}`, { replace: true }); await poll.refresh() }
 </script>
 <template>
@@ -20,7 +20,7 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
         <UButton color="neutral" variant="outline" :disabled="busy || !row.access_ready" :loading="checking" @click="check">Refresh repository</UButton>
         <span id="repo-checked-at" class="text-xs text-muted">{{ checkedAtText(report, localTime) }}</span>
       </div>
-      <RepositoryRulesPanel id-prefix="repo-" :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" @download="downloaded = true" />
+      <RepositoryRulesPanel id-prefix="repo-" :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" :controller-slug="view?.connections?.controller?.app_slug" @download="downloaded = true" />
       <DeploymentCard
         v-if="deployment"
         :card="deployment"

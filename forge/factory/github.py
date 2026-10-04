@@ -24,6 +24,19 @@ def own_build_pr(pr, repo_id, number, publisher):
             and ((pr.get('base') or {}).get('repo') or {}).get('id') == repo_id)
 
 
+def classic_allowances(value):
+    """Current classic bypass list as names, so a replacement can keep it; None if unreadable."""
+    if not isinstance(value, dict) or not all(kind in value for kind in ('users', 'teams', 'apps')):
+        return None
+    names = {}
+    for kind, key in (('users', 'login'), ('teams', 'slug'), ('apps', 'slug')):
+        rows = value[kind]
+        if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get(key), str) for r in rows):
+            return None
+        names[kind] = [r[key] for r in rows]
+    return names
+
+
 class GitHubUnavailable(RuntimeError):
     def __init__(self, message, *, status=None):
         super().__init__(message)
@@ -559,7 +572,8 @@ class GitHub:
             if source['kind'] == 'classic':
                 apps = (review.get('bypass_pull_request_allowances') or {}).get('apps') or []
                 if not any(isinstance(a, dict) and a.get('id') == app_id for a in apps):
-                    missing.append(source)
+                    allowances = classic_allowances(review.get('bypass_pull_request_allowances'))
+                    missing.append({**source, 'bypass_allowances': allowances} if allowances else source)
                 continue
             if source.get('id') in seen:
                 continue

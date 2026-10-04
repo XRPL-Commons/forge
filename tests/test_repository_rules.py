@@ -125,6 +125,25 @@ class RepositoryRuleTests(unittest.TestCase):
         protection['required_pull_request_reviews']['bypass_pull_request_allowances']['apps'] = [{'id': 4959034}]
         self.assertTrue(github.protections(self.item, {'base_ref': 'main'}))
 
+    def test_missing_classic_bypass_reports_the_current_allowances(self):
+        protection = classic()
+        protection['required_pull_request_reviews']['bypass_pull_request_allowances'] = {
+            'users': [{'login': 'maintainer'}], 'teams': [{'slug': 'core'}], 'apps': [{'id': 999, 'slug': 'other-app'}]}
+        bypass = self.reader(protection, []).protection_report(self.item, {'base_ref': 'main'})['bypass']
+        self.assertEqual(bypass['status'], 'missing')
+        self.assertEqual(bypass['sources'][0]['kind'], 'classic')
+        self.assertEqual(bypass['sources'][0]['bypass_allowances'],
+                         {'users': ['maintainer'], 'teams': ['core'], 'apps': ['other-app']})
+        protection['required_pull_request_reviews']['bypass_pull_request_allowances'] = {'apps': [{'id': 999}]}
+        bypass = self.reader(protection, []).protection_report(self.item, {'base_ref': 'main'})['bypass']
+        self.assertNotIn('bypass_allowances', bypass['sources'][0])
+        del protection['required_pull_request_reviews']['bypass_pull_request_allowances']
+        bypass = self.reader(protection, []).protection_report(self.item, {'base_ref': 'main'})['bypass']
+        self.assertNotIn('bypass_allowances', bypass['sources'][0])
+        protection['required_pull_request_reviews']['bypass_pull_request_allowances'] = {'users': [], 'teams': [], 'apps': []}
+        bypass = self.reader(protection, []).protection_report(self.item, {'base_ref': 'main'})['bypass']
+        self.assertEqual(bypass['sources'][0]['bypass_allowances'], {'users': [], 'teams': [], 'apps': []})
+
     def test_bypass_observation_budget_is_not_a_missing_bypass(self):
         with self.assertRaises(GitHubBudgetExhausted):
             self.reader(None, [rule()], bypass=GitHubBudgetExhausted('Later')).protections(self.item, {'base_ref': 'main'})
