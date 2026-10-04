@@ -110,6 +110,37 @@ def deployments(root):
         return {}
 
 
+def attention_kind(item):
+    """Why an issue waits for the operator, as one stable code (None when it doesn't).
+
+    approve: a pull request waits for a human approval
+    question: the worker asked the operator something
+    approach: attempts ran out; a different approach is needed before retrying
+    failed: an attempt failed and can be retried
+    env: Forge's own setup or the repository's prerequisites need repair
+    review: paused, or a decision changed while it was applied
+    """
+    from .ledger import APPROACH_HOLD
+    state = item.get('state')
+    if item.get('blocked_dependencies') or state in ('merged', 'cancelled'):
+        return None
+    if state == 'approval_needed':
+        return 'approve' if (item.get('merge_gate') or {}).get('kind') in ('approval', None) else 'review'
+    if state == 'failed':
+        return 'failed'
+    if state != 'hold':
+        return None
+    if item.get('decision_request'):
+        return 'question'
+    if item.get('reason') == APPROACH_HOLD:
+        return 'approach'
+    if item.get('environment_hold') or item.get('prerequisite_hold'):
+        return 'env'
+    if (item.get('operator_hold') or {}).get('kind') in ('pause', 'backlog'):
+        return None  # A deliberate pause is not a request for attention.
+    return 'review'
+
+
 def view(root):
     ledger = Ledger(Path(root) / 'state' / 'factory')
     data = ledger.read()
@@ -135,6 +166,7 @@ def view(root):
                             or ((item.get('operator_hold') or {}).get('kind'))
                             or ('prerequisite' if item.get('prerequisite_hold') else None))
         row['merge_gate_kind'] = (item.get('merge_gate') or {}).get('kind')
+        row['attention_kind'] = attention_kind(item)
         history = histories.get(item['key'], [])
         recent = history[-3:]
         done = next((event for event in reversed(history) if event['kind'] in ('merged', 'cancelled')), None)
