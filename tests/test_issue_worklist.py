@@ -608,6 +608,12 @@ class WorklistTests(unittest.TestCase):
         self.actions.apply(identifier, decision)
         self.assertEqual(self.ledger.read()['issues']['1:1']['closed_as'], 'not_planned')
 
+    def test_a_hold_label_is_on_hold_not_attention(self):
+        self.tracked(hold='Waiting for dry-run evidence')
+        self.github.value['labels'].append({'name': 'hold'}); self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['status'], row['actions']), ('waiting', ['resume']))
+
     def test_close_works_for_an_issue_forge_never_tracked(self):
         identifier, decision = self.decision('close', reason='Not needed')
         self.actions.apply(identifier, decision)

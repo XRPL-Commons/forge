@@ -231,7 +231,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     elif held:
         state, detail, case = 'attention', 'Paused by ' + ', '.join(sorted(held)) + ' on GitHub.', 'label_hold'
         if held == {'hold'}:
-            actions = ['resume']
+            # A deliberate pause is on hold, not a request for attention.
+            state, actions = 'waiting', ['resume']
         else:
             detail += ' Resolve the dependency before releasing this hold.'
     elif item.get('environment_hold'):

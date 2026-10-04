@@ -19,6 +19,8 @@ class AttentionKindTests(unittest.TestCase):
             ({'state': 'hold', 'operator_hold': {'kind': 'conflict'}}, 'review'),
             ({'state': 'hold', 'operator_hold': {'kind': 'pause'}}, None),
             ({'state': 'hold', 'reason': APPROACH_HOLD, 'blocked_dependencies': [90]}, None),
+            ({'state': 'hold', 'reason': 'Waiting for dry-run evidence', 'label_hold': ['hold']}, None),
+            ({'state': 'hold', 'reason': 'Waiting for dry-run evidence'}, 'review'),
             ({'state': 'ready'}, None),
             ({'state': 'merged'}, None),
         ]

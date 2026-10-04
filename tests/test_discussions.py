@@ -70,6 +70,10 @@ class DiscussionsTest(unittest.TestCase):
         self.assertTrue(any('Approve pull request #31 on GitHub' in step for step in context['operator_only']))
         self.assertIn("What you can do", note(job)['instructions'])
 
+    def test_discussions_get_ten_minutes(self):
+        job = self.start()
+        self.assertEqual(job['deadline'], 1000 + 600)
+
     def test_complete_then_apply_requires_explicit_operator_and_is_idempotent(self):
         job = self.start(); self.finish(job)
         view = self.service.view('1:2')
