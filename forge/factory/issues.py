@@ -409,12 +409,14 @@ class IssueInventory:
 
     REFRESH_SPACING = 30
     _refresh_started = 0.0  # per process: every GET used to start a thread
+    _refresh_lock = threading.Lock()
 
     def start_refresh(self, force=False):
         now = time.monotonic()
-        if not force and now - IssueInventory._refresh_started < self.REFRESH_SPACING:
-            return
-        IssueInventory._refresh_started = now
+        with IssueInventory._refresh_lock:
+            if not force and now - IssueInventory._refresh_started < self.REFRESH_SPACING:
+                return
+            IssueInventory._refresh_started = now
         threading.Thread(target=self.refresh, args=(force,), daemon=True).start()
 
     def view(self, *, repo_id=None, state='open', query='', page=1, key=None):

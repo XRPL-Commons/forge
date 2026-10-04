@@ -154,6 +154,7 @@
       "repo": "XRPL-Commons/hackathon",
       "repo_id": 2,
       "status": "completed",
+      "reason_code": "closed",
       "explanation": "Closed on GitHub.",
       "actions": [],
       "setup_needed": false,
