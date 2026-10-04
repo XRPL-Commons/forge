@@ -37,7 +37,10 @@ class RepositorySetupTests(unittest.TestCase):
         payload, filename = self.service.download(10, revision)
         self.assertEqual(payload['conditions']['ref_name']['include'], ['refs/heads/release/v2'])
         controller = self.settings.load()['connections']['controller']['app_id']
-        self.assertEqual(payload['bypass_actors'], [{'actor_id': controller, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}])
+        self.assertEqual(payload['bypass_actors'], [
+            {'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'},
+            {'actor_id': controller, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
+        ])
         self.assertEqual(payload['rules'][0]['type'], 'pull_request')
         self.assertEqual(filename, 'forge-review-rules-10.json')
         self.assertEqual(row['protection']['bypass']['status'], 'operator_review')
