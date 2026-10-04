@@ -9,7 +9,7 @@ import uuid
 from ..settings import Settings
 from ..state import AtomicStore, StateError
 from .config import load
-from .contracts import references_issue
+from .contracts import claims_issue
 from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision as issue_revision, decision_labels, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD, Ledger
@@ -242,12 +242,16 @@ class IssueActions:
                 raise ValueError(f'Issue #{number} must be completed first.')
         owned = (item.get('candidate') or {}).get('pr') if item else None
         pulls = self.github.pulls(decision)
+        # Only a PR that says it resolves this issue is existing work; a passing
+        # mention in another PR's description is not (the same rule as ownership).
         linked = [p for p in pulls if p['number'] != owned
-                  and references_issue(p.get('body'), decision['repo'], decision['number'])]
+                  and claims_issue(p.get('body'), decision['repo'], decision['number'])]
         if linked:
             publisher = self.github.publisher('build')
-            if any(not own_build_pr(p, decision['repo_id'], decision['number'], publisher) for p in linked):
-                raise ValueError('An existing pull request needs review before Forge starts another attempt.')
+            other = [p for p in linked if not own_build_pr(p, decision['repo_id'], decision['number'], publisher)]
+            if other:
+                raise ValueError(f"Pull request #{other[0]['number']} says it resolves this issue. Review or close it "
+                                 'before Forge starts another attempt.')
         if not owned and (issue.get('assignees') or 'wip' in labels(issue)):
             raise ValueError('Existing work or an assignee needs review before Forge starts another attempt.')
         if not self.settings.admission(decision['repo'])['allowed']:
