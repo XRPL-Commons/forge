@@ -436,6 +436,18 @@ class Supervisor:
             self.github.check(item, 'controller', gate, gate['key'], None, reason)
         self.ledger.invalidate(key, reason, candidate=candidate, hold=hold)
 
+    def candidate_gone(self, item, issue, number):
+        if issue['state'] != 'open':
+            self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
+        else:
+            self.ledger.invalidate(item['key'], f'Pull request #{number} no longer exists on GitHub. '
+                                   'Retry to start fresh, or close the issue if the work was dropped.', hold=True)
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            current['candidate'] = None
+            current['evidence'] = {}
+        self.github.labels(self.ledger.read()['issues'][item['key']])
+
     def pause_external_change(self, item, reason):
         self.invalidate(item['key'], reason, hold=True)
 
@@ -523,7 +535,16 @@ class Supervisor:
             item = self.ledger.read()['issues'][item['key']]
         candidate_value = item['candidate']
         if candidate_value:
-            pr = self.github.pr(item, candidate_value['pr'])
+            try:
+                pr = self.github.pr(item, candidate_value['pr'])
+            except GitHubUnavailable as error:
+                if getattr(error, 'status', None) != 404:
+                    raise
+                # The candidate PR is gone (deleted or hidden from the App). Every later
+                # observation used to stop here, so a closed issue was never noticed
+                # (thegame #50, PR #67).
+                self.candidate_gone(item, issue, candidate_value['pr'])
+                return
             if pr.get('merged'):
                 with self.ledger.transaction() as data:
                     current = data['issues'][item['key']]
