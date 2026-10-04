@@ -17,9 +17,24 @@ The latest attempt's provider is preferred if verified and available; another co
 
 ## Lifecycle and limits
 
-`state/issues/discussions.json` stores conversations and the currently retained job intent. One discussion worker runs at a time, after productive dispatch. It obeys existing memory admission and provider leases, uses a five-minute execution deadline and gives up queued admission after ten minutes. It never consumes issue failure attempts. Setup/reset cancels discussions before touching accounts. Cleanup failure retains the job and lease until absence is verified.
+`state/issues/discussions.json` stores conversations and the currently retained job intent. One discussion worker runs at a time, after productive dispatch. It obeys existing memory admission and provider leases, uses a ten-minute execution deadline and gives up queued admission after ten minutes. It never consumes issue failure attempts. Setup/reset cancels discussions before touching accounts. Cleanup failure retains the job and lease until absence is verified.
 
 The UI polls bounded snapshots, including public assistant text emitted so far, every 2.5 seconds while open; this is incremental delivery, not token-level SSE. Private reasoning and tool input/output are excluded. Reopening restores server history; older messages paginate twenty at a time. Inputs are limited to 4,000 characters, final answers to 12,000, reasons to 2,000 and retained conversations to 1,000 messages per issue. Twelve recent messages and bounded attempt summaries form the handoff; earlier turns remain readable but may be absent from the prompt.
+
+## Presence: someone joins, works, answers or leaves
+
+The read also returns `presence`, recorded in the discussion record only (never the factory ledger):
+
+- `finding`: no worker yet, with `waiting_since` and the launch logic's real `reason` and `code`: `busy` (one discussion runs at a time), `paused`, `disabled`, `pipeline` (pipeline work launches first), `capacity` (memory), `not_ready`, or the provider cooldown's own code (`blocked_auth`, `blocked_quota`) with `until` and a link to Settings → Coding accounts. A provider in cooldown is never launched.
+- `joined`: the container started. `agent` (provider, model, persona name), `joined_at`, `instead_of` after a switch, and `activity`: the last eight short lines of what the agent is doing, each with a timestamp.
+- `answered`: the answer carries `agent` and its `activity`, shown folded as "What Ember did".
+- `left`: the reply was cut off, with `reason` `timeout`, `restart`, `cancelled`, `auth`, `quota` or `error` and a sentence naming the true cause. A `role: "system"` message records it in the thread, so an unanswered question always ends in an answer or one left line. A worker that cannot sign in or is out of quota is replaced once by another ready provider; that provider is avoided until it frees up. The job keeps the worker's last twenty log lines (scrubbed, `excerpt`) for diagnosis.
+
+Each provider answers as one persona (`forge/factory/personas.py`, `ui/app/utils/personas.ts`): Claude is Ember, Codex is Bolt, Grok is Nova.
+
+Activity comes from the worker's bounded `docker logs` tail. Claude Code and Grok keep their stream-json transcript inside the adapter until the run ends, so their adapters print one `forge.activity` event per tool call while it runs (tool name and a few truncated inputs; never results, file contents or model text, `forge/harnesses/activity.py`). Codex `exec --json` events already reach the logs. `forge/factory/activity.py` maps both to lines such as "Reading issue #7" or "Searching the repository for `coach`": at most a program and one argument, credential-looking text dropped, every line scrubbed and capped at 100 characters. Without structured events it falls back to coarse phases.
+
+Restart detection: each service process has a boot identity, stamped on the jobs it launches. A job from an earlier process whose container is gone, or exited without a result, leaves with `restart`; one still running is adopted. Sending the same words as the unanswered question is never a second copy: while the reply is on its way it is a no-op, after it failed it is Try again.
 
 GET `/api/issues/discussion?issue=<key>&before=<sequence>` reads a conversation. POST `/api/issues/discussion` accepts `send` (key, message, request_id), `cancel` (key), or `apply` (key, message_id), all behind existing host/origin/action-token/reset guards. Request IDs deduplicate messages and proposal receipts across interruption. An applied receipt means submitted; the existing issue action status reports pending/applied/rejected, and the scheduler decides actual admission. A changed revision/head invalidates an unapplied proposal.
 

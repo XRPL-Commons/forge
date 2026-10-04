@@ -66,6 +66,9 @@ class Service:
         self.runner_class, self.github_class = runner, github
         self.next_cycle = 0
         self.next_sync = 0
+        # Names this process: a discussion worker an earlier one started and
+        # that is gone without an answer was orphaned by a restart.
+        self.boot = uuid.uuid4().hex
 
     def runner(self, config):
         # The runner finds <root>/runner-seccomp.json through FORGE_CREDENTIAL_ROOT.
@@ -348,7 +351,7 @@ class Service:
         data = self.setup.read()
         op = data.get('operation')
         from .factory.discussions import Discussions
-        discussions = Discussions(self.root, runner=self.runner)
+        discussions = Discussions(self.root, runner=self.runner, boot=self.boot)
         if op:
             # Setup/reset must not race a discussion's rotating provider login.
             with controller_lock(self.root):

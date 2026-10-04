@@ -46,9 +46,19 @@ export default async function (page, { base, requests }) {
   // button that cancels it.
   await prompt.fill('Look again (hold)')
   await prompt.press('Enter')
-  await page.getByText('Reading the saved evidence', { exact: true }).waitFor()
-  // The streaming indicator says what the worker is doing.
-  await page.locator('[data-streaming]').getByText('Agent is reading the saved evidence').waitFor()
+  // First Forge looks for someone available, and says why it is still looking.
+  const finding = page.locator('[data-presence][data-phase="finding"]')
+  await finding.waitFor()
+  assert.match(await finding.innerText(), /Looking for someone available/)
+  assert.match(await finding.locator('[data-finding-reason]').innerText(), /one runs at a time · waiting \d+ s/)
+  await page.screenshot({ path: '/tmp/forge-conversation-finding.png' })
+  // Then someone joins, with a face and a name, and says what it is doing.
+  const joined = page.locator('[data-presence][data-phase="joined"]')
+  await joined.waitFor()
+  assert.match(await joined.locator('[data-presence-title]').innerText(), /^Ember joined · Claude Sonnet 4\.6 · \d+ s$/)
+  assert.equal(await joined.locator('canvas[data-persona="Ember"]').getAttribute('data-mood'), 'busy')
+  await joined.locator('[data-activity]').getByText('Ember is reading issue #610').waitFor()
+  await joined.locator('[data-current]').getByText('Ember is searching the repository for `producer`').waitFor()
   // The box stays editable so the next question can be drafted meanwhile.
   assert.equal(await prompt.isDisabled(), false)
   assert.equal(await prompt.inputValue(), '')
@@ -56,13 +66,30 @@ export default async function (page, { base, requests }) {
   // Stop is the live control while a reply runs: enabled, not greyed out.
   assert.equal(await page.getByRole('button', { name: 'Stop reply', exact: true }).isEnabled(), true)
   await page.getByRole('button', { name: 'Stop reply', exact: true }).click()
-  await page.getByText('Reply stopped').waitFor()
+  // Stopping reads as the agent leaving: a system line, not a bubble.
+  await page.locator('[data-left][data-reason="cancelled"]').getByText('You stopped Ember').waitFor()
+  assert.equal(await page.locator('[data-left] canvas[data-persona="Ember"]').getAttribute('data-mood'), 'left')
   assert.equal(await prompt.isDisabled(), false)
   assert.equal(await page.getByRole('button', { name: 'Cancel reply' }).count(), 0)
   await prompt.fill('Why did the last attempt fail?')
   await prompt.press('Enter')
   await page.locator('[data-proposal-action]').waitFor()
   assert.equal((await page.locator('[data-proposal-action]').innerText()).trim(), 'Retry attempt')
+  // The answer is Ember's: who joined, its face and name, and what it did, folded away.
+  assert.equal((await page.locator('[data-joined]').last().innerText()).trim(), 'Ember joined · Claude Sonnet 4.6')
+  const reply = page.locator('[data-role="assistant"]').last()
+  assert.equal((await reply.locator('[data-persona-name]').innerText()).trim(), 'Ember')
+  assert.match(await reply.innerText(), /Ember via Claude/)
+  assert.equal(await reply.locator('canvas[data-persona="Ember"]').getAttribute('data-mood'), 'happy')
+  const did = reply.locator('[data-agent-did]')
+  assert.equal((await did.locator('summary').innerText()).trim(), 'What Ember did')
+  assert.equal(await did.getAttribute('open'), null)
+  await did.locator('summary').click()
+  await did.getByText('Reading issue #610').waitFor()
+  assert.match(await page.locator('[data-speaker]').innerText(), /Ember answers here, via Claude/)
+  // Join and leave lines are system lines, never user or assistant bubbles.
+  assert.equal(await page.locator('[data-role="system"] [data-joined]').count(), await page.locator('[data-joined]').count())
+  assert.equal(await page.locator('[data-role="system"] [data-left]').count(), 1)
   assert.equal(await prompt.inputValue(), '')
   assert.match(await page.locator('body').innerText(), /new conversation using saved issue evidence/i)
   assert.match(await page.locator('body').innerText(), /shared type is incorrect/)

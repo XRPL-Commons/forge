@@ -35,6 +35,71 @@ let codingAccounts = null
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
 // Questions whose first reply already failed: "(fail)" fails once, then answers.
 let failedQuestions = new Set()
+// The reply in progress, scripted on the clock like the real presence model:
+// Forge looks for someone available, an agent joins and works, then answers
+// or leaves. Each poll reads where the script has got to.
+//   plain       finding → Ember joins, three activity lines → answer
+//   "(hold)"    finding → Ember joins and keeps working until stopped
+//   "(fail)"    first time: Ember joins, then runs out of time
+//   "(auth)"    Bolt joins, cannot sign in, Ember joins instead and answers
+let turn = null
+const EMBER = { provider: 'claude', model: 'claude-sonnet-4-6', name: 'Ember', label: 'Claude' }
+const BOLT = { provider: 'codex', model: null, name: 'Bolt', label: 'Codex' }
+const LINES = ['Getting started', 'Reading issue #610', 'Searching the repository for `producer`']
+const ANSWER = 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)'
+
+function startTurn(question, kind) {
+  turn = { question, kind, started: Date.now() }
+  Object.assign(conversation, { status: 'queued', reason: 'Looking for someone available', partial: '',
+    presence: { phase: 'finding', waiting_since: Date.now() / 1000, code: 'busy', reason: 'Another conversation is using the discussion worker; one runs at a time' } })
+}
+
+function joined(agent, since, t, instead = null) {
+  const at = turn.started / 1000 + since / 1000
+  const lines = LINES.filter((_, i) => t >= since + i * 700).map((text, i) => ({ at: at + i * 0.7, text }))
+  return { phase: 'joined', agent, joined_at: at, activity: lines, instead_of: instead }
+}
+
+function leave(reason, text, agent, extra = {}) {
+  conversation.messages.push({ id: `left-${conversation.messages.length + 1}`, sequence: conversation.messages.length + 1, role: 'system', event: 'left',
+    reason, text, agent, reply_to: turn.question, at: Date.now() / 1000, ...extra })
+}
+
+function answer(agent, instead = null) {
+  const lines = LINES.map((text, i) => ({ at: turn.started / 1000 + 1 + i, text }))
+  conversation.messages.push({ id: `11111111-2222-4333-8444-${555555555555 + conversation.messages.filter(m => m.role === 'assistant').length}`, sequence: conversation.messages.length + 1, role: 'assistant',
+    text: ANSWER, agent, instead_of: instead, activity: [...lines, { at: turn.started / 1000 + 4, text: 'Writing the answer' }],
+    proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
+  Object.assign(conversation, { status: 'idle', reason: null, partial: '', presence: { phase: 'answered', agent, at: Date.now() / 1000 } })
+  turn = null
+}
+
+function advance() {
+  if (!turn) return
+  const t = Date.now() - turn.started
+  if (turn.kind === 'auth') {
+    if (t < 1000) return
+    if (t < 4000) return Object.assign(conversation, { status: 'running', presence: joined(BOLT, 1000, t) })
+    if (!turn.left) {
+      turn.left = true
+      leave('auth', "Bolt can't sign in: the Codex login expired. Reconnect it in Settings → Coding accounts.", BOLT,
+        { link: { to: '/settings/harnesses', label: 'Settings → Coding accounts' }, retrying: true })
+    }
+    if (t < 6500) return Object.assign(conversation, { status: 'queued', presence: { phase: 'finding', waiting_since: turn.started / 1000 + 4, code: 'switching', reason: 'Finding someone else to answer', instead_of: BOLT } })
+    if (t < 9000) return Object.assign(conversation, { status: 'running', presence: joined(EMBER, 6500, t, BOLT) })
+    return answer(EMBER, BOLT)
+  }
+  if (t < 1200) return
+  if (turn.kind === 'fail' && t >= 3000) {
+    leave('timeout', 'Ember ran out of time after 10 min', EMBER)
+    Object.assign(conversation, { status: 'unavailable', reason: 'Ember ran out of time after 10 min', partial: '',
+      presence: { phase: 'left', reason: 'timeout', text: 'Ember ran out of time after 10 min', agent: EMBER, at: Date.now() / 1000 } })
+    turn = null
+    return
+  }
+  if (turn.kind === 'hold' || t < 6000) return Object.assign(conversation, { status: conversation.status === 'cancelling' ? 'cancelling' : 'running', presence: joined(EMBER, 1200, t) })
+  answer(EMBER)
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -190,6 +255,7 @@ const server = http.createServer(async (req, res) => {
     connectedAgents = []
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     failedQuestions = new Set()
+    turn = null
     return send(res, 200, { ok: true })
   }
 
@@ -235,23 +301,32 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/issues/discussion') {
     record(req, pathname, query, body)
     if (req.method === 'POST') {
+      let request = 'discussion-decision'
       if (body.action === 'send') {
-        conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text: body.message })
-        // A message containing "(hold)" leaves the reply in progress so a
-        // spec can exercise stopping it; anything else is answered at once.
-        // A first "(fail)" ends the way a worker that ran out of time does.
-        if (body.message.includes('(hold)')) Object.assign(conversation, { status: 'running', reason: 'Agent is reading the saved evidence', partial: 'Reading the saved evidence' })
-        else if (body.message.includes('(fail)') && !failedQuestions.has(body.message)) {
-          failedQuestions.add(body.message)
-          Object.assign(conversation, { status: 'unavailable', reason: 'Discussion stopped or exceeded its time limit', partial: '' })
-        } else conversation.messages.push({ id: `11111111-2222-4333-8444-${555555555555 + conversation.messages.filter(m => m.role === 'assistant').length}`, sequence: conversation.messages.length + 1, role: 'assistant',
-          text: 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)',
-          proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
-        if (!body.message.includes('(hold)') && conversation.messages.at(-1).role === 'assistant') Object.assign(conversation, { status: 'idle', reason: null, partial: '' })
-      } else if (body.action === 'cancel') Object.assign(conversation, { status: 'cancelled', reason: 'Reply stopped', partial: '' })
+        const text = body.message.trim()
+        // Like Forge: the same words as the unanswered question are never a
+        // second copy; after a failed reply they are Try again.
+        const asked = conversation.messages.findLast(m => m.role !== 'system')
+        if (asked?.role === 'user' && asked.text === text) {
+          request = asked.id
+          if (!turn) startTurn(asked.id, 'answer')
+        } else {
+          conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text })
+          const failing = text.includes('(fail)') && !failedQuestions.has(text)
+          if (failing) failedQuestions.add(text)
+          startTurn(body.request_id, text.includes('(hold)') ? 'hold' : text.includes('(auth)') ? 'auth' : failing ? 'fail' : 'answer')
+        }
+      } else if (body.action === 'cancel') {
+        const agent = conversation.presence?.agent ?? null
+        const text = agent ? `You stopped ${agent.name}` : 'You stopped the request'
+        if (turn) leave('cancelled', text, agent)
+        turn = null
+        Object.assign(conversation, { status: 'cancelled', reason: text, partial: '', presence: { phase: 'left', reason: 'cancelled', text, agent, at: Date.now() / 1000 } })
+      }
       else if (body.action === 'apply') conversation.messages.find(m => m.id === body.message_id).receipt = 'discussion-decision'
-      return send(res, 200, withToken({ ok: true, request: 'discussion-decision' }))
+      return send(res, 200, withToken({ ok: true, request }))
     }
+    advance()
     return send(res, 200, withToken({ ok: true, ...conversation }))
   }
 

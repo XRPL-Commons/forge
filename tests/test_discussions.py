@@ -52,7 +52,7 @@ class DiscussionsTest(unittest.TestCase):
         self.service.send('1:2', 'Why did this fail?', identifier)
         self.assertEqual(len(self.service.view('1:2')['messages']), 1)
         self.assertEqual(before, Ledger(self.root / 'state/factory').read())
-        with self.assertRaises(ValueError): self.send()
+        with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
 
     def test_read_only_token_and_reconstructed_assignment(self):
         job = self.start()
@@ -104,7 +104,7 @@ class DiscussionsTest(unittest.TestCase):
         job = self.start(); self.service.cancel('1:2')
         # A running observation returning after Cancel must not erase the fence.
         self.service.save('1:2', job=job, status='running')
-        with self.assertRaises(ValueError): self.send()
+        with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
         self.service.tick(self.config, self.github, self.settings, launch=False)
         self.assertTrue(self.service.read()['1:2']['job']['cleanup'])
         self.assertEqual(self.service.view('1:2')['status'], 'cancelled')
@@ -122,7 +122,8 @@ class DiscussionsTest(unittest.TestCase):
         self.runner.reset.side_effect = RunnerError('engine unavailable')
         self.service.tick(self.config, self.github, self.settings, launch=False)
         self.assertEqual(len(self.service.active_jobs()), 1)
-        with self.assertRaises(ValueError): self.send()
+        with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
+        self.assertEqual(self.service.view('1:2')['presence']['reason'], 'cancelled')
 
     def test_restart_after_answer_before_cleanup_does_not_duplicate_reply(self):
         job = self.start(); self.runner.reset.side_effect = RunnerError('interrupted cleanup')
@@ -134,7 +135,8 @@ class DiscussionsTest(unittest.TestCase):
 
     def test_forbidden_proposal_is_not_shown_as_applicable(self):
         job = self.start(); self.finish(job, proposal={'action': 'merge', 'reason': 'Skip review'})
-        self.assertEqual(len(self.service.view('1:2')['messages']), 1)
+        self.assertEqual([m['role'] for m in self.service.view('1:2')['messages']], ['user', 'system'])
+        self.assertIn('not available', self.service.view('1:2')['messages'][-1]['text'])
         self.assertEqual(self.service.view('1:2')['status'], 'unavailable')
         self.assertTrue(self.service.active_jobs()[0]['fenced'])
 
