@@ -8,6 +8,81 @@ from tests.test_factory_cycle import CycleTest
 
 
 class DependencySchedulingTests(CycleTest):
+    def declared_wait(self):
+        # A real prerequisite phrased outside the deterministic parser's grammar.
+        self.body = 'Use the foundation from #90 to implement this feature.'
+        self.github.issue = Mock(return_value=({'number': 1, 'state': 'open', 'labels': [], 'body': self.body}, 'requirements'))
+        self.github.call = Mock(return_value={'number': 90, 'state': 'open'})
+        self.cycle()
+        job = self.active()
+        self.engine.finish(job, {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'waiting_on_issues',
+                                 'summary': 'Foundation is open.', 'issues': [90], 'evidence': self.body})
+        return job
+
+    def test_declared_dependency_resumes_after_closure_without_charging_attempt(self):
+        job = self.declared_wait()
+        self.assertFalse(self.cycle()['errors'])
+        data = self.ledger.read()
+        item = data['issues'][self.key]
+        self.assertEqual(item['declared_dependencies'], [90])
+        self.assertEqual(item['blocked_dependencies'], [90])
+        self.assertEqual(item['failures'], [])
+        self.assertIsNone(item['active'])
+        self.assertNotIn('environment_hold', item)
+        self.assertNotIn('decision_request', item)
+        self.assertEqual(data['jobs'][job['id']]['outcome'], 'waiting_on_issues')
+        issue, _ = self.github.issue({})
+        row = presentation(issue, item, {'name': 'example/project', 'enabled': True, 'access_ready': True}, self.config)
+        self.assertEqual((row['status'], row['dependencies'], row['actions']), ('blocked', [90], ['start_anyway']))
+        self.cycle()
+        self.assertFalse(self.engine.jobs)
+        self.github.call.return_value['state'] = 'closed'
+        self.assertFalse(self.cycle()['errors'])
+        resumed = self.active()
+        self.assertEqual(resumed['role'], 'build')
+        self.assertEqual(resumed['branch'], job['branch'])
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+
+    def test_edited_requirements_drop_old_worker_declarations(self):
+        self.declared_wait(); self.cycle()
+        self.github.issue.return_value[0]['body'] = 'Independent work now.'
+        self.assertFalse(self.cycle()['errors'])
+        self.assertEqual(self.active()['role'], 'build')
+        self.assertNotIn('declared_dependencies', self.ledger.read()['issues'][self.key])
+
+    def test_parsed_and_declared_prerequisites_are_both_enforced(self):
+        self.declared_wait()
+        self.cycle()
+        from forge.factory.contracts import digest
+        self.body += '\nDepends on #2.'
+        self.github.issue.return_value[0]['body'] = self.body
+        with self.ledger.transaction() as data:
+            data['issues'][self.key]['dependency_body'] = digest(self.body)
+        self.github.call.side_effect = lambda role, item, method, path: {'number': int(path.split('/')[-1]), 'state': 'open'}
+        self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['blocked_dependencies'], [2, 90])
+        issue, _ = self.github.issue({})
+        row = presentation(issue, item, {'name': 'example/project', 'enabled': True, 'access_ready': True}, self.config)
+        self.assertFalse(row['actions'])
+
+    def test_unverified_declaration_does_not_resume_or_charge_a_failure(self):
+        self.declared_wait()
+        self.github.call.side_effect = GitHubUnavailable('Unavailable')
+        self.cycle()
+        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
+        self.assertEqual(len(self.ledger.read()['jobs']), 1)
+        self.github.call.side_effect = None
+        self.cycle()
+        self.assertEqual(self.ledger.read()['issues'][self.key]['blocked_dependencies'], [90])
+
+    def test_dependency_evidence_must_quote_current_requirements(self):
+        job = self.declared_wait()
+        self.engine.jobs[job['id']]['result']['evidence'] = 'An invented prerequisite #90.'
+        self.cycle()
+        self.assertNotIn('declared_dependencies', self.ledger.read()['issues'][self.key])
+        self.assertEqual(self.ledger.read()['jobs'][job['id']]['outcome'], 'failed')
+
     def dependency(self, state='open'):
         self.github.issue = Mock(return_value=({'number': 1, 'state': 'open', 'labels': [],
             'body': 'Effort: S. Depends on: #2 (foundation). Blocks: #3 (page).'}, 'requirements'))

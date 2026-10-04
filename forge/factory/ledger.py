@@ -157,7 +157,7 @@ class Ledger:
                     # Failed builds can publish a useful draft without an accepted
                     # candidate. Continue that assigned branch instead of
                     # orphaning its PR on a fresh branch after investigation.
-                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed', 'needs_decision', 'services_retry')
+                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed', 'needs_decision', 'services_retry', 'waiting_on_issues')
                             or ((runner_config or {}).get('memory_tiers') and confirmed(capture, report))):
                         retry = {'role': role, 'branch': previous['branch']}
             # GitHub's open draft is the truth about where the work is; the last
@@ -394,6 +394,27 @@ class Ledger:
             job['outcome'] = 'memory_retry'
             self.event(data, issue, 'memory_escalated', attempt=identifier, previous=used, memory=target, detail=detail[:2000])
             return True
+
+    def wait_on_issues(self, identifier, numbers, evidence, body, blocked, summary=None):
+        """Release the worker while prerequisites finish, without spending a retry."""
+        from .contracts import digest
+        with self.transaction() as data:
+            job, issue = self._current(data, identifier)
+            if job['outcome'] is not None:
+                return
+            if job['role'] != 'build':
+                raise StateError('Only a build can declare prerequisites')
+            previous = issue.get('declared_dependencies', []) if issue.get('dependency_body') == digest(body or '') else []
+            issue.update(state='ready', active=None, reason=None,
+                         declared_dependencies=sorted(set(previous) | set(numbers)),
+                         dependency_evidence=evidence, dependency_body=digest(body or ''),
+                         blocked_dependencies=blocked,
+                         dependency_reason=('Waiting for ' + ', '.join('#' + str(n) for n in blocked) + '.') if blocked else None)
+            issue.pop('dependencies_checked_at', None)
+            job['outcome'] = 'waiting_on_issues'
+            self.remember(issue, summary)
+            self.event(data, issue, 'dependencies_declared', attempt=identifier, issues=numbers,
+                       reason=evidence)
 
     def request_decision(self, identifier, decision, summary=None):
         """A question stops dispatch without charging a failure or starting review."""
