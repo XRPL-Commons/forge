@@ -394,6 +394,12 @@ describe('issues waiting on dependencies', () => {
   it('are not counted as queued for a worker', () => {
     expect(readout(v, now)!.queued).toBe(1)
   })
+
+  it('never land in the attention crate or count toward Needs you', () => {
+    const groups = groupIssues(v, now)
+    expect([...groups.attention, ...groups.held].map(c => c.key)).not.toContain('1:612')
+    expect(lineAnalyse(lineState(v, now, groups)!).attention).toBe(0)
+  })
 })
 
 describe('issues owned by someone else', () => {

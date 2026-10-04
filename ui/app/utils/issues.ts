@@ -6,7 +6,11 @@
 import { elapsed } from './factory'
 import { ago, clampTitle, reviewerMentions } from './format'
 
-export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'completed'
+// `blocked`: waiting on other issues (its prerequisites) to close. It starts
+// by itself when they do, so it never asks anything of the operator.
+// `dropped`: closed on GitHub as not planned or as a duplicate. It is no
+// longer needed, which is not the same as finished.
+export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'blocked' | 'completed' | 'dropped'
 export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'assign_reviewer' | 'stop' | 'close'
 
 // Which pull request this is to the issue: the one Forge is carrying now, an
@@ -104,6 +108,29 @@ export const STATUS_NAMES: Record<IssueStatus, string> = {
   attention: 'Needs attention',
   completed: 'Completed',
   waiting: 'Waiting',
+  blocked: 'Waiting on other issues',
+  dropped: 'No longer needed',
+}
+
+// The order the server sorts the list in (forge/factory/issues.py view()):
+// what needs the operator first, finished work last.
+export const STATUS_ORDER: IssueStatus[] = ['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped']
+
+// The open prerequisites a blocked issue waits on. The server names them in
+// the explanation ("Waiting for #90, #101."); the dependencies the body lists
+// are the fallback. Empty for any other status.
+export function blockingIssues(row: Pick<IssueRow, 'status' | 'explanation' | 'dependencies'>): number[] {
+  if (row.status !== 'blocked') return []
+  const named = [...(row.explanation ?? '').matchAll(/#(\d+)/g)].map(match => Number(match[1]))
+  const numbers = named.length ? named : (row.dependencies ?? [])
+  return [...new Set(numbers.filter(number => Number.isSafeInteger(number) && number > 0))]
+}
+
+// The status chip's words: a blocked issue names what it waits on.
+export function statusLabel(row: Pick<IssueRow, 'status' | 'explanation' | 'dependencies'>): string {
+  const numbers = blockingIssues(row)
+  if (numbers.length) return `Waiting on ${numbers.map(number => `#${number}`).join(', ')}`
+  return STATUS_NAMES[row.status] ?? row.status
 }
 
 export const ACTION_LABELS: Record<IssueAction, string> = {
@@ -164,7 +191,9 @@ export const SHOW_OPTIONS: { value: string; label: string }[] = [
   { value: 'queued', label: 'Queued' },
   { value: 'working', label: 'Working' },
   { value: 'waiting', label: 'Waiting' },
+  { value: 'blocked', label: 'Waiting on other issues' },
   { value: 'completed', label: 'Completed' },
+  { value: 'dropped', label: 'No longer needed' },
 ]
 
 // Decisions that change what Forge does next are recorded with the operator's

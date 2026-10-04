@@ -5,6 +5,7 @@ has a preceding durable intent; ambiguous responses are reconciled on later cycl
 """
 from copy import deepcopy
 from pathlib import Path
+import re
 import time
 import json
 
@@ -357,7 +358,8 @@ class Supervisor:
         if issue['state'] != 'open':
             with self.ledger.transaction() as data:
                 data['issues'][item['key']]['ownership_wait'] = None
-            self.ledger.cancel(item['key'], 'Issue closed externally; reconcile any published PR separately')
+            self.ledger.cancel(item['key'], 'Issue closed externally; reconcile any published PR separately',
+                              closed_as=issue.get('state_reason'))
             return
         if requirements != job['requirements'] or job['policy'] != digest(policy(self.config)):
             self.invalidate(item['key'], 'Requirements or policy changed during the attempt')
@@ -505,18 +507,35 @@ class Supervisor:
         if issue['state'] != 'open':
             with self.ledger.transaction() as data:
                 data['issues'][item['key']]['ownership_wait'] = None
-            self.ledger.cancel(item['key'], 'Issue closed externally')
+            self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
             self.github.labels(self.ledger.read()['issues'][item['key']])
             return
         ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
         if not ownership_clear and not item.get('active'):
             return
+        if item['state'] == 'hold' and item.get('decision_request') and not item.get('active'):
+            # A worker that asked "should this wait for #90?" when the issue itself
+            # names #90 as a prerequisite: Forge's own dependency wait answers it.
+            asked = item['decision_request']
+            text = ' '.join(str(asked.get(k) or '') for k in ('question', 'recommendation', 'evidence'))
+            named = [n for n in dependencies(issue.get('body')) if re.search(rf'(?<![\w/])#{n}\b', text)]
+            if named:
+                self.ledger.retry(item['key'], 'Waits for prerequisites named in the issue: '
+                                  + ', '.join('#' + str(n) for n in named))
+                self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
         if item.get('environment_hold') and item['state'] == 'hold':
             labels = {label['name'] for label in issue.get('labels', [])}
             if labels.intersection(self.config['hold_labels']):
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
             held = item['environment_hold']
+            if held['blocker'] == 'dependency_access' and dependencies(issue.get('body')):
+                # Workers reported "wait for #N" as an access problem. Once Forge can
+                # read the prerequisites itself, the ordinary dependency wait applies.
+                if self.ledger.resume_environment(item['key'], 'The issue names prerequisite issues; waiting on them instead'):
+                    self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
             if held['blocker'] == 'services':
                 # Older installations held missing databases for manual approval.
                 # Resume once under the same bounded policy as a new blocker.

@@ -3,8 +3,8 @@
 // renders this view, so both pages read the same way.
 import { elapsed, type CardModel } from './factory'
 import { ago } from './format'
-import { STATUS_NAMES, rowFacts, rowStory, type IssueRow } from './issues'
-import { statusTone, type BadgeColor } from './tones'
+import { rowFacts, rowStory, statusLabel, type IssueRow } from './issues'
+import { statusBadge, type BadgeColor } from './tones'
 import { portraitFromScene, type PortraitLook } from './cube'
 import { workbenchLook } from './workbench'
 
@@ -28,7 +28,8 @@ export interface IssueCardView {
   headline: string
   plain: string
   facts: CardFact[]
-  status: { label: string; color: BadgeColor } | null
+  // `icon` and `dim`: the calm chip of an issue waiting on other issues.
+  status: { label: string; color: BadgeColor; icon?: string | null; dim?: boolean } | null
   look: PortraitLook
   running: boolean
 }
@@ -56,7 +57,7 @@ export function rowCardView(row: IssueRow, now: number): IssueCardView {
     headline: story.headline,
     plain: story.plain,
     facts,
-    status: { label: STATUS_NAMES[row.status], color: statusTone(row.status) },
+    status: { label: statusLabel(row), ...statusBadge(row.status) },
     look: portraitFromScene(workbenchLook(row).scene),
     running: row.status === 'working',
   }
@@ -104,7 +105,10 @@ export function modelCardView(card: CardModel, now: number): IssueCardView {
     headline,
     plain: card.summary && card.reason && card.reason !== card.summary ? card.reason : '',
     facts,
-    status: card.phaseLabel ? { label: card.phaseLabel, color: cardColor(card) } : null,
+    status: !card.phaseLabel ? null
+      : card.look.mood === 'patient' ? { label: card.phaseLabel, ...statusBadge('blocked') }
+        : card.look.mood === 'rest' ? { label: card.phaseLabel, ...statusBadge('dropped') }
+        : { label: card.phaseLabel, color: cardColor(card) },
     look: card.look,
     running: card.running,
   }

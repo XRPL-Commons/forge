@@ -61,7 +61,17 @@ const HEART = 'M6 10.4 1.9 6.4A2.5 2.5 0 0 1 6 3.1a2.5 2.5 0 0 1 4.1 3.3Z'
         <p class="flex min-w-0 text-xs text-muted">
           <span class="truncate">{{ view.repo }}</span><span v-if="view.number !== null" class="shrink-0 whitespace-pre">{{ ` · #${view.number}` }}</span>
         </p>
-        <UBadge v-if="view.status" :color="view.status.color" variant="subtle" :size="compact ? 'sm' : 'md'" class="shrink-0 rounded-full" data-status-chip>{{ view.status.label }}</UBadge>
+        <UBadge
+          v-if="view.status"
+          :color="view.status.color"
+          :variant="view.status.dim ? 'outline' : 'subtle'"
+          :icon="view.status.icon ?? undefined"
+          :size="compact ? 'sm' : 'md'"
+          class="shrink-0 rounded-full"
+          :class="view.status.dim ? 'text-muted' : ''"
+          :data-tone="view.status.dim ? 'calm' : undefined"
+          data-status-chip
+        >{{ view.status.label }}</UBadge>
       </div>
 
       <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">

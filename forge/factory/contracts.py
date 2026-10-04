@@ -102,12 +102,22 @@ def dependencies(body):
             continue
         if fenced:
             continue
-        match = re.search(r'\b(?:blocked by\b|depends on\b|dependency:)', line, re.I)
-        if match:
-            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
+        for match in [*re.finditer(START, line, re.I), *re.finditer(r'^[\W_]*follows\b', line, re.I)]:
+            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
                               maxsplit=1, flags=re.I)[0]
             numbers.update(int(n) for n in re.findall(r'(?<![\w/])#([1-9]\d*)\b', clause))
+        numbers.update(int(n) for n in re.findall(FIRST, line, re.I))
     return sorted(numbers)
+
+
+# Statements that something must finish before this issue starts. Written for
+# how people phrase it ("Do not start until #90 is closed", "#101 must be
+# merged first"), never for mentions or downstream links ("blocks #5", "see #3").
+START = (r'\b(?:blocked (?:by|on)\b|depends on\b|dependency:|dependencies:|prerequisites?:'
+         r'|(?:do not|don\'t|cannot|can\'t) (?:start|begin) (?:until|before)\b|wait(?:s|ing)? (?:for|on|until)\b'
+         r'|(?:start|begin)s? (?:only )?after\b)')
+FIRST = (r'(?<![\w/])#([1-9]\d*)\s+(?:must|needs to|has to|should)\s+(?:be\s+)?'
+         r'(?:merged|closed|done|finished|completed|landed|shipped|land|ship|merge)\b[^.;]*?\bfirst\b')
 
 
 def references_issue(body, repo, number):

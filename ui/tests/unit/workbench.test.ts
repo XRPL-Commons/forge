@@ -82,7 +82,23 @@ describe('workbenchLook', () => {
   })
 
   it('ties a ghost cube to each dependency', () => {
-    expect(look({ status: 'waiting', dependencies: [85, 86] }).scene.dependencies).toEqual([85, 86])
+    expect(look({ status: 'queued', dependencies: [85, 86] }).scene.dependencies).toEqual([85, 86])
+  })
+
+  it('waits patiently, tethered to the open prerequisites and never lit, when blocked on other issues', () => {
+    const view = look({ status: 'blocked', explanation: 'Waiting for #90, #101.', dependencies: [85, 90, 101] })
+    expect([view.mood, view.needsYou, view.scene.beacon, view.scene.zzz]).toEqual(['patient', false, false, false])
+    expect(view.scene.dependencies).toEqual([90, 101])
+    expect(view.label).toBe('Cube for #50, Queue stage, waiting on other issues')
+    // Without the numbers in the explanation, the body's dependencies stand in.
+    expect(look({ status: 'blocked', explanation: '', dependencies: [85] }).scene.dependencies).toEqual([85])
+  })
+
+  it('rests in grey, eyes closed, with no bow or confetti, when no longer needed', () => {
+    const view = look({ status: 'dropped', explanation: 'No longer needed: closed as a duplicate.', pull_requests: candidate })
+    expect([view.stage, view.mood, view.needsYou]).toEqual(['queued', 'rest', false])
+    expect([view.scene.accessory, view.scene.confetti, view.scene.beacon, view.scene.zzz]).toEqual([null, false, false, false])
+    expect(view.label).toBe('Cube for #50, Queue stage, no longer needed')
   })
 
   it('celebrates a merge with a bow, confetti and every badge earned', () => {

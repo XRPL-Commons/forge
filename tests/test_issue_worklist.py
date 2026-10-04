@@ -583,7 +583,27 @@ class WorklistTests(unittest.TestCase):
         self.actions.apply(identifier, decision)
         self.assertEqual(len([c for c in self.github.calls if c[0] in ('POST', 'PATCH')]), 3)
         self.refresh()
-        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'completed')
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'dropped')
+
+    def test_issues_closed_as_not_planned_are_dropped_not_completed(self):
+        self.tracked()
+        for reason, status in (('not_planned', 'dropped'), ('duplicate', 'dropped'), ('completed', 'completed'), (None, 'completed')):
+            with self.subTest(reason=reason):
+                self.github.value.update(state='closed', state_reason=reason)
+                self.refresh()
+                row = self.inventory.view(key='1:1')['issue']
+                self.assertEqual(row['status'], status)
+                self.assertFalse(row['closable'])
+        self.github.value.update(state='closed', state_reason='not_planned'); self.refresh()
+        self.assertEqual([r['key'] for r in self.inventory.view(state='dropped')['issues']], ['1:1'])
+        self.assertEqual(self.inventory.view(state='completed')['issues'], [])
+        self.assertEqual(self.inventory.view(state='open')['issues'], [])
+
+    def test_closing_from_forge_records_the_reason(self):
+        self.awaiting_approval(); self.refresh()
+        identifier, decision = self.decision('close', reason='Superseded by #9')
+        self.actions.apply(identifier, decision)
+        self.assertEqual(self.ledger.read()['issues']['1:1']['closed_as'], 'not_planned')
 
     def test_close_works_for_an_issue_forge_never_tracked(self):
         identifier, decision = self.decision('close', reason='Not needed')

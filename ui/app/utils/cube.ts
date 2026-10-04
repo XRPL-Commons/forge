@@ -27,7 +27,9 @@ export type CubeMouth = 'smile' | 'flat' | 'wobble' | 'o'
 // Earned along the way: a hard hat while building, a magnifier in review, a
 // rosette once the security review passed, a bow when merged.
 export type CubeAccessory = 'hat' | 'magnifier' | 'badge' | 'bow'
-export type CubeMood = 'busy' | 'worried' | 'hopeful' | 'sleep' | 'happy' | 'open'
+// `patient`: waiting on other issues, eyes on the cubes it is tied to.
+// `rest`: no longer needed: eyes closed, no z's, perfectly still.
+export type CubeMood = 'busy' | 'worried' | 'hopeful' | 'sleep' | 'happy' | 'open' | 'patient' | 'rest'
 
 export interface CubeOptions {
   alpha?: number; sx?: number; sy?: number
@@ -141,6 +143,8 @@ export function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 
     case 'hopeful': return { eyes: 'open', look: c * 0.08, lookY: -c * 0.05, mouth: 'smile' }
     case 'happy': return { eyes: 'happy', mouth: 'smile' }
     case 'sleep': return { eyes: 'closed', mouth: 'o' }
+    case 'rest': return { eyes: 'closed', mouth: null }
+    case 'patient': return { eyes: 'open', look: -c * 0.09, lookY: c * 0.02, mouth: 'flat' }
     default: return { eyes: 'open', look: c * 0.07, mouth: null }
   }
 }
@@ -160,6 +164,7 @@ export function cubeMotion(t: number, hop: number, seed: number, c: number, mood
     if (mood === 'worried') dy = -Math.pow(Math.max(0, Math.sin(t / 520 + seed)), 10) * 2.5
     if (mood === 'sleep') { sy = 1 + Math.sin(t / 900) * 0.025; sx = 1 / sy }
     if (mood === 'open') dy = -Math.max(0, Math.sin(t / 900 + seed)) * 1
+    if (mood === 'patient') dx = Math.sin(t / 1600 + seed) * 0.8
   }
   return { dx, dy, sx, sy, blink: ((t + seed * 997) % 4300) < 130 }
 }

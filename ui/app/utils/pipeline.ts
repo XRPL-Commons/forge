@@ -93,6 +93,12 @@ function locate(row: PipelineRow): { at: StageId | null; state: PipelineView['st
       return { at: 'queued', state: 'upcoming', note: 'Not queued' }
     case 'waiting':
       return { at: reached(row, failures > 0), state: 'waiting', note: 'Waiting' }
+    // Closed as not planned or a duplicate: off the line, nothing earned.
+    case 'dropped':
+      return { at: null, state: 'closed', note: 'No longer needed' }
+    // Its prerequisites are still open: it waits where it stands, calmly.
+    case 'blocked':
+      return { at: reached(row, failures > 0), state: 'waiting', note: 'Waiting on other issues' }
     case 'attention':
     default:
       if (row.merge_blocker) return { at: 'approval', state: 'blocked', note: 'Merge blocked' }
