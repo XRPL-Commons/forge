@@ -72,5 +72,6 @@
   ],
   "codex_parallel_auth": false,
   "environment_tiers": {},
-  "repository_environments": {}
+  "repository_environments": {},
+  "repository_verification": {}
 }

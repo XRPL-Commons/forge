@@ -133,6 +133,23 @@ class ImmediateDecisionTests(unittest.TestCase):
         self.assertNotIn('decision_request', self.item())
         self.assertIn('decision_answered', [e['kind'] for e in self.ledger.read()['events']])
 
+    def test_releasing_a_hold_restores_verification_and_retry_records_failed_check(self):
+        self.tracked()
+        verification = {'what': 'Check the PDF header', 'why': 'Requires the release image', 'ci': []}
+        with self.ledger.transaction() as data:
+            data['issues']['1:1'].update(state='hold', candidate={'pr': 7},
+                environment_hold={'state': 'approval_needed'}, verification_request=verification,
+                verified_checks=[{'proof': {'via': 'human'}}])
+        self.decide('recheck')
+        self.assertEqual(self.item()['state'], 'approval_needed')
+        self.assertEqual(self.item()['verification_request'], verification)
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['reason_code'], 'verification')
+        self.decide('retry', reason='The export returns HTML instead of a PDF')
+        self.assertEqual(self.item()['state'], 'ready')
+        self.assertNotIn('verification_request', self.item())
+        self.assertNotIn('verified_checks', self.item())
+        self.assertEqual(self.item()['retry_plan'], 'The export returns HTML instead of a PDF')
+
     def test_stale_revision_and_active_or_cleaning_worker_are_refused(self):
         self.tracked(); self.github.value['labels'].append({'name': 'ready'})
         self.refresh()

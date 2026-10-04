@@ -51,6 +51,7 @@ export interface IssueRow {
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null
+  verification_request?: { what: string; why: string; created_at: number; ci?: { name: string; app_id: number }[] } | null
   // Each reviewer's latest review on the candidate pull request as Forge last
   // read it, and when Forge last read GitHub for this issue. Older payloads omit them.
   approvals?: IssueApproval[]
@@ -184,6 +185,8 @@ export const EVENT_LABELS: Record<string, string> = {
   human_retry: 'Another attempt approved',
   draft_resumed: 'Continuing an earlier draft',
   decision_requested: 'Waiting for your decision',
+  verification_requested: 'External verification requested',
+  verification_completed: 'Verification confirmed',
   decision_answered: 'Your answer recorded',
   environment_selected: 'Worker environment selected',
   environment_override: 'Issue environment preference saved',

@@ -639,6 +639,14 @@ const rootClass = computed(() => {
 
               <p v-if="message" id="detail-message" role="status" class="text-sm text-amber-200">{{ message }}</p>
 
+              <section v-if="detail.verification_request" id="issue-verification" class="space-y-2 rounded-lg border border-line bg-panel p-4 text-sm">
+                <h3 class="font-medium">Verification needed</h3>
+                <p class="text-muted">{{ detail.verification_request.why }}</p>
+                <pre class="whitespace-pre-wrap break-words font-sans">{{ detail.verification_request.what }}</pre>
+                <p v-if="detail.verification_request.ci?.length" class="text-muted">Waiting for configured CI checks: {{ detail.verification_request.ci.map(check => check.name).join(', ') }}. Forge checks them automatically.</p>
+                <p v-else class="text-muted">Run these steps on the current PR revision, then approve on GitHub if they pass. If they fail, comment on the PR and retry with the findings.</p>
+              </section>
+
               <!-- One primary way forward (or a calm line when there is none),
                    smaller secondary decisions, then stopping the attempt. -->
               <!-- Dropped work asks nothing: the only way back is on GitHub. -->
@@ -846,6 +854,7 @@ const rootClass = computed(() => {
       <LazyApprovalDialog
         v-if="approvalOpen && approval && detail"
         :reason="approval.reason"
+        :verification="!!detail.verification_request"
         :url="pullUrl(approval.pr) + '/files'"
         :can-assign="canAssign"
         @opened="sentToGitHub = true"
