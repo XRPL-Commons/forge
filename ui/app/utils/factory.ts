@@ -40,6 +40,9 @@ export interface LedgerIssueView {
   // "No longer needed" (workbench.ts isDropped). Older payloads omit it.
   closed_as?: ClosedAs | null
   ownership_wait?: IssueSummary | null
+  // Why the issue waits for the operator (control.py attention_kind), null
+  // when it does not. Older payloads omit it.
+  attention_kind?: 'approve' | 'question' | 'approach' | 'failed' | 'env' | 'review' | 'verify' | null
   history?: LedgerEvent[]
   // Deployment verdicts (contracts §2). Both are present and null until the
   // supervisor has evidence; `deployed` is written once, `deploy_failed` is

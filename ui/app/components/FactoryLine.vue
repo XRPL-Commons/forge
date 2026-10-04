@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import type { CardModel, ColumnRole, FactoryView, IssueGroups } from '~/utils/factory'
 import {
-  LINE_REASONS, LINE_REASON_GROUP, LINE_REASON_SHORT, LINE_SHORT_LABELS,
+  LINE_REASONS, LINE_REASON_SHORT, LINE_REASON_TEXT, LINE_SHORT_LABELS,
   lineAnalyse, lineBlocker, lineDiff, lineFill, lineGroups, lineMix, lineHeadline, lineHeadlineText, lineStation, lineState, lineSummary, lineTooltip,
   type AttentionReason, type HeadlinePart, type LineInfo, type LineItem, type LineStage, type LineState,
 } from '~/utils/factoryLine'
 import { panelQuery, panelTarget } from '~/utils/panel'
+import { lineBayCard, lineIssueCard, lineListCard, placeCard, type LineCard, type Rect } from '~/utils/lineCard'
+import { needsYouRows, type NeedsFilter } from '~/utils/needsYou'
+import { unblockCounts } from '~/utils/unblocks'
 import { CUBE_INK as INK, drawCube, roundRect as rr, type CubeOptions } from '~/utils/cube'
+import { BAY_GLYPHS, GLYPH_INK, glyphMotion, type GlyphPart } from '~/utils/bayGlyphs'
 
 // The factory line: a 200px strip that draws the board as a toy factory.
 // Every cube is an issue from the last poll; a cube moves only when a poll
@@ -14,7 +18,9 @@ import { CUBE_INK as INK, drawCube, roundRect as rr, type CubeOptions } from '~/
 // worker is actually running. The drawing is the "Toy factory" prototype,
 // ported onto live state from utils/factoryLine.ts.
 const props = defineProps<{ view: FactoryView | null; now: number; groups?: IssueGroups }>()
-const emit = defineEmits<{ open: [card: CardModel]; attention: [] }>()
+// `attention` opens the list of issues that need the operator, filtered to
+// one bay when a bay was clicked.
+const emit = defineEmits<{ open: [card: CardModel]; attention: [filter: NeedsFilter] }>()
 
 const route = useRoute()
 const router = useRouter()
@@ -33,7 +39,18 @@ const links = computed(() => (state.value?.items ?? []).map(item => ({
 const canvas = ref<HTMLCanvasElement | null>(null)
 // Where each cube rests, for the hidden links (and the tests that click them).
 const spots = ref<Record<string, { x: number; y: number }>>({})
-const tip = ref<{ x: number; y: number; title: string; detail: string } | null>(null)
+// The hover card: what it says, the strip area it describes (in viewport
+// pixels), and where it sits once measured. It is teleported to the body
+// and fixed, so the strip's rounded overflow never clips it.
+const tip = ref<{ key: string; card: LineCard; anchor: Rect } | null>(null)
+const tipEl = ref<HTMLElement | null>(null)
+const tipAt = ref<{ left: number; top: number } | null>(null)
+// The crate and its bays, for the keyboard buttons laid over them.
+const regions = ref<{ crate: Rect; bays: (Rect & { reason: AttentionReason })[] }>({ crate: { x: 0, y: 0, w: 0, h: 0 }, bays: [] })
+const unblocks = computed(() => unblockCounts(props.view?.issues ?? []))
+const rawIssues = computed(() => new Map((props.view?.issues ?? []).map(issue => [issue.key, issue])))
+const crateRows = computed(() => needsYouRows(state.value, props.view))
+const needCount = computed(() => info.value?.attention ?? 0)
 
 // ---------------------------------------------------------------------------
 // Scene model: the live items plus the cubes still on their way out.
@@ -141,7 +158,7 @@ interface Bay { r: AttentionReason; x: number; w: number; label: string }
 interface Layout {
   pos: Map<string, { x: number; y: number }>; s: number; c: number; g0: number; gp: number; cols: { x: number; w: number }[]
   machines: Record<ColumnRole, Machine>; gateX: number; tx: number; bedW: number; cabW: number; fy: number; cb: number
-  bays: Bay[]; plank: number; crateX: number; crateR: number; wx: number; hx: number; pad: number; small: boolean
+  bays: Bay[]; plank: number; crateX: number; crateR: number; needR: number; areaY: number; wx: number; hx: number; pad: number; small: boolean
 }
 const STAGES: ColumnRole[] = ['build', 'review', 'audit']
 
@@ -184,13 +201,18 @@ function layout(ctx: CanvasRenderingContext2D, W: number): Layout {
   const bays: Bay[] = []; let bx = pad + 4; const plank = 14
   for (const r of LINE_REASONS) {
     const items = g.attention.filter(i => i.reason === r); if (!items.length) continue
-    const ncol = Math.ceil(items.length / 3), label = items.length + ' ' + (small ? REASON_TINY : LINE_REASON_SHORT)[r]
-    const w = Math.max(ncol * (cb + 2) + 6, ctx.measureText(label).width + 10)
+    const ncol = Math.ceil(items.length / 3), label = small ? String(items.length) : items.length + ' ' + LINE_REASON_SHORT[r]
+    const w = Math.max(ncol * (cb + 2) + 6, ctx.measureText(label).width + 10, GLYPH_SIZE(small) + 4)
     const x0 = bx + (w - ncol * (cb + 2)) / 2 + cb / 2 + 1
     items.forEach((is, k) => pos.set(is.id, { x: x0 + Math.floor(k / 3) * (cb + 2), y: fy - plank - (k % 3) * cb }))
     bays.push({ r, x: bx, w, label }); bx += w
   }
   const crateR = Math.max(bx + 4, pad + 70)
+  // The crate's clickable area runs on over the beacon and its "N NEED YOU".
+  ctx.font = FONT(600, small ? 9 : 10); spacing(ctx, '0.06em'); const needW = ctx.measureText('NEED YOU').width; spacing(ctx, '0px')
+  ctx.font = FONT(600, small ? 17 : 20, 'mono'); const countW = ctx.measureText(String(g.attention.length)).width
+  const needR = crateR + 20 * s + Math.max(needW, countW) + 4
+  const areaY = fy - plank - cb * 3 - 6 - GLYPH_SIZE(small)
   const wx = small ? crateR + 66 : Math.max(crateR + 78, pad + bw * 0.56)
   // Two rows per bench; a long bench packs its columns closer to stay on screen.
   const pile = (arr: Item[], x0: number, right: number) => {
@@ -206,10 +228,49 @@ function layout(ctx: CanvasRenderingContext2D, W: number): Layout {
   let hx = small ? Math.max(wRight + 8, wx + waitW + 10) : Math.max(wRight + 16, wx + waitW + 16, pad + bw * 0.77)
   if (hx + holdW > W - pad) hx = Math.max(wx + waitW + 4, W - pad - holdW)
   pile(g.hold, hx, W - pad)
-  return { pos, s, c, g0, gp, cols, machines, gateX, tx, bedW, cabW, fy, cb, bays, plank, crateX: pad, crateR, wx, hx, pad, small }
+  return { pos, s, c, g0, gp, cols, machines, gateX, tx, bedW, cabW, fy, cb, bays, plank, crateX: pad, crateR, needR, areaY, wx, hx, pad, small }
 }
 
-const REASON_TINY: Record<AttentionReason, string> = { failed: 'fail', decision: 'decide', approval: 'appr', env: 'env' }
+// On a phone a bay is its count under its character; the hover card names it.
+const GLYPH_SIZE = (small: boolean) => small ? 16 : 22
+
+// Each bay's cubes wear its mood: puzzled by a question, sheepish and sooty
+// after a failure, hopeful while waiting for a stamp, grumpy and bandaged
+// when the setup is broken.
+function bayFace(reason: AttentionReason | undefined, cb: number): CubeOptions {
+  switch (reason) {
+    case 'approach': return { eyes: 'worried', look: -cb * 0.06, lookY: cb * 0.04, soot: true }
+    case 'question': return { eyes: 'puzzled', look: cb * 0.07, lookY: -cb * 0.05 }
+    case 'approve': return { eyes: 'open', look: cb * 0.04, lookY: -cb * 0.07 }
+    case 'failed': return { eyes: 'worried', look: 0, lookY: cb * 0.06, soot: true }
+    case 'env': return { eyes: 'grumpy', look: 0, lookY: cb * 0.02, bandage: true }
+    case 'verify': return { eyes: 'open', look: cb * 0.08, lookY: cb * 0.03 }
+    default: return { eyes: 'open', look: -cb * 0.07, lookY: 0 }
+  }
+}
+
+// One bay's character, drawn from the same paths as the SVG in the modal.
+const glyphPaths = new Map<string, Path2D>()
+function glyphPath(d: string) { let p = glyphPaths.get(d); if (!p) { p = new Path2D(d); glyphPaths.set(d, p) } return p }
+function drawGlyph(ctx: CanvasRenderingContext2D, reason: AttentionReason, cx: number, bottom: number, size: number, t: number, pop: number, alpha: number) {
+  const k = size / 24, m = glyphMotion(reason, t, reduced)
+  const scale = 1 + 0.35 * Math.sin(Math.PI * clamp(pop, 0, 1)) * (pop < 1 ? 1 : 0)
+  ctx.save(); ctx.globalAlpha = alpha
+  ctx.translate(cx, bottom); ctx.scale(k * scale, k * scale); ctx.translate(-12, -24)
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+  const paint = (part: GlyphPart) => {
+    const path = glyphPath(part.d)
+    if (part.fill && part.fill !== 'none') { ctx.fillStyle = part.fill; ctx.fill(path) }
+    if (part.stroke !== 'none') { ctx.strokeStyle = part.stroke ?? GLYPH_INK; ctx.lineWidth = part.width ?? 1.4; ctx.stroke(path) }
+  }
+  for (const part of BAY_GLYPHS[reason]) {
+    if (!part.moves) { paint(part); continue }
+    ctx.save(); ctx.translate(12 + m.dx, 12 + m.dy); ctx.rotate(m.turn); ctx.translate(-12, -12); paint(part); ctx.restore()
+  }
+  ctx.restore()
+}
+// When a cube last landed in each bay: its character pops.
+const bayPop = new Map<AttentionReason, number>()
 function sideLabelWidth(ctx: CanvasRenderingContext2D, n: number, t: string, small: boolean) {
   ctx.font = FONT(500, small ? 10 : 11, 'mono'); const a = ctx.measureText(String(n)).width
   ctx.font = FONT(600, small ? 9 : 10); spacing(ctx, '0.06em'); const b = ctx.measureText(' ' + t.toUpperCase()).width; spacing(ctx, '0px')
@@ -297,7 +358,7 @@ function frame(now: number, at: number) {
     const k = v.dur ? clamp((now - v.t0) / v.dur, 0, 1) : 1
     const e = ease(k)
     v.x = v.fx + (v.tx - v.fx) * e; v.y = v.fy + (v.ty - v.fy) * e
-    if (k >= 1 && v.k < 1 && v.hop) { v.land = now; if (is.stage !== 'merged') puff(v.x, v.y, '#5b626c', 3, 0.6) }
+    if (k >= 1 && v.k < 1 && v.hop) { v.land = now; if (is.stage === 'attention' && is.reason) bayPop.set(is.reason, now); if (is.stage !== 'merged') puff(v.x, v.y, '#5b626c', 3, 0.6) }
     v.k = k
   }
   scene.snap = false
@@ -495,7 +556,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     ctx.fillStyle = gr; ctx.fillRect(0, g0 + 16 * s, W, H)
   }
   rr(ctx, cx0b, fy - pk - cb * 1.3, cx1b - cx0b, cb * 1.3 + pk, 4); ctx.fillStyle = '#2b2419'; ctx.fill(); ctx.lineWidth = 1.6; ctx.strokeStyle = INK; ctx.stroke()
-  hits.push({ kind: 'crate', x: cx0b, y: fy - pk - cb * 3 - 6, w: cx1b - cx0b + 60 * s, h: cb * 3 + pk + 6 })
+  hits.push({ kind: 'crate', x: cx0b, y: L.areaY, w: L.needR - cx0b, h: fy - L.areaY })
   let wi = 0
   for (const is of g.attention) {
     const v = vis.get(is.id); if (!v) continue
@@ -503,7 +564,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     const x = v.x; let y = v.y
     if (v.k < 1 && v.hop) y -= Math.sin(Math.PI * v.k) * clamp(v.dist * 0.2, 16, 40)
     else if (motion) y += -Math.pow(Math.max(0, Math.sin(at * 2.2 - wi * 0.55)), 10) * 3 * s
-    drawCube(ctx, x, y, cb, v.col, { eyes: 'worried', alpha: a, look: 0, lookY: -cb * 0.04, glow: a === 1 ? 'rgba(240,180,76,.5)' : null, glowBlur: 4 + 6 * pulse })
+    drawCube(ctx, x, y, cb, v.col, { ...bayFace(is.reason, cb), alpha: a, glow: a === 1 ? 'rgba(240,180,76,.5)' : null, glowBlur: 4 + 6 * pulse })
     if (blockerHover(is)) { ctx.strokeStyle = COL.text; ctx.lineWidth = 1; rr(ctx, x - cb / 2 - 3, y - cb - 3, cb + 6, cb + 6, 4); ctx.stroke() }
     wi++
   }
@@ -514,7 +575,12 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     if (i) { ctx.fillStyle = 'rgba(10,12,15,.6)'; ctx.fillRect(bay.x, fy - pk + 2, 1.5, pk - 3) }
     ctx.fillStyle = hov ? '#fff4dc' : '#2a1d08'
     const tw2 = ctx.measureText(bay.label).width; ctx.fillText(bay.label, bay.x + (bay.w - tw2) / 2, fy - 3.5)
-    hits.push({ kind: 'reason', reason: bay.r, x: bay.x, y: fy - pk - cb * 3 - 6, w: bay.w, h: cb * 3 + pk + 6 })
+    // The bay's character stands on its top cube.
+    const rows = Math.min(3, g.attention.filter(is => is.reason === bay.r).length)
+    const glyph = GLYPH_SIZE(small)
+    drawGlyph(ctx, bay.r, bay.x + bay.w / 2, fy - pk - rows * cb - 3, glyph, at, (now - (bayPop.get(bay.r) ?? -1e9)) / 450, scene.hover?.kind === 'reason' && scene.hover.reason !== bay.r ? 0.45 : 1)
+    ctx.font = FONT(600, small ? 8.5 : 9.5); ctx.textAlign = 'left'
+    hits.push({ kind: 'reason', reason: bay.r, x: bay.x, y: L.areaY, w: bay.w, h: fy - L.areaY })
   })
   // attention cubes are hit after their bay, so a cube wins over its bay
   for (const is of g.attention) {
@@ -581,7 +647,9 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
 
 // The resting place of every cube, published only when the layout changes.
 function publishSpots(L: Layout) {
-  const key = scene.W + '|' + [...L.pos.entries()].map(([id, p]) => `${id}:${Math.round(p.x)},${Math.round(p.y)}`).join(';')
+  const crate = { x: Math.round(L.crateX), y: Math.round(L.areaY), w: Math.round(L.needR - L.crateX), h: Math.round(L.fy - L.areaY) }
+  const bays = L.bays.map(bay => ({ reason: bay.r, x: Math.round(bay.x), y: crate.y, w: Math.round(bay.w), h: crate.h }))
+  const key = scene.W + '|' + JSON.stringify([crate, bays]) + '|' + [...L.pos.entries()].map(([id, p]) => `${id}:${Math.round(p.x)},${Math.round(p.y)}`).join(';')
   if (key === layoutKey) return
   layoutKey = key
   const next: Record<string, { x: number; y: number }> = {}
@@ -592,6 +660,7 @@ function publishSpots(L: Layout) {
     next[id] = { x: Math.round(p.x), y: Math.round(p.y - size / 2) }
   }
   spots.value = next
+  regions.value = { crate, bays }
 }
 
 // ---------------------------------------------------------------------------
@@ -601,38 +670,78 @@ function hitAt(x: number, y: number): Hit | null {
   for (let i = scene.hits.length - 1; i >= 0; i--) { const h = scene.hits[i]!; if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h }
   return null
 }
-function hideTip() { tip.value = null; scene.hover = null; if (canvas.value) canvas.value.style.cursor = '' }
-function showTip(h: Hit | null, x: number, y: number) {
+const hitKey = (h: Hit) => h.kind === 'issue' ? `issue:${h.id}` : h.kind === 'reason' ? `reason:${h.reason}` : h.kind === 'neck' ? `neck:${h.stage}` : 'crate'
+function hideTip() { tip.value = null; tipAt.value = null; scene.hover = null; if (canvas.value) canvas.value.style.cursor = '' }
+function cardFor(h: Hit): LineCard | null {
+  if (h.kind === 'issue') {
+    const is = model.byId.get(h.id!); if (!is) return null
+    return lineIssueCard(is, rawIssues.value.get(is.id), unblocks.value.get(is.id) ?? 0, true)
+  }
+  if (h.kind === 'reason') return lineBayCard(h.reason!, model.groups.attention)
+  if (h.kind === 'crate') {
+    const n = model.groups.attention.length
+    return lineListCard(n ? `${n} need${n === 1 ? 's' : ''} you` : 'Nothing needs you', crateRows.value.map(row => row.item), n ? 'Click to see them all' : '')
+  }
+  return lineListCard(`${LINE_SHORT_LABELS[h.stage!]} is full`, [], '', `${h.waiting} waiting in front of it`)
+}
+function showTip(h: Hit | null) {
   if (!h) { hideTip(); requestDraw(); return }
   scene.hover = h
   if (canvas.value) canvas.value.style.cursor = h.kind === 'neck' ? 'default' : 'pointer'
-  let title = '', detail = ''
-  if (h.kind === 'issue') {
-    const is = model.byId.get(h.id!); if (!is) { hideTip(); return }
-    const text = lineTooltip(is, (state.value?.repos ?? 0) > 1)
-    const cut = text.indexOf(' · ')
-    title = cut < 0 ? text : text.slice(0, cut); detail = cut < 0 ? '' : text.slice(cut)
+  const card = cardFor(h)
+  if (!card) { hideTip(); return }
+  const key = hitKey(h)
+  if (tip.value?.key !== key) {
+    const r = canvas.value!.getBoundingClientRect()
+    tip.value = { key, card, anchor: { x: r.left + h.x, y: r.top + h.y, w: h.w, h: h.h } }
+    tipAt.value = null
+    void nextTick(placeTip)
   }
-  else if (h.kind === 'reason') {
-    const list = model.groups.attention.filter(i => i.reason === h.reason)
-    title = `${list.length} ${LINE_REASON_GROUP[h.reason!]}`; detail = ' · ' + list.map(i => i.number != null ? '#' + i.number : i.id).join(' ')
-  }
-  else if (h.kind === 'crate') { title = `${model.groups.attention.length} need you`; detail = model.groups.attention.length ? ' · Open Needs attention' : '' }
-  else { title = `${LINE_SHORT_LABELS[h.stage!]} is full`; detail = ` · ${h.waiting} waiting in front of it` }
-  tip.value = { x: clamp(x, 80, scene.W - 80), y: Math.max(y, 44), title, detail }
   requestDraw()
+}
+// Measured once rendered, then clamped to the viewport and flipped as needed.
+function placeTip() {
+  const el = tipEl.value, t = tip.value
+  if (!el || !t) return
+  const at = placeCard(t.anchor, { w: el.offsetWidth, h: el.offsetHeight }, { w: document.documentElement.clientWidth, h: window.innerHeight })
+  tipAt.value = { left: at.left, top: at.top }
 }
 function point(e: PointerEvent | MouseEvent) {
   const r = canvas.value!.getBoundingClientRect()
   return { x: e.clientX - r.left, y: e.clientY - r.top }
 }
-function onPointer(e: PointerEvent) { const p = point(e); showTip(hitAt(p.x, p.y), p.x, p.y) }
+// On a touch screen the first tap shows the card and a second tap on the
+// same thing opens it.
+let touch = false, armed = false
+function onPointer(e: PointerEvent) {
+  const p = point(e), h = hitAt(p.x, p.y)
+  if (e.type === 'pointerdown') {
+    touch = e.pointerType === 'touch' || e.pointerType === 'pen'
+    armed = !!h && tip.value?.key === hitKey(h)
+  }
+  showTip(h)
+}
+function onLeave(e: PointerEvent) { if (e.pointerType === 'mouse') hideTip() }
 function onClick(e: MouseEvent) {
   const p = point(e), h = hitAt(p.x, p.y)
-  if (!h) return
-  if (h.kind === 'issue') { const is = model.byId.get(h.id!); if (is) emit('open', is.card) }
-  else if (h.kind === 'reason' || h.kind === 'crate') emit('attention')
+  if (!h) { hideTip(); return }
+  if (touch && !armed && h.kind !== 'neck') return
+  touch = false; armed = false
+  activate(h)
 }
+function activate(h: Hit) {
+  if (h.kind === 'issue') { const is = model.byId.get(h.id!); if (is) { hideTip(); emit('open', is.card) } }
+  else if (h.kind === 'reason') { hideTip(); emit('attention', h.reason!) }
+  else if (h.kind === 'crate') { hideTip(); emit('attention', 'all') }
+}
+// The crate and bay buttons are transparent and let the pointer through to
+// the canvas; they are there for the keyboard and for screen readers.
+function focusRegion(rect: Rect, kind: 'crate' | 'reason', reason?: AttentionReason) {
+  showTip({ kind, reason, x: rect.x, y: rect.y, w: rect.w, h: rect.h })
+}
+function blurRegion() { hideTip(); requestDraw() }
+function onOutside(e: PointerEvent) { if (tip.value && e.target !== canvas.value) hideTip() }
+function onScroll() { if (tip.value) hideTip() }
 function openLink(item: LineItem) { emit('open', item.card) }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +799,9 @@ onMounted(() => {
   intersectionObserver = new IntersectionObserver(([entry]) => { onScreen = !!entry?.isIntersecting; onVisibility() })
   intersectionObserver.observe(el)
   document.addEventListener('visibilitychange', onVisibility)
+  document.addEventListener('pointerdown', onOutside, true)
+  window.addEventListener('scroll', onScroll, { passive: true, capture: true })
+  window.addEventListener('resize', onScroll)
   apply(state.value)
   resize()
   start()
@@ -700,6 +812,9 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)
+  document.removeEventListener('pointerdown', onOutside, true)
+  window.removeEventListener('scroll', onScroll, { capture: true })
+  window.removeEventListener('resize', onScroll)
   motionQuery?.removeEventListener('change', onMotion)
   vis.clear(); ghosts.length = 0; toy.parts.length = 0; toy.plus.length = 0
 })
@@ -714,15 +829,69 @@ onBeforeUnmount(() => {
       class="block h-[200px] w-full touch-manipulation"
       @pointermove="onPointer"
       @pointerdown="onPointer"
-      @pointerleave="hideTip"
+      @pointerleave="onLeave"
       @click="onClick"
     />
-    <div
-      v-if="tip"
-      class="factory-tip pointer-events-none absolute max-w-[260px] truncate rounded-md border border-line px-2 py-1 text-xs tabular-nums text-white"
-      :style="{ left: tip.x + 'px', top: tip.y + 'px' }"
-      aria-hidden="true"
-    ><b class="font-semibold">{{ tip.title }}</b><span class="text-muted">{{ tip.detail }}</span></div>
+    <!-- Keyboard and screen-reader ways into the crate. Transparent, and the
+         pointer goes through them to the canvas underneath. -->
+    <button
+      v-if="regions.crate.w"
+      type="button"
+      class="line-region pointer-events-none absolute rounded-md opacity-0 focus-visible:opacity-100"
+      :style="{ left: regions.crate.x + 'px', top: regions.crate.y + 'px', width: regions.crate.w + 'px', height: regions.crate.h + 'px' }"
+      :aria-label="`Show the ${needCount} issue${needCount === 1 ? '' : 's'} that need${needCount === 1 ? 's' : ''} you`"
+      aria-haspopup="dialog"
+      data-line-crate
+      @focus="focusRegion(regions.crate, 'crate')"
+      @blur="blurRegion"
+      @click="emit('attention', 'all')"
+    />
+    <button
+      v-for="bay in regions.bays"
+      :key="bay.reason"
+      type="button"
+      class="line-region pointer-events-none absolute rounded-md opacity-0 focus-visible:opacity-100"
+      :style="{ left: bay.x + 'px', top: bay.y + 'px', width: bay.w + 'px', height: bay.h + 'px' }"
+      :aria-label="`Show the ${info?.reasons[bay.reason] ?? 0} in ${LINE_REASON_SHORT[bay.reason]}: ${LINE_REASON_TEXT[bay.reason]}`"
+      aria-haspopup="dialog"
+      :data-line-bay="bay.reason"
+      @focus="focusRegion(bay, 'reason', bay.reason)"
+      @blur="blurRegion"
+      @click="emit('attention', bay.reason)"
+    />
+    <Teleport to="body">
+      <div
+        v-if="tip"
+        ref="tipEl"
+        class="factory-card pointer-events-none fixed z-50 w-max max-w-[min(280px,calc(100vw-16px))] rounded-lg border border-line px-3 py-2.5 text-xs text-white"
+        :style="{ left: (tipAt?.left ?? 0) + 'px', top: (tipAt?.top ?? 0) + 'px', visibility: tipAt ? 'visible' : 'hidden' }"
+        aria-hidden="true"
+        data-line-card
+      >
+        <template v-if="tip.card.kind === 'issue'">
+          <p class="text-muted tabular-nums">{{ tip.card.ref }}</p>
+          <p class="mt-0.5 line-clamp-2 text-sm font-semibold leading-5" data-card-title>{{ tip.card.title }}</p>
+          <p class="mt-1 flex items-start gap-1.5 text-white/90" data-card-status><BayGlyph v-if="tip.card.reason" :reason="tip.card.reason" :size="16" /><span>{{ tip.card.status }}</span></p>
+          <p v-if="tip.card.detail" class="mt-0.5 line-clamp-2 text-muted">{{ tip.card.detail }}</p>
+          <p class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span class="inline-flex items-center gap-1.5 text-muted"><span class="inline-block size-2.5 rounded-sm border border-black/40" :style="{ background: tip.card.swatch }" />{{ tip.card.stage }}</span>
+            <span v-if="tip.card.unblocks > 0" class="rounded-full border border-amber-200/40 px-1.5 text-[11px] text-amber-200" data-card-unblocks>Unblocks {{ tip.card.unblocks }}</span>
+          </p>
+          <p class="mt-1.5 text-[11px] text-muted">{{ tip.card.hint }}</p>
+        </template>
+        <template v-else>
+          <p class="flex items-center gap-1.5 font-semibold"><BayGlyph v-if="tip.card.reason" :reason="tip.card.reason" :size="18" />{{ tip.card.heading }}</p>
+          <p v-if="tip.card.sub" class="mt-0.5 text-white/85">{{ tip.card.sub }}</p>
+          <ul v-if="tip.card.rows.length" class="mt-1 flex flex-col gap-0.5">
+            <li v-for="row in tip.card.rows" :key="row.id" class="flex min-w-0 gap-1.5">
+              <span class="shrink-0 tabular-nums text-muted">{{ row.ref }}</span><span class="truncate">{{ row.title }}</span>
+            </li>
+          </ul>
+          <p v-if="tip.card.more" class="mt-0.5 text-muted">+{{ tip.card.more }} more</p>
+          <p v-if="tip.card.hint" class="mt-1.5 text-[11px] text-muted">{{ tip.card.hint }}</p>
+        </template>
+      </div>
+    </Teleport>
     <div class="sr-only" data-line-summary>{{ summary }}</div>
     <ul class="sr-only" aria-label="Issues on the factory line">
       <li v-for="link in links" :key="link.item.id">
@@ -740,5 +909,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.factory-tip { background: #0b0d10; transform: translate(-50%, calc(-100% - 10px)); box-shadow: 0 4px 16px rgb(0 0 0 / 0.4); }
+.factory-card { background: #0b0d10; box-shadow: 0 6px 20px rgb(0 0 0 / 0.45); }
+.line-region { outline: 2px solid var(--color-sky-200, #a5d8ff); outline-offset: 1px; }
 </style>

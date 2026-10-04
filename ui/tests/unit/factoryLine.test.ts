@@ -4,14 +4,17 @@ import {
   LINE_LOOKS, LINE_RESERVED, LINE_STAGES, lineFill, lineMix, lineAnalyse, lineBlocker, lineDiff, lineGroups, lineHeadline, lineHeadlineText, lineReason, lineState, lineStation,
   lineSummary, lineTooltip, type LineState,
 } from '../../app/utils/factoryLine'
+import { attentionKind } from '../e2e/attention-kind.mjs'
 
 const now = 1_000_000
 
+// Rows carry the server's attention code, as /api/factory sends them.
 function issue(number: number, over: Record<string, unknown> = {}): any {
-  return {
+  const row: any = {
     key: `1:${number}`, repo_id: 1, repo: 'XRPL-Commons/academy', number, title: `Issue ${number}`,
     state: 'ready', reason: null, active: null, failure_count: 0, history: [], ...over,
   }
+  return 'attention_kind' in over ? row : { ...row, attention_kind: attentionKind(row) }
 }
 
 function job(number: number, role: string, over: Record<string, unknown> = {}): any {
@@ -64,7 +67,7 @@ describe('lineState', () => {
     expect(groups.queued.map(item => [item.id, item.next])).toEqual([['1:3', 'build'], ['1:4', 'build'], ['1:5', 'build'], ['1:6', 'review']])
     expect(groups.audit.map(item => item.id)).toEqual(['1:7'])
     expect(groups.approval.map(item => item.id)).toEqual(['1:8'])
-    expect(groups.attention.map(item => [item.id, item.reason])).toEqual([['1:10', 'failed'], ['1:13', 'decision'], ['1:11', 'approval'], ['1:12', 'env']])
+    expect(groups.attention.map(item => [item.id, item.reason])).toEqual([['1:13', 'approach'], ['1:11', 'approve'], ['1:10', 'failed'], ['1:12', 'env']])
     expect(groups.hold.map(item => item.id)).toEqual(['1:14'])
     expect(stageOf(state, '1:15')).toMatchObject({ stage: 'waiting', on: [7] })
     expect(state.slots).toEqual({ build: 2, review: 1, audit: 1 })
@@ -87,12 +90,13 @@ describe('lineState', () => {
     expect(lineState(null, now)).toBeNull()
   })
 
-  it('sorts holds into the crate unless they are a deliberate pause', () => {
-    expect(lineReason(issue(1, { state: 'hold', reason: 'Paused by an operator' }))).toBeNull()
-    expect(lineReason(issue(1, { state: 'hold', reason: 'Not queued for Forge' }))).toBeNull()
-    expect(lineReason(issue(1, { state: 'hold', reason: 'x', prerequisite_hold: true }))).toBe('env')
-    expect(lineReason(issue(1, { state: 'hold', reason: 'Something else' }))).toBe('decision')
-    expect(lineReason(issue(1, { state: 'ready' }))).toBeNull()
+  it("sorts issues into the crate by the server's attention code, never by the reason prose", () => {
+    for (const kind of ['approach', 'question', 'approve', 'verify', 'failed', 'env', 'review']) {
+      expect(lineReason({ attention_kind: kind as any })).toBe(kind)
+    }
+    expect(lineReason({ attention_kind: null })).toBeNull()
+    expect(lineReason({})).toBeNull()
+    expect(lineReason({ attention_kind: 'something-new' as any })).toBeNull()
   })
 })
 
@@ -101,7 +105,7 @@ describe('lineAnalyse and lineHeadline', () => {
     const info = lineAnalyse(lineState(busy(), now)!)
     expect(info.necks).toEqual([{ stage: 'build', waiting: 3 }])
     expect(info.attention).toBe(4)
-    expect(info.reasons).toEqual({ failed: 1, decision: 1, approval: 1, env: 1 })
+    expect(info.reasons).toEqual({ approach: 1, question: 0, approve: 1, verify: 0, failed: 1, env: 1, review: 0 })
     expect(info.occupied).toBe(3)
     expect(info.running).toBe(2)
     expect(lineHeadlineText(lineHeadline(info))).toBe('4 need you · Build is the bottleneck, 3 waiting')
@@ -135,7 +139,7 @@ describe('lineAnalyse and lineHeadline', () => {
 describe('lineTooltip and lineBlocker', () => {
   it('reads like the board', () => {
     const state = lineState(busy(), now)!
-    expect(lineTooltip(stageOf(state, '1:10')!, false)).toBe('#10 · Needs attention · 3 of 3 attempts failed')
+    expect(lineTooltip(stageOf(state, '1:10')!, false)).toBe('#10 · Needs attention · An attempt failed')
     expect(lineTooltip(stageOf(state, '1:3')!, true)).toBe('#3 · Queued · Waiting for a worker · XRPL-Commons/academy')
     expect(lineTooltip(stageOf(state, '1:15')!, false)).toBe('#15 · Waiting on other issues · Waiting on #7')
   })

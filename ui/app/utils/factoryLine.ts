@@ -9,7 +9,8 @@ import {
 } from './factory'
 
 export type LineStage = 'queued' | ColumnRole | 'approval' | 'merged' | 'attention' | 'waiting' | 'hold'
-export type AttentionReason = 'failed' | 'decision' | 'approval' | 'env'
+// Why an issue waits for the operator: the server's `attention_kind` code.
+export type AttentionReason = 'approach' | 'question' | 'approve' | 'failed' | 'env' | 'review' | 'verify'
 
 export interface LineItem {
   // The issue key ("1:601"), so a cube keeps its identity from poll to poll.
@@ -52,15 +53,24 @@ export interface LineInfo {
 export interface HeadlinePart { t: string; c: 'amber' | 'coral' | 'text' | 'muted' }
 
 export const LINE_STAGES: LineStage[] = ['queued', 'build', 'review', 'audit', 'approval', 'merged', 'attention', 'waiting', 'hold']
-export const LINE_REASONS: AttentionReason[] = ['failed', 'decision', 'approval', 'env']
+export const LINE_REASONS: AttentionReason[] = ['approach', 'question', 'approve', 'verify', 'failed', 'env', 'review']
 export const LINE_STAGE_LABELS: Record<LineStage, string> = {
   queued: 'Queued', build: 'Build', review: 'Review', audit: 'Security audit', approval: 'Waiting to merge',
   merged: 'Merged', attention: 'Needs attention', waiting: 'Waiting on other issues', hold: 'On hold',
 }
 export const LINE_SHORT_LABELS: Record<ColumnRole, string> = { build: 'Build', review: 'Review', audit: 'Audit' }
-export const LINE_REASON_SHORT: Record<AttentionReason, string> = { failed: 'failed', decision: 'decide', approval: 'approve', env: 'env' }
-export const LINE_REASON_GROUP: Record<AttentionReason, string> = {
-  failed: 'attempts failed', decision: 'decisions needed', approval: 'approvals needed from you', env: 'environment problems',
+// The bay label under the crate, and the plain sentence on cards and filters.
+export const LINE_REASON_SHORT: Record<AttentionReason, string> = {
+  approach: 'new approach', question: 'question', approve: 'approve', failed: 'retry', env: 'fix setup', review: 'review', verify: 'verify',
+}
+export const LINE_REASON_TEXT: Record<AttentionReason, string> = {
+  approach: 'Out of attempts: describe a different approach, then retry',
+  question: 'The worker asked you something',
+  approve: 'A pull request waits for your approval',
+  failed: 'An attempt failed',
+  env: "Forge's setup needs repair",
+  review: 'Paused or changed while being applied',
+  verify: "A person needs to check something workers can't",
 }
 
 // How a cube looks at each station. A cube matures as it advances: raw grey
@@ -107,26 +117,11 @@ export function lineFill(item: Pick<LineItem, 'stage' | 'next' | 'running'>): st
   return look.fill
 }
 
-// A deliberate pause sleeps on the shelf; every other hold is a question
-// for the operator, sorted into the crate by what it asks.
-const PAUSED = /Paused by an operator|Not queued|hold or dependency label/
-const ENVIRONMENT = /environment needs attention/
-
-export function lineReason(issue: LedgerIssueView): AttentionReason | null {
-  if (issue.state === 'approval_needed') return 'approval'
-  if (issue.state === 'failed') return 'failed'
-  if (issue.state !== 'hold') return null
-  const reason = issue.reason ?? ''
-  if (PAUSED.test(reason)) return null
-  if (issue.prerequisite_hold || ENVIRONMENT.test(reason)) return 'env'
-  return 'decision'
-}
-
-function attentionStatus(issue: LedgerIssueView, reason: AttentionReason, card: CardModel): string {
-  if (reason === 'failed') return issue.failure_count > 0 ? `${issue.failure_count} of 3 attempts failed` : (issue.reason || 'Attempts failed')
-  if (reason === 'approval') return issue.reviewers_requested?.logins?.length ? card.reason : 'Approval needed from you'
-  if (reason === 'env') return 'Environment problem'
-  return 'Decision needed'
+// The server says why an issue waits for the operator; an issue without a
+// code is not waiting on them (a deliberate pause sleeps on the shelf).
+export function lineReason(issue: Pick<LedgerIssueView, 'attention_kind'>): AttentionReason | null {
+  const kind = issue.attention_kind
+  return kind && (LINE_REASONS as string[]).includes(kind) ? kind as AttentionReason : null
 }
 
 function columnStatus(card: CardModel, stage: LineStage): string {
@@ -156,7 +151,7 @@ export function lineState(view: FactoryView | null | undefined, now: number, gro
   for (const card of [...groups.attention, ...groups.held]) {
     const issue = byKey.get(card.key)
     const reason = issue ? lineReason(issue) : null
-    if (reason && issue) add(card, 'attention', { reason, status: attentionStatus(issue, reason, card) })
+    if (reason) add(card, 'attention', { reason, status: LINE_REASON_TEXT[reason] })
     else add(card, 'hold', { status: 'On hold' })
   }
   for (const card of groups.owned) add(card, 'hold', { status: 'Owned by someone else' })

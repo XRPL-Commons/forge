@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 export default async function(page, { base, requests }) {
   for (const [path, marker] of [
-    ['/', 'id="needs-attention"'], ['/issues', 'data-key="1:610"'], ['/issues/1:610', 'id="issue-title"'],
+    ['/', 'id="factory-line"'], ['/issues', 'data-key="1:610"'], ['/issues/1:610', 'id="issue-title"'],
     ['/settings', 'id="capacity-build"'], ['/settings/repositories', 'data-key="1"'],
     ['/settings/github', 'data-key="build"'],
   ]) {

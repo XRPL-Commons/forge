@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { withAttentionKinds } from './attention-kind.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES_DIR = path.join(__dirname, 'fixtures')
@@ -265,12 +266,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET') {
     record(req, pathname, query, body)
-    const fixture = base === 'settings' && savedSettings ? savedSettings
+    let fixture = base === 'settings' && savedSettings ? savedSettings
       : base === 'factory' && savedFactory ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
+    if (base === 'factory') fixture = withAttentionKinds(fixture)
     if (base === 'factory' && query.section === 'completed' && query.limit && fixture.ok !== false) {
       return send(res, 200, withToken(completedPage(fixture, query)))
     }

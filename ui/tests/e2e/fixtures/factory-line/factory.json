@@ -978,6 +978,111 @@
       "number": 730,
       "title": "Add a faucet rate limit",
       "state": "approval_needed"
+    },
+    {
+      "repo_id": 1,
+      "repo": "XRPL-Commons/academy",
+      "reason": null,
+      "requirements": {
+        "labels": [
+          "ready"
+        ]
+      },
+      "candidate": null,
+      "active": null,
+      "failures": [],
+      "budget_start": 1789990000,
+      "failure_count": 0,
+      "retry_plan": null,
+      "evidence": {},
+      "created_at": 1789990000,
+      "last_observed": 1790000000,
+      "history": [
+        {
+          "sequence": 1,
+          "at": 1789996400,
+          "issue": "1:740",
+          "kind": "discovered"
+        }
+      ],
+      "key": "1:740",
+      "number": 740,
+      "title": "Issue certificates from the new flow",
+      "state": "ready",
+      "blocked_dependencies": [
+        722
+      ],
+      "dependency_reason": "Waiting on #722"
+    },
+    {
+      "repo_id": 1,
+      "repo": "XRPL-Commons/academy",
+      "reason": null,
+      "requirements": {
+        "labels": [
+          "ready"
+        ]
+      },
+      "candidate": null,
+      "active": null,
+      "failures": [],
+      "budget_start": 1789990000,
+      "failure_count": 0,
+      "retry_plan": null,
+      "evidence": {},
+      "created_at": 1789990000,
+      "last_observed": 1790000000,
+      "history": [
+        {
+          "sequence": 1,
+          "at": 1789996400,
+          "issue": "1:741",
+          "kind": "discovered"
+        }
+      ],
+      "key": "1:741",
+      "number": 741,
+      "title": "Email certificates to graduates",
+      "state": "ready",
+      "blocked_dependencies": [
+        740
+      ],
+      "dependency_reason": "Waiting on #740"
+    },
+    {
+      "repo_id": 1,
+      "repo": "XRPL-Commons/academy",
+      "reason": null,
+      "requirements": {
+        "labels": [
+          "ready"
+        ]
+      },
+      "candidate": null,
+      "active": null,
+      "failures": [],
+      "budget_start": 1789990000,
+      "failure_count": 0,
+      "retry_plan": null,
+      "evidence": {},
+      "created_at": 1789990000,
+      "last_observed": 1790000000,
+      "history": [
+        {
+          "sequence": 1,
+          "at": 1789996400,
+          "issue": "1:742",
+          "kind": "discovered"
+        }
+      ],
+      "key": "1:742",
+      "number": 742,
+      "title": "Report provider capacity on the dashboard",
+      "state": "ready",
+      "blocked_dependencies": [
+        604
+      ],
+      "dependency_reason": "Waiting on #604"
     }
   ],
   "jobs": [

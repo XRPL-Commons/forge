@@ -61,4 +61,18 @@ export default async function (page, { base, scenario, requests }) {
   await card.screenshot({ path: '/tmp/forge-auto-env-mobile.png' })
   await page.setViewportSize({ width: 1440, height: 1000 })
   await card.screenshot({ path: '/tmp/forge-auto-env-desktop.png' })
+
+  // Held on the environment, needing a person, with no button to press: the
+  // environment still waits in its collapsed section (the summary already
+  // says what stopped the issue), and the action bar says a person is needed
+  // instead of "Nothing needed from you right now".
+  await scenario('environment-blocked')
+  await page.goto(base + '/issues/1:610')
+  const needsPerson = page.locator('#issue-actions #issue-needs-person')
+  await needsPerson.waitFor()
+  assert.equal((await needsPerson.innerText()).trim(), 'A person needs to verify this. See the note above.')
+  assert.equal(await page.locator('#issue-nothing-needed').count(), 0)
+  assert.equal(await page.locator('#issue-actions').getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 1)
+  await openEnvironment(page)
+  await card.getByRole('button', { name: 'Change environment' }).waitFor()
 }

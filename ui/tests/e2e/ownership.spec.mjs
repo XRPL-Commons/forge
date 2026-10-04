@@ -1,19 +1,24 @@
 import assert from 'node:assert/strict'
 
+// An issue someone else owns sleeps on the factory line's shelf: it is not
+// a card on Activity, and it is not in the list of issues that need you.
 export default async function (page, { base, scenario }) {
   await scenario('owned')
   await page.goto(base + '/')
-  const section = page.locator('#owned')
-  await section.waitFor()
-  assert.match(await section.innerText(), /Assigned to @lucbocahut/)
-  assert.equal(await page.locator('#waiting').count(), 0)
-  assert.equal(await page.locator('#needs-attention [data-key="1:610"]').count(), 0)
+  const link = page.locator('.factory-line [data-line-issue="1:610"]')
+  await link.waitFor({ state: 'attached' })
+  assert.match(await link.textContent(), /On hold · Owned by someone else/)
+  assert.equal(await page.locator('#owned, #waiting, #needs-attention').count(), 0)
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 1000 })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
     await page.screenshot({ path: `/tmp/forge-135-owned-${width}.png`, fullPage: true, animations: 'disabled' })
   }
-  await section.locator('[data-key="1:610"]').click()
+  // Its cube opens the same panel a card did.
+  await page.waitForFunction(() => document.querySelector('.factory-line [data-line-issue="1:610"]')?.hasAttribute('data-x'), null, { timeout: 10000 })
+  await page.locator('.factory-line canvas[role="img"]').click({
+    position: { x: Number(await link.getAttribute('data-x')), y: Number(await link.getAttribute('data-y')) },
+  })
   const panel = page.locator('[role="dialog"][data-side="right"]')
   await panel.waitFor()
   await panel.getByText('Assigned to @lucbocahut', { exact: true }).waitFor()
