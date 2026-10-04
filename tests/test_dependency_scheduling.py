@@ -64,6 +64,28 @@ class DependencySchedulingTests(CycleTest):
         self.assertNotIn('decision_request', item)
         self.assertEqual((item['state'], item['blocked_dependencies'], item['active']), ('ready', [2], None))
 
+    def test_failures_from_open_prerequisites_become_a_wait_with_a_fresh_budget(self):
+        from forge.factory.ledger import APPROACH_HOLD
+        self.cycle()
+        job = self.active()
+        self.engine.finish(job, {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'blocked_environment',
+                                 'blocker': 'toolchain', 'summary': 'stop', 'headline': 'Stopped', 'plain': 'Stopped.'})
+        self.cycle()
+        with self.ledger.transaction() as data:
+            item = data['issues'][self.key]
+            item.update(state='hold', reason=APPROACH_HOLD, active=None)
+            item.pop('environment_hold', None)
+            data['jobs'][job['id']].update(role='recovery', cleanup=True, outcome='investigated',
+                capture={'result': {'headline': 'Issue waits for its prerequisites',
+                                    'summary': 'The issue forbids starting until #2 is closed.'}})
+        self.github.issue = Mock(return_value=({'number': 1, 'state': 'open', 'labels': [],
+            'body': 'Do not start until #2 is closed.'}, 'requirements'))
+        self.github.call = Mock(return_value={'number': 2, 'state': 'open'})
+        self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual((item['state'], item['blocked_dependencies']), ('ready', [2]))
+        self.assertEqual(self.ledger.failure_count(item), 0)
+
     def test_open_dependency_waits_and_closure_starts_without_retry(self):
         self.dependency()
         self.assertFalse(self.cycle()['errors'])
