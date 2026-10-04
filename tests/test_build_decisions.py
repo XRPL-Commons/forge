@@ -7,6 +7,30 @@ from tests.test_factory_adapters import WorkerContractTests
 
 
 class DecisionContractTests(unittest.TestCase):
+    def test_dependency_wait_contract_and_rolling_upgrade(self):
+        job = WorkerContractTests().note('build')
+        report = {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'waiting_on_issues',
+                  'summary': 'Foundation is still open.', 'issues': [90], 'evidence': 'Use the foundation from #90.'}
+        self.assertEqual(result(copy.deepcopy(report), job)['issues'], [90])
+        for invalid in ([], [1], [0], [True], ['90'], [90, 90], list(range(2, 23))):
+            with self.subTest(issues=invalid), self.assertRaises(ValueError):
+                result({**report, 'issues': invalid}, job)
+        for evidence in (None, [], '', ' ' , 'x' * 2001):
+            with self.subTest(evidence=evidence), self.assertRaises(ValueError):
+                result({**report, 'evidence': evidence}, job)
+        for outcome in ('pass', 'needs_decision', 'blocked_environment'):
+            with self.subTest(outcome=outcome), self.assertRaises(ValueError):
+                result({**report, 'outcome': outcome}, job)
+        review = WorkerContractTests().note('review')
+        with self.assertRaises(ValueError):
+            result({**report, 'role': 'review', 'attempt': review['id'], 'candidate': 'candidate-key'}, review)
+        self.assertIn('waiting_on_issues', schema(job)['properties']['outcome']['enum'])
+        self.assertNotIn('waiting_on_issues', schema(review)['properties']['outcome']['enum'])
+        instructions = assignment_note(job)['instructions']
+        self.assertIn('resumes automatically', instructions)
+        self.assertIn('Reserve dependency_access', instructions)
+        result({**report, 'outcome': 'pass', 'issues': [], 'evidence': None}, job)
+
     def test_only_complete_build_questions_are_accepted(self):
         job = WorkerContractTests().note('build')
         decision = {'question': 'Wait for upstream?', 'options': ['Wait', 'Remove the dependency'],

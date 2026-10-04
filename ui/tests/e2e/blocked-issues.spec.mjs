@@ -71,4 +71,39 @@ export default async function (page, { base, scenario, requests }) {
   const panel = page.locator('[role="dialog"][data-side="right"]')
   await panel.locator('#issue-nothing-needed [data-blocking="590"]').waitFor()
   assert.equal(await panel.locator('[data-blocking="590"]').getAttribute('href'), '/?issue=1:590')
+
+  // Worker discoveries can be overridden, with a reason and a current revision.
+  let snapshot, submitted, applied = false
+  await page.route('**/api/issues?issue=*', async route => {
+    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
+    snapshot = await response.json()
+    Object.assign(snapshot.issue, {
+      actions: applied ? ['pause'] : ['start_anyway'],
+      status: applied ? 'queued' : 'blocked',
+      dependencies: applied ? [] : [590, 601],
+      explanation: applied ? 'Queued for Forge.' : 'Waiting for #590, #601.',
+      summary: applied ? { headline: 'Waiting for a builder', plain: 'Work can proceed.' } : snapshot.issue.summary,
+    })
+    await route.fulfill({ response, json: snapshot })
+  })
+  await page.route('**/api/issues/action', async route => {
+    submitted = route.request().postDataJSON()
+    applied = true
+    await route.fulfill({ json: { ...snapshot, ok: true, request: 'dependency-override',
+      issue: { ...snapshot.issue, actions: ['pause'], status: 'queued', dependencies: [],
+        summary: { headline: 'Waiting for a builder', plain: 'Work can proceed.' } } } })
+  })
+  await page.goto(base + '/issues/1%3A612')
+  assert.equal(await page.getByRole('link', { name: 'Edit dependencies on GitHub ↗' }).getAttribute('href'),
+    'https://github.com/XRPL-Commons/academy/issues/612')
+  await page.getByRole('button', { name: 'Start anyway…', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  const confirm = dialog.getByRole('button', { name: 'Start anyway…', exact: true })
+  await confirm.waitFor()
+  assert.equal(await confirm.isDisabled(), true)
+  await dialog.getByRole('textbox', { name: 'What changed?' }).fill('The foundation API is already available')
+  await confirm.click()
+  await waitForText(page, 'Waiting for a builder')
+  assert.deepEqual(submitted, { key: '1:612', action: 'start_anyway', revision: 'current',
+    reason: 'The foundation API is already available' })
 }

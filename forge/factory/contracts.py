@@ -110,6 +110,14 @@ def dependencies(body):
     return sorted(numbers)
 
 
+def issue_dependencies(body, item=None, *, content_hash=None):
+    """Worker discoveries apply only to the requirements they quote."""
+    item = item or {}
+    declared = (item.get('declared_dependencies', [])
+                if item.get('dependency_body') == (content_hash or digest(body or '')) else [])
+    return sorted(set(dependencies(body)) | set(declared))
+
+
 # Statements that something must finish before this issue starts. Written for
 # how people phrase it ("Do not start until #90 is closed", "#101 must be
 # merged first"), never for mentions or downstream links ("blocks #5", "see #3").
@@ -177,12 +185,23 @@ def result(value, job):
     # launched from the previous image writes neither blocker nor plain language.
     common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services') if key in value}
     role = job['role']
+    if role == 'build':
+        common |= {key for key in ('issues', 'evidence') if key in value}
     if (set(value) != common | set(ROLE_FIELDS.get(role, ())) or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != role
-            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision'}
+            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision', 'waiting_on_issues'}
             or any(not isinstance(value[k], str) or not value[k].strip()
                    for k in ('summary', 'headline', 'plain') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
+    if value['outcome'] == 'waiting_on_issues':
+        numbers, evidence = value.get('issues'), value.get('evidence')
+        if (role != 'build' or not isinstance(numbers, list) or not 1 <= len(numbers) <= 20
+                or any(type(n) is not int or n <= 0 or n == job.get('issue_number') for n in numbers)
+                or len(set(numbers)) != len(numbers)
+                or not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 2000):
+            raise ValueError('A dependency wait needs same-repository issue numbers and a requirements quote')
+    elif role == 'build' and (value.get('issues', []) != [] or value.get('evidence') is not None):
+        raise ValueError('Only waiting_on_issues can carry dependency evidence')
     decision = value.get('decision')
     if value['outcome'] == 'needs_decision':
         if (role != 'build' or not isinstance(decision, dict)
@@ -297,6 +316,12 @@ def assignment_note(job):
         'and the expected result. Never return blocked_environment or reject only because such a check cannot run here.')
     if job['role'] == 'build':
         base['instructions'] += (
+            ' If an open issue in this repository must finish first, return waiting_on_issues with issues '
+            'listing its issue numbers and evidence quoting the assigned issue requirements. Do not include '
+            'this issue itself, pull requests, or issues from another repository. Forge checks their state '
+            'and resumes automatically once they close; this is not a decision or an environment blocker. '
+            'Reserve dependency_access for unavailable package registries, repository access or network access. '
+            'For other outcomes use issues [] and evidence null. '
             ' If the requirements cannot be met by changing code, or the outcome is an approval, exception '
             'or policy choice, do not open a PR. Return needs_decision with decision containing the question, '
             'two to six options, a recommendation and the key evidence in prose. For other outcomes set decision null. '

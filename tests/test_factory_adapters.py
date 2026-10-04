@@ -339,7 +339,8 @@ class WorkerContractTests(unittest.TestCase):
             self.assertEqual(shape['properties']['headline']['maxLength'], HEADLINE_LIMIT)
             self.assertEqual(shape['properties']['plain']['maxLength'], PLAIN_LIMIT)
             self.assertFalse(shape['additionalProperties'])
-            self.assertEqual(set(shape['properties']) - {'version', 'attempt', 'role', 'outcome', 'blocker',
+            optional_build = {'issues', 'evidence'} if role == 'build' else set()
+            self.assertEqual(set(shape['properties']) - optional_build - {'version', 'attempt', 'role', 'outcome', 'blocker',
                                                          'summary', 'headline', 'plain', 'decision', 'required_services'}, set(ROLE_FIELDS[role]))
 
     def test_assignment_instructions_teach_the_tone_with_examples(self):
