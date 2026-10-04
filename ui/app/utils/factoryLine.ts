@@ -198,8 +198,11 @@ export function lineAnalyse(state: LineState): LineInfo {
   }
 }
 
-export function lineHeadline(info: LineInfo): HeadlinePart[] {
+// `account` names a coding account that is down ("Codex signed out"); it
+// leads, because nothing else on the line moves while it is.
+export function lineHeadline(info: LineInfo, account?: string | null): HeadlinePart[] {
   const parts: HeadlinePart[] = []
+  if (account) parts.push({ t: account, c: 'coral' })
   if (info.attention) parts.push({ t: `${info.attention} need${info.attention === 1 ? 's' : ''} you`, c: 'amber' })
   if (info.neck) parts.push({ t: `${LINE_SHORT_LABELS[info.neck.stage]} is the bottleneck, ${info.neck.waiting} waiting`, c: 'coral' })
   else if (info.occupied) parts.push({ t: `${info.occupied} of ${info.slots} slots working`, c: 'text' })

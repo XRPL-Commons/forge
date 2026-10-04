@@ -123,6 +123,13 @@ async function main() {
         body: JSON.stringify({ name }),
       })
     }
+    async function accounts(list) {
+      await fetch(`${MOCK_BASE}/__accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accounts: list }),
+      })
+    }
     async function requests() {
       const res = await fetch(`${MOCK_BASE}/__requests`)
       return res.json()
@@ -139,7 +146,7 @@ async function main() {
       const name = specName.replace(/\.spec\.mjs$/, '')
       try {
         const mod = await import(pathToFileURL(path.join(__dirname, specName)).href)
-        await mod.default(page, { base: APP_BASE, scenario, requests })
+        await mod.default(page, { base: APP_BASE, scenario, requests, accounts })
         log(`PASS ${name}`)
       } catch (error) {
         failures += 1

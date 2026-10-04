@@ -15,6 +15,7 @@ from .credentials import Credentials
 from .settings import Settings, digest, read_json, write_json
 from .state import AtomicStore
 from .factory.config import validate as runtime_config
+from .factory.accounts import status_label
 from .harnesses.registry import manifests, manifest
 
 ROLES = tuple(ROLE_PERMISSIONS)
@@ -268,7 +269,7 @@ class Onboarding:
         def status(entry):
             cooldown = health.get(entry['provider'], {})
             if cooldown.get('until', 0) > self.clock():
-                return 'sign in again' if cooldown.get('reason') == 'blocked_auth' else 'usage limit; retry pending'
+                return status_label(cooldown)
             if data['phase'] == 'active' and config.get('provider_ready') is not None and entry['id'] not in config['provider_ready']:
                 return 'verification required'
             return data.get('provider_checks', {}).get(entry['id'], 'connected')

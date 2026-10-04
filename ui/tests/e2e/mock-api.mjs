@@ -29,6 +29,9 @@ let savedFactory = null
 let savedRepositoryView = null
 let savedIssue = null
 let connectedAgents = []
+// Coding-account health served on every /api/factory read (POST /__accounts),
+// so a spec can take an account down on any scenario's board.
+let codingAccounts = null
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
 // Questions whose first reply already failed: "(fail)" fails once, then answers.
 let failedQuestions = new Set()
@@ -170,6 +173,11 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, requests)
   }
 
+  if (req.method === 'POST' && pathname === '/__accounts') {
+    codingAccounts = body && typeof body === 'object' && Array.isArray(body.accounts) ? body.accounts : null
+    return send(res, 200, { ok: true })
+  }
+
   if (req.method === 'POST' && pathname === '/__scenario') {
     const name = body && typeof body === 'object' ? body.name : undefined
     if (typeof name === 'string' && name) scenario = name
@@ -178,6 +186,7 @@ const server = http.createServer(async (req, res) => {
     savedFactory = null
     savedRepositoryView = null
     savedIssue = null
+    codingAccounts = null
     connectedAgents = []
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     failedQuestions = new Set()
@@ -281,6 +290,7 @@ const server = http.createServer(async (req, res) => {
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
     if (base === 'factory') fixture = withAttentionKinds(fixture)
+    if (base === 'factory' && codingAccounts && fixture.ok !== false) fixture = { ...fixture, coding_accounts: codingAccounts }
     if (base === 'factory' && query.section === 'completed' && query.limit && fixture.ok !== false) {
       return send(res, 200, withToken(completedPage(fixture, query)))
     }

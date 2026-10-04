@@ -123,6 +123,13 @@ describe('lineAnalyse and lineHeadline', () => {
     expect(lineHeadline(info)).toEqual([{ t: 'All quiet', c: 'muted' }])
   })
 
+  it('leads with a coding account that is down', () => {
+    const info = lineAnalyse(lineState(busy(), now)!)
+    expect(lineHeadlineText(lineHeadline(info, 'Codex signed out'))).toBe('Codex signed out · 4 need you · Build is the bottleneck, 3 waiting')
+    expect(lineHeadline(lineAnalyse(lineState(view([]), now)!), 'Codex signed out')[0]).toEqual({ t: 'Codex signed out', c: 'coral' })
+    expect(lineHeadline(info, null)[0]!.t).toBe('4 need you')
+  })
+
   it('leads with the operator when only attention is left', () => {
     const info = lineAnalyse(lineState(view([issue(1, { state: 'failed', failure_count: 3 })]), now)!)
     expect(lineHeadlineText(lineHeadline(info))).toBe('1 needs you')
