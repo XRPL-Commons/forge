@@ -108,6 +108,8 @@ Forge stores its own required runtime credentials privately on the controller:
 the operator identity App secret, role App credentials and coding-provider logins.
 The identity App requests no OAuth scopes and is separate from the four role Apps.
 [Runtime setup](docs/factory-runtime.md) covers admission, capacity and operations.
+[External verification](docs/human-verification.md) covers checks a person must run
+and opting a repository into verification through CI.
 GitHub raw content remains authoritative; cached summaries are not independent
 proof of approval or completion.
 

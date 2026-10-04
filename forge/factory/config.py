@@ -25,6 +25,7 @@ DEFAULT = {
     # together exceed 256 (pthread_create: Resource temporarily unavailable).
     'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 1024,
     'environment_tiers': {}, 'repository_environments': {},
+    'repository_verification': {},
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -127,6 +128,8 @@ def validate(value):
         validate({**tier, 'environment_tiers': {}, 'repository_environments': {}})
     from .environments import validate_profiles
     validate_profiles(config['repository_environments'])
+    from .verification import validate_profiles as validate_verification
+    validate_verification(config['repository_verification'])
     return config
 
 
@@ -136,4 +139,7 @@ def load(root):
 
 
 def policy(config):
-    return {key: config[key] for key in ('human_required', 'human_reviewers', 'merge_method')}
+    value = {key: config[key] for key in ('human_required', 'human_reviewers', 'merge_method')}
+    if config.get('repository_verification'):
+        value['repository_verification'] = config['repository_verification']
+    return value

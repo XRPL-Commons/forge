@@ -224,7 +224,8 @@ class Supervisor:
                                                                                       'It could not read them from GitHub. Repair the connection, then recheck this issue.'}, job))
                             self.ledger.job_update(job['id'], fenced=True, phase='stopping', capture={'result': None, 'logs': '', 'missing': []})
                             return
-                        self.ledger.job_update(job['id'], ci_evidence=ci, review_policy=policy(self.config))
+                        self.ledger.job_update(job['id'], ci_evidence=ci, review_policy=policy(self.config),
+                                               verification_checks=self.config['repository_verification'].get(job['repo'], []))
                         job = self.ledger.read()['jobs'][job['id']]
                         if job.get('candidate') and job['role'] != 'recovery':
                             self.github.check(job, 'controller', job['candidate'], job['candidate']['key'], None, 'Candidate is being processed')
@@ -351,6 +352,17 @@ class Supervisor:
                 recovered = self.github.publication(original, item['requirements'], original['policy'])
                 if recovered:
                     self.ledger.recover_publication(original['id'], recovered)
+            if report and report['outcome'] == 'needs_human_verification':
+                current = self.ledger.read()['issues'][item['key']]
+                selected = current.get('candidate')
+                if (selected and current_issue['state'] == 'open' and original['requirements'] == requirements
+                        and original['policy'] == digest(policy(self.config))
+                        and ((original['role'] == 'build' and selected.get('build_attempt') == original['id'])
+                             or (original.get('candidate') or {}).get('key') == selected['key'])):
+                    pr = self.github.pr(current, selected['pr'])
+                    if self.verification_candidate_current(selected, pr):
+                        self.request_verification(job, report)
+                        return
             findings = (report if report and report['outcome'] == 'pass' else self.incomplete('Investigation did not return usable findings'))
             self.ledger.findings(job['id'], findings, summary=self.card(findings, job))
             return
@@ -373,7 +385,10 @@ class Supervisor:
                 return
             published = self.github.publication(job, requirements, job['policy'])
             if published:
-                self.ledger.accept(job['id'], candidate=published, summary=self.card(report, job))
+                if report and report['outcome'] == 'needs_human_verification':
+                    self.request_verification(job, report, candidate=published)
+                else:
+                    self.ledger.accept(job['id'], candidate=published, summary=self.card(report, job))
                 return
         else:
             current = self.github.pr(item, job['candidate']['pr'])
@@ -385,6 +400,9 @@ class Supervisor:
                 return
             if current['base']['sha'] != job['candidate']['base']:
                 return  # Reconciliation creates a fresh candidate and reruns review.
+            if report and report['outcome'] == 'needs_human_verification':
+                self.request_verification(job, report)
+                return
             if report and report['outcome'] in ('pass', 'reject'):
                 check_id = self.github.verdict(job, report)
                 # Verify revision again after publication; stale results are only history.
@@ -414,6 +432,47 @@ class Supervisor:
                              {'headline': 'Stopped: the attempt did not finish',
                               'plain': 'The worker stopped without a usable result. Nothing was merged. '
                                        'Forge investigates the failure before trying again.'}, job))
+
+    def request_verification(self, job, report, *, candidate=None):
+        wanted = report['verification'].get('checks', [])
+        allowed = {c['name']: c for c in self.config['repository_verification'].get(job['repo'], [])}
+        ci = [allowed[name] for name in wanted] if wanted and all(name in allowed for name in wanted) else []
+        self.ledger.request_verification(job['id'], {**report['verification'], 'ci': ci},
+                                         candidate=candidate, summary=self.card(report, job))
+
+    @staticmethod
+    def verification_candidate_current(selected, pr):
+        return (pr.get('state') == 'open' and not pr.get('draft') and not pr.get('merged')
+                and pr['head']['sha'] == selected['head'] and pr['base']['sha'] == selected['base'])
+
+    def verification_gate(self, item):
+        from .verification import ci_result
+        request = item['verification_request']
+        selected = item['candidate']
+        if request['candidate'] != selected['key']:
+            self.invalidate(item['key'], 'Verification belongs to an earlier candidate')
+            return
+        pr = self.github.pr(item, selected['pr'])
+        if not self.verification_candidate_current(selected, pr):
+            return
+        approvals = self.github.approvals(item, pr)
+        blocked = any(a['state'] == 'CHANGES_REQUESTED' for a in approvals)
+        if request.get('ci'):
+            snapshot = self.github.ci_evidence({**item, 'candidate': selected})
+            passed = ci_result(snapshot, selected, request['ci']) and not blocked
+            proof = {'via': 'ci', 'checks': request['ci'], 'observed_at': self.clock()}
+        else:
+            counted = [a for a in approvals if a['counted'] and (a.get('at') or 0) > int(request['created_at'])]
+            passed = bool(counted) and not blocked
+            proof = {'via': 'human', 'approvals': counted}
+        with self.ledger.transaction() as data:
+            data['issues'][item['key']]['merge_gate'] = {'candidate': selected['key'],
+                'kind': 'verification_ci' if request.get('ci') else 'approval',
+                'reason': request['what'], 'approvals': approvals}
+        self.github.check(item, 'controller', selected, selected['key'], None,
+                          'External verification pending: ' + request['what'])
+        if passed and self.verification_candidate_current(selected, self.github.pr(item, selected['pr'])):
+            self.ledger.complete_verification(item['key'], request, proof)
 
     def invalidate(self, key, reason, *, candidate=None, hold=False):
         item = self.ledger.read()['issues'][key]
@@ -654,13 +713,21 @@ class Supervisor:
                 return
         if item['active'] and self.ledger.read()['jobs'][item['active']]['role'] != 'merge':
             return
+        if item.get('verification_request') and item['state'] == 'approval_needed':
+            self.verification_gate(item)
+            self.github.labels(self.ledger.read()['issues'][item['key']])
+            return
         if ownership_clear and item['state'] in ('audited', 'approval_needed'):
             self.merge(item, pr)
         self.github.labels(self.ledger.read()['issues'][item['key']])
 
     def merge(self, item, pr):
         audit = item['evidence'].get('audit', {})
-        required = self.config['human_required'] or audit.get('human_required') == 'required'
+        verified = [v for v in item.get('verified_checks', []) if v['candidate'] == item['candidate']['key']]
+        required = self.config['human_required'] or audit.get('human_required') == 'required' or any(v['proof']['via'] == 'human' for v in verified)
+        ci = {c['name']: c for v in verified for c in v.get('ci', [])}
+        from .verification import ci_result
+        ci_passed = not ci or ci_result(self.github.ci_evidence({**item, 'candidate': item['candidate']}), item['candidate'], list(ci.values()))
         approvals = self.github.approvals(item, pr)
         blocked = any(a['state'] == 'CHANGES_REQUESTED' for a in approvals)
         approved = any(a['counted'] for a in approvals) and not blocked
@@ -671,6 +738,8 @@ class Supervisor:
             reason = 'A current GitHub review requests changes'
         elif required and not approved:
             reason = audit.get('human_reason') or 'An authorized human must approve the current candidate'
+        elif not ci_passed:
+            reason = 'The configured verification checks must pass for this candidate'
         elif not self.github.gates(item):
             reason = 'Current review and audit checks must match the accepted evidence'
         elif not self.github.protections(item, item['candidate']):

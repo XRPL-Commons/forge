@@ -182,7 +182,8 @@ class Ledger:
                    'phase': 'reserved', 'outcome': None, 'cleanup': False, 'fenced': False,
                    'history': {'failures': [{'attempt': f['attempt'], 'role': f['role'], 'cause': f['cause'][:2000],
                                              'findings': deepcopy(f.get('findings'))} for f in issue['failures'][-3:]],
-                               'retry_plan': issue['retry_plan']}}
+                               'retry_plan': issue['retry_plan'],
+                               'verified_checks': deepcopy(issue.get('verified_checks', []))}}
             if retry and retry['role'] == role:
                 job['resume_branch'] = retry.get('branch') if role == 'build' else None
             if role == 'build' and existing_draft and not issue['candidate']:
@@ -235,6 +236,8 @@ class Ledger:
                 candidate = {**candidate, 'accepted_at': self.clock()}
                 issue['candidate'] = candidate
                 issue['evidence'] = {}
+                issue.pop('verified_checks', None)
+                issue.pop('verification_request', None)
             elif job['candidate'] != issue['candidate']:
                 raise StateError('Candidate changed during execution')
             issue['state'] = PASS_STATE[job['role']]
@@ -396,6 +399,55 @@ class Ledger:
             self.event(data, issue, 'memory_escalated', attempt=identifier, previous=used, memory=target, detail=detail[:2000])
             return True
 
+    def request_verification(self, identifier, verification, *, candidate=None, summary=None):
+        """A revision-bound human/CI gate, never a substitute for technical review."""
+        with self.transaction() as data:
+            job = data['jobs'][identifier]
+            issue = data['issues'][job['issue_key']]
+            if job['outcome'] is not None:
+                return False
+            if job['role'] == 'recovery':
+                if issue['active'] or issue['state'] not in ('investigating', 'failed', 'built'):
+                    raise StateError('Obsolete investigation cannot request verification')
+                if (not issue['failures'] or issue['failures'][-1]['attempt'] != job['failure']['attempt']
+                        or issue['failures'][-1].get('investigation') != identifier):
+                    raise StateError('Only the current failure can be reclassified')
+                failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
+                failure.update(charged=False, investigation='complete', correction='Acceptance check needs external verification')
+            elif issue['active'] != identifier:
+                raise StateError('Obsolete attempt cannot request verification')
+            elif candidate is None and job['candidate'] != issue['candidate']:
+                raise StateError('Candidate changed during execution')
+            if candidate is not None:
+                issue.update(candidate={**candidate, 'accepted_at': self.clock()}, evidence={})
+                issue.pop('verified_checks', None)
+            if not issue['candidate']:
+                raise StateError('Verification requires a published candidate')
+            # A review/audit paused midway is rerun with the verified evidence.
+            resume = 'reviewed' if issue['evidence'].get('review', {}).get('outcome') == 'pass' and job['role'] != 'review' else 'built'
+            request = {**deepcopy(verification), 'checks': verification.get('checks', []),
+                       'candidate': issue['candidate']['key'], 'attempt': identifier,
+                       'created_at': self.clock(), 'resume_state': resume}
+            issue.update(state='approval_needed', active=None, reason=verification['what'], verification_request=request)
+            issue.pop('merge_gate', None)
+            job['outcome'] = 'needs_human_verification'
+            self.remember(issue, summary)
+            self.event(data, issue, 'verification_requested', attempt=identifier, verification=request, reason=verification['what'])
+            return True
+
+    def complete_verification(self, key, request, proof):
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            if (issue.get('verification_request') != request or issue['state'] != 'approval_needed'
+                    or issue['active'] or issue['candidate']['key'] != request['candidate']):
+                raise StateError('Verification changed; observe the candidate again')
+            record = {**deepcopy(request), 'proof': deepcopy(proof), 'verified_at': self.clock()}
+            issue.setdefault('verified_checks', []).append(record)
+            issue.update(state=request['resume_state'], reason=None)
+            issue.pop('verification_request', None)
+            issue.pop('merge_gate', None)
+            self.event(data, issue, 'verification_completed', verification=record)
+
     def request_decision(self, identifier, decision, summary=None):
         """A question stops dispatch without charging a failure or starting review."""
         with self.transaction() as data:
@@ -519,6 +571,8 @@ class Ledger:
                 candidate = {**candidate, 'accepted_at': self.clock()}
             issue.update(state='hold' if hold else 'built' if candidate else 'ready', candidate=candidate or issue['candidate'],
                          evidence={}, reason=reason)
+            issue.pop('verification_request', None)
+            issue.pop('verified_checks', None)
             self.event(data, issue, 'candidate_invalidated', reason=reason)
             if hold:
                 self.event(data, issue, 'held', reason=reason)
@@ -628,11 +682,14 @@ class Ledger:
             raise ValueError('Human retry must record a decision')
         with self.transaction() as data:
             issue = data['issues'][key]
-            if issue['state'] not in {'failed', 'hold', 'cancelled'} or issue['active']:
+            verification = issue['state'] == 'approval_needed' and issue.get('verification_request')
+            if (issue['state'] not in {'failed', 'hold', 'cancelled'} and not verification) or issue['active']:
                 raise StateError('Issue does not need a human retry decision')
             if any(j['issue_key'] == key and not j['cleanup'] for j in data['jobs'].values()):
                 raise StateError('Reset old executions before retrying')
             issue.update(state='ready', budget_start=len(issue['failures']), retry_plan=reason, reason=None, evidence={})
+            issue.pop('verification_request', None)
+            issue.pop('verified_checks', None)
             decision = issue.pop('decision_request', None)
             if decision:
                 self.event(data, issue, 'decision_answered', decision=decision, reason=reason, request=request_id)

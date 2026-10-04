@@ -39,6 +39,7 @@ def revision(issue, item):
     tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request', 'environment_override', 'environment_choice', 'environment_retry')}
     if (item or {}).get('decision_version'):
         tracked['decision_version'] = item['decision_version']
+    tracked['verification_request'] = (item or {}).get('verification_request')
     return digest({'github': public, 'ledger': tracked})
 
 
@@ -104,6 +105,10 @@ SUMMARIES = {
                       'Forge tried the same idea more than once and it did not work. Describe a different approach on the issue, then retry it.'),
     'approval_needed': ('Waiting for a person to approve the pull request',
                         'The change is finished and needs a human approval before it can be merged. {why} Approve it on GitHub, or ask someone to review it.'),
+    'verification': ('Waiting for a verification check',
+                     'Run the requested check and approve the pull request if it passes. Forge then completes the remaining reviews. If it fails, record the findings and retry.'),
+    'verification_ci': ('Waiting for CI verification',
+                       'Forge checks the configured workflow results automatically. The remaining reviews resume when those checks pass for this revision.'),
     'built': ('Built and waiting for review',
               'The change is written and its pull request is open. Forge starts the review when a reviewer is free.'),
     'reviewed': ('Reviewed and waiting for the security check',
@@ -262,6 +267,10 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             actions, case = ['retry'], 'approach_hold'
     elif merge_blocked:
         state, detail, case = 'attention', gate.get('reason') or 'GitHub has not allowed this merge.', 'merge_blocked'
+    elif item.get('state') == 'approval_needed' and item.get('verification_request'):
+        automatic = bool(item['verification_request'].get('ci'))
+        state, detail, case = ('waiting' if automatic else 'attention'), item['verification_request']['what'], ('verification_ci' if automatic else 'verification')
+        actions = (['retry'] if automatic else ['assign_reviewer', 'retry']) if owned_pr else []
     elif item.get('state') == 'approval_needed':
         state, detail, case = 'attention', 'The pull request needs a human review.', 'approval_needed'
         # Asking a named human for that review is the only decision on offer;
@@ -296,7 +305,9 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     return {'status': state, 'reason_code': case, 'ledger_state': item.get('state'),
             'explanation': detail, 'summary': summary, 'actions': actions, 'closable': closable, 'setup_needed': setup or not repo.get('access_ready'),
             'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
-                        if case == 'approval_needed' and owned_pr and human_approval else None,
+                        if owned_pr and ((case == 'approval_needed' and human_approval)
+                                         or (case == 'verification' and not item['verification_request'].get('ci'))) else None,
+            'verification_request': item.get('verification_request'),
             'approvals': [{k: a.get(k) for k in ('login', 'state', 'at', 'counted', 'why')} for a in gate.get('approvals') or []],
             'last_checked': item.get('last_observed'),
             'merge_blocker': {'reason': detail} if case == 'merge_blocked' else None,

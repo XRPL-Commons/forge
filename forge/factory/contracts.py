@@ -175,14 +175,28 @@ def result(value, job):
     common = {'version', 'attempt', 'role', 'outcome', 'summary'}
     # Older image contracts remain readable during a rolling upgrade: a worker
     # launched from the previous image writes neither blocker nor plain language.
-    common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services') if key in value}
+    common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services', 'verification') if key in value}
     role = job['role']
     if (set(value) != common | set(ROLE_FIELDS.get(role, ())) or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != role
-            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision'}
+            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision', 'needs_human_verification'}
             or any(not isinstance(value[k], str) or not value[k].strip()
                    for k in ('summary', 'headline', 'plain') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
+    verification = value.get('verification')
+    if value['outcome'] == 'needs_human_verification':
+        if (role not in ROLES or not isinstance(verification, dict)
+                or set(verification) not in ({'what', 'why'}, {'what', 'why', 'checks'})
+                or any(not isinstance(verification[k], str) or not verification[k].strip() or len(verification[k]) > 4000
+                       for k in ('what', 'why'))):
+            raise ValueError('Verification needs exact steps and an explanation of why workers cannot run them')
+        checks = verification.get('checks', [])
+        if (not isinstance(checks, list) or len(checks) > 20
+                or any(not isinstance(c, str) or not c.strip() or len(c) > 200 for c in checks)
+                or len(set(checks)) != len(checks)):
+            raise ValueError('Verification checks must name distinct configured CI checks')
+    elif verification is not None:
+        raise ValueError('Only needs_human_verification can request verification')
     decision = value.get('decision')
     if value['outcome'] == 'needs_decision':
         if (role != 'build' or not isinstance(decision, dict)
@@ -252,6 +266,7 @@ def assignment_note(job):
         base['resume_pr'] = job['resume_pr']
     base['review_policy'] = job.get('review_policy', {})
     base['ci_evidence'] = job.get('ci_evidence')
+    base['verification_checks'] = job.get('verification_checks', [])
     base['environment'] = {k: (job.get('runner_config') or {}).get(k, default)
                            for k, default in (('environment_tier', 'standard'), ('services', []))}
     base['instructions'] = (
@@ -293,8 +308,14 @@ def assignment_note(job):
     base['instructions'] += (
         ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
         'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
-        'Do everything else you can verify, then state the exact remaining check a person must run: commands, inputs '
-        'and the expected result. Never return blocked_environment or reject only because such a check cannot run here.')
+        'Do everything else you can verify, then return needs_human_verification with verification containing '
+        'what (exact commands, synthetic inputs and expected result), why (why workers cannot run it), and checks []. '
+        'Builders must publish the candidate using the normal submission procedure before requesting verification. '
+        'If configured verification_checks perform that exact check, name them in checks; Forge verifies their '
+        'publisher and result at this candidate revision. Otherwise leave checks empty for a human check. '
+        'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
+        'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
+        'Never return blocked_environment or reject only because a check needs access outside the worker.')
     if job['role'] == 'build':
         base['instructions'] += (
             ' If the requirements cannot be met by changing code, or the outcome is an approval, exception '

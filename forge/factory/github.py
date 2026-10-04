@@ -418,6 +418,10 @@ class GitHub:
                 latest[review['user']['login'].lower()] = review
         allowlist = {n.lower() for n in self.runtime['human_reviewers']}
         after = (item.get('candidate') or {}).get('accepted_at', 0)
+        verification_times = [v['created_at'] for v in item.get('verified_checks', []) if v.get('proof', {}).get('via') == 'human']
+        if item.get('verification_request'):
+            verification_times.append(item['verification_request']['created_at'])
+        verification_after = max(verification_times, default=0)
         def submitted(review):
             try:
                 return datetime.fromisoformat(review['submitted_at'].replace('Z', '+00:00')).timestamp()
@@ -436,6 +440,8 @@ class GitHub:
                 why = 'Approved an earlier commit'
             elif after and (at is None or at <= int(after)):
                 why = 'Approved before the current change was accepted'
+            elif verification_after and (at is None or at <= int(verification_after)):
+                why = 'Approved before the verification request'
             elif allowlist and name not in allowlist:
                 why = 'Not on the approver list in Settings'
             elif not allowlist and not self.can_write(item, review['user']['login']):

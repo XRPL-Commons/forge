@@ -83,8 +83,12 @@ def decide(root, *, key, action, revision: str, reason, request_id=None):
         else:
             item.update(state='ready' if action == 'retry' else stage, reason=None, retry_plan=reason.strip())
             item.pop('operator_hold', None)
+            if action != 'retry' and item.get('verification_request'):
+                item.update(state='approval_needed', reason=item['verification_request']['what'])
         if action == 'retry':
             item.update(budget_start=len(item['failures']), evidence={})
+            item.pop('verification_request', None)
+            item.pop('verified_checks', None)
             answer = item.pop('decision_request', None)
             if answer:
                 ledger.event(data, item, 'decision_answered', decision=answer, reason=reason.strip())
@@ -400,6 +404,8 @@ class IssueActions:
             else:
                 previous = current.get('operator_hold') or current.get('environment_hold') or current.get('prerequisite_hold') or {}
                 current.update(state=previous.get('state', 'ready'), reason=None)
+                if current.get('verification_request'):
+                    current.update(state='approval_needed', reason=current['verification_request']['what'])
                 current.pop('operator_hold', None)
                 current.pop('prerequisite_hold', None)
                 current.pop('environment_hold', None)
@@ -453,7 +459,7 @@ class IssueActions:
     def validate_action(self, action, issue, item):
         state = (item or {}).get('state')
         held = labels(issue).intersection(self.config['hold_labels'])
-        if action == 'retry' and not (state == 'failed' or (state == 'hold' and (
+        if action == 'retry' and not ((state == 'approval_needed' and (item or {}).get('verification_request')) or state == 'failed' or (state == 'hold' and (
                 (item or {}).get('reason') == APPROACH_HOLD or (item or {}).get('decision_request')))):
             raise ValueError('Retry is only for failed attempts or a hold that waits for a new approach.')
         if action in ('queue', 'backlog', 'pause') and (held or state in ('failed', 'merged', 'approval_needed', 'investigating')):

@@ -126,6 +126,8 @@ def attention_kind(item):
     if item.get('blocked_dependencies') or state in ('merged', 'cancelled') or 'hold' in item.get('label_hold', []):
         return None  # Waiting on other issues, finished, or deliberately paused with the hold label.
     if state == 'approval_needed':
+        if item.get('verification_request'):
+            return None if item['verification_request'].get('ci') else 'verify'
         if (item.get('merge_gate') or {}).get('kind') not in ('approval', None):
             return 'review'
         # The audit asked a person to check something workers cannot run.
@@ -333,11 +335,12 @@ def save_runtime(root, config, revision):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['status', 'validate', 'activate', 'once', 'run', 'stop', 'reset', 'retry',
-                                          'environment-probe', 'environment-confirm'])
+                                          'environment-probe', 'environment-confirm', 'verification-configure'])
     parser.add_argument('--root', required=True)
     parser.add_argument('--target')
     parser.add_argument('--reason', default='')
-    parser.add_argument('--revision', help='Exact environment proposal revision to confirm')
+    parser.add_argument('--revision', help='Exact environment proposal revision, or runtime_revision for verification-configure')
+    parser.add_argument('--checks', help='verification-configure: JSON list of {name, app_id}; [] disables CI verification')
     args = parser.parse_args(argv)
     root = Path(args.root)
     try:
@@ -348,6 +351,10 @@ def main(argv=None):
             print(json.dumps(view(root), indent=2))
             return 0
         settings, config = Settings(root), load(root)
+        if args.command == 'verification-configure':
+            from .verification import configure
+            print(json.dumps(configure(root, args.target, json.loads(args.checks or 'null'), args.revision)))
+            return 0
         if args.command in ('environment-probe', 'environment-confirm'):
             from .environments import probe
             repo = next((r for r in settings.view()['repositories'] if str(r['id']) == args.target), None)
