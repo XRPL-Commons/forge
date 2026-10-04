@@ -155,6 +155,11 @@ def view(root):
                     'active', 'last_summary', 'reviewers_requested', 'prerequisite_hold',
                     'blocked_dependencies', 'dependency_reason', 'ownership_wait', 'created_at', 'last_observed',
                     'retry_after', 'deployed', 'deploy_failed', 'closed_as', 'label_hold')
+    # Finished attempts leave the jobs list below, but their captured output is
+    # still what the operator opens an issue to read.
+    attempts = {}
+    for job in data['jobs'].values():
+        attempts.setdefault(job['issue_key'], []).append(job)
     histories = {}
     for event in data['events']:
         histories.setdefault(event['issue'], []).append(event)
@@ -184,6 +189,11 @@ def view(root):
                           for event in recent]
         row.setdefault('deployed', None)
         row.setdefault('deploy_failed', None)
+        recent_jobs = sorted(attempts.get(item['key'], []), key=lambda j: j.get('created_at') or 0, reverse=True)[:6]
+        row['attempts'] = [{'id': j['id'], 'role': j['role'], 'outcome': j.get('outcome'), 'phase': j.get('phase'),
+                            'created_at': j.get('created_at'),
+                            'started_at': ((j.get('observation') or {}).get('execution') or {}).get('started_at')}
+                           for j in recent_jobs if j['role'] != 'merge']
         issues.append(row)
     job_fields = ('id', 'issue_key', 'repo_id', 'repo', 'issue_number', 'role', 'slot',
                   'provider', 'provider_id', 'model', 'phase', 'outcome', 'cleanup', 'fenced',

@@ -27,6 +27,7 @@ export interface LedgerEvent { kind: string; provider?: string; model?: string |
 
 export interface LedgerIssueView {
   key: string; repo_id: number; repo: string; number: number; title: string
+  attempts?: Array<Pick<JobView, 'id' | 'role' | 'outcome' | 'phase' | 'created_at' | 'started_at'>>
   state: IssueState; reason: string | null; active: string | null; failure_count: number
   candidate?: { pr?: number } | null
   // The plain-language card of the last outcome (contracts §2, LedgerIssueView).

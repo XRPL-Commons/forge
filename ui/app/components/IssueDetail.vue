@@ -289,10 +289,16 @@ function isoTime(at: number): string { return new Date(at * 1000).toISOString() 
 
 // Every job this issue has had, newest first — a finished failed attempt and
 // a recovery investigation stay reachable, not only the running one.
-const jobs = computed<JobView[]>(() => (loaded.value?.factory?.jobs ?? [])
-  .filter(job => job.issue_key === props.issueKey)
-  .slice()
-  .sort((left, right) => (right.started_at ?? right.created_at) - (left.started_at ?? left.created_at)))
+// Running jobs plus the issue's recent finished attempts, whose output stays readable.
+const jobs = computed<JobView[]>(() => {
+  const live = (loaded.value?.factory?.jobs ?? []).filter(job => job.issue_key === props.issueKey)
+  const row = (loaded.value?.factory?.issues ?? []).find(issue => issue.key === props.issueKey)
+  const past = (row?.attempts ?? [])
+    .filter(job => !live.some(running => running.id === job.id))
+    .map(job => ({ ...job, issue_key: props.issueKey }) as JobView)
+  return [...live, ...past]
+    .sort((left, right) => (right.started_at ?? right.created_at ?? 0) - (left.started_at ?? left.created_at ?? 0))
+})
 
 // `?job=<id>` is a link to one run — what the operator follows out of the
 // activity list or a shared message.
@@ -301,7 +307,7 @@ const requestedJob = computed<string | null>(() => {
   const job = Array.isArray(asked) ? asked[0] : asked
   return typeof job === 'string' && job ? job : null
 })
-const selectedJob = computed<string | null>(() => requestedJob.value ?? detail.value?.active ?? null)
+const selectedJob = computed<string | null>(() => requestedJob.value ?? detail.value?.active ?? jobs.value[0]?.id ?? null)
 
 // That run's output stays reachable even when the issue behind it is not: a
 // repository that left the inventory (or a reset fence) fails the detail
