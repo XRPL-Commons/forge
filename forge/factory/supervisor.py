@@ -436,12 +436,8 @@ class Supervisor:
             self.github.check(item, 'controller', gate, gate['key'], None, reason)
         self.ledger.invalidate(key, reason, candidate=candidate, hold=hold)
 
-    def candidate_gone(self, item, issue, number):
-        if issue['state'] != 'open':
-            self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
-        else:
-            self.ledger.invalidate(item['key'], f'Pull request #{number} no longer exists on GitHub. '
-                                   'Retry to start fresh, or close the issue if the work was dropped.', hold=True)
+    def closed_issue_with_unreadable_candidate(self, item, issue):
+        self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
         with self.ledger.transaction() as data:
             current = data['issues'][item['key']]
             current['candidate'] = None
@@ -538,12 +534,11 @@ class Supervisor:
             try:
                 pr = self.github.pr(item, candidate_value['pr'])
             except GitHubUnavailable as error:
-                if getattr(error, 'status', None) != 404:
+                if getattr(error, 'status', None) != 404 or issue['state'] != 'closed':
                     raise
-                # The candidate PR is gone (deleted or hidden from the App). Every later
-                # observation used to stop here, so a closed issue was never noticed
-                # (thegame #50, PR #67).
-                self.candidate_gone(item, issue, candidate_value['pr'])
+                # A 404 can also mean lost App access. Only confirmed issue
+                # closure lets us discard the candidate; open work stays intact.
+                self.closed_issue_with_unreadable_candidate(item, issue)
                 return
             if pr.get('merged'):
                 with self.ledger.transaction() as data:
