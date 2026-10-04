@@ -145,6 +145,19 @@ export const ACTION_LABELS: Record<IssueAction, string> = {
   close: 'Close issue',
 }
 
+// What a decision's confirm button says while Forge is answering it.
+export const ACTION_PENDING_LABELS: Record<IssueAction, string> = {
+  queue: 'Queuing…',
+  backlog: 'Returning…',
+  pause: 'Pausing…',
+  resume: 'Releasing…',
+  retry: 'Retrying…',
+  recheck: 'Rechecking…',
+  assign_reviewer: 'Assigning…',
+  stop: 'Stopping…',
+  close: 'Closing…',
+}
+
 export const ACTION_EFFECTS: Record<IssueAction, string> = {
   queue: 'Forge will check repository setup, dependencies and existing work before starting when capacity is available.',
   backlog: 'This removes the issue from Forge’s queue. The GitHub issue stays open.',

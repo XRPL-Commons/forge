@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reviewerOptions, type PullRequestRef, type Reviewer } from '~/utils/issues'
+import { ACTION_LABELS, ACTION_PENDING_LABELS, reviewerOptions, type PullRequestRef, type Reviewer } from '~/utils/issues'
 
 // Asking people for the human review. The operator only ever picks from the
 // people Forge found for this repository: there is no free-text login, so a
@@ -13,7 +13,9 @@ const props = withDefaults(defineProps<{
   // The pull request's page, or the issue's when there is no candidate.
   pullUrl: string
   error?: string | null
-}>(), { error: null })
+  // True while the request is in flight: one submit, and the dialog stays open.
+  pending?: boolean
+}>(), { error: null, pending: false })
 
 const emit = defineEmits<{ submit: [logins: string[]]; close: [] }>()
 const chosen = ref<string[]>([])
@@ -21,6 +23,13 @@ const options = computed(() => reviewerOptions(props.reviewers))
 const pullName = computed(() => (props.pull ? `PR #${props.pull.number}` : 'the pull request'))
 const description = computed(() =>
   `Forge asks GitHub to request a review of ${pullName.value} from the people you choose; the approval itself still happens on GitHub.`)
+
+function submit() {
+  if (chosen.value.length && !props.pending) emit('submit', chosen.value)
+}
+function dismiss() {
+  if (!props.pending) emit('close')
+}
 
 watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselected] }, { immediate: true })
 </script>
@@ -31,7 +40,8 @@ watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselect
     title="Assign reviewer"
     :description="description"
     :close="false"
-    @update:open="value => !value && emit('close')"
+    :dismissible="!pending"
+    @update:open="value => !value && dismiss()"
   >
     <template #body>
       <UAlert v-if="error" class="mb-3" role="alert" color="error" variant="subtle" :description="error" />
@@ -46,6 +56,7 @@ watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselect
           aria-label="Reviewers"
           placeholder="Choose reviewers"
           class="mt-1 w-full"
+          :disabled="pending"
         />
       </template>
       <div v-else id="reviewer-none" class="text-sm text-muted">
@@ -63,8 +74,8 @@ watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselect
     </template>
     <template #footer>
       <div class="flex justify-end gap-2">
-        <UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton>
-        <UButton v-if="options.length" color="primary" :disabled="!chosen.length" @click="emit('submit', chosen)">Assign reviewer</UButton>
+        <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Close</UButton>
+        <UButton v-if="options.length" color="primary" data-confirm :loading="pending" :disabled="!chosen.length || pending" :aria-busy="pending" @click="submit">{{ pending ? ACTION_PENDING_LABELS.assign_reviewer : ACTION_LABELS.assign_reviewer }}</UButton>
       </div>
     </template>
   </UModal>

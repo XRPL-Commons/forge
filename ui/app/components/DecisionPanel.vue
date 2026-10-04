@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import {
-  ACTION_EFFECTS, ACTION_LABELS, decisionNeedsReason, defaultReason,
+  ACTION_EFFECTS, ACTION_LABELS, ACTION_PENDING_LABELS, decisionNeedsReason, defaultReason,
   type IssueAction, type IssueDetail,
 } from '~/utils/issues'
 
 // The confirmation step of a decision: it derives every string from the copy
 // maps and knows no endpoints. The detail route owns both POSTs, so this
 // component only reports what the operator confirmed.
-const props = defineProps<{ open: boolean; action: IssueAction; detail: IssueDetail; error?: string | null; reason?: string }>()
+const props = defineProps<{ open: boolean; action: IssueAction; detail: IssueDetail; error?: string | null; reason?: string; pending?: boolean }>()
 const emit = defineEmits<{ submit: [decision: { action: IssueAction; reason: string }]; close: [] }>()
 
 const needsReason = computed(() => decisionNeedsReason(props.action))
@@ -32,6 +32,8 @@ function confirm(reason: string) {
     :require-reason="needsReason"
     :initial-reason="reason ?? ''"
     :error="error"
+    :pending="pending"
+    :pending-label="ACTION_PENDING_LABELS[action]"
     @confirm="confirm"
     @close="emit('close')"
   />

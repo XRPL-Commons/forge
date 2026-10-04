@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { IssueAction } from '~/utils/issues'
+import { ACTION_LABELS, ACTION_PENDING_LABELS, type IssueAction } from '~/utils/issues'
 
 // Dropping an issue is the one decision that cannot be undone from Forge, so
 // its dialog says exactly what happens on GitHub and asks why. Like
 // DecisionPanel it knows no endpoints: the detail route submits it.
-const props = defineProps<{ open: boolean; issueKey: string; number: number; pull?: number | null; error?: string | null }>()
+const props = defineProps<{ open: boolean; issueKey: string; number: number; pull?: number | null; error?: string | null; pending?: boolean }>()
 const emit = defineEmits<{ submit: [decision: { action: IssueAction; reason: string }]; close: [] }>()
 
 const reason = ref('')
@@ -12,7 +12,10 @@ watch(() => props.open, (open) => { if (open) reason.value = '' }, { immediate: 
 const ready = computed(() => reason.value.trim().length > 0)
 
 function submit() {
-  if (ready.value) emit('submit', { action: 'close', reason: reason.value.trim() })
+  if (ready.value && !props.pending) emit('submit', { action: 'close', reason: reason.value.trim() })
+}
+function dismiss() {
+  if (!props.pending) emit('close')
 }
 </script>
 
@@ -23,7 +26,8 @@ function submit() {
     :title="`Close issue #${number}?`"
     description="Use this when Forge should not finish this issue."
     :close="false"
-    @update:open="value => !value && emit('close')"
+    :dismissible="!pending"
+    @update:open="value => !value && dismiss()"
   >
     <template #body>
       <UAlert v-if="error" class="mb-3" role="alert" color="error" variant="subtle" :description="error" />
@@ -43,12 +47,13 @@ function submit() {
         :rows="3"
         class="mt-1 w-full"
         required
+        :disabled="pending"
       />
     </template>
     <template #footer>
       <div class="flex w-full justify-end gap-2">
-        <UButton color="neutral" variant="ghost" @click="emit('close')">Cancel</UButton>
-        <UButton color="error" :disabled="!ready" @click="submit">Close issue</UButton>
+        <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Cancel</UButton>
+        <UButton color="error" data-confirm :loading="pending" :disabled="!ready || pending" :aria-busy="pending" @click="submit">{{ pending ? ACTION_PENDING_LABELS.close : ACTION_LABELS.close }}</UButton>
       </div>
     </template>
   </UModal>
