@@ -26,12 +26,11 @@ def own_build_pr(pr, repo_id, number, publisher):
 
 def classic_allowances(value):
     """Current classic bypass list as names, so a replacement can keep it; None if unreadable."""
-    value = value if value is not None else {}
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not all(kind in value for kind in ('users', 'teams', 'apps')):
         return None
     names = {}
     for kind, key in (('users', 'login'), ('teams', 'slug'), ('apps', 'slug')):
-        rows = value.get(kind) or []
+        rows = value[kind]
         if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get(key), str) for r in rows):
             return None
         names[kind] = [r[key] for r in rows]

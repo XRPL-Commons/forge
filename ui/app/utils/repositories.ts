@@ -426,8 +426,9 @@ export function bypassSourceLabel(source: ProtectionSource, branch: string | nul
 // Replacing `bypass_pull_request_allowances` replaces the whole list, so the
 // command keeps whoever GitHub reported as already allowed.
 export function classicBypassCommand(repo: string, branch: string, slug: string, allowances?: BypassAllowances | null): string {
-  const apps = [...new Set([...(allowances?.apps ?? []), slug])]
-  const value = allowances ? { users: allowances.users, teams: allowances.teams, apps } : { apps }
+  if (!allowances) return ''
+  const apps = [...new Set([...allowances.apps, slug])]
+  const value = { users: allowances.users, teams: allowances.teams, apps }
   const body = JSON.stringify({ bypass_pull_request_allowances: value }).replaceAll("'", "'\\''")
   return `gh api -X PATCH repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_pull_request_reviews --input - <<< '${body}'`
 }

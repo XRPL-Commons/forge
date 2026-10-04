@@ -96,7 +96,7 @@ async function copy() {
             <template v-else>This replaces the rule’s list of bypassing Apps. If other Apps are already listed there, add their slugs to the command too.</template>
           </p>
         </template>
-        <p v-else class="mt-2 text-xs text-muted">Refresh App access to show an equivalent GitHub CLI command.</p>
+        <p v-else class="mt-2 text-xs text-muted">Use the GitHub settings steps above. A CLI command is available only when Forge can read the controller App name and the complete existing bypass list.</p>
         <p class="mt-2 text-xs text-muted">If your rulesets already cover the same requirements, you can delete the classic rule instead.</p>
       </div>
       <div v-if="fix.rulesets.length" :id="(idPrefix || '') + 'bypass-rulesets'" class="rounded-lg border border-line bg-bg p-3">

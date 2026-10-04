@@ -139,6 +139,9 @@ class RepositoryRuleTests(unittest.TestCase):
         self.assertNotIn('bypass_allowances', bypass['sources'][0])
         del protection['required_pull_request_reviews']['bypass_pull_request_allowances']
         bypass = self.reader(protection, []).protection_report(self.item, {'base_ref': 'main'})['bypass']
+        self.assertNotIn('bypass_allowances', bypass['sources'][0])
+        protection['required_pull_request_reviews']['bypass_pull_request_allowances'] = {'users': [], 'teams': [], 'apps': []}
+        bypass = self.reader(protection, []).protection_report(self.item, {'base_ref': 'main'})['bypass']
         self.assertEqual(bypass['sources'][0]['bypass_allowances'], {'users': [], 'teams': [], 'apps': []})
 
     def test_bypass_observation_budget_is_not_a_missing_bypass(self):

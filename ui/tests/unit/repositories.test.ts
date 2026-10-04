@@ -421,8 +421,7 @@ describe('controller bypass guidance', () => {
   })
 
   it('builds a classic bypass command that keeps the reported allowances', () => {
-    expect(classicBypassCommand('XRPL-Commons/hackathon', 'main', 'forge-controller-2d9a0cef')).toBe(
-      `gh api -X PATCH repos/XRPL-Commons/hackathon/branches/main/protection/required_pull_request_reviews --input - <<< '{"bypass_pull_request_allowances":{"apps":["forge-controller-2d9a0cef"]}}'`)
+    expect(classicBypassCommand('XRPL-Commons/hackathon', 'main', 'forge-controller-2d9a0cef')).toBe('')
     expect(classicBypassCommand('o/r', 'release/1', 'forge', { users: ['maintainer'], teams: ['core'], apps: ['other', 'forge'] })).toBe(
       `gh api -X PATCH repos/o/r/branches/release%2F1/protection/required_pull_request_reviews --input - <<< '{"bypass_pull_request_allowances":{"users":["maintainer"],"teams":["core"],"apps":["other","forge"]}}'`)
   })
