@@ -22,8 +22,8 @@ once newer decisions or external effects exist.
 
 Approval covers the lifecycle, storage and migration architecture plus the proposed
 policy choices in **Review decisions still needed** and **Decisions preserved from
-the earlier design draft**. Retention deletion and the seven-day parity / 30-day
-rollback windows remain explicit proposals. Implementation follows #209's phases
+the earlier design draft**. Retention and rollback are decided (see Operator decisions); the seven-day parity
+check before cutover remains. Implementation follows #209's phases
 0–7; this PR changes no runtime behavior or deployed server.
 
 The original design remains available in commit `2dd3f89`. This revision replaces
@@ -278,7 +278,7 @@ The initial PR #210 draft recorded these operator choices. They remain proposals
 | Completed outbox rows | Proposed retention: 14 days for response/debug detail | Durable operation identity and confirmed receipts survive longer where required to prevent repeating comments, review requests or other external effects after recovery. |
 | Backups | Proposed: seven daily and four weekly verified database snapshots | Plus a protected pre-migration backup until the rollback decision is complete. |
 | Cutover parity | Proposed: seven consecutive days of clean fixture/live-copy parity before switching authority | Intentional lifecycle corrections need named, reviewed exceptions; they are not unexplained mismatches. |
-| JSON rollback window | Proposed: keep verified source backups and the export/backend compatibility path for 30 days after storage cutover | Decide explicitly when compatibility ends. Batches cannot be losslessly projected into the old issue-only model; never automatically dissolve them to roll back. |
+| JSON rollback window | **Decided: none.** Existing data is migrated once into SQLite; there is no JSON compatibility path or switch-back after cutover. | Migration is verified by the import parity checks before cutover; a one-time pre-migration copy of the JSON stores is kept for diagnosis only, not as a rollback path. |
 | Durability | `synchronous=FULL` | The earlier prototype's FULL/NORMAL timings are reported measurements, not a new benchmark from this design pass. |
 
 Output APIs should distinguish available, expired-by-policy, not-yet-captured and corrupt/missing artifacts. Expired historical logs should show the expiry in the UI while preserving outcome and summary. A missing current result or evidence artifact must not be treated as a passed check or safely ignored as “logs unavailable.” The 30/90-day policies remain proposals; no pruning is authorized by writing this document.
@@ -748,6 +748,20 @@ ready-to-run, first accepted work, and first GitHub-confirmed normal merge. A
 database migration preserves those timestamps; it must not restart the clock.
 The full release proof includes a unit of one and a two-issue batch reaching a
 normal merged PR, with no manual server shell steps.
+
+## Operator decisions (2026-10-05)
+
+Recorded answers to this design's open questions. They are binding for #209.
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Does removing a hold label resume the work? | **Yes.** It releases that label wait, as the UI already promises. |
+| 2 | Is "closed as completed elsewhere" shown as done or cancelled? | **Done** (`close_code` completed). Only not-planned or duplicate closes are dropped. |
+| 3 | Does work resume automatically when repository setup becomes ready? | **Yes.** The repository-readiness wait releases itself on a passing check. |
+| 4 | Retention | Finished raw logs **30 days**. Events are kept indefinitely (they are small). Completed outbox detail 14 days, as proposed. |
+| 5 | Durability | `synchronous=FULL` (about 1.6 ms per write transaction). |
+| 6 | May units that already have a PR be merged into a batch? | **Yes.** Proposals may include them, and the operator approves each batch as usual. |
+| 7 | Rollback | **No rollback path.** Existing data is migrated once; there is no JSON compatibility window or switch-back. A one-time pre-migration copy is kept for diagnosis only. |
 
 ## Delivery and approval
 
