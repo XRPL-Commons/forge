@@ -73,10 +73,14 @@ watch(() => props.open, (open) => { if (open) chosen.value = [...props.preselect
       </div>
     </template>
     <template #footer>
-      <div class="flex justify-end gap-2">
-        <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Close</UButton>
-        <UButton v-if="options.length" color="primary" data-confirm :loading="pending" :disabled="!chosen.length || pending" :aria-busy="pending" @click="submit">{{ pending ? ACTION_PENDING_LABELS.assign_reviewer : ACTION_LABELS.assign_reviewer }}</UButton>
-      </div>
+      <DialogFooter>
+        <template #secondary>
+          <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Close</UButton>
+        </template>
+        <template v-if="options.length" #primary>
+          <UButton color="primary" data-confirm :loading="pending" :disabled="!chosen.length || pending" :aria-busy="pending" @click="submit">{{ pending ? ACTION_PENDING_LABELS.assign_reviewer : ACTION_LABELS.assign_reviewer }}</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>

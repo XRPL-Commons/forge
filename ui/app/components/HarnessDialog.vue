@@ -87,9 +87,11 @@ async function copy(kind: 'login' | 'check' | 'token') {
       </div>
     </template>
     <template #footer>
-      <div class="flex justify-end">
-        <UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton>
-      </div>
+      <DialogFooter>
+        <template #secondary>
+          <UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>
