@@ -1,5 +1,6 @@
 """Persistence and isolation checks for the inactive SQLite store."""
 
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -127,7 +128,7 @@ os._exit(24)
         with self.store.write() as writer:
             writer.execute("UPDATE store_metadata SET value='not-committed' WHERE key='test'")
             self.assertEqual(self.store.backup(destination), destination)
-        with sqlite3.connect(destination) as backup:
+        with closing(sqlite3.connect(destination)) as backup:
             self.assertEqual(backup.execute("SELECT value FROM store_metadata WHERE key='test'").fetchone()[0], "committed")
             self.assertEqual(backup.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
