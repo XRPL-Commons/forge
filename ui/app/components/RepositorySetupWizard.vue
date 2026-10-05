@@ -72,13 +72,17 @@ async function next() {
       <p v-else class="mt-4 text-sm text-muted">Loading repository…</p>
     </template>
     <template #footer>
-      <div class="flex w-full items-center justify-between gap-2">
-        <div class="flex gap-1">
+      <DialogFooter>
+        <template #start>
           <UButton color="neutral" variant="ghost" :disabled="step === 0 || busy" @click="back">Back</UButton>
+        </template>
+        <template #secondary>
           <UButton color="neutral" variant="ghost" @click="close">Cancel</UButton>
-        </div>
-        <UButton :disabled="disabled" :loading="waiting || enabling" @click="next">{{ primary }}</UButton>
-      </div>
+        </template>
+        <template #primary>
+          <UButton :disabled="disabled" :loading="waiting || enabling" @click="next">{{ primary }}</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>

@@ -51,10 +51,14 @@ function dismiss() {
       />
     </template>
     <template #footer>
-      <div class="flex w-full justify-end gap-2">
-        <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Cancel</UButton>
-        <UButton color="error" data-confirm :loading="pending" :disabled="!ready || pending" :aria-busy="pending" @click="submit">{{ pending ? ACTION_PENDING_LABELS.close : ACTION_LABELS.close }}</UButton>
-      </div>
+      <DialogFooter>
+        <template #secondary>
+          <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Cancel</UButton>
+        </template>
+        <template #primary>
+          <UButton color="error" data-confirm :loading="pending" :disabled="!ready || pending" :aria-busy="pending" @click="submit">{{ pending ? ACTION_PENDING_LABELS.close : ACTION_LABELS.close }}</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>

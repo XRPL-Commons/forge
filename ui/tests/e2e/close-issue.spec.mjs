@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { assertPhoneStack, assertPrimaryFarRight } from './dialog-footer.mjs'
 
 // Closing an issue is the quiet way out of the pipeline: a reason is required,
 // the dialog says what happens on GitHub, and the decision is submitted like
@@ -53,6 +54,9 @@ export default async function (page, { base, scenario, requests }) {
   // The reason is required.
   const confirm = dialog.getByRole('button', { name: 'Close issue', exact: true })
   assert.equal(await confirm.isDisabled(), true, 'no reason, no close')
+  await assertPhoneStack(dialog, { primary: 'Close issue', secondary: 'Cancel' })
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await assertPrimaryFarRight(dialog, { primary: 'Close issue', secondary: 'Cancel' })
   await dialog.getByRole('textbox', { name: 'Why are you closing it?' }).fill('   ')
   assert.equal(await confirm.isDisabled(), true, 'whitespace is not a reason')
   await dialog.getByRole('textbox', { name: 'Why are you closing it?' }).fill('Superseded by #640')
