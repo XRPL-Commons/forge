@@ -323,6 +323,8 @@ class CycleTest(unittest.TestCase):
         self.assertFalse(self.cycle()['errors'])
         item = self.ledger.read()['issues'][self.key]
         self.assertEqual(item['state'], 'cancelled')
+        self.assertEqual(item['github_observation']['issue']['state'], 'closed')
+        self.assertIsNone(item['github_observation']['issue']['state_reason'])
         self.assertIsNone(item['candidate'])
         self.assertFalse(self.cycle()['errors'])
 

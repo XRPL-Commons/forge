@@ -582,6 +582,7 @@ class WorklistTests(unittest.TestCase):
             ('PATCH', '/issues/1', {'state': 'closed', 'state_reason': 'not_planned'})])
         data = self.ledger.read()
         self.assertEqual(data['issues']['1:1']['state'], 'cancelled')
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'dropped')
         # A restarted controller replays the decision without commenting twice.
         self.actions.apply(identifier, decision)
         self.assertEqual(len([c for c in self.github.calls if c[0] in ('POST', 'PATCH')]), 3)
@@ -616,10 +617,44 @@ class WorklistTests(unittest.TestCase):
 
     def test_a_close_the_ledger_saw_wins_over_a_stale_open_copy(self):
         self.tracked(hold='Configure two approving reviews and stale-approval dismissal before dispatch'); self.refresh()
-        self.ledger.cancel('1:1', 'Issue closed externally', closed_as='completed')
+        for reason, status in (('completed', 'completed'), ('not_planned', 'dropped'), ('duplicate', 'dropped'), (None, 'completed')):
+            with self.subTest(reason=reason):
+                self.ledger.cancel('1:1', 'Issue closed externally',
+                    github_issue={**self.github.value, 'state': 'closed', 'state_reason': reason})
+                row = self.inventory.view(key='1:1')['issue']
+                self.assertEqual(row['state'], 'closed')
+                self.assertEqual(row['status'], status)
+                self.assertFalse(row['closable'])
+                self.assertEqual(row['actions'], [])
+
+    def test_operator_stopped_open_issue_can_resume(self):
+        self.tracked(); self.refresh()
+        from forge.factory.control import queue, requests
+        job = self.ledger.reserve('1:1', 'build', 'worker-1', publisher='builder[bot]', policy='policy', timeout=600)
+        queue(self.root, 'stop', job['id'], 'Operator stopped this attempt')
+        requests(self.root, self.ledger)
+        self.ledger.release(job['id'])
         row = self.inventory.view(key='1:1')['issue']
-        self.assertEqual(row['status'], 'completed')
-        self.assertFalse(row['closable'])
+        self.assertEqual((row['state'], row['status'], row['actions']), ('open', 'attention', ['resume']))
+        self.assertEqual(row['summary']['headline'], 'The previous attempt was stopped')
+
+    def test_newer_inventory_reopen_wins_over_ledger_closure(self):
+        self.tracked(); self.refresh()
+        self.ledger.cancel('1:1', 'Issue closed externally',
+            github_issue={**self.github.value, 'state': 'closed', 'state_reason': 'not_planned'})
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'dropped')
+        self.refresh()  # GitHub now returns an open issue after the recorded closure.
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['state'], row['status'], row['actions']), ('open', 'attention', ['resume']))
+
+    def test_newer_direct_reopen_wins_over_ledger_closure(self):
+        self.tracked(); self.refresh()
+        self.ledger.cancel('1:1', 'Issue closed externally',
+            github_issue={**self.github.value, 'state': 'closed', 'state_reason': 'completed'})
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['github_observation'] = {'at': time.time(), 'issue': facts(self.github.value)}
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['state'], row['status'], row['actions']), ('open', 'attention', ['resume']))
 
     def test_close_works_for_an_issue_forge_never_tracked(self):
         identifier, decision = self.decision('close', reason='Not needed')
