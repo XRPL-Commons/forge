@@ -411,7 +411,7 @@ export function agentFace(mood: AgentMood, c: number, t: number, still: boolean)
   }
 }
 
-function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
+export function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
   if (!mark) return
   ctx.save(); ctx.translate(x, y)
   ctx.lineWidth = Math.max(1, s * 0.14); ctx.strokeStyle = CUBE_INK; ctx.lineJoin = 'round'
