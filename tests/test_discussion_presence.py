@@ -65,6 +65,7 @@ class PresenceTest(unittest.TestCase):
         self.assertEqual(here['phase'], 'joined')
         self.assertEqual(here['agent'], {'provider': 'codex', 'model': None, 'name': 'Bolt', 'label': 'Codex'})
         self.assertEqual([a['text'] for a in here['activity']], ['Getting started'])
+        self.assertEqual(here['mode'], 'evidence')
         job = self.service.read()['1:2']['job']
         self.runner.inspect.return_value = {'status': 'running', 'running': True}
         self.runner.observe.return_value = {'logs': logs(
@@ -79,6 +80,8 @@ class PresenceTest(unittest.TestCase):
         self.assertEqual(lines, ['Getting started', 'Reading issue #7', 'Searching the repository for `coach`'])
         self.assertNotIn('SECRET', json.dumps(self.service.read()))
         self.assertNotIn('seen', self.service.view('1:2')['presence'])
+        # Searching the repository: the operator sees Bolt is checking the code.
+        self.assertEqual(self.service.view('1:2')['presence']['mode'], 'code')
         self.finish(job)
         view = self.service.view('1:2')
         self.assertEqual(view['presence']['phase'], 'answered')

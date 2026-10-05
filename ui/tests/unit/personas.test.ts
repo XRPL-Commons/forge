@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { PERSONAS, modelLabel, persona, personaSays } from '../../app/utils/personas'
-import { agentFace } from '../../app/utils/cube'
+import { agentFace, drawAgent, workerShape, workerSteps } from '../../app/utils/cube'
 
 describe('persona', () => {
   it('gives each provider one stable named character', () => {
@@ -53,5 +53,66 @@ describe('agentFace', () => {
     expect(agentFace('looking', 24, 0, false).look).not.toEqual(agentFace('looking', 24, 1000, false).look)
     expect(agentFace('happy', 24, 0, false).eyes).toBe('happy')
     expect(agentFace('left', 24, 0, false).eyes).toBe('closed')
+  })
+})
+
+// A recording 2D context: which shapes a drawing makes, without a browser.
+function recorder() {
+  const calls: { name: string; args: unknown[] }[] = []
+  const fills: unknown[] = []
+  const state: Record<string, unknown> = {}
+  const ctx = new Proxy(state, {
+    get(target, key: string) {
+      if (key === 'fillStyle') return fills.at(-1)
+      if (key in target) return target[key]
+      return (...args: unknown[]) => { calls.push({ name: key, args }) }
+    },
+    set(target, key: string, value) {
+      if (key === 'fillStyle') fills.push(value)
+      else target[key] = value
+      return true
+    },
+  })
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, fills }
+}
+
+describe('the agent worker', () => {
+  it('stands on two feet under a body, unlike the issue cube head', () => {
+    const S = 40
+    const shape = workerShape(S)
+    expect(shape.legs).toHaveLength(2)
+    expect(shape.feet).toHaveLength(2)
+    const bodyBottom = shape.body.y + shape.body.h
+    for (const [i, leg] of shape.legs.entries()) {
+      const foot = shape.feet[i]!
+      // Each leg runs from inside the body down onto its foot; the feet are on the floor, inside the canvas.
+      expect(leg.y).toBeLessThan(bodyBottom)
+      expect(leg.y + leg.h).toBeGreaterThanOrEqual(foot.y)
+      expect(foot.y + foot.h).toBeLessThanOrEqual(S)
+      expect(foot.y).toBeGreaterThan(bodyBottom)
+    }
+    expect(shape.legs[0]!.x).toBeLessThan(S / 2)
+    expect(shape.legs[1]!.x).toBeGreaterThan(S / 2)
+    // A machine-like body: wider than tall, the face on it, the mark above it.
+    expect(shape.body.w).toBeGreaterThan(shape.body.h)
+    expect(shape.face.y).toBeLessThanOrEqual(bodyBottom)
+    expect(shape.face.y - shape.face.c * 0.46).toBeGreaterThan(shape.body.y)
+    expect(shape.mark.y).toBeLessThan(shape.body.y)
+    expect(shape.mark.y - shape.mark.s).toBeGreaterThanOrEqual(0)
+  })
+  it('draws body, two legs and two feet in the persona colour', () => {
+    const { ctx, calls, fills } = recorder()
+    drawAgent(ctx, 28, '#cf6f4e', 'spark', 'happy')
+    // Two legs, two feet, the body and its top band, at least.
+    expect(calls.filter(c => c.name === 'fill').length).toBeGreaterThanOrEqual(6)
+    // Both legs and the body wear the persona's colour.
+    expect(fills.filter(f => f === '#cf6f4e').length).toBeGreaterThanOrEqual(3)
+  })
+  it('steps while busy and holds still with reduced motion', () => {
+    expect(workerSteps('busy', 40, 0, true)).toEqual([0, 0])
+    expect(workerSteps('happy', 40, 500, false)).toEqual([0, 0])
+    const a = workerSteps('busy', 40, 170, false), b = workerSteps('busy', 40, 520, false)
+    expect(a[0] > 0 || a[1] > 0).toBe(true)
+    expect(a).not.toEqual(b)
   })
 })

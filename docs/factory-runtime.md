@@ -97,6 +97,10 @@ that provider and use another without consuming the issue failure budget. Empty
 pools preserve the legacy single-provider configuration. Explicit `provider_ready`
 entries fence unverified reconnects until qualification completes.
 
+`discussion_model` (default `null`) optionally names a faster model per provider
+for issue conversations only, for example `{"claude": "claude-haiku-4-5"}`.
+Providers it does not name, and every pipeline role, keep the pool entry's model.
+
 Credentials stay in the private installation store. Refreshable OAuth credentials
 are serialized per reference and saved using compare-and-swap before teardown;
 API-key and long-lived-token jobs retain full configured concurrency. Refreshed

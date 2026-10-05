@@ -2,7 +2,8 @@
 import { drawAgent, type AgentMood } from '~/utils/cube'
 import { persona } from '~/utils/personas'
 
-// The discussion agent's face: its persona's cube, looking around while Forge
+// The discussion agent: its persona's worker (a body on two feet, unlike the
+// issues' cube heads), looking around while Forge
 // finds someone, busy while it works, happy with an answer, eyes shut once it
 // left. Only looking and busy move, and not at all with reduced motion or a
 // hidden tab. Decorative: the name beside it carries the meaning.
@@ -59,6 +60,7 @@ watch(() => [props.mood, props.provider, props.size], run)
     ref="canvas"
     class="agent-avatar block shrink-0"
     aria-hidden="true"
+    data-shape="worker"
     :data-persona="who.name"
     :data-mood="mood"
     :width="size"

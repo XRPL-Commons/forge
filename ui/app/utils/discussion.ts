@@ -72,6 +72,7 @@ export interface ActivityLine { at: number; text: string }
 export interface Link { to: string; label: string }
 export type PresencePhase = 'finding' | 'joined' | 'answered' | 'left' | 'idle'
 export type LeftReason = 'timeout' | 'restart' | 'cancelled' | 'error' | 'auth' | 'quota'
+export type AnswerMode = 'evidence' | 'code'
 export interface Presence {
   phase: PresencePhase
   // finding
@@ -85,6 +86,8 @@ export interface Presence {
   joined_at?: number | null
   activity?: ActivityLine[]
   instead_of?: AgentInfo | null
+  // Answering from the saved evidence, or reading the repository.
+  mode?: AnswerMode
   // left
   text?: string
   at?: number
@@ -114,6 +117,33 @@ export function presenceMood(phase: PresencePhase | undefined): AgentMood {
   if (phase === 'joined') return 'busy'
   if (phase === 'left') return 'left'
   return 'happy'
+}
+
+// What the agent is doing, in one phrase: a context answer is quick; reading
+// the code takes minutes, so the operator knows which to expect.
+export function modeLine(mode: AnswerMode | undefined): string {
+  return mode === 'code' ? 'Checking the code' : 'Answering from saved evidence'
+}
+
+// Past about 90 s, a gentle word on why it is taking a while.
+export const SLOW_SECONDS = 90
+export function slowNote(name: string, mode: AnswerMode | undefined, seconds: number): string | null {
+  if (seconds < SLOW_SECONDS) return null
+  return `Taking longer than usual: ${name} is ${mode === 'code' ? 'reading the code' : 'still working on it'}`
+}
+
+// Whether an answer runs past about `lines` lines in the chat column, and so
+// starts folded behind Show more. Blank lines count half (paragraph spacing);
+// a long line wraps every `width` characters.
+export const COLLAPSED_LINES = 6
+export function collapsible(text: string, lines = COLLAPSED_LINES, width = 80): boolean {
+  let count = 0
+  for (const line of text.trim().split('\n')) {
+    const words = line.trim()
+    count += words ? Math.ceil(words.length / width) : 0.5
+    if (count > lines) return true
+  }
+  return false
 }
 
 // "12 s", "2 min", "1 h 5 min": how long the operator has been waiting.

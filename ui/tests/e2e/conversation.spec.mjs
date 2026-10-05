@@ -57,8 +57,22 @@ export default async function (page, { base, requests }) {
   await joined.waitFor()
   assert.match(await joined.locator('[data-presence-title]').innerText(), /^Ember joined · Claude Sonnet 4\.6 · \d+ s$/)
   assert.equal(await joined.locator('canvas[data-persona="Ember"]').getAttribute('data-mood'), 'busy')
+  // Agents are workers on two feet, not the issues' cube heads.
+  const worker = joined.locator('canvas[data-persona="Ember"]')
+  assert.equal(await worker.getAttribute('data-shape'), 'worker')
+  const workerBox = await worker.boundingBox()
+  assert.deepEqual([Math.round(workerBox.width), Math.round(workerBox.height)], [40, 40])
+  // The worker is drawn: its feet sit near the bottom of the canvas.
+  assert.ok(await worker.evaluate((el) => {
+    const data = el.getContext('2d').getImageData(0, Math.floor(el.height * 0.9), el.width, Math.ceil(el.height * 0.05)).data
+    return data.some((v, i) => i % 4 === 3 && v > 0)
+  }), 'the worker has feet')
+  // Which kind of answer is coming: from the saved evidence until it opens the code.
+  await joined.locator('[data-mode][data-answer-mode="evidence"]').getByText('Answering from saved evidence').waitFor()
   await joined.locator('[data-activity]').getByText('Ember is reading issue #610').waitFor()
   await joined.locator('[data-current]').getByText('Ember is searching the repository for `producer`').waitFor()
+  await joined.locator('[data-mode][data-answer-mode="code"]').getByText('Checking the code').waitFor()
+  assert.equal(await joined.locator('[data-slow]').count(), 0)
   // The box stays editable so the next question can be drafted meanwhile.
   assert.equal(await prompt.isDisabled(), false)
   assert.equal(await prompt.inputValue(), '')
@@ -81,6 +95,19 @@ export default async function (page, { base, requests }) {
   assert.equal((await reply.locator('[data-persona-name]').innerText()).trim(), 'Ember')
   assert.match(await reply.innerText(), /Ember via Claude/)
   assert.equal(await reply.locator('canvas[data-persona="Ember"]').getAttribute('data-mood'), 'happy')
+  assert.equal(await reply.locator('canvas[data-persona="Ember"]').getAttribute('data-shape'), 'worker')
+  // A short reply reads in full: nothing folded.
+  assert.equal(await reply.locator('[data-answer]').getAttribute('data-collapsed'), 'false')
+  assert.equal(await reply.locator('[data-show-more]').count(), 0)
+  // The proposal is one compact card: the button and its short reason, no
+  // second "Proposed decision" block repeating the answer.
+  const card = reply.locator('[data-proposal]')
+  assert.doesNotMatch(await card.innerText(), /Proposed decision/)
+  assert.equal(await reply.getByText('Proposed decision').count(), 0)
+  assert.equal((await card.locator('[data-proposal-reason]').innerText()).trim(), 'Correct the shared producer type before updating consumers.')
+  assert.equal(await card.locator('[data-proposal-action]').count(), 1)
+  const cardBox = await card.boundingBox()
+  assert.ok(cardBox.height <= 64, `compact proposal card ${cardBox.height}px`)
   const did = reply.locator('[data-agent-did]')
   assert.equal((await did.locator('summary').innerText()).trim(), 'What Ember did')
   assert.equal(await did.getAttribute('open'), null)
@@ -121,4 +148,34 @@ export default async function (page, { base, requests }) {
     assert.ok(box.y + box.height <= height, `prompt on screen at ${width}`)
     await page.screenshot({ path: `/tmp/forge-conversation-${width}.png`, fullPage: true })
   }
+
+  // Over about 90 s, a gentle note says why it is taking a while.
+  await prompt.fill('Check the code properly (slow)')
+  await prompt.press('Enter')
+  const slow = page.locator('[data-presence][data-phase="joined"] [data-slow]')
+  await slow.waitFor()
+  assert.equal((await slow.innerText()).trim(), 'Taking longer than usual: Ember is reading the code')
+  assert.match(await page.locator('[data-presence-title]').innerText(), /· 1 min$/)
+  assert.equal((await page.locator('[data-presence] [data-mode]').innerText()).trim(), 'Checking the code')
+  await page.screenshot({ path: '/tmp/forge-conversation-slow.png' })
+  await page.getByRole('button', { name: 'Stop reply', exact: true }).click()
+  await page.locator('[data-left][data-reason="cancelled"]').nth(1).waitFor()
+
+  // A long answer folds behind Show more, and unfolds on request.
+  await prompt.fill('Tell me everything (long)')
+  await prompt.press('Enter')
+  const long = page.locator('[data-role="assistant"]').filter({ hasText: 'Finding 1' })
+  await long.waitFor({ timeout: 15000 })
+  const body = long.locator('[data-answer]')
+  assert.equal(await body.getAttribute('data-collapsed'), 'true')
+  const folded = (await body.boundingBox()).height
+  assert.ok(folded <= 140, `folded answer ${folded}px`)
+  const more = long.getByRole('button', { name: 'Show more' })
+  assert.equal(await more.getAttribute('aria-expanded'), 'false')
+  await more.click()
+  assert.equal(await body.getAttribute('data-collapsed'), 'false')
+  assert.ok((await body.boundingBox()).height > folded + 40, 'unfolded answer is taller')
+  await long.getByText('The final line of the long answer.').waitFor()
+  assert.equal(await long.getByRole('button', { name: 'Show less' }).getAttribute('aria-expanded'), 'true')
+  await page.screenshot({ path: '/tmp/forge-conversation-long.png', fullPage: true })
 }

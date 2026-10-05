@@ -22,6 +22,9 @@ from .factory.ledger import Ledger
 from .factory.runner import ContainerRunner, RunnerError, RunnerCapacity
 from .factory.supervisor import Supervisor
 
+# How often a queued or running conversation is driven between cycles.
+DISCUSSION_POLL_SECONDS = 4
+
 
 PROBE_FAILURE_MESSAGES = {
     'provider_login_expired': 'The server login has expired. Run bin/forge setup login {provider} on the server',
@@ -66,6 +69,7 @@ class Service:
         self.runner_class, self.github_class = runner, github
         self.next_cycle = 0
         self.next_sync = 0
+        self.next_discussion = 0
         # Names this process: a discussion worker an earlier one started and
         # that is gone without an answer was orphaned by a restart.
         self.boot = uuid.uuid4().hex
@@ -403,7 +407,11 @@ class Service:
                 return
             # A crash between fencing and recording reset requires an explicit retry.
             return
-        if data['phase'] != 'active' or time.monotonic() < self.next_cycle:
+        if data['phase'] != 'active':
+            return
+        if time.monotonic() < self.next_cycle:
+            if not op:
+                self.converse(discussions)
             return
         with controller_lock(self.root):
             settings, config = Settings(self.root), load(self.root)
@@ -448,6 +456,28 @@ class Service:
                 except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
                     pass  # Durable discussion intent is retried; never corrupt deployment state.
             self.next_cycle = time.monotonic() + config['cycle_seconds']
+            self.next_discussion = time.monotonic() + DISCUSSION_POLL_SECONDS
+
+    def converse(self, discussions):
+        """Between cycles, keep a live conversation moving.
+
+        A cycle runs every cycle_seconds (30 s by default), so a question used to
+        wait up to a cycle for its worker and a finished answer up to another
+        before the operator saw it (measured: 16-54 s and about 25 s). Only
+        discussions tick here; pipeline dispatch still waits for the cycle, and
+        Discussions.tick itself defers to pipeline work waiting to launch.
+        """
+        if time.monotonic() < self.next_discussion or not discussions.live():
+            return
+        self.next_discussion = time.monotonic() + DISCUSSION_POLL_SECONDS
+        try:
+            with controller_lock(self.root):
+                settings, config = Settings(self.root), load(self.root)
+                github = self.github_class(settings, config)
+                github.deadline = time.monotonic() + 10
+                discussions.tick(config, github, settings)
+        except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
+            pass  # The next cycle retries; durable intent stays in the thread.
 
 
 def main():

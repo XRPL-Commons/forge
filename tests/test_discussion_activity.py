@@ -6,7 +6,7 @@ from pathlib import Path
 import runpy
 import unittest
 
-from forge.factory.activity import command_line, tool_line, merge, events, public, LIMIT
+from forge.factory.activity import command_line, tool_line, merge, events, public, mode, LIMIT
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,6 +83,15 @@ class ActivityLinesTest(unittest.TestCase):
         self.assertEqual([a['text'] for a in activity], ['Reading the saved evidence', 'Inspecting the repository'])
         activity, seen = merge(activity, seen, json.dumps({'type': 'claude.result', 'summary': 'x'}), 1060, 1000)
         self.assertEqual(activity[-1]['text'], 'Writing the answer')
+
+    def test_mode_says_whether_the_agent_answers_from_evidence_or_checks_the_code(self):
+        lines = lambda *texts: [{'at': 1, 'text': t} for t in texts]
+        self.assertEqual(mode([]), 'evidence')
+        self.assertEqual(mode(lines('Getting started', 'Reading the saved evidence', 'Reading issue #7',
+                                    'Opening PR #3', 'Querying GitHub', 'Thinking it through', 'Writing the answer')), 'evidence')
+        for code in ('Searching the repository for `x`', 'Reading src/a.ts', 'Looking around the repository',
+                     'Inspecting the repository', 'Running npm test'):
+            self.assertEqual(mode(lines('Getting started', code)), 'code', code)
 
     def test_claude_stream_events_map_too(self):
         logs = json.dumps({'type': 'assistant', 'message': {'id': 'm1', 'content': [
