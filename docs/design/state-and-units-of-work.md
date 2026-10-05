@@ -1,64 +1,42 @@
 # State and units of work
 
-**Status:** design proposal for operator review. No code changes yet.
-**Scope:** move Forge's durable state from JSON files into SQLite. While doing so,
-rebuild the issue lifecycle around **units of work** (one or more issues delivered
-together, #207) and fix the lifecycle bugs found this week at their root.
+Status: **draft for operator approval**, phase 0 of [#209](https://github.com/XRPL-Commons/forge/issues/209).
+This consolidates the initial PR #210 design and a parallel lifecycle/storage review.
+It includes the shared stage and transition-event work from superseded
+[#168](https://github.com/XRPL-Commons/forge/issues/168) and the batch requirements
+of [#207](https://github.com/XRPL-Commons/forge/issues/207).
 
-**Related:** [issue state machine](../issue-state-machine.md),
-[software factory contract](../software-factory-spec.md),
-[factory runtime](../factory-runtime.md) and issue #207.
+## Summary and review scope
 
----
+Move mutable controller state into one private SQLite database. Model each delivery
+as a unit containing one or more issues, with immutable candidates, scoped gates,
+row-level transactions and one shared lifecycle projection for API, UI and CLI.
+Migration and recovery run through the CLI; personal GitHub credentials stay local.
+Time to first merge remains the product metric.
 
-## 0. Summary
+The design preserves parallel part builds, a shared three-failure budget, and
+operator approval of batch proposals. It distinguishes an operator stopping work
+from confirmed GitHub closure and keeps cleanup ownership until termination is
+verified. The migration protocol covers all writers and refuses stale rollback
+once newer decisions or external effects exist.
 
-Today one JSON document, `state/factory/factory-ledger.json`, holds every issue,
-job, event, slot and cooldown. On the live box it is **64.6 MB**. Every write
-reloads it, serializes it twice to validate it, and rewrites it with fsync. That
-costs about **1.4 s per write**, and about **0.7 s for each `Ledger.read()`**.
-`supervisor.py` calls `ledger.read()` 47 times and opens 26 transactions of its own.
-Finished jobs' logs make up 75% of the file.
+Approval covers the lifecycle, storage and migration architecture plus the proposed
+policy choices in **Review decisions still needed** and **Decisions preserved from
+the earlier design draft**. Retention deletion and the seven-day parity / 30-day
+rollback windows remain explicit proposals. Implementation follows #209's phases
+0–7; this PR changes no runtime behavior or deployed server.
 
-The lifecycle has the same shape as the storage. An issue's real state is its
-`state` field plus about 25 side fields: `operator_hold`, `environment_hold`,
-`prerequisite_hold`, `blocked_dependencies`, `label_hold`, `ownership_wait`,
-`merge_gate`, `retry_after`, `decision_request`, `verification_request`, and
-others. Free text in `reason` fills the gaps. Three readers interpret those fields
-independently, each with its own precedence: the supervisor, `presentation()` and
-`attention_kind()`. Most of this week's bugs come from that.
+The original design remains available in commit `2dd3f89`. This revision replaces
+its unit-wide job exclusion with member-scoped eligibility, mutable charge flags
+with immutable budget accounting, the backend flag with a guarded database path,
+and artifact-first two-store rollout with an inactive schema followed by verified
+cutover. These changes remove concurrency, recovery and migration ambiguities.
 
-The proposal:
+## Lifecycle audit and proposed shared model
 
-1. **Separate the concepts.**
-   - An **issue** is a GitHub fact.
-   - A **unit of work** owns the branch, the candidate PR, the attempt budget and
-     the pipeline stage.
-   - A **job** is one worker run.
-   - A **wait** is one coded reason why a unit cannot advance.
+This section is a design proposal. It does not authorize implementation before the design is approved. Code evidence is from main `16ad85e`; references name functions so they remain useful after nearby edits.
 
-   A single issue is a unit of one, and a batch is a unit of several.
-2. **Give a unit one closed state enum,** `build → integrate → review → audit →
-   merge → merged | closed`. A transition table backs it, and both Python and a
-   SQLite trigger enforce it. Every hold, gate and wait becomes a row in `waits`,
-   with a `kind` and `code` from a closed registry. Each row records how it is
-   released. Wording, attention codes and display precedence are derived from that
-   registry, in one place.
-3. **Store everything in one SQLite database,** `state/forge.db`.
-   - It runs in WAL mode, with `BEGIN IMMEDIATE` for writers and snapshot reads
-     for the API.
-   - Constraints and partial unique indexes replace `Ledger.validate()`.
-   - Logs move to a compressed `job_artifacts` table with a retention policy.
-   - GitHub side effects go through an `outbox` that is written in the same
-     transaction as the state change.
-4. **Deliver it in six independently shippable PRs.** The first one alone
-   removes about 80% of the write cost.
-
----
-
-## 1. Lifecycle audit
-
-### 1.1 Persisted states and their writers
+### Legacy states and writers
 
 `STATES` in `contracts.py` lists `ready`, `built`, `reviewed`, `audited`,
 `approval_needed`, `investigating`, `hold`, `failed`, `merged` and `cancelled`.
@@ -86,10 +64,10 @@ pseudo-job.
 | any → `hold` (+ `operator_hold`) | `issue_actions.decide` and `IssueActions.apply` for pause and backlog |
 | `hold`/`failed`/`cancelled`/`approval_needed` → `ready` or saved stage | `ledger.retry`, **and separately** `issue_actions.decide` (queue, resume, retry, recheck, start_anyway) |
 | any → `merged` | `supervisor.reconcile_current` (direct dict edit when GitHub reports the PR merged); `ledger.accept` for the merge job |
-| any → `cancelled` | `ledger.cancel` (external closure, operator close; `closed_as` from GitHub's `state_reason`) |
+| any → `cancelled` | `ledger.cancel` (external closure, operator close, and operator Stop of an open issue; closure provenance must be checked separately) |
 | `hold` → `ready` (self-healing) | `reconcile_current` regex over recovery prose (#196) and over `decision_request` text (#174) |
 
-**Holds and waits.** There are fourteen of them, recorded in eight different ways.
+**Legacy holds and waits.** These are recorded in several unrelated shapes.
 
 | Hold or wait | Recorded as | Set by | Released by | Budget |
 | --- | --- | --- | --- | --- |
@@ -109,10 +87,10 @@ pseudo-job.
 | Approval and merge gate (#140, #189, c060ff1) | `state=approval_needed`, `merge_gate={kind,reason}`, `reason` | `supervisor.merge` | A fresh observation passes every gate | no |
 | Unknown outcome | `state=hold`, reason prose | `cycle()` after deadline + 900 s | Operator | no |
 
-### 1.2 Findings: problem → root cause in the model
+### Legacy findings and causes
 
-The **live** column comes from the read-only dry run against the live box
-(section 6.2).
+The **live** column preserves the initial author’s reported observations; see
+**Earlier author’s prototype report** below for their scope and limitations.
 
 | # | Problem observed | Root cause in the model | Live |
 | --- | --- | --- | --- |
@@ -141,682 +119,529 @@ expensive and every derived view a full scan.
 
 ---
 
-## 2. Model from first principles
 
-### 2.1 Concepts
+### Current ownership and shared projection
 
-| Concept | What it is | Owns | Does not own |
-| --- | --- | --- | --- |
-| **Issue** | The GitHub fact: title, body, labels, assignees, open/closed, `state_reason`, dependencies stated in the body. Cached in one row. | Its GitHub status, its admission intent (queued or backlog) | Branches, budgets, pipeline stage |
-| **Unit of work** | One or more issues delivered by one PR. A unit of one is the normal case. | Stage, branch, current candidate, attempt budget (`budget_epoch`), retry plan, environment choice, decision fence | GitHub facts |
-| **Part** | A member issue inside a unit, with its own sub-branch in a batch | Part build status | The PR |
-| **Job** | One worker run with a role, plus its outcome and failure accounting | Logs (as artifacts), result, `charged` | Unit state (it proposes; transition functions decide) |
-| **Candidate** | One verified PR revision: head, base, requirements and policy digest | Evidence (review, audit), verifications, check runs, merge commit | — |
-| **Wait** | One coded reason the unit cannot advance now | Its code, detail, since, until and release mode | Prose |
-| **Decision** | One operator request, idempotent by request id | Action, reason, status | — |
-
-Gates are evaluated **per unit**: dependencies, ownership, holds, repository
-readiness, account availability, human approval. A gate that holds is
-materialized as a `waits` row, and clears by setting `cleared_at`. A job never
-moves the unit directly. Its outcome is handed to a transition function, which
-changes `units.state` and the `waits` rows in one transaction.
-
-### 2.2 Unit state machine
-
-`units.state` is a closed enum and is always the **next pipeline step**. A
-stopped unit keeps its stage; the stop is a wait. This removes every saved
-`{'state': …}` copy.
-
-| State | Meaning | Next job |
+| Fact | Current owner | Problem to remove |
 | --- | --- | --- |
-| `build` | Parts need building, or rebuilding | `build`, one per pending part |
-| `integrate` | Batch only: every live part is built and the batch branch and PR need assembling | `integrate` |
-| `review` | The current candidate needs review | `review` |
-| `audit` | The current candidate needs audit | `audit` |
-| `merge` | Technical gates have passed; the supervisor evaluates the merge gate and merges | none (a supervisor merge request) |
-| `merged` | Terminal: GitHub confirmed the candidate merged | — |
-| `closed` | Terminal, with `close_code`: `dropped`, `closed_on_github`, `cancelled`, `dissolved`, `superseded` | — |
+| Pipeline phase | `contracts.STATES`, `NEXT_ROLE`, `PASS_STATE`, `RETRY_STATE`; `Ledger.accept/fail/findings` | `hold`, `failed`, `investigating`, and `approval_needed` replace the phase, so each hold stores a separate resume state. |
+| Candidate and verdicts | Issue's `candidate` and `evidence`; job's candidate snapshot | One issue, one active job, one PR is embedded in `_current`, `reserve`, submission markers and all transitions. |
+| Eligibility | `Supervisor.choose`, `reconcile_current`, `IssueActions.validate_action` | Several dictionaries and strings independently prevent dispatch. A row can retain dependency, environment, ownership and operator holds at once. |
+| Attention | `control.attention_kind` | Different precedence from the issue panel: dependencies suppress attention, while the issue panel can prefer a hold. |
+| Issue panel status | `issues.presentation` | Combines inventory's GitHub cache, ledger facts, PR ownership, free text and action availability. |
+| Activity grouping | `ui/app/utils/factory.ts:groupCards` and `workbench.ts:ledgerLook` | Recomputes phase from ledger states, candidate presence and jobs. |
+| Issue pipeline | `ui/app/utils/pipeline.ts:locate`, `reached`, `stoppedAt` | Independently infers phase from status, reason code, review rows, PRs and possible actions. A hold after audit can appear at a different stage on Activity. |
+| Human decisions | `issue_actions.decide` plus actions JSON and GitHub synchronization | Immediate local mutations have a decision-version fence, but cross-store effects are not one transaction. Preserve the fence in the new store. |
+| Terminality | `Ledger.cancel`, external closure and merge reconciliation | `cancelled` means both an open issue's stopped attempt and an externally closed issue. These are different facts. |
+| Events | `Ledger.event` and ad hoc mutations | Generic `accepted`, `state_changed`, and specialized events do not consistently capture before/after phase and gate. |
+| Observation | `Supervisor.cycle` | Repeated whole-ledger reads/writes and per-issue remote calls consume the observation budget. SQLite fixes the former, not GitHub latency by itself. |
 
-| From → to | Trigger | Function | Budget |
+Concrete cancellation regression: `control.requests` calls `ledger.cancel(job['issue_key'], request['reason'])` when an operator stops a non-recovery job. It does not close the GitHub issue. `presentation` intentionally offers Resume for this case. Treating every `cancelled` ledger row as GitHub closure would hide open work as completed. The new model stores a confirmed GitHub closure separately from a stopped execution; wording never determines which happened.
+
+### Observation ordering
+
+Concurrent readers must not overwrite newer GitHub facts with a delayed older response. Compare authoritative remote revision/update identity plus a monotonically allocated collection generation; an arrival timestamp alone is insufficient. An ambiguous or partial result records uncertainty and requests reconciliation. A missing page never proves an issue closed.
+
+### Entities and ownership
+
+- **Issue** owns GitHub identity, observed title/body/state/state reason, observation metadata, and an immutable requirements revision. It does not own candidate, retry budget or pipeline phase.
+- **Unit** owns one delivery: repository, base branch, membership generation, current lifecycle state, current candidate, budget epoch and policy revision. A single issue is a unit of one.
+- **Membership/part** joins an issue to a unit, pins its requirements revision, records its part branch and accepted output, and preserves historical membership when removed. Each issue has at most one live membership. A unit may have many part attempts running simultaneously.
+- **Attempt** is one execution: build part, integration, review, audit, recovery or merge. It pins unit generation, requirements, inputs, candidate when relevant, and a fencing generation. A worker result is a proposal; only a validated transition accepts it.
+- **Candidate** is an immutable revision of a unit PR, identified by repository, PR, head, base, membership/requirements revision and policy revision. A pointer chooses the current candidate. Verdicts, CI evidence and verification records reference that candidate; they are not copied mutable issue flags.
+- **Gate** is a durable requirement or external-effect intent, with a code, scope (`unit`, `member` or `candidate`), subject, structured parameters, status and provenance. Approved human verification, CI observations and resolved environment repairs remain evidence after their current gate clears. Scope determines which assignments it can prevent; display priority does not broaden its authority.
+
+Issues expose the states requested by #209 through a single server projection: `untracked` (known GitHub issue never admitted), `queued` (admitted, with no started work), `in_unit` (active membership without a current blocker), `blocked` (this member cannot advance because of an applicable member or unit gate, even while siblings continue), `done` (confirmed merged delivery or GitHub completed closure), and `dropped` (confirmed not-planned/duplicate closure). For unbatched queued work, the unit of one already exists. `in_unit` therefore does not mean “batch only”; membership details distinguish the two. Historical membership cannot make a reopened GitHub issue immediately done again. An issue's projected state is not another column to mutate independently.
+
+### One state, one current blocker
+
+Recommended unit lifecycle states are `queued`, `building`, `integrating`, `reviewing`, `auditing`, `merging`, `merged`, `closed`, and `dissolved`. The names describe the phase, including time waiting for a worker. A state does not assert that a worker is running. Execution activity comes from current attempts.
+
+`merging` includes waiting for human approval, verification or GitHub merge eligibility. Verification requested during review or audit retains that phase. `closed` means all delivery work ended without a merge, with an explicit closure cause; `dissolved` records an operator decision to release batch members. A stopped worker is never a terminal unit state.
+
+A unit has zero or one **current blocker**, selected centrally from applicable unresolved gate/observation facts only when the unit has no permitted forward work. A member may have its own single current blocker while other members continue. A blocked part does not make the entire unit blocked while independent parts remain runnable or active. Use either a store view or one transition-owned reference to the selected gate; do not duplicate mutable blocker code/details on the unit and gate. Several independent facts may remain unresolved, but only one governs the displayed next action and dispatch. Removing one cause recomputes the selection from the same transaction snapshot; it never silently deletes another cause.
+
+Recommended priority, with structured subcodes:
+
+1. Terminal state: no current blocker and no new dispatch.
+2. `operator_pause`, `operator_backlog`, `label_hold`, `membership_decision`, `operator_sync`, `external_change`, `ownership_conflict`: explicit intent and ownership protections.
+3. `budget_exhausted`, `approach_required`, `decision_required`: an operator decision is required before new code work.
+4. `repository_setup`, `environment`, `observation_unavailable`: admission, capabilities or authoritative evidence unavailable.
+5. `dependency`: unmet external prerequisites or a dependency cycle. An internal predecessor waiting during parallel build is a **part eligibility fact**, not a blocker for unrelated runnable parts.
+6. `recovery_pending`, `cleanup_pending`, `provider_unavailable`, `capacity`, `retry_delay`: automatic recovery or scheduling waits.
+7. `verification_human`, `verification_ci`, `approval_required`, `changes_requested`, `merge_checks`, `merge_conflict`: candidate gates applicable at the current phase.
+
+This is ordering for presentation, not permission to bypass lower gates. Applicability is checked against the prospective assignment: a unit gate applies to every new assignment, a member gate applies to that member and dependent parts that need its output, and a candidate gate applies to integration or later work that consumes that candidate. Dispatch requires **all applicable hard gates** to be satisfied, except the gate that a particular recovery/recheck action is explicitly authorized to resolve. Terminal observations are processed before selecting blockers. An explicit pause is never replaced by an automatic dependency wait. “Recheck environment” clears only the environment requirement it proves repaired; it cannot release an operator pause or approve a candidate.
+
+**Recovery and cleanup scope:** a failed part opens `recovery_pending` for that member, and its attempt retains its own cleanup lease. It does not gate independent build parts or recovery for a different member. `environment` is member-scoped when the capability is specific to that part, and unit-scoped only when independently observed common infrastructure prevents every part. A candidate-bound review/audit recovery prevents combined advancement but does not prevent explicitly scheduled independent remediation. Integration waits for all required current outputs. At that point the view may select one missing member gate as the unit's current blocker, retaining the member subject. Shared `budget_exhausted`, an operator pause, membership uncertainty and repository access restrictions apply to the entire unit.
+
+Candidate invalidation is an immediate transition even while paused: archive the old evidence, fence attempts, select the new pending work phase, and retain the operator pause. This avoids resuming an obsolete audit after the base or requirements change.
+
+### Transition matrix
+
+Every transition checks an expected entity version and assignment generation, updates records and appends its event atomically. Remote work happens after commit, with durable intent and idempotency identity.
+
+| Trigger | Preconditions | Result | Budget |
 | --- | --- | --- | --- |
-| *(new)* → `build` | Issue admitted (ready label or `queue`) or batch approved | `units.admit`, `batches.approve` | new epoch |
-| `build` → `review` | Build accepted and candidate verified (unit of one) | `pipeline.accept` | — |
-| `build` → `integrate` | Last live part built (batch) | `pipeline.accept` | — |
-| `integrate` → `review` | Integration accepted and the single PR verified | `pipeline.accept` | — |
-| `review` → `audit` | Review passed for the current candidate | `pipeline.accept` | — |
-| `audit` → `merge` | Audit passed | `pipeline.accept` | — |
-| `review`/`audit` → `build` or `integrate` | Rejection | `pipeline.fail(rejection=True)` | charged |
-| `merge` → `build` or `integrate` | Conflict with base | `pipeline.conflict` | uncharged |
-| `review`/`audit`/`merge` → `build` | Requirements, base or policy changed | `pipeline.invalidate` | uncharged |
-| `audit`/`merge` → `review` | Head replaced by a new valid candidate | `pipeline.invalidate(candidate=…)` | uncharged |
-| `merge` → `merged`, or any open state → `merged` | GitHub confirms the candidate merged (Forge's or external) | `pipeline.merged` | — |
-| any open state → `closed` | All members closed on GitHub, operator close, dissolve, or absorbed into a batch | `pipeline.close(code)` | — |
+| Admit issue | Open issue; repository enabled; no live membership | Create unit of one in `queued`; pin requirements; select admission gates | New epoch, three failures |
+| Approve combine proposal | Same repository/base; no human ownership; all external prerequisites closed; no live writes or cleanup; approved exact membership revision | Create unit; transfer memberships and reusable part refs atomically; retire source units with reason `combined` | New unit epoch; retain prior histories |
+| Reserve first build part | Runnable part and capacity; all applicable gates pass | Unit `building`; reserve attempt and slot/lease before launch | No charge |
+| Accept part result | Assignment current; expected requirements/base/input revision; independently confirmed commit | Part output accepted; newly eligible descendants may run | No charge |
+| Finish all parts | Every live member has accepted current output; cleanup complete | Batch `integrating`; one integration assignment | No charge |
+| Publish valid candidate | Current unit/membership, valid publication marker, independently confirmed PR head/base | Unit `reviewing`; select current candidate | No charge |
+| Review passes | Verdict bound to current candidate | `auditing`; persist review evidence | No charge |
+| Audit passes | Verdict bound to current candidate | `merging`; persist audit evidence and required gates | No charge |
+| Needs human/CI verification | Valid current candidate and exact instructions | Retain phase; add verification gate; do not publish passing technical verdict | No charge |
+| Verification satisfies | Fresh candidate-bound evidence; human approval newer than request or allowed exact CI result | Clear that gate; resume remaining technical work | No charge |
+| Execution/code failure | Current, unfenced attempt | Record failure; retain retry phase; queue recovery scoped to that part or candidate. Independent parts continue below the shared failure limit | Charge once |
+| Review/audit rejects | Current candidate | Invalidate downstream evidence; return to `building` for a singleton or `integrating` for a batch, scheduling affected part revisions as needed | Charge once |
+| Recovery diagnoses repairable environment/prerequisite/valid prior publication | Exact failed attempt and independently confirmed facts | Correct charge by append-only adjustment, set appropriate gate or accept recovered output | Reverse that charge once |
+| Base conflict | Candidate still owned; merge not confirmed | Invalidate verdicts; fence obsolete merge intent; rebuild singleton or integration at current base | No charge |
+| Pause or stop | Expected current version | Record operator pause; fence relevant attempts; retain phase and refs | No charge |
+| Resume/recheck | Explicitly authorized action and expected gate/version | Resolve only intended gate; recompute all others | No reset unless explicit retry |
+| Confirm PR merged | Independently observed merge SHA for owned candidate | `merged`; fence obsolete attempts; persist delivery memberships; enqueue member issue closure checks | No charge |
+| Observe GitHub closure | Authoritative observation with state reason | Singleton `closed`; batch membership change requires an explicit include/drop decision; preserve work | No charge |
+| Drop member | Operator chooses exact membership generation; cleanup confirmed; dependent retained parts have an explicit dependency decision | Remove live membership, keep history/branch; create standalone queued unit; invalidate combined candidate and affected descendant outputs/input manifests | No silent budget reset on retained batch |
+| Dissolve batch | Operator chooses exact generation; fence/stop then confirm cleanup | `dissolved`; release members to standalone queued units; preserve refs/history; supersede old candidate | Explicit new epochs for new units |
 
-An execution failure keeps the state and adds an `investigation` wait.
-Verification requests add a `verification` wait **on the current stage**; the
-stage's job reruns once the wait clears. That is exactly today's `resume_state`
-behavior, without the copy.
+A singleton may keep the present direct-build-to-PR path and skip `integrating`; both paths produce the same candidate contract. The integration phase is compulsory when combining parallel parts. No batch review/audit may run against an individual part PR.
 
-Terminal states are terminal. Resuming a closed unit creates a **new** unit, which
-inherits the branch through the existing-draft logic (`own_draft`). That matches
-today's budget reset on retry.
+### Parallel parts and the shared three-failure budget
 
-```mermaid
-stateDiagram-v2
-    [*] --> build: admitted / batch approved
-    build --> review: unit of one, build accepted
-    build --> integrate: batch, all parts built
-    integrate --> review: single PR verified
-    review --> audit: pass
-    audit --> merge: pass
-    review --> build: rejection (charged)
-    audit --> build: rejection (charged)
-    merge --> build: conflict / invalidated (uncharged)
-    audit --> review: new candidate
-    merge --> review: new candidate
-    merge --> merged: GitHub confirms
-    build --> closed
-    review --> closed
-    audit --> closed
-    merge --> closed
-    merged --> [*]
-    closed --> [*]
-```
+#207 already resolves three product choices: proposals enabled by default but never auto-applied, one shared three-failure budget, and no member-count cap. Do not reopen them as unanswered design questions.
 
-Python owns the transition table (`pipeline.TRANSITIONS`). It is also seeded into
-`unit_transitions` and enforced by a trigger, so a stray `UPDATE` cannot create an
-illegal state.
+- Dispatch parallel independent parts up to available Build capacity. Pin each part to an input manifest: original base plus exact accepted predecessor commits. A dependent part starts only after predecessors have built; “starts later” alone is insufficient if their code is absent from its branch. Integration merges in dependency order and validates the combined result.
+- Cyclic internal dependencies cannot produce runnable work. Surface `dependency_cycle` with the actual cycle and request a revised split/combined implementation plan; do not burn worker attempts discovering the cycle repeatedly.
+- Charge build, integration, review and audit failures to the unit's current budget epoch. Unique charge identity is `(attempt_id, charge_kind)`; retries of the same result cannot double-charge. Infrastructure failure, environment repair and base-conflict rebuild remain uncharged. Recovery failure does not invent a second charge for the original failure.
+- On the transaction that records the third charge, set `budget_exhausted` and fence every still-active assignment atomically. Stop further launches. Other already captured or in-flight results retain their reports and branches, but cannot add another charge or advance the exhausted unit after that fence. Thus concurrent failures cannot race through to a fourth charged attempt. Preserve the raw failure observations rather than misreporting them as successes.
+- A failure below the shared limit blocks its own part and descendants requiring its output. Independent parts continue; their launch is not conditioned on that member's recovery or cleanup. Only exhaustion or an explicit unit-scoped operator/safety gate stops the whole unit.
+- Already accepted parts remain reusable after exhaustion. No integration/review proceeds until the operator chooses drop, hold or a documented retry. The three-failure budget is a failure limit, not a cap of three parallel parts.
+- Dropping the failed part needs an explicit continuation decision for the retained unit; otherwise its shared budget is still exhausted. Recommended UI: “Drop #N and retry remaining work”, with both decisions in one transaction and a new budget epoch, retaining every prior charge. Dropped work receives its own history and a fresh epoch only through that explicit choice. Automatic batch proposals must never reset or evade an exhausted budget.
+- Dropping a prerequisite member cannot leave a retained descendant pointing to its now-excluded commit. The drop preview lists affected descendants, accepted outputs and active assignments. The operator must choose to retain the prerequisite, remove/replan the dependency in the descendant's requirements, or wait for the prerequisite as external work. On confirmed drop, fence affected assignments, invalidate descendant outputs and integration evidence, and build new input manifests from the retained member graph. Unaffected parts remain reusable. No old branch containing dropped code is silently accepted into the retained delivery.
+- Failure attribution names member IDs when known and can be unit-wide when the problem is integration. A worker cannot automatically drop a member because it is difficult.
 
-### 2.3 Waits: one registry, one precedence, one wording
+### Candidate and membership safety
 
-`forge/factory/codes.py` defines every wait kind and code. It replaces the string
-comparisons, `SUMMARIES` keys, `attention_kind()` and the hold branches of
-`presentation()`. The `waits.kind` and `waits.code` columns have a foreign key to
-the seeded `wait_codes` table, so an unknown code cannot be written.
+1. Candidate identity includes a digest of all live members, requirements revisions, part commits, target base and policy. Replacing any input invalidates current technical verdicts, verification evidence and merge intent.
+2. Keep one current PR candidate per unit, but preserve candidate history. “One PR” means one delivery PR, not one irrevocable candidate revision.
+3. Add a versioned unit submission marker containing unit ID, generation, publication attempt and head; validate its complete member manifest from the store. Continue reading legacy issue markers during migration. Workers cannot choose membership by editing closing keywords.
+4. Before publication and merge, verify that PR closing keywords cover exactly the intended live member set in this repository and that the PR does not unexpectedly claim unrelated issues. Merge closes all live members; durable follow-up records repair any GitHub auto-close omissions without re-running the merge.
+5. Membership changes fence and supersede existing integration/review/audit/merge assignments. A lost HTTP response to merge must be reconciled before permitting drop or dissolve: never expose members as new work while the old PR may already have merged.
+6. Reopened issues are new requirements/queue decisions, with historical delivery retained. A merged unit remains merged; reopening one member does not reopen the whole batch.
+7. A PR 404 on an open unit is `observation_unavailable` until absence versus lost access is established. Confirmed issue closure may retire singleton work while preserving an unreadable PR reference; a 404 alone is never proof of successful completion.
+8. Provider and slot leases remain owned until teardown is confirmed. Clearing a logical active attempt does not free its physical capacity prematurely.
 
-| Kind | Codes | Release | Attention | Blocks |
-| --- | --- | --- | --- | --- |
-| `applying` | `labels` | auto, when the outbox confirms the labels | — | dispatch |
-| `external_change` | `pr_edited`, `outcome_unknown`, `legacy_hold` | operator `recheck` | `review` | everything |
-| `decision` | `question` | operator answer | `question` | dispatch |
-| `budget` | `exhausted` | operator `retry` (new epoch) | `failed` | dispatch (recovery still runs) |
-| `approach` | `repeated_failure` | operator `retry` with an approach | `approach` | dispatch |
-| `environment` | `toolchain`, `sandbox`, `dependency_access`, `resources`, `ci_evidence`, `services`, `host_memory` | auto recheck by code, or operator `recheck` | `env` | dispatch |
-| `repository` | `protection_missing`, `bypass_missing`, `access_missing`, `disabled` | auto, when the repository observation is `ready` | `env` | dispatch and merge |
-| `verification` | `human`, `ci` | auto, on a fresh approval or a CI pass for this candidate | `verify` / — | stage job |
-| `approval` | `human_required` | auto, on a counted approval | `approve` | merge |
-| `merge_blocked` | `changes_requested`, `gates_mismatch`, `ci_failed`, `unresolved_human_requirement`, `refused` | auto | `review` | merge |
-| `operator` | `pause`, `backlog` | operator `resume` or `queue` | — | dispatch |
-| `label_hold` | `hold`, `blocked` | **auto, when the label is removed** | — | dispatch and merge |
-| `ownership` | `assignee`, `wip_label`, `claiming_pr` | auto | — | dispatch and merge |
-| `dependency` | `open_prerequisite` (detail: numbers, source `body` or `declared`) | auto; `start_anyway` for `declared` | — | dispatch |
-| `investigation` | `pending` | auto, when the recovery job ends | — | stage job |
-| `backoff` | `account_auth`, `account_quota`, `github_unavailable`, `environment_selection` | auto, at `until` | — | dispatch |
+### Shared stage, event and action contract
 
-The table's order **is** the display precedence. Several waits may be active at
-once, and all of them are shown. The headline is the first. A unit can therefore
-honestly be "paused by a label *and* waiting for #17". Both clear independently,
-and clearing one never erases the other.
+Create one backend `UnitView` builder shared by status, issue inventory/detail, CLI and future event feed. It returns:
 
-`status.describe(unit, waits, live_job, issue)` derives the plain wording, the UI
-status (`working`, `attention`, `waiting`, `blocked`, `queued`) and the
-`attention_kind` from the registry. The supervisor's eligibility check and the
-UI call the same function. Worker prose stays in `waits.detail.note` and in job
-summaries; it is never compared.
+- `unit_id`, `unit_version`, `state`, `stage_code`, `current_blocker` (nullable structured code and subject);
+- stage progress derived from current candidate evidence, active attempts and membership, including Build part counts and Integrate;
+- one `display_status`, `attention_kind`, human-readable explanation and allowed actions;
+- candidate identity, member summaries and paged links to attempts/artifacts/events;
+- observation freshness separately from the lifecycle state.
 
-**Typed results replace the self-healing regexes (#174, #196).** The `recovery`
-and `build` result schemas (`ROLE_FIELDS`) gain `blocked_by: [issue numbers]`.
-A result that carries it becomes a `dependency/open_prerequisite` wait with
-`source=declared`. The regexes in `reconcile_current` remain only as a
-**migration** rule for legacy holds.
+The UI maps stage codes to visual assets only. Delete independent lifecycle inference from `pipeline.locate`, `workbench.ledgerLook`, Activity grouping, and action-based inference once all endpoints carry this contract. Wording lives in the server presentation catalog keyed by code and typed parameters. No comparison of prose, PR presence or “does this row offer Retry?” determines state.
 
-### 2.4 Issue-level status
+Events have an increasing database sequence, kind/version, timestamp, subject unit/issue/attempt/candidate IDs, actor, correlation/request ID, before/after lifecycle and blocker references, and a bounded structured payload. Emit an event in the same transaction as every accepted transition; operational heartbeats need not create lifecycle events. Member views link to the unit event rather than copying one event per member. Attempt output is paged from artifacts, never embedded in change events or state summaries.
 
-This is derived in a SQL view, `issue_status`, and never stored.
+Required event kinds cover creation/admission, membership change, part accepted, candidate selected/superseded, phase changed, gate opened/resolved, attempt reserved/finished/fenced, budget charged/corrected/reset, decision applied/rejected, merged, closed and dissolved. Replay of one idempotency key yields the original result, without another transition/event. This gives #169 a safe sequence cursor without introducing a second authority for lifecycle state.
 
-| Status | Rule |
+### Observation and validation commitments
+
+“All open units every cycle” requires a repository-scoped observation pass as well as SQLite. Batch GitHub issue/PR/check reads where possible, persist observations once, and evaluate every open unit against that snapshot. Do not hold a database write transaction while waiting for GitHub or a runner. Fresh observations still must be fetched at publication/merge and authority boundaries. If GitHub rate limits prevent complete observation, report the incomplete cycle and stale units explicitly; do not claim the cycle guarantee was met. Measure both local evaluation time and external freshness under the same live workload.
+
+Required lifecycle tests include every transition plus: open stopped issue versus closed issue; explicit pause plus open dependency; environment recheck under a human hold; candidate change during review/verification/merge; closed/deleted PR with lost-access ambiguity; repeated result and repeated decision identity; three simultaneous failures; third failure racing a success and new dispatch; drop/dissolve racing publication or ambiguous merge; membership/requirements changing mid-part; internal DAG inputs and cycles; a failed part leaves independent parts running; recovery and cleanup scope do not stop independent dispatch; dropping a prerequisite invalidates affected descendant manifests and excludes dropped code; no stale evidence after integration/base changes; all API/CLI/UI surfaces returning the same stage/action for the same snapshot.
+
+### Review decisions still needed
+
+These are proposed defaults for design approval, not requests to implement immediately:
+
+- **Combine existing work:** initially allow combine only after active executions and cleanup finish; preserve branches and require rebuilding/integrating stale candidates. Do not adopt an in-flight merge.
+- **Budget reset after dropping:** use an explicit combined “drop and retry remaining” operator action. Preserve the old epoch and charges; no automatic reset.
+- **Closure of a batch member outside Forge:** pause integration/merge with a membership decision. Other already accepted parts remain preserved; never silently remove the closed member's code or rewrite its requirements.
+- **Unclear migration phase:** retain a coded `legacy_reconciliation` blocker with the original record reference when the old hold has no reliable resume phase. Never infer an audited phase merely because a PR exists.
+- **Dissolve after merge:** reject because the delivery is complete; preserve all histories. “At any time” in #207 should mean before confirmed merge, with pending external merge first reconciled.
+
+### Decisions preserved from the earlier design draft
+
+The initial PR #210 draft recorded these operator choices. They remain proposals. The following defaults require approval with this design:
+
+| Decision | Recommended default | Release or retention boundary |
+| --- | --- | --- |
+| Remove a GitHub `hold`/`blocked` label | Automatically clear the gate created by that label after a fresh authoritative observation | Preserve any separately recorded operator pause, dependency, environment or budget gate. Resume is possible only if every applicable gate clears. |
+| Repository protection, bypass or access repaired | Automatically clear that readiness gate after an authoritative check | Bind readiness to repository, target branch, controller identity and policy revision. Cached readiness for another target or App cannot permit merge. |
+| Closed externally as completed | Show `done`, with explicit GitHub closure provenance | Never infer closure from a stopped/cancelled execution or call it merged without a confirmed merge. |
+| Finished raw logs, CI transcript and launch input | Proposed retention: 30 days | Do not delete active-job data, current-candidate proofs, immutable input manifests, unresolved-failure evidence or pending reconciliation inputs. Retain the small normalized facts needed to explain and safely resume current work. |
+| Lifecycle events, decisions, merge facts, validated results, summaries and failure findings | Keep indefinitely | They are audit/history facts. Lifecycle meanings and idempotency must not depend on retained raw logs. |
+| Telemetry | Proposed retention: 90 days | Define an explicit allowlist. A record whose contents justify ownership, authority or a state transition is not disposable merely because its old name sounds operational. |
+| Completed outbox rows | Proposed retention: 14 days for response/debug detail | Durable operation identity and confirmed receipts survive longer where required to prevent repeating comments, review requests or other external effects after recovery. |
+| Backups | Proposed: seven daily and four weekly verified database snapshots | Plus a protected pre-migration backup until the rollback decision is complete. |
+| Cutover parity | Proposed: seven consecutive days of clean fixture/live-copy parity before switching authority | Intentional lifecycle corrections need named, reviewed exceptions; they are not unexplained mismatches. |
+| JSON rollback window | Proposed: keep verified source backups and the export/backend compatibility path for 30 days after storage cutover | Decide explicitly when compatibility ends. Batches cannot be losslessly projected into the old issue-only model; never automatically dissolve them to roll back. |
+| Durability | `synchronous=FULL` | The earlier prototype's FULL/NORMAL timings are reported measurements, not a new benchmark from this design pass. |
+
+Output APIs should distinguish available, expired-by-policy, not-yet-captured and corrupt/missing artifacts. Expired historical logs should show the expiry in the UI while preserving outcome and summary. A missing current result or evidence artifact must not be treated as a passed check or safely ignored as “logs unavailable.” The 30/90-day policies remain proposals; no pruning is authorized by writing this document.
+
+The earlier draft also proposes typed prerequisite findings for recovery as well as build workers. Preserve this requirement: a recovery report can identify member-scoped prerequisites with source requirements revision and quoted evidence; the supervisor independently verifies identities and applicability before changing gates or reversing charges. Retire prose-regex inference from normal reconciliation, keeping conservative, reported mappings only in the one-time importer.
+
+## Storage and access design
+
+This section is a proposal for design review. It does not authorize migration of a
+running server. SQLite replaces the controller's mutable runtime records; a second
+live copy in JSON is never a source of truth after that domain cuts over.
+
+### Database ownership and durability
+
+Use `<private-root>/state/forge.sqlite3`, owned by the Forge service account. The
+directory is `0700`; the database, WAL, shared-memory files and backups are `0600`.
+Validate ownership, permissions and symlinks before opening any existing database.
+The database is never mounted into workers or the UI container. The controller
+provides the existing authenticated API and selects explicit public fields.
+
+Use Python's standard `sqlite3` library. Establish `journal_mode=WAL`,
+`synchronous=FULL`, `foreign_keys=ON`, a bounded busy timeout and explicit
+transaction boundaries on every connection. Fail startup when required settings
+or schema compatibility cannot be established. Do not silently fall back to a new
+database after corruption or deletion. Keep one immutable instance anchor outside
+the database, containing only the expected instance ID and format signature. It
+distinguishes first installation from a lost initialized store; it contains no
+mutable generation or configuration. The database path is fixed by the host
+launcher. Missing expected database/anchor pairs require explicit recovery.
+
+Qualify the actual linked SQLite library during installation and updates:
+`sqlite3.sqlite_version` must identify a WAL-reset fix (3.51.3 or later, or a
+verified vendor backport such as 3.44.6/3.50.7). Distribution version branding alone
+does not establish that the linked library contains the fix. Record the tested
+library version and vendor evidence in the host qualification report.
+[SQLite WAL-reset fix](https://www.sqlite.org/wal.html#walreset)
+
+WAL allows readers and one writer to run concurrently on one host. Readers keep a
+consistent snapshot for their short transaction. Keep the database on a local
+filesystem, release read transactions before network calls or response streaming,
+and retain `FULL` durability for launch intents and operator decisions. Monitor
+WAL size and checkpoint time; use passive checkpoints during normal operation and
+quiesced checkpoints for maintenance. [SQLite WAL documentation](https://www.sqlite.org/wal.html)
+
+Writers use `BEGIN IMMEDIATE`; acquire no external locks and make no GitHub,
+container or provider calls while holding the transaction. A bounded busy failure
+returns a retryable coded error. Retrying an operator command uses its original
+idempotency key; retrying an observation rereads its version fence.
+[SQLite transactions](https://www.sqlite.org/lang_transaction.html)
+
+### Schema boundaries
+
+Columns below are the proposed logical schema. The first implementation PR will
+include executable migrations and constraint tests. JSON columns are allowed for
+bounded report details or raw observations, never as a replacement whole-ledger
+document or a second copy of a normalized state field.
+
+| Tables | Owned facts and constraints |
 | --- | --- |
-| `done` | Member of a `merged` unit, or closed on GitHub with `state_reason` `completed` or null |
-| `dropped` | Closed as `not_planned` or `duplicate`, with no merged unit |
-| `in_unit` | Open, with a membership row whose `left_at IS NULL` |
-| `queued` | Open, admitted (ready label or `queue` decision) but not in a unit yet, for example before the next cycle |
-| `untracked` | Everything else (today's "backlog") |
+| `schema_migrations`, `store_metadata` | Applied schema version/checksum, instance ID, storage generation, per-domain backend authority, feature version. A binary refuses newer unsupported schemas. |
+| `repositories`, `repository_observations` | Repository identity and the latest access, protection, inventory, deployment and refresh observations; observation type, revision, fetched time, error code and bounded details. Partial GitHub scans have a scan generation and cursor; missing pages never imply closure. |
+| `issues`, `issue_revisions` | Unique `(repository_id, github_number)`; GitHub state/state reason, labels, assignees, observation provenance and current requirements revision pointer. Immutable revisions own title, body/content hash and canonical requirements snapshot/hash. The inventory and supervisor update this one pointer, while memberships retain their pinned revision. |
+| `units`, `unit_issues` | Unit state, current candidate reference, primary blocker reference, version fence, budget generation and lifecycle timestamps. Membership has a stable ID, requirements revision, part state and historical exit reason. A partial unique index permits only one active unit membership per issue. Members must share repository and base branch, enforced by transition validation in the same transaction. |
+| `issue_dependencies` | Directed prerequisite edges with source and requirements revision; explicit member mappings distinguish dependencies inside a batch from external prerequisites. |
+| `candidates`, `candidate_evidence` | Immutable unit candidate identity: PR, branch, head, base, policy digest and requirements digest; review/audit/verification evidence references the exact candidate. New candidates invalidate previous gates by identity, not by clearing arbitrary nested fields. |
+| `pull_requests`, `candidate_observations`, `check_runs`, `merge_requests` | PR discovery/ownership, current candidate observations, individual check identities/statuses and durable merge intents. An uncertain merge request stays reconcilable before membership changes or retry. Check settlement is a durable external effect, not inferred from a completed process. |
+| `unit_gates` | Coded unresolved and resolved gates scoped to unit, member and optional exact candidate. A member FK and constrained subject key permit independent same-code member gates, with one unresolved row per `(unit, code, subject)`. Unit projection selects at most one primary blocker by shared precedence/applicability while retaining other facts. A part's recovery/cleanup gate stops that part and descendants; unrelated eligible parts continue below budget exhaustion. One cleared gate cannot erase another. |
+| `attempts`, `jobs`, `job_leases` | Attempts record charge/no-charge classification and budget generation. Jobs record role, candidate, optional member, phase, result and execution fence. A job lease owns a unique resource slot until verified cleanup; candidate invalidation does not release a lease. Parallel part jobs are permitted, while review/audit/integration exclusivity is checked by transitions. |
+| `job_artifacts` | Output, capture, observation and assignment-history artifacts, keyed by `(job_id, kind, sequence)` with content type, size and digest. Large output uses bounded chunks; list/status queries never fetch blobs. Keep already-redacted content only. |
+| `events` | Append-only integer sequence, transaction ID, entity IDs, kind, time, actor reference and bounded payload. Index `(unit_id, sequence)` and `(issue_id, sequence)`; a global sequence is the cursor for #169. Store state/projection transitions once with old/new codes and versions. |
+| `decisions`, `external_effects`, `check_requests` | Durable commands with unique request IDs, actor, expected entity version, status and result; outbound GitHub/process effects have stable identifiers and reconciliation status. Repeated requests return the existing result. |
+| `discussions`, `messages`, `discussion_executions` | Conversation identity, optional member/unit context, auxiliary execution ownership and ordered message records. Auxiliary discussion executions share the provider-capacity reservation boundary but do not consume a unit failure budget; their DDL is outside the pipeline-job fixture. Transcript output remains an artifact instead of growing the discussion row. |
+| `provider_cooldowns`, `provider_observations` | Account readiness, cooldown reason/retry time and the last provider observation. Credential contents remain in the credential store. |
+| `memory_profiles`, `unit_environment` | Learned memory by repository/role with source-job provenance; explicit unit environment choice/override, retry tier and selected profile revision. Applying a memory retry preserves the candidate, budget and branch. Provider-selection and repository-discovery cursors belong to typed runtime controls. |
+| `deployment_observations`, `environment_proposals`, `environment_scans` | Current deployment knowledge and typed environment/configuration proposals and their revisions. Accepting a proposal records a decision and an idempotent external configuration effect. |
+| `setup_operations`, `client_operations`, `runtime_controls` | Onboarding/reset progress, approved client repository operations, activation and pause generations, supervisor heartbeat and operational cursors. |
+| `configuration` | Versioned active runtime, repository and identity configuration with opaque credential references; JSON becomes an explicit import/export format. |
+| `operator_sessions`, `operator_flows`, `client_connections`, `operator_audit` | Existing authorization epochs, expiry, token hashes, scopes and request audit records. Preserve revocation semantics: sign-out revokes that operator's approved agent connections. Pending login flows remain private and bounded by expiry. |
+| `notification_outbox`, `notification_deliveries` | Durable enqueue IDs, delivery status, retry schedule and bounded diagnostic details. An observer owned by another installation remains separate. |
+| `import_runs`, `import_sources`, `import_progress` | Frozen source hashes, importer version, per-table cursor/counts, validation report and completion status. |
 
-A partial unique index allows at most one open membership per issue, so an issue
-is never in two units.
+Use foreign keys for ownership, unique constraints for identities and idempotency,
+and checks for state codes, positive versions and valid budget values. Enable
+foreign-key enforcement on every connection. Cross-row invariants such as a
+candidate belonging to the current unit and active jobs belonging to an allowed
+member are validated by transition methods under the write transaction, with
+composite foreign keys where practical. [SQLite foreign-key settings](https://www.sqlite.org/pragma.html#pragma_foreign_keys)
 
-### 2.5 Where each fact lives
+The single database is not a reason to widen credential access. Identity client
+secrets currently live inside `operator-auth/auth.json`; migration moves them to
+the existing private credential store with an opaque reference in the database.
+GitHub App keys and provider credentials stay there too. Personal GitHub admin
+tokens remain on the operator's computer. This reference change must preserve
+atomic activation and fail closed if a credential reference is missing. Config
+files such as `runtime.json` and `factory.json` become import/export interfaces;
+their active mutable settings live in versioned `configuration` rows by the final
+phase. Host service definitions, image policy and immutable source files remain
+installation inputs. During staged cutover a configuration domain has one selected
+writer; phase 7 removes its live JSON writes. Only the immutable instance anchor,
+launcher location, sealed backups, credential material and temporary IPC remain
+outside the operational database. The active storage generation, configuration
+revisions and migration journal live in database tables.
+Worker assignment/result files remain temporary IPC artifacts, not authoritative
+controller state. No worker can mutate a database row.
+
+The earlier draft proposes compressed artifact storage and live-tail deduplication;
+retain both as implementation options. Final output may supersede an identical
+live tail after its digest is verified. Compression must record codec, raw byte
+length and digest and enforce a bounded decompression size. Missing optional log
+output can be shown as unavailable. Missing assignment inputs, result contracts,
+candidate evidence or lease records must fail the affected transition closed; they
+are not interchangeable with optional logs.
+
+Take verified backups daily and before every schema migration or host update. The
+initial release retains all imported artifacts, events and idempotency records.
+The earlier 30-day output/90-day telemetry and 7-daily/4-weekly backup deletion
+policies are proposals requiring explicit retention approval; migration never
+silently applies them. Structured results, summaries, requirements revisions,
+decision identities and delivery evidence remain durable. A later retention tool
+must prove that an artifact is no longer needed by active recovery or rollback
+before deleting it, and distinguish output expiry from a missing required record.
+
+The accompanying `state-and-units-of-work.sql` is an executable core-schema design
+fixture, not a production migration. It proves key ownership, exclusive active
+membership, slot uniqueness, append-only events and budget correction constraints.
+The remaining tables follow the ownership boundaries above; their full DDL belongs
+in the schema implementation PR. The fixture uses the same gate codes as the
+lifecycle section and includes unit membership/fencing generations and candidate
+input-manifest identity. Memberships reference immutable issue revision rows;
+candidate manifests incorporate every pinned revision and dependency input. It
+uses `STRICT` tables, supported by qualified SQLite
+versions. Assignment acceptance checks the saved generation and manifest against
+the current unit within the write transaction.
+
+### Legacy field census
 
 | Today (ledger field) | New home | Notes |
 | --- | --- | --- |
-| `state` | `units.state` + active `waits` | — |
-| `reason` | `waits.code` + `waits.detail` | Prose only in `detail.note` |
-| `active` | `jobs WHERE unit_id=? AND cleanup=0`; `merge_requests` | No pointer to keep in sync |
-| `candidate` | `candidates`, `units.candidate_id` | — |
-| `failures`, `budget_start`, `job.failure`, `job.history` | `jobs.charged`, `jobs.budget_epoch`, `jobs.investigates`, `jobs.findings`; `units.budget_epoch` | History is a query; the launch input is kept as an artifact |
-| `evidence`, `verified_checks`, `verification_request`, `merge_gate.approvals` | `evidence`, `verifications`, `candidate_observations`, keyed by `candidate_id` | Scoped to the candidate, so no clearing is needed |
-| `requirements`, `title`, `github_observation`, inventory rows | `issues` (one row, newest `observed_at` wins) | Inventory and supervisor share it |
-| `blocked_dependencies`, `dependency_reason`, `declared_dependencies`, `dependency_body`, `dependency_evidence`, `dependencies_checked_at` | `issue_dependencies` + `waits(dependency)` | Wording derived |
-| `ownership_wait` | `waits(ownership)` with a structured detail (`login`, `pr`) | — |
-| `label_hold` | `issues.labels` → `waits(label_hold)` | — |
-| `operator_hold`, `operator_sync`, `operator_request`, `actions.json`, `operator-requests.json`, `check-requests.json` | `decisions`, `waits(operator \| applying)`, `outbox` | — |
-| `environment_hold`, `prerequisite_hold` | `waits(environment \| repository)` | The saved stage disappears |
-| `environment_choice`, `_override`, `_retry`, `_label`, `memory_retry` | `units.environment` (JSON) | `environment_label_pending` becomes the outbox |
-| `decision_request` | `waits(decision).detail` | — |
-| `checks_settled` | `check_runs` + `outbox` | — |
+| `state` | `units.state` + scoped `unit_gates` | — |
+| `reason` | `unit_gates.code` + structured detail | Prose only in `detail.note` |
+| `active` | `jobs`, `job_leases`; `merge_requests` | No pointer to keep in sync |
+| `candidate` | `candidates`, `units.current_candidate_id` | — |
+| `failures`, `budget_start`, `job.failure`, `job.history` | append-only `budget_entries`, `attempts`, recovery findings and `units.budget_generation` | History is a query; the launch input is kept as an artifact |
+| `evidence`, `verified_checks`, `verification_request`, `merge_gate.approvals` | `candidate_evidence`, candidate-bound `unit_gates`, `candidate_observations` | Scoped to the candidate, so no clearing is needed |
+| `requirements`, `title`, `github_observation`, inventory rows | `issues` + immutable `issue_revisions` (compare remote revision and collection generation, not response arrival time) | Inventory and supervisor share it |
+| `blocked_dependencies`, `dependency_reason`, `declared_dependencies`, `dependency_body`, `dependency_evidence`, `dependencies_checked_at` | `issue_dependencies` + `unit_gates(dependency)` | Wording derived |
+| `ownership_wait` | `unit_gates(ownership_conflict)` with a structured detail (`login`, `pr`) | — |
+| `label_hold` | `issues.labels` → `unit_gates(label_hold)` | — |
+| `operator_hold`, `operator_sync`, `operator_request`, `actions.json`, `operator-requests.json`, `check-requests.json` | `decisions`, `unit_gates(operator_pause \| operator_backlog \| operator_sync)`, `external_effects` | — |
+| `environment_hold`, `prerequisite_hold` | `unit_gates(environment \| repository_setup)` | The saved stage disappears |
+| `environment_choice`, `_override`, `_retry`, `_label`, `memory_retry` | versioned `unit_environment` | `environment_label_pending` becomes the outbox |
+| `decision_request` | `unit_gates(decision_required).details_json` | — |
+| `checks_settled` | `check_runs` + `external_effects` | — |
 | `last_summary` | The latest job summary for the unit | Derived |
-| `retry_after` | `waits(backoff).until` | — |
+| `retry_after` | `unit_gates(retry_delay)` with a bounded retry timestamp | — |
 | `closed_as` | `issues.state_reason` | — |
-| `deployed`, `deploy_failed` | `candidates.deployed_at`, `candidates.deploy_failed` | — |
+| `deployed`, `deploy_failed` | `deployment_observations` bound to candidate | — |
 | `last_observed`, `settled_observed`, `budget_interruptions` | `units.observed_at`, `units.observe_interruptions` | — |
-| `decision_version` | `units.decision_version` | — |
-| Ledger `slots` | `jobs.slot` + partial unique index | — |
-| `provider_cooldowns`, `provider_retry_after`, `provider_cursor`, `memory_profiles`, `discovery_observed` | `provider_cooldowns`, `kv`, `memory_profiles`, `repositories.discovered_at` | — |
-| `discussions.json` | `discussion_threads`, `discussion_messages`; discussion runs become `jobs(role='discussion')` | `reserve_logins` becomes one query |
+| `decision_version` | `units.version` | — |
+| Ledger `slots` | `job_leases` with unique slot and verified cleanup | — |
+| `provider_cooldowns`, `provider_retry_after`, `provider_cursor`, `memory_profiles`, `discovery_observed` | `provider_cooldowns`, `runtime_controls`, `memory_profiles`, repository observations | — |
+| `discussions.json` | `discussions`, `messages`, auxiliary `discussion_executions` | `reserve_logins` becomes one query |
 
 ---
 
-## 3. SQLite schema
 
-The schema is condensed here; the full DDL lives in
-`forge/store/schema/001_initial.sql`. Timestamps are `REAL` epoch seconds, as
-today, and JSON columns hold JSON text.
+### Access layer and transition boundary
 
-```sql
-CREATE TABLE repositories (
-  id INTEGER PRIMARY KEY,                       -- GitHub repository id
-  name TEXT NOT NULL, target_branch TEXT, discovered_at REAL,
-  readiness TEXT NOT NULL DEFAULT 'unknown' CHECK (readiness IN
-    ('unknown','ready','protection_missing','bypass_missing','bypass_unknown','access_missing','disabled')),
-  readiness_report TEXT, readiness_observed_at REAL,   -- protections() + controller_bypass(), read once
-  collaborators TEXT, collaborators_at REAL);
+`forge/store/` contains connection setup, ordered SQL migrations, typed queries,
+domain transition methods, artifacts and import tools. Callers never receive a
+mutable whole-store dictionary or issue unrestricted SQL from UI/CLI adapters.
 
-CREATE TABLE issues (                           -- the only copy of GitHub issue facts
-  repo_id INTEGER NOT NULL REFERENCES repositories, number INTEGER NOT NULL CHECK (number > 0),
-  title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', body_hash TEXT NOT NULL,
-  body_truncated INTEGER NOT NULL DEFAULT 0,
-  gh_state TEXT NOT NULL CHECK (gh_state IN ('open','closed')),
-  state_reason TEXT CHECK (state_reason IN ('completed','not_planned','duplicate','reopened')),
-  labels TEXT NOT NULL DEFAULT '[]', assignees TEXT NOT NULL DEFAULT '[]', label_events TEXT,
-  admitted TEXT CHECK (admitted IN ('queued','backlog')),   -- ready label or operator intent
-  updated_at TEXT, observed_at REAL NOT NULL,
-  PRIMARY KEY (repo_id, number)) WITHOUT ROWID;
+The interface separates:
 
-CREATE TABLE issue_dependencies (
-  repo_id INTEGER NOT NULL, number INTEGER NOT NULL, prerequisite INTEGER NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('body','declared')),
-  body_hash TEXT NOT NULL, evidence TEXT,          -- valid while issues.body_hash matches
-  PRIMARY KEY (repo_id, number, prerequisite, source),
-  FOREIGN KEY (repo_id, number) REFERENCES issues) WITHOUT ROWID;
+- `read_snapshot()` with paged unit/issue lists, counts, details, bounded recent
+  events and lazy artifact reads;
+- `apply(command, expected_version, request_id, actor)` for operator mutations;
+- `observe(entity_id, expected_version, observation)` for controller results;
+- `reserve_job`, `record_result`, `fence_job` and `release_lease` for execution;
+- `events_after(sequence, limit)` for the future change feed.
 
-CREATE TABLE pull_requests (
-  repo_id INTEGER NOT NULL, number INTEGER NOT NULL, title TEXT, body TEXT, branch TEXT, author TEXT,
-  gh_state TEXT NOT NULL, forge_owned INTEGER NOT NULL DEFAULT 0,
-  claims TEXT NOT NULL DEFAULT '[]',              -- issue numbers per claims_issue(), computed on write
-  observed_at REAL NOT NULL, PRIMARY KEY (repo_id, number)) WITHOUT ROWID;
+A mutation validates its entity version and exact candidate identity, changes only
+affected rows, recomputes the shared lifecycle projection, appends its transition
+events and records any required external effect in one transaction. A failed or
+rolled-back transaction emits no event. Repeating an idempotent command emits no
+second event. The supervisor can record a new observation without manufacturing a
+state transition when the codes did not change.
 
-CREATE TABLE units (
-  id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL REFERENCES repositories,
-  kind TEXT NOT NULL CHECK (kind IN ('single','batch')),
-  state TEXT NOT NULL CHECK (state IN ('build','integrate','review','audit','merge','merged','closed')),
-  close_code TEXT CHECK (close_code IN ('dropped','closed_on_github','cancelled','dissolved','superseded')),
-  target_branch TEXT NOT NULL, branch TEXT,
-  candidate_id INTEGER REFERENCES candidates DEFERRABLE INITIALLY DEFERRED,
-  budget_epoch INTEGER NOT NULL DEFAULT 0, retry_plan TEXT, environment TEXT,
-  decision_version INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT NOT NULL CHECK (created_by IN ('discovery','operator','supervisor','import')),
-  created_at REAL NOT NULL, closed_at REAL, observed_at REAL,
-  observe_interruptions INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (id, repo_id),
-  CHECK ((state IN ('merged','closed')) = (closed_at IS NOT NULL)),
-  CHECK ((state = 'closed') = (close_code IS NOT NULL)),
-  CHECK (kind = 'batch' OR state <> 'integrate'));
-CREATE INDEX units_open ON units(state, observed_at) WHERE closed_at IS NULL;
-CREATE INDEX units_done ON units(closed_at DESC, id DESC) WHERE closed_at IS NOT NULL;
+#168's shared stage function belongs in this boundary: it consumes typed unit,
+issue, gate and job facts and returns the same stage, state and reason code for
+both API views and dispatch eligibility. The frontend maps these codes to visuals.
+It does not parse prose. Transition records compare the old and new canonical
+projection; they do not diff or deserialize every issue in every transaction.
 
-CREATE TABLE unit_transitions (from_state TEXT, to_state TEXT, PRIMARY KEY (from_state, to_state)) WITHOUT ROWID;
-CREATE TRIGGER unit_state_machine BEFORE UPDATE OF state ON units
-WHEN OLD.state <> NEW.state AND NOT EXISTS
-  (SELECT 1 FROM unit_transitions WHERE from_state = OLD.state AND to_state = NEW.state)
-BEGIN SELECT RAISE(ABORT, 'illegal unit transition'); END;
+Avoid changing every production reader in the schema PR. Ship the inactive store
+and transition tests first; then a frozen import/parity tool; then cut over each
+domain with exactly one writer. A temporary compatibility adapter may emit legacy
+API shapes from SQL queries. It may not reconstruct the whole old ledger on every
+read or implement whole-document writes.
 
-CREATE TABLE unit_issues (                      -- membership and batch parts
-  unit_id INTEGER NOT NULL, repo_id INTEGER NOT NULL, number INTEGER NOT NULL,
-  part_branch TEXT,
-  part_state TEXT NOT NULL DEFAULT 'pending' CHECK (part_state IN ('pending','built','dropped')),
-  joined_at REAL NOT NULL, left_at REAL,
-  left_reason TEXT CHECK (left_reason IN ('merged','closed','dropped','dissolved','superseded')),
-  PRIMARY KEY (unit_id, repo_id, number),
-  FOREIGN KEY (unit_id, repo_id) REFERENCES units(id, repo_id),     -- same repository only
-  FOREIGN KEY (repo_id, number) REFERENCES issues) WITHOUT ROWID;
-CREATE UNIQUE INDEX one_open_unit_per_issue ON unit_issues(repo_id, number) WHERE left_at IS NULL;
+## Migration, parity and rollback
 
-CREATE TABLE candidates (
-  id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL REFERENCES units,
-  key TEXT NOT NULL UNIQUE, pr INTEGER NOT NULL, branch TEXT NOT NULL,
-  head TEXT NOT NULL, base TEXT NOT NULL, base_ref TEXT NOT NULL,
-  build_job TEXT NOT NULL REFERENCES jobs, summary TEXT,
-  accepted_at REAL NOT NULL, superseded_at REAL, merge_commit TEXT,
-  deployed_at REAL, deployed_via TEXT, deploy_failed TEXT);
-CREATE TABLE evidence (candidate_id INTEGER NOT NULL REFERENCES candidates,
-  role TEXT NOT NULL CHECK (role IN ('review','audit')), outcome TEXT NOT NULL, job_id TEXT REFERENCES jobs,
-  human_required TEXT CHECK (human_required IN ('required','not_required')), human_reason TEXT,
-  summary TEXT, at REAL NOT NULL, PRIMARY KEY (candidate_id, role)) WITHOUT ROWID;
-CREATE TABLE verifications (id INTEGER PRIMARY KEY, candidate_id INTEGER NOT NULL REFERENCES candidates,
-  job_id TEXT REFERENCES jobs, request TEXT NOT NULL, ci TEXT,
-  status TEXT NOT NULL CHECK (status IN ('pending','complete','void')), proof TEXT,
-  created_at REAL NOT NULL, verified_at REAL);
-CREATE TABLE candidate_observations (candidate_id INTEGER PRIMARY KEY REFERENCES candidates,
-  approvals TEXT, mergeable INTEGER, observed_at REAL NOT NULL);   -- last merge-gate read
-CREATE TABLE check_runs (candidate_id INTEGER NOT NULL REFERENCES candidates,
-  name TEXT NOT NULL CHECK (name IN ('review','audit','controller')),
-  status TEXT NOT NULL CHECK (status IN ('in_progress','success','failure','neutral')),
-  summary TEXT, published_at REAL, PRIMARY KEY (candidate_id, name)) WITHOUT ROWID;
-CREATE TABLE merge_requests (id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL REFERENCES units,
-  candidate_id INTEGER NOT NULL REFERENCES candidates, requested_at REAL NOT NULL,
-  result TEXT CHECK (result IN ('merged','refused','superseded')), detail TEXT, finished_at REAL);
-CREATE UNIQUE INDEX one_open_merge ON merge_requests(unit_id) WHERE result IS NULL;
+### Source inventory
 
-CREATE TABLE jobs (
-  id TEXT PRIMARY KEY CHECK (length(id) = 36),
-  unit_id INTEGER REFERENCES units, part_number INTEGER, thread_number INTEGER,
-  role TEXT NOT NULL CHECK (role IN ('build','integrate','review','audit','recovery','discussion')),
-  stage TEXT, candidate_id INTEGER REFERENCES candidates,
-  slot TEXT, provider TEXT, provider_id TEXT, model TEXT, publisher TEXT,
-  branch TEXT, resume_branch TEXT, resume_pr INTEGER, target_branch TEXT,
-  policy TEXT, requirements TEXT, runner_config TEXT,
-  phase TEXT NOT NULL CHECK (phase IN ('reserved','preparing','running','stopping','cleaned')),
-  outcome TEXT CHECK (outcome IN ('accepted','failed','investigated','blocked_environment','waiting',
-    'waiting_on_issues','needs_decision','needs_human_verification','memory_retry','services_retry',
-    'superseded','cancelled','held','external_merge')),
-  fenced INTEGER NOT NULL DEFAULT 0, cleanup INTEGER NOT NULL DEFAULT 0, cancelled INTEGER NOT NULL DEFAULT 0,
-  charged INTEGER NOT NULL DEFAULT 0, budget_epoch INTEGER, cause TEXT, retry_stage TEXT,
-  investigates TEXT REFERENCES jobs, findings TEXT, correction TEXT, summary TEXT,
-  created_at REAL NOT NULL, deadline REAL, last_observed REAL, finished_at REAL,
-  CHECK ((role = 'discussion') = (unit_id IS NULL)),
-  CHECK (cleanup = 0 OR fenced = 1),
-  CHECK (charged = 0 OR outcome = 'failed'));
-CREATE UNIQUE INDEX one_job_per_slot  ON jobs(slot) WHERE cleanup = 0 AND slot IS NOT NULL;
-CREATE UNIQUE INDEX one_live_job_part ON jobs(unit_id, ifnull(part_number, 0)) WHERE cleanup = 0 AND unit_id IS NOT NULL;
-CREATE UNIQUE INDEX one_investigation ON jobs(investigates) WHERE investigates IS NOT NULL AND outcome IS NOT 'waiting';
-CREATE INDEX jobs_by_unit ON jobs(unit_id, created_at DESC);
-CREATE INDEX jobs_open    ON jobs(last_observed) WHERE outcome IS NULL;
+The importer must cover more than `AtomicStore`. Current mutable sources include:
 
-CREATE TABLE job_artifacts (                    -- large and private: logs and raw results, kept apart
-  job_id TEXT NOT NULL REFERENCES jobs ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('logs','live_tail','result','input','ci_evidence','teardown')),
-  encoding TEXT NOT NULL DEFAULT 'zlib', bytes INTEGER NOT NULL, body BLOB NOT NULL, created_at REAL NOT NULL,
-  PRIMARY KEY (job_id, kind)) WITHOUT ROWID;
+- `state/factory/factory-ledger.json`: issues, jobs, slots, events, provider state;
+- `state/issues/inventory.json`, `actions.json`, `discussions.json`;
+- factory operator requests, check requests and supervisor observation;
+- deployments, environment scans/proposals, repository access/setup observations;
+- onboarding/setup and client-operation state;
+- active `runtime.json`, `factory.json` and operator-managed configuration revisions;
+- operator auth/session/connection state and request audit JSONL;
+- activation/pause generations, service heartbeat and notification outbox/status.
 
-CREATE TABLE wait_codes (kind TEXT, code TEXT, release TEXT NOT NULL, attention TEXT,
-  precedence INTEGER NOT NULL, PRIMARY KEY (kind, code)) WITHOUT ROWID;   -- seeded from codes.py
-CREATE TABLE waits (
-  id INTEGER PRIMARY KEY, unit_id INTEGER NOT NULL REFERENCES units,
-  kind TEXT NOT NULL, code TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}',
-  since REAL NOT NULL, until REAL, recheck_after REAL,
-  cleared_at REAL, cleared_by TEXT CHECK (cleared_by IN ('auto','operator','supervisor','transition')),
-  decision_id TEXT REFERENCES decisions,
-  FOREIGN KEY (kind, code) REFERENCES wait_codes);
-CREATE UNIQUE INDEX one_active_wait_kind ON waits(unit_id, kind) WHERE cleared_at IS NULL;
+The implementation inventory must list every direct `read_json`, `write_json`,
+`atomic_json` and marker access and classify it as migrated runtime state,
+configuration, credential material, temporary IPC or independent observer state.
+CI checks must reject remaining runtime JSON writes after phase 7. A ledger-only
+migration cannot satisfy #209's final acceptance.
 
-CREATE TABLE decisions (                        -- replaces actions.json, operator/check requests, operator_request
-  id TEXT PRIMARY KEY,                          -- the client's request id: idempotency without scanning events
-  repo_id INTEGER NOT NULL, number INTEGER, unit_id INTEGER REFERENCES units,
-  action TEXT NOT NULL CHECK (action IN ('queue','backlog','pause','resume','retry','recheck','start_anyway',
-    'assign_reviewer','environment','close','check','stop','reset','combine','approve_batch','reject_batch',
-    'drop_part','dissolve')),
-  reason TEXT NOT NULL, revision TEXT, payload TEXT,
-  status TEXT NOT NULL CHECK (status IN ('pending','applied','rejected')), error TEXT,
-  created_at REAL NOT NULL, applied_at REAL);
-CREATE UNIQUE INDEX one_pending_decision ON decisions(repo_id, number) WHERE status = 'pending' AND number IS NOT NULL;
+### Domain authority during staged delivery
 
-CREATE TABLE outbox (                           -- GitHub side effects, written in the same transaction
-  id INTEGER PRIMARY KEY, unit_id INTEGER REFERENCES units, repo_id INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('labels','check','settle_checks','close_issue','comment',
-    'request_reviewers','environment_label','close_pr')),
-  dedupe TEXT NOT NULL, payload TEXT NOT NULL,
-  created_at REAL NOT NULL, next_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-  done_at REAL, error TEXT);
-CREATE UNIQUE INDEX outbox_pending ON outbox(dedupe) WHERE done_at IS NULL;   -- the latest intent wins
+`store_metadata` records the authoritative backend for each runtime domain. Every
+supported launcher and adapter reads this routing under maintenance. A domain
+moves as a dependency-closed set of writers and readers; phases 3 and 4 must ship
+together wherever a legacy reader would otherwise consume frozen state. There
+is never a live dual-write period for the same fact.
 
-CREATE TABLE events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,         -- monotonic, never reused after pruning
-  at REAL NOT NULL, repo_id INTEGER, number INTEGER, unit_id INTEGER, job_id TEXT,
-  kind TEXT NOT NULL, code TEXT, data TEXT NOT NULL DEFAULT '{}');
-CREATE INDEX events_unit  ON events(unit_id, id);
-CREATE INDEX events_issue ON events(repo_id, number, id);
-CREATE TRIGGER events_append_only BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+Capture briefly quiesces all writers for a coherent all-store snapshot. During
+cutover, only migrated domains have their live JSON originals sealed and retired;
+unconverted configuration/authentication domains resume their existing sole JSON
+writer. The complete snapshot remains sealed separately. Each later domain
+migration takes a fresh coherent snapshot, imports that domain, and changes its
+recorded authority under maintenance. Phase 7 requires every runtime domain to
+use SQLite. Restoring the frozen full JSON snapshot is allowed only before any
+writer resumes; later rollback must reconcile current state from both domain
+backends as well as external effects.
 
-CREATE TABLE batch_proposals (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, target_branch TEXT NOT NULL,
-  members TEXT NOT NULL, rationale TEXT NOT NULL,
-  proposed_by TEXT NOT NULL CHECK (proposed_by IN ('operator','supervisor')),
-  status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected','expired')),
-  unit_id INTEGER REFERENCES units, decision_id TEXT REFERENCES decisions,
-  created_at REAL NOT NULL, decided_at REAL);
+### Import protocol
 
-CREATE TABLE discussion_threads (repo_id INTEGER NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL,
-  origin TEXT, reason TEXT, presence TEXT, partial TEXT, job_id TEXT REFERENCES jobs, updated_at REAL NOT NULL,
-  PRIMARY KEY (repo_id, number)) WITHOUT ROWID;
-CREATE TABLE discussion_messages (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, number INTEGER NOT NULL,
-  sequence INTEGER NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, at REAL NOT NULL, data TEXT,
-  UNIQUE (repo_id, number, sequence));
+1. Inspect the installation, schema support, free space and all source stores.
+   Produce a plan bound to source revision, storage generation and inventory.
+2. Enter maintenance: reject new writes and job admissions, drain existing jobs
+   through result collection and verified cleanup, then stop every runtime JSON
+   writer. A manual pause alone is insufficient: API actions, auth, setup,
+   discussions, inventory refresh and deployment observers also write. Acquire a
+   migration lock recognized by new supported binaries. Old binaries do not know
+   this lock: stop their services/timers and API entrypoints, and replace managed
+   launchers with a backend/schema guard before switching storage. The guard
+   rejects a source version that cannot read the selected database. Arbitrary
+   manual execution of an old checkout is outside that launcher guarantee; the
+   procedure seals migrated-domain JSON read-only and records any old process it cannot stop
+   as a blocker. Report any uncleaned job and resume later; never infer process
+   termination from elapsed time.
+3. Copy all source files and initialization markers into a private immutable
+   backup. Hash a manifest and fsync the snapshot before importing. Import only
+   this frozen snapshot; resumability is against these hashes, not moving live
+   files. A dry run imports an existing coherent private snapshot and never selects
+   the new database or restarts services. Capturing a coherent snapshot from the live
+   legacy stores is a separate planned operation that can require a short maintenance
+   window; the CLI names that effect explicitly. It must not describe a live capture
+   that pauses writers as read-only. Admission draining, controller cutover and
+   service restart belong to explicit apply operations.
+4. Import bounded batches into a staging database. Commit source cursors and rows
+   together. Stable legacy IDs and unique import keys prevent duplicates after a
+   crash. Preserve old event sequences and timestamps, job IDs, cleanup fences,
+   budget generations, candidates and approvals; do not reclassify historical
+   failures or authorize work during import.
+5. Validate schema constraints, `integrity_check`, `foreign_key_check`, row counts,
+   artifact sizes/digests and domain ownership invariants. Compare legacy and SQL
+   public views from the same frozen source, including paging and lazy output.
+   Report each intentional lifecycle correction separately; an unexplained parity
+   difference blocks activation. New unit membership maps each legacy issue to a
+   deterministic unit of one, with no batch proposals activated by import.
+6. Mark the import complete in staging `store_metadata`, create a verified SQLite
+   backup, checkpoint and close staging connections, then rename the database to
+   the fixed live path and fsync the directory under maintenance. Install/verify
+   the immutable instance anchor. The completed metadata at the guarded live path
+   is the selector; there is no mutable JSON backend pointer. If a crash separates
+   rename and anchor creation, the launcher refuses the incomplete pair and the
+   migration resume completes it using the staging journal and sealed source
+   manifest. Keep migrated-domain JSON and the full backup sealed and read-only. Restart
+   compatible services in read-only reconciliation mode first, verify GitHub and
+   process ownership, then resume admission. Each domain has one active writer
+   throughout; never dual-write JSON and SQLite.
 
-CREATE TABLE provider_cooldowns (provider TEXT PRIMARY KEY, until REAL NOT NULL,
-  reason TEXT NOT NULL CHECK (reason IN ('blocked_auth','blocked_quota')), detail TEXT, since REAL, job_id TEXT);
-CREATE TABLE memory_profiles (repo_id INTEGER, role TEXT, memory TEXT NOT NULL, job_id TEXT, at REAL,
-  PRIMARY KEY (repo_id, role)) WITHOUT ROWID;
-CREATE TABLE deployments (repo_id INTEGER PRIMARY KEY, observed TEXT NOT NULL, at REAL NOT NULL);
-CREATE TABLE kv (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL);  -- supervisor lease, cursor
-CREATE TABLE migrations (step TEXT PRIMARY KEY, source_digest TEXT, done_at REAL NOT NULL);
+Crash tests cover every boundary, including a committed import batch without a
+finished CLI response, completed staging DB before selection, selection before
+service restart and restart during reconciliation. A resume checks the recorded
+operation/generation and continues the existing operation; it never creates a
+fresh empty store as a recovery shortcut.
+
+### Backups and rollback
+
+Use the SQLite backup API for a consistent live backup; copying only the main DB
+file while WAL is active can omit committed transactions. Verify each backup in a
+separate connection and store its schema/source/storage-generation metadata.
+[SQLite backup API](https://www.sqlite.org/backup.html)
+
+Before the new controller resumes writes or external effects, rollback can restore
+the frozen JSON backup and previous compatible code under maintenance. Once new
+work has run, restoring that old backup would erase decisions and execution
+ownership. The rollback planner must refuse that shortcut. At that point use a
+forward fix, or drain/reconcile and export a verified current snapshot into a
+supported older schema. Never start the previous supervisor against stale JSON.
+Introducing batches is an explicit compatibility barrier: old one-issue binaries
+cannot safely consume those units, so rollback requires a compatible release or
+operator-approved dissolution with live reconciliation.
+
+Rollback also must not revive revoked sessions or client connections. Preserve
+the current revocation epoch across recovery or invalidate sessions and pairing
+grants as part of the recorded recovery operation; never copy an old auth backup
+back into use silently. Backups include credential references, not secret values
+in reports, and retain the existing private credential recovery procedure.
+
+### Measured release gates
+
+The live dry run happens on a private snapshot and produces a redacted report:
+source bytes, rows per table, artifact bytes, database/WAL bytes, import and resume
+times, parity mismatches and ownership checks. No issue bodies or logs belong in
+the PR or benchmark output.
+
+Measure old/new code on the same source snapshot and host: cold and warm status
+requests, page/detail/output queries, transaction latency and a complete cycle.
+Report p50/p95, query counts, elapsed time spent in GitHub and storage, and every
+open unit's observation freshness. The target is single-digit milliseconds for
+status data and observation of every open unit in seconds. Storage changes alone
+do not remove GitHub rate limits: conditional/batched fetches and fair scheduling
+must be measured independently, and API failures must remain visible as stale
+observations rather than being reported as a successful complete cycle.
+
+Run transition, stale-version, idempotency, candidate-change, concurrent-reader,
+competing-writer, process-crash, disk-full, corruption, missing-file, permission and
+backup/restore tests. Publish actual measurements when the implementation exists;
+this design does not claim a live dry run or performance result.
+
+## Design validation and reported measurements
+
+### Reproducible core-schema checks
+
+The adjacent [SQL fixture](state-and-units-of-work.sql) exercises the core ownership
+and persistence constraints. It is deliberately incomplete and is not installed
+or imported by Forge. Run only against the script's disposable in-memory database:
+
+```sh
+python3 docs/design/check-state-and-units-of-work.py
 ```
 
-**Views** keep the derivations in one place: `issue_status` (section 2.4),
-`dispatchable` and `unit_failures`. For example:
+The check covers 21 rejected mutations, independent same-code member gates,
+verified lease cleanup, foreign keys and database integrity. It does not prove
+all transitions, migrations, process races or performance; those are implementation
+release gates below. No production database is read by this check.
 
-```sql
-CREATE VIEW dispatchable AS
-SELECT u.* FROM units u
-WHERE u.state IN ('build','integrate','review','audit')
-  AND NOT EXISTS (SELECT 1 FROM waits w WHERE w.unit_id = u.id AND w.cleared_at IS NULL
-                  AND (w.until IS NULL OR w.until > unixepoch('subsec')))
-  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.unit_id = u.id AND j.cleanup = 0);
--- unit_failures: COUNT(*) FROM jobs WHERE unit_id = ? AND charged AND budget_epoch = units.budget_epoch
-```
+### Earlier author's prototype report (2026-10-05)
 
-**How `Ledger.validate()` maps to the schema.**
-
-| Invariant in `validate()` | Replaced by |
-| --- | --- |
-| `item['state'] in STATES` | `CHECK` on `units.state` + the transition trigger |
-| `0 <= budget_start <= len(failures)` | `budget_epoch` integer; failures are rows |
-| `active` exists and belongs to the issue | No `active` pointer; `one_live_job_part`, `one_open_merge` |
-| `job.role` valid; `job.issue_key` exists | `CHECK`, foreign key |
-| A slot points to exactly one uncleaned job | `one_job_per_slot` partial unique index |
-| A finished job holds no slot | Same index (`WHERE cleanup = 0`) |
-| JSON serializable, no NaN | `CHECK (json_valid(col))` on JSON columns (omitted above for brevity) |
-
-### 3.1 Connections and transactions
-
-- **Pragmas on every connection:**
-  - `journal_mode=WAL` (persistent);
-  - `foreign_keys=ON`;
-  - `busy_timeout=5000`;
-  - `synchronous=FULL`, which keeps today's fsync durability (measured at 1.6 ms
-    per commit on the live disk; `NORMAL` measured 0.1 ms);
-  - `journal_size_limit=67108864`;
-  - `auto_vacuum=INCREMENTAL`, set at creation.
-- **Writers use `BEGIN IMMEDIATE`.** It takes the write lock up front, so a deferred
-  read never fails later while upgrading to a write. Write transactions contain
-  **no network or container calls**. The pattern is:
-  1. read a snapshot;
-  2. call GitHub or the runner outside any transaction;
-  3. open a short write transaction that re-checks its preconditions with
-     compare-and-set (`UPDATE … WHERE id=? AND decision_version=? AND state=?`,
-     then check `rowcount`).
-
-  `Ledger.observing()` and `DecisionChanged` become that check, and no longer
-  re-read 64 MB.
-- **Readers use a deferred `BEGIN`.** All `SELECT`s for one API response run inside
-  one read transaction, so they see one WAL snapshot. Readers never block the
-  writer, and the writer never blocks readers. API connections set
-  `PRAGMA query_only=ON`. There is one connection per thread
-  (`threading.local`), since `setup_service` is threaded.
-- **Processes.** The supervisor, the API (`setup_service`) and the CLI open the
-  same file on one host. WAL needs a local filesystem; `state/` already is one.
-
-### 3.2 File, permissions, backups, retention
-
-- **Location.** The database is `<root>/state/forge.db`, with `-wal` and `-shm`
-  beside it.
-  - `state/` stays `0700`, and the files are `0600` (`os.umask(0o077)` before
-    the first connect).
-  - Opening refuses a symlink (an `lstat` check, as in `AtomicStore._load`).
-  - The file is never mounted into workers.
-  - `state/forge.initialized`, together with `PRAGMA user_version`, keeps the
-    fail-closed rule: an initialized but missing database is an error, never a
-    blank start.
-- **Secrets stay out.** `operator-auth`, `credentials`, `job-secrets` and
-  `*.secret` stay files. Job logs remain best-effort redacted private data, as
-  today.
-- **Backups.**
-  - The online backup API (`connection.backup`) writes to
-    `state/backups/forge-<UTC>.db` (`0600`):
-    - daily;
-    - before every schema migration;
-    - before every `host_update` deploy.
-  - Retention: keep 7 daily and 4 weekly backups.
-  - Each backup is verified with `PRAGMA integrity_check`.
-  - The supervisor lease (`controller_lock`) is not needed; the backup is an
-    online snapshot.
-- **Retention.**
-
-| Data | Policy |
-| --- | --- |
-| `job_artifacts.live_tail` | Deleted when the job finishes; `logs` supersedes it (today's 20 MB of duplicate observation logs) |
-| `job_artifacts.logs`, `ci_evidence`, `input` | Kept 30 days after the job finishes, then deleted |
-| `job_artifacts.result`, `jobs.summary`, `findings` | Kept forever (small) |
-| Events: transitions, decisions, merges | Kept forever |
-| Events: telemetry (`runner_released`, `availability_wait`, `dependencies_checked`, `ownership_changed`, `environment_recheck`) | Pruned after 90 days |
-| `outbox` done rows | Pruned after 14 days |
-
-  Pruning runs once a day in its own small transactions, followed by
-  `PRAGMA incremental_vacuum`. Event ids stay monotonic because of
-  `AUTOINCREMENT`. Idempotency lives in `decisions`, so pruning events never
-  breaks it.
-
----
-
-## 4. Access layer
-
-### 4.1 Shape
-
-```text
-forge/store/db.py        connect(), pragmas, migrations (user_version), backup(), retention()
-forge/store/repos.py     Issues, Units, Members, Jobs, Artifacts, Waits, Decisions, Outbox, Events, Threads
-                         row-level reads/writes only; no lifecycle rules
-forge/factory/codes.py   wait registry (kind, code, release, attention, precedence, wording)
-forge/factory/pipeline.py  the ONLY writer of units.state and waits: transition functions
-forge/factory/status.py  describe(): one derivation for supervisor eligibility and UI
-```
-
-```python
-store = Store(root)
-with store.read() as r:                       # BEGIN; one WAL snapshot
-    unit = r.units.get(unit_id); waits = r.waits.active(unit_id)
-with store.write() as w:                      # BEGIN IMMEDIATE … COMMIT (rollback on exception)
-    w.units.fence(unit_id, decision_version=v)          # raises DecisionChanged
-    pipeline.accept(w, job_id, candidate=fresh, evidence=None, summary=card)
-    # inside: CAS on jobs.outcome IS NULL, insert candidate, set unit.state,
-    # clear transition-scoped waits, append event, enqueue outbox('labels'), all atomic
-```
-
-**Ledger methods become pipeline functions.** Each has a one-to-one replacement,
-so phase 3 can keep the names.
-
-| `Ledger` method | `pipeline` function | Behavior change |
-| --- | --- | --- |
-| `discover`, `discover_in` | `units.admit` / `issues.upsert` | A hold label becomes a `label_hold` wait, not `state=hold` |
-| `reserve` | `jobs.reserve` | Slot and part uniqueness come from indexes; provider cursor in `kv` |
-| `job_update`, `release` | `jobs.observe`, `jobs.release` | Observation goes to `job_artifacts.live_tail`, one row |
-| `accept`, `fail`, `findings`, `recover_publication` | same names | Failures are job rows; findings set the `approach` or `budget` wait |
-| `resolve_conflict`, `invalidate` | `pipeline.conflict`, `pipeline.invalidate` | They also close any open `merge_requests` row |
-| `request_verification`, `complete_verification` | same names | A `verification` wait on the current stage; no `resume_state` |
-| `wait_on_issues`, `request_decision` | same names | `dependency` and `decision` waits |
-| `block_environment`, `resume_environment`, `retry_memory`, `retry_services` | same names | An `environment` wait; the stage is untouched |
-| `wait` | `pipeline.backoff` | A `backoff` wait plus a `provider_cooldowns` upsert |
-| `hold`, `pause_for_protection`, `resume_protection`, `migrate_protection_hold*` | `waits.set` / `waits.clear` with typed codes | The legacy migration happens once, in the importer |
-| `cancel` | `pipeline.close(code)` | `close_code` comes from `state_reason`; `completed` maps to `closed_on_github` |
-| `retry` **and** `issue_actions.decide` retry path | `pipeline.retry` (single implementation) | New `budget_epoch`; clears `budget`, `approach` and `decision` waits |
-| `deployed`, `deploy_failed`, `merge_commit` | `candidates.*` | — |
-
-### 4.2 Callers
-
-- **Supervisor cycle (`supervisor.cycle`).**
-  - `execution()` writes one artifact row per live job, instead of rewriting the
-    ledger.
-  - The observation loop is `SELECT … FROM units WHERE closed_at IS NULL ORDER BY
-    priority, observed_at LIMIT n`. Settled units leave the rotation; a reopened
-    issue is found by discovery and creates a new unit.
-  - `reconcile(unit)` reads GitHub and **upserts the `issues` and `pull_requests`
-    rows**, so the inventory is current for every observed issue. It then calls
-    `pipeline.observe(w, unit, facts)`. That one transaction sets or clears the
-    `dependency`, `ownership`, `label_hold`, `repository` and `merge_blocked`
-    waits from facts, and enqueues labels.
-  - `dispatch()` becomes `SELECT … FROM dispatchable ORDER BY created_at`.
-  - A new `drain_outbox()` step publishes labels, checks, closures and settled
-    checks, with retries, and records `check_runs`.
-  - `check_logins()` upserts `provider_cooldowns` only when the value changes.
-- **`issue_actions`.**
-  - `decide()` inserts into `decisions`. The request id is the primary key, so
-    idempotency costs nothing.
-  - It then calls the pipeline function (`retry`, `pause`, `resume`, …) and
-    enqueues label changes in the same transaction.
-  - `operator_sync` and `operator_request` become a pending decision plus an
-    `applying` wait.
-  - `IssueActions.process()` drains pending decisions that need GitHub first
-    (assign reviewer, environment, close).
-- **`discussions`.** Threads and messages become rows. `read()` is a read
-  transaction, `send()` inserts one message, and presence is one column update.
-  `reserve_logins` and `active_jobs` become one query on
-  `jobs WHERE role='discussion' AND cleanup=0`.
-- **Status API** (`legacy/forge-status.py` and `setup_service`).
-  - `control.view` runs three indexed queries in one snapshot: open units with
-    their headline wait, the latest 6 jobs per unit, and the last 3 events per unit.
-  - `select_view(section='completed')` becomes keyset paging on `units_done`
-    (`WHERE (closed_at, id) < (?, ?)`).
-  - `IssueInventory.view` joins `issues`, `issue_status`, the open unit, its
-    active waits and `status.describe()`. Filtering by status, searching
-    (`LIKE`), ordering and the 50-row pages all run in SQL.
-  - `presentation()` shrinks to formatting `describe()` and actions. Its precedence
-    chain, legacy approval string match and reason-code sniffing are deleted.
-- **CLI.** `forge factory stop|reset|retry` insert decisions. New commands:
-  `forge state import|parity|export|backup|check`.
-- **View cache (#172).** `fingerprint()` stats six directories on every request,
-  and `MAX_AGE` exists because rebuilding was expensive. With indexed queries
-  (0.3 ms for the whole open board on live data), the cache is unnecessary for
-  correctness and speed. Keep only the HTTP `ETag`/304 path, keyed by a cheap
-  revision (`SELECT max(id) FROM events` plus the `PRAGMA data_version` of the
-  serving connection). Delete `ViewCache.get` once phase 4 ships.
-
----
-
-## 5. Batches and units of work (#207)
-
-The model above already contains most of #207. These are the flows.
-
-1. **Proposal.**
-   - The operator ("Combine into one PR…") or the supervisor (on by default)
-     writes a `batch_proposals` row.
-   - The supervisor proposes only units in `build` with no candidate, in the same
-     repository and target branch, linked by a label, a parent issue or a
-     prerequisite chain, or small enough together. There is no size cap.
-   - **Validation, at proposal and again at approval:**
-     - every member is open;
-     - no member has an `ownership`, `label_hold` or `operator` wait;
-     - every prerequisite is either a member or closed;
-     - there is no prerequisite cycle among the members;
-     - no member has a live job.
-2. **Approval.** This is one write transaction, and the batch unit gets a fresh
-   epoch.
-   - Each member's unit of one closes with `close_code=superseded`
-     (`left_reason=superseded`).
-   - A `kind='batch'` unit is created in `build` with branch `forge/batch-<id>`.
-   - Members join with `part_branch=forge/batch-<id>/issue-<n>`. A member's
-     existing candidate branch is reused as its part branch.
-   - The supervisor's proposals become decisions (`approve_batch` or
-     `reject_batch`), never applied silently.
-3. **Parallel part builds.**
-   - Each pending part gets a `build` job (`jobs.part_number`). The jobs run in
-     parallel within Build slots.
-   - `one_live_job_part` allows one live job per part, instead of one per issue.
-   - A part whose in-batch prerequisite part is not `built` is not dispatchable.
-     This is a scheduling rule in `dispatchable`, not a wait, because nothing
-     external is awaited.
-4. **Integration.**
-   - When every non-dropped part is `built`, the unit moves `build → integrate`.
-   - The `integrate` job merges the part branches into the batch branch, resolves
-     conflicts, runs the repository's checks and opens or updates **one PR**.
-   - The PR body has `Closes #a`, `closes #b`… for each member, plus submission
-     marker **version 2**: `{"version": 2, "unit": id, "issues": [...],
-     "attempt", "head"}`. `contracts.submission()` accepts v1 and v2.
-   - The candidate is verified against every member's requirements digest.
-5. **Review, audit, approval and merge, once.**
-   - These steps apply unchanged to the one candidate.
-   - Evidence may attribute findings to members (`evidence.detail.members`).
-   - `ownership()` must treat the unit's own batch PR as the candidate for every
-     member. Without that, the batch PR's closing keywords would trip the #151
-     ownership rule.
-6. **Shared budget.**
-   - Charged failures of part builds, integration, review and audit all count
-     against the unit's single `budget_epoch` (3).
-   - A rejection returns to `build` with `retry_plan` routed to the named parts
-     (`part_state` back to `pending`). Recovery may set `retry_stage=integrate`
-     when only the integration is at fault.
-   - A conflict with base returns to `integrate`, uncharged.
-   - Once the budget is exhausted, there is a `budget` wait, and the operator
-     chooses between retry, dropping a part and dissolving.
-7. **Dropping a part.**
-   - The `drop_part` decision sets `part_state=dropped` and `left_at`, and starts
-     a new unit of one for that issue with the part branch as its resume branch.
-   - If a candidate exists, the unit returns to `integrate` (uncharged), so the PR
-     loses that member's closing keyword.
-   - A part never blocks the others without an explicit operator choice, as
-     #207's acceptance criteria require.
-8. **Dissolving.** The `dissolve` decision closes the unit (`dissolved`), comments
-   on and closes the batch PR through the outbox, and creates units of one for
-   every remaining member, each keeping its part branch. Events and jobs stay
-   attached to the closed batch unit for history.
-9. **Gating.**
-   - External prerequisites of any member form the unit's `dependency` wait (the
-     union, minus members).
-   - Ownership, label holds and operator pauses on **any** member gate the whole
-     unit, and the wait detail names the member.
-   - Repository readiness and account availability apply per unit, as today.
-10. **Merge.**
-    - `pipeline.merged` sets `left_reason=merged` for every member and enqueues
-      `close_issue` for members GitHub did not close itself (non-default target
-      branches).
-    - Deployment observation attaches to the candidate, so every member shows as
-      deployed.
-
----
-
-## 6. Migration
-
-### 6.1 Import
-
-`forge state import` is one-time, resumable and idempotent.
-
-1. **Take a lock and a backup.** Hold the controller lock, with the supervisor
-   paused. Copy every source JSON file to `state/backups/json-<UTC>/` (`0600`) and
-   record each file's sha256 in `migrations.source_digest`.
-2. **Import in steps.** The steps are `repositories`, `issues` (inventory plus the
-   ledger's GitHub overlay), `units`, `jobs`+`artifacts`, `events`,
-   `decisions`, `discussions`, `cooldowns`/`profiles`/`kv`.
-   - Each step runs in its own transaction and is recorded in `migrations`.
-   - A rerun skips completed steps.
-   - Natural keys (job uuid, `(repo_id, number)`, request id) make reinsertion
-     `INSERT OR IGNORE`.
-3. **Map legacy state to units of one** (in phase 5; phases 2–4 import the
-   ledger's shape).
-
-| Legacy state | `units.state` | Waits created |
-| --- | --- | --- |
-| `ready` / `built` / `reviewed` / `audited` | `build` / `review` / `audit` / `merge` | From the side fields: `blocked_dependencies`, `ownership_wait`, `retry_after` |
-| `approval_needed` + `verification_request` | `resume_state` → `review` or `audit` | `verification` |
-| `approval_needed` | `merge` | `approval` or `merge_blocked`, from `merge_gate.kind` |
-| `investigating` | The pending failure's `retry_state` | `investigation` |
-| `failed` | The last failure's `retry_state` | `budget` |
-| `hold` | The saved stage from `operator_hold`, `environment_hold` or `prerequisite_hold` `.state`, else `build` | `decision` / `approach` (`APPROACH_HOLD`) / `environment` / `repository` / `operator` / `label_hold`; anything else becomes `external_change/legacy_hold`, with the reason kept in `detail.note` |
-| `merged` | `merged` | — |
-| `cancelled` | `closed`, with `close_code` from `closed_as`: `completed` → `closed_on_github`, `not_planned`/`duplicate` → `dropped`, none → `cancelled` | — |
-
-### 6.2 Dry run against the live box
-
-The dry run used a private copy under `/tmp` (`0700`). It ran under `nice 19`
-while the service was live, and the copy was deleted afterwards. Only counts,
-sizes and timings were printed. Root: `/home/luc/ops/forge-watchdog`,
-2026-10-05.
+The initial PR #210 author reported the following measurements using a private
+copy of the live state and a simplified prototype schema. We preserved these
+figures from commit `2dd3f89`; this review did not rerun that experiment. They show
+potential benefit, not a verified full-store migration or production performance
+result. A coherent snapshot across all mutable writers was not established by
+that report. The phase 2 importer must reproduce counts and parity with the full
+schema and explicit source hashes before activation.
 
 | Source | Size | Rows |
 | --- | --- | --- |
@@ -842,98 +667,107 @@ sizes and timings were printed. Root: `/home/luc/ops/forge-watchdog`,
 | Database size | 64.6 MB | **34.3 MB**: artifacts zlib 48.8 → 11.3 MB (13.8 MB on disk); jobs 10.9; issues 3.4; units 4.2; events 1.8 |
 | **Round-trip parity** | — | **0 mismatches** over 112 issues and 878 jobs (artifacts reattached); 3,135 events equal |
 
-**Artifact age.** Of the artifact bytes:
 
-- 6.2 MB are less than a day old;
-- 11.3 MB are 1–7 days old;
-- 29.1 MB are 7–14 days old;
-- 2.1 MB are 14–30 days old.
+## Operator and agent workflow
 
-The proposed 30-day log retention changes nothing yet. Dropping `live_tail` on
-finish saves 20 MB, and compression saves another 37 MB. With slimmed `jobs`
-columns (no `failure` or `history` copies), the steady-state database should be
-about 15 MB.
+The following is a proposed command surface, not commands available today. Extend
+the standalone client's existing `forge server` group. The client handles SSH,
+host jobs, status polling, and any transfers; the operator never copies state
+files or enters a remote shell. The JSON interface and human wizard call the same
+operations. Personal GitHub credentials remain local.
 
-**Lifecycle overlaps found in live data** (they confirm section 1.2):
+| Proposed command | Result and authority |
+| --- | --- |
+| `forge --json server state plan --ssh forge` | Read-only compatibility, size, disk-space, active-execution and source-store inventory; returns a plan ID and revision. |
+| `forge --json server state capture --ssh forge --plan ID --revision REV --apply` | Creates a coherent private host snapshot under a planned maintenance window, quiescing all writers; returns a snapshot ID and resumes the existing backend. |
+| `forge --json server state dry-run --ssh forge --plan ID --snapshot ID` | Imports that frozen snapshot into a separate database, runs parity and integrity checks, and returns counts/timings. It does not switch the backend, pause services or write to GitHub. |
+| `forge server state migrate --ssh forge --plan ID --revision REV --apply` | Revalidates the plan, enters maintenance, drains/fences jobs and writers, backs up, imports, verifies, atomically selects the database, then resumes only after health checks. |
+| `forge --json server state status --ssh forge --migration ID` | Durable progress, current authority by domain, completed checks, actionable error code, and exact resume command. |
+| `forge server state resume --ssh forge --migration ID --apply` | Continues the same migration journal; never starts a second import or silently changes its source snapshot. |
+| `forge server state rollback --ssh forge --migration ID --apply` | Revalidates rollback eligibility and performs the guarded rollback procedure above; refuses a blind restore after new external effects. |
 
-- 11 issues are open in the inventory but settled in the ledger, with the
-  inventory 6 h old;
-- 8 issues are `cancelled` with `closed_as=completed`;
-- 38 settled issues carry a stale `merge_gate`;
-- 17 settled issues carry `retry_after`;
-- 3 settled issues carry `blocked_dependencies`;
-- 1 issue is held only by a label, recorded as `state=hold` with no typed hold
-  field.
+An interactive wizard explains the current phase and waits only for decisions
+that require a person. `--json` never opens a prompt or browser. Every mutation
+accepts an idempotency key and expected revision, returns structured errors and
+documents retry semantics through `forge commands` and the bundled agent skill.
+Database maintenance requires SSH operator authority; an ordinary repository
+agent connection cannot migrate, export private state, or restore backups.
 
-The prototype schema (units, jobs, artifacts, events, issues) is simplified. The
-importer in phase 2 targets the full schema.
+`bin/forge update` detects the old backend and the required schema version. It
+does not start new workers against a half-migrated database or silently let an
+older binary resume writing JSON. Initial SQLite release leaves the source JSON
+backup private and immutable. Final retirement removes live reads and writes,
+not the recovery backup. New installs use the database directly.
 
-### 6.3 Parity before cut-over
+## Observation and performance
 
-`forge state parity` builds `control.view(root)` and `IssueInventory.view()` for
-every filter and page, plus `discussions.view` for every thread, from **both**
-backends, and diffs them row by row on `key`.
+Removing serialization alone does not make GitHub fast. The current supervisor
+has a wall-clock budget and rotates issues; moving the same network loop behind
+SQL would retain this limit. The cutover must change both local persistence and
+observation scheduling:
 
-- **Phases 2–4** must show zero diffs, apart from a short allow-list of
-  intended fixes (for example, inventory staleness). It runs in CI on fixture
-  ledgers that cover every hold kind, and nightly on a copy of the live state
-  (the same `/tmp` procedure as 6.2).
-- **Cut-over gate:** 7 consecutive days of clean nightly parity.
-- **Phase 5** changes the semantics, so its parity compares
-  `status.describe()` with today's `presentation()` and reviews each difference
-  by hand. Every difference must map to a row of the table in 1.2.
+1. Read all open units, latest repository observations, due work and requested
+   checks in indexed snapshot queries. Do not read job artifacts or full event
+   history to build a status response or choose work.
+2. Batch lightweight GitHub issue/PR identity and revision observations per
+   repository/installation. Record which units were actually covered by each
+   successful response. Use bounded concurrency outside SQL transactions and
+   respect GitHub rate limits. A failed batch records unavailable evidence; it
+   never pretends its units were freshly observed.
+3. Reconcile every open unit against that cycle's observations. Revalidate the
+   exact candidate, current approvals, technical check identities, branch
+   protections and bypass policy immediately before any merge attempt. A cached
+   broad observation never replaces these final gates.
+4. Publish durable external intents, claim available jobs, and dispatch after
+   commit. Provider login, Docker launch, GitHub calls and retries never hold a
+   database transaction open. An old process or attempt must fail its fencing
+   check before publishing a new effect.
+5. Carry unfinished remote observation work forward with explicit stale status
+   and fair scheduling. Manual Check now and imminent merges get priority, but
+   cannot indefinitely starve other units.
 
-### 6.4 Rollback
+The acceptance test measures a complete observation sweep on a copy of the live
+workload and then on the host with healthy GitHub access. It records open-unit
+count, API requests and quota, p50/p95 sweep duration, oldest successful remote
+observation age, units covered and deferred, query time, writer wait, database
+size and WAL size. The target is a complete healthy sweep in seconds (initial
+budget: ten seconds at the measured live workload), with every open unit
+covered. Outages and exhausted upstream quotas must be reported as degraded;
+there is no honest constant-time promise for arbitrarily many remote units.
 
-- **Through phase 4:** the runtime setting `state_backend: json | sqlite` selects
-  the backend. `forge state export` writes `factory-ledger.json` and the other
-  stores back from SQLite. This is lossless, because the model is unchanged up to
-  phase 4. The original JSON files stay read-only in the backup directory for 30
-  days.
-- **After phase 5:** export maps units of one back to legacy states (the reverse
-  of 6.1). It refuses while a batch is open: dissolve batches first, then roll
-  back.
-- **Corrupt database:** restore the latest verified backup, then run the existing
-  "reconcile before recovery" procedure. The supervisor re-observes GitHub, and
-  jobs are reconciled from their containers.
+The status API target is p95 under ten milliseconds for representative board,
+issue, unit and paginated history requests on the host, excluding network
+transport. Measure it cold and warm while the supervisor writes, using the same
+input data as the JSON baseline. Output downloads are measured separately.
+Bounded indexed queries are the baseline; remove the file-fingerprint cache only
+after uncached database reads meet the target. A later event cursor (#169) can
+invalidate optional presentation caches without reintroducing file scans.
 
----
+**Time to first merge remains the product metric.** Record fresh CLI setup start,
+ready-to-run, first accepted work, and first GitHub-confirmed normal merge. A
+database migration preserves those timestamps; it must not restart the clock.
+The full release proof includes a unit of one and a two-issue batch reaching a
+normal merged PR, with no manual server shell steps.
 
-## 7. Phased delivery
+## Delivery and approval
 
-Each phase is a small, mergeable PR with no flag day.
+This draft completes phase 0 of #209 when approved. It carries #168's shared
+stage projection and transition events into the database model; the closed
+issue's per-job JSON archive is not implemented.
 
-| # | PR | Size | Main risks | Tests |
-| --- | --- | --- | --- | --- |
-| 1 | **Store foundation and artifact offload.** Add `forge/store/db.py` (pragmas, permissions, migrations, backup). Move `capture`, `observation`, `ci_evidence` and `history` to `job_artifacts`, behind `Ledger.artifact(job_id, kind)`. The ledger keeps everything else. Clean up `.pending-*` on start. | M | Two stores are not atomic. Write the artifact before the ledger reference, and treat a missing artifact as "logs unavailable", never as an error. Old ledgers carry the fields inline (read both). | Store unit tests (permissions, symlink refusal, WAL, busy timeout); existing `tests/test_factory_*` unchanged; a size regression test (ledger size independent of job logs on a fixture with 1,000 jobs). **Expected effect on live: 64.6 → ≈12 MB, so roughly 80% less time per write.** |
-| 2 | **Full schema, importer and parity (no behavior change).** `forge state import --dry-run\|--apply`, `forge state parity`, `forge state export`. | M | Mapping gaps in rarely used fields. Mitigated by the field census in 2.5 and the round-trip check. | Golden fixtures for every state and hold kind; import → export round trip byte-equal after normalization; nightly parity on a live copy. |
-| 3 | **Supervisor on SQLite.** Reimplement `Ledger` methods on rows (same names). Replace the 26 direct transactions in `supervisor.py`, the 16 in `issue_actions.py` and the 13 in `discussions.py` with named repository or pipeline calls. Flag `state_backend`. | L | Concurrency between processes; long transactions accidentally wrapping GitHub calls (lint: no network inside `store.write()`); semantic drift. | Full suite parametrized over both backends; a two-process writer contention test; crash-injection tests (kill between statements, then assert the old or new state); a cycle-time benchmark on the replay (target: < 2 s of the 42 s cycle spent in storage). |
-| 4 | **API and UI on SQL.** `control.view`, `IssueInventory.view` and `discussions.view` move to indexed queries with SQL paging. The inventory refresh and supervisor observations write the same `issues` rows. Retire `ViewCache.get` and keep ETag. | M | Response shape drift visible in the UI. | API snapshot tests (identical JSON to the JSON backend); a performance test (all views < 50 ms on a 10k-issue fixture); the existing UI end-to-end tests. |
-| 5 | **Units of one, waits and codes.** Add `units`, `unit_issues`, `waits`, `codes.py`, `status.describe()` and the outbox. Migrate legacy holds. Delete `attention_kind()`'s and `presentation()`'s precedence chains, the reason-string comparisons and the #174/#196 regexes. Typed `blocked_by` in results. Label holds release automatically. | L | Operator-visible behavior changes (label release, `done` vs `cancelled`); migration of `legacy_hold`. | A transition-table property test (every illegal pair raises, in Python and through the trigger); migration fixtures from each legacy state; wording snapshots per wait code; the "both hold and dependency" regression; outbox retry and dedupe tests (checks settle after a crash between the state change and publishing). |
-| 6 | **Batches (#207).** Operator "Combine" first (6a). Then supervisor proposals, on by default with approval (6b). Part builds, integration role, submission v2, drop part, dissolve, batch view. | L | Integration-role prompt quality; ownership of members through the batch PR; review cost of large diffs (no cap). | End-to-end runs on a fixture repository: two members built in parallel, one PR with both closing keywords, merge closes both; drop part; dissolve keeps branches; an internal prerequisite orders the parts; an external prerequisite gates the unit. |
+| Phase | Reviewable deliverable | Release gate |
+| --- | --- | --- |
+| 0 | This lifecycle audit, schema, access boundary and migration design. | Operator approves the design and the explicitly proposed policies. |
+| 1 | Private SQLite store, schema, typed transitions and invariant tests, disabled for runtime use. | Constraint, concurrency and transaction crash tests pass. |
+| 2 | Resumable import, backup and deterministic parity tooling. | Private live-state-copy dry run reports no unexplained differences; crash/resume leaves one import. |
+| 3 | Supervisor and mutation paths use row operations; artifacts remain out of hot queries. | Single-writer ownership, cleanup and external-effect recovery survive restarts; measured observation sweep improves. |
+| 4 | API, UI and CLI share projections and database queries. | Parity and host latency pass; every mutation/read family is accounted for. |
+| 5 | Existing work represented as units of one. | Requirements, budgets, candidates, approvals and completion survive migration without being reset. |
+| 6 | Approved batch proposals, parallel dependency-aware parts, integration, shared budget, drop and dissolve. | Two or more issues reach one normal merged PR; failure/drop/dissolve races are tested. |
+| 7 | Retire operational JSON paths and finish update/backup documentation. | Static call-site inventory plus runtime instrumentation finds no operational JSON writes; recovery rehearsal passes. |
 
-Phase 1 is independent and delivers most of the performance win. Phases 2 to 4
-change storage only. Phase 5 changes the lifecycle on a stable store, and phase 6
-adds batches with no further schema change.
-
----
-
-## 8. Open questions for the operator
-
-1. **Label holds.** Should removing the `hold` or `blocked` label on GitHub resume
-   the issue by itself? Proposed: **yes**. Today it doesn't, although the UI says
-   it does.
-2. **Closed as completed outside Forge.** Should this show as `done` rather than
-   `cancelled`? Proposed: **yes**, with `close_code=closed_on_github`.
-3. **Repository readiness.** Should a unit resume automatically when protection or
-   bypass becomes ready? Today it needs a recheck. Proposed: **automatic**.
-4. **Retention.** Keep logs for 30 days and results and summaries forever?
-   Should telemetry events be pruned after 90 days?
-5. **Durability.** Use `synchronous=FULL` (1.6 ms per commit, today's guarantees)
-   or `NORMAL` (0.1 ms; may lose the last commit on power loss, never corrupts)?
-   Proposed: `FULL`.
-6. **Batch membership.** May the supervisor propose only candidate-less units,
-   while the operator may also combine units that already have a PR (that PR is
-   then closed as superseded)?
-7. **Rollback window.** Keep the JSON backend and export for 30 days after phase
-   4, and drop them in phase 5?
+The implementation can share groundwork between phases, but no phase silently
+enables the next. Neither migration nor live deployment is implied by merging
+this design. #209 remains open until all its acceptance criteria, including
+batches, are met. Draft #166 remains separate until its outstanding first-merge
+setup acceptance is complete.
