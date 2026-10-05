@@ -656,10 +656,17 @@ class Ledger:
             issue.pop('prerequisite_hold', None)
             self.event(data, issue, 'protection_restored')
 
-    def cancel(self, key, reason, *, closed_as=None):
+    def cancel(self, key, reason, *, closed_as=None, github_issue=None):
         with self.transaction() as data:
             issue = data['issues'][key]
-            if closed_as and issue['state'] != 'merged':
+            if github_issue is not None and issue['state'] != 'merged':
+                from .issues import facts
+                if github_issue.get('state') != 'closed':
+                    raise ValueError('Cancellation closure evidence must be a closed GitHub issue')
+                issue['github_observation'] = {'at': self.clock(),
+                    'issue': facts({**github_issue, 'number': issue['number']})}
+                closed_as = github_issue.get('state_reason')
+            if (closed_as or github_issue is not None) and issue['state'] != 'merged':
                 issue['closed_as'] = closed_as  # GitHub's state_reason: completed, not_planned, duplicate
             if issue['state'] in ('cancelled', 'merged'):
                 return

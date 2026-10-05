@@ -373,7 +373,7 @@ class Supervisor:
             with self.ledger.transaction() as data:
                 data['issues'][item['key']]['ownership_wait'] = None
             self.ledger.cancel(item['key'], 'Issue closed externally; reconcile any published PR separately',
-                              closed_as=issue.get('state_reason'))
+                              github_issue=issue)
             return
         if requirements != job['requirements'] or job['policy'] != digest(policy(self.config)):
             self.invalidate(item['key'], 'Requirements or policy changed during the attempt')
@@ -496,7 +496,7 @@ class Supervisor:
         self.ledger.invalidate(key, reason, candidate=candidate, hold=hold)
 
     def closed_issue_with_unreadable_candidate(self, item, issue):
-        self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
+        self.ledger.cancel(item['key'], 'Issue closed externally', github_issue=issue)
         with self.ledger.transaction() as data:
             current = data['issues'][item['key']]
             current['candidate'] = None
@@ -617,7 +617,7 @@ class Supervisor:
         if issue['state'] != 'open':
             with self.ledger.transaction() as data:
                 data['issues'][item['key']]['ownership_wait'] = None
-            self.ledger.cancel(item['key'], 'Issue closed externally', closed_as=issue.get('state_reason'))
+            self.ledger.cancel(item['key'], 'Issue closed externally', github_issue=issue)
             self.github.labels(self.ledger.read()['issues'][item['key']])
             return
         ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
@@ -1024,7 +1024,8 @@ class Supervisor:
                             if not self.dependencies_recently_clear(item) and not self.dependency_ready(item, issue):
                                 continue
                             if issue['state'] != 'open':
-                                self.ledger.cancel(item['key'], 'Issue closed externally')
+                                self.ledger.cancel(item['key'], 'Issue closed externally',
+                                                   github_issue=issue)
                                 continue
                             if requirements != item['requirements']:
                                 self.invalidate(item['key'], 'Issue requirements changed')

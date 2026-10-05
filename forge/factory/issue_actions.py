@@ -290,7 +290,7 @@ class IssueActions:
             # Replay-safe: a restarted controller finds the issue already closed and finishes.
             if issue['state'] == 'open' and issue_revision(issue, item) != decision['revision']:
                 raise ValueError('This issue changed. Refresh it before applying the decision.')
-            self.close(identifier, decision, item, issue['state'] == 'open')
+            self.close(identifier, decision, item, value)
             return
         if issue['state'] != 'open':
             raise ValueError('This issue is closed.')
@@ -422,7 +422,7 @@ class IssueActions:
             current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
             self.ledger.event(state, current, 'operator_' + decision['action'], reason=decision['reason'], request=identifier)
 
-    def close(self, identifier, decision, item, open_issue):
+    def close(self, identifier, decision, item, github_issue):
         """Drop the issue: close Forge's pull request, then the issue as not planned.
 
         Stops a running attempt; the next cycle cleans up its runner. Branches are kept."""
@@ -431,14 +431,15 @@ class IssueActions:
             current = self.github.call('controller', decision, 'GET', f'/pulls/{pull}')
             if isinstance(current, dict) and current.get('state') == 'open' and not current.get('merged'):
                 self.github.call('controller', decision, 'PATCH', f'/pulls/{pull}', {'state': 'closed'})
-        if open_issue:
+        if github_issue['state'] == 'open':
             self.github.call('controller', decision, 'POST', f"/issues/{decision['number']}/comments",
                              {'body': 'Closed from Forge as not planned: ' + decision['reason']})
             self.github.call('controller', decision, 'PATCH', f"/issues/{decision['number']}",
                              {'state': 'closed', 'state_reason': 'not_planned'})
+            github_issue = {**github_issue, 'state': 'closed', 'state_reason': 'not_planned'}
         if item is None:
             return
-        self.ledger.cancel(decision['key'], 'Closed as not planned: ' + decision['reason'], closed_as='not_planned')
+        self.ledger.cancel(decision['key'], 'Closed as not planned: ' + decision['reason'], github_issue=github_issue)
         with self.ledger.transaction() as state:
             current = state['issues'][decision['key']]
             current.pop('operator_request', None)
