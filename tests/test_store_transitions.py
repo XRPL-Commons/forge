@@ -260,6 +260,49 @@ class StoreTransitionTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 2)
 
+    def test_closed_observation_blocks_dispatch_but_keeps_terminal_issue_projection(self):
+        for reason, projected in [('completed', 'done'), ('not_planned', 'dropped')]:
+            with self.subTest(reason=reason):
+                with self.store.write() as db:
+                    db.execute("UPDATE issues SET github_state = 'closed', state_reason = ? WHERE id = 'issue-1'", (reason,))
+                view = self.view()
+                self.assertEqual(view['members'][0]['projected_state'], projected)
+                self.assertEqual(view['current_blocker']['code'], 'external_change')
+                with self.assertRaisesRegex(TransitionError, 'applicable gate'):
+                    self.reserve()
+                with self.store.read_snapshot() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
+
+    def test_disabled_repository_blocks_dispatch_and_current_result_acceptance(self):
+        with self.store.write() as db:
+            db.execute('UPDATE repositories SET enabled = 0 WHERE id = 1')
+        self.assertEqual(self.view()['current_blocker']['code'], 'repository_setup')
+        with self.assertRaisesRegex(TransitionError, 'applicable gate'):
+            self.reserve()
+        with self.store.write() as db:
+            db.execute('UPDATE repositories SET enabled = 1 WHERE id = 1')
+        job = self.reserve()
+        with self.store.write() as db:
+            db.execute('UPDATE repositories SET enabled = 0 WHERE id = 1')
+        with self.assertRaisesRegex(TransitionError, 'gate prevents accepting'):
+            self.accept_build(job)
+        self.assertEqual(self.view()['state'], 'building')
+        self.assertIsNone(self.view()['current_candidate_id'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM candidate_evidence').fetchone()[0], 0)
+
+    def test_success_after_authoritative_issue_closure_cannot_advance_unit(self):
+        job = self.reserve()
+        with self.store.write() as db:
+            db.execute("UPDATE issues SET github_state = 'closed', state_reason = 'completed' WHERE id = 'issue-1'")
+        with self.assertRaisesRegex(TransitionError, 'gate prevents accepting'):
+            self.accept_build(job)
+        self.assertEqual(self.view()['state'], 'building')
+        self.assertIsNone(self.view()['current_candidate_id'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM candidates').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 1)
+
     def test_completed_external_closure_and_hold_label_resolution_keep_pause(self):
         gate = self.lifecycle.open_gate(self.command(), 'label_hold', details={'label': 'hold'})
         self.lifecycle.pause(self.command())

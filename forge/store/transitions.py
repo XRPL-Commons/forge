@@ -54,6 +54,18 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None):
     Derived blockers have no gate ID and are not stored as a second authority.
     """
     gates = _gates(db, unit["id"])
+    repository = db.execute("SELECT enabled FROM repositories WHERE id = ?", (unit["repository_id"],)).fetchone()
+    if repository is None or not repository["enabled"]:
+        gates.append({"id": None, "unit_id": unit["id"], "member_id": None, "candidate_id": None,
+                      "subject_key": "unit", "code": "repository_setup", "created_at": 0.0,
+                      "resolved_at": None, "details_json": _json({"reason": "repository_disabled"})})
+    for row in db.execute(
+        "SELECT m.id, i.state_reason FROM unit_issues m JOIN issues i ON i.id = m.issue_id "
+        "WHERE m.unit_id = ? AND m.left_at IS NULL AND i.github_state = 'closed'", (unit["id"],),
+    ):
+        gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
+                      "subject_key": f"member:{row['id']}", "code": "external_change", "created_at": 0.0,
+                      "resolved_at": None, "details_json": _json({"reason": "issue_closed", "state_reason": row["state_reason"]})})
     for row in db.execute(
         "SELECT m.id FROM unit_issues m WHERE m.unit_id = ? AND m.left_at IS NULL AND ("
         "EXISTS (SELECT 1 FROM issue_dependencies d WHERE d.issue_id = m.issue_id "
