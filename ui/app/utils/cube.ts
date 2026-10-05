@@ -63,7 +63,25 @@ export function drawCube(ctx: CanvasRenderingContext2D, x: number, y: number, c:
   ctx.lineWidth = lw; ctx.strokeStyle = CUBE_INK; ctx.stroke()
   const inset = lw + 0.9
   roundRect(ctx, -c / 2 + inset, -c + inset, c - 2 * inset, c * 0.26, c * 0.12); ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.fill()
+  drawFace(ctx, c, o)
+  if (o.soot) {
+    ctx.fillStyle = 'rgba(16,14,12,.55)'
+    for (const [px, py, pr] of [[-0.28, -0.14, 0.07], [-0.12, -0.08, 0.05], [0.24, -0.2, 0.06]] as const) { ctx.beginPath(); ctx.arc(c * px, c * py, c * pr, 0, TAU); ctx.fill() }
+  }
+  if (o.bandage) {
+    ctx.save(); ctx.translate(c * 0.24, -c * 0.8); ctx.rotate(-0.7)
+    roundRect(ctx, -c * 0.2, -c * 0.07, c * 0.4, c * 0.14, c * 0.05); ctx.fillStyle = '#efe3c8'; ctx.fill()
+    ctx.lineWidth = Math.max(0.8, c * 0.03); ctx.strokeStyle = CUBE_INK; ctx.stroke()
+    ctx.fillStyle = 'rgba(10,12,15,.45)'; ctx.fillRect(-c * 0.05, -c * 0.05, c * 0.1, c * 0.1)
+    ctx.restore()
+  }
+  if (o.accessory) drawAccessory(ctx, o.accessory, c, lw)
+  ctx.restore()
+}
 
+// Eyes, brows and mouth, in the coordinates of a cube of side c standing on
+// (0, 0): the issue cube and the agent worker share one face.
+export function drawFace(ctx: CanvasRenderingContext2D, c: number, o: Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'eyeCol' | 'blink' | 'mouth'> = {}, mouthFrom = 22) {
   const ex = c * 0.19, ey = -c * 0.46, er = Math.max(1.2, c * 0.075), look = o.look || 0, lookY = o.lookY || 0
   const ink = o.eyeCol || '#12151a'
   ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, c * 0.07); ctx.lineCap = 'round'
@@ -96,18 +114,7 @@ export function drawCube(ctx: CanvasRenderingContext2D, x: number, y: number, c:
     }
     ctx.stroke()
   }
-  if (o.soot) {
-    ctx.fillStyle = 'rgba(16,14,12,.55)'
-    for (const [px, py, pr] of [[-0.28, -0.14, 0.07], [-0.12, -0.08, 0.05], [0.24, -0.2, 0.06]] as const) { ctx.beginPath(); ctx.arc(c * px, c * py, c * pr, 0, TAU); ctx.fill() }
-  }
-  if (o.bandage) {
-    ctx.save(); ctx.translate(c * 0.24, -c * 0.8); ctx.rotate(-0.7)
-    roundRect(ctx, -c * 0.2, -c * 0.07, c * 0.4, c * 0.14, c * 0.05); ctx.fillStyle = '#efe3c8'; ctx.fill()
-    ctx.lineWidth = Math.max(0.8, c * 0.03); ctx.strokeStyle = CUBE_INK; ctx.stroke()
-    ctx.fillStyle = 'rgba(10,12,15,.45)'; ctx.fillRect(-c * 0.05, -c * 0.05, c * 0.1, c * 0.1)
-    ctx.restore()
-  }
-  if (c >= 22 && o.mouth) {
+  if (c >= mouthFrom && o.mouth) {
     const my = -c * 0.25, mx = look * 0.5
     ctx.lineWidth = Math.max(1, c * 0.045); ctx.beginPath()
     if (o.mouth === 'smile') ctx.arc(mx, my - c * 0.06, c * 0.09, Math.PI * 0.2, Math.PI * 0.8)
@@ -117,8 +124,6 @@ export function drawCube(ctx: CanvasRenderingContext2D, x: number, y: number, c:
     } else ctx.arc(0, my, c * 0.035, 0, TAU)
     ctx.stroke()
   }
-  if (o.accessory) drawAccessory(ctx, o.accessory, c, lw)
-  ctx.restore()
 }
 
 // Drawn in the cube's own coordinates: (0, 0) is the middle of its base.
@@ -388,8 +393,8 @@ export function drawPortrait(ctx: CanvasRenderingContext2D, S: number, look: Por
 }
 
 // ---------------------------------------------------------------------------
-// The discussion agent's avatar: the same cube in its persona's colour with a
-// small mark above it, whose face follows the conversation. Looking around
+// The discussion agent's avatar: a little worker on two feet in its persona's
+// colour with a small mark above it, whose face follows the conversation. Looking around
 // while Forge finds someone, focused while it works, happy with an answer,
 // eyes shut once it has left. `t` animates; `still` is the reduced-motion frame.
 // ---------------------------------------------------------------------------
@@ -428,13 +433,67 @@ function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: 
   ctx.fill(); ctx.stroke(); ctx.restore()
 }
 
+// The agent is a worker, not an issue: a machine-like body on two little legs
+// with feet, like the machines on the factory floor, its face on the body and
+// its persona's mark above. Issues stay rounded-square cube heads. Everything
+// is laid out in an S×S square; `workerShape` is the geometry, for tests.
+export interface WorkerShape {
+  body: { x: number; y: number; w: number; h: number; r: number }
+  legs: { x: number; y: number; w: number; h: number }[]
+  feet: { x: number; y: number; w: number; h: number }[]
+  face: { x: number; y: number; c: number }
+  mark: { x: number; y: number; s: number }
+}
+
+export function workerShape(S: number): WorkerShape {
+  const floor = S * 0.97, cx = S / 2
+  const fw = S * 0.2, fh = S * 0.075, lw = S * 0.095, lh = S * 0.13
+  const bw = S * 0.72, bh = S * 0.5
+  const bodyBottom = floor - fh - lh + S * 0.02
+  const top = bodyBottom - bh
+  const spread = bw * 0.27
+  return {
+    body: { x: cx - bw / 2, y: top, w: bw, h: bh, r: S * 0.11 },
+    legs: [-1, 1].map(side => ({ x: cx + side * spread - lw / 2, y: bodyBottom - S * 0.03, w: lw, h: floor - fh - bodyBottom + S * 0.04 })),
+    feet: [-1, 1].map(side => ({ x: cx + side * spread - fw / 2 + side * S * 0.03, y: floor - fh, w: fw, h: fh })),
+    face: { x: cx, y: bodyBottom - bh * 0.06, c: bw * 0.8 },
+    mark: { x: cx + bw * 0.32, y: top - S * 0.09, s: S * 0.15 },
+  }
+}
+
+// Busy: little alternating steps. Every other mood stands; still never moves.
+export function workerSteps(mood: AgentMood, S: number, t: number, still: boolean): [number, number] {
+  if (still || mood !== 'busy') return [0, 0]
+  const k = Math.sin(t / 110)
+  return [Math.max(0, k) * S * 0.035, Math.max(0, -k) * S * 0.035]
+}
+
 export function drawAgent(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, mood: AgentMood, t = 0, still = true) {
   ctx.clearRect(0, 0, S, S)
-  const c = Math.round(S * 0.66), floor = Math.round(S * 0.95), cx = S / 2 - S * 0.05
-  const face = agentFace(mood, c, t, still)
+  const shape = workerShape(S)
+  const face = agentFace(mood, shape.face.c, t, still)
+  const lift = workerSteps(mood, S, t, still)
+  // A hop lifts the whole worker; a step lifts one foot and the body a little.
+  const bob = face.dy - Math.max(lift[0], lift[1]) * 0.5
+  const lw = Math.max(1.2, S * 0.045)
   ctx.save()
   ctx.globalAlpha = mood === 'left' ? 0.7 : 1
-  drawCube(ctx, cx + face.dx, floor + face.dy, c, fill, { eyes: face.eyes, look: face.look, lookY: face.lookY, mouth: face.mouth })
-  drawMark(ctx, mark, cx + c * 0.42 + face.dx, floor - c - S * 0.08 + face.dy, S * 0.17, fill)
+  ctx.lineWidth = lw; ctx.strokeStyle = CUBE_INK; ctx.lineJoin = 'round'
+  // Legs and feet first, so the body sits on top of them.
+  shape.legs.forEach((leg, i) => {
+    const up = lift[i]! - face.dy
+    roundRect(ctx, leg.x + face.dx, leg.y + bob, leg.w, leg.h - up - bob, leg.w * 0.4); ctx.fillStyle = fill; ctx.fill(); ctx.stroke()
+    const foot = shape.feet[i]!
+    roundRect(ctx, foot.x + face.dx, foot.y - up, foot.w, foot.h, foot.h * 0.5); ctx.fillStyle = '#2a2f37'; ctx.fill(); ctx.stroke()
+  })
+  const b = shape.body
+  roundRect(ctx, b.x + face.dx, b.y + bob, b.w, b.h, b.r); ctx.fillStyle = fill; ctx.fill(); ctx.stroke()
+  // The machines' lighter top band.
+  const inset = lw + 0.6
+  roundRect(ctx, b.x + face.dx + inset, b.y + bob + inset, b.w - 2 * inset, b.h * 0.2, b.r * 0.6); ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.fill()
+  ctx.save(); ctx.translate(shape.face.x + face.dx, shape.face.y + bob)
+  drawFace(ctx, shape.face.c, { eyes: face.eyes, look: face.look, lookY: face.lookY, mouth: face.mouth }, 12)
+  ctx.restore()
+  drawMark(ctx, mark, shape.mark.x + face.dx, shape.mark.y + bob, shape.mark.s, fill)
   ctx.restore()
 }

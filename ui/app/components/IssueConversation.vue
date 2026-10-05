@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { requestId } from '~/utils/requestId'
 import { ACTION_LABELS, type IssueAction } from '~/utils/issues'
-import { SUGGESTED_PROMPTS, clockTime, elapsedLabel, findingDetail, joinedLine, leftLine, nearBottom, presenceMood, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
+import { SUGGESTED_PROMPTS, clockTime, collapsible, elapsedLabel, modeLine, slowNote, findingDetail, joinedLine, leftLine, nearBottom, presenceMood, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
 import { persona, personaSays } from '~/utils/personas'
 interface Message extends ThreadMessage { proposal?: { action: IssueAction; reason: string } | null; receipt?: string }
 interface Conversation { messages: Message[]; before: number | null; status: string; provider?: string; reason: string | null; partial: string; origin: { role: string; provider: string; link: string } | null; presence?: Presence | null }
@@ -42,6 +42,19 @@ const waitedFor = computed(() => {
   const since = live.value?.phase === 'joined' ? live.value.joined_at : live.value?.waiting_since
   return since ? elapsedLabel(now.value - since) : ''
 })
+// How long the agent has worked on this answer, and a gentle note past ~90 s.
+const slow = computed(() => {
+  if (live.value?.phase !== 'joined' || !liveAgent.value || !live.value.joined_at) return null
+  return slowNote(liveAgent.value.name, live.value.mode, now.value - live.value.joined_at)
+})
+// Long answers start folded; the operator unfolds the ones they want.
+const unfolded = ref(new Set<string>())
+const folded = (id: string) => !unfolded.value.has(id) && collapsible(byId.value.get(id)?.text ?? '')
+function toggle(id: string) {
+  const next = new Set(unfolded.value)
+  if (next.has(id)) next.delete(id); else next.add(id)
+  unfolded.value = next
+}
 // One line for what is happening now: the shimmer and the screen reader say it.
 const statusLine = computed(() => {
   if (sending.value) return 'Sending…'
@@ -274,6 +287,11 @@ async function loadOlder() {
                 <div class="min-w-0 flex-1">
                   <template v-if="liveAgent && live">
                     <p class="text-sm text-white" data-presence-title>{{ joinedLine(live.agent, live.instead_of) }}<span v-if="waitedFor" class="text-muted"> · {{ waitedFor }}</span></p>
+                    <!-- Which kind of answer is on its way: quick from the saved evidence, or minutes reading the code. -->
+                    <p class="mt-0.5 flex items-center gap-1.5 text-xs text-muted" data-mode :data-answer-mode="live.mode ?? 'evidence'">
+                      <UIcon :name="live.mode === 'code' ? 'i-lucide-file-search' : 'i-lucide-notebook-text'" class="size-3.5 shrink-0" aria-hidden="true" />{{ modeLine(live.mode) }}
+                    </p>
+                    <p v-if="slow" class="mt-1 text-xs text-muted italic" data-slow>{{ slow }}</p>
                     <ol class="mt-1.5 space-y-0.5" data-activity aria-label="What the agent is doing">
                       <li v-for="(line, index) in activity" :key="`${line.at}-${index}`" class="text-sm wrap-anywhere">
                         <UChatShimmer v-if="index === activity.length - 1 && state !== 'stopping'" :text="personaSays(liveAgent.name, line.text)" data-current />
@@ -307,15 +325,28 @@ async function loadOlder() {
                   <template v-else-if="byId.get(message.id)!.agent"><span class="text-white/85" data-persona-name>{{ persona(byId.get(message.id)!.agent!.provider).name }}</span> <span class="font-normal">via {{ persona(byId.get(message.id)!.agent!.provider).providerLabel }}</span></template>
                   <template v-else>Forge agent</template>
                 </p>
-                <Suspense v-if="message.role === 'assistant'"><ConversationMessage :id="message.id" :text="byId.get(message.id)!.text" /><template #fallback><p class="mt-1 whitespace-pre-wrap break-words text-sm">{{ byId.get(message.id)!.text }}</p></template></Suspense>
+                <!-- A chat reply: anything past about six lines folds behind Show more. -->
+                <div v-if="message.role === 'assistant'" :id="`answer-${message.id}`" data-answer :data-collapsed="folded(message.id) ? 'true' : 'false'" :class="folded(message.id) ? 'max-h-32 overflow-hidden [mask-image:linear-gradient(to_bottom,#000_60%,transparent)]' : ''">
+                  <Suspense><ConversationMessage :id="message.id" :text="byId.get(message.id)!.text" /><template #fallback><p class="mt-1 whitespace-pre-wrap break-words text-sm">{{ byId.get(message.id)!.text }}</p></template></Suspense>
+                </div>
                 <p v-else class="mt-1 whitespace-pre-wrap break-words text-sm text-white">{{ byId.get(message.id)!.text }}</p>
-                <div v-if="byId.get(message.id)!.proposal" class="mt-3 rounded-lg border border-line p-3" data-proposal>
-                  <p class="text-xs text-muted">Proposed decision</p>
-                  <p class="mt-1 whitespace-pre-wrap break-words text-sm text-white/85">{{ byId.get(message.id)!.proposal!.reason }}</p>
-                  <p v-if="byId.get(message.id)!.receipt" role="status" class="mt-2 text-sm text-mint-200">Decision submitted. The issue status in Details shows whether Forge accepted it.</p>
+                <UButton
+                  v-if="message.role === 'assistant' && collapsible(byId.get(message.id)!.text)"
+                  variant="link"
+                  color="neutral"
+                  size="xs"
+                  class="px-0"
+                  :aria-expanded="!folded(message.id)"
+                  :aria-controls="`answer-${message.id}`"
+                  data-show-more
+                  @click="toggle(message.id)"
+                >{{ folded(message.id) ? 'Show more' : 'Show less' }}</UButton>
+                <!-- The proposal: one compact card, the button and its short reason. -->
+                <div v-if="byId.get(message.id)!.proposal" class="mt-2 flex w-fit max-w-full flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-line px-3 py-2" data-proposal aria-label="Suggested decision" role="group">
+                  <p v-if="byId.get(message.id)!.receipt" role="status" class="text-sm text-mint-200">Decision submitted. The issue status in Details shows whether Forge accepted it.</p>
                   <UButton
                     v-else
-                    class="mt-2"
+                    class="shrink-0"
                     size="sm"
                     :color="byId.get(message.id)!.proposal!.action === primary ? 'primary' : 'neutral'"
                     :variant="byId.get(message.id)!.proposal!.action === primary ? 'solid' : 'outline'"
@@ -323,6 +354,7 @@ async function loadOlder() {
                     data-proposal-action
                     @click="emit('act', byId.get(message.id)!.proposal!.action, byId.get(message.id)!.proposal!.reason)"
                   >{{ ACTION_LABELS[byId.get(message.id)!.proposal!.action] }}</UButton>
+                  <p class="line-clamp-2 min-w-0 flex-1 basis-48 text-xs text-muted wrap-anywhere" data-proposal-reason :title="byId.get(message.id)!.proposal!.reason">{{ byId.get(message.id)!.proposal!.reason }}</p>
                 </div>
                 <div v-if="message.role === 'assistant' && actions.length" class="mt-2 flex flex-wrap items-center gap-1.5" data-reply-actions>
                   <span class="text-xs text-muted">You can:</span>

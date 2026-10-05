@@ -253,5 +253,22 @@ def started(at):
     return [{"id": "phase:started", "at": at, "text": STARTED}]
 
 
+# Lines that mean the worker opened the repository rather than answering from
+# the saved evidence. The operator sees which: a context answer is quick;
+# checking the code takes minutes.
+CODE = ("Searching the repository", "Looking around the repository", "Looking for files", INSPECTING,
+        "Checking the git checkout", "Inspecting git history", "Running ")
+NOT_CODE = ("Reading issue", "Reading the issue", EVIDENCE)
+
+
+def mode(activity):
+    """'code' once the worker reads the repository, else 'evidence'."""
+    for entry in activity or []:
+        text = str(entry.get("text", ""))
+        if text.startswith(CODE) or (text.startswith("Reading ") and not text.startswith(NOT_CODE)):
+            return "code"
+    return "evidence"
+
+
 def public(activity):
     return [{"at": e["at"], "text": e["text"]} for e in activity or []][-KEEP:]

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { SUGGESTED_PROMPTS, clockTime, elapsedLabel, findingDetail, issueTab, joinedLine, leftLine, nearBottom, presenceMood, replyState, tabQuery, threadEntries, unansweredQuestion, unreadReply, type ThreadMessage } from '../../app/utils/discussion'
+import { COLLAPSED_LINES, SLOW_SECONDS, SUGGESTED_PROMPTS, clockTime, collapsible, modeLine, slowNote, elapsedLabel, findingDetail, issueTab, joinedLine, leftLine, nearBottom, presenceMood, replyState, tabQuery, threadEntries, unansweredQuestion, unreadReply, type ThreadMessage } from '../../app/utils/discussion'
 import { panelQuery } from '../../app/utils/panel'
 import { issuePath } from '../../app/utils/issues'
 
@@ -134,6 +134,32 @@ describe('presence', () => {
     // Not while a reply is on its way, nor when Forge is already finding someone else.
     expect((threadEntries([user('a'), left('l')], true).at(-1) as { actionable: boolean }).actionable).toBe(false)
     expect((threadEntries([user('a'), left('l', { retrying: true })], false).at(-1) as { actionable: boolean }).actionable).toBe(false)
+  })
+})
+
+describe('answer mode and time', () => {
+  it('says whether the agent answers from the saved evidence or checks the code', () => {
+    expect(modeLine('evidence')).toBe('Answering from saved evidence')
+    expect(modeLine(undefined)).toBe('Answering from saved evidence')
+    expect(modeLine('code')).toBe('Checking the code')
+  })
+  it('adds a gentle note only past about 90 s', () => {
+    expect(SLOW_SECONDS).toBe(90)
+    expect(slowNote('Ember', 'code', 89)).toBeNull()
+    expect(slowNote('Ember', 'code', 90)).toBe('Taking longer than usual: Ember is reading the code')
+    expect(slowNote('Bolt', 'evidence', 200)).toBe('Taking longer than usual: Bolt is still working on it')
+  })
+})
+
+describe('collapsible', () => {
+  it('keeps a short chat reply open', () => {
+    expect(collapsible('The shared type is wrong. Fix the producer first.')).toBe(false)
+    expect(collapsible('One.\n\nTwo.\n\n- a\n- b\n- c')).toBe(false)
+  })
+  it('folds anything past about six lines', () => {
+    expect(collapsible(Array.from({ length: 8 }, (_, i) => `Line ${i}`).join('\n'))).toBe(true)
+    expect(collapsible('word '.repeat(120))).toBe(true)
+    expect(COLLAPSED_LINES).toBe(6)
   })
 })
 

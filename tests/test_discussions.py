@@ -68,7 +68,61 @@ class DiscussionsTest(unittest.TestCase):
         self.assertEqual(context['actions'], ['retry', 'assign_reviewer', 'close'])
         self.assertEqual([a['button'] for a in context['available_actions']], ['Retry attempt', 'Assign reviewer', 'Close issue'])
         self.assertTrue(any('Approve pull request #31 on GitHub' in step for step in context['operator_only']))
-        self.assertIn("What you can do", note(job)['instructions'])
+        self.assertNotIn("What you can do", note(job)['instructions'])
+
+    def test_the_agent_answers_from_context_first_in_a_short_chat_reply(self):
+        text = note(self.start())['instructions']
+        # Context first; the repository only when the context cannot answer or the operator asks.
+        self.assertIn('Answer FIRST from the supplied context', text)
+        self.assertIn('Open the repository only when that context cannot answer the question, or the operator explicitly asks', text)
+        self.assertIn('Checking the code to confirm, about 2 min.', text)
+        self.assertIn('about 60 seconds of tool use', text)
+        # A chat reply: the direct answer first, a hard length limit, no report.
+        self.assertIn('2-5 short sentences', text)
+        self.assertIn('at most 3 bullets', text)
+        self.assertIn('Hard limit: 1200 characters', text)
+        self.assertNotIn('12000', text)
+        # The buttons are under the reply: never a list of them in prose.
+        self.assertIn('Never list the available actions in prose', text)
+        self.assertIn('At most one sentence may name the button you recommend', text)
+        # The proposal is a note for the next attempt, not the answer again.
+        self.assertIn('1-2 sentence note for the next attempt', text)
+        self.assertNotIn('Separate observations from inference', text)
+
+    def test_a_long_answer_is_trimmed_not_lost(self):
+        job = self.start()
+        self.finish(job, summary='The producer type is wrong. ' * 200,
+                    proposal={'action': 'retry', 'reason': 'Fix the producer first. ' * 100})
+        reply = self.service.view('1:2')['messages'][-1]
+        self.assertEqual(reply['role'], 'assistant')
+        self.assertLessEqual(len(reply['text']), 1500)
+        self.assertTrue(reply['text'].startswith('The producer type is wrong.'))
+        self.assertTrue(reply['text'].endswith('…'))
+        self.assertLessEqual(len(reply['proposal']['reason']), 400)
+        self.assertTrue(reply['proposal']['reason'].endswith('…'))
+
+    def test_a_short_answer_is_kept_as_written(self):
+        job = self.start(); self.finish(job)
+        reply = self.service.view('1:2')['messages'][-1]
+        self.assertEqual(reply['text'], 'Fix the shared producer type first.')
+        self.assertEqual(reply['proposal'], {'action': 'retry', 'reason': 'Fix the shared producer type first.'})
+
+    def test_discussion_model_is_used_for_conversations_only(self):
+        self.config['discussion_model'] = {'claude': 'claude-haiku-4-5'}
+        self.config.update(provider='claude', model='claude-opus-4-1')
+        job = self.start()
+        self.assertEqual(job['runner_config']['model'], 'claude-haiku-4-5')
+        self.assertEqual(self.config['model'], 'claude-opus-4-1')
+
+    def test_without_discussion_model_the_provider_model_stays(self):
+        self.config['discussion_model'] = {'grok': 'grok-fast'}
+        self.config.update(provider='claude', model='claude-opus-4-1')
+        self.assertEqual(self.start()['runner_config']['model'], 'claude-opus-4-1')
+
+    def test_live_names_a_conversation_waiting_or_working(self):
+        self.assertFalse(self.service.live())
+        self.send()
+        self.assertTrue(self.service.live())
 
     def test_discussions_get_ten_minutes(self):
         job = self.start()

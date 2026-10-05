@@ -620,6 +620,24 @@ class ServiceHookTests(unittest.TestCase):
         self.cycle(service, side_effect=TypeError('constructor'))  # A construction failure is swallowed too.
         self.assertIsNone(self.setup.view()['error'])
 
+    def test_a_live_conversation_moves_between_cycles(self):
+        from forge.factory.discussions import Discussions
+        service = self.activated()
+        self.cycle(service)
+        self.assertGreater(service.next_cycle, time.monotonic())
+        with patch.object(Discussions, 'live', return_value=False), patch.object(Discussions, 'tick') as tick:
+            service.next_discussion = 0
+            service.tick()
+            tick.assert_not_called()
+        with patch.object(Discussions, 'live', return_value=True), patch.object(Discussions, 'tick') as tick, \
+                patch('forge.setup_service.Supervisor') as supervisor:
+            service.next_discussion = 0
+            service.tick()
+            service.tick()  # Driven every few seconds, not every service tick.
+            self.assertEqual(tick.call_count, 1)
+            self.assertTrue(tick.call_args.kwargs.get('launch', True))
+            supervisor.assert_not_called()  # Pipeline dispatch still waits for the cycle.
+
     def test_tick_is_skipped_while_a_setup_operation_is_pending(self):
         import uuid
         service = self.activated()

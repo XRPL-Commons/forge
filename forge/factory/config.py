@@ -30,10 +30,15 @@ DEFAULT = {
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
     'provider': 'codex', 'model': None, 'provider_pool': [], 'provider_ready': None,
+    # Issue conversations only: a faster model per provider, e.g. {"claude": "claude-haiku-4-5"}.
+    # Null keeps each pool entry's own model. Pipeline roles never use it.
+    'discussion_model': None,
     'codex_parallel_auth': False,
     'ready_label': 'ready', 'hold_labels': ['hold', 'blocked'],
     'merge_method': 'squash',
 }
+
+MODEL = r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}'
 
 
 def validate(value):
@@ -45,8 +50,13 @@ def validate(value):
         raise ValueError('Expected runtime version 1')
     if config['provider'] not in manifests():
         raise ValueError('Provider must name an installed harness')
-    if config['model'] is not None and (not isinstance(config['model'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', config['model'])):
+    if config['model'] is not None and (not isinstance(config['model'], str) or not re.fullmatch(MODEL, config['model'])):
         raise ValueError('Invalid provider model')
+    quick = config['discussion_model']
+    if quick is not None and (not isinstance(quick, dict) or len(quick) > 20
+            or any(provider not in manifests() for provider in quick)
+            or any(not isinstance(v, str) or not re.fullmatch(MODEL, v) for v in quick.values())):
+        raise ValueError('discussion_model maps installed providers to model names')
     pool = config['provider_pool']
     if not isinstance(pool, list) or len(pool) > 20:
         raise ValueError('Configure at most twenty provider/model entries')

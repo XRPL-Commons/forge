@@ -47,6 +47,10 @@ const EMBER = { provider: 'claude', model: 'claude-sonnet-4-6', name: 'Ember', l
 const BOLT = { provider: 'codex', model: null, name: 'Bolt', label: 'Codex' }
 const LINES = ['Getting started', 'Reading issue #610', 'Searching the repository for `producer`']
 const ANSWER = 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)'
+// "(long)": an answer well past six lines, which the chat folds behind Show more.
+const LONG_ANSWER = ['The last attempt failed because the shared type is incorrect.', '',
+  ...Array.from({ length: 9 }, (_, i) => `- Finding ${i + 1}: the consumer in module ${i + 1} still reads the old field.`), '',
+  'The final line of the long answer.'].join('\n')
 
 function startTurn(question, kind) {
   turn = { question, kind, started: Date.now() }
@@ -57,7 +61,9 @@ function startTurn(question, kind) {
 function joined(agent, since, t, instead = null) {
   const at = turn.started / 1000 + since / 1000
   const lines = LINES.filter((_, i) => t >= since + i * 700).map((text, i) => ({ at: at + i * 0.7, text }))
-  return { phase: 'joined', agent, joined_at: at, activity: lines, instead_of: instead }
+  // Like Forge: answering from the saved evidence until it searches the repository.
+  const mode = lines.some(line => line.text.startsWith('Searching the repository')) ? 'code' : 'evidence'
+  return { phase: 'joined', agent, joined_at: at, activity: lines, instead_of: instead, mode }
 }
 
 function leave(reason, text, agent, extra = {}) {
@@ -68,7 +74,7 @@ function leave(reason, text, agent, extra = {}) {
 function answer(agent, instead = null) {
   const lines = LINES.map((text, i) => ({ at: turn.started / 1000 + 1 + i, text }))
   conversation.messages.push({ id: `11111111-2222-4333-8444-${555555555555 + conversation.messages.filter(m => m.role === 'assistant').length}`, sequence: conversation.messages.length + 1, role: 'assistant',
-    text: ANSWER, agent, instead_of: instead, activity: [...lines, { at: turn.started / 1000 + 4, text: 'Writing the answer' }],
+    text: turn.kind === 'long' ? LONG_ANSWER : ANSWER, agent, instead_of: instead, activity: [...lines, { at: turn.started / 1000 + 4, text: 'Writing the answer' }],
     proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
   Object.assign(conversation, { status: 'idle', reason: null, partial: '', presence: { phase: 'answered', agent, at: Date.now() / 1000 } })
   turn = null
@@ -96,6 +102,12 @@ function advance() {
       presence: { phase: 'left', reason: 'timeout', text: 'Ember ran out of time after 10 min', agent: EMBER, at: Date.now() / 1000 } })
     turn = null
     return
+  }
+  // "(slow)": Ember has been reading the code for over 90 s, until stopped.
+  if (turn.kind === 'slow') {
+    const working = joined(EMBER, 1200, t)
+    return Object.assign(conversation, { status: conversation.status === 'cancelling' ? 'cancelling' : 'running',
+      presence: { ...working, joined_at: Date.now() / 1000 - 95, mode: 'code' } })
   }
   if (turn.kind === 'hold' || t < 6000) return Object.assign(conversation, { status: conversation.status === 'cancelling' ? 'cancelling' : 'running', presence: joined(EMBER, 1200, t) })
   answer(EMBER)
@@ -314,7 +326,7 @@ const server = http.createServer(async (req, res) => {
           conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text })
           const failing = text.includes('(fail)') && !failedQuestions.has(text)
           if (failing) failedQuestions.add(text)
-          startTurn(body.request_id, text.includes('(hold)') ? 'hold' : text.includes('(auth)') ? 'auth' : failing ? 'fail' : 'answer')
+          startTurn(body.request_id, text.includes('(hold)') ? 'hold' : text.includes('(slow)') ? 'slow' : text.includes('(long)') ? 'long' : text.includes('(auth)') ? 'auth' : failing ? 'fail' : 'answer')
         }
       } else if (body.action === 'cancel') {
         const agent = conversation.presence?.agent ?? null
