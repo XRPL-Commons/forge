@@ -411,7 +411,7 @@ export function agentFace(mood: AgentMood, c: number, t: number, still: boolean)
   }
 }
 
-function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
+export function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
   if (!mark) return
   ctx.save(); ctx.translate(x, y)
   ctx.lineWidth = Math.max(1, s * 0.14); ctx.strokeStyle = CUBE_INK; ctx.lineJoin = 'round'
@@ -470,14 +470,21 @@ export function workerSteps(mood: AgentMood, S: number, t: number, still: boolea
 
 export function drawAgent(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, mood: AgentMood, t = 0, still = true) {
   ctx.clearRect(0, 0, S, S)
+  const face = agentFace(mood, workerShape(S).face.c, t, still)
+  drawWorker(ctx, S, fill, mark, face, workerSteps(mood, S, t, still), mood === 'left' ? 0.7 : 1)
+}
+
+export type WorkerFace = Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth' | 'blink'> & { dx: number; dy: number }
+
+// A worker in its S×S square at the origin; callers translate to place it
+// elsewhere (the sign-in scene's shop floor). `lift` raises each foot.
+export function drawWorker(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, face: WorkerFace, lift: [number, number] = [0, 0], alpha = 1) {
   const shape = workerShape(S)
-  const face = agentFace(mood, shape.face.c, t, still)
-  const lift = workerSteps(mood, S, t, still)
   // A hop lifts the whole worker; a step lifts one foot and the body a little.
   const bob = face.dy - Math.max(lift[0], lift[1]) * 0.5
   const lw = Math.max(1.2, S * 0.045)
   ctx.save()
-  ctx.globalAlpha = mood === 'left' ? 0.7 : 1
+  ctx.globalAlpha = alpha
   ctx.lineWidth = lw; ctx.strokeStyle = CUBE_INK; ctx.lineJoin = 'round'
   // Legs and feet first, so the body sits on top of them.
   shape.legs.forEach((leg, i) => {
@@ -492,7 +499,7 @@ export function drawAgent(ctx: CanvasRenderingContext2D, S: number, fill: string
   const inset = lw + 0.6
   roundRect(ctx, b.x + face.dx + inset, b.y + bob + inset, b.w - 2 * inset, b.h * 0.2, b.r * 0.6); ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.fill()
   ctx.save(); ctx.translate(shape.face.x + face.dx, shape.face.y + bob)
-  drawFace(ctx, shape.face.c, { eyes: face.eyes, look: face.look, lookY: face.lookY, mouth: face.mouth }, 12)
+  drawFace(ctx, shape.face.c, { eyes: face.eyes, look: face.look, lookY: face.lookY, mouth: face.mouth, blink: face.blink }, 12)
   ctx.restore()
   drawMark(ctx, mark, shape.mark.x + face.dx, shape.mark.y + bob, shape.mark.s, fill)
   ctx.restore()

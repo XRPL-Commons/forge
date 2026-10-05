@@ -247,7 +247,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('down')
   await page.goto(base + '/')
   await page.waitForURL(base + '/login')
-  await waitForText(page, 'The sign-in service is unavailable')
+  await waitForText(page, 'Forge couldn’t reach its sign-in service')
   assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
   assert.equal(await page.locator('#factory-line').count(), 0)
   assert.equal(await page.locator('.issue-card').count(), 0)
