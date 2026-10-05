@@ -2,7 +2,7 @@
 // sent, and the small decorative factory scene above the card. The scene is
 // pure canvas drawing from a clock: no data, no requests, nothing about the
 // instance. Same cubes, palette and personas as the factory line.
-import { CUBE_INK, cubeMotion, drawCube, drawMark, drawSmoke, drawZzz, moodFace, roundRect, type CubeAccessory, type CubeMood } from './cube'
+import { CUBE_INK, cubeMotion, drawCube, drawSmoke, drawWorker, drawZzz, moodFace, roundRect, workerShape, type CubeAccessory, type CubeMood } from './cube'
 import { LINE_LOOKS, lineMix } from './factoryLine'
 import { PERSONAS } from './personas'
 
@@ -143,9 +143,10 @@ function lamp(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, on
 }
 
 // The host's little wave: a mitten on a stub at the cube's upper right.
-function drawWave(ctx: CanvasRenderingContext2D, x: number, y: number, c: number, fill: string, t: number, still: boolean) {
+// (px, py) is the shoulder, on the worker's body edge.
+function drawWave(ctx: CanvasRenderingContext2D, px: number, py: number, c: number, fill: string, t: number, still: boolean) {
   const a = -1.05 + (still ? 0.25 : Math.sin(t / 170) * 0.42)
-  const px = x + c * 0.47, py = y - c * 0.5, len = c * 0.42
+  const len = c * 0.42
   const hx = px + Math.cos(a) * len, hy = py + Math.sin(a) * len
   ctx.lineCap = 'round'; ctx.strokeStyle = CUBE_INK; ctx.lineWidth = Math.max(2.4, c * 0.13)
   ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(hx, hy); ctx.stroke()
@@ -276,20 +277,25 @@ export function drawSignInScene(ctx: CanvasRenderingContext2D, W: number, H: num
   for (const [i, who] of L.cast.entries()) {
     const p = PERSONAS[who.name === 'Ember' ? 'claude' : who.name === 'Bolt' ? 'codex' : 'grok']!
     const host = who.name === 'Ember', size = who.size
-    const m = cubeMotion(t, -1e9, i * 1.7 + 0.4, size, host ? hostMood : asleep ? 'sleep' : 'hopeful', still)
-    const x = who.x + m.dx, y = L.floor + m.dy
-    ctx.beginPath(); ctx.ellipse(who.x, L.floor + 1, size * 0.5, size * 0.12, 0, 0, TAU); ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fill()
-    let face = moodFace(host ? hostMood : asleep ? 'sleep' : 'hopeful', size)
+    // Personas are workers (body, legs, feet), not issue heads: the same
+    // drawing as AgentAvatar, in a square of side S standing on the floor.
+    const S = Math.round(size * 1.45), shape = workerShape(S), fc = shape.face.c
+    const m = cubeMotion(t, -1e9, i * 1.7 + 0.4, fc, host ? hostMood : asleep ? 'sleep' : 'hopeful', still)
+    const ox = who.x - S / 2, oy = L.floor - S * 0.97
+    ctx.beginPath(); ctx.ellipse(who.x, L.floor + 1, S * 0.36, S * 0.06, 0, 0, TAU); ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fill()
+    let face = moodFace(host ? hostMood : asleep ? 'sleep' : 'hopeful', fc)
     if (!host && !asleep) {
       // Bolt and Nova track the nearest cube on the line; after a failed
       // attempt they glance over at Ember instead.
       const target = mood === 'worried' ? L.cast[0]!.x : nearest(xs, who.x)
-      face = { ...face, eyes: 'open', look: clamp((target - who.x) / 80, -1, 1) * size * 0.1, lookY: mood === 'worried' ? 0 : -size * 0.07, mouth: mood === 'worried' ? 'flat' : 'smile' }
+      face = { ...face, eyes: 'open', look: clamp((target - who.x) / 80, -1, 1) * fc * 0.1, lookY: mood === 'worried' ? 0 : -fc * 0.07, mouth: mood === 'worried' ? 'flat' : 'smile' }
     }
-    drawCube(ctx, x, y, size, p.fill, { ...face, sx: m.sx, sy: m.sy, blink: m.blink })
-    drawMark(ctx, p.mark, x + size * 0.42, y - size - size * 0.12, size * 0.26, p.fill)
-    if (host && (mood === 'waving' || mood === 'hopeful')) drawWave(ctx, x, y, size, p.fill, t, still)
-    if (host && mood === 'worried') drawSweat(ctx, x - size * 0.58, y - size * 0.8, s, t, still)
-    if (host && asleep) drawZzz(ctx, x + size * 0.45, y - size - 2 * s, s, t, still)
+    ctx.save(); ctx.translate(ox, oy)
+    drawWorker(ctx, S, p.fill, p.mark, { ...face, blink: m.blink, dx: m.dx, dy: m.dy })
+    ctx.restore()
+    const b = shape.body, bx = ox + b.x + m.dx, by = oy + b.y + m.dy
+    if (host && (mood === 'waving' || mood === 'hopeful')) drawWave(ctx, bx + b.w - 1, by + b.h * 0.42, size, p.fill, t, still)
+    if (host && mood === 'worried') drawSweat(ctx, bx - 4 * s, by + b.h * 0.2, s, t, still)
+    if (host && asleep) drawZzz(ctx, bx + b.w * 0.95, by - 4 * s, s, t, still)
   }
 }
