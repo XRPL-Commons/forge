@@ -218,7 +218,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     state, detail, actions, case = 'backlog', 'Not queued for Forge.', [], 'backlog'
     setup = bool(item.get('prerequisite_hold')) or item.get('reason') == LEGACY_SETUP_REASON
     cleanup = bool(item.get('cleanup_pending'))
-    if issue['state'] == 'closed' or item.get('state') == 'merged':
+    # The ledger hears of a close before the next inventory scan does (academy #705).
+    if issue['state'] == 'closed' or item.get('state') in ('merged', 'cancelled'):
         merged = item.get('state') == 'merged'
         closed_as = issue.get('state_reason') or item.get('closed_as')
         if not merged and closed_as in ('not_planned', 'duplicate'):

@@ -614,6 +614,13 @@ class WorklistTests(unittest.TestCase):
         row = self.inventory.view(key='1:1')['issue']
         self.assertEqual((row['status'], row['actions']), ('waiting', ['resume']))
 
+    def test_a_close_the_ledger_saw_wins_over_a_stale_open_copy(self):
+        self.tracked(hold='Configure two approving reviews and stale-approval dismissal before dispatch'); self.refresh()
+        self.ledger.cancel('1:1', 'Issue closed externally', closed_as='completed')
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual(row['status'], 'completed')
+        self.assertFalse(row['closable'])
+
     def test_close_works_for_an_issue_forge_never_tracked(self):
         identifier, decision = self.decision('close', reason='Not needed')
         self.actions.apply(identifier, decision)
