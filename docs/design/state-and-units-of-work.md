@@ -1,6 +1,6 @@
 # State and units of work
 
-Status: **draft for operator approval**, phase 0 of [#209](https://github.com/XRPL-Commons/forge/issues/209).
+Status: **architecture and lifecycle behavior approved 2026-10-05**, phase 0 of [#209](https://github.com/XRPL-Commons/forge/issues/209).
 This consolidates the initial PR #210 design and a parallel lifecycle/storage review.
 It includes the shared stage and transition-event work from superseded
 [#168](https://github.com/XRPL-Commons/forge/issues/168) and the batch requirements
@@ -17,14 +17,13 @@ Time to first merge remains the product metric.
 The design preserves parallel part builds, a shared three-failure budget, and
 operator approval of batch proposals. It distinguishes an operator stopping work
 from confirmed GitHub closure and keeps cleanup ownership until termination is
-verified. The migration protocol covers all writers and refuses stale rollback
-once newer decisions or external effects exist.
+verified. The migration protocol covers all writers and moves each state domain
+to SQLite once. There is no JSON switch-back; the source copy is diagnostic only.
 
-Approval covers the lifecycle, storage and migration architecture plus the proposed
-policy choices in **Review decisions still needed** and **Decisions preserved from
-the earlier design draft**. Retention and rollback are decided (see Operator decisions); the seven-day parity
-check before cutover remains. Implementation follows #209's phases
-0–7; this PR changes no runtime behavior or deployed server.
+The operator approved the architecture and lifecycle behavior, then resolved the
+seven policy choices below. Implementation follows #209's phases 0–7. The current
+foundation is inactive; migration, automatic resumption, batch orchestration and
+retention execution ship in their respective later phases.
 
 The original design remains available in commit `2dd3f89`. This revision replaces
 its unit-wide job exclusion with member-scoped eligibility, mutable charge flags
@@ -34,7 +33,7 @@ cutover. These changes remove concurrency, recovery and migration ambiguities.
 
 ## Lifecycle audit and proposed shared model
 
-This section is a design proposal. It does not authorize implementation before the design is approved. Code evidence is from main `16ad85e`; references name functions so they remain useful after nearby edits.
+This section defines the approved lifecycle architecture. Code evidence is from main `16ad85e`; references name functions so they remain useful after nearby edits.
 
 ### Legacy states and writers
 
@@ -253,9 +252,9 @@ Required event kinds cover creation/admission, membership change, part accepted,
 
 Required lifecycle tests include every transition plus: open stopped issue versus closed issue; explicit pause plus open dependency; environment recheck under a human hold; candidate change during review/verification/merge; closed/deleted PR with lost-access ambiguity; repeated result and repeated decision identity; three simultaneous failures; third failure racing a success and new dispatch; drop/dissolve racing publication or ambiguous merge; membership/requirements changing mid-part; internal DAG inputs and cycles; a failed part leaves independent parts running; recovery and cleanup scope do not stop independent dispatch; dropping a prerequisite invalidates affected descendant manifests and excludes dropped code; no stale evidence after integration/base changes; all API/CLI/UI surfaces returning the same stage/action for the same snapshot.
 
-### Review decisions still needed
+### Approved lifecycle behavior
 
-These are proposed defaults for design approval, not requests to implement immediately:
+These defaults were approved with the architecture:
 
 - **Combine existing work:** initially allow combine only after active executions and cleanup finish; preserve branches and require rebuilding/integrating stale candidates. Do not adopt an in-flight merge.
 - **Budget reset after dropping:** use an explicit combined “drop and retry remaining” operator action. Preserve the old epoch and charges; no automatic reset.
@@ -263,32 +262,37 @@ These are proposed defaults for design approval, not requests to implement immed
 - **Unclear migration phase:** retain a coded `legacy_reconciliation` blocker with the original record reference when the old hold has no reliable resume phase. Never infer an audited phase merely because a PR exists.
 - **Dissolve after merge:** reject because the delivery is complete; preserve all histories. “At any time” in #207 should mean before confirmed merge, with pending external merge first reconciled.
 
-### Decisions preserved from the earlier design draft
+### Operator decisions (2026-10-05)
 
-The initial PR #210 draft recorded these operator choices. They remain proposals. The following defaults require approval with this design:
-
-| Decision | Recommended default | Release or retention boundary |
+| Decision | Approved behavior | Boundary |
 | --- | --- | --- |
-| Remove a GitHub `hold`/`blocked` label | Automatically clear the gate created by that label after a fresh authoritative observation | Preserve any separately recorded operator pause, dependency, environment or budget gate. Resume is possible only if every applicable gate clears. |
-| Repository protection, bypass or access repaired | Automatically clear that readiness gate after an authoritative check | Bind readiness to repository, target branch, controller identity and policy revision. Cached readiness for another target or App cannot permit merge. |
-| Closed externally as completed | Show `done`, with explicit GitHub closure provenance | Never infer closure from a stopped/cancelled execution or call it merged without a confirmed merge. |
-| Finished raw logs, CI transcript and launch input | Proposed retention: 30 days | Do not delete active-job data, current-candidate proofs, immutable input manifests, unresolved-failure evidence or pending reconciliation inputs. Retain the small normalized facts needed to explain and safely resume current work. |
-| Lifecycle events, decisions, merge facts, validated results, summaries and failure findings | Keep indefinitely | They are audit/history facts. Lifecycle meanings and idempotency must not depend on retained raw logs. |
-| Telemetry | Proposed retention: 90 days | Define an explicit allowlist. A record whose contents justify ownership, authority or a state transition is not disposable merely because its old name sounds operational. |
-| Completed outbox rows | Proposed retention: 14 days for response/debug detail | Durable operation identity and confirmed receipts survive longer where required to prevent repeating comments, review requests or other external effects after recovery. |
-| Backups | Proposed: seven daily and four weekly verified database snapshots | Plus a protected pre-migration backup until the rollback decision is complete. |
-| Cutover parity | Proposed: seven consecutive days of clean fixture/live-copy parity before switching authority | Intentional lifecycle corrections need named, reviewed exceptions; they are not unexplained mismatches. |
-| JSON rollback window | **Decided: none.** Existing data is migrated once into SQLite; there is no JSON compatibility path or switch-back after cutover. | Migration is verified by the import parity checks before cutover; a one-time pre-migration copy of the JSON stores is kept for diagnosis only, not as a rollback path. |
-| Durability | `synchronous=FULL` | The earlier prototype's FULL/NORMAL timings are reported measurements, not a new benchmark from this design pass. |
+| Remove a GitHub hold label | Resume eligible work automatically after a fresh observation clears the label gate | A separate operator pause, dependency or other applicable gate remains authoritative. |
+| Closed externally as completed | Show `done`, with GitHub closure provenance | Do not call it merged without a confirmed merge. A stopped execution is not closure. |
+| Repository setup becomes ready | Resume eligible work automatically | Verify readiness for the exact repository, target branch, controller identity and policy; clear only that setup gate. |
+| Retention | Finished raw logs: 30 days; events: kept indefinitely | Preserve summaries, normalized results, decisions, candidate proofs and immutable input manifests. Required evidence is not a disposable log. All event kinds are kept; the former 90-day telemetry-event deletion proposal is withdrawn. |
+| Durability | `synchronous=FULL` | No runtime downgrade to `NORMAL`. |
+| Existing PR in a batch | Allowed, with operator approval of each batch | Quiesce execution/cleanup and reconcile any uncertain merge first; preserve useful branches and revalidate combined candidate evidence. |
+| Rollback | None; one-way migration with no JSON switch-back | Keep one immutable pre-migration source copy for diagnosis only. Do not expose a restore-to-JSON command or restart old writers against it. |
 
-Output APIs should distinguish available, expired-by-policy, not-yet-captured and corrupt/missing artifacts. Expired historical logs should show the expiry in the UI while preserving outcome and summary. A missing current result or evidence artifact must not be treated as a passed check or safely ignored as “logs unavailable.” The 30/90-day policies remain proposals; no pruning is authorized by writing this document.
+Output APIs distinguish available, expired-by-policy, not-yet-captured and
+corrupt/missing artifacts. Expired logs preserve outcome and summary. Missing
+current result/evidence cannot be treated as passed verification. The retention
+policy is approved; its scheduled deletion implementation belongs to a later
+phase and is disabled in the foundation.
+
+The prior 30-day JSON rollback window is withdrawn. The proposed seven-day parity
+soak is a migration release decision; it does not block this inactive foundation.
+Activation requires complete deterministic parity, crash/resume and integrity
+checks on a coherent snapshot. SQLite backup frequency and response/debug-detail
+pruning may be specified in their implementation PR; no additional deletion
+policy is implied.
 
 The earlier draft also proposes typed prerequisite findings for recovery as well as build workers. Preserve this requirement: a recovery report can identify member-scoped prerequisites with source requirements revision and quoted evidence; the supervisor independently verifies identities and applicability before changing gates or reversing charges. Retire prose-regex inference from normal reconciliation, keeping conservative, reported mappings only in the one-time importer.
 
 ## Storage and access design
 
-This section is a proposal for design review. It does not authorize migration of a
-running server. SQLite replaces the controller's mutable runtime records; a second
+This section defines the approved storage design. Live migration is a later
+delivery phase. SQLite replaces the controller's mutable runtime records; a second
 live copy in JSON is never a source of truth after that domain cuts over.
 
 ### Database ownership and durability
@@ -392,14 +396,13 @@ output can be shown as unavailable. Missing assignment inputs, result contracts,
 candidate evidence or lease records must fail the affected transition closed; they
 are not interchangeable with optional logs.
 
-Take verified backups daily and before every schema migration or host update. The
-initial release retains all imported artifacts, events and idempotency records.
-The earlier 30-day output/90-day telemetry and 7-daily/4-weekly backup deletion
-policies are proposals requiring explicit retention approval; migration never
-silently applies them. Structured results, summaries, requirements revisions,
-decision identities and delivery evidence remain durable. A later retention tool
-must prove that an artifact is no longer needed by active recovery or rollback
-before deleting it, and distinguish output expiry from a missing required record.
+Use verified SQLite backups for database recovery and before schema changes.
+The foundation provides the backup primitive without a schedule or deletion job.
+Logs expire 30 days after completion in the later retention implementation;
+normalized results, summaries, decisions, input manifests and all events remain.
+A raw transcript needed by active recovery must first have its durable evidence
+extracted before it can expire. The one-time legacy source copy is diagnostic
+only and is never a runtime backend or rollback target.
 
 The accompanying `state-and-units-of-work.sql` is an executable core-schema design
 fixture, not a production migration. It proves key ownership, exclusive active
@@ -479,7 +482,7 @@ domain with exactly one writer. A temporary compatibility adapter may emit legac
 API shapes from SQL queries. It may not reconstruct the whole old ledger on every
 read or implement whole-document writes.
 
-## Migration, parity and rollback
+## One-way migration and parity
 
 ### Source inventory
 
@@ -514,9 +517,9 @@ unconverted configuration/authentication domains resume their existing sole JSON
 writer. The complete snapshot remains sealed separately. Each later domain
 migration takes a fresh coherent snapshot, imports that domain, and changes its
 recorded authority under maintenance. Phase 7 requires every runtime domain to
-use SQLite. Restoring the frozen full JSON snapshot is allowed only before any
-writer resumes; later rollback must reconcile current state from both domain
-backends as well as external effects.
+use SQLite. Once a domain switches, its JSON writer never resumes. Failures stop admission
+and use resumable import or a forward repair of the authoritative store; the
+frozen source is available only for diagnosis.
 
 ### Import protocol
 
@@ -572,28 +575,24 @@ service restart and restart during reconciliation. A resume checks the recorded
 operation/generation and continues the existing operation; it never creates a
 fresh empty store as a recovery shortcut.
 
-### Backups and rollback
+### Backups and forward recovery
 
-Use the SQLite backup API for a consistent live backup; copying only the main DB
-file while WAL is active can omit committed transactions. Verify each backup in a
-separate connection and store its schema/source/storage-generation metadata.
+Use the SQLite backup API for consistent database backups. Copying only the main
+DB file while WAL is active can omit committed transactions.
 [SQLite backup API](https://www.sqlite.org/backup.html)
+Verify each backup separately and record schema, instance and generation metadata.
 
-Before the new controller resumes writes or external effects, rollback can restore
-the frozen JSON backup and previous compatible code under maintenance. Once new
-work has run, restoring that old backup would erase decisions and execution
-ownership. The rollback planner must refuse that shortcut. At that point use a
-forward fix, or drain/reconcile and export a verified current snapshot into a
-supported older schema. Never start the previous supervisor against stale JSON.
-Introducing batches is an explicit compatibility barrier: old one-issue binaries
-cannot safely consume those units, so rollback requires a compatible release or
-operator-approved dissolution with live reconciliation.
+Legacy migration is one-way. The diagnostic pre-migration copy is never restored
+as an operational JSON store, and there is no export-and-switch-back path. A
+failed import resumes against the same source manifest. A post-cutover failure
+requires repairing or recovering the SQLite store, reconciling current worker
+ownership and uncertain external effects before admission resumes.
 
-Rollback also must not revive revoked sessions or client connections. Preserve
-the current revocation epoch across recovery or invalidate sessions and pairing
-grants as part of the recorded recovery operation; never copy an old auth backup
-back into use silently. Backups include credential references, not secret values
-in reports, and retain the existing private credential recovery procedure.
+Database disaster recovery must preserve current revocation epochs or invalidate
+sessions and pairing grants explicitly. Recovering an older database must never
+silently revive revoked connections, repeat a merge, or reassign an uncleaned slot.
+This requirement applies to a future recovery tool; this foundation only creates
+verified backups and does not activate restored data.
 
 ### Measured release gates
 
@@ -684,7 +683,6 @@ operations. Personal GitHub credentials remain local.
 | `forge server state migrate --ssh forge --plan ID --revision REV --apply` | Revalidates the plan, enters maintenance, drains/fences jobs and writers, backs up, imports, verifies, atomically selects the database, then resumes only after health checks. |
 | `forge --json server state status --ssh forge --migration ID` | Durable progress, current authority by domain, completed checks, actionable error code, and exact resume command. |
 | `forge server state resume --ssh forge --migration ID --apply` | Continues the same migration journal; never starts a second import or silently changes its source snapshot. |
-| `forge server state rollback --ssh forge --migration ID --apply` | Revalidates rollback eligibility and performs the guarded rollback procedure above; refuses a blind restore after new external effects. |
 
 An interactive wizard explains the current phase and waits only for decisions
 that require a person. `--json` never opens a prompt or browser. Every mutation
@@ -749,36 +747,22 @@ database migration preserves those timestamps; it must not restart the clock.
 The full release proof includes a unit of one and a two-issue batch reaching a
 normal merged PR, with no manual server shell steps.
 
-## Operator decisions (2026-10-05)
+## Delivery
 
-Recorded answers to this design's open questions. They are binding for #209.
-
-| # | Question | Decision |
-|---|---|---|
-| 1 | Does removing a hold label resume the work? | **Yes.** It releases that label wait, as the UI already promises. |
-| 2 | Is "closed as completed elsewhere" shown as done or cancelled? | **Done** (`close_code` completed). Only not-planned or duplicate closes are dropped. |
-| 3 | Does work resume automatically when repository setup becomes ready? | **Yes.** The repository-readiness wait releases itself on a passing check. |
-| 4 | Retention | Finished raw logs **30 days**. Events are kept indefinitely (they are small). Completed outbox detail 14 days, as proposed. |
-| 5 | Durability | `synchronous=FULL` (about 1.6 ms per write transaction). |
-| 6 | May units that already have a PR be merged into a batch? | **Yes.** Proposals may include them, and the operator approves each batch as usual. |
-| 7 | Rollback | **No rollback path.** Existing data is migrated once; there is no JSON compatibility window or switch-back. A one-time pre-migration copy is kept for diagnosis only. |
-
-## Delivery and approval
-
-This draft completes phase 0 of #209 when approved. It carries #168's shared
+The operator approved phase 0 of #209. It carries #168's shared
 stage projection and transition events into the database model; the closed
 issue's per-job JSON archive is not implemented.
 
 | Phase | Reviewable deliverable | Release gate |
 | --- | --- | --- |
-| 0 | This lifecycle audit, schema, access boundary and migration design. | Operator approves the design and the explicitly proposed policies. |
+| 0 | This lifecycle audit, schema, access boundary and migration design. | Approved architecture and operator decisions are recorded above. |
 | 1 | Private SQLite store, schema, typed transitions and invariant tests, disabled for runtime use. | Constraint, concurrency and transaction crash tests pass. |
 | 2 | Resumable import, backup and deterministic parity tooling. | Private live-state-copy dry run reports no unexplained differences; crash/resume leaves one import. |
 | 3 | Supervisor and mutation paths use row operations; artifacts remain out of hot queries. | Single-writer ownership, cleanup and external-effect recovery survive restarts; measured observation sweep improves. |
 | 4 | API, UI and CLI share projections and database queries. | Parity and host latency pass; every mutation/read family is accounted for. |
 | 5 | Existing work represented as units of one. | Requirements, budgets, candidates, approvals and completion survive migration without being reset. |
 | 6 | Approved batch proposals, parallel dependency-aware parts, integration, shared budget, drop and dissolve. | Two or more issues reach one normal merged PR; failure/drop/dissolve races are tested. |
-| 7 | Retire operational JSON paths and finish update/backup documentation. | Static call-site inventory plus runtime instrumentation finds no operational JSON writes; recovery rehearsal passes. |
+| 7 | Retire operational JSON paths and finish update/backup documentation. | Static call-site inventory plus runtime instrumentation finds no operational JSON writes; forward-recovery rehearsal passes. |
 
 The implementation can share groundwork between phases, but no phase silently
 enables the next. Neither migration nor live deployment is implied by merging
