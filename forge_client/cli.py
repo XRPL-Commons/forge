@@ -33,6 +33,28 @@ def repository_commands():
     return commands
 
 
+def migration_commands():
+    result = {}
+    for action in ('plan', 'capture', 'resume', 'import', 'verify'):
+        remote = action in ('plan', 'capture', 'resume')
+        names = ('ssh', 'source', 'root') if remote else ('snapshot', 'destination')
+        properties = {name: {'type': 'string'} for name in names}
+        required = list(names)
+        if action == 'capture':
+            properties.update(snapshot={'type': 'string'}, apply={'type': 'boolean', 'const': True})
+            required += ['snapshot', 'apply']
+        if not remote:
+            properties['batch'] = {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'default': 100}
+        result[action] = {
+            'usage': 'forge migrate ' + action + ' --json',
+            'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
+            'maintenance': action in ('capture', 'resume'),
+            'activation_supported': False,
+            'target': 'selected SSH host' if remote else 'private local staging',
+        }
+    return result
+
+
 def parser():
     p = argparse.ArgumentParser(prog='forge', description='Connect a local agent to an existing Forge server.')
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
@@ -78,12 +100,22 @@ def parser():
     mode.add_argument('--apply', action='store_true', help='Configure the selected host')
     mode.add_argument('--resume', action='store_true', help='Finish an interrupted setup without another secret')
     setup.add_argument('--secret-stdin', action='store_true', help='Read the identity-app secret from stdin; never a command argument')
+    migration = sub.add_parser('migrate', help='Plan capture, import and verify a private legacy snapshot; never activates SQLite')
+    migration.add_argument('migration_command', choices=('plan','capture','resume','import','verify'))
+    for name in ('ssh','source','root','snapshot','destination'):
+        migration.add_argument('--'+name)
+    migration.add_argument('--apply', action='store_true', help='Allow capture to briefly stop and restore Forge writers')
+    migration.add_argument('--batch', type=int, default=100)
+    migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     sub.add_parser('commands')
     sub.add_parser('skill', help='Print the bundled Forge repository agent skill')
     return p
 
 
 def execute(args):
+    if args.command == 'migrate':
+        from .migration import execute as migrate
+        return migrate(args)
     if args.command == 'skill':
         from importlib.resources import files
         return {'skill': files('forge_client').joinpath('skills/forge-repositories/SKILL.md').read_text()}
@@ -91,8 +123,9 @@ def execute(args):
         from .bootstrap import setup
         return setup(args)
     if args.command == 'commands':
-        return {'commands': ['connect', 'connect --resume', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['connect', 'connect --resume', 'migrate plan', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(),
+                'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],
                 'credential_storage': 'OS keyring', 'transport': 'verified HTTPS',

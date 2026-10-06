@@ -101,6 +101,8 @@ ordered observations, stale commands and results, rejection replay, concurrent
 failure accounting, cleanup, retention, transaction crashes, disk-full rollback
 and consistent backups. No test copies live state.
 
+The capture/core-import work is described in [the migration guide](store-migration.md).
+
 ## Remaining #209 work
 
 The [approved design](design/state-and-units-of-work.md) remains the release plan.

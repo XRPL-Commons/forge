@@ -12,7 +12,8 @@ class StoreCodesTests(unittest.TestCase):
         self.db = sqlite3.connect(':memory:')
         self.addCleanup(self.db.close)
         self.db.execute('PRAGMA foreign_keys=ON')
-        self.db.executescript((Path(__file__).resolve().parents[1] / 'forge/store/schema/001_initial.sql').read_text())
+        for schema in sorted((Path(__file__).resolve().parents[1] / 'forge/store/schema').glob('[0-9]*.sql')):
+            self.db.executescript(schema.read_text())
         self.db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/repo')")
 
     def unit(self, name='u', state='building'):

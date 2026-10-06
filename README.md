@@ -14,6 +14,9 @@ on its Linux host.
 
 ### Local CLI
 
+The CLI also includes offline SQLite import libraries. See [migration staging](docs/store-migration.md)
+for capture, resume and verification commands; these do not activate SQLite in production.
+
 On macOS or Linux with Python 3.10+, Git and
 [uv](https://docs.astral.sh/uv/getting-started/installation/) installed:
 
@@ -31,6 +34,7 @@ not install or start the Forge server. No PyPI release is currently published.
 
 | Command | Run it on | Purpose |
 | --- | --- | --- |
+| `forge migrate` | Your computer or the external agent’s computer | Capture a private legacy snapshot and test an offline SQLite import; production cutover is not enabled |
 | `forge server setup` | Your computer or the external agent's computer | Configure operator sign-in and private HTTPS on an existing Tailscale host over SSH |
 | `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
 | `bin/forge update` | The Forge server, from its source checkout | Update the source and reconcile the installed services |

@@ -192,6 +192,8 @@ class Lifecycle:
             raise TransitionError("request, actor, unit and positive expected version are required")
         rejection = None
         with self.store.write() as db:
+            if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
+                raise TransitionError("staging imports cannot accept lifecycle commands")
             prior = db.execute("SELECT 1 FROM decisions WHERE request_id = ?", (command.request_id,)).fetchone()
             if prior:
                 yield db  # _replay returns or raises the original result; no new journal row.

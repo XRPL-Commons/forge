@@ -160,6 +160,7 @@ ARTIFACT_KINDS = {
 }
 
 EVENT_KINDS = frozenset({
+    'legacy_event',
     'unit_created', 'admitted', 'membership_changed', 'part_accepted',
     'candidate_selected', 'candidate_superseded', 'phase_changed',
     'gate_opened', 'gate_resolved', 'attempt_reserved', 'attempt_finished',
