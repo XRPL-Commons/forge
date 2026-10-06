@@ -142,9 +142,11 @@ class StoreTransitionTests(unittest.TestCase):
         # Fixture only: batch composition commands remain a later delivery phase.
         admitted = self.admit(number)
         with self.store.write() as db:
-            db.execute('UPDATE unit_issues SET unit_id = ? WHERE id = ?', ('unit-1', admitted['member_id']))
-            db.execute("UPDATE units SET state = 'dissolved' WHERE id = ?", (f'unit-{number}',))
-        return admitted['member_id'], {**self.manifest, 'requirements_revision_id': admitted['revision_id']}
+            db.execute("UPDATE unit_issues SET left_at = 100, exit_reason = 'combined', state = 'removed' WHERE id = ?", (admitted['member_id'],))
+            db.execute("UPDATE units SET state = 'closed', close_code = 'combined' WHERE id = ?", (f'unit-{number}',))
+            member_id = f'independent-member-{number}'
+            db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES(?,'unit-1',?,1,'main',?,'pending',100)", (member_id, f'issue-{number}', admitted['revision_id']))
+        return member_id, {**self.manifest, 'requirements_revision_id': admitted['revision_id']}
 
     def test_member_gate_blocks_only_that_part_and_projection_agrees_with_dispatch(self):
         sibling, manifest = self.add_independent_member(2)
@@ -306,7 +308,7 @@ class StoreTransitionTests(unittest.TestCase):
     def test_completed_external_closure_and_hold_label_resolution_keep_pause(self):
         gate = self.lifecycle.open_gate(self.command(), 'label_hold', details={'label': 'hold'})
         self.lifecycle.pause(self.command())
-        self.lifecycle.resolve_gate(self.command(), gate['gate_id'], evidence={'observed_labels': [], 'observed_at': 101})
+        self.lifecycle.resolve_gate(self.command(), gate['gate_id'], release='observation', evidence={'observed_labels': [], 'observed_at': 101, 'verified': True})
         self.assertEqual(self.view()['current_blocker']['code'], 'operator_pause')
         with self.store.write() as db:
             db.execute("UPDATE issues SET github_state = 'closed', state_reason = 'completed' WHERE id = 'issue-1'")

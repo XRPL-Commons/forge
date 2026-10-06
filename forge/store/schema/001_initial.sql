@@ -10,6 +10,254 @@ CREATE TABLE store_metadata (
     value TEXT NOT NULL CHECK (length(CAST(value AS BLOB)) <= 65536)
 ) STRICT;
 
+-- Closed code registry, shared with codes.py and checked by registry tests.
+CREATE TABLE unit_states (code TEXT PRIMARY KEY NOT NULL, terminal INTEGER NOT NULL CHECK (terminal IN (0,1))) STRICT;
+INSERT INTO unit_states VALUES
+    ('queued', 0),
+    ('building', 0),
+    ('integrating', 0),
+    ('reviewing', 0),
+    ('auditing', 0),
+    ('merging', 0),
+    ('merged', 1),
+    ('closed', 1),
+    ('dissolved', 1);
+
+CREATE TABLE unit_transitions (from_state TEXT NOT NULL REFERENCES unit_states(code), to_state TEXT NOT NULL REFERENCES unit_states(code), PRIMARY KEY (from_state,to_state)) STRICT;
+INSERT INTO unit_transitions VALUES
+    ('queued', 'building'),
+    ('queued', 'closed'),
+    ('queued', 'dissolved'),
+    ('queued', 'reviewing'),
+    ('building', 'closed'),
+    ('building', 'dissolved'),
+    ('building', 'integrating'),
+    ('building', 'reviewing'),
+    ('integrating', 'building'),
+    ('integrating', 'closed'),
+    ('integrating', 'dissolved'),
+    ('integrating', 'reviewing'),
+    ('reviewing', 'auditing'),
+    ('reviewing', 'building'),
+    ('reviewing', 'closed'),
+    ('reviewing', 'dissolved'),
+    ('reviewing', 'integrating'),
+    ('reviewing', 'merged'),
+    ('auditing', 'building'),
+    ('auditing', 'closed'),
+    ('auditing', 'dissolved'),
+    ('auditing', 'integrating'),
+    ('auditing', 'merged'),
+    ('auditing', 'merging'),
+    ('merging', 'building'),
+    ('merging', 'closed'),
+    ('merging', 'dissolved'),
+    ('merging', 'integrating'),
+    ('merging', 'merged');
+
+CREATE TABLE close_codes (code TEXT PRIMARY KEY NOT NULL, issue_outcome TEXT CHECK (issue_outcome IN ('done','dropped'))) STRICT;
+INSERT INTO close_codes VALUES
+    ('github_completed', 'done'),
+    ('github_not_planned', 'dropped'),
+    ('github_duplicate', 'dropped'),
+    ('operator_closed', NULL),
+    ('combined', NULL);
+
+CREATE TABLE gate_codes (
+    code TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('intent','decision','readiness','dependency','automatic','candidate')),
+    priority INTEGER NOT NULL CHECK (priority BETWEEN 2 AND 7),
+    release TEXT NOT NULL CHECK (release IN ('operator','observation','recheck','time','evidence','transition')),
+    unit_scope INTEGER NOT NULL CHECK (unit_scope IN (0,1)),
+    member_scope INTEGER NOT NULL CHECK (member_scope IN (0,1)),
+    candidate_scope INTEGER NOT NULL CHECK (candidate_scope IN (0,1))
+) STRICT;
+INSERT INTO gate_codes VALUES
+    ('operator_pause', 'intent', 2, 'operator', 1, 0, 0),
+    ('operator_backlog', 'intent', 2, 'operator', 1, 0, 0),
+    ('label_hold', 'intent', 2, 'observation', 1, 1, 0),
+    ('membership_decision', 'intent', 2, 'operator', 1, 1, 0),
+    ('operator_sync', 'intent', 2, 'observation', 1, 0, 0),
+    ('external_change', 'intent', 2, 'operator', 1, 1, 0),
+    ('ownership_conflict', 'intent', 2, 'observation', 1, 1, 0),
+    ('budget_exhausted', 'decision', 3, 'operator', 1, 0, 0),
+    ('approach_required', 'decision', 3, 'operator', 1, 1, 0),
+    ('decision_required', 'decision', 3, 'operator', 1, 1, 0),
+    ('repository_setup', 'readiness', 4, 'observation', 1, 0, 0),
+    ('environment', 'readiness', 4, 'recheck', 1, 1, 0),
+    ('observation_unavailable', 'readiness', 4, 'observation', 1, 1, 1),
+    ('legacy_reconciliation', 'readiness', 4, 'operator', 1, 1, 0),
+    ('dependency', 'dependency', 5, 'observation', 1, 1, 0),
+    ('recovery_pending', 'automatic', 6, 'transition', 1, 1, 1),
+    ('cleanup_pending', 'automatic', 6, 'transition', 1, 1, 1),
+    ('provider_unavailable', 'automatic', 6, 'time', 1, 0, 0),
+    ('capacity', 'automatic', 6, 'transition', 1, 0, 0),
+    ('retry_delay', 'automatic', 6, 'time', 1, 1, 0),
+    ('verification_human', 'candidate', 7, 'evidence', 0, 0, 1),
+    ('verification_ci', 'candidate', 7, 'evidence', 0, 0, 1),
+    ('approval_required', 'candidate', 7, 'evidence', 0, 0, 1),
+    ('changes_requested', 'candidate', 7, 'transition', 0, 0, 1),
+    ('merge_checks', 'candidate', 7, 'observation', 0, 0, 1),
+    ('merge_conflict', 'candidate', 7, 'transition', 0, 0, 1);
+CREATE TABLE job_roles (code TEXT PRIMARY KEY NOT NULL) STRICT;
+INSERT INTO job_roles VALUES
+    ('build'),
+    ('integration'),
+    ('review'),
+    ('audit'),
+    ('recovery'),
+    ('merge');
+CREATE TABLE job_phases (code TEXT PRIMARY KEY NOT NULL) STRICT;
+INSERT INTO job_phases VALUES
+    ('reserved'),
+    ('starting'),
+    ('running'),
+    ('collecting'),
+    ('finished'),
+    ('cleaned');
+CREATE TABLE part_states (code TEXT PRIMARY KEY NOT NULL) STRICT;
+INSERT INTO part_states VALUES
+    ('pending'),
+    ('building'),
+    ('built'),
+    ('failed'),
+    ('removed'),
+    ('done');
+CREATE TABLE exit_reasons (code TEXT PRIMARY KEY NOT NULL) STRICT;
+INSERT INTO exit_reasons VALUES
+    ('dropped'),
+    ('dissolved'),
+    ('merged'),
+    ('closed'),
+    ('combined');
+CREATE TABLE event_kinds (code TEXT PRIMARY KEY NOT NULL) STRICT;
+INSERT INTO event_kinds VALUES
+    ('admitted'),
+    ('attempt_fenced'),
+    ('attempt_finished'),
+    ('attempt_reserved'),
+    ('budget_charged'),
+    ('budget_corrected'),
+    ('budget_reset'),
+    ('candidate_selected'),
+    ('candidate_superseded'),
+    ('cleanup_verified'),
+    ('closed'),
+    ('decision_applied'),
+    ('decision_rejected'),
+    ('dissolved'),
+    ('gate_opened'),
+    ('gate_resolved'),
+    ('issue_admitted'),
+    ('issue_observed'),
+    ('lease_released'),
+    ('lifecycle_changed'),
+    ('membership_changed'),
+    ('merged'),
+    ('part_accepted'),
+    ('phase_changed'),
+    ('unit_created');
+CREATE TABLE artifact_kinds (code TEXT PRIMARY KEY NOT NULL, retention TEXT NOT NULL CHECK (retention IN ('raw','durable'))) STRICT;
+INSERT INTO artifact_kinds VALUES
+    ('logs', 'raw'),
+    ('output', 'raw'),
+    ('live_tail', 'raw'),
+    ('ci_transcript', 'raw'),
+    ('launch_input', 'durable'),
+    ('input_manifest', 'durable'),
+    ('result', 'durable'),
+    ('summary', 'durable');
+CREATE TRIGGER unit_states_no_insert BEFORE INSERT ON unit_states BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER unit_states_no_update BEFORE UPDATE ON unit_states BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER unit_states_no_delete BEFORE DELETE ON unit_states BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER unit_transitions_no_insert BEFORE INSERT ON unit_transitions BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER unit_transitions_no_update BEFORE UPDATE ON unit_transitions BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER unit_transitions_no_delete BEFORE DELETE ON unit_transitions BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER close_codes_no_insert BEFORE INSERT ON close_codes BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER close_codes_no_update BEFORE UPDATE ON close_codes BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER close_codes_no_delete BEFORE DELETE ON close_codes BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER gate_codes_no_insert BEFORE INSERT ON gate_codes BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER gate_codes_no_update BEFORE UPDATE ON gate_codes BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER gate_codes_no_delete BEFORE DELETE ON gate_codes BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER job_roles_no_insert BEFORE INSERT ON job_roles BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER job_roles_no_update BEFORE UPDATE ON job_roles BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER job_roles_no_delete BEFORE DELETE ON job_roles BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER job_phases_no_insert BEFORE INSERT ON job_phases BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER job_phases_no_update BEFORE UPDATE ON job_phases BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER job_phases_no_delete BEFORE DELETE ON job_phases BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER part_states_no_insert BEFORE INSERT ON part_states BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER part_states_no_update BEFORE UPDATE ON part_states BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER part_states_no_delete BEFORE DELETE ON part_states BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER exit_reasons_no_insert BEFORE INSERT ON exit_reasons BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER exit_reasons_no_update BEFORE UPDATE ON exit_reasons BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER exit_reasons_no_delete BEFORE DELETE ON exit_reasons BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER event_kinds_no_insert BEFORE INSERT ON event_kinds BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER event_kinds_no_update BEFORE UPDATE ON event_kinds BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER event_kinds_no_delete BEFORE DELETE ON event_kinds BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER artifact_kinds_no_insert BEFORE INSERT ON artifact_kinds BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER artifact_kinds_no_update BEFORE UPDATE ON artifact_kinds BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+CREATE TRIGGER artifact_kinds_no_delete BEFORE DELETE ON artifact_kinds BEGIN
+    SELECT RAISE(ABORT, 'registry changes require a migration');
+END;
+
 CREATE TABLE repositories (
     id INTEGER PRIMARY KEY CHECK (id > 0),
     full_name TEXT NOT NULL UNIQUE,
@@ -51,15 +299,18 @@ CREATE TABLE units (
     base_branch TEXT NOT NULL,
     membership_generation INTEGER NOT NULL DEFAULT 1 CHECK (membership_generation > 0),
     fencing_generation INTEGER NOT NULL DEFAULT 1 CHECK (fencing_generation > 0),
-    state TEXT NOT NULL CHECK (state IN (
-        'queued', 'building', 'integrating', 'reviewing', 'auditing',
-        'merging', 'merged', 'closed', 'dissolved')),
+    state TEXT NOT NULL REFERENCES unit_states(code),
+    close_code TEXT REFERENCES close_codes(code),
+    merge_sha TEXT CHECK (merge_sha IS NULL OR length(merge_sha) > 0),
     current_candidate_id TEXT,
     primary_gate_id TEXT,
     version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
     budget_generation INTEGER NOT NULL DEFAULT 1 CHECK (budget_generation > 0),
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
+    CHECK ((state = 'closed') = (close_code IS NOT NULL)),
+    CHECK ((state = 'merged') = (merge_sha IS NOT NULL)),
+    CHECK (state NOT IN ('merged','closed','dissolved') OR primary_gate_id IS NULL),
     UNIQUE (id, repository_id, base_branch),
     FOREIGN KEY (id, current_candidate_id) REFERENCES candidates(unit_id, id)
         DEFERRABLE INITIALLY DEFERRED,
@@ -73,10 +324,10 @@ CREATE TABLE unit_issues (
     repository_id INTEGER NOT NULL,
     base_branch TEXT NOT NULL,
     requirements_revision_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'building', 'built', 'failed', 'removed', 'done')),
+    state TEXT NOT NULL REFERENCES part_states(code),
     joined_at REAL NOT NULL,
     left_at REAL,
-    exit_reason TEXT CHECK (exit_reason IN ('dropped', 'dissolved', 'merged', 'closed', 'combined')),
+    exit_reason TEXT REFERENCES exit_reasons(code),
     CHECK ((left_at IS NULL AND exit_reason IS NULL) OR
            (left_at IS NOT NULL AND exit_reason IS NOT NULL)),
     FOREIGN KEY (unit_id, repository_id, base_branch)
@@ -108,19 +359,14 @@ CREATE TABLE unit_gates (
     candidate_id TEXT,
     member_id TEXT,
     subject_key TEXT NOT NULL,
-    code TEXT NOT NULL CHECK (code IN (
-        'operator_pause', 'operator_backlog', 'label_hold', 'membership_decision', 'operator_sync',
-        'external_change', 'ownership_conflict', 'budget_exhausted',
-        'approach_required', 'decision_required', 'repository_setup', 'environment',
-        'observation_unavailable', 'dependency', 'recovery_pending', 'cleanup_pending',
-        'provider_unavailable', 'capacity', 'retry_delay', 'verification_human',
-        'verification_ci', 'approval_required', 'changes_requested', 'merge_checks',
-        'merge_conflict', 'legacy_reconciliation')),
+    code TEXT NOT NULL REFERENCES gate_codes(code),
     details_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details_json) AND json_type(details_json) = 'object' AND length(CAST(details_json AS BLOB)) <= 65536),
     created_at REAL NOT NULL,
     resolved_at REAL,
-    CHECK ((member_id IS NULL AND subject_key = 'unit') OR
-           (member_id IS NOT NULL AND subject_key = 'member:' || member_id) OR
+    resolution TEXT CHECK (resolution IN ('operator','observation','recheck','time','evidence','transition','superseded')),
+    CHECK ((resolved_at IS NULL) = (resolution IS NULL)),
+    CHECK ((member_id IS NULL AND candidate_id IS NULL AND subject_key = 'unit') OR
+           (member_id IS NOT NULL AND candidate_id IS NULL AND subject_key = 'member:' || member_id) OR
            (member_id IS NULL AND candidate_id IS NOT NULL AND subject_key = 'candidate:' || candidate_id)),
     UNIQUE (unit_id, id),
     FOREIGN KEY (unit_id, candidate_id) REFERENCES candidates(unit_id, id),
@@ -156,8 +402,8 @@ CREATE TABLE jobs (
     attempt_id TEXT NOT NULL,
     member_id TEXT,
     candidate_id TEXT,
-    role TEXT NOT NULL CHECK (role IN ('build', 'integration', 'review', 'audit', 'recovery', 'merge')),
-    phase TEXT NOT NULL CHECK (phase IN ('reserved', 'starting', 'running', 'collecting', 'finished', 'cleaned')),
+    role TEXT NOT NULL REFERENCES job_roles(code),
+    phase TEXT NOT NULL REFERENCES job_phases(code),
     outcome TEXT,
     fenced INTEGER NOT NULL DEFAULT 0 CHECK (fenced IN (0, 1)),
     cleanup INTEGER NOT NULL DEFAULT 0 CHECK (cleanup IN (0, 1)),
@@ -176,16 +422,40 @@ CREATE TABLE job_leases (
 ) STRICT;
 CREATE TABLE job_artifacts (
     job_id TEXT NOT NULL REFERENCES jobs(id),
-    kind TEXT NOT NULL,
+    kind TEXT NOT NULL REFERENCES artifact_kinds(code),
     sequence INTEGER NOT NULL CHECK (sequence >= 0),
     media_type TEXT NOT NULL,
     digest TEXT NOT NULL,
-    content BLOB NOT NULL,
-    size INTEGER NOT NULL CHECK (size >= 0 AND size <= 1048576 AND size = length(content)),
+    content BLOB,
+    size INTEGER NOT NULL CHECK (size >= 0 AND size <= 1048576),
+    codec TEXT NOT NULL DEFAULT 'identity' CHECK (codec IN ('identity','zlib')),
+    raw_size INTEGER CHECK (raw_size IS NULL OR (raw_size >= 0 AND raw_size <= 1048576)),
     created_at REAL NOT NULL DEFAULT 0,
     expires_at REAL CHECK (expires_at IS NULL OR expires_at >= created_at),
+    expired_at REAL,
+    CHECK ((content IS NULL) = (expired_at IS NOT NULL)),
+    CHECK (content IS NULL OR size = length(content)),
+    CHECK (codec != 'zlib' OR raw_size IS NOT NULL),
+    CHECK (codec != 'identity' OR raw_size IS NULL OR raw_size = size),
+    CHECK (expired_at IS NULL OR (expired_at >= created_at + 2592000 AND (expires_at IS NULL OR expired_at >= expires_at))),
     PRIMARY KEY (job_id, kind, sequence)
 ) STRICT;
+CREATE TABLE artifact_pins (
+    job_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    reference_id TEXT NOT NULL,
+    PRIMARY KEY (job_id,kind,sequence,purpose,reference_id),
+    FOREIGN KEY (job_id,kind,sequence) REFERENCES job_artifacts(job_id,kind,sequence)
+) STRICT;
+CREATE TRIGGER artifact_pins_unexpired BEFORE INSERT ON artifact_pins
+WHEN EXISTS (SELECT 1 FROM job_artifacts WHERE job_id=NEW.job_id AND kind=NEW.kind AND sequence=NEW.sequence AND expired_at IS NOT NULL)
+BEGIN SELECT RAISE(ABORT, 'an expired artifact cannot be pinned'); END;
+CREATE TRIGGER artifact_pins_no_update BEFORE UPDATE ON artifact_pins
+BEGIN SELECT RAISE(ABORT, 'artifact pins are immutable'); END;
+CREATE TRIGGER artifact_pins_no_delete BEFORE DELETE ON artifact_pins
+BEGIN SELECT RAISE(ABORT, 'artifact pins require explicit retention policy'); END;
 CREATE TABLE decisions (
     id TEXT PRIMARY KEY NOT NULL,
     request_id TEXT NOT NULL UNIQUE,
@@ -204,7 +474,7 @@ CREATE TABLE events (
     unit_id TEXT REFERENCES units(id),
     issue_id TEXT REFERENCES issues(id),
     job_id TEXT REFERENCES jobs(id),
-    kind TEXT NOT NULL,
+    kind TEXT NOT NULL REFERENCES event_kinds(code),
     at REAL NOT NULL,
     actor_id TEXT,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json) AND length(CAST(payload_json AS BLOB)) <= 65536)
@@ -239,9 +509,22 @@ BEGIN SELECT RAISE(ABORT, 'lease requires an unfenced job awaiting cleanup'); EN
 CREATE TRIGGER candidates_no_update BEFORE UPDATE ON candidates BEGIN
     SELECT RAISE(ABORT, 'candidates are immutable');
 END;
-CREATE TRIGGER artifacts_no_update BEFORE UPDATE ON job_artifacts BEGIN
-    SELECT RAISE(ABORT, 'artifacts are immutable');
-END;
+CREATE TRIGGER artifacts_expire_only BEFORE UPDATE ON job_artifacts
+WHEN OLD.content IS NULL OR NEW.content IS NOT NULL OR NEW.expired_at IS NULL
+    OR NEW.job_id IS NOT OLD.job_id OR NEW.kind IS NOT OLD.kind OR NEW.sequence IS NOT OLD.sequence
+    OR NEW.media_type IS NOT OLD.media_type OR NEW.digest IS NOT OLD.digest
+    OR NEW.size IS NOT OLD.size OR NEW.codec IS NOT OLD.codec OR NEW.raw_size IS NOT OLD.raw_size
+    OR NEW.created_at IS NOT OLD.created_at OR NEW.expires_at IS NOT OLD.expires_at
+    OR (SELECT retention FROM artifact_kinds WHERE code=OLD.kind) != 'raw'
+    OR NOT EXISTS (SELECT 1 FROM jobs WHERE id=OLD.job_id AND cleanup=1)
+    OR EXISTS (SELECT 1 FROM artifact_pins WHERE job_id=OLD.job_id AND kind=OLD.kind AND sequence=OLD.sequence)
+    OR EXISTS (SELECT 1 FROM jobs j JOIN units u ON u.id=j.unit_id
+               WHERE j.id=OLD.job_id AND u.state NOT IN ('merged','closed','dissolved') AND u.current_candidate_id IS NOT NULL AND
+                 (j.candidate_id=u.current_candidate_id OR EXISTS (
+                    SELECT 1 FROM candidate_evidence e WHERE e.attempt_id=j.attempt_id AND e.candidate_id=u.current_candidate_id)))
+    OR EXISTS (SELECT 1 FROM jobs j JOIN unit_gates g ON g.unit_id=j.unit_id
+               WHERE j.id=OLD.job_id AND g.resolved_at IS NULL AND g.code IN ('recovery_pending','cleanup_pending'))
+BEGIN SELECT RAISE(ABORT, 'only unpinned completed raw artifacts may expire'); END;
 CREATE TRIGGER issue_revisions_no_update BEFORE UPDATE ON issue_revisions BEGIN
     SELECT RAISE(ABORT, 'issue revisions are immutable');
 END;
@@ -443,7 +726,7 @@ CREATE TABLE messages (
 CREATE TABLE discussion_executions (
     id TEXT PRIMARY KEY NOT NULL,
     discussion_id TEXT NOT NULL REFERENCES discussions(id),
-    phase TEXT NOT NULL CHECK (phase IN ('reserved', 'starting', 'running', 'collecting', 'finished', 'cleaned')),
+    phase TEXT NOT NULL REFERENCES job_phases(code),
     fenced INTEGER NOT NULL DEFAULT 0 CHECK (fenced IN (0, 1)),
     cleanup INTEGER NOT NULL DEFAULT 0 CHECK (cleanup IN (0, 1)),
     created_at REAL NOT NULL,
@@ -729,3 +1012,82 @@ BEGIN SELECT RAISE(ABORT, 'job fencing and cleanup cannot be reversed'); END;
 CREATE TRIGGER discussion_cleanup_monotonic BEFORE UPDATE ON discussion_executions
 WHEN NEW.fenced < OLD.fenced OR NEW.cleanup < OLD.cleanup
 BEGIN SELECT RAISE(ABORT, 'execution fencing and cleanup cannot be reversed'); END;
+
+-- Lifecycle constraints supplement command validation without requiring every
+-- statement in a multi-statement transition to increment the entity version.
+CREATE TRIGGER unit_transition_legal BEFORE UPDATE OF state ON units
+WHEN NEW.state != OLD.state AND NOT EXISTS (
+    SELECT 1 FROM unit_transitions WHERE from_state=OLD.state AND to_state=NEW.state)
+BEGIN SELECT RAISE(ABORT, 'illegal unit transition'); END;
+CREATE TRIGGER unit_identity_fixed BEFORE UPDATE ON units
+WHEN NEW.id IS NOT OLD.id OR NEW.repository_id IS NOT OLD.repository_id OR NEW.base_branch IS NOT OLD.base_branch
+BEGIN SELECT RAISE(ABORT, 'unit identity is immutable'); END;
+CREATE TRIGGER unit_terminal_facts_fixed BEFORE UPDATE ON units
+WHEN OLD.state IN ('merged','closed','dissolved') AND
+    (NEW.close_code IS NOT OLD.close_code OR NEW.merge_sha IS NOT OLD.merge_sha OR NEW.current_candidate_id IS NOT OLD.current_candidate_id)
+BEGIN SELECT RAISE(ABORT, 'terminal delivery facts are immutable'); END;
+CREATE TRIGGER unit_terminal_no_live_members BEFORE UPDATE OF state ON units
+WHEN NEW.state IN ('merged','closed','dissolved') AND EXISTS (
+    SELECT 1 FROM unit_issues WHERE unit_id=NEW.id AND left_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'release memberships before ending a unit'); END;
+CREATE TRIGGER unit_terminal_no_live_jobs BEFORE UPDATE OF state ON units
+WHEN NEW.state IN ('merged','closed','dissolved') AND EXISTS (
+    SELECT 1 FROM jobs WHERE unit_id=NEW.id AND fenced=0 AND phase IN ('reserved','starting','running','collecting'))
+BEGIN SELECT RAISE(ABORT, 'fence live jobs before ending a unit'); END;
+CREATE TRIGGER unit_terminal_no_open_gates BEFORE UPDATE OF state ON units
+WHEN NEW.state IN ('merged','closed','dissolved') AND EXISTS (
+    SELECT 1 FROM unit_gates WHERE unit_id=NEW.id AND resolved_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'resolve gates before ending a unit'); END;
+CREATE TRIGGER memberships_join_open_unit BEFORE INSERT ON unit_issues
+WHEN NEW.left_at IS NULL AND EXISTS (SELECT 1 FROM units WHERE id=NEW.unit_id AND state IN ('merged','closed','dissolved'))
+BEGIN SELECT RAISE(ABORT, 'a terminal unit cannot gain members'); END;
+CREATE TRIGGER memberships_history_fixed BEFORE UPDATE ON unit_issues
+WHEN OLD.left_at IS NOT NULL OR NEW.id IS NOT OLD.id OR NEW.unit_id IS NOT OLD.unit_id
+    OR NEW.issue_id IS NOT OLD.issue_id OR NEW.repository_id IS NOT OLD.repository_id
+    OR NEW.base_branch IS NOT OLD.base_branch OR NEW.joined_at IS NOT OLD.joined_at
+BEGIN SELECT RAISE(ABORT, 'membership history is immutable'); END;
+CREATE TRIGGER memberships_no_delete BEFORE DELETE ON unit_issues
+BEGIN SELECT RAISE(ABORT, 'membership history is retained'); END;
+CREATE TRIGGER gates_scope BEFORE INSERT ON unit_gates
+WHEN NOT EXISTS (SELECT 1 FROM gate_codes WHERE code=NEW.code AND (
+    (NEW.member_id IS NOT NULL AND member_scope=1) OR
+    (NEW.member_id IS NULL AND NEW.candidate_id IS NOT NULL AND candidate_scope=1) OR
+    (NEW.member_id IS NULL AND NEW.candidate_id IS NULL AND unit_scope=1)))
+BEGIN SELECT RAISE(ABORT, 'gate scope does not fit its code'); END;
+CREATE TRIGGER gates_open_unit BEFORE INSERT ON unit_gates
+WHEN EXISTS (SELECT 1 FROM units WHERE id=NEW.unit_id AND state IN ('merged','closed','dissolved'))
+BEGIN SELECT RAISE(ABORT, 'a terminal unit cannot gain gates'); END;
+CREATE TRIGGER gates_resolve_only BEFORE UPDATE ON unit_gates
+WHEN OLD.resolved_at IS NOT NULL OR NEW.resolved_at IS NULL
+    OR NEW.id IS NOT OLD.id OR NEW.unit_id IS NOT OLD.unit_id OR NEW.code IS NOT OLD.code
+    OR NEW.subject_key IS NOT OLD.subject_key OR NEW.candidate_id IS NOT OLD.candidate_id
+    OR NEW.member_id IS NOT OLD.member_id OR NEW.details_json IS NOT OLD.details_json
+    OR NEW.created_at IS NOT OLD.created_at
+    OR (NEW.resolution != 'superseded' AND NEW.resolution IS NOT (SELECT release FROM gate_codes WHERE code=OLD.code))
+BEGIN SELECT RAISE(ABORT, 'a gate can only resolve once using its release rule'); END;
+CREATE TRIGGER gates_no_delete BEFORE DELETE ON unit_gates
+BEGIN SELECT RAISE(ABORT, 'gate history is retained'); END;
+CREATE UNIQUE INDEX one_live_job_per_member ON jobs(member_id)
+    WHERE member_id IS NOT NULL AND fenced=0 AND phase IN ('reserved','starting','running','collecting');
+CREATE UNIQUE INDEX one_live_unit_job ON jobs(unit_id)
+    WHERE member_id IS NULL AND fenced=0 AND phase IN ('reserved','starting','running','collecting');
+CREATE TRIGGER jobs_open_unit BEFORE INSERT ON jobs
+WHEN EXISTS (SELECT 1 FROM units WHERE id=NEW.unit_id AND state IN ('merged','closed','dissolved'))
+BEGIN SELECT RAISE(ABORT, 'a terminal unit cannot start a job'); END;
+CREATE TRIGGER jobs_forward_only BEFORE UPDATE ON jobs
+WHEN (CASE NEW.phase WHEN 'reserved' THEN 0 WHEN 'starting' THEN 1 WHEN 'running' THEN 2 WHEN 'collecting' THEN 3 WHEN 'finished' THEN 4 ELSE 5 END)
+   < (CASE OLD.phase WHEN 'reserved' THEN 0 WHEN 'starting' THEN 1 WHEN 'running' THEN 2 WHEN 'collecting' THEN 3 WHEN 'finished' THEN 4 ELSE 5 END)
+    OR (OLD.outcome IS NOT NULL AND NEW.outcome IS NOT OLD.outcome)
+BEGIN SELECT RAISE(ABORT, 'job execution facts only move forward'); END;
+CREATE TRIGGER jobs_no_delete BEFORE DELETE ON jobs
+BEGIN SELECT RAISE(ABORT, 'job history is retained'); END;
+CREATE TRIGGER issues_identity_fixed BEFORE UPDATE ON issues
+WHEN NEW.id IS NOT OLD.id OR NEW.repository_id IS NOT OLD.repository_id OR NEW.github_number IS NOT OLD.github_number
+BEGIN SELECT RAISE(ABORT, 'issue identity is immutable'); END;
+CREATE TRIGGER issues_observed_in_order BEFORE UPDATE ON issues
+WHEN (OLD.remote_updated_at IS NOT NULL AND NEW.remote_updated_at IS NULL)
+    OR NEW.remote_updated_at < OLD.remote_updated_at
+    OR (NEW.remote_updated_at IS OLD.remote_updated_at AND NEW.collection_generation < OLD.collection_generation)
+BEGIN SELECT RAISE(ABORT, 'an older observation cannot replace a newer one'); END;
+CREATE TRIGGER repository_observations_no_update BEFORE UPDATE ON repository_observations
+BEGIN SELECT RAISE(ABORT, 'repository observations are immutable history'); END;

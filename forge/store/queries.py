@@ -1,28 +1,14 @@
 """Bounded snapshot reads, with output fetched only by explicit artifact request."""
-from dataclasses import dataclass
-import hashlib
 import json
 
+from .artifacts import (
+    Artifact, ArtifactCorrupt, ArtifactExpired, ArtifactTooLarge, Artifacts,
+    MAX_ARTIFACT_SIZE,
+)
 from .transitions import project_unit
 
 
 MAX_PAGE_SIZE = 100
-MAX_ARTIFACT_SIZE = 1024 * 1024
-TERMINAL_STATES = ('merged', 'closed', 'dissolved')
-
-
-class ArtifactCorrupt(ValueError):
-    """A required artifact cannot be trusted; its bytes must not be consumed."""
-
-
-@dataclass(frozen=True)
-class Artifact:
-    job_id: str
-    kind: str
-    sequence: int
-    media_type: str
-    digest: str
-    content: bytes
 
 
 def _limit(value):
@@ -108,7 +94,7 @@ class Queries:
             parameters.extend(after)
         with self.store.read_snapshot() as connection:
             rows = connection.execute(
-                'SELECT job_id, kind, sequence, media_type, digest, size '
+                'SELECT job_id, kind, sequence, media_type, digest, size, codec, raw_size, expired_at '
                 'FROM job_artifacts WHERE ' + ' AND '.join(clauses)
                 + ' ORDER BY kind, sequence LIMIT ?', (*parameters, limit + 1),
             ).fetchall()
@@ -120,25 +106,4 @@ class Queries:
             }
 
     def artifact(self, job_id, kind, sequence=0):
-        if type(sequence) is not int or sequence < 0:
-            raise ValueError('sequence must be a nonnegative integer')
-        with self.store.read_snapshot() as connection:
-            metadata = connection.execute(
-                'SELECT media_type, digest, size FROM job_artifacts '
-                'WHERE job_id = ? AND kind = ? AND sequence = ?',
-                (job_id, kind, sequence),
-            ).fetchone()
-            if metadata is None:
-                raise KeyError((job_id, kind, sequence))
-            if not 0 <= metadata['size'] <= MAX_ARTIFACT_SIZE:
-                raise ArtifactCorrupt('artifact chunk exceeds the allowed size')
-            content = connection.execute(
-                'SELECT content FROM job_artifacts '
-                'WHERE job_id = ? AND kind = ? AND sequence = ?',
-                (job_id, kind, sequence),
-            ).fetchone()['content']
-            if (len(content) != metadata['size']
-                    or hashlib.sha256(content).hexdigest() != metadata['digest']):
-                raise ArtifactCorrupt('artifact size or digest does not match')
-            return Artifact(job_id, kind, sequence, metadata['media_type'],
-                            metadata['digest'], content)
+        return Artifacts(self.store).read(job_id, kind, sequence)

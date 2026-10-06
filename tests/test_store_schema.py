@@ -112,7 +112,7 @@ class StoreSchemaTests(unittest.TestCase):
         self.rejected(lambda: self.gate('wrong_unit', member='mc', subject='member:mc'))
         self.gate('candidate', candidate='ca', subject='candidate:ca')
         self.rejected(lambda: self.gate('wrong_candidate', candidate='cc', subject='candidate:cc'))
-        self.db.execute("UPDATE unit_gates SET resolved_at=2 WHERE id='ga'")
+        self.db.execute("UPDATE unit_gates SET resolved_at=2,resolution='transition' WHERE id='ga'")
         self.gate('new', member='ma', subject='member:ma')
 
     def test_jobs_match_the_attempt_member_and_assignment_is_immutable(self):
@@ -177,7 +177,7 @@ class StoreSchemaTests(unittest.TestCase):
         self.rejected(lambda: self.db.execute("UPDATE part_outputs SET commit_oid='other'"))
 
     def test_required_history_cannot_be_deleted_or_rewritten(self):
-        self.insert('events', transaction_id='t', unit_id='u', kind='created', at=1, payload_json='{}')
+        self.insert('events', transaction_id='t', unit_id='u', kind='unit_created', at=1, payload_json='{}')
         for table, change in [('events', "kind='changed'"), ('candidates', "head_oid='other'"), ('issue_revisions', "title='other'")]:
             with self.subTest(table=table):
                 self.rejected(lambda: self.db.execute(f'UPDATE {table} SET {change}'))

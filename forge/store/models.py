@@ -3,51 +3,13 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class Phase(str, Enum):
-    QUEUED = "queued"
-    BUILDING = "building"
-    INTEGRATING = "integrating"
-    REVIEWING = "reviewing"
-    AUDITING = "auditing"
-    MERGING = "merging"
-    MERGED = "merged"
-    CLOSED = "closed"
-    DISSOLVED = "dissolved"
+from .codes import UNIT_STATES, JOB_ROLES, GATES
 
-
-class Role(str, Enum):
-    BUILD = "build"
-    REVIEW = "review"
-    AUDIT = "audit"
-
-
-class GateCode(str, Enum):
-    OPERATOR_PAUSE = "operator_pause"
-    OPERATOR_BACKLOG = "operator_backlog"
-    LABEL_HOLD = "label_hold"
-    MEMBERSHIP_DECISION = "membership_decision"
-    OPERATOR_SYNC = "operator_sync"
-    EXTERNAL_CHANGE = "external_change"
-    OWNERSHIP_CONFLICT = "ownership_conflict"
-    BUDGET_EXHAUSTED = "budget_exhausted"
-    APPROACH_REQUIRED = "approach_required"
-    DECISION_REQUIRED = "decision_required"
-    REPOSITORY_SETUP = "repository_setup"
-    ENVIRONMENT = "environment"
-    OBSERVATION_UNAVAILABLE = "observation_unavailable"
-    DEPENDENCY = "dependency"
-    RECOVERY_PENDING = "recovery_pending"
-    CLEANUP_PENDING = "cleanup_pending"
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-    CAPACITY = "capacity"
-    RETRY_DELAY = "retry_delay"
-    VERIFICATION_HUMAN = "verification_human"
-    VERIFICATION_CI = "verification_ci"
-    APPROVAL_REQUIRED = "approval_required"
-    CHANGES_REQUESTED = "changes_requested"
-    MERGE_CHECKS = "merge_checks"
-    MERGE_CONFLICT = "merge_conflict"
-    LEGACY_RECONCILIATION = "legacy_reconciliation"
+# Compatibility enums derive from the closed registry; it is the only Python
+# source for valid persisted lifecycle values.
+Phase = Enum("Phase", {value.upper(): value for value in UNIT_STATES}, type=str)
+Role = Enum("Role", {value.upper(): value for value in JOB_ROLES}, type=str)
+GateCode = Enum("GateCode", {value.upper(): value for value in GATES}, type=str)
 
 
 @dataclass(frozen=True)

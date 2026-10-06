@@ -44,6 +44,7 @@ class StoreDatabaseTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(connection.execute("PRAGMA synchronous").fetchone()[0], 2)
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA trusted_schema").fetchone()[0], 0)
             self.assertEqual(connection.execute("PRAGMA query_only").fetchone()[0], 1)
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")

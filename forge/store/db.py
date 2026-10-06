@@ -213,8 +213,10 @@ class Store:
                 raise StoreError("store_invalid", "WAL could not be enabled")
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA trusted_schema=OFF")
             if (connection.execute("PRAGMA synchronous").fetchone()[0] != 2
-                    or connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1):
+                    or connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1
+                    or connection.execute("PRAGMA trusted_schema").fetchone()[0] != 0):
                 raise StoreError("store_invalid", "Required SQLite settings could not be enabled")
             for suffix in ("-wal", "-shm"):
                 sidecar = Path(str(path) + suffix)

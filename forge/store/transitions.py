@@ -4,19 +4,23 @@ These commands do not launch workers, inspect GitHub, or choose batch membership
 The caller supplies independently verified evidence. Every accepted mutation and
 its event share one SQLite transaction; external effects belong outside it.
 """
+from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import datetime, timezone
 import hashlib
 import json
+import sqlite3
 import time
 import uuid
 
+from . import codes, status
 from .models import (
     Candidate, Command, GateCode, IdempotencyConflict, Role, TransitionError,
     VersionConflict,
 )
 
-TERMINAL = {"merged", "closed", "dissolved"}
-GATE_PRIORITY = {code.value: i for i, code in enumerate(GateCode)}
+TERMINAL = codes.TERMINAL_STATES
+GATE_PRIORITY = {code: (gate.priority, index) for index, (code, gate) in enumerate(codes.GATES.items())}
 
 
 def _json(value):
@@ -77,6 +81,16 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None):
         gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
                       "subject_key": f"member:{row['id']}", "code": "dependency", "created_at": 0.0,
                       "resolved_at": None, "details_json": _json({"reason": "dependency_validation_unavailable"})})
+    for row in db.execute(
+        "SELECT m.id FROM unit_issues m JOIN issues i ON i.id = m.issue_id "
+        "JOIN issue_revisions current ON current.id = i.current_revision_id "
+        "JOIN issue_revisions pinned ON pinned.id = m.requirements_revision_id "
+        "WHERE m.unit_id = ? AND m.left_at IS NULL AND current.requirements_hash != pinned.requirements_hash",
+        (unit["id"],),
+    ):
+        gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
+                      "subject_key": f"member:{row['id']}", "code": "membership_decision", "created_at": 0.0,
+                      "resolved_at": None, "details_json": _json({"reason": "requirements_revision_changed"})})
     return sorted((gate for gate in gates
                    if (gate["candidate_id"] is None or gate["candidate_id"] == candidate_id)
                    and (gate["member_id"] is None or gate["member_id"] == member_id
@@ -99,8 +113,8 @@ def project_unit(db, unit_id):
     members = []
     for row in db.execute(
         "SELECT m.*, i.github_state, i.state_reason, i.github_number FROM unit_issues m "
-        "JOIN issues i ON i.id = m.issue_id WHERE m.unit_id = ? AND m.left_at IS NULL ORDER BY m.id",
-        (unit_id,),
+        "JOIN issues i ON i.id = m.issue_id WHERE m.unit_id = ? AND (m.left_at IS NULL OR ? IN ('merged','closed','dissolved')) ORDER BY m.id",
+        (unit_id, unit["state"]),
     ):
         member = dict(row)
         gates = applicable_gates(db, unit, member["id"], unit["current_candidate_id"])
@@ -127,7 +141,10 @@ def project_unit(db, unit_id):
         blocked = [m["current_blocker"] for m in members if m["current_blocker"]]
         if blocked and (unit["state"] not in {"queued", "building"} or not runnable):
             blocker = min(blocked, key=lambda g: (GATE_PRIORITY[g["code"]], g["created_at"], g["id"] or g["subject_key"]))
-    unit.update(stage_code=unit["state"], current_blocker=None if unit["state"] in TERMINAL else blocker,
+    blocker = None if unit["state"] in TERMINAL else blocker
+    unit.update(stage_code=unit["state"], current_blocker=blocker,
+                display_status=status.describe(blocker["code"] if blocker else unit["state"]),
+                reason_code=blocker["code"] if blocker else None,
                 members=members, charged_failures=_charges(db, unit))
     return unit
 
@@ -148,13 +165,63 @@ class Lifecycle:
         row = db.execute("SELECT * FROM decisions WHERE request_id = ?", (command.request_id,)).fetchone()
         if row is None:
             return None
-        if (row["unit_id"], row["actor_id"], row["expected_version"], row["command"], row["payload_json"]) != (
+        result = json.loads(row["result_json"])
+        target = row["unit_id"] if row["unit_id"] is not None else result.get("unit_id")
+        if (target, row["actor_id"], row["expected_version"], row["command"], row["payload_json"]) != (
             command.unit_id, command.actor_id, command.expected_version, operation, _json(payload)
         ):
             raise IdempotencyConflict("request identity already belongs to a different command")
+        if row["status"] == "rejected":
+            errors = {"TransitionError": TransitionError, "VersionConflict": VersionConflict,
+                      "IntegrityError": sqlite3.IntegrityError}
+            raise errors.get(result["error_type"], TransitionError)(result["message"])
         if row["status"] != "applied":
             raise TransitionError("request is not an applied command")
-        return json.loads(row["result_json"])
+        return result
+
+    @contextmanager
+    def _command_transaction(self, command, operation, payload):
+        """Persist semantic rejection after rolling back every attempted state edit.
+
+        Busy/I/O/commit failures remain retryable storage failures and are not
+        recorded as decisions. Replays check the full actor/version/payload.
+        """
+        if (not all(isinstance(value, str) and value for value in
+                    (command.request_id, command.actor_id, command.unit_id))
+                or type(command.expected_version) is not int or command.expected_version < 1):
+            raise TransitionError("request, actor, unit and positive expected version are required")
+        rejection = None
+        with self.store.write() as db:
+            prior = db.execute("SELECT 1 FROM decisions WHERE request_id = ?", (command.request_id,)).fetchone()
+            if prior:
+                yield db  # _replay returns or raises the original result; no new journal row.
+            else:
+                db.execute("SAVEPOINT lifecycle_command")
+                try:
+                    yield db
+                except (TransitionError, sqlite3.IntegrityError) as error:
+                    db.execute("ROLLBACK TO lifecycle_command")
+                    db.execute("RELEASE lifecycle_command")
+                    target = db.execute("SELECT id FROM units WHERE id = ?", (command.unit_id,)).fetchone()
+                    unit_id = target[0] if target else None
+                    result = {"unit_id": command.unit_id, "error_type": type(error).__name__, "message": str(error)}
+                    db.execute(
+                        "INSERT INTO decisions(id,request_id,unit_id,actor_id,expected_version,command,payload_json,status,result_json,created_at) "
+                        "VALUES(?,?,?,?,?,?,?,'rejected',?,?)",
+                        (_id(command.request_id, "decision"), command.request_id, unit_id, command.actor_id,
+                         command.expected_version, operation, _json(payload), _json(result), self.clock()),
+                    )
+                    db.execute(
+                        "INSERT INTO events(transaction_id,unit_id,kind,at,actor_id,payload_json) "
+                        "VALUES(?,?,'decision_rejected',?,?,?)",
+                        (command.request_id, unit_id, self.clock(), command.actor_id,
+                         _json({"command": operation, **result})),
+                    )
+                    rejection = error
+                else:
+                    db.execute("RELEASE lifecycle_command")
+        if rejection is not None:
+            raise rejection
 
     @staticmethod
     def _lifecycle_summary(projected):
@@ -184,7 +251,7 @@ class Lifecycle:
     def _apply(self, command, operation, payload, change):
         if not command.request_id or not command.actor_id or type(command.expected_version) is not int or command.expected_version < 1:
             raise TransitionError("request, actor and positive expected version are required")
-        with self.store.write() as db:
+        with self._command_transaction(command, operation, payload) as db:
             previous = self._replay(db, command, operation, payload)
             if previous is not None:
                 return previous
@@ -203,7 +270,7 @@ class Lifecycle:
                        observed_at=observed_at, base_branch=base_branch)
         if not all((request_id, actor_id, unit_id, issue_id, repository_name, base_branch)):
             raise TransitionError("admission identities must be nonempty")
-        with self.store.write() as db:
+        with self._command_transaction(command, "admit_issue", payload) as db:
             previous = self._replay(db, command, "admit_issue", payload)
             if previous is not None:
                 return previous
@@ -237,6 +304,10 @@ class Lifecycle:
         code = GateCode(code).value
         if member_id and candidate_id:
             raise TransitionError("a gate has one subject")
+        rule = codes.GATES[code]
+        scope = "member" if member_id else "candidate" if candidate_id else "unit"
+        if scope not in rule.scopes or (rule.candidate and candidate_id is None):
+            raise TransitionError("gate scope does not match its registered rule")
         subject = f"member:{member_id}" if member_id else f"candidate:{candidate_id}" if candidate_id else "unit"
         existing = db.execute(
             "SELECT id FROM unit_gates WHERE unit_id = ? AND code = ? AND subject_key = ? AND resolved_at IS NULL",
@@ -244,7 +315,7 @@ class Lifecycle:
         ).fetchone()
         if existing:
             raise TransitionError("this subject already has an unresolved gate with that code")
-        gate_id = _id(command.request_id, f"gate:{code}:{subject}")
+        gate_id = _id(command.request_id, f"gate:{command.unit_id}:{code}:{subject}")
         db.execute(
             "INSERT INTO unit_gates(id,unit_id,candidate_id,member_id,subject_key,code,details_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
             (gate_id, command.unit_id, candidate_id, member_id, subject, code, _json(details), self.clock()),
@@ -264,24 +335,43 @@ class Lifecycle:
             return {"gate_id": self._open_gate(db, command, code, details, member_id, candidate_id)}
         return self._apply(command, "open_gate", payload, change)
 
-    def resolve_gate(self, command, gate_id, *, evidence):
+    def resolve_gate(self, command, gate_id, *, release, evidence):
         if not evidence:
             raise TransitionError("gate resolution requires evidence")
         def change(db, unit):
             gate = db.execute("SELECT * FROM unit_gates WHERE id = ? AND unit_id = ? AND resolved_at IS NULL", (gate_id, unit["id"])).fetchone()
             if gate is None:
                 raise TransitionError("gate is not unresolved on this unit")
-            if gate["code"] in {"operator_pause", "budget_exhausted", "cleanup_pending"}:
+            rule = codes.GATES[gate["code"]]
+            if release != rule.release:
+                raise TransitionError("release rule does not match this gate")
+            if gate["code"] in {"operator_pause", "budget_exhausted"} or rule.release == "transition":
                 raise TransitionError("this gate requires its dedicated lifecycle command")
+            self._release_evidence(gate, release, evidence)
             if gate["candidate_id"] and gate["candidate_id"] != unit["current_candidate_id"]:
                 raise TransitionError("evidence is for an obsolete candidate")
             self._resolve(db, command, gate_id, evidence)
             return {"gate_id": gate_id}
-        return self._apply(command, "resolve_gate", {"gate_id": gate_id, "evidence": evidence}, change)
+        return self._apply(command, "resolve_gate", {"gate_id": gate_id, "release": release, "evidence": evidence}, change)
 
-    def _resolve(self, db, command, gate_id, evidence):
-        db.execute("UPDATE unit_gates SET resolved_at = ? WHERE id = ?", (self.clock(), gate_id))
-        self._event(db, command, "gate_resolved", {"gate_id": gate_id, "evidence": evidence})
+    def _release_evidence(self, gate, release, evidence):
+        if not isinstance(evidence, dict) or not evidence:
+            raise TransitionError("resolution requires structured evidence")
+        if release in {"observation", "recheck", "evidence"}:
+            if evidence.get("verified") is not True or not isinstance(evidence.get("observed_at"), (int, float)) or evidence["observed_at"] < gate["created_at"]:
+                raise TransitionError("resolution requires a fresh verified observation")
+        if release == "evidence" and evidence.get("candidate_id") != gate["candidate_id"]:
+            raise TransitionError("evidence must identify the gated candidate")
+        if release == "time":
+            retry_at = json.loads(gate["details_json"]).get("retry_at")
+            if not isinstance(retry_at, (int, float)) or self.clock() < retry_at:
+                raise TransitionError("retry time has not elapsed")
+
+    def _resolve(self, db, command, gate_id, evidence, *, resolution=None):
+        gate = db.execute("SELECT code FROM unit_gates WHERE id = ?", (gate_id,)).fetchone()
+        resolution = resolution or codes.GATES[gate["code"]].release
+        db.execute("UPDATE unit_gates SET resolved_at = ?, resolution = ? WHERE id = ?", (self.clock(), resolution, gate_id))
+        self._event(db, command, "gate_resolved", {"gate_id": gate_id, "resolution": resolution, "evidence": evidence})
 
     @staticmethod
     def _live(unit):
@@ -322,6 +412,8 @@ class Lifecycle:
 
     def reserve_job(self, command, role, *, slot, execution_fence, input_manifest, member_id=None, candidate_id=None):
         role = Role(role).value
+        if role not in {"build", "review", "audit"}:
+            raise TransitionError("this role requires the later execution adapter")
         payload = dict(role=role, slot=slot, execution_fence=execution_fence, input_manifest=input_manifest,
                        member_id=member_id, candidate_id=candidate_id)
         def change(db, unit):
@@ -506,3 +598,355 @@ class Lifecycle:
                     self._resolve(db, command, gate[0], {"cleanup_verified": job_id})
             return {}
         return self._apply(command, "verify_cleanup", {"job_id": job_id, "execution_fence": execution_fence, "evidence": evidence}, change)
+
+    @staticmethod
+    def _members(db, unit_id):
+        return [dict(row) for row in db.execute(
+            "SELECT * FROM unit_issues WHERE unit_id = ? AND left_at IS NULL ORDER BY id", (unit_id,))]
+
+    def _singleton(self, db, unit):
+        members = self._members(db, unit["id"])
+        if len(members) != 1:
+            raise TransitionError("this command requires a unit of one")
+        return members[0]
+
+    @staticmethod
+    def _quiescent(db, unit_id, *, allow_confirmed_merge=False):
+        if db.execute("SELECT 1 FROM jobs WHERE unit_id = ? AND cleanup = 0", (unit_id,)).fetchone():
+            raise TransitionError("all workers require verified cleanup before this operation")
+        if not allow_confirmed_merge and (db.execute(
+            "SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit_id,)
+        ).fetchone() or db.execute(
+            "SELECT 1 FROM external_effects WHERE unit_id = ? AND status IN ('pending','running','uncertain')",
+            (unit_id,),
+        ).fetchone()):
+            raise TransitionError("external effects must be reconciled before this operation")
+
+    def _invalidate(self, db, command, unit, reason, evidence):
+        self._live(unit)
+        self._singleton(db, unit)
+        if db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone():
+            raise TransitionError("merge intent must be reconciled before rework")
+        candidate_id = unit["current_candidate_id"]
+        self._fence(db, command)
+        if candidate_id:
+            for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id = ? AND candidate_id = ? AND resolved_at IS NULL", (unit["id"], candidate_id)).fetchall():
+                self._resolve(db, command, gate[0], {"reason": reason}, resolution="superseded")
+            self._event(db, command, "candidate_superseded", {"candidate_id": candidate_id, "reason": reason, "evidence": evidence})
+        db.execute("UPDATE units SET current_candidate_id = NULL, primary_gate_id = NULL, state = 'building' WHERE id = ?", (unit["id"],))
+        db.execute("UPDATE unit_issues SET state = 'pending' WHERE unit_id = ? AND left_at IS NULL", (unit["id"],))
+        self._event(db, command, "phase_changed", {"before": unit["state"], "after": "building", "reason": reason})
+
+    def invalidate_candidate(self, command, candidate_id, *, reason, evidence):
+        """Invalidate exact candidate facts without removing an operator pause."""
+        if reason not in {"base_changed", "requirements_changed", "candidate_changed", "merge_conflict"}:
+            raise TransitionError("unsupported invalidation reason")
+        if not isinstance(evidence, dict) or evidence.get("verified") is not True:
+            raise TransitionError("candidate invalidation requires verified evidence")
+        def change(db, unit):
+            if not candidate_id or candidate_id != unit["current_candidate_id"]:
+                raise TransitionError("invalidation must identify the current candidate")
+            self._invalidate(db, command, unit, reason, evidence)
+            return {"invalidated_candidate_id": candidate_id}
+        return self._apply(command, "invalidate_candidate", dict(candidate_id=candidate_id, reason=reason, evidence=evidence), change)
+
+    def reject_job(self, command, job_id, *, execution_fence, input_manifest, evidence):
+        """Record a candidate-bound technical rejection, charge once, then rework."""
+        if not isinstance(evidence, dict) or evidence.get("verdict") != "fail":
+            raise TransitionError("rejection requires a structured failing verdict")
+        payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest, evidence=evidence)
+        def change(db, unit):
+            job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
+            if job["role"] not in {"review", "audit"} or evidence.get("candidate_id") != job["candidate_id"]:
+                raise TransitionError("rejection must identify the review or audit candidate")
+            if not current:
+                self._result(db, command, job, evidence, "stale_failure")
+                return {"accepted": False, "charged": False}
+            self._singleton(db, unit)
+            self._result(db, command, job, evidence, "rejected")
+            db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,attempt_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,?,?,'fail',?,?,?)",
+                       (_id(command.request_id, "evidence"), unit["id"], job["candidate_id"], job["attempt_id"], job["role"], command.actor_id, self.clock(), _json(evidence)))
+            charge_id = _id(command.request_id, "charge")
+            db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','technical_rejection',?)", (charge_id, job["attempt_id"], self.clock()))
+            self._event(db, command, "budget_charged", {"charge_id": charge_id}, job_id=job_id)
+            self._invalidate(db, command, unit, "technical_rejection", evidence)
+            if _charges(db, unit) >= 3:
+                self._open_gate(db, command, "budget_exhausted", {"limit": 3})
+            return {"accepted": True, "charged": True, "phase": "building"}
+        return self._apply(command, "reject_job", payload, change)
+
+    def retry(self, command, *, evidence):
+        """An explicit operator retry creates a new budget epoch after cleanup."""
+        if not isinstance(evidence, dict) or evidence.get("approved") is not True:
+            raise TransitionError("retry requires an explicit operator approval")
+        def change(db, unit):
+            self._live(unit)
+            self._quiescent(db, unit["id"])
+            self._singleton(db, unit)
+            if _charges(db, unit) == 0:
+                raise TransitionError("there are no failures to retry")
+            self._fence(db, command)
+            for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id = ? AND code IN ('budget_exhausted','recovery_pending') AND resolved_at IS NULL", (unit["id"],)).fetchall():
+                self._resolve(db, command, gate[0], {"retry": command.request_id})
+            db.execute("UPDATE units SET budget_generation = budget_generation + 1 WHERE id = ?", (unit["id"],))
+            db.execute("UPDATE unit_issues SET state = 'pending' WHERE unit_id = ? AND left_at IS NULL AND state = 'failed'", (unit["id"],))
+            self._event(db, command, "budget_reset", {"before": unit["budget_generation"], "after": unit["budget_generation"] + 1, "evidence": evidence})
+            return {"budget_generation": unit["budget_generation"] + 1}
+        return self._apply(command, "retry", {"evidence": evidence}, change)
+
+    def reconcile_recovery(self, command, job_id, *, evidence, reverse_charge=False):
+        """Complete a verified recovery after cleanup; preserve unrelated gates."""
+        if not isinstance(evidence, dict) or evidence.get("verified") is not True or type(reverse_charge) is not bool:
+            raise TransitionError("recovery requires verified structured evidence")
+        def change(db, unit):
+            self._live(unit)
+            job = db.execute("SELECT * FROM jobs WHERE id = ? AND unit_id = ?", (job_id, unit["id"])).fetchone()
+            if job is None or not job["cleanup"] or job["outcome"] != "failure":
+                raise TransitionError("recovery requires a cleaned failed assignment")
+            gates = [g for g in _gates(db, unit["id"]) if g["code"] == "recovery_pending" and json.loads(g["details_json"]).get("job_id") == job_id]
+            if not gates:
+                raise TransitionError("assignment has no pending recovery")
+            if reverse_charge:
+                charge = db.execute("SELECT id FROM budget_entries WHERE attempt_id = ? AND kind = 'charge'", (job["attempt_id"],)).fetchone()
+                if charge is None:
+                    raise TransitionError("assignment has no charge to correct")
+                db.execute("INSERT INTO budget_entries(id,attempt_id,kind,corrects_id,reason_code,created_at) VALUES(?,?,'correction',?,'verified_recovery',?)", (_id(command.request_id, "correction"), job["attempt_id"], charge[0], self.clock()))
+                self._event(db, command, "budget_corrected", {"charge_id": charge[0], "evidence": evidence})
+                if _charges(db, unit) < 3:
+                    for gate in _gates(db, unit["id"]):
+                        if gate["code"] == "budget_exhausted":
+                            self._resolve(db, command, gate["id"], {"charge_correction": charge[0]})
+            for gate in gates:
+                self._resolve(db, command, gate["id"], evidence)
+            if job["member_id"]:
+                db.execute("UPDATE unit_issues SET state = 'pending' WHERE id = ? AND state = 'failed'", (job["member_id"],))
+            return {"recovered_job_id": job_id, "corrected": reverse_charge}
+        return self._apply(command, "reconcile_recovery", dict(job_id=job_id, evidence=evidence, reverse_charge=reverse_charge), change)
+
+    @staticmethod
+    def _remote_time(value):
+        if not isinstance(value, str):
+            raise TransitionError("observation needs an ISO 8601 remote timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise TransitionError("observation timestamp is invalid") from error
+        if parsed.tzinfo is None:
+            raise TransitionError("observation timestamp must include its timezone")
+        return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+    def observe_issue(self, command, issue_id, *, state, title, body, requirements,
+                      remote_updated_at, generation, state_reason=None, labels=(), assignees=()):
+        """Apply an ordered authoritative observation to a current or historical member.
+
+        Reopening updates GitHub facts only. A terminal unit stays terminal; the
+        operator may subsequently admit the issue into a new unit.
+        """
+        remote_updated_at = self._remote_time(remote_updated_at)
+        if state not in {"open", "closed"} or type(generation) is not int or generation < 1:
+            raise TransitionError("observation requires a valid state and positive generation")
+        if state_reason not in {None, "completed", "not_planned", "duplicate", "reopened"}:
+            raise TransitionError("unknown GitHub closure reason")
+        if state == "open" and state_reason not in {None, "reopened"}:
+            raise TransitionError("open issue cannot retain a closure reason")
+        if not isinstance(title, str) or not isinstance(body, str) or not all(isinstance(v, str) for v in (*labels, *assignees)):
+            raise TransitionError("issue text and observed identities must be strings")
+        payload = dict(issue_id=issue_id, state=state, title=title, body=body, requirements=requirements,
+                       remote_updated_at=remote_updated_at, generation=generation, state_reason=state_reason,
+                       labels=sorted(set(labels)), assignees=sorted(set(assignees)))
+        def change(db, unit):
+            old = db.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
+            member = db.execute("SELECT * FROM unit_issues WHERE unit_id = ? AND issue_id = ? ORDER BY joined_at DESC LIMIT 1", (unit["id"], issue_id)).fetchone()
+            owner = db.execute("SELECT unit_id FROM unit_issues WHERE issue_id = ? AND left_at IS NULL", (issue_id,)).fetchone()
+            if old is None or member is None or (owner and owner[0] != unit["id"]):
+                raise TransitionError("observation must use the issue's current owning unit")
+            old_order = (self._remote_time(old["remote_updated_at"]) if old["remote_updated_at"] else "", old["collection_generation"])
+            new_order = (remote_updated_at, generation)
+            if new_order < old_order:
+                return {"issue_id": issue_id, "stale": True, "revision_id": old["current_revision_id"]}
+            content_hash, requirements_hash = manifest_hash([title, body]), manifest_hash(requirements)
+            revision = db.execute("SELECT * FROM issue_revisions WHERE id = ?", (old["current_revision_id"],)).fetchone()
+            changed = (state != old["github_state"] or state_reason != old["state_reason"] or content_hash != revision["content_hash"]
+                       or requirements_hash != revision["requirements_hash"] or payload["labels"] != json.loads(old["labels_json"])
+                       or payload["assignees"] != json.loads(old["assignees_json"]))
+            if new_order == old_order:
+                if changed:
+                    raise TransitionError("conflicting observations share the same ordering identity")
+                return {"issue_id": issue_id, "stale": False, "unchanged": True, "revision_id": old["current_revision_id"]}
+            existing = db.execute("SELECT id FROM issue_revisions WHERE issue_id = ? AND content_hash = ? AND requirements_hash = ?", (issue_id, content_hash, requirements_hash)).fetchone()
+            revision_id = existing[0] if existing else _id(command.request_id, "revision")
+            if not existing:
+                db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)", (revision_id, issue_id, title, body, content_hash, requirements_hash, _json(requirements), self.clock()))
+            db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, version = version + 1 WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), self.clock(), issue_id))
+            if member["left_at"] is None and unit["state"] not in TERMINAL:
+                if requirements_hash != revision["requirements_hash"]:
+                    ambiguous = db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone()
+                    if ambiguous or len(self._members(db, unit["id"])) != 1:
+                        self._fence(db, command)
+                        if not any(g["code"] == "membership_decision" and g["member_id"] == member["id"] for g in _gates(db, unit["id"])):
+                            self._open_gate(db, command, "membership_decision", {"reason": "requirements_changed", "revision_id": revision_id}, member["id"])
+                    else:
+                        db.execute("UPDATE unit_issues SET requirements_revision_id = ? WHERE id = ?", (revision_id, member["id"]))
+                        db.execute("UPDATE units SET membership_generation = membership_generation + 1 WHERE id = ?", (unit["id"],))
+                        self._invalidate(db, command, unit, "requirements_changed", {"issue_id": issue_id, "revision_id": revision_id})
+                if state == "closed" and old["github_state"] != "closed":
+                    self._fence(db, command)
+                matching_hold = [g for g in _gates(db, unit["id"]) if g["code"] == "label_hold" and g["member_id"] == member["id"]]
+                held = any(label in {"hold", "blocked"} for label in payload["labels"])
+                if held and not matching_hold:
+                    self._open_gate(db, command, "label_hold", {"source": "github_labels", "issue_id": issue_id}, member["id"])
+                elif not held:
+                    for gate in matching_hold:
+                        if json.loads(gate["details_json"]).get("source") == "github_labels":
+                            self._resolve(db, command, gate["id"], {"observed_at": self.clock(), "labels": payload["labels"]})
+            self._event(db, command, "issue_observed", payload, issue_id=issue_id)
+            return {"issue_id": issue_id, "stale": False, "revision_id": revision_id}
+        return self._apply(command, "observe_issue", payload, change)
+
+    def admit_known_issue(self, *, request_id, actor_id, unit_id, issue_id, expected_issue_version, base_branch="main"):
+        """Admit a reopened or previously released issue without reusing its old unit."""
+        command = Command(request_id, actor_id, unit_id, 1)
+        payload = dict(issue_id=issue_id, expected_issue_version=expected_issue_version, base_branch=base_branch)
+        with self._command_transaction(command, "admit_known_issue", payload) as db:
+            previous = self._replay(db, command, "admit_known_issue", payload)
+            if previous is not None:
+                return previous
+            issue = db.execute("SELECT i.*, r.enabled FROM issues i JOIN repositories r ON r.id = i.repository_id WHERE i.id = ?", (issue_id,)).fetchone()
+            if issue is None or issue["github_state"] != "open" or not issue["enabled"]:
+                raise TransitionError("admission requires an open issue in an enabled repository")
+            if issue["version"] != expected_issue_version:
+                raise VersionConflict("issue observation changed before admission")
+            if db.execute("SELECT 1 FROM unit_issues WHERE issue_id = ? AND left_at IS NULL", (issue_id,)).fetchone():
+                raise TransitionError("issue already belongs to a live unit")
+            member_id = self._create_unit(db, command, unit_id, issue, base_branch, issue["current_revision_id"])
+            return self._save(db, command, "admit_known_issue", payload, {"member_id": member_id, "revision_id": issue["current_revision_id"]}, initial=True)
+
+    def _create_unit(self, db, command, unit_id, issue, base_branch, revision_id):
+        if not all(isinstance(v, str) and v for v in (command.request_id, command.actor_id, unit_id, base_branch)):
+            raise TransitionError("admission identities must be nonempty")
+        member_id = _id(command.request_id, f"member:{unit_id}")
+        db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'queued',?,?)", (unit_id, issue["repository_id"], base_branch, self.clock(), self.clock()))
+        db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES(?,?,?,?,?,?,'pending',?)", (member_id, unit_id, issue["id"], issue["repository_id"], base_branch, revision_id, self.clock()))
+        child = Command(command.request_id, command.actor_id, unit_id, 1)
+        self._event(db, child, "issue_admitted", {"member_id": member_id, "revision_id": revision_id}, issue_id=issue["id"])
+        if any(label in {"hold", "blocked"} for label in json.loads(issue["labels_json"])):
+            self._open_gate(db, child, "label_hold", {"source": "github_labels", "issue_id": issue["id"]}, member_id)
+        return member_id
+
+    def adopt_candidate(self, command, candidate, *, evidence):
+        """Approve an existing PR for a quiescent singleton; review still must run."""
+        if not isinstance(candidate, Candidate) or not isinstance(evidence, dict) or evidence.get("approved") is not True or evidence.get("verified") is not True:
+            raise TransitionError("existing candidate needs operator approval and verified publication")
+        def change(db, unit):
+            self._live(unit)
+            self._quiescent(db, unit["id"])
+            member = self._singleton(db, unit)
+            if unit["state"] not in {"queued", "building"} or unit["current_candidate_id"] is not None:
+                raise TransitionError("existing PR adoption requires a candidate-less unit")
+            if applicable_gates(db, unit, member["id"]):
+                raise TransitionError("unit is blocked from adopting a candidate")
+            revision = db.execute("SELECT requirements_hash FROM issue_revisions WHERE id = ?", (member["requirements_revision_id"],)).fetchone()
+            if candidate.requirements_hash != revision[0] or any(evidence.get(k) != getattr(candidate, k) for k in ("pull_number", "head_oid", "base_oid", "policy_hash", "input_manifest_hash")):
+                raise TransitionError("existing PR evidence does not match the approved candidate")
+            candidate_id = _id(command.request_id, "candidate")
+            db.execute("INSERT INTO candidates(id,unit_id,pull_number,branch,head_oid,base_oid,policy_hash,requirements_hash,membership_generation,input_manifest_hash,accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (candidate_id, unit["id"], candidate.pull_number, candidate.branch, candidate.head_oid, candidate.base_oid, candidate.policy_hash, candidate.requirements_hash, unit["membership_generation"], candidate.input_manifest_hash, self.clock()))
+            db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,'publication','pass',?,?,?)", (_id(command.request_id, "evidence"), unit["id"], candidate_id, command.actor_id, self.clock(), _json(evidence)))
+            db.execute("UPDATE units SET state = 'reviewing', current_candidate_id = ? WHERE id = ?", (candidate_id, unit["id"]))
+            db.execute("UPDATE unit_issues SET state = 'built' WHERE id = ?", (member["id"],))
+            self._event(db, command, "candidate_selected", {"candidate_id": candidate_id, "source": "operator_existing_pr"})
+            return {"candidate_id": candidate_id}
+        return self._apply(command, "adopt_candidate", {"candidate": asdict(candidate), "evidence": evidence}, change)
+
+    @staticmethod
+    def _prove_not_merged(db, unit, evidence):
+        if unit["current_candidate_id"] is None:
+            return
+        candidate = db.execute("SELECT * FROM candidates WHERE id = ?", (unit["current_candidate_id"],)).fetchone()
+        if (evidence.get("verified") is not True or evidence.get("merged") is not False
+                or evidence.get("candidate_id") != candidate["id"]
+                or evidence.get("pull_number") != candidate["pull_number"]
+                or evidence.get("head_oid") != candidate["head_oid"]
+                or not isinstance(evidence.get("observed_at"), (int, float))
+                or evidence["observed_at"] < candidate["accepted_at"]):
+            raise TransitionError("ending candidate work requires a fresh confirmed unmerged observation")
+
+    def _settle(self, db, command, unit, target, *, close_code=None, merge_sha=None):
+        for gate in _gates(db, unit["id"]):
+            self._resolve(db, command, gate["id"], {"terminal_state": target}, resolution="superseded")
+        self._fence(db, command)
+        for member in self._members(db, unit["id"]):
+            db.execute("UPDATE unit_issues SET state = ?, left_at = ?, exit_reason = ? WHERE id = ?", ("done" if target == "merged" else "removed", self.clock(), target, member["id"]))
+            self._event(db, command, "membership_changed", {"member_id": member["id"], "exit_reason": target}, issue_id=member["issue_id"])
+        db.execute("UPDATE units SET state = ?, close_code = ?, merge_sha = ?, primary_gate_id = NULL WHERE id = ?", (target, close_code, merge_sha, unit["id"]))
+        self._event(db, command, target, {"close_code": close_code, "merge_sha": merge_sha})
+
+    def confirm_merged(self, command, candidate_id, *, merge_sha, evidence):
+        """Record a confirmed remote merge, including a human merge during review."""
+        if not isinstance(merge_sha, str) or not merge_sha or not isinstance(evidence, dict) or evidence.get("verified") is not True:
+            raise TransitionError("merge confirmation requires independently verified evidence")
+        def change(db, unit):
+            self._live(unit)
+            if candidate_id != unit["current_candidate_id"] or unit["state"] not in {"reviewing", "auditing", "merging"}:
+                raise TransitionError("merge confirmation must identify the current candidate")
+            self._quiescent(db, unit["id"], allow_confirmed_merge=True)
+            identity = db.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
+            if evidence.get("merge_sha") != merge_sha or evidence.get("merged") is not True or any(evidence.get(k) != identity[k] for k in ("pull_number", "head_oid", "base_oid")):
+                raise TransitionError("merge receipt does not match the exact candidate")
+            db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,'merge','pass',?,?,?)", (_id(command.request_id, "evidence"), unit["id"], candidate_id, command.actor_id, self.clock(), _json(evidence)))
+            for request in db.execute("SELECT id,effect_id FROM merge_requests WHERE unit_id = ? AND candidate_id = ? AND status IN ('pending','uncertain')", (unit["id"], candidate_id)).fetchall():
+                db.execute("UPDATE merge_requests SET status = 'merged', merge_oid = ? WHERE id = ?", (merge_sha, request["id"]))
+                db.execute("UPDATE external_effects SET status = 'confirmed', receipt_json = ?, updated_at = ? WHERE id = ?", (_json(evidence), self.clock(), request["effect_id"]))
+            # The receipt reconciles only this candidate's merge intent. Any
+            # unrelated uncertain external effect still needs reconciliation.
+            self._quiescent(db, unit["id"])
+            self._settle(db, command, unit, "merged", merge_sha=merge_sha)
+            return {"merge_sha": merge_sha}
+        return self._apply(command, "confirm_merged", dict(candidate_id=candidate_id, merge_sha=merge_sha, evidence=evidence), change)
+
+    def close_unit(self, command, *, close_code, evidence):
+        """End a singleton after cleanup, with a confirmed cause; stop uses pause."""
+        if close_code not in codes.CLOSE_CODES or close_code == "combined" or not isinstance(evidence, dict) or not evidence:
+            raise TransitionError("unsupported singleton closure or missing evidence")
+        def change(db, unit):
+            self._live(unit)
+            self._quiescent(db, unit["id"])
+            self._prove_not_merged(db, unit, evidence)
+            member = self._singleton(db, unit)
+            issue = db.execute("SELECT * FROM issues WHERE id = ?", (member["issue_id"],)).fetchone()
+            if close_code.startswith("github_"):
+                reason = close_code.removeprefix("github_")
+                if issue["github_state"] != "closed" or issue["state_reason"] != reason or evidence.get("issue_version") != issue["version"]:
+                    raise TransitionError("closure must match the current authoritative issue observation")
+            elif evidence.get("approved") is not True:
+                raise TransitionError("operator closure requires explicit approval")
+            self._settle(db, command, unit, "closed", close_code=close_code)
+            return {"close_code": close_code}
+        return self._apply(command, "close_unit", dict(close_code=close_code, evidence=evidence), change)
+
+    def dissolve(self, command, *, evidence):
+        """Explicitly release a quiescent batch into new singleton deliveries."""
+        if not isinstance(evidence, dict) or evidence.get("approved") is not True:
+            raise TransitionError("dissolve requires explicit operator approval")
+        def change(db, unit):
+            self._live(unit)
+            self._quiescent(db, unit["id"])
+            self._prove_not_merged(db, unit, evidence)
+            members = self._members(db, unit["id"])
+            if len(members) < 2:
+                raise TransitionError("only a batch can be dissolved")
+            issues = [dict(db.execute("SELECT * FROM issues WHERE id = ?", (m["issue_id"],)).fetchone()) for m in members]
+            if any(issue["github_state"] != "open" for issue in issues):
+                raise TransitionError("closed members require an explicit membership decision before dissolve")
+            retained_intent = [gate for gate in _gates(db, unit["id"]) if gate["code"] in {"operator_pause", "operator_backlog"}]
+            self._settle(db, command, unit, "dissolved")
+            released = []
+            for member, issue in zip(members, issues):
+                child_id = _id(command.request_id, f"unit:{member['id']}")
+                child_member = self._create_unit(db, command, child_id, issue, unit["base_branch"], member["requirements_revision_id"])
+                child_command = Command(command.request_id, command.actor_id, child_id, 1)
+                for gate in retained_intent:
+                    self._open_gate(db, child_command, gate["code"], {"source_unit_id": unit["id"], "source_gate_id": gate["id"]})
+                self._event(db, Command(command.request_id, command.actor_id, child_id, 1), "membership_changed", {"source_unit_id": unit["id"], "source_member_id": member["id"], "member_id": child_member}, issue_id=issue["id"])
+                released.append({"unit_id": child_id, "member_id": child_member, "issue_id": issue["id"]})
+            return {"released": released}
+        return self._apply(command, "dissolve", {"evidence": evidence}, change)

@@ -37,9 +37,9 @@ class StoreQueryTests(unittest.TestCase):
         for number in range(1, 5):
             unit = f'u{number}'
             db.execute(
-                'INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) '
-                "VALUES(?,1,'main',?,1,1)",
-                (unit, 'closed' if number == 4 else 'queued'),
+                'INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at,close_code) '
+                "VALUES(?,1,'main',?,1,1,?)",
+                (unit, 'closed' if number == 4 else 'queued', 'operator_closed' if number == 4 else None),
             )
             db.execute(
                 'INSERT INTO events(transaction_id,unit_id,kind,at,payload_json) '
@@ -93,16 +93,16 @@ class StoreQueryTests(unittest.TestCase):
         self.assertFalse(any('SELECT content' in sql for sql in self.store.statements))
         self.assertEqual(self.queries.artifact('j1', 'output', 1).content, b'second output')
         with self.assertRaises(KeyError):
-            self.queries.artifact('j1', 'missing')
+            self.queries.artifact('j1', 'output', 99)
 
     def test_corrupt_artifact_is_not_returned(self):
         self.store.connection.execute(
             'INSERT INTO job_artifacts(job_id,kind,sequence,media_type,digest,content,size) '
-            "VALUES('j1','bad',0,'text/plain',?,X'00',1)", ('0' * 64,),
+            "VALUES('j1','result',0,'text/plain',?,X'00',1)", ('0' * 64,),
         )
         self.store.connection.commit()
         with self.assertRaises(ArtifactCorrupt):
-            self.queries.artifact('j1', 'bad')
+            self.queries.artifact('j1', 'result')
 
     def test_limits_and_cursors_are_validated(self):
         for limit in (0, -1, 101, True, 1.5, '10'):
