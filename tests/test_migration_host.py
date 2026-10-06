@@ -60,3 +60,17 @@ class HostTests(unittest.TestCase):
         with self.assertRaisesRegex(MigrationError,'maintenance_resume_required'):
             self.host.capture(self.root/'snapshot','same')
         self.assertEqual(self.calls,[])
+
+    def test_plan_reports_unqualified_sqlite_without_blocking_a_safe_capture(self):
+        from types import SimpleNamespace
+        host=Host(self.root,self.root/'source',run=lambda *args,**kwargs:SimpleNamespace(returncode=1,stdout=''))
+        host.identity=lambda:'revision'
+        host.units=lambda:[]
+        ledger=dict(version=1,issues={},jobs={},slots={},events=[])
+        with patch('forge.store.migration.host.sources',return_value={'state/factory/factory-ledger.json':json.dumps(ledger).encode()}), \
+                patch('forge.store.migration.host.qualified_sqlite',return_value=False):
+            plan=host.inspect()
+        self.assertEqual(plan['blockers'],[])
+        self.assertEqual(plan['cutover_blockers'],['sqlite_unqualified'])
+        self.assertFalse(plan['activation'])
+        self.assertGreater(plan['free_bytes'],0)

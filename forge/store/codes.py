@@ -154,6 +154,7 @@ ARTIFACT_KINDS = {
     'live_tail': 'raw',
     'ci_transcript': 'raw',
     'launch_input': 'durable',
+    'failure_evidence': 'durable',
     'input_manifest': 'durable',
     'result': 'durable',
     'summary': 'durable',

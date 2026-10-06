@@ -64,6 +64,14 @@ def normalize(importer):
     settings=importer.source.json('factory.json',{})
     configured={r['id']:r for r in settings.get('repositories',[])}
     repositories={int(k):v['name'] for k,v in inventory.get('repositories',{}).items()}
+    access=importer.source.json('state/github-access/repositories.json',{}).get('repositories',{})
+    operations=importer.source.json('state/client-operations/operations.json',{})
+    for repo in [*settings.get('repositories',[]), *({'id':int(key),**value} for key,value in access.items()),
+                 *(value['request']['repository'] for value in operations.values())]:
+        if repo.get('name'):
+            if repo['id'] in repositories and repositories[repo['id']]!=repo['name']:
+                raise MigrationError('repository_identity_conflict')
+            repositories[repo['id']]=repo['name']
     for issue in ledger['issues'].values():
         if issue['repo_id'] in repositories and repositories[issue['repo_id']]!=issue['repo']:
             raise MigrationError('repository_identity_conflict')
@@ -97,10 +105,11 @@ def normalize(importer):
         assignees=[v['login'] if isinstance(v,dict) else v for v in facts.get('assignees',[])]
         insert(db,'issues',id=key,repository_id=repo,github_number=facts['number'],github_state=state,
                state_reason=reason,current_revision_id=revision,remote_updated_at=facts.get('updated_at'),
-               observed_at=at,labels_json=encode(labels).decode(),assignees_json=encode(assignees).decode())
+               observed_at=at,labels_json=encode(labels).decode(),assignees_json=encode(assignees).decode(),
+               assignee_types_json=encode(facts.get('assignee_types',{})).decode())
         insert(db,'issue_revisions',id=revision,issue_id=key,title=facts.get('title',''),body=body,
                content_hash=manifest_hash([facts.get('title',''),body]),requirements_hash=requirement_hash,
-               requirements_json=encode({'legacy_body_hash':requirement_hash}).decode(),observed_at=at)
+               requirements_json=encode({'legacy_body_hash':requirement_hash,'body_truncated':bool(facts.get('body_truncated'))}).decode(),observed_at=at)
         if facts.get('body_truncated'):
             finding(db,importer,key,'truncated_observation')
         if item:
@@ -160,7 +169,7 @@ def normalize(importer):
                                ('ownership_wait','ownership_conflict'),('blocked_dependencies','dependency'),
                                ('decision_request','decision_required')]:
                 if item.get(field):
-                    gate(db,unit,code,item['created_at'],{'legacy_field':field})
+                    gate(db,unit,code,item['created_at'],{'legacy_field':field,'value':item[field]})
             if Ledger.failure_count(item)>=3:
                 gate(db,unit,'budget_exhausted',item['created_at'])
             if item.get('retry_after'):
@@ -232,12 +241,23 @@ def normalize(importer):
     batches(importer,'normalized:evidence',sorted(ledger['issues'].items()),add_evidence)
     def add_event(db,event):
         key=event.get('issue'); sequence=event['sequence']
-        payload={'legacy_kind':event['kind'],'source':LEDGER,'source_record':['events',sequence-1],'digest':digest(encode(event))}
+        payload={'legacy_kind':event['kind'],'source':LEDGER,'source_record':['events',sequence-1],
+                 'digest':digest(encode(event)),'legacy':event}
         insert(db,'events',sequence=sequence,transaction_id='legacy:event:'+str(sequence),unit_id='legacy:unit:'+key if key else None,
                issue_id=key,kind='legacy_event',at=event['at'],payload_json=encode(payload).decode())
     if [e['sequence'] for e in ledger['events']] != list(range(1,len(ledger['events'])+1)):
         raise MigrationError('legacy_event_sequence_invalid')
     batches(importer,'normalized:events',ledger['events'],add_event)
+    from .supporting import normalize as supporting
+    mapped=supporting(importer,ledger,inventory)
+    from .configuration import normalize as configuration
+    mapped.update(configuration(importer))
+    from .identity import normalize as identity
+    mapped.update(identity(importer))
+    from .operational import normalize as operational
+    mapped.update(operational(importer))
+    from .context import normalize as context
+    context(importer,ledger)
     with importer.store.write() as db:
         for key,item in ledger['issues'].items():
             view=project_unit(db,'legacy:unit:'+key)
@@ -246,5 +266,5 @@ def normalize(importer):
             primary=view['current_blocker']
             db.execute('UPDATE units SET primary_gate_id=? WHERE id=?',(primary['id'] if primary else None,view['id']))
         for name,row in importer.source.entries.items():
-            if name not in (LEDGER,INVENTORY) and row['domain'] not in ('diagnostic','independent_observer') and not name.endswith('.initialized'):
+            if name not in mapped | {LEDGER,INVENTORY} and row['domain'] not in ('diagnostic','independent_observer') and not name.endswith('.initialized'):
                 finding(db,importer,name,'domain_mapping_pending')

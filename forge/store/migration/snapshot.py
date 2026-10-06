@@ -129,6 +129,20 @@ def sources(root):
     return result
 
 
+def uncleaned_auxiliary(data):
+    """Count every known auxiliary execution owner, including setup/reset probes."""
+    jobs = []
+    def value(name):
+        return decode(data[name]) if name in data else {}
+    jobs.extend(row.get('job') for row in value('state/deployments.json').get('repositories',{}).values())
+    jobs.extend(row.get('job') for row in value('state/issues/discussions.json').values())
+    setup = value('state/onboarding/setup.json')
+    jobs.extend(setup.get('probe_jobs',[]))
+    jobs.extend((setup.get('operation') or {}).get('jobs',[]))
+    jobs.append(value('state/discussion-qualification.json').get('job'))
+    return sum(1 for job in jobs if isinstance(job,dict) and not job.get('cleanup',False))
+
+
 @contextmanager
 def operation_lock(root, name='.migration.lock'):
     path = Path(root)/name
@@ -161,7 +175,7 @@ def capture(root, destination, *, source_revision, storage_generation, quiescent
         from ...factory.ledger import Ledger
         ledger = decode(data['state/factory/factory-ledger.json'])
         Ledger.validate(ledger)
-        if ledger['slots'] or any(not j['cleanup'] for j in ledger['jobs'].values()):
+        if ledger['slots'] or any(not j['cleanup'] for j in ledger['jobs'].values()) or uncleaned_auxiliary(data):
             raise MigrationError('uncleaned_jobs')
         destination.mkdir(mode=0o700)  # Explicitly new; never overwrite an earlier capture.
         os.chmod(destination, 0o700)

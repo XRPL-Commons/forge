@@ -153,10 +153,21 @@ class Importer:
                       ('import_records','repositories','issues','units','jobs','job_artifacts','events','budget_entries')}
             findings = [dict(row) for row in db.execute('SELECT code,blocking,count(*) AS count FROM import_findings WHERE run_id=? GROUP BY code,blocking', (self.run_id,))]
         from .parity import check
+        from .supporting_parity import check as supporting_check
+        from .configuration import check as configuration_check
+        from .identity_parity import check as identity_check
+        from .operational_parity import check as operational_check
+        from .context import check as context_check
         semantic_checks = check(self)
+        supporting_checks = supporting_check(self)
+        supporting_checks.update(configuration_check(self))
+        supporting_checks.update(identity_check(self))
+        supporting_checks.update(operational_check(self))
+        supporting_checks.update(context_check(self))
         report = dict(status='staged', activation_allowed=False, source_manifest=self.run_id,
                       source_files=verified, source_bytes=sum(r['size'] for r in self.source.entries.values()),
-                      source_parity_mismatches=0, normalized_checks=semantic_checks, public_view_parity='pending', rows=counts, findings=findings,
+                      source_parity_mismatches=0, normalized_checks=semantic_checks, supporting_checks=supporting_checks,
+                      public_view_parity='pending', rows=counts, findings=findings,
                       database_bytes=self.store.path.stat().st_size,
                       validation_seconds=round(time.monotonic()-started,4))
         with self.store.write() as db:

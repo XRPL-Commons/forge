@@ -11,6 +11,14 @@ from forge_client.migration import bundle
 
 
 class MigrationCLITests(unittest.TestCase):
+    def test_runtime_preparation_requires_apply_and_never_invokes_capture(self):
+        values=['migrate','prepare','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
+        with patch('forge_client.migration.call',return_value={'status':'runtime_ready'}) as call:
+            with self.assertRaises(SetupError):execute(parser().parse_args(values))
+            call.assert_not_called()
+            self.assertEqual(execute(parser().parse_args([*values,'--apply'])),{'status':'runtime_ready'})
+            self.assertEqual(call.call_args.args[1],'prepare')
+
     def test_capture_requires_explicit_apply_before_any_remote_call(self):
         args=parser().parse_args(['migrate','capture','--ssh','forge','--source','/srv/source','--root','/srv/runtime','--snapshot','/private/tmp/new-snapshot'])
         with patch('forge_client.migration.call') as call:

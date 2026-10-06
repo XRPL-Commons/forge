@@ -3,12 +3,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import sqlite3
 import subprocess
 import time
 
-from .snapshot import MigrationError, capture, sources, decode, encode, digest, read_regular, operation_lock
+from .snapshot import MigrationError, capture, sources, decode, encode, digest, read_regular, operation_lock, uncleaned_auxiliary
 from ...state import atomic_json
-from ..db import _fsync_directory
+from ..db import _fsync_directory, qualified_sqlite
 from ...factory.ledger import Ledger
 
 
@@ -41,15 +43,7 @@ class Host:
         data=sources(self.root)
         ledger=decode(data['state/factory/factory-ledger.json'])
         Ledger.validate(ledger)
-        auxiliary=0
-        for name in ('state/deployments.json','state/issues/discussions.json'):
-            def count(value):
-                if not isinstance(value,dict):
-                    return 0
-                if isinstance(value.get('job'),dict) and not value['job'].get('cleanup',False):
-                    return 1
-                return sum(count(v) for v in value.values() if isinstance(v,dict))
-            auxiliary+=count(decode(data[name])) if name in data else 0
+        auxiliary=uncleaned_auxiliary(data)
         blockers=[]
         try:
             cron=self.run(['crontab','-l'],capture_output=True,text=True,timeout=10)
@@ -63,9 +57,16 @@ class Host:
             blockers.append('uncleaned_jobs')
         revision_hash=digest(encode({'source_revision':revision,'units':self.units(),
                                     'root':str(self.root),'sources':{n:digest(raw) for n,raw in sorted(data.items())}}))
+        from .runtime import inspect as runtime_inspect
+        prepared=runtime_inspect(self.root)
         return dict(status='blocked' if blockers else 'planned',plan=revision_hash,source_revision=revision,
                     source_files=len(data),source_bytes=sum(len(v) for v in data.values()),
-                    services=self.units(),blockers=blockers,effects=['Stop Forge API/UI and background writers briefly',
+                    services=self.units(),blockers=blockers,
+                    sqlite_version=sqlite3.sqlite_version,sqlite_qualified=qualified_sqlite(),
+                    prepared_sqlite=prepared,
+                    free_bytes=shutil.disk_usage(self.root).free,
+                    cutover_blockers=[] if qualified_sqlite() or prepared else ['sqlite_unqualified'],
+                    effects=['Stop Forge API/UI and background writers briefly',
                     'Capture and hash a private diagnostic snapshot','Restore previously active services'],activation=False)
 
     def quiet(self):
@@ -139,6 +140,10 @@ def run(request):
     host=Host(request['root'],request['source'])
     if request['action']=='plan':
         return host.inspect()
+    if request['action']=='prepare':
+        host.identity()  # Bind the explicit runtime root to the managed host.
+        from .runtime import prepare
+        return prepare(host.root)
     if request['action']=='resume':
         return host.restore()
     if request['action']=='capture':

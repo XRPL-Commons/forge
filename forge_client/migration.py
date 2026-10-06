@@ -55,7 +55,7 @@ def call(args,action,**fields):
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=300)
+    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action=='prepare' else 300)
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed','The host operation failed. Use forge migrate resume to restore services after an interrupted capture.')
     value=json.loads(result.stdout)
     require(value.get('ok') is True,'migration_'+str(value.get('error','failed')),'Migration could not proceed: '+str(value.get('error','failed')))
@@ -111,6 +111,9 @@ def execute(args):
         require(args.ssh and args.source and args.root,'migration_host_required','Select --ssh, --source and --root for this host.')
         if args.migration_command in ('plan','resume'):
             return call(args,args.migration_command)
+        if args.migration_command=='prepare':
+            require(args.apply,'migration_apply_required','Preparing the private SQLite runtime may install compiler dependencies. Supply --apply.')
+            return call(args,'prepare')
         require(args.apply and args.snapshot,'migration_apply_required','Capture briefly stops Forge writers. Supply --apply and a new --snapshot private directory.')
         require(not Path(args.snapshot).exists() and not Path(args.snapshot).is_symlink(),'snapshot_exists','Choose a new private snapshot directory; capture never replaces an earlier copy.')
         plan=call(args,'plan')
