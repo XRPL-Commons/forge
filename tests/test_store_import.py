@@ -101,6 +101,22 @@ class ImportTests(unittest.TestCase):
             self.assertEqual(view['state'],'closed');self.assertEqual(view['members'][0]['projected_state'],'done')
             self.assertIsNone(view['merge_sha'])
 
+    def test_candidate_verification_and_approval_keep_exact_candidate_scope(self):
+        self.issue['state']='approval_needed'
+        self.issue['candidate']=dict(pr=12,head='head',base='base',policy='policy',requirements='requirements-hash',
+                                    key='identity',build_attempt='build',accepted_at=12,branch='work')
+        self.issue['verification_request']=dict(candidate='identity',ci=[],what='Confirm behavior',created_at=13,resume_state='built')
+        self.issue['merge_gate']=dict(candidate='identity',kind='approval',reason='Approval pending')
+        self.ledger['jobs']['build']=dict(id='build',issue_key='1:1',role='build',cleanup=True,fenced=True,
+                          slot='slot',created_at=11,phase='cleaned',outcome='accepted',branch='work',target_branch='main')
+        importer=Importer(self.snapshot(),self.base/'staging');importer.run()
+        with importer.store.read_snapshot() as db:
+            gates=db.execute("SELECT code,candidate_id,details_json FROM unit_gates WHERE candidate_id IS NOT NULL ORDER BY code").fetchall()
+            self.assertEqual([g['code'] for g in gates],['approval_required','verification_human'])
+            self.assertTrue(all(g['candidate_id']=='legacy:candidate:identity' for g in gates))
+            self.assertEqual(json.loads(gates[1]['details_json']),self.issue['verification_request'])
+            self.assertEqual(db.execute('SELECT state FROM units').fetchone()[0],'reviewing')
+
     def test_staging_rejects_lifecycle_commands_and_parity_detects_changed_facts(self):
         from forge.store.transitions import Lifecycle
         from forge.store.models import Command,TransitionError

@@ -136,6 +136,13 @@ def normalize(importer):
                    if isinstance(h:=item.get(field),dict) and h.get('state') in PHASE]
             state=saved[0] if len(set(saved))==1 else None
         phase=PHASE.get(state,'queued')
+        verification=item.get('verification_request')
+        if original=='approval_needed' and verification:
+            resume=verification.get('resume_state')
+            if resume in ('built','reviewed'):
+                phase=PHASE[resume]
+            else:
+                finding(db,importer,key,'verification_resume_stage_missing')
         merge_sha=merge_receipts.get(key)
         if original=='merged' and merge_sha:
             phase='merged'
@@ -180,6 +187,24 @@ def normalize(importer):
             finding(db,importer,key,'ambiguous_legacy_cancelled')
         if candidate:
             add_candidate(db,unit,candidate,build,item['created_at'])
+        if not terminal:
+            current=db.execute('SELECT current_candidate_id FROM units WHERE id=?',(unit,)).fetchone()[0]
+            verification=item.get('verification_request')
+            if verification:
+                if current and verification.get('candidate')==candidate.get('key'):
+                    code='verification_ci' if verification.get('ci') else 'verification_human'
+                    gate(db,unit,code,verification.get('created_at') or item['created_at'],verification,candidate=current)
+                else:
+                    finding(db,importer,key,'verification_candidate_mismatch')
+            merge=item.get('merge_gate')
+            if merge and merge.get('kind')!='ready':
+                if current and merge.get('candidate')==candidate.get('key'):
+                    code='approval_required' if merge.get('kind')=='approval' else 'merge_checks'
+                    gate(db,unit,code,item['created_at'],merge,candidate=current)
+                else:
+                    finding(db,importer,key,'merge_gate_candidate_mismatch')
+            if original=='investigating' or any(f.get('investigation')=='pending' for f in item['failures']):
+                gate(db,unit,'recovery_pending',item['created_at'],{'source':LEDGER})
     def add_candidate(db,unit,candidate,build,at):
         required=('pr','head','base','policy','requirements','key')
         if not build or any(not candidate.get(k) for k in required):

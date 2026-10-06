@@ -64,6 +64,11 @@ def check(importer):
             require(row is not None and all(row[new]==value.get(old) for new,old in fields)
                     and decode(row['capabilities_json'])==value['capabilities'] and decode(row['scope_json'])==value['scope'],'identity_pairing')
             counts['client_pairings']+=1
+        expected_limits={('device','instance'):source['device_window']} if 'device_window' in source else {}
+        expected_limits.update({('lookup',key):value for key,value in source.get('connection_lookups',{}).items()})
+        actual_limits={(row['kind'],row['subject']):dict(start=row['window_start'],count=row['request_count'])
+                       for row in db.execute('SELECT * FROM auth_rate_limits')}
+        require(actual_limits==expected_limits,'authorization_rate_limit')
         if AUDIT in importer.source.entries:
             expected = [decode(line) for line in importer.source.read(AUDIT).splitlines() if line.strip()]
             rows = db.execute('SELECT * FROM operator_audit ORDER BY sequence').fetchall()

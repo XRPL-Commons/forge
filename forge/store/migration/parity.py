@@ -38,7 +38,8 @@ def check(importer):
             counters['jobs']+=1
         for event in source['events']:
             row=db.execute('SELECT * FROM events WHERE sequence=?',(event['sequence'],)).fetchone()
-            if row is None or row['at']!=event['at'] or row['issue_id']!=event['issue'] or decode(row['payload_json'])['digest']!=digest(encode(event)):
+            if (row is None or row['at']!=event['at'] or row['issue_id']!=event['issue']
+                    or decode(row['payload_json'])['digest']!=digest(encode(event)) or decode(row['payload_json'])['legacy']!=event):
                 raise MigrationError('event_parity_mismatch')
             counters['events']+=1
         for table,count in [('units',len(source['issues'])),('jobs',len(source['jobs'])),('events',len(source['events']))]:
