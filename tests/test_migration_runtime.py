@@ -30,6 +30,7 @@ class RuntimeTests(unittest.TestCase):
             if args==['make','install']:
                 (self.install/'lib').mkdir(parents=True)
                 (self.install/'lib/libsqlite3.so.0.8.6').write_bytes(b'qualified library fixture')
+                (self.install/'lib/libsqlite3.so.0').symlink_to('libsqlite3.so.0.8.6')
             return SimpleNamespace(returncode=0,stdout=json.dumps(dict(version='3.51.3',journal_mode='wal',synchronous=2,foreign_keys=1,integrity='ok')))
         self.run=run
         for name,value in [('sys.platform','linux'),('SOURCE_SHA',digest(self.source))]:
@@ -53,6 +54,14 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(MigrationError,'sqlite_source_digest_mismatch'):
             runtime.prepare(self.root,run=self.run,download=lambda *a,**k:io.BytesIO(b'wrong source'))
         self.assertEqual(self.calls,[])
+
+    def test_loader_cannot_follow_an_unverified_library_outside_the_runtime(self):
+        result=runtime.prepare(self.root,run=self.run,download=lambda *a,**k:io.BytesIO(self.source))
+        external=self.root/'external-library';external.write_bytes(b'unverified')
+        loader=Path(result['library_directory'])/'libsqlite3.so.0'
+        loader.unlink();loader.symlink_to(external)
+        with self.assertRaisesRegex(MigrationError,'sqlite_runtime_identity_mismatch'):
+            runtime.inspect(self.root,run=self.run)
 
     def test_failed_qualification_never_publishes_a_runtime(self):
         def run(args,**kwargs):

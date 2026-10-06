@@ -37,6 +37,9 @@ with tempfile.TemporaryDirectory() as directory:
 def library_digests(prefix):
     files=sorted(path for path in (prefix/'lib').glob('libsqlite3.so.*') if path.is_file() and not path.is_symlink())
     if not files:raise MigrationError('sqlite_runtime_library_missing')
+    try:loaded=(prefix/'lib/libsqlite3.so.0').resolve(strict=True)
+    except OSError:raise MigrationError('sqlite_runtime_library_missing') from None
+    if loaded not in files:raise MigrationError('sqlite_runtime_identity_mismatch')
     return {path.name:digest(read_regular(path,limit=64*1024*1024)) for path in files}
 
 
@@ -113,6 +116,9 @@ def prepare(root, *, run=subprocess.run, download=urllib.request.urlopen):
             for path in install.rglob('*'):
                 if path.is_file() and not path.is_symlink():
                     with path.open('rb') as stream:os.fsync(stream.fileno())
+            directories=[path for path in install.rglob('*') if path.is_dir() and not path.is_symlink()]
+            for path in sorted(directories,key=lambda path:len(path.parts),reverse=True):_fsync_directory(path)
+            _fsync_directory(install)
             os.rename(install,target)
             _fsync_directory(directory)
             qualify(target,run=run)
