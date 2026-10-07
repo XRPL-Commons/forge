@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-export default async function (page, { base, requests }) {
+export default async function (page, { base, requests, discussionTime }) {
   await page.addInitScript(() => { Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true }) })
   await page.goto(base + '/issues/1:610')
   await page.getByRole('button', { name: 'Discuss blocker', exact: true }).click()
@@ -44,6 +44,7 @@ export default async function (page, { base, requests }) {
   assert.equal((await discussionPosts()).length, 0)
   // Enter sends; while the reply is in progress the submit becomes a stop
   // button that cancels it.
+  await discussionTime(0)
   await prompt.fill('Look again (hold)')
   await prompt.press('Enter')
   // First Forge looks for someone available, and says why it is still looking.
@@ -53,6 +54,7 @@ export default async function (page, { base, requests }) {
   assert.match(await finding.locator('[data-finding-reason]').innerText(), /one runs at a time · waiting \d+ s/)
   await page.screenshot({ path: '/tmp/forge-conversation-finding.png' })
   // Then someone joins, with a face and a name, and says what it is doing.
+  await discussionTime(1300)
   const joined = page.locator('[data-presence][data-phase="joined"]')
   await joined.waitFor()
   assert.match(await joined.locator('[data-presence-title]').innerText(), /^Ember joined · Claude Sonnet 4\.6 · \d+ s$/)
@@ -69,7 +71,9 @@ export default async function (page, { base, requests }) {
   }), 'the worker has feet')
   // Which kind of answer is coming: from the saved evidence until it opens the code.
   await joined.locator('[data-mode][data-answer-mode="evidence"]').getByText('Answering from saved evidence').waitFor()
+  await discussionTime(2000)
   await joined.locator('[data-activity]').getByText('Ember is reading issue #610').waitFor()
+  await discussionTime(2700)
   await joined.locator('[data-current]').getByText('Ember is searching the repository for `producer`').waitFor()
   await joined.locator('[data-mode][data-answer-mode="code"]').getByText('Checking the code').waitFor()
   assert.equal(await joined.locator('[data-slow]').count(), 0)
@@ -85,6 +89,7 @@ export default async function (page, { base, requests }) {
   assert.equal(await page.locator('[data-left] canvas[data-persona="Ember"]').getAttribute('data-mood'), 'left')
   assert.equal(await prompt.isDisabled(), false)
   assert.equal(await page.getByRole('button', { name: 'Cancel reply' }).count(), 0)
+  await discussionTime(null)
   await prompt.fill('Why did the last attempt fail?')
   await prompt.press('Enter')
   await page.locator('[data-proposal-action]').waitFor()

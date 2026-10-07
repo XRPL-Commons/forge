@@ -134,6 +134,13 @@ async function main() {
       const res = await fetch(`${MOCK_BASE}/__requests`)
       return res.json()
     }
+    async function discussionTime(elapsed) {
+      const res = await fetch(`${MOCK_BASE}/__discussion-time`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ elapsed }),
+      })
+      if (!res.ok) throw new Error('Invalid mock discussion time')
+    }
 
     const entries = await readdir(__dirname)
     const specNames = entries.filter((name) => name.endsWith('.spec.mjs') && (!process.env.FORGE_E2E_SPEC || name === process.env.FORGE_E2E_SPEC)).sort()
@@ -146,7 +153,7 @@ async function main() {
       const name = specName.replace(/\.spec\.mjs$/, '')
       try {
         const mod = await import(pathToFileURL(path.join(__dirname, specName)).href)
-        await mod.default(page, { base: APP_BASE, scenario, requests, accounts })
+        await mod.default(page, { base: APP_BASE, scenario, requests, accounts, discussionTime })
         log(`PASS ${name}`)
       } catch (error) {
         failures += 1
