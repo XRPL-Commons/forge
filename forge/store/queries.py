@@ -1,11 +1,13 @@
 """Bounded snapshot reads, with output fetched only by explicit artifact request."""
 import json
+import math
 
 from .artifacts import (
     Artifact, ArtifactCorrupt, ArtifactExpired, ArtifactTooLarge, Artifacts,
     MAX_ARTIFACT_SIZE,
 )
-from .transitions import project_unit
+from .transitions import project_unit, issue_state, applicable_gates, TERMINAL
+from . import status
 
 
 MAX_PAGE_SIZE = 100
@@ -31,6 +33,105 @@ class Queries:
     def unit(self, unit_id):
         with self.store.read_snapshot() as connection:
             return project_unit(connection, unit_id)
+
+    @staticmethod
+    def _issue(connection, issue_id, *, include_body=False):
+        # List pages never select requirements or issue bodies. These can be
+        # large, and belong to the explicit single-issue detail request.
+        body = ', r.body, r.requirements_json' if include_body else ''
+        row = connection.execute(
+            'SELECT i.*, r.title, r.content_hash, r.requirements_hash, p.full_name AS repository'
+            + body + ' FROM issues i JOIN issue_revisions r ON r.id=i.current_revision_id '
+            'JOIN repositories p ON p.id=i.repository_id WHERE i.id=?', (issue_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(issue_id)
+        issue = dict(row)
+        for field in ('labels', 'assignees', 'assignee_types'):
+            issue[field] = json.loads(issue.pop(field + '_json'))
+        if include_body:
+            issue['requirements'] = json.loads(issue.pop('requirements_json'))
+        member = connection.execute(
+            'SELECT * FROM unit_issues WHERE issue_id=? '
+            'ORDER BY (left_at IS NULL) DESC, joined_at DESC, id DESC LIMIT 1', (issue_id,),
+        ).fetchone()
+        unit = None
+        blocker = None
+        if member:
+            unit = dict(connection.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())
+            if member['left_at'] is None and unit['state'] not in TERMINAL:
+                gates = applicable_gates(connection, unit, member['id'], unit['current_candidate_id'])
+                blocker = gates[0] if gates else None
+            elif unit['state'] not in TERMINAL:
+                # A removed member does not inherit the still-running batch's phase.
+                unit = None
+        projected = issue_state(issue, unit, blocker, dict(member) if member else None)
+        current = bool(member and member['left_at'] is None and unit and unit['state'] not in TERMINAL)
+        lifecycle = dict(state=projected, unit_id=unit['id'] if current else None,
+                         unit_version=unit['version'] if current else None,
+                         member_id=member['id'] if current else None,
+                         historical_unit_id=member['unit_id'] if member and not current else None,
+                         stage_code=unit['state'] if current or projected == 'done' and unit and unit['state'] == 'merged' else None,
+                         reason_code=blocker['code'] if blocker else None,
+                         current_blocker=blocker,
+                         candidate_id=unit['current_candidate_id'] if current else None)
+        if projected in {'done', 'dropped', 'untracked'}:
+            lifecycle['display_status'] = {'done': 'Done', 'dropped': 'Dropped', 'untracked': 'Not queued'}[projected]
+        elif issue['github_state'] == 'closed' and issue['state_reason'] is None and blocker is None:
+            lifecycle.update(reason_code='observation_unavailable',
+                             display_status=status.describe('observation_unavailable'))
+        else:
+            lifecycle['display_status'] = status.describe(blocker['code'] if blocker else unit['state'])
+        issue['lifecycle'] = lifecycle
+        return issue
+
+    def issue(self, issue_id):
+        with self.store.read_snapshot() as connection:
+            return self._issue(connection, issue_id, include_body=True)
+
+    def issues(self, *, repository_id=None, after=None, limit=50, github_state=None):
+        limit = _limit(limit)
+        if repository_id is not None and (type(repository_id) is not int or repository_id < 1):
+            raise ValueError('repository_id must be a positive integer')
+        if github_state not in {None, 'open', 'closed'}:
+            raise ValueError('github_state must be open or closed')
+        clauses, parameters = [], []
+        if repository_id is not None:
+            clauses.append('repository_id=?')
+            parameters.append(repository_id)
+        if github_state is not None:
+            clauses.append('github_state=?')
+            parameters.append(github_state)
+        if after is not None:
+            if (not isinstance(after, (list, tuple)) or len(after) != 2
+                    or any(type(value) is not int or value < 1 for value in after)):
+                raise ValueError('issue cursor must contain repository ID and issue number')
+            clauses.append('(repository_id,github_number)>(?,?)')
+            parameters.extend(after)
+        where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+        with self.store.read_snapshot() as connection:
+            rows = connection.execute('SELECT id,repository_id,github_number FROM issues' + where
+                                      + ' ORDER BY repository_id,github_number LIMIT ?', (*parameters, limit + 1)).fetchall()
+            page = rows[:limit]
+            return dict(items=[self._issue(connection, row['id']) for row in page],
+                        next_cursor=[page[-1]['repository_id'], page[-1]['github_number']] if len(rows) > limit else None)
+
+    def jobs(self, unit_id, *, before=None, limit=20):
+        """Job metadata only; artifact bytes have a separate explicit query."""
+        limit = _limit(limit)
+        clauses, parameters = ['unit_id=?'], [unit_id]
+        if before is not None:
+            if (not isinstance(before, (tuple, list)) or len(before) != 2
+                    or type(before[0]) not in (int, float) or not math.isfinite(before[0]) or not isinstance(before[1], str)):
+                raise ValueError('job cursor must contain creation time and job ID')
+            clauses.append('(created_at,id)<(?,?)')
+            parameters.extend(before)
+        with self.store.read_snapshot() as connection:
+            rows = connection.execute('SELECT id,unit_id,attempt_id,member_id,candidate_id,role,phase,outcome,fenced,cleanup,created_at '
+                                      'FROM jobs WHERE ' + ' AND '.join(clauses)
+                                      + ' ORDER BY created_at DESC,id DESC LIMIT ?', (*parameters, limit + 1)).fetchall()
+            items = [dict(row) for row in rows[:limit]]
+            return dict(items=items, next_cursor=[items[-1]['created_at'], items[-1]['id']] if len(rows) > limit else None)
 
     def units(self, *, after=None, limit=50, include_terminal=False):
         limit = _limit(limit)

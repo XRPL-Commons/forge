@@ -23,7 +23,7 @@ The running supervisor, API, UI and CLI still use their existing stores. Importi
 - Commands also cover existing-PR adoption, candidate invalidation and technical
   rejection, recovery reconciliation, retry with a new budget generation, verified
   cleanup, confirmed merges, closure and guarded batch dissolution.
-- `Queries` provides paged units, event cursors and artifact metadata. Unit lists
+- `Queries` provides paged units, issues, job history, event cursors and artifact metadata. Unit lists
   and details use the same lifecycle projection, including canonical status text.
   `codes.py` defines the closed vocabulary; tests require the SQL registry and
   legal state transitions to agree with it.
@@ -39,6 +39,47 @@ All callers of the mutation API are trusted controller adapters. They must verif
 GitHub and process evidence before entering a transaction. A worker cannot open
 the database or authorize a transition by supplying its own report.
 
+## Worker execution adapter
+
+`forge.factory.execution_controller.ExecutionController` is an explicit SQLite
+caller. It is not yet selected by the production supervisor. It uses the existing
+container runner and role-scoped GitHub token issuer, without a JSON ledger shim.
+
+- `Lifecycle.reserve_job(..., launch=Launch(...))` saves immutable launch inputs
+  and the capacity lease in one transaction. The adapter currently accepts units
+  of one for build, review and audit. Imported historical jobs are never relaunched.
+- `ExecutionQueries.pending()` reads bounded pages of execution IDs; `job(id)`
+  fetches one assignment. Neither reads captured output or the import archive.
+- `Executions.progress()` commits launch progress before the next engine effect.
+  A process lock serializes engine calls. After interruption, container inspection
+  reconciles the existing execution identity before another create or start.
+- `Executions.collect()` saves the worker report and logs, then fences execution
+  in the same transaction. Engine reset happens afterwards. Only a verified reset
+  releases capacity. A failure to save capture leaves the lease and container owned.
+- A `result_pending` gate preserves the original delivery phase while GitHub
+  validation is outstanding. Cleanup can finish first. The saved assignment fence,
+  membership, requirements and budget generations still govern result acceptance;
+  an operator pause or changed requirements makes the delayed result stale.
+- Lifecycle completion consumes that pending result exactly once. Worker reports
+  are claims; a result evaluator must independently check GitHub evidence before
+  passing it to a lifecycle command. Tokens never enter the database.
+
+Issue list pages omit bodies and requirements; issue detail loads them explicitly.
+Job pages expose metadata and have a separate artifact API. Unit and issue reads
+share issue-state rules. A reopened issue no longer inherits its old delivery's
+completion, even when a later GitHub response clears `state_reason`. The old unit
+retains its merge receipt and remains merged.
+
+Tests exercise lost create/start/reset responses, capture commit failures, operator
+decisions during launch, post-cleanup result validation, exclusive engine access,
+and a local build/review/audit/merge-confirmation sequence using a fake runner.
+They do not establish a real GitHub first merge or full public-view parity.
+
+Remaining controller integration includes dispatch/provider selection, ordered
+GitHub reconciliation, result classification, durable check/merge effects and the
+existing operator actions. The API/UI/CLI handlers must adopt the new queries
+before the dependency-closed runtime cutover can select SQLite.
+
 ## Artifacts and retention
 
 `Artifacts.put()` stores an explicitly identified chunk of at most 1 MiB,
@@ -48,7 +89,7 @@ bound decompression, and verify the uncompressed length and digest. Normal unit
 and event queries do not load artifact bytes.
 
 `Artifacts.prune_raw_logs()` expires one bounded batch of raw log chunks after
-30 days. It preserves active work, cleanup and recovery evidence, open units'
+30 days. It preserves active work, pending-result, cleanup and recovery evidence, open units'
 current candidate evidence, and explicit durable pins. Callers must use
 `Artifacts.pin_in()` in the transaction that records a durable raw-log reference.
 Structured results, summaries, launch manifests and all events remain retained.
@@ -74,7 +115,8 @@ second backend or a generic state setter that bypasses candidate evidence.
 
 The linked standard-library SQLite must contain the WAL reset fix: upstream
 3.51.3 or later, or the qualified 3.44.6/3.50.7 patch series. Installation of the
-runtime library is a later CLI setup/update change. CI builds checksum-pinned
+runtime library is available through `forge migrate prepare`; managed launchers
+still need to select it during cutover. CI builds checksum-pinned
 SQLite 3.51.3 and verifies the Python module actually links it.
 
 ```sh
@@ -110,8 +152,9 @@ Label removal and repaired repository readiness resume eligible work; completed
 external closure shows done; batches may include existing PRs with approval.
 The store supports these rules, but existing runtime adapters must still adopt it.
 
-1. **Import and parity:** coherent capture of every legacy store, resumable import,
-   deterministic comparison and a dry run against a private live-state copy.
+1. **Import and parity:** the captured production stores now have resumable entity
+   mappings and independent fact checks. Public-view parity and fresh reconciliation
+   of unfinished work remain; see the migration guide for the dry-run evidence.
 2. **Supervisor and API/UI/CLI cutover:** replace every relevant reader and writer,
    reconcile external effects, schedule retention, and measure latency on the host.
 3. **Units and batches:** migrate existing work without losing candidate evidence

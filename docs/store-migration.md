@@ -164,6 +164,12 @@ other service during import or verification.
 
 ## Source inventory and next work
 
+The next implementation adds an explicit SQLite worker execution driver and
+bounded issue/job reads (see [the foundation guide](store-foundation.md#worker-execution-adapter)).
+Launches, capture, fencing and cleanup use row commands; the production supervisor
+and public handlers have not selected them. These additions do not change
+`import_only`, resolve the captured live-unit findings or permit activation.
+
 See [the writer inventory](design/state-source-inventory.md). Complete phase 2 by
 comparing every public view against the
 same frozen source, and producing a report with no unexplained differences.

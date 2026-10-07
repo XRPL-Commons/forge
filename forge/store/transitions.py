@@ -107,6 +107,35 @@ def _charges(db, unit):
     ).fetchone()[0]
 
 
+def issue_state(issue, unit=None, blocker=None, member=None):
+    """One issue-state rule for unit cards and issue reads.
+
+    Callers choose the current membership, or the latest historical delivery.
+    A reopened observation supersedes an old delivery's completion for the issue,
+    while the delivery itself stays merged forever.
+    """
+    if issue['github_state'] == 'closed':
+        if issue['state_reason'] == 'completed':
+            return 'done'
+        if issue['state_reason'] in {'not_planned', 'duplicate'}:
+            return 'dropped'
+        return 'blocked'  # Unknown closure provenance needs an observation.
+    if unit is None:
+        return 'untracked'
+    if unit['state'] == 'merged':
+        completed_version = member.get('completion_issue_version') if member else None
+        if completed_version is not None:
+            return 'untracked' if issue.get('reopened_version', 0) > completed_version else 'done'
+        # Imported history predates completion versions. Preserve an explicit
+        # reopened observation, including after GitHub clears its state_reason.
+        return 'untracked' if issue['state_reason'] == 'reopened' or issue.get('reopened_version', 0) else 'done'
+    if unit['state'] in TERMINAL:
+        return 'untracked'
+    if blocker:
+        return 'blocked'
+    return 'queued' if unit['state'] == 'queued' else 'in_unit'
+
+
 def project_unit(db, unit_id):
     """Canonical stage/blocker projection; callers must hold a read snapshot."""
     unit = _unit(db, unit_id)
@@ -119,18 +148,10 @@ def project_unit(db, unit_id):
         member = dict(row)
         gates = applicable_gates(db, unit, member["id"], unit["current_candidate_id"])
         blocker = gates[0] if gates and unit["state"] not in TERMINAL else None
-        if member["github_state"] == "closed" and member["state_reason"] == "completed":
-            state = "done"
-        elif member["github_state"] == "closed" and member["state_reason"] in {"not_planned", "duplicate"}:
-            state = "dropped"
-        elif unit["state"] == "merged":
-            state = "done"
-        elif blocker:
-            state = "blocked"
-        elif unit["state"] == "queued":
-            state = "queued"
-        else:
-            state = "in_unit"
+        # Old in-memory schema fixtures omit the later observation columns.
+        if 'completion_issue_version' in member:
+            member['reopened_version'] = db.execute('SELECT reopened_version FROM issues WHERE id=?', (member['issue_id'],)).fetchone()[0]
+        state = issue_state(member, unit, blocker, member)
         member.update(current_blocker=blocker, projected_state=state)
         members.append(member)
     gates = applicable_gates(db, unit, candidate_id=unit["current_candidate_id"])
@@ -327,7 +348,7 @@ class Lifecycle:
 
     def open_gate(self, command, code, *, details, member_id=None, candidate_id=None):
         code = GateCode(code).value
-        if code in {"operator_pause", "budget_exhausted", "cleanup_pending", "recovery_pending"}:
+        if code in {"operator_pause", "budget_exhausted", "cleanup_pending", "recovery_pending", "result_pending"}:
             raise TransitionError("this gate is managed by its dedicated lifecycle command")
         payload = dict(code=code, details=details, member_id=member_id, candidate_id=candidate_id)
         def change(db, unit):
@@ -412,12 +433,17 @@ class Lifecycle:
         if not exists:
             self._open_gate(db, command, "cleanup_pending", {"job_id": job_id}, member_id)
 
-    def reserve_job(self, command, role, *, slot, execution_fence, input_manifest, member_id=None, candidate_id=None):
+    def reserve_job(self, command, role, *, slot, execution_fence, input_manifest, member_id=None, candidate_id=None, launch=None):
         role = Role(role).value
         if role not in {"build", "review", "audit"}:
             raise TransitionError("this role requires the later execution adapter")
         payload = dict(role=role, slot=slot, execution_fence=execution_fence, input_manifest=input_manifest,
                        member_id=member_id, candidate_id=candidate_id)
+        if launch is not None:
+            from .executions import Launch
+            if not isinstance(launch, Launch):
+                raise TransitionError('launch must be a Launch specification')
+            payload['launch'] = launch.payload()
         def change(db, unit):
             self._live(unit)
             expected = {"build": {"queued", "building"}, "review": {"reviewing"}, "audit": {"auditing"}}[role]
@@ -461,6 +487,9 @@ class Lifecycle:
                 (job_id, unit["id"], attempt_id, member_id, candidate_id, role, self.clock()),
             )
             db.execute("INSERT INTO job_leases(slot,job_id,execution_fence,acquired_at) VALUES(?,?,?,?)", (slot, job_id, execution_fence, self.clock()))
+            if launch is not None:
+                from .executions import insert_launch
+                insert_launch(db, job_id, slot, execution_fence, payload['launch'], self.clock())
             if role == "build":
                 db.execute("UPDATE units SET state = 'building' WHERE id = ?", (unit["id"],))
                 db.execute("UPDATE unit_issues SET state = 'building' WHERE id = ?", (member_id,))
@@ -471,13 +500,19 @@ class Lifecycle:
     def _job(self, db, unit, job_id, execution_fence, input_manifest):
         job = db.execute("SELECT j.*, a.assignment_generation, a.membership_generation, a.budget_generation, a.input_manifest_json FROM jobs j JOIN attempts a ON a.id = j.attempt_id WHERE j.id = ? AND j.unit_id = ?", (job_id, unit["id"])).fetchone()
         lease = db.execute("SELECT execution_fence FROM job_leases WHERE job_id = ?", (job_id,)).fetchone()
-        if job is None or lease is None or lease[0] != execution_fence:
+        captured = db.execute('SELECT l.execution_fence,e.capture_authorized,e.result_revoked FROM job_launches l '
+                              'JOIN job_execution_state e ON e.job_id=l.job_id '
+                              'WHERE l.job_id=? AND e.captured_at IS NOT NULL', (job_id,)).fetchone()
+        owner = lease[0] if lease else captured['execution_fence'] if captured and job and job['cleanup'] else None
+        if job is None or owner != execution_fence:
             raise TransitionError("result does not own the execution lease")
         if job["input_manifest_json"] != _json(input_manifest):
             raise TransitionError("result input manifest differs from its assignment")
         if job["outcome"] is not None:
             raise TransitionError("assignment already has a result")
-        current = (not job["fenced"] and job["assignment_generation"] == unit["fencing_generation"]
+        current = ((not job["fenced"] or bool(captured and captured['capture_authorized'] and not captured['result_revoked']))
+                   and unit['state'] not in TERMINAL
+                   and job["assignment_generation"] == unit["fencing_generation"]
                    and job["membership_generation"] == unit["membership_generation"]
                    and job["budget_generation"] == unit["budget_generation"]
                    and (job["candidate_id"] is None or job["candidate_id"] == unit["current_candidate_id"]))
@@ -490,9 +525,14 @@ class Lifecycle:
     def _result(self, db, command, job, evidence, outcome):
         content = _json(evidence).encode()
         db.execute("INSERT INTO job_artifacts(job_id,kind,sequence,media_type,digest,content,size) VALUES(?,'result',0,'application/json',?,?,?)", (job["id"], hashlib.sha256(content).hexdigest(), content, len(content)))
-        db.execute("UPDATE jobs SET phase = 'finished', outcome = ? WHERE id = ?", (outcome, job["id"]))
+        db.execute("UPDATE jobs SET phase = CASE WHEN cleanup=1 THEN 'cleaned' ELSE 'finished' END, outcome = ? WHERE id = ?", (outcome, job["id"]))
         self._event(db, command, "attempt_finished", {"outcome": outcome}, job_id=job["id"])
-        self._ensure_cleanup_gate(db, command, job["id"], job["member_id"])
+        if not job['cleanup'] and _unit(db, command.unit_id)['state'] not in TERMINAL:
+            self._ensure_cleanup_gate(db, command, job["id"], job["member_id"])
+        for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='result_pending' "
+                               "AND resolved_at IS NULL AND json_extract(details_json,'$.job_id')=?",
+                               (command.unit_id, job['id'])).fetchall():
+            self._resolve(db, command, gate[0], {'result_recorded': job['id']})
 
     def finish_job(self, command, job_id, *, execution_fence, input_manifest, evidence, candidate=None):
         """Accept independently checked build publication or technical pass evidence."""
@@ -507,7 +547,9 @@ class Lifecycle:
             if not current:
                 self._result(db, command, job, evidence, "stale_success")
                 return {"accepted": False}
-            if applicable_gates(db, unit, job["member_id"], job["candidate_id"]):
+            if any(g['code'] not in {'result_pending', 'cleanup_pending'}
+                   or json.loads(g['details_json']).get('job_id') != job_id
+                   for g in applicable_gates(db, unit, job["member_id"], job["candidate_id"])):
                 raise TransitionError("a gate prevents accepting this result")
             expected = {"build": "building", "review": "reviewing", "audit": "auditing"}
             if unit["state"] != expected.get(job["role"]):
@@ -779,7 +821,12 @@ class Lifecycle:
             revision_id = existing[0] if existing else _id(command.request_id, "revision")
             if not existing:
                 db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)", (revision_id, issue_id, title, body, content_hash, requirements_hash, _json(requirements), self.clock()))
-            db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, version = version + 1 WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), self.clock(), issue_id))
+            reopened_version = old['reopened_version']
+            if state == 'open' and (old['github_state'] == 'closed' or state_reason == 'reopened' and old['state_reason'] != 'reopened'):
+                reopened_version = old['version'] + 1
+            elif not reopened_version and old['state_reason'] == 'reopened':
+                reopened_version = old['version']
+            db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, reopened_version = ?, version = version + 1 WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), self.clock(), reopened_version, issue_id))
             if member["left_at"] is None and unit["state"] not in TERMINAL:
                 if requirements_hash != revision["requirements_hash"]:
                     ambiguous = db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone()
@@ -877,7 +924,7 @@ class Lifecycle:
             self._resolve(db, command, gate["id"], {"terminal_state": target}, resolution="superseded")
         self._fence(db, command)
         for member in self._members(db, unit["id"]):
-            db.execute("UPDATE unit_issues SET state = ?, left_at = ?, exit_reason = ? WHERE id = ?", ("done" if target == "merged" else "removed", self.clock(), target, member["id"]))
+            db.execute("UPDATE unit_issues SET state = ?, left_at = ?, exit_reason = ?, completion_issue_version = (SELECT version FROM issues WHERE id=unit_issues.issue_id) WHERE id = ?", ("done" if target == "merged" else "removed", self.clock(), target, member["id"]))
             self._event(db, command, "membership_changed", {"member_id": member["id"], "exit_reason": target}, issue_id=member["issue_id"])
         db.execute("UPDATE units SET state = ?, close_code = ?, merge_sha = ?, primary_gate_id = NULL WHERE id = ?", (target, close_code, merge_sha, unit["id"]))
         self._event(db, command, target, {"close_code": close_code, "merge_sha": merge_sha})
