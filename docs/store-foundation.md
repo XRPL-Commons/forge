@@ -75,10 +75,48 @@ decisions during launch, post-cleanup result validation, exclusive engine access
 and a local build/review/audit/merge-confirmation sequence using a fake runner.
 They do not establish a real GitHub first merge or full public-view parity.
 
-Remaining controller integration includes dispatch/provider selection, ordered
-GitHub reconciliation, result classification, durable check/merge effects and the
-existing operator actions. The API/UI/CLI handlers must adopt the new queries
-before the dependency-closed runtime cutover can select SQLite.
+### Explicit SQLite supervisor
+
+`forge.factory.sqlite_supervisor.SqliteSupervisor` now composes bounded cleanup,
+ordered GitHub observations, result validation, merge authorization, durable
+GitHub effects and dispatch. It is an explicit adapter, not a production backend
+selector. Import-only stores reject controller execution.
+
+- Observation generations are reserved before remote reads. Issue facts, configured
+  hold labels, ownership and repository readiness commit together. New holds fence
+  worker authority; repaired readiness releases only the observation-owned gate.
+- Dispatch pins a singleton's requirements, target, policy, provider account and
+  runner configuration with its lease. Fresh GitHub preparation checks ownership,
+  protections and the exact target. Provider credentials stay outside the database;
+  launch rows retain references and prevent conflicting refresh writers.
+- Captured results are classified only after verified cleanup. Fresh GitHub facts
+  establish publication and candidate identity. Technical verdicts use durable
+  effect identities before lifecycle acceptance. Environment/provider/decision
+  waits open scoped gates without consuming the failure budget. Stale policy or
+  assignment results cannot advance work or consume budget.
+- Candidate effects commit intent before GitHub requests. Lost responses are
+  reconciled through stable review/check identities and fresh PR reads. Merge
+  authorization checks current policy, ownership, accepted checks, protections and
+  human approvals again immediately before the exact-head request. An HTTP success
+  never establishes a completed merge; a matching GitHub observation does.
+- Pages preserve scheduling progress across cycles, and the supervisor records a
+  bounded heartbeat including per-item error counts. Its process lock prevents
+  concurrent cycles. Raw-log retention runs in bounded batches at most hourly;
+  structured results, events and pinned recovery evidence remain retained.
+
+Local integration tests compose the real row controllers with simulated GitHub
+and worker engines through build, review, audit, human approval and confirmed merge,
+including supervisor restarts. The combined local checkpoint passed 271 store
+regressions and 14 migration/runtime CLI tests on SQLite 3.53.1. This is not real
+GitHub or production acceptance; Linux and full application qualification remain
+at the integrated batch boundary.
+
+Still required before selecting this runtime: recovery-worker scheduling;
+automatic memory/service escalation and durable environment selection; revision-bound
+dependency fulfillment and verification/operator actions; supporting-domain writers
+(discussions, deployment, configuration, identity and client operations); API/UI/CLI
+read adapters; managed-launcher guards, activation, fresh parity and live qualification.
+No legacy reconciliation gate is cleared merely because these adapters exist.
 
 ## Artifacts and retention
 
@@ -94,7 +132,8 @@ current candidate evidence, and explicit durable pins. Callers must use
 `Artifacts.pin_in()` in the transaction that records a durable raw-log reference.
 Structured results, summaries, launch manifests and all events remain retained.
 An expired chunk keeps its metadata and returns `ArtifactExpired`; retries do not
-recreate its bytes. No runtime scheduler invokes retention in this foundation.
+recreate its bytes. The explicit SQLite supervisor schedules bounded retention;
+production still uses the existing runtime until qualified cutover.
 
 ## Consolidation checklist
 

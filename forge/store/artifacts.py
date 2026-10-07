@@ -159,7 +159,7 @@ class Artifacts:
     def prune_raw_logs(self, *, now=None, batch=500):
         """Tombstone one bounded batch of eligible logs after 30 days.
 
-        No scheduler calls this method. Active work, current-candidate evidence,
+        The explicit SQLite supervisor schedules bounded pruning. Active work, current-candidate evidence,
         recovery/cleanup and explicitly pinned historical references are retained.
         """
         now = self.clock() if now is None else now

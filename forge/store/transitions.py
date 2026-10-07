@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -355,6 +356,8 @@ class Lifecycle:
             self._live(unit)
             if candidate_id and candidate_id != unit["current_candidate_id"]:
                 raise TransitionError("gate does not refer to the current candidate")
+            if code == "external_change":
+                self._fence(db, command)
             return {"gate_id": self._open_gate(db, command, code, details, member_id, candidate_id)}
         return self._apply(command, "open_gate", payload, change)
 
@@ -534,14 +537,24 @@ class Lifecycle:
                                (command.unit_id, job['id'])).fetchall():
             self._resolve(db, command, gate[0], {'result_recorded': job['id']})
 
-    def finish_job(self, command, job_id, *, execution_fence, input_manifest, evidence, candidate=None):
+    def finish_job(self, command, job_id, *, execution_fence, input_manifest, evidence, candidate=None, gates=()):
         """Accept independently checked build publication or technical pass evidence."""
         if not isinstance(evidence, dict) or not evidence:
             raise TransitionError("result requires structured verified evidence")
         if candidate is not None and not isinstance(candidate, Candidate):
             raise TransitionError("candidate must be a Candidate identity")
+        if not isinstance(gates, (list, tuple)) or any(
+                not isinstance(gate, dict) or set(gate) != {'code', 'details'}
+                or gate['code'] not in {'verification_human', 'verification_ci', 'approval_required'}
+                or not isinstance(gate['details'], dict) or not gate['details'] for gate in gates):
+            raise TransitionError('completion gates require candidate-bound verification or approval details')
+        if len({gate['code'] for gate in gates}) != len(gates):
+            raise TransitionError('completion gates must be unique')
         payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest,
                        evidence=evidence, candidate=asdict(candidate) if candidate else None)
+        # Preserve replay identities for callers predating completion gates.
+        if gates:
+            payload['gates'] = list(gates)
         def change(db, unit):
             job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
             if not current:
@@ -580,10 +593,41 @@ class Lifecycle:
                 candidate_id = job["candidate_id"]
             db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,attempt_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,?,?,'pass',?,?,?)", (_id(command.request_id, "evidence"), unit["id"], candidate_id, job["attempt_id"], "publication" if job["role"] == "build" else job["role"], command.actor_id, self.clock(), _json(evidence)))
             self._result(db, command, job, evidence, "success")
+            for gate in gates:
+                self._open_gate(db, command, gate['code'], gate['details'], candidate_id=candidate_id)
             db.execute("UPDATE units SET state = ? WHERE id = ?", (target, unit["id"]))
             self._event(db, command, "phase_changed", {"before": unit["state"], "after": target}, job_id=job_id)
             return {"accepted": True, "phase": target}
         return self._apply(command, "finish_job", payload, change)
+
+    def defer_job(self, command, job_id, *, execution_fence, input_manifest, evidence, code, details):
+        """Save a verified wait and its gate together, without charging a failure.
+
+        A wait is not a successful review/audit. Releasing the gate retries that
+        phase; any existing candidate and failure history stay intact.
+        """
+        if code not in {'environment', 'provider_unavailable', 'decision_required', 'dependency', 'verification_human', 'verification_ci'}:
+            raise TransitionError('unsupported worker deferral gate')
+        if not isinstance(evidence, dict) or not evidence or not isinstance(details, dict) or not details:
+            raise TransitionError('deferral requires structured evidence and gate details')
+        if code == 'provider_unavailable':
+            retry_at = details.get('retry_at')
+            if type(retry_at) not in (int, float) or not math.isfinite(retry_at) or retry_at <= self.clock():
+                raise TransitionError('provider deferral requires a future finite retry time')
+        payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest,
+                       evidence=evidence, code=code, details=details)
+        def change(db, unit):
+            job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
+            self._result(db, command, job, evidence, 'deferred' if current else 'stale_deferred')
+            if not current:
+                return {'accepted': False, 'charged': False}
+            member_id = job['member_id'] if code not in {'provider_unavailable', 'verification_human', 'verification_ci'} else None
+            candidate_id = job['candidate_id'] if code in {'verification_human', 'verification_ci'} else None
+            if code in {'verification_human', 'verification_ci'} and candidate_id is None:
+                raise TransitionError('verification deferral requires an existing exact candidate')
+            gate_id = self._open_gate(db, command, code, {**details, 'job_id': job_id}, member_id, candidate_id)
+            return {'accepted': True, 'charged': False, 'gate_id': gate_id}
+        return self._apply(command, 'defer_job', payload, change)
 
     def record_failure(self, command, job_id, *, execution_fence, input_manifest, evidence, charge=True):
         if not isinstance(evidence, dict) or not evidence or type(charge) is not bool:
@@ -780,7 +824,8 @@ class Lifecycle:
         return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
     def observe_issue(self, command, issue_id, *, state, title, body, requirements,
-                      remote_updated_at, generation, state_reason=None, labels=(), assignees=()):
+                      remote_updated_at, generation, state_reason=None, labels=(), assignees=(),
+                      hold_labels=("hold", "blocked"), admission=None, ownership_conflict=None, assignee_types=None):
         """Apply an ordered authoritative observation to a current or historical member.
 
         Reopening updates GitHub facts only. A terminal unit stays terminal; the
@@ -795,9 +840,23 @@ class Lifecycle:
             raise TransitionError("open issue cannot retain a closure reason")
         if not isinstance(title, str) or not isinstance(body, str) or not all(isinstance(v, str) for v in (*labels, *assignees)):
             raise TransitionError("issue text and observed identities must be strings")
+        if not all(isinstance(label, str) and label for label in hold_labels):
+            raise TransitionError('hold labels must be nonempty strings')
+        if admission is not None and type(admission) is not bool:
+            raise TransitionError('admission observation must be boolean')
+        if ownership_conflict is not None and type(ownership_conflict) is not bool:
+            raise TransitionError('ownership observation must be boolean')
+        if assignee_types is not None and (not isinstance(assignee_types, dict)
+                or any(login not in assignees or kind not in {'User', 'Bot', 'Organization', 'Mannequin'}
+                       for login, kind in assignee_types.items())):
+            raise TransitionError('assignee types must identify the observed GitHub assignees')
         payload = dict(issue_id=issue_id, state=state, title=title, body=body, requirements=requirements,
                        remote_updated_at=remote_updated_at, generation=generation, state_reason=state_reason,
                        labels=sorted(set(labels)), assignees=sorted(set(assignees)))
+        if tuple(hold_labels) != ('hold', 'blocked') or admission is not None or ownership_conflict is not None:
+            payload.update(hold_labels=sorted(set(hold_labels)), admission=admission, ownership_conflict=ownership_conflict)
+        if assignee_types is not None:
+            payload['assignee_types'] = assignee_types
         def change(db, unit):
             old = db.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
             member = db.execute("SELECT * FROM unit_issues WHERE unit_id = ? AND issue_id = ? ORDER BY joined_at DESC LIMIT 1", (unit["id"], issue_id)).fetchone()
@@ -812,7 +871,8 @@ class Lifecycle:
             revision = db.execute("SELECT * FROM issue_revisions WHERE id = ?", (old["current_revision_id"],)).fetchone()
             changed = (state != old["github_state"] or state_reason != old["state_reason"] or content_hash != revision["content_hash"]
                        or requirements_hash != revision["requirements_hash"] or payload["labels"] != json.loads(old["labels_json"])
-                       or payload["assignees"] != json.loads(old["assignees_json"]))
+                       or payload["assignees"] != json.loads(old["assignees_json"])
+                       or assignee_types is not None and assignee_types != json.loads(old["assignee_types_json"]))
             if new_order == old_order:
                 if changed:
                     raise TransitionError("conflicting observations share the same ordering identity")
@@ -827,6 +887,8 @@ class Lifecycle:
             elif not reopened_version and old['state_reason'] == 'reopened':
                 reopened_version = old['version']
             db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, reopened_version = ?, version = version + 1 WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), self.clock(), reopened_version, issue_id))
+            if assignee_types is not None:
+                db.execute('UPDATE issues SET assignee_types_json=? WHERE id=?', (_json(assignee_types), issue_id))
             if member["left_at"] is None and unit["state"] not in TERMINAL:
                 if requirements_hash != revision["requirements_hash"]:
                     ambiguous = db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone()
@@ -841,13 +903,28 @@ class Lifecycle:
                 if state == "closed" and old["github_state"] != "closed":
                     self._fence(db, command)
                 matching_hold = [g for g in _gates(db, unit["id"]) if g["code"] == "label_hold" and g["member_id"] == member["id"]]
-                held = any(label in {"hold", "blocked"} for label in payload["labels"])
+                held = bool(set(hold_labels).intersection(payload["labels"]))
                 if held and not matching_hold:
+                    self._fence(db, command)
                     self._open_gate(db, command, "label_hold", {"source": "github_labels", "issue_id": issue_id}, member["id"])
                 elif not held:
                     for gate in matching_hold:
                         if json.loads(gate["details_json"]).get("source") == "github_labels":
                             self._resolve(db, command, gate["id"], {"observed_at": self.clock(), "labels": payload["labels"]})
+                for code, blocked, scope in (
+                        ('repository_setup', None if admission is None else not admission, None),
+                        ('ownership_conflict', ownership_conflict, member['id'])):
+                    if blocked is None:
+                        continue
+                    existing_gates = [g for g in _gates(db, unit['id'])
+                                      if g['code'] == code and g['member_id'] == scope]
+                    if blocked and not existing_gates:
+                        self._fence(db, command)
+                        self._open_gate(db, command, code, {'source': 'controller_observation', 'issue_id': issue_id}, scope)
+                    elif not blocked:
+                        for gate in existing_gates:
+                            if json.loads(gate['details_json']).get('source') == 'controller_observation':
+                                self._resolve(db, command, gate['id'], {'verified': True, 'observed_at': self.clock()})
             self._event(db, command, "issue_observed", payload, issue_id=issue_id)
             return {"issue_id": issue_id, "stale": False, "revision_id": revision_id}
         return self._apply(command, "observe_issue", payload, change)
@@ -945,6 +1022,8 @@ class Lifecycle:
             for request in db.execute("SELECT id,effect_id FROM merge_requests WHERE unit_id = ? AND candidate_id = ? AND status IN ('pending','uncertain')", (unit["id"], candidate_id)).fetchall():
                 db.execute("UPDATE merge_requests SET status = 'merged', merge_oid = ? WHERE id = ?", (merge_sha, request["id"]))
                 db.execute("UPDATE external_effects SET status = 'confirmed', receipt_json = ?, updated_at = ? WHERE id = ?", (_json(evidence), self.clock(), request["effect_id"]))
+                self._event(db, command, 'external_effect_changed', {'effect_id': request['effect_id'],
+                    'status': 'confirmed', 'candidate_id': candidate_id})
             # The receipt reconciles only this candidate's merge intent. Any
             # unrelated uncertain external effect still needs reconciliation.
             self._quiescent(db, unit["id"])

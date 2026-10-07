@@ -44,8 +44,45 @@ class Launch:
         return asdict(self)
 
 
+def provider_available(db, provider, provider_id, config, now):
+    """Account admission from current rows; usable inside reservation writes.
+
+    Legacy provider-wide cooldowns remain effective. OAuth refresh files have a
+    single writer until verified teardown. Qualified Codex access-only snapshots
+    can share a file after every old refresh writer has drained.
+    """
+    reference = config.get('provider_auth_file_env')
+    accounts = {provider, provider_id, reference} - {None}
+    for account in accounts:
+        cooldown = db.execute('SELECT retry_at FROM provider_cooldowns WHERE account_ref=? AND provider=?',
+                              (account, provider)).fetchone()
+        if cooldown and cooldown[0] > now:
+            return False
+        observed = db.execute('SELECT readiness FROM provider_observations WHERE account_ref=? AND provider=? '
+                              'ORDER BY observed_at DESC,id DESC LIMIT 1', (account, provider)).fetchone()
+        if observed and observed[0] != 'ready':
+            return False
+    if not reference:
+        return True
+    # Discussion runtime migration has no typed account assignment yet. An
+    # unknown live lease cannot be assumed to own a different OAuth file.
+    if db.execute('SELECT 1 FROM discussion_leases LIMIT 1').fetchone():
+        return False
+    parallel = provider == 'codex' and config.get('codex_parallel_auth') is True
+    rows = db.execute('SELECT l.provider,l.runner_config_json FROM job_launches l '
+                      'JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 '
+                      "AND json_extract(l.runner_config_json,'$.provider_auth_file_env')=?", (reference,))
+    for row in rows:
+        other = json.loads(row['runner_config_json'])
+        if not parallel or row['provider'] != 'codex' or other.get('codex_parallel_auth') is not True:
+            return False
+    return True
+
+
 def insert_launch(db, job_id, slot, execution_fence, payload, now):
     """Called inside reserve_job's transaction, never as a second write."""
+    if not provider_available(db, payload['provider'], payload['provider_id'], payload['runner_config'], now):
+        raise TransitionError('provider account is unavailable or still leased')
     if payload['deadline'] <= now:
         raise TransitionError('launch deadline must be in the future')
     members = db.execute('SELECT m.requirements_revision_id FROM unit_issues m JOIN jobs j ON j.unit_id=m.unit_id '
@@ -63,6 +100,12 @@ def insert_launch(db, job_id, slot, execution_fence, payload, now):
          _json(payload['context']), payload['deadline'], members[0][0]),
     )
     db.execute('INSERT INTO job_execution_state(job_id) VALUES(?)', (job_id,))
+    pool = payload['runner_config'].get('provider_pool') or []
+    position = next((index for index, entry in enumerate(pool) if entry.get('id') == payload['provider_id']), None)
+    if position is not None:
+        db.execute("INSERT INTO runtime_controls(name,cursor,updated_at) VALUES('provider_cursor',?,?) "
+                   'ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at, '
+                   'generation=runtime_controls.generation+1', (str((position + 1) % len(pool)), now))
 
 
 def _artifact(db, job_id, kind, content, now):
@@ -160,6 +203,32 @@ class Executions(Lifecycle):
         return self._apply(command, 'fence_execution', dict(job_id=job_id, execution_fence=execution_fence, reason=reason), change)
 
 
+    def revoke_captured(self, command, job_id, *, execution_fence, input_manifest, policy_hash):
+        """Revoke a captured assignment after a verified policy change.
+
+        Cleanup may already have released its lease. The immutable launch fence
+        still names the assignment; next-cycle stale-result consumption releases
+        only this job's result gate, without charging or clearing other gates.
+        """
+        if (not isinstance(policy_hash, str) or not policy_hash
+                or not isinstance(input_manifest, dict)
+                or policy_hash == input_manifest.get('policy_hash')):
+            raise TransitionError('captured policy revocation requires a different policy identity')
+        payload = dict(job_id=job_id, execution_fence=execution_fence,
+                       input_manifest=input_manifest, policy_hash=policy_hash)
+        def change(db, unit):
+            job, _ = self._job(db, unit, job_id, execution_fence, input_manifest)
+            capture = db.execute('SELECT captured_at FROM job_execution_state WHERE job_id=?', (job_id,)).fetchone()
+            if capture is None or capture['captured_at'] is None:
+                raise TransitionError('only a captured assignment can be revoked by this command')
+            db.execute('UPDATE jobs SET fenced=1 WHERE id=?', (job_id,))
+            db.execute('UPDATE job_execution_state SET result_revoked=1 WHERE job_id=?', (job_id,))
+            self._event(db, command, 'attempt_fenced',
+                        {'reason': 'policy_changed', 'policy_hash': policy_hash}, job_id=job_id)
+            return {'job_id': job_id, 'result_revoked': True}
+        return self._apply(command, 'revoke_captured_policy', payload, change)
+
+
 class ExecutionQueries:
     def __init__(self, store):
         self.store = store
@@ -183,7 +252,8 @@ class ExecutionQueries:
             row = db.execute(
                 'SELECT j.*, l.slot,l.execution_fence,l.branch,l.publisher,l.provider,l.provider_id,l.model,'
                 'l.deadline,l.requirements_revision_id,l.runner_config_json,l.policy_json,l.context_json,e.container_id,e.captured_at,'
-                'e.capture_authorized,u.version AS unit_version,u.base_branch AS target_branch,'
+                'e.capture_authorized,e.result_revoked,u.state AS unit_state,u.current_candidate_id,'
+                'u.version AS unit_version,u.base_branch AS target_branch,'
                 'u.fencing_generation,u.membership_generation,u.budget_generation,r.id AS repo_id,r.full_name AS repo,'
                 'a.input_manifest_json,a.assignment_generation,a.membership_generation AS assigned_membership,'
                 'a.budget_generation AS assigned_budget '
