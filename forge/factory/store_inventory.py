@@ -128,6 +128,9 @@ class StoreInventory:
                     item = {'repo': repo['name'], 'repo_id': repo['id']}
                     error, complete = None, False
                     details = json.loads(previous['details_json']) if previous and previous['controller_identity'] == identity else {}
+                    # Captured scan facts belong to their original observation.
+                    details.pop('scan', None)
+                    details.pop('scan_issues_present', None)
                     people, authors, pulls = None, None, None
                     try:
                         if cursor['page'] > 100:

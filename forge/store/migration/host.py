@@ -92,10 +92,60 @@ class Host:
             if (str(self.root).encode() in command or str(self.source).encode() in command) and b'git\x00' not in command:
                 raise MigrationError('unmanaged_process')
 
-    def restore(self):
+    def prepare_source_update(self, previous, target, tool_version):
+        """Read/fetch and qualify a pinned fast-forward without running host setup."""
+        import io
+        import tarfile
+        if not re.fullmatch(r'[0-9a-f]{40}', target):
+            raise MigrationError('repair_revision_required')
+        current=self.identity()
+        if current not in {previous,target}:
+            raise MigrationError('repair_source_changed')
+        if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
+            raise MigrationError('repair_source_not_clean')
+        self.command('git','-C',str(self.source),'fetch','--no-tags','origin',target)
+        if self.command('git','-C',str(self.source),'rev-parse',target+'^{commit}')!=target:
+            raise MigrationError('repair_revision_mismatch')
+        ancestry=self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,target],capture_output=True,timeout=30)
+        if ancestry.returncode:
+            raise MigrationError('repair_requires_forward_revision')
+        archive=self.run(['git','-C',str(self.source),'archive','--format=tar',target,'forge'],capture_output=True,timeout=60)
+        if archive.returncode or len(archive.stdout)>32*1024*1024:
+            raise MigrationError('repair_source_unavailable')
+        records={}
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout),mode='r:') as contents:
+            for member in contents:
+                if member.isdir() and member.name.rstrip('/')=='forge':continue
+                path=Path(member.name)
+                if not member.name.startswith('forge/') or '..' in path.parts:
+                    raise MigrationError('repair_source_unsafe')
+                if not (path.suffix in {'.py','.sql'} or path.match('forge/harnesses/*/manifest.json')):
+                    continue
+                if not member.isfile() or member.size>4*1024*1024 or member.name in records:
+                    raise MigrationError('repair_source_unsafe')
+                records[member.name.removeprefix('forge/')]=contents.extractfile(member).read()
+        fingerprint='1:'+digest(b''.join(name.encode()+records[name] for name in sorted(records,key=Path)))
+        if not records or fingerprint!=tool_version:
+            raise MigrationError('repair_bundle_source_mismatch')
+
+    def install_source_update(self, previous, target):
+        """Only advance the checkout; service/runtime reconciliation is forbidden."""
+        current=self.identity()
+        if current not in {previous,target}:
+            raise MigrationError('repair_source_changed')
+        if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
+            raise MigrationError('repair_source_not_clean')
+        if current!=target:
+            self.command('git','-c','core.hooksPath=/dev/null','-C',str(self.source),'merge','--ff-only',target)
+        if self.identity()!=target:
+            raise MigrationError('repair_revision_mismatch')
+
+    def restore(self, *, accept_tool_update=False, source_revision=None):
         if (self.root/'.migration-cutover.json').exists():
             from .cutover import Cutover
-            return Cutover(self).resume()
+            return Cutover(self).resume(accept_tool_update=accept_tool_update, source_revision=source_revision)
+        if accept_tool_update or source_revision:
+            raise MigrationError('cutover_not_started')
         with operation_lock(self.root, '.migration-host.lock'):
             return self._restore()
 
@@ -139,6 +189,23 @@ class Host:
             self._restore()
 
 
+def failure(error, request):
+    """Safe transport diagnostics: never include exception text or source rows."""
+    from ..db import StoreError
+    stage='before_journal'
+    path=Path(request['root'])/'.migration-cutover.json'
+    if path.exists():
+        try:
+            value=decode(read_regular(path,limit=1048576))
+            candidate=value.get('stage')
+            stage=candidate if candidate in {'draining','stopping','capturing','importing','validated','selected','complete'} else 'journal_unreadable'
+        except Exception:
+            stage='journal_unreadable'
+    name=type(error).__name__
+    return dict(ok=False,error=error.code if isinstance(error,(MigrationError,StoreError)) else 'unexpected_migration_failure',
+                exception_type=name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',name) else 'Exception',stage=stage)
+
+
 def run(request):
     host=Host(request['root'],request['source'])
     if request['action']=='plan':
@@ -151,7 +218,7 @@ def run(request):
         from .runtime import prepare
         return prepare(host.root)
     if request['action']=='resume':
-        return host.restore()
+        return host.restore(accept_tool_update=request.get('accept_tool_update') is True, source_revision=request.get('source_revision'))
     if request['action']=='activate':
         if request.get('apply') is not True: raise MigrationError('activation_not_authorized')
         from .cutover import Cutover

@@ -8,7 +8,7 @@ rehearsal. Only `activate --apply` authorizes the production switch.
 
 Install the CLI from the same release deployed on the server. Update the managed
 server launchers with that release before activation: migration checks the exact
-Python/SQL package fingerprint, the service commands and their qualified SQLite
+package fingerprint (Python, SQL and provider manifests), the service commands and their qualified SQLite
 runtime. Run these commands on your computer; the CLI handles SSH and private files.
 
 ```sh
@@ -59,6 +59,28 @@ under the writer barrier. After the marker is published it only finishes the SQL
 restart. It never switches back to JSON. A failed step retains the private staging
 and journal; use `plan` to inspect the stage and `resume` to continue after correcting
 the reported blocker. No shell session or manual file transfer is needed.
+
+### Resume with a corrected importer
+
+If an import bug requires a newer Forge release, install that CLI release locally
+and explicitly select its full server commit:
+
+```sh
+forge migrate resume --ssh forge --source /absolute/server/checkout --root /absolute/private/runtime \
+  --accept-tool-update --source-revision FULL_COMMIT_SHA --json
+```
+
+This option is available only before SQLite has been selected. The CLI verifies
+the sealed snapshot and paused runtime, checks that the requested commit is a
+clean fast-forward with the same package as the local CLI, and updates only the
+server source. Services remain stopped. It retains the previous partial database
+for diagnosis, records the authorized repair, and imports the same capture again
+with the corrected tool. Source and public-view parity must pass before selection.
+If interrupted, ordinary `migrate resume` continues the recorded repair.
+
+Do not run the regular server update or edit the journal during this maintenance
+window. The repair command preserves the original service list, runtime settings
+and capture; it does not recapture state or restore JSON writers.
 
 The pre-migration copy is kept for diagnosis. It contains private state and must
 not be attached to issues, PRs or chat. The selected marker and instance identity

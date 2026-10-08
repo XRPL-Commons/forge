@@ -127,16 +127,107 @@ class Cutover:
                 atomic_json(self.root/'runtime.json',paused)
             return self._resume(value)
 
-    def resume(self):
+    def resume(self, *, accept_tool_update=False, source_revision=None):
         with operation_lock(self.root,'.migration-host.lock'):
             if not self.path.exists():
                 raise MigrationError('cutover_not_started')
-            return self._resume(self._read())
+            value=self._read()
+            if accept_tool_update or value.get('tool_update'):
+                self._update_tool(value, requested_revision=source_revision, authorize=accept_tool_update)
+            elif source_revision:
+                raise MigrationError('repair_authorization_required')
+            return self._resume(value)
+
+    def _update_tool(self, value, *, requested_revision, authorize):
+        """Explicit forward repair of an unselected import, retaining every input."""
+        import re
+        from ...factory.control import controller_lock
+        if os.path.lexists(self.marker) or value['stage'] in {'selected','complete'}:
+            raise MigrationError('repair_after_selection_forbidden')
+        if value['stage'] not in {'importing','validated'}:
+            raise MigrationError('repair_requires_frozen_snapshot')
+        if os.path.lexists(self.root/'state'/('.pending-storage-'+value['id'])):
+            raise MigrationError('repair_selection_pending')
+        pending=value.get('tool_update')
+        if pending is None and not authorize:
+            raise MigrationError('repair_authorization_required')
+        target=requested_revision or (pending or {}).get('to_revision')
+        if not isinstance(target,str) or not re.fullmatch(r'[0-9a-f]{40}',target):
+            raise MigrationError('repair_revision_required')
+        version=importer_version()
+        with controller_lock(self.root,timeout=10), exclusive(self.root):
+            self.host.quiet()
+            self._runtime_current(value)
+            snapshot=Snapshot(value['snapshot'])
+            if snapshot.id!=value['manifest']:
+                raise MigrationError('cutover_snapshot_identity_changed')
+            self._same_snapshot(snapshot)
+            if any(self._pending().values()):
+                raise MigrationError('cutover_drain_not_complete')
+            destination=Path(value['destination'])
+            if pending is None:
+                history=value.get('source_updates',[])
+                if len(history)>=20:
+                    raise MigrationError('repair_history_limit')
+                self.host.prepare_source_update(value['source_revision'],target,version)
+                if target==value['source_revision'] and version==value['tool_version']:
+                    raise MigrationError('repair_tool_unchanged')
+                identifier=str(uuid.uuid4())
+                exists=os.path.lexists(destination)
+                if exists and (destination.is_symlink() or not destination.is_dir()):
+                    raise MigrationError('repair_staging_unsafe')
+                info=destination.stat() if exists else None
+                pending=dict(id=identifier,from_revision=value['source_revision'],from_tool_version=value['tool_version'],
+                    to_revision=target,to_tool_version=version,source_manifest=snapshot.id,
+                    archive=str(destination.with_name('sqlite.diagnostic-'+identifier)),
+                    staging_identity=[info.st_dev,info.st_ino] if info else None,
+                    accepted_at=self.clock(),actor_id='operator:cli:'+str(os.getuid()),phase='prepared')
+                self._save(value,tool_update=pending)
+                if self.after_stage:self.after_stage('tool_update_prepared')
+            if (pending.get('to_revision')!=target or pending.get('to_tool_version')!=version
+                    or pending.get('from_revision')!=value['source_revision'] or pending.get('from_tool_version')!=value['tool_version']
+                    or pending.get('source_manifest')!=snapshot.id or pending.get('phase') not in {'prepared','archived'}):
+                raise MigrationError('repair_authority_mismatch')
+            try:
+                if str(uuid.UUID(pending['id']))!=pending['id']:raise ValueError()
+            except (ValueError,KeyError,TypeError):raise MigrationError('repair_authority_mismatch') from None
+            archive=destination.with_name('sqlite.diagnostic-'+pending['id'])
+            if pending.get('archive')!=str(archive):
+                raise MigrationError('repair_authority_mismatch')
+            self.host.install_source_update(pending['from_revision'],target)
+            if package_version(self.host.source)!=version:
+                raise MigrationError('repair_bundle_source_mismatch')
+            self._qualify(value)
+            self.host.quiet()
+            self._same_snapshot(snapshot)
+            identity=pending.get('staging_identity')
+            if identity is not None:
+                if os.path.lexists(archive):
+                    if os.path.lexists(destination):raise MigrationError('repair_staging_conflict')
+                    retained=archive
+                else:
+                    retained=destination
+                if (retained.is_symlink() or not retained.is_dir()
+                        or [retained.stat().st_dev,retained.stat().st_ino]!=identity):
+                    raise MigrationError('repair_staging_changed')
+                if retained==destination:
+                    os.rename(destination,archive)
+                    _fsync_directory(destination.parent)
+                    if self.after_stage:self.after_stage('tool_update_renamed')
+            elif os.path.lexists(destination) or os.path.lexists(archive):
+                raise MigrationError('repair_staging_conflict')
+            pending['phase']='archived'
+            self._save(value,tool_update=pending)
+            if self.after_stage:self.after_stage('tool_update_archived')
+            receipt={**pending,'completed_at':self.clock()}
+            self._save(value,'importing',source_revision=target,tool_version=version,tool_update=None,
+                source_updates=[*value.get('source_updates',[]),receipt],public_parity=None,qualification=None,normalized_parity=None)
 
     def status(self):
         value=self._read()
         result=dict(status=value['stage'],activation=os.path.lexists(self.marker),source_revision=value['source_revision'],
-                    diagnostic_copy=value['snapshot'],database_root=value['destination'])
+                    diagnostic_copy=value['snapshot'],database_root=value['destination'],
+                    tool_update_pending=bool(value.get('tool_update')),source_updates=value.get('source_updates',[]))
         if result['activation']:
             from ..runtime import selected
             store=selected(self.root)
@@ -170,7 +261,7 @@ class Cutover:
 
     def _record(self,store,value,stage,**evidence):
         proof={'source_manifest':value.get('manifest'),'service_qualification':value.get('qualification'),
-               'public_parity':value.get('public_parity'),**evidence}
+               'public_parity':value.get('public_parity'),'source_updates':value.get('source_updates',[]),**evidence}
         with store.write() as db:
             db.execute("INSERT INTO runtime_operations(id,kind,stage,source_revision,manifest_digest,started_at,updated_at,evidence_json) VALUES(?,'activate',?,?,?,?,?,?) "
                 'ON CONFLICT(id) DO UPDATE SET stage=excluded.stage,updated_at=excluded.updated_at,evidence_json=excluded.evidence_json',

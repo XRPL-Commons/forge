@@ -58,11 +58,22 @@ def normalize(importer, ledger, inventory):
         observation = 'legacy:inventory:'+key
         collaborators = value.get('collaborators') or {}
         details = {k:value[k] for k in ('scan','error') if k in value}
+        scan = value.get('scan')
+        cursor = None
+        if scan is not None:
+            if not isinstance(scan, dict) or ('issues' in scan and not isinstance(scan['issues'], dict)):
+                raise MigrationError('invalid_inventory_scan')
+            details['scan'] = {k:v for k,v in scan.items() if k != 'issues'}
+            details['scan_issues_present'] = 'issues' in scan
+            if 'state' in scan or 'page' in scan:
+                if scan.get('state') not in ('open','closed') or type(scan.get('page')) is not int or scan['page'] < 1:
+                    raise MigrationError('invalid_inventory_scan_cursor')
+                cursor = json_text({k:scan[k] for k in ('state','page')})
         details['collaborators_at'] = collaborators.get('at')
         insert(db, 'repository_observations', id=observation, repository_id=int(key), kind='inventory',
                controller_identity=value.get('identity'), collection_generation=1, fetched_at=value.get('at') or 0,
                complete=int(value.get('complete',False)), refreshing=int(value.get('refreshing',False)),
-               error_code='legacy_inventory_error' if value.get('error') else None, details_json=json_text(details))
+               error_code='legacy_inventory_error' if value.get('error') else None, cursor=cursor, details_json=json_text(details))
         for pull in value.get('pulls', []):
             insert(db, 'inventory_pull_summaries', repository_id=int(key), github_number=pull['number'],
                    title=pull.get('title',''), body=pull.get('body',''), author_login=pull.get('author',''),
@@ -82,6 +93,19 @@ def normalize(importer, ledger, inventory):
                        ('name','issues','at','complete','identity','refreshing','error','scan','collaborators','pulls'))
 
     batches(importer, 'normalized:inventory_metadata', sorted(inventory.get('repositories', {}).items()), repository)
+
+    def scan_issue(db, row):
+        repository_id, key, facts = row
+        if not isinstance(facts, dict) or ('body' in facts and facts['body'] is not None and not isinstance(facts['body'], str)):
+            raise MigrationError('invalid_inventory_scan_issue')
+        insert(db, 'inventory_scan_issues', observation_id='legacy:inventory:'+repository_id,
+               issue_key=key, body=facts.get('body'), body_present=int('body' in facts),
+               fields_json=json_text({k:v for k,v in facts.items() if k != 'body'}))
+
+    scan_rows = [(repo_id, key, facts)
+                 for repo_id, value in sorted(inventory.get('repositories', {}).items())
+                 for key, facts in sorted((value.get('scan') or {}).get('issues', {}).items())]
+    batches(importer, 'normalized:inventory_scan_issues', scan_rows, scan_issue)
 
     def discussion(db, pair):
         key, thread = pair
