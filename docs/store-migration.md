@@ -1,11 +1,70 @@
-# Legacy state import: private staging only
+# One-way SQLite migration
 
-This is the capture and import work for [#209 phase 2](https://github.com/XRPL-Commons/forge/issues/209).
-It does **not** activate SQLite or complete the production migration. The captured
-production sources now have entity mappings and independent fact checks. The
-runtime adapters, full API/UI/CLI view parity and cutover protocol remain required.
+The CLI prepares, validates and activates the SQLite runtime for an existing
+Forge installation. `capture`, `import` and `verify` remain useful for an offline
+rehearsal. Only `activate --apply` authorizes the production switch.
 
-## Operator workflow
+## Activate an existing server
+
+Install the CLI from the same release deployed on the server. Update the managed
+server launchers with that release before activation: migration checks the exact
+Python/SQL package fingerprint, the service commands and their qualified SQLite
+runtime. Run these commands on your computer; the CLI handles SSH and private files.
+
+```sh
+forge migrate plan --ssh forge --source /absolute/server/checkout --root /absolute/private/runtime --json
+forge migrate prepare --ssh forge --source /absolute/server/checkout --root /absolute/private/runtime --apply --json
+forge migrate activate --ssh forge --source /absolute/server/checkout --root /absolute/private/runtime --apply --json
+```
+
+Activation records the original runtime intent and active services in a private
+journal before making changes. It pauses Build and merge admission, stops the
+API/UI mutation entrypoints and lets existing workers finish verified cleanup.
+If workers remain, it returns `status: draining` with their counts. Continue the
+same authorized operation with:
+
+```sh
+forge migrate resume --ssh forge --source /absolute/server/checkout --root /absolute/private/runtime --json
+```
+
+Once drained, the CLI stops the remaining managed writers, captures a fresh sealed
+snapshot, imports normalized rows and checks source, relational and public-view
+parity. Unexpected source/configuration changes, unqualified launchers, pending
+setup/reset operations and unexplained import findings prevent selection.
+It then restores the original enabled/merge settings in SQLite, publishes the
+private `state/storage` marker atomically and restarts the previously active services.
+
+The result includes the SQLite instance identity, diagnostic-copy location and
+remaining reconciliation-hold count. Imported unfinished work retains its
+`legacy_reconciliation` gate until fresh evidence authorizes a typed reconciliation;
+activation does not erase gates or reset attempt budgets.
+
+The active supervisor uses the recorded CLI activation authority to fetch current
+GitHub facts before releasing each migration boundary. Changed candidate inputs
+return to Build; an exact remote merge receipt records the completed merge.
+Pending imported failures receive one read-only investigation using preserved
+assignment diagnostics and current qualified worker settings. Forge does not
+invent an original runnable launch or reverse its failure charge. Incomplete or
+interrupted older investigations retain their evidence and require an attributed
+operator retry decision. Independent holds and exhausted budgets remain enforced.
+Pending legacy operator requests keep their original intention and an attributed
+interruption receipt. Forge pauses affected work for a fresh operator decision;
+it does not replay an old request with newly invented authority.
+Truncated cached bodies stay explicitly incomplete until a full issue read; they
+cannot authorize admission or merge.
+
+`resume` follows the journal. Before selection it continues the interrupted drain,
+copy or import. An incomplete capture is retained separately and captured again
+under the writer barrier. After the marker is published it only finishes the SQLite
+restart. It never switches back to JSON. A failed step retains the private staging
+and journal; use `plan` to inspect the stage and `resume` to continue after correcting
+the reported blocker. No shell session or manual file transfer is needed.
+
+The pre-migration copy is kept for diagnosis. It contains private state and must
+not be attached to issues, PRs or chat. The selected marker and instance identity
+are fixed; old launchers and JSON writers must refuse the selected installation.
+
+## Optional offline rehearsal
 
 Use the CLI from the checkout containing these commands, or install that version
 of `forge-agent-client`. The wheel includes the Python store/import libraries and
@@ -58,9 +117,10 @@ session before restoration, run:
 forge migrate resume --ssh forge --source /absolute/server/checkout --root /absolute/private/runtime --json
 ```
 
-This restores only the previously active services. It does not import or activate
-a database. A failed service restoration retains the journal and returns an error.
-A partially written capture has no valid seal and cannot be imported.
+For a `capture` operation, resume restores only the previously active services.
+For an authorized `activate` operation, it continues the one-way protocol above.
+A failed restoration retains its journal. A partially written capture has no valid
+seal and cannot be imported.
 
 ## Resume and integrity
 
@@ -78,8 +138,8 @@ A partially written capture has no valid seal and cannot be imported.
   An incomplete database initializer fails closed and needs a new staging attempt
   or explicit diagnosis; the importer never deletes it as a recovery shortcut.
 - Imported stores have `import_only=true`; lifecycle and configuration mutations reject them. There
-  is no activation command, JSON switch-back, retention schedule or service restart
-  in the import/verify path.
+  is no selection or service restart in the import/verify path; activation uses the
+  separate maintenance protocol above. There is no JSON switch-back.
 - Verification checks source round trips, relational integrity, unit versions,
   requirements identities, every historical charge/correction, candidates, jobs,
   event sequences/timestamps and every artifact chunk's bytes and digest.
@@ -89,7 +149,7 @@ A partially written capture has no valid seal and cannot be imported.
   Failure evidence and auxiliary execution inputs are separate artifacts.
   Unknown entity fields are explicit blocking findings.
   `public_view_parity: pending` explicitly distinguishes these checks from the
-  future API/UI/CLI projection acceptance gate.
+  separate public-view acceptance gate run by activation.
 
 ## Production-copy dry run (2026-10-06)
 
@@ -128,7 +188,7 @@ The first import reported 34 unmapped supporting files. Those captured sources
 now have mappings; the expanded dry run reports **zero unmapped source files**.
 That does not mean their runtime adapters have switched to the database.
 
-Remaining findings prevent activation:
+The historical dry run left these findings to resolve or preserve at activation:
 
 - 13 live units retain `legacy_reconciliation` gates until current ownership,
   GitHub facts and their other gates are checked by the cutover reconciler.
@@ -162,19 +222,16 @@ interrupted write. It is never included in a migration report. The full sealed
 source evidence remains private too. No credentials are sent to GitHub or any
 other service during import or verification.
 
-## Source inventory and next work
+## Source inventory and release validation
 
-The explicit SQLite supervisor now composes bounded worker execution, ordered
-issue observations, result validation, durable GitHub check/merge effects and
-dispatch (see [the foundation guide](store-foundation.md#explicit-sqlite-supervisor)).
-The production launcher and public handlers have not selected it. Recovery,
-supporting-domain writers, operator actions and remaining parity contracts still
-need integration. These additions do not change `import_only`, resolve the captured
-live-unit findings or permit activation. The new effect schema changes the importer
-fingerprint, so release-candidate qualification must use a fresh staging destination.
+The selected runtime composes row-based pipeline controllers and supporting-domain
+writers. The migration protocol checks public views against the same frozen source
+before selection. Explicitly retained reconciliation holds remain visible in the UI.
+See [the writer inventory](design/state-source-inventory.md) and
+[the foundation guide](store-foundation.md).
 
-See [the writer inventory](design/state-source-inventory.md). Complete phase 2 by
-comparing every public view against the
-same frozen source, and producing a report with no unexplained differences.
-Phases 3–4 then move readers and writers together under a maintenance boundary.
-Only that later cutover may select the database. #209 remains open.
+Code and schema changes alter the importer fingerprint. An offline rehearsal uses a
+new staging destination after such changes. An interrupted production activation
+must resume with its original source/tool identity. Production activation and a real
+issue reaching its first merge remain release-validation steps; implementing this
+command does not claim that either has already happened. #209 remains open.

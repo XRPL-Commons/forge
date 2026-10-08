@@ -326,6 +326,18 @@ class MergeControllerTests(unittest.TestCase):
             controller.step('u')
         self.assertEqual(EffectQueries(self.store).pending(), [])
 
+    def test_fresh_approval_observation_is_visible_for_exact_candidate(self):
+        from forge.factory.store_views import PipelineViews
+        effect=self.prepare_candidate(human_required=True)
+        self.remote.approve()
+        self.assertTrue(self.admission(effect)['human_approved'])
+        row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
+        self.assertTrue(any(review['counted'] for review in row['approvals']))
+        self.remote.approve(identifier=2,state='CHANGES_REQUESTED')
+        self.assertIsNone(self.admission(effect))
+        row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
+        self.assertTrue(any(review['state']=='CHANGES_REQUESTED' for review in row['approvals']))
+
 
 if __name__ == '__main__':
     unittest.main()

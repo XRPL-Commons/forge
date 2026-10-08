@@ -86,7 +86,7 @@ class DeploymentTests(unittest.TestCase):
         self.github = FakeGitHub()
         self.settings = FakeSettings([{'id': 7, 'name': 'example/site', 'enabled': True,
                                        'access_ready': True, 'dispatch_allowed': True}])
-        self.config = {'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'engine': '/usr/bin/docker',
+        self.config = {'enabled': True, 'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'engine': '/usr/bin/docker',
                        'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'],
                        'grace_seconds': 10, 'proxy': 'http://forge-egress:3128', 'provider': 'codex'}
 
@@ -161,6 +161,18 @@ class DeploymentTests(unittest.TestCase):
         self.deployments().tick(self.config)
         self.assertFalse(self.engine)
         self.assertEqual(self.entry()['status'], 'proposed')
+
+    def test_disabled_factory_finishes_owned_worker_without_starting_replacement(self):
+        self.second_repository()
+        self.deployments().tick(self.config)
+        identifier = self.finish(7)
+        self.deployments().tick({**self.config, 'enabled': False})
+        self.assertEqual(self.entry(7)['status'], 'proposed')
+        self.assertEqual(self.resets, [identifier])
+        self.assertFalse(self.engine)
+        self.assertNotIn('8', self.deployments().read()['repositories'])
+        self.deployments().tick({**self.config, 'enabled': False})
+        self.assertFalse(self.engine)
 
     def test_only_one_strategist_runs_at_a_time(self):
         self.second_repository()

@@ -15,6 +15,7 @@ import time
 import uuid
 
 from . import codes, status
+from .presentation import record_revision_display
 from .models import (
     Candidate, Command, GateCode, IdempotencyConflict, Role, TransitionError,
     VersionConflict,
@@ -53,9 +54,9 @@ def _gates(db, unit_id):
 def applicable_gates(db, unit, member_id=None, candidate_id=None):
     """All hard gates for this assignment, in the common display order.
 
-    Dependency rows are a fail-closed boundary until the later dependency
-    evaluator can validate their observations and input manifests. Even a closed
-    prerequisite needs that evaluator; this foundation never infers fulfillment.
+    External issue dependencies require a proof for the pinned requirements
+    revision. Member dependencies remain blocked until the batch evaluator
+    validates their exact candidate inputs.
     Derived blockers have no gate ID and are not stored as a second authority.
     """
     gates = _gates(db, unit["id"])
@@ -74,7 +75,7 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None):
     for row in db.execute(
         "SELECT m.id FROM unit_issues m WHERE m.unit_id = ? AND m.left_at IS NULL AND ("
         "EXISTS (SELECT 1 FROM issue_dependencies d WHERE d.issue_id = m.issue_id "
-        "AND d.requirements_revision_id = m.requirements_revision_id) OR "
+        "AND d.requirements_revision_id = m.requirements_revision_id) AND NOT COALESCE((SELECT clear FROM dependency_checks c WHERE c.member_id=m.id AND c.requirements_revision_id=m.requirements_revision_id ORDER BY generation DESC LIMIT 1),0) OR "
         "EXISTS (SELECT 1 FROM member_dependencies d WHERE d.unit_id = m.unit_id "
         "AND d.member_id = m.id AND d.membership_generation = ?))",
         (unit["id"], unit["membership_generation"]),
@@ -313,6 +314,7 @@ class Lifecycle:
                 "VALUES(?,?,?,?,?,?,?,?)", (revision_id, issue_id, title, body, manifest_hash([title, body]),
                                            manifest_hash(requirements), _json(requirements), observed_at),
             )
+            record_revision_display(db,revision_id,body,requirements)
             db.execute(
                 "INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,?,'queued',?,?)",
                 (unit_id, repository_id, base_branch, self.clock(), self.clock()),
@@ -371,7 +373,7 @@ class Lifecycle:
             rule = codes.GATES[gate["code"]]
             if release != rule.release:
                 raise TransitionError("release rule does not match this gate")
-            if gate["code"] in {"operator_pause", "budget_exhausted", "verification_human", "verification_ci"} or rule.release == "transition":
+            if gate["code"] in {"operator_pause", "budget_exhausted", "verification_human", "verification_ci", "legacy_reconciliation"} or rule.release == "transition":
                 raise TransitionError("this gate requires its dedicated lifecycle command")
             self._release_evidence(gate, release, evidence)
             if gate["candidate_id"] and gate["candidate_id"] != unit["current_candidate_id"]:
@@ -593,6 +595,8 @@ class Lifecycle:
                 candidate_id = job["candidate_id"]
             db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,attempt_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,?,?,'pass',?,?,?)", (_id(command.request_id, "evidence"), unit["id"], candidate_id, job["attempt_id"], "publication" if job["role"] == "build" else job["role"], command.actor_id, self.clock(), _json(evidence)))
             self._result(db, command, job, evidence, "success")
+            from .runtime_requirements import learn_memory_in
+            learn_memory_in(db, unit, job, self.clock())
             for gate in gates:
                 self._open_gate(db, command, gate['code'], gate['details'], candidate_id=candidate_id)
             db.execute("UPDATE units SET state = ? WHERE id = ?", (target, unit["id"]))
@@ -912,6 +916,7 @@ class Lifecycle:
             revision_id = existing[0] if existing else _id(command.request_id, "revision")
             if not existing:
                 db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)", (revision_id, issue_id, title, body, content_hash, requirements_hash, _json(requirements), self.clock()))
+                record_revision_display(db,revision_id,body,requirements)
             reopened_version = old['reopened_version']
             if state == 'open' and (old['github_state'] == 'closed' or state_reason == 'reopened' and old['state_reason'] != 'reopened'):
                 reopened_version = old['version'] + 1
@@ -973,6 +978,11 @@ class Lifecycle:
                 raise TransitionError("admission requires an open issue in an enabled repository")
             if issue["version"] != expected_issue_version:
                 raise VersionConflict("issue observation changed before admission")
+            revision = db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?', (issue['current_revision_id'],)).fetchone()
+            requirements = json.loads(revision[0])
+            if isinstance(requirements, dict) and (requirements.get('body_truncated') or requirements.get('body_unavailable')
+                    or requirements.get('complete') is False or 'legacy_body_hash' in requirements):
+                raise TransitionError('admission requires fresh complete issue requirements')
             if db.execute("SELECT 1 FROM unit_issues WHERE issue_id = ? AND left_at IS NULL", (issue_id,)).fetchone():
                 raise TransitionError("issue already belongs to a live unit")
             member_id = self._create_unit(db, command, unit_id, issue, base_branch, issue["current_revision_id"])
@@ -1043,7 +1053,10 @@ class Lifecycle:
             raise TransitionError("merge confirmation requires independently verified evidence")
         def change(db, unit):
             self._live(unit)
-            if candidate_id != unit["current_candidate_id"] or unit["state"] not in {"reviewing", "auditing", "merging"}:
+            # A preserved candidate may still be queued for rework when a human
+            # merges it. Exact remote receipt and verified cleanup remain the
+            # authority; the scheduler phase cannot erase an observed merge.
+            if not candidate_id or candidate_id != unit["current_candidate_id"]:
                 raise TransitionError("merge confirmation must identify the current candidate")
             self._quiescent(db, unit["id"], allow_confirmed_merge=True)
             identity = db.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
@@ -1058,6 +1071,10 @@ class Lifecycle:
             # The receipt reconciles only this candidate's merge intent. Any
             # unrelated uncertain external effect still needs reconciliation.
             self._quiescent(db, unit["id"])
+            if unit['state'] in {'queued','building','integrating'}:
+                # Normalize a preserved, already published candidate inside the
+                # receipt transaction; no technical verdict or launch is implied.
+                db.execute("UPDATE units SET state='reviewing' WHERE id=?", (unit['id'],))
             self._settle(db, command, unit, "merged", merge_sha=merge_sha)
             return {"merge_sha": merge_sha}
         return self._apply(command, "confirm_merged", dict(candidate_id=candidate_id, merge_sha=merge_sha, evidence=evidence), change)

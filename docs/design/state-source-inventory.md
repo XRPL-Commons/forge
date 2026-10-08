@@ -1,39 +1,52 @@
 # Runtime state source inventory
 
-This inventory accompanies the inactive importer. It is not a declaration that
-all writers have moved to SQLite. Source references describe the current modules;
-phase 7 must add a static/runtime check that rejects surviving operational JSON
-writes after cutover.
+The application selects SQLite through the private `state/storage` marker.
+Before selection, the legacy paths remain available for capture and draining.
+After selection, adapters use the rows below; legacy operational JSON writes fail.
+Production activation is a separate CLI operation, described in
+[the migration guide](../store-migration.md).
 
-| Domain | Current writers/readers | Source files | Import status |
-| --- | --- | --- | --- |
-| Pipeline | `factory/ledger.py`, `factory/supervisor.py`, `factory/control.py`, `factory/issue_actions.py` | `state/factory/factory-ledger.json`, operator/check requests, supervisor heartbeat | Core, controller context, failure evidence, provider/memory facts and requests mapped; runtime transitions and external-effect reconciliation pending |
-| GitHub issue inventory | `factory/issues.py`, `factory/control.py`, `factory/discussions.py` | `state/issues/inventory.json` | Issue facts/revisions, repository sweep metadata, collaborators and partial PR summaries mapped; partial summaries never fabricated into exact candidate observations |
-| Operator actions | `factory/issue_actions.py` | `state/issues/actions.json` | One request row per decision, preserving opaque expected revision, status and plans; effect dispatcher pending |
-| Discussions | `factory/discussions.py` | `state/issues/discussions.json` | Threads, paged messages, proposal metadata, executions and explicit artifacts mapped |
-| Deployment observations | `deployments.py`, `factory/discussions.py`, `factory/control.py`, `repository_setup.py` | `state/deployments.json` | Per-repository profile, observation/proposal and auxiliary execution mapped |
-| Environment | `repository_environments.py`, `factory/control.py` | `state/environment-scans.json`, `state/environment-proposals.json`, runtime configuration revisions | Scans, proposals, per-unit choices/overrides and versioned configuration mapped |
-| Repository access/setup | `settings.py`, `repository_setup.py`, `setup_service.py` | `state/github-access/{access,repositories,sync}.json` | Separate role/repository observations, sync receipt and repository setup report rows |
-| Setup/update | `onboarding.py`, `host_setup.py`, `host_update.py`, `setup_service.py`, `operator_bootstrap.py` | `state/onboarding/setup.json`, `state/setup-service.json`, setup/runtime/host runtime configuration | Setup identity/generation, configuration and separate probe executions mapped; runtime setup adapter pending |
-| Operator identity/auth | `operator_auth.py`, status request audit writer | `state/operator-auth/auth.json`, `requests.jsonl` | Identity configuration, credential reference, sessions, flows, original epochs and request audit mapped; no revived authorization |
-| Agent/client operations | `client_repositories.py`, `client_connections.py` | `state/client-operations/operations.json`, connection state | Grants, consumed device codes, refresh replay history, rate limits and operations mapped |
-| Notifications | `notifications.py` | `state/notifications/outbox/*.json`, delivery status | Outbox channel rows and retained delivery receipts mapped; an unknown delivery-status source still blocks qualification |
-| Configuration | `settings.py`, `factory/config.py`, `factory/verification.py`, onboarding/setup/update adapters | `factory.json`, `runtime.json`, `host-runtime.json`, `setup/runtime.json` | Versioned configuration rows; identity secret staged separately with a verified private reference |
-| Activation/pause markers | `onboarding.py`, `setup_service.py`, `host_setup.py`, `factory/control.py` | `state/*.enabled`, `state/factory-paused.json`, login marker | Named runtime controls retain opaque source generation and marker facts |
-| Initialization markers | `state.AtomicStore` | `*.initialized` | Captured with source; a marker without its store blocks capture |
-| Credentials | `credentials.py`, `factory/codex_auth.py`, provider login helpers | Credential directories, credential index, staged provider auth | Remain credential material, outside runtime row migration; refs must be preserved |
-| Temporary IPC | `state.py`, settings locks, runner locks | `*.lock`, `.pending-*`, process locks | Not authoritative snapshot sources; no import of interrupted atomic-write temporaries |
-| Independent observer | `observer/` | `state/observer/` and observer-private mirror state | Independent domain; any included evidence is not selected as controller runtime state |
-| Deployment diagnostics | Historical operator/tool receipts | `state/*-deployment.json`, `state/deploy-*.json` | Diagnostic evidence only |
+| Domain | Selected runtime | Legacy source |
+| --- | --- | --- |
+| Pipeline | `factory/sqlite_runtime.py` composes execution, observation, requirements, recovery, verification, effects and dispatch controllers | `state/factory/factory-ledger.json`, requests and heartbeat |
+| Issue inventory | `factory/store_inventory.py`, `store/queries.py`, `factory/store_views.py`; revision facts, sweep cursors and bounded presentation rows | `state/issues/inventory.json` |
+| Operator actions | `factory/store_operator.py`; actor-bound requests and external-effect receipts | `state/issues/actions.json`, operator/check requests |
+| Discussions | `factory/sqlite_discussions.py`, `store/discussions.py`; threads, paged messages and owned executions | `state/issues/discussions.json` |
+| Deployments | `sqlite_deployments.py`, `store/auxiliary.py`; profiles, observations, proposals and execution artifacts | `state/deployments.json` |
+| Environment | `sqlite_environments.py`, `store/runtime_requirements.py`; scans, proposals, per-unit choices and configuration revisions | Environment scans/proposals and runtime defaults |
+| Repository access/setup | `sqlite_settings.py`, `repository_setup.py`; role/repository observations, sync receipts and protection checks | `state/github-access/{access,repositories,sync}.json` |
+| Setup/update | `sqlite_onboarding.py`, `sqlite_setup_service.py`, `host_update.py`; setup generation, probes, activation and configuration history | Onboarding, setup heartbeat and host configuration |
+| Operator identity/auth | `sqlite_identity.py`; identity configuration, private credential reference, sessions, flows, original epochs and request audit | `state/operator-auth/auth.json`, `requests.jsonl` |
+| Agent/client operations | `sqlite_identity.py`; grants, device codes, replay history, rate limits and operations | Client connection/operation stores |
+| Notifications | `store/notifications.py`; one outbox row per event/channel, attempts and delivery receipts | Notification outbox and delivery status |
+| Configuration | `store/configuration.py`; versioned rows for live/setup runtime, repository settings and host records | `factory.json`, `runtime.json`, `host-runtime.json`, `host.json`, setup configuration |
+| Activation/pause | Named `runtime_controls` rows with original generation facts | Activation, pause and login markers |
+| Initialization | Import provenance and store identity; orphan legacy initialization markers block capture | `*.initialized` |
+| Credentials | Private credential files remain separate; configuration stores references | Credential directories, credential index and staged provider auth |
+| Temporary IPC | Process locks and runner control files; no authority imported from interrupted atomic writes | `*.lock`, `.pending-*` |
+| Independent observer | Separate observer domain; deferred in #111 | Observer-private state and mirror |
+| Deployment diagnostics | Immutable diagnostic evidence | Historical deployment receipts |
 
-Capture discovers recognized JSON/JSONL/initialization/activation files beneath
-`state/` and `setup/`, plus the three top-level configuration files. It rejects
-symlink files/directories and checks the complete selected file set before and
-after copying under maintenance. A new storage format or marker suffix requires
-updating this inventory and capture classification before that domain can cut over.
-Unclassified captured files remain visible in the source manifest and prevent
-completion through a `domain_mapping_pending` finding.
+## Cutover boundary
 
-No adapter may read an imported whole-document archive as its new runtime store.
-The archive exists to prove lossless import and diagnose mapping errors. New
-runtime paths must use normalized row queries and typed transitions.
+`legacy_writers.py` gives operational JSON writers a shared process lease. The
+migration CLI takes the exclusive lease after draining and stopping services,
+and holds it from capture through storage selection. A durable maintenance
+journal keeps writers blocked after an interruption. Existing adapter objects
+recheck the boundary before publication, including notification delivery.
+
+Capture discovers recognized JSON, JSONL, initialization and activation files
+beneath `state/` and `setup/`, plus the four top-level configuration files. It
+rejects symlinks and checks the selected source set and digests. Unclassified
+files remain visible in the manifest and block activation.
+
+The importer preserves original rows and evidence. Fresh migration reconciliation
+checks active issue and candidate identities before resuming, rebuilding or
+closing work. Interrupted operator intentions remain attributed records and
+require an explicit decision where automatic continuation would change intent.
+Truncated cached bodies remain marked incomplete until a fresh GitHub read.
+
+Whole-document import archives support parity checks and diagnosis. Runtime
+adapters use normalized rows and bounded artifacts; they do not reconstruct a
+writable JSON ledger. Tests exercise the selected public paths, resumable cutover,
+concurrent writers, and retained identity and lifecycle facts.

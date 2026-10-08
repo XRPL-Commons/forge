@@ -64,11 +64,21 @@ def provider_available(db, provider, provider_id, config, now):
             return False
     if not reference:
         return True
-    # Discussion runtime migration has no typed account assignment yet. An
-    # unknown live lease cannot be assumed to own a different OAuth file.
-    if db.execute('SELECT 1 FROM discussion_leases LIMIT 1').fetchone():
-        return False
     parallel = provider == 'codex' and config.get('codex_parallel_auth') is True
+    # Every execution domain pins the credential reference before launching.
+    # A legacy unknown lease remains fail closed until verified teardown.
+    for lease_table, runtime_table in (('discussion_leases','discussion_runtime'), ('auxiliary_leases','auxiliary_runtime')):
+        rows = db.execute('SELECT r.manifest_json FROM '+lease_table+' l LEFT JOIN '+runtime_table+
+                          ' r ON r.execution_id=l.execution_id LIMIT 101').fetchall()
+        if len(rows)>100:
+            return False
+        for row in rows:
+            if row[0] is None:
+                return False
+            other = json.loads(row[0]).get('runner_config') or {}
+            if other.get('provider_auth_file_env') == reference and (
+                    not parallel or other.get('provider') != 'codex' or other.get('codex_parallel_auth') is not True):
+                return False
     rows = db.execute('SELECT l.provider,l.runner_config_json FROM job_launches l '
                       'JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 '
                       "AND json_extract(l.runner_config_json,'$.provider_auth_file_env')=?", (reference,))
@@ -278,6 +288,8 @@ class ExecutionQueries:
                 identity = dict(db.execute('SELECT * FROM candidates WHERE id=?', (job['candidate_id'],)).fetchone())
                 job['candidate'] = dict(key=identity['id'], pr=identity['pull_number'], branch=identity['branch'],
                                         head=identity['head_oid'], base=identity['base_oid'], requirements=identity['requirements_hash'])
+            from .operator_views import reviewer_request_in
+            job['reviewers_requested']=reviewer_request_in(db,job['candidate_id']) if job['candidate_id']==job['current_candidate_id'] else None
             # The singleton adapter pins the original membership, even after its
             # unit is closed or the issue is admitted elsewhere.
             members = db.execute('SELECT m.id,i.github_number,m.issue_id '

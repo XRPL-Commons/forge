@@ -67,6 +67,9 @@ def normalize(importer, ledger, inventory):
             insert(db, 'inventory_pull_summaries', repository_id=int(key), github_number=pull['number'],
                    title=pull.get('title',''), body=pull.get('body',''), author_login=pull.get('author',''),
                    branch=pull.get('branch',''), forge_owned=int(pull.get('forge_owned',False)), observation_id=observation)
+            from ..presentation import record_pull_display
+            repository_name=db.execute('SELECT full_name FROM repositories WHERE id=?',(int(key),)).fetchone()[0]
+            record_pull_display(db,int(key),repository_name,pull)
             unknown_fields(db, importer, observation, pull, ('number','title','body','author','branch','forge_owned'))
         for person in collaborators.get('rows', []):
             insert(db, 'inventory_collaborators', repository_id=int(key), login=person['login'], source='collaborator',
@@ -128,6 +131,7 @@ def normalize(importer, ledger, inventory):
         insert(db, 'issue_action_requests', id=identifier, issue_id=value['key'], action=value['action'],
                expected_revision=value['revision'], status=value['status'], reason=value['reason'], message=value.get('message'),
                plan_json=json_text(value.get('plan')), environment_json=json_text(value.get('environment')), created_at=value['created_at'])
+        insert(db,'imported_operator_requests',request_id=identifier,source_manifest=importer.run_id,source_status=value['status'],source_message=value.get('message'))
         unknown_fields(db, importer, 'action:'+identifier, value,
                        ('action','created_at','key','message','number','plan','reason','repo','repo_id','revision','status','environment'))
         issue = db.execute('SELECT i.github_number,i.repository_id,r.full_name FROM issues i JOIN repositories r ON r.id=i.repository_id WHERE i.id=?', (value['key'],)).fetchone()

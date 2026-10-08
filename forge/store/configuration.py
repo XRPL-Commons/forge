@@ -20,19 +20,24 @@ class Configuration:
             return dict(revision=row['revision'],settings=json.loads(row['settings_json']),credential_ref=row['credential_ref'])
 
     def replace(self, domain, settings, *, expected_revision, subject='instance', credential_ref=None):
+        with self.store.write() as db:
+            return self.replace_in(db, domain, settings, expected_revision=expected_revision,
+                                   subject=subject, credential_ref=credential_ref)
+
+    def replace_in(self, db, domain, settings, *, expected_revision, subject='instance', credential_ref=None):
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('expected_revision must be a nonnegative integer')
         payload = json.dumps(settings,sort_keys=True,separators=(',',':'),allow_nan=False)
         if len(payload.encode()) > 65536:
             raise ValueError('configuration exceeds its size limit')
-        with self.store.write() as db:
-            if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
-                raise ConfigurationConflict('staging imports cannot accept configuration changes')
-            row = db.execute('SELECT revision FROM configuration WHERE domain=? AND subject=? AND active=1', (domain,subject)).fetchone()
-            current = row[0] if row else 0
-            if current != expected_revision:
-                raise ConfigurationConflict('configuration changed; reload before saving')
-            db.execute('UPDATE configuration SET active=0 WHERE domain=? AND subject=? AND active=1',(domain,subject))
-            db.execute('INSERT INTO configuration VALUES(?,?,?,?,?,?,?)',
-                       (domain,subject,current+1,1,payload,credential_ref,self.clock()))
-            return current+1
+        if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
+            raise ConfigurationConflict('staging imports cannot accept configuration changes')
+        row = db.execute('SELECT revision FROM configuration WHERE domain=? AND subject=? AND active=1', (domain,subject)).fetchone()
+        current = row[0] if row else 0
+        if current != expected_revision:
+            raise ConfigurationConflict('configuration changed; reload before saving')
+        following = db.execute('SELECT COALESCE(MAX(revision),0)+1 FROM configuration WHERE domain=? AND subject=?', (domain,subject)).fetchone()[0]
+        db.execute('UPDATE configuration SET active=0 WHERE domain=? AND subject=? AND active=1',(domain,subject))
+        db.execute('INSERT INTO configuration VALUES(?,?,?,?,?,?,?)',
+                   (domain,subject,following,1,payload,credential_ref,self.clock()))
+        return following

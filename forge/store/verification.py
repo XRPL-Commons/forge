@@ -169,7 +169,8 @@ class VerificationQueries:
                                 'WHERE m.unit_id=? AND m.left_at IS NULL LIMIT 2', (unit['id'],)).fetchall()
             if len(members) != 1:
                 raise TransitionError('verification currently requires a unit of one')
-            return dict(gate=dict(gate), unit=unit, identity=candidate, repo=repository['full_name'], repo_id=repository['id'],
+            from .operator_views import reviewer_request_in
+            return dict(gate=dict(gate), unit=unit, unit_state=unit['state'],reviewers_requested=reviewer_request_in(db,candidate['id']),identity=candidate, repo=repository['full_name'], repo_id=repository['id'],
                         number=members[0]['github_number'], requirements=json.loads(members[0]['requirements_json']),
                         target_branch=unit['base_branch'], details=json.loads(gate['details_json']),
                         candidate=dict(key=candidate['id'], pr=candidate['pull_number'], head=candidate['head_oid'],

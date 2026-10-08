@@ -38,3 +38,40 @@ class MigrationCLITests(unittest.TestCase):
             self.assertIn('forge/store/migration/host.py',names)
             self.assertIn('forge/store/schema/002_import_archive.sql',names)
             self.assertTrue(all(n.startswith('forge/') and n.endswith(('.py','.sql')) for n in names))
+
+    def test_activate_requires_explicit_apply_and_routes_host_protocol(self):
+        values=['migrate','activate','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
+        with patch('forge_client.migration.call',return_value={'status':'draining'}) as call:
+            with self.assertRaises(SetupError):execute(parser().parse_args(values))
+            call.assert_not_called()
+            self.assertEqual(execute(parser().parse_args([*values,'--apply'])),{'status':'draining'})
+            self.assertEqual(call.call_args.args[1],'activate')
+            self.assertIs(call.call_args.kwargs['apply'],True)
+
+    def test_agent_contract_exposes_one_way_activation(self):
+        from forge_client.cli import migration_commands
+        contract=migration_commands()['activate']
+        self.assertTrue(contract['activation_supported'])
+        self.assertTrue(contract['maintenance'])
+        self.assertIn('apply',contract['input_schema']['required'])
+
+    def test_bootstrap_is_executable_python_with_qualified_child(self):
+        from forge_client.migration import BOOTSTRAP
+        compile(BOOTSTRAP,'migration-bootstrap','exec')
+        self.assertIn('LD_LIBRARY_PATH',BOOTSTRAP)
+        self.assertIn('qualified_sqlite()',BOOTSTRAP)
+
+    def test_drain_response_has_complete_resumable_command(self):
+        import json
+        import shlex
+        from types import SimpleNamespace
+        from forge_client.migration import call
+        args = parser().parse_args(['migrate', 'activate', '--ssh', 'forge', '--source', '/srv/forge source', '--root', '/srv/runtime', '--apply'])
+        response = {'ok': True, 'status': 'draining', 'next_command': 'forge migrate resume'}
+        with patch('forge_client.migration.bundle', return_value=b''), patch('forge_client.migration.subprocess.run',
+                return_value=SimpleNamespace(returncode=0, stdout=json.dumps(response).encode())):
+            value = call(args, 'activate', apply=True)
+        command = shlex.split(value['next_command'])
+        parsed = parser().parse_args(command[1:])
+        self.assertEqual((parsed.migration_command, parsed.ssh, parsed.source, parsed.root),
+                         ('resume', 'forge', '/srv/forge source', '/srv/runtime'))

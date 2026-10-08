@@ -19,8 +19,11 @@ IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_a
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
-def decide(root, *, key, action, revision: str, reason, request_id=None):
+def decide(root, *, key, action, revision: str, reason, request_id=None, actor_id=None):
     """Accept a decision without a GitHub call or waiting for the controller lease."""
+    from .store_operator import selected_service
+    service=selected_service(root,actor_id=actor_id)
+    if service is not None:return service.request(key,action,revision,reason,request_id=request_id)
     if not isinstance(action, str) or action not in IMMEDIATE:
         return request(root, key=key, action=action, revision=revision, reason=reason, request_id=request_id)
     if not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
@@ -122,7 +125,10 @@ def reviewer_logins(reason):
     return logins
 
 
-def request(root, *, key, action, revision: str, reason, request_id=None, environment=None):
+def request(root, *, key, action, revision: str, reason, request_id=None, environment=None, actor_id=None):
+    from .store_operator import selected_service
+    service=selected_service(root,actor_id=actor_id)
+    if service is not None:return service.request(key,action,revision,reason,request_id=request_id,environment=environment)
     if action == 'start_anyway' and environment is None:
         return decide(root, key=key, action=action, revision=revision, reason=reason, request_id=request_id)
     if not isinstance(action, str) or action not in ACTIONS or not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:

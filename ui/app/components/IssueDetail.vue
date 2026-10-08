@@ -38,6 +38,9 @@ const environmentOpen = ref(false)
 // Each request the page sends has one submission: its spinner, its double
 // submit guard and the error its dialog shows.
 const environmentRequest = useSubmission('Could not save the environment.')
+const verificationRequest = useSubmission('Could not confirm verification.')
+const verificationStatement = ref('')
+const verificationIdentity = ref<{ gate: string; revision: string; statement: string; id: string } | null>(null)
 
 const factory = useFactory(() => '/api/factory?issue=' + encodeURIComponent(props.issueKey))
 const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${encodeURIComponent(props.issueKey)}`, async (path) => {
@@ -57,6 +60,13 @@ const loaded = computed<Loaded | null>(() => {
   return value ? { ...value, factory: factory.data.value?.ok === false ? null : factory.data.value } : null
 })
 const detail = computed<IssueDetailView | null>(() => loaded.value?.detail?.issue ?? null)
+watch(() => detail.value?.verification_request?.gate_id, (gate, previous) => {
+  if (previous && gate !== previous) {
+    verificationStatement.value = ''
+    verificationIdentity.value = null
+    verificationRequest.error.value = gate ? 'The verification request changed. Check the current candidate before confirming.' : null
+  }
+})
 const actions = computed(() => loaded.value?.detail?.actions ?? [])
 const fence = computed(() => loaded.value?.fence ?? null)
 
@@ -387,6 +397,25 @@ function ask(action: IssueAction, reason = '') {
   submitting.value = true
 }
 
+async function confirmVerification() {
+  const issue = detail.value
+  const gate = issue?.verification_request?.gate_id
+  const statement = verificationStatement.value.trim()
+  if (!issue || !gate || !statement || busy.value) return
+  if (verificationIdentity.value?.gate !== gate || verificationIdentity.value?.revision !== issue.revision || verificationIdentity.value?.statement !== statement) {
+    verificationIdentity.value = { gate, revision: issue.revision, statement, id: crypto.randomUUID() }
+  }
+  const requestId = verificationIdentity.value.id
+  submitting.value = true
+  const confirmed = await verificationRequest.run(() => api.act('/api/issues/verify', {
+    key: issue.key, revision: issue.revision, gate_id: gate, statement, request_id: requestId,
+  }))
+  submitting.value = false
+  if (confirmed) verificationStatement.value = ''
+  await poll.refresh()
+  if (confirmed) await factory.refresh()
+}
+
 async function saveEnvironment(environment: IssueEnvironmentSelection) {
   const issue = detail.value
   if (!issue || busy.value) return
@@ -644,6 +673,12 @@ const rootClass = computed(() => {
                 <p class="text-muted">{{ detail.verification_request.why }}</p>
                 <pre class="whitespace-pre-wrap break-words font-sans">{{ detail.verification_request.what }}</pre>
                 <p v-if="detail.verification_request.ci?.length" class="text-muted">Waiting for configured CI checks: {{ detail.verification_request.ci.map(check => check.name).join(', ') }}. Forge checks them automatically.</p>
+                <template v-else-if="detail.verification_request.can_confirm">
+                  <p class="text-muted">Run these steps on the current pull request revision. Record what you checked and confirm only after they pass.</p>
+                  <UTextarea v-model="verificationStatement" aria-label="Verification evidence" placeholder="What I checked and the result" :maxlength="2000" :disabled="busy" class="w-full" />
+                  <UButton :disabled="busy || !verificationStatement.trim()" :loading="verificationRequest.pending.value" @click="confirmVerification">Confirm verification passed</UButton>
+                  <p v-if="verificationRequest.error.value" role="alert" class="text-error">{{ verificationRequest.error.value }}</p>
+                </template>
                 <p v-else class="text-muted">Run these steps on the current PR revision, then approve on GitHub if they pass. If they fail, comment on the PR and retry with the findings.</p>
               </section>
 

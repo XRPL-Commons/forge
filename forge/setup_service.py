@@ -63,6 +63,14 @@ def probe_failure_message(capture, provider, *, timed_out=False):
 
 
 class Service:
+    def __new__(cls, root, **kwargs):
+        if cls is Service:
+            from .store.runtime import selected
+            if selected(root) is not None:
+                from .sqlite_setup_service import SqliteService
+                return object.__new__(SqliteService)
+        return object.__new__(cls)
+
     def __init__(self, root, *, runner=ContainerRunner, github=GitHub):
         self.root = Path(root)
         self.setup = Onboarding(root)
@@ -129,6 +137,16 @@ class Service:
         return any(not job['cleanup'] and (job.get('runner_config') or {}).get('provider_auth_file_env') in references
                    for job in records['jobs'].values())
 
+    def drain(self, scope):
+        config = load(self.root)
+        ledger = Ledger(self.root / 'state/factory')
+        with controller_lock(self.root):
+            supervisor = Supervisor(ledger, self.runner(config), self.github_class(Settings(self.root), config), Settings(self.root), config)
+            for job in ledger.read()['jobs'].values():
+                if not job['cleanup'] and job['role'] != 'merge':
+                    supervisor.execution(job)
+            return self.draining(scope, config, ledger.read())
+
     def runner_verified(self, op):
         """Worker isolation is a property of the image the last qualification covered."""
         return bool(op.get('providers')) and bool(op.get('image')) and op['image'] == self.setup.runtime()['image']
@@ -146,7 +164,7 @@ class Service:
             verified = any(checks.get(i) == 'passed' for i in scope)
         if config['provider_pool']:
             config['provider_ready'] = passed
-            write_json(self.root / ('runtime.json' if data['phase'] == 'active' else 'setup/runtime.json'), config)
+            self.setup.save_runtime(config, active=data['phase'] == 'active')
         self.update(op, probe_jobs=data['probe_jobs'], provider_checks=checks, provider_errors=data.get('provider_errors', {}),
                     probe_error=None, checks={**data['checks'], 'provider': 'passed' if verified else 'failed', 'runner': 'passed'},
                     qualification={'key': self.setup.qualification_key(data), 'at': self.setup.clock(),
@@ -166,21 +184,17 @@ class Service:
         if op['step'] == 'prepare':
             for job in data['probe_jobs']:
                 self.runner(job['runner_config']).reset(job)
+                job['cleanup'] = True
+            if data['probe_jobs']:
+                self.update(op, probe_jobs=data['probe_jobs'])
             scope = op.get('providers')
             if data['phase'] == 'active' and op['action'] == 'harness_check':
                 # Drain normally before probing shared login credentials. A full
                 # check blocks new dispatch while cleanup continues; a scoped one
                 # waits only for the workers holding the checked login, and tick()
                 # keeps dispatching the harnesses outside the scope.
-                config = load(self.root)
-                ledger = Ledger(self.root / 'state/factory')
-                with controller_lock(self.root):
-                    supervisor = Supervisor(ledger, self.runner(config), self.github_class(Settings(self.root), config), Settings(self.root), config)
-                    for job in ledger.read()['jobs'].values():
-                        if not job['cleanup'] and job['role'] != 'merge':
-                            supervisor.execution(job)
-                    if self.draining(scope, config, ledger.read()):
-                        return
+                if self.drain(scope):
+                    return
             config = self.setup.runtime() if op['action'] == 'harness_check' else self.access(data)
             self.runner(config).ready()
             if op['action'] == 'check' and self.setup.qualified(data):
@@ -252,6 +266,7 @@ class Service:
             return
         if job['kind'] == 'provider':
             capture = runner.capture(job)
+            job['capture'] = capture
             if current['running'] or current['exit_code'] != 0 or capture['result'] != {'ready': True, 'attempt': job['id']}:
                 error = probe_failure_message(capture, job['runner_config']['provider'], timed_out=current['running'])
         elif not current['running']:

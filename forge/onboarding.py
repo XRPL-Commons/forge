@@ -22,6 +22,14 @@ ROLES = tuple(ROLE_PERMISSIONS)
 
 
 class Onboarding:
+    def __new__(cls, root, **kwargs):
+        if cls is Onboarding:
+            from .store.runtime import selected
+            if selected(root) is not None:
+                from .sqlite_onboarding import SqliteOnboarding
+                return object.__new__(SqliteOnboarding)
+        return object.__new__(cls)
+
     def __init__(self, root, *, clock=time.time, client=None):
         self.root = Path(root)
         self.clock = clock
@@ -54,6 +62,19 @@ class Onboarding:
         host = self.root / 'host-runtime.json'
         config = read_json(path) if path.exists() else read_json(host) if host.exists() else {}
         return runtime_config({**config, 'enabled': False, 'merge_enabled': False})
+
+    def active_runtime(self):
+        return runtime_config(read_json(self.root / 'runtime.json'))
+
+    def save_runtime(self, config, *, active):
+        write_json(self.root / ('runtime.json' if active else 'setup/runtime.json'), config)
+
+    def provider_health(self):
+        from .factory.ledger import Ledger
+        return Ledger(self.root / 'state/factory').read().get('provider_cooldowns', {})
+
+    def reset_fence(self, data):
+        write_json(self.root / 'state/factory-paused.json', {'generation': data['generation']})
 
     def revision(self, data):
         return digest({'generation': data['generation'], 'config': self.settings().load(), 'runtime': self.runtime(),
@@ -248,15 +269,14 @@ class Onboarding:
 
     def harnesses(self, data=None):
         data = data or self.read()
-        config = (runtime_config(read_json(self.root / 'runtime.json')) if data['phase'] == 'active' else self.runtime())
+        config = self.active_runtime() if data['phase'] == 'active' else self.runtime()
         pool = config['provider_pool']
         # Legacy single-provider setup remains readable during migration.
         if not pool and data.get('provider_revision'):
             pool = [{'id': config['provider'], **{k: config[k] for k in ('provider', 'model')}}]
         health = {}
         if data['phase'] == 'active':
-            from .factory.ledger import Ledger
-            health = Ledger(self.root / 'state/factory').read().get('provider_cooldowns', {})
+            health = self.provider_health()
         def auth(entry):
             # How the account is held decides whether its jobs may run in parallel.
             names = manifest(entry['provider'])
@@ -303,7 +323,7 @@ class Onboarding:
             if data['phase'] not in ('setup', 'active') or data.get('operation'):
                 raise ValueError('Finish the current setup operation before connecting a harness')
             active = data['phase'] == 'active'
-            config = runtime_config(read_json(self.root / 'runtime.json')) if active else self.runtime()
+            config = self.active_runtime() if active else self.runtime()
             pool = config['provider_pool']
             if not pool and data.get('provider_revision'):
                 pool = [{'id': config['provider'], **{k: config[k] for k in
@@ -326,7 +346,7 @@ class Onboarding:
                 config['provider_ready'] = [e['id'] for e in pool if e['provider'] != provider and (ready is None or e['id'] in ready)]
             runtime_config(config)  # Validate BEFORE persisting credentials or configuration.
             self.credentials.put(reference or environment[0], auth_value if reference else secret, file=bool(reference))
-            write_json(self.root / ('runtime.json' if active else 'setup/runtime.json'), config)
+            self.save_runtime(config, active=active)
             data.update(provider_revision=str(uuid.uuid4()), checks={}, provider_checks={}, provider_errors={}, error=None)
             data.pop('readiness', None)
 
@@ -368,7 +388,7 @@ class Onboarding:
                     raise ValueError('Run readiness checks again before starting')
             else:
                 # Fence persists even if the process crashes before its intent is saved.
-                write_json(self.root / 'state/factory-paused.json', {'generation': data['generation']})
+                self.reset_fence(data)
                 data['phase'] = 'resetting'
             image = None
             if action == 'harness_check':

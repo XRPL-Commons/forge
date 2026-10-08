@@ -30,18 +30,20 @@ class PreparedDispatch:
     runner_config: dict
     branch: str | None = None
     context: dict = field(default_factory=dict)
+    unit_version: int | None = None
 
 
 class GitHubPrepare:
     """Fresh remote admission and exact worker inputs for the singleton adapter."""
-    def __init__(self, github, config):
+    def __init__(self, github, config, *, requirements=None):
         self.github, self.config = github, validate(config)
+        self.requirements = requirements
 
     def __call__(self, snapshot, role):
         unit, member, issue = snapshot['unit'], snapshot['member'], snapshot['issue']
         candidate = snapshot['candidate']
         item = dict(repo_id=unit['repository_id'], repo=issue['repository'], number=issue['github_number'],
-                    candidate={'pr': candidate['pull_number']} if candidate else None)
+                    candidate={'pr': candidate['pull_number'],'key':candidate['id']} if candidate else None,unit_state=unit['state'],reviewers_requested=snapshot.get('reviewers_requested'))
         remote, requirements = self.github.issue(item)
         pinned = issue['requirements']
         # Imported legacy requirement records need explicit reconciliation.
@@ -51,9 +53,12 @@ class GitHubPrepare:
         labels = {label['name'] if isinstance(label, dict) else label for label in remote.get('labels', [])}
         if labels.intersection(self.config['hold_labels']) or ownership(remote, item, item['repo'], self.github.pulls(item)):
             return None
-        # Dependency evaluation is a separate ordered observation. Until that
-        # adapter exists, do not infer completion from issue text or stale facts.
-        if issue_dependencies(remote.get('body'), item):
+        # The requirements adapter independently refreshes prerequisite facts.
+        # A caller without that adapter cannot infer completion from issue text.
+        refreshed = self.requirements.prepare(snapshot, role, remote) if self.requirements else None
+        if self.requirements and refreshed is None:
+            return None
+        if not self.requirements and issue_dependencies(remote.get('body'), item):
             return None
         target = self.github.target(item)
         if target != unit['base_branch'] or not self.github.protections(item, {'base_ref': target}):
@@ -67,9 +72,18 @@ class GitHubPrepare:
         environment = snapshot.get('environment') or {}
         item.update(environment_choice=environment.get('choice'), environment_override=environment.get('override'),
                     environment_retry=environment.get('retry'), environment_label=environment.get('label'))
-        item['environment_choice'] = choose(self.config, item, remote)
+        item['environment_choice'] = refreshed['choice'] if refreshed else choose(self.config, item, remote)
         config = worker_config(self.config, item)
-        memory = snapshot.get('memory_bytes', {}).get(role)
+        memory = snapshot.get('memory_bytes', {}).get(role, 0)
+        retry = environment.get('memory_retry') or {}
+        if retry.get('role') == role and self.config['memory_tiers']:
+            from .capacity import memory_bytes
+            memory = max(memory, memory_bytes(retry['memory']))
+        if memory and self.config['memory_tiers']:
+            from .capacity import memory_bytes
+            if retry.get('role') == role and memory > memory_bytes(self.config['memory_tiers'][-1]):
+                return None
+            memory = memory_bytes(next((tier for tier in self.config['memory_tiers'] if memory_bytes(tier) >= memory), self.config['memory_tiers'][-1]))
         if memory:
             from .capacity import memory_bytes
             if memory > memory_bytes(config['memory']):
@@ -89,7 +103,7 @@ class GitHubPrepare:
                 context['resume_branch'] = branch
             if draft:
                 context['resume_pr'] = draft['pr']
-        return PreparedDispatch(base, publisher, config, branch, context)
+        return PreparedDispatch(base, publisher, config, branch, context, refreshed['unit_version'] if refreshed else None)
 
 
 class DispatchController:
@@ -137,7 +151,8 @@ class DispatchController:
                 memory[row['role']] = row['memory_bytes']
             previous = db.execute('SELECT l.branch FROM jobs j JOIN job_launches l ON l.job_id=j.id '
                                   "WHERE j.unit_id=? AND j.role='build' ORDER BY j.created_at DESC,j.id DESC LIMIT 1", (unit_id,)).fetchone()
-            return dict(unit=unit, member=member, issue=issue, candidate=dict(candidate) if candidate else None,
+            from ..store.operator_views import reviewer_request_in
+            return dict(reviewers_requested=reviewer_request_in(db,unit['current_candidate_id']),unit=unit, member=member, issue=issue, candidate=dict(candidate) if candidate else None,
                         role=role, reason=reason, environment=environment, memory_bytes=memory,
                         resume_branch=previous[0] if previous else None)
 
@@ -173,7 +188,9 @@ class DispatchController:
         labels = {row['name'] if isinstance(row, dict) else row for row in issue['labels']}
         if labels.intersection(self.config['hold_labels']):
             return {**result, 'reason': 'label_hold'}
-        if ownership(issue, {'number': issue['github_number']}, issue['repository']):
+        if ownership(issue, {'number':issue['github_number'],'unit_state':snapshot['unit']['state'],
+            'candidate':{'pr':snapshot['candidate']['pull_number'],'key':snapshot['candidate']['id']} if snapshot['candidate'] else None,
+            'reviewers_requested':snapshot.get('reviewers_requested')},issue['repository']):
             return {**result, 'reason': 'human_owned'}
         with self.store.read_snapshot() as db:
             occupied = {row[0] for row in db.execute('SELECT slot FROM job_leases UNION SELECT slot FROM discussion_leases')}
@@ -186,11 +203,25 @@ class DispatchController:
             return {**result, 'reason': 'observation_changed'}
         if not isinstance(prepared, PreparedDispatch) or not isinstance(prepared.base_oid, str) or not SHA.fullmatch(prepared.base_oid):
             raise TransitionError('dispatch requires verified target head and launch inputs')
+        if prepared.unit_version is not None:
+            refreshed = self.snapshot(unit_id)
+            if (refreshed['reason'] or refreshed['unit']['version'] != prepared.unit_version
+                    or refreshed['member'] != snapshot['member'] or refreshed['candidate'] != snapshot['candidate']
+                    or refreshed['role'] != role
+                    or refreshed['unit']['fencing_generation'] != snapshot['unit']['fencing_generation']):
+                return {**result, 'reason': 'observation_changed'}
+            snapshot = refreshed
         config = deepcopy(prepared.runner_config)
         # Runtime files contain credential references only. Reject unknown keys
         # rather than persisting environment values supplied by a caller.
         extras = {key: config.pop(key) for key in ('environment_tier', 'services') if key in config}
-        config = {**validate(config), **extras}
+        allocation = config['memory']
+        if config['memory_tiers']:
+            from .capacity import memory_bytes
+            if memory_bytes(allocation) not in {memory_bytes(tier) for tier in config['memory_tiers']} and extras.get('environment_tier') != 'full':
+                raise TransitionError('worker allocation must match a configured memory tier')
+            config['memory'] = config['memory_tiers'][0]
+        config = {**validate(config), **extras, 'memory': allocation}
         if not config['enabled']:
             return {**result, 'reason': 'runtime_disabled'}
         entry, config = self._provider(config)
@@ -241,6 +272,23 @@ class DispatchController:
                 after = cursor[0] if cursor and cursor[0] else ''
             rows = db.execute("SELECT id,state FROM units WHERE id>? AND state IN ('queued','building','reviewing','auditing') "
                               'ORDER BY id LIMIT ?', (after, limit + 1)).fetchall()
+        # An eligible memory escalation drains capacity; smaller work must not
+        # refill it while the next bounded allocation is waiting to fit.
+        if self.config['memory_tiers']:
+            with self.store.read_snapshot() as db:
+                retries = db.execute("SELECT u.id FROM units u JOIN unit_environment_observations e ON e.unit_id=u.id "
+                    "WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('queued','building','reviewing','auditing') "
+                    "ORDER BY json_extract(e.memory_retry_json,'$.at'),u.id LIMIT 100").fetchall()
+            for retry in retries:
+                snapshot = self.snapshot(retry['id'])
+                if (not snapshot['reason'] and snapshot['role'] == (snapshot['environment'].get('memory_retry') or {}).get('role')
+                        and self.admission(snapshot) is True):
+                    try:
+                        result = self.step(retry['id'])
+                    except (RunnerError, GitHubUnavailable, TransitionError, StoreError, OSError) as error:
+                        result = {'unit_id': retry['id'], 'error': getattr(error, 'code', type(error).__name__)}
+                    if result.get('reserved') or result.get('reason') in {'capacity_unavailable','role_capacity'}:
+                        return {'items': [result], 'next_cursor': after or None}
         page = rows[:limit]
         priority = {'auditing': 0, 'reviewing': 1, 'building': 2, 'queued': 2}
         items = []

@@ -39,6 +39,31 @@ class ObservationTests(unittest.TestCase):
         return ObservationController(self.store, github or GitHub(), admission=lambda item: admission,
                                      clock=lambda: 100.0)
 
+    def test_refresh_consumes_only_the_captured_operator_request(self):
+        with self.store.write() as db:
+            db.execute("INSERT INTO operator_observation_requests VALUES('issue-1','operator',1)")
+        github = GitHub()
+        def newer_request():
+            with self.store.write() as db:
+                db.execute("UPDATE operator_observation_requests SET requested_at=2 WHERE issue_id='issue-1'")
+        github.after_issue = newer_request
+        self.controller(github).step('unit-1')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT requested_at FROM operator_observation_requests').fetchone()[0], 2)
+        github.after_issue = None
+        self.controller(github).step('unit-1')
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM operator_observation_requests').fetchone())
+
+    def test_failed_refresh_retains_operator_request(self):
+        with self.store.write() as db:
+            db.execute("INSERT INTO operator_observation_requests VALUES('issue-1','operator',1)")
+        github = GitHub(); github.failure = True
+        with self.assertRaises(GitHubUnavailable):
+            self.controller(github).step('unit-1')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM operator_observation_requests').fetchone()[0], 1)
+
     def test_hold_observation_fences_worker_and_removal_resumes_without_budget_reset(self):
         job = self.reserve()
         github = GitHub()

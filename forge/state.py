@@ -14,6 +14,12 @@ class StateError(RuntimeError):
 
 
 def atomic_json(path: Path, value: object) -> None:
+    from .legacy_writers import mutation
+    with mutation(path):
+        _atomic_json(path, value)
+
+
+def _atomic_json(path: Path, value: object) -> None:
     """Persist replacement and directory entry; interruption leaves old or new JSON."""
     fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
     try:
@@ -41,6 +47,8 @@ class AtomicStore:
     """
 
     def __init__(self, root: str | Path, name: str):
+        from .store.runtime import require_legacy
+        require_legacy(root)
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.root / (name + ".json")
@@ -69,6 +77,12 @@ class AtomicStore:
 
     @contextmanager
     def transaction(self):
+        from .legacy_writers import mutation
+        # Include the read and caller mutation, not only the final rename.
+        with mutation(self.path):
+            yield from self._transaction()
+
+    def _transaction(self):
         fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -77,4 +91,3 @@ class AtomicStore:
             atomic_json(self.path, data)
             if not self.marker.exists():
                 atomic_json(self.marker, {"version": 1})
-

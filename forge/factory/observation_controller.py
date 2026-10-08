@@ -36,7 +36,9 @@ class ObservationController:
             selected = db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone()
         candidate = dict(selected) if selected else None
         item = dict(repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
-                    candidate={'pr': candidate['pull_number']} if candidate else None)
+                    candidate={'pr': candidate['pull_number'],'key':candidate['id']} if candidate else None,unit_state=unit['state'])
+        from ..store.operator_views import ownership_context
+        item=ownership_context(self.store,item,unit['current_candidate_id'])
         return unit, issue, candidate, item
 
     def _generation(self, issue):
@@ -64,10 +66,24 @@ class ObservationController:
         return {'unit_id': unit['id'], 'pending': 'external_change'}
 
     def step(self, unit_id):
+        with self.store.read_snapshot() as db:
+            requested = db.execute('SELECT r.issue_id,r.requested_at FROM operator_observation_requests r '
+                'JOIN unit_issues m ON m.issue_id=r.issue_id WHERE m.unit_id=? AND m.left_at IS NULL', (unit_id,)).fetchone()
+        outcome = self._step(unit_id)
+        if requested and not outcome.get('stale') and not outcome.get('pending'):
+            with self.store.write() as db:
+                db.execute('DELETE FROM operator_observation_requests WHERE issue_id=? AND requested_at=?',
+                           (requested['issue_id'], requested['requested_at']))
+        return outcome
+
+    def _step(self, unit_id):
         snapshot = self._snapshot(unit_id)
         if snapshot is None:
             return {'unit_id': unit_id, 'terminal': True}
         unit, issue, candidate, item = snapshot
+        with self.store.read_snapshot() as db:
+            if db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='legacy_reconciliation' AND resolved_at IS NULL", (unit_id,)).fetchone():
+                return {'unit_id': unit_id, 'pending': 'legacy_reconciliation'}
         generation = self._generation(issue)
         remote, requirements = self.github.issue(item)
         if (remote.get('number') != item['number'] or 'pull_request' in remote

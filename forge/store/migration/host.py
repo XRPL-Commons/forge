@@ -93,6 +93,9 @@ class Host:
                 raise MigrationError('unmanaged_process')
 
     def restore(self):
+        if (self.root/'.migration-cutover.json').exists():
+            from .cutover import Cutover
+            return Cutover(self).resume()
         with operation_lock(self.root, '.migration-host.lock'):
             return self._restore()
 
@@ -139,6 +142,9 @@ class Host:
 def run(request):
     host=Host(request['root'],request['source'])
     if request['action']=='plan':
+        if (host.root/'.migration-cutover.json').exists():
+            from .cutover import Cutover
+            return Cutover(host).status()
         return host.inspect()
     if request['action']=='prepare':
         host.identity()  # Bind the explicit runtime root to the managed host.
@@ -146,6 +152,10 @@ def run(request):
         return prepare(host.root)
     if request['action']=='resume':
         return host.restore()
+    if request['action']=='activate':
+        if request.get('apply') is not True: raise MigrationError('activation_not_authorized')
+        from .cutover import Cutover
+        return Cutover(host).activate(expected_plan=request.get('plan'))
     if request['action']=='capture':
         return host.capture(request['destination'],request['plan'])
     raise MigrationError('unknown_migration_action')

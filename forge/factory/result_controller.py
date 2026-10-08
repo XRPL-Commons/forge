@@ -21,8 +21,9 @@ from .ownership import ownership
 
 class ResultController:
     def __init__(self, store, github, *, policy, verdicts=None, clock=time.time,
-                 availability_retry_seconds=300, hold_labels=('hold', 'blocked')):
+                 availability_retry_seconds=300, hold_labels=('hold', 'blocked'), requirements=None):
         self.store, self.github = store, github
+        self.requirements = requirements
         self.policy, self.verdicts, self.clock = policy, verdicts, clock
         self.availability_retry_seconds = availability_retry_seconds
         self.hold_labels = frozenset(hold_labels)
@@ -126,9 +127,13 @@ class ResultController:
                     policy_hash=digest(current_policy))
             return {'job_id': job_id, 'pending': 'policy_reconciliation'}
         labels = {row.get('name') if isinstance(row, dict) else row for row in issue.get('labels', [])}
-        if labels & self.hold_labels or ownership(issue, {**item, 'candidate': job['candidate']}, job['repo']):
+        if labels & self.hold_labels or ownership(issue, {**item, 'candidate': job['candidate'],'reviewers_requested':job.get('reviewers_requested'),'unit_state':job['unit_state']}, job['repo']):
             return {'job_id': job_id, 'pending': 'issue_reconciliation'}
 
+        if self.requirements is not None:
+            retry = self.requirements.classify(job, capture, report)
+            if retry is not None:
+                return {'job_id': job_id, **retry}
         if (capture.get('execution') or {}).get('oom_killed'):
             return {'job_id': job_id, **self._defer(job, evidence, 'environment',
                 {'reason': 'resources', 'job_id': job_id, 'oom_killed': True})}

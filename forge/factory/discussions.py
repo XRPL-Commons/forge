@@ -160,7 +160,16 @@ def excerpt(logs):
 
 
 class Discussions:
-    def __init__(self, root, *, runner=ContainerRunner, inventory=None, clock=time.time, boot=None):
+    def __new__(cls, root, **kwargs):
+        if cls is Discussions:
+            from ..store.runtime import selected
+            store = kwargs.pop('store', None) or selected(root)
+            if store is not None:
+                from .sqlite_discussions import SQLiteDiscussions
+                return SQLiteDiscussions(root, store=store, **kwargs)
+        return super().__new__(cls)
+
+    def __init__(self, root, *, runner=ContainerRunner, inventory=None, clock=time.time, boot=None, store=None, actor_id=None):
         # `boot` names this service process: a job from an earlier one whose
         # worker is gone was orphaned by a restart.
         self.root, self.runner, self.clock, self.boot = Path(root), runner, clock, boot
@@ -199,7 +208,7 @@ class Discussions:
                 "provider": ((thread.get("job") or {}).get("runner_config") or {}).get("provider"),
                 "presence": presence(thread)}
 
-    def send(self, key, message, request_id):
+    def send(self, key, message, request_id, *, actor_id=None):
         row = self.issue(key)
         if not isinstance(message, str) or not 1 <= len(message.strip()) <= 4000:
             raise ValueError("Write a question of at most 4000 characters")
@@ -234,7 +243,7 @@ class Discussions:
                       job=job if job and not job["cleanup"] else None, cancel_requested=False,
                       presence={"phase": "finding", "waiting_since": now, "code": "waiting", "reason": ASKING})
 
-    def cancel(self, key):
+    def cancel(self, key, *, actor_id=None):
         self.issue(key)
         with self.store.transaction() as data:
             thread = data.get(key)
@@ -247,7 +256,7 @@ class Discussions:
             else:
                 self.leave(thread, None, "cancelled")
 
-    def apply(self, key, message_id):
+    def apply(self, key, message_id, *, actor_id=None):
         row = self.issue(key)
         from .issue_actions import request
         with self.store.transaction() as data:

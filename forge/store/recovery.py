@@ -99,11 +99,20 @@ def failure_context(store, db, recovery_job_id):
         try:
             value[kind] = json.loads(artifacts.read(row['id'], kind).content)
         except (KeyError, ArtifactExpired):
-            value[kind] = {'unavailable': True}
+            if kind=='worker_capture' and db.execute('SELECT 1 FROM migration_recovery_adoptions WHERE failed_job_id=?',(row['id'],)).fetchone():
+                try:value[kind]=json.loads(artifacts.read(row['id'],'result').content)
+                except (KeyError,ArtifactExpired):value[kind]={'unavailable':True}
+            else:value[kind] = {'unavailable': True}
+    if db.execute('SELECT 1 FROM migration_recovery_adoptions WHERE failed_job_id=?',(row['id'],)).fetchone():
+        for kind in ('failure_evidence','worker_capture'):
+            diagnostic=_json(value[kind])
+            if len(diagnostic.encode())>16384:
+                value[kind]={'truncated':True,'digest':manifest_hash(value[kind]),'excerpt':diagnostic[:4000],
+                             'artifact':{'job_id':row['id'],'kind':kind}}
     try:
         value['logs'] = artifacts.read(row['id'], 'logs').content.decode('utf-8', errors='replace')[-16384:]
     except (KeyError, ArtifactExpired):
-        value['logs'] = value['failure_evidence'].get('logs_excerpt', '[Preserved log evidence unavailable]')
+        value['logs'] = (value['failure_evidence'].get('logs_excerpt') if isinstance(value['failure_evidence'],dict) else None) or '[Preserved log evidence unavailable]'
     return value
 
 
@@ -118,7 +127,7 @@ class Recovery(Executions):
             failed = db.execute('SELECT j.*,a.input_manifest_json FROM jobs j JOIN attempts a ON a.id=j.attempt_id '
                                 'WHERE j.id=? AND j.unit_id=?', (failed_job_id, unit['id'])).fetchone()
             failure = db.execute('SELECT * FROM attempt_failures WHERE attempt_id=?', (failed['attempt_id'],)).fetchone() if failed else None
-            if (failed is None or failed['role'] == 'recovery' or not failed['cleanup'] or failed['outcome'] not in {'failure', 'rejected'}
+            if (failed is None or failed['role'] == 'recovery' or not failed['cleanup'] or (failed['outcome'] not in {'failure', 'rejected'} and not (failed['outcome']=='failed' and db.execute("SELECT 1 FROM migration_recovery_adoptions WHERE failed_job_id=? AND disposition='investigate'",(failed['id'],)).fetchone()))
                     or failure is None or not failure['recovery_required'] or failure['investigation'] != 'pending'):
                 raise TransitionError('recovery requires an uninvestigated cleaned confirmed failure')
             if db.execute('SELECT 1 FROM recovery_assignments WHERE failed_job_id=?', (failed_job_id,)).fetchone():
@@ -199,6 +208,8 @@ class Recovery(Executions):
                            (unit['id'], _json(alternative)))
             if failed['member_id']:
                 db.execute("UPDATE unit_issues SET state='pending' WHERE id=? AND state='failed'", (failed['member_id'],))
+        from .migration_recovery import advance_in
+        advance_in(self,db,command,unit)
         return {'accepted': current, 'investigated_job_id': failed['id'], 'approach_required': approach}
 
     def finish(self, command, job_id, *, execution_fence, input_manifest, findings, incomplete=False, gates=()):

@@ -144,8 +144,36 @@ def validate(value):
 
 
 def load(root):
+    from ..store.runtime import selected
+    from ..store.configuration import Configuration
+    store = selected(root)
+    if store is not None:
+        domain = 'setup/runtime.json' if Path(root).name == 'setup' else 'runtime.json'
+        row = Configuration(store).get(domain)
+        return validate(row['settings'] if row else {})
     path = Path(root) / 'runtime.json'
     return validate(read_json(path) if path.exists() else {})
+
+
+def save(root, config, *, revision=None):
+    from ..settings import digest, write_json
+    from ..store.runtime import selected
+    from ..store.configuration import Configuration, ConfigurationConflict
+    config = validate(config)
+    store = selected(root)
+    if store is not None:
+        domain = 'setup/runtime.json' if Path(root).name == 'setup' else 'runtime.json'
+        commands = Configuration(store)
+        previous = commands.get(domain)
+        current = validate(previous['settings'] if previous else {})
+        if revision is not None and revision != digest(current):
+            raise ConfigurationConflict('Runtime settings changed; reload before saving')
+        commands.replace(domain, config, expected_revision=previous['revision'] if previous else 0)
+    else:
+        if revision is not None and revision != digest(load(root)):
+            raise ValueError('Runtime settings changed; reload before saving')
+        write_json(Path(root) / 'runtime.json', config)
+    return config
 
 
 def policy(config):

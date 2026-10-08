@@ -31,7 +31,8 @@ def candidate_snapshot(store, unit_id):
         if len(members) != 1:
             raise TransitionError('merge authorization currently requires a unit of one')
         identity = dict(db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone())
-        value = dict(unit_id=unit_id, unit_version=unit['version'], repo=unit['repo'], repo_id=unit['repo_id'],
+        from ..store.operator_views import reviewer_request_in
+        value = dict(reviewers_requested=reviewer_request_in(db,identity['id']),unit_id=unit_id, unit_version=unit['version'], repo=unit['repo'], repo_id=unit['repo_id'],
             state=unit['state'], number=members[0]['github_number'], requirements=json.loads(members[0]['requirements_json']),
             identity=identity, candidate_id=identity['id'], candidate=dict(key=identity['id'], pr=identity['pull_number'],
                 branch=identity['branch'], head=identity['head_oid'], base=identity['base_oid'], base_ref=unit['base_branch'],
@@ -115,6 +116,12 @@ class MergeAdmission:
         # Approval reads are last; the effect driver repeats this check directly
         # before the exact-head merge request after publishing its check.
         reviews = self.github.approvals(item, pr)
+        from ..store.presentation import record_approval_display
+        from ..store.runtime import writable
+        with self.store.write() as db:
+            writable(db)
+            if db.execute('SELECT 1 FROM units WHERE id=? AND current_candidate_id=?',(item['unit_id'],identity['id'])).fetchone():
+                record_approval_display(db,identity['id'],reviews,self.clock())
         if any(review['state'] == 'CHANGES_REQUESTED' for review in reviews):
             return None
         human = any(review['counted'] for review in reviews)

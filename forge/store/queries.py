@@ -40,8 +40,8 @@ class Queries:
         # large, and belong to the explicit single-issue detail request.
         body = ', r.body, r.requirements_json' if include_body else ''
         row = connection.execute(
-            'SELECT i.*, r.title, r.content_hash, r.requirements_hash, p.full_name AS repository'
-            + body + ' FROM issues i JOIN issue_revisions r ON r.id=i.current_revision_id '
+            "SELECT i.*, r.title, r.content_hash, r.requirements_hash, COALESCE(v.body_truncated,0) AS body_truncated, p.full_name AS repository"
+            + body + ' FROM issues i JOIN issue_revisions r ON r.id=i.current_revision_id LEFT JOIN revision_presentation v ON v.revision_id=r.id '
             'JOIN repositories p ON p.id=i.repository_id WHERE i.id=?', (issue_id,),
         ).fetchone()
         if row is None:

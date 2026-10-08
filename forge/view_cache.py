@@ -18,6 +18,18 @@ MAX_ENTRIES = 32
 
 
 def fingerprint(root):
+    from .store.runtime import selected
+    store=selected(root)
+    if store is not None:
+        # SQLite may live outside the installation tree. Include the WAL so a
+        # committed request invalidates cached pages before the clock timeout.
+        found=[]
+        for path in (store.path,Path(str(store.path)+'-wal')):
+            try:
+                info=path.stat()
+                found.append((str(path),info.st_ino,info.st_mtime_ns,info.st_size))
+            except FileNotFoundError:found.append((str(path),None,0,0))
+        return (store.instance_id,*found)
     found = []
     for name in DIRECTORIES:
         try:

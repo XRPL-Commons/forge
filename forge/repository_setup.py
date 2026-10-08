@@ -1,6 +1,7 @@
 """Read-only repository preparation. The operator imports generated rules on GitHub."""
 import threading
 import time
+import json
 
 from .settings import digest, read_json, write_json
 from .factory.github import GitHub, GitHubUnavailable
@@ -28,6 +29,7 @@ class RepositorySetup:
         self.path = settings.state / 'repositories.json'
         # Deployment state belongs to the live factory, never to the setup copy.
         self.root = settings.root.parent if settings.root.name == 'setup' else settings.root
+        self.database = getattr(settings, 'database', None)
 
     def deployments(self):
         from .deployments import Deployments
@@ -36,6 +38,9 @@ class RepositorySetup:
 
     def proposals(self):
         """A read for the UI: it never fails the page and never creates factory state."""
+        if self.database is not None:
+            from .store.operations import deployment_views
+            return deployment_views(self.database)
         try:
             rows = read_json(self.root / 'state/deployments.json')['repositories']
             return {key: row for key, row in rows.items() if isinstance(row, dict)}
@@ -43,11 +48,46 @@ class RepositorySetup:
             return {}
 
     def read(self):
+        if self.database is not None:
+            with self.database.read_snapshot() as db:
+                rows = db.execute('SELECT s.*,r.full_name FROM repository_setup_observations s JOIN repositories r ON r.id=s.repository_id').fetchall()
+                return {'repositories': {str(row['repository_id']): dict(name=row['full_name'], status=row['status'],
+                    revision=row['source_revision'], started_at=row['started_at'], previous_status=row['previous_status'],
+                    report=json.loads(row['report_json']) if row['report_json'] else None,
+                    last_known=json.loads(row['last_known_json']) if row['last_known_json'] else None) for row in rows}}
         try:
             value = read_json(self.path)
             return value if isinstance(value, dict) and isinstance(value.get('repositories'), dict) else {'repositories': {}}
         except (OSError, ValueError):
             return {'repositories': {}}
+
+    def save_observation(self, repo_id, data, *, expected_generation=None):
+        if self.database is None:
+            write_json(self.path, data)
+            return
+        from .store.runtime import writable
+        value = data['repositories'][str(repo_id)]
+        with self.database.write() as db:
+            writable(db)
+            self.settings._generation(db, expected_generation)
+            # Access discovery can include a repository not yet enabled locally.
+            db.execute('INSERT INTO repositories(id,full_name,enabled) VALUES(?,?,0) ON CONFLICT(id) DO NOTHING',
+                       (repo_id, value['name']))
+            db.execute('INSERT INTO repository_setup_observations VALUES(?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(repository_id) DO UPDATE SET status=excluded.status,source_revision=excluded.source_revision,'
+                'started_at=excluded.started_at,previous_status=excluded.previous_status,report_json=excluded.report_json,'
+                'last_known_json=excluded.last_known_json,source_fields_json=excluded.source_fields_json',
+                (repo_id, value['status'], value['revision'], value['started_at'], value.get('previous_status'),
+                 json.dumps(value.get('report'), allow_nan=False), json.dumps(value.get('last_known'), allow_nan=False),
+                 json.dumps(sorted(value))))
+
+    def registration(self):
+        if self.database is not None:
+            with self.database.read_snapshot() as db:
+                row = db.execute("SELECT settings_json FROM setup_instances WHERE scope='live'").fetchone()
+                return json.loads(row[0]) if row else {}
+        path = self.root / 'state/onboarding/setup.json'
+        return read_json(path) if path.exists() else {}
 
     def views(self, rows, config):
         from .repository_environments import RepositoryEnvironments
@@ -87,7 +127,7 @@ class RepositorySetup:
 
     def view(self, repo_id=None):
         settings = self.settings.view()
-        registration = read_json(self.root / 'state/onboarding/setup.json') if (self.root / 'state/onboarding/setup.json').exists() else {}
+        registration = self.registration()
         connections = {}
         for role, access in settings['roles'].items():
             app = registration.get('apps', {}).get(role, {})
@@ -205,6 +245,7 @@ class RepositorySetup:
                 if self.settings.paused():
                     return False
                 config = self.settings.load()
+                generation = self.settings.generation()
                 current_revision = digest(config)
                 if revision is not None and revision != current_revision:
                     raise ValueError('Repository settings changed. Reload and check again.')
@@ -223,7 +264,7 @@ class RepositorySetup:
                     data['repositories'][str(row['id'])] = {'report': known, 'last_known': known,
                         'previous_status': ('ready' if protection_ready(known) else 'needs_setup') if known else None, 'revision': observation_key(config, row), 'name': row['name'],
                         'status': 'checking', 'started_at': self.settings.clock()}
-                    write_json(self.path, data)
+                    self.save_observation(row['id'], data, expected_generation=generation)
                     report = {'repo_id': row['id'], 'branch': None, 'available': False,
                               'observed_at': self.settings.clock(), 'requirements': [], 'errors': []}
                     try:
@@ -248,7 +289,7 @@ class RepositorySetup:
                     status = ('unknown' if not report['available'] else
                               'ready' if protection_ready(report) else 'needs_setup')
                     data['repositories'][str(row['id'])].update(status=status, report=report)
-                    write_json(self.path, data)
+                    self.save_observation(row['id'], data, expected_generation=generation)
                 return True
         except BlockingIOError:
             return False

@@ -7,13 +7,13 @@ from .supporting_parity import require
 CONTEXT_FIELDS = [('summary_json','last_summary'),('retry_plan_json','retry_plan'),
                   ('decision_request_json','decision_request'),('verification_request_json','verification_request')]
 ENVIRONMENT_FIELDS = [('choice_json','environment_choice'),('override_json','environment_override'),
-                      ('retry_json','environment_retry'),('memory_retry_json','memory_retry')]
+                      ('retry_json','environment_retry'),('memory_retry_json','memory_retry'),('environment_hold_json','environment_hold')]
 KNOWN = ('key','repo_id','repo','number','title','state','reason','requirements','candidate','active','failures','budget_start','created_at',
          'blocked_dependencies','budget_interruptions','checks_settled','closed_as','decision_version','declared_dependencies',
          'dependencies_checked_at','dependency_body','dependency_evidence','dependency_reason','environment_choice','environment_hold',
          'environment_label','environment_override','environment_retry','memory_retry','evidence','github_observation','label_hold',
          'last_observed','last_summary','merge_gate','operator_hold','operator_sync','operator_request','ownership_wait','prerequisite_hold',
-         'retry_after','retry_plan','settled_observed','decision_request','verification_request')
+         'retry_after','retry_plan','settled_observed','decision_request','verification_request','reviewers_requested')
 
 
 def normalize(importer, ledger):
@@ -38,12 +38,27 @@ def normalize(importer, ledger):
                    summary_json=json_text(failure.get('summary')),at=failure['at'])
             artifact(db,failure['attempt'],'failure_evidence',failure.get('evidence'),failure['at'])
             unknown_fields(db,importer,key,failure,('attempt','role','cause','investigation','retry_state','evidence','findings','summary','at','charged'))
+        reviewers=value.get('reviewers_requested')
+        if reviewers:
+            candidate=db.execute('SELECT current_candidate_id FROM units WHERE id=?',(identifier,)).fetchone()[0]
+            if candidate and value.get('state') in {'audited','approval_needed','merged'}:
+                insert(db,'candidate_reviewer_requests',candidate_id=candidate,request_id=reviewers.get('request') or 'legacy:'+key,
+                    actor_id='legacy:operator',logins_json=json_text(reviewers['logins']),requested_at=reviewers['at'],issue_assignment=1)
+            else:finding(db,importer,key,'reviewer_request_without_current_candidate')
         unknown_fields(db,importer,key,value,KNOWN)
         if value.get('operator_request'):
             # Its original request ID and expected revision must be reconciled
             # with the external label effect before dispatch may resume.
             finding(db,importer,key,'operator_effect_requires_reconciliation')
     batches(importer,'normalized:delivery_context',sorted(ledger['issues'].items()),unit)
+    def job_metadata(db,pair):
+        identifier,job=pair
+        observed=job.get('observation') or {}
+        execution=observed.get('execution') or {}
+        insert(db,'job_public_metadata',job_id=identifier,slot=job.get('slot'),provider=job.get('provider'),
+            provider_id=job.get('provider_id'),model=job.get('model'),deadline=job.get('deadline'),
+            observed_at=observed.get('at'),started_at=execution.get('started_at'),source_phase=job.get('phase'),source_fenced=job.get('fenced'))
+    batches(importer,'normalized:job_public_metadata',sorted(ledger['jobs'].items()),job_metadata)
     with importer.store.write() as db:
         unknown_fields(db,importer,'ledger',ledger,('version','issues','jobs','slots','events','provider_cooldowns','provider_cursor','memory_profiles','discovery_observed'))
 
@@ -84,5 +99,12 @@ def check(importer):
                         db.execute('SELECT sequence FROM job_artifacts WHERE job_id=? AND kind=? ORDER BY sequence',(failure['attempt'],row['evidence_kind']))]
                 require(decode(b''.join(chunks))==failure.get('evidence'),'failure_evidence')
                 counts['attempt_failures']+=1
+            reviewers=value.get('reviewers_requested')
+            if reviewers and value.get('state') in {'audited','approval_needed','merged'}:
+                candidate=db.execute('SELECT current_candidate_id FROM units WHERE id=?',(identifier,)).fetchone()[0]
+                if candidate:
+                    receipt=db.execute('SELECT * FROM candidate_reviewer_requests WHERE candidate_id=?',(candidate,)).fetchone()
+                    require(receipt is not None and decode(receipt['logins_json'])==reviewers['logins']
+                        and receipt['requested_at']==reviewers['at'] and receipt['issue_assignment']==1,'candidate_reviewers')
             counts['unit_contexts']+=1
     return counts

@@ -110,6 +110,10 @@ def normalize(importer):
         insert(db,'issue_revisions',id=revision,issue_id=key,title=facts.get('title',''),body=body,
                content_hash=manifest_hash([facts.get('title',''),body]),requirements_hash=requirement_hash,
                requirements_json=encode({'legacy_body_hash':requirement_hash,'body_truncated':bool(facts.get('body_truncated'))}).decode(),observed_at=at)
+        from ..presentation import record_revision_display
+        record_revision_display(db,revision,body,{'body_truncated':bool(facts.get('body_truncated'))},source_content_hash=requirement_hash)
+        from ..presentation import record_label_display
+        record_label_display(db,key,labels,facts.get('label_events',[]))
         if facts.get('body_truncated'):
             finding(db,importer,key,'truncated_observation')
         if item:
@@ -119,6 +123,7 @@ def normalize(importer):
                 insert(db,'issue_revisions',id=pinned_revision,issue_id=key,title=item.get('title',''),body='',
                        content_hash=manifest_hash([item.get('title',''),'']),requirements_hash=pinned,
                        requirements_json=encode({'legacy_body_hash':pinned,'body_unavailable':True}).decode(),observed_at=item['created_at'])
+                record_revision_display(db,pinned_revision,'',{'body_unavailable':True},source_content_hash=pinned)
             add_unit(db,key,item,pinned_revision)
     merge_receipts={}
     for key,item in ledger['issues'].items():
@@ -250,6 +255,10 @@ def normalize(importer):
         current=db.execute('SELECT current_candidate_id FROM units WHERE id=?',(unit,)).fetchone()[0]
         if not current:
             return
+        merge=item.get('merge_gate') or {}
+        if merge.get('candidate')==candidate.get('key') and merge.get('approvals'):
+            from ..presentation import record_approval_display
+            record_approval_display(db,current,merge['approvals'],item.get('last_observed') or item['created_at'],source='legacy')
         for role,value in item.get('evidence',{}).items():
             if role not in ('review','audit','merge'):
                 finding(db,importer,key,'unknown_candidate_evidence');continue

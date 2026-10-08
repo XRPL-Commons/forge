@@ -51,7 +51,7 @@ export interface IssueRow {
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null
-  verification_request?: { what: string; why: string; created_at: number; ci?: { name: string; app_id: number }[] } | null
+  verification_request?: { what: string; why: string; created_at: number; gate_id?: string; can_confirm?: boolean; ci?: { name: string; app_id: number }[] } | null
   // Each reviewer's latest review on the candidate pull request as Forge last
   // read it, and when Forge last read GitHub for this issue. Older payloads omit them.
   approvals?: IssueApproval[]

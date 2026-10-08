@@ -3,7 +3,7 @@ from .normalize import batches, insert
 from .supporting import json_text, unknown_fields
 from .snapshot import MigrationError
 
-CONFIGURATION = ('factory.json','runtime.json','host-runtime.json','setup/factory.json','setup/runtime.json')
+CONFIGURATION = ('factory.json','runtime.json','host-runtime.json','host.json','setup/factory.json','setup/runtime.json')
 CONTROLS = {
     'state/factory-v2.enabled':'factory_active',
     'state/factory-onboarding.enabled':'onboarding_active',

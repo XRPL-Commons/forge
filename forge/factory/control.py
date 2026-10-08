@@ -40,7 +40,10 @@ def controller_lock(root, *, timeout=0):
         yield
 
 
-def queue(root, action, target, reason):
+def queue(root, action, target, reason, *, actor_id="local:cli"):
+    from .store_operator import selected_service
+    service=selected_service(root,actor_id=actor_id)
+    if service is not None:return service.stop_job(target,reason,action=action)
     if action == 'retry':
         raise ValueError('Open the issue in Issues to review and retry its failed attempt.')
     if action not in ('stop', 'reset') or not isinstance(reason, str) or not reason.strip():
@@ -55,7 +58,10 @@ def queue(root, action, target, reason):
     return identifier
 
 
-def request_check(root, key, clock=time.time):
+def request_check(root, key, clock=time.time, *, actor_id="local:cli"):
+    from .store_operator import selected_service
+    service=selected_service(root,actor_id=actor_id)
+    if service is not None:return service.request_check(key)
     """Ask the supervisor to observe one issue first in its next cycle, e.g. right after
     the operator approved on GitHub. Only reorders observation; changes no state."""
     if not isinstance(key, str) or not key or len(key) > 256:
@@ -149,6 +155,8 @@ def attention_kind(item):
 
 
 def view(root):
+    service=public_views(root)
+    if service is not None:return service.factory()
     ledger = Ledger(Path(root) / 'state' / 'factory')
     data = ledger.read()
     # Activity is a summary, not a second copy of the durable ledger. Full
@@ -323,12 +331,22 @@ def select_view(payload, *, section=None, issue=None, now=None, limit=None, befo
     return {**payload, 'issues': visible, 'jobs': [job for job in jobs if job['id'] in visible_jobs], 'summary': summary}
 
 
+def public_views(root):
+    from ..store.runtime import selected
+    store=selected(root)
+    if store is None:return None
+    from .store_views import PipelineViews
+    return PipelineViews(store,repositories=lambda:Settings(root).view()['repositories'],runtime=lambda:load(root))
+
+
+def factory_view(root, **arguments):
+    service=public_views(root)
+    return service.factory(**arguments) if service is not None else select_view(view(root),**arguments)
+
+
 def save_runtime(root, config, revision):
-    config = validate(config)
-    with Settings(root).locked('runtime-config'):
-        if revision != digest(load(root)):
-            raise ValueError('Runtime settings changed; reload before saving')
-        write_json(Path(root) / 'runtime.json', config)
+    from .config import save
+    save(root, config, revision=revision)
     return view(root)
 
 
@@ -356,6 +374,21 @@ def main(argv=None):
             print(json.dumps(configure(root, args.target, json.loads(args.checks or 'null'), args.revision)))
             return 0
         if args.command in ('environment-probe', 'environment-confirm'):
+            from ..store.runtime import selected
+            if selected(root) is not None:
+                from ..repository_environments import RepositoryEnvironments
+                environments = RepositoryEnvironments(settings)
+                repo = environments.identity(int(args.target or 0), digest(settings.load()))
+                if args.command == 'environment-probe':
+                    environments.start_scan(repo, digest(settings.load()), environments.view(repo['repo_id'])['revision'], background=False)
+                    result = environments.view(repo['repo_id'])
+                    if result['status'] != 'complete' or not result['proposal']:
+                        raise ValueError(result['error'] or 'The repository requirements scan did not complete')
+                    print(json.dumps({**result['proposal'], 'revision': result['revision']}))
+                else:
+                    environments.confirm(repo, digest(settings.load()), args.revision)
+                    print('Optional repository default saved. Issue environment choices take precedence.')
+                return 0
             from .environments import probe
             repo = next((r for r in settings.view()['repositories'] if str(r['id']) == args.target), None)
             if not repo:
@@ -381,6 +414,24 @@ def main(argv=None):
             settings.load()
             print('Runtime configuration is valid. Access and execution preflight are separate checks.')
             return 0
+        from ..store.runtime import selected
+        if selected(root) is not None and args.command in {'activate','once','run'}:
+            if args.command=='activate':
+                print('SQLite factory controller is already selected.')
+                return 0
+            from .sqlite_runtime import cycle
+            from .sqlite_supervisor import SqliteSupervisor
+            with controller_lock(root):
+                last_sync=0
+                while True:
+                    config=load(root)
+                    if args.command=='run' and time.time()-last_sync>=settings.load()['sync_interval_seconds']:
+                        settings.start_refresh();last_sync=time.time()
+                    observation=cycle(root,config=config,settings=settings)
+                    if args.command=='once':
+                        print(json.dumps(observation))
+                        return 0 if not SqliteSupervisor._errors(observation['stages']) else 1
+                    time.sleep(config['cycle_seconds'])
         with controller_lock(root):
             marker = root / 'state' / 'factory-v2.enabled'
             ledger = Ledger(root / 'state' / 'factory')

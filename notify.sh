@@ -8,4 +8,4 @@ if [[ "${1:-}" == "--event-key" ]]; then
   KEY_ARGS=(--event-key "$2")
   shift 2
 fi
-exec python3 -m forge.notifications enqueue --state "${FORGE_NOTIFY_STATE:-$DIR/state/notifications}" "${KEY_ARGS[@]}" -- "$*"
+exec python3 -m forge.launch forge.notifications enqueue --state "${FORGE_NOTIFY_STATE:-$DIR/state/notifications}" "${KEY_ARGS[@]}" -- "$*"

@@ -1,4 +1,4 @@
-"""Deterministic migration CLI: SSH capture, then local offline import and parity."""
+"""Deterministic migration CLI: preparation, staged inspection and one-way activation."""
 import base64
 import io
 import json
@@ -15,7 +15,7 @@ from .contracts import SetupError, require
 
 # This bootstrap reads only locally supplied code and intent. The remote host
 # never supplies commands. Temporary tools do not replace the running checkout.
-BOOTSTRAP = '''import base64,hashlib,json,pathlib,sys,tempfile,zipfile,io
+BOOTSTRAP = r'''import base64,hashlib,json,pathlib,sys,tempfile,zipfile,io,os,subprocess
 request=json.loads(sys.stdin.buffer.read(8*1024*1024))
 raw=base64.b64decode(request.pop("bundle"),validate=True)
 if hashlib.sha256(raw).hexdigest()!=request.pop("bundle_digest"): raise ValueError("bundle mismatch")
@@ -28,8 +28,19 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
  sys.path.insert(0,directory)
  from forge.store.migration.host import run
  from forge.store.migration.snapshot import MigrationError
- try: print(json.dumps({"ok":True,**run(request)}))
- except MigrationError as error: print(json.dumps({"ok":False,"error":error.code}))
+ from forge.store.db import StoreError,qualified_sqlite
+ try:
+  prepared=None
+  if request["action"]!="prepare" and not qualified_sqlite():
+   from forge.store.migration.runtime import inspect
+   prepared=inspect(request["root"])
+  if prepared:
+   child="import json,sys;sys.path.insert(0,"+repr(directory)+");from forge.store.migration.host import run;from forge.store.migration.snapshot import MigrationError;from forge.store.db import StoreError\ntry: print(json.dumps({'ok':True,**run(json.load(sys.stdin))}))\nexcept (MigrationError,StoreError) as e: print(json.dumps({'ok':False,'error':e.code}))"
+   completed=subprocess.run([sys.executable,"-I","-c",child],input=json.dumps(request),capture_output=True,text=True,timeout=1450,env={**os.environ,"LD_LIBRARY_PATH":prepared["library_directory"]})
+   if completed.returncode or len(completed.stdout)>65536: raise MigrationError("qualified_migration_failed")
+   print(completed.stdout.strip())
+  else: print(json.dumps({"ok":True,**run(request)}))
+ except (MigrationError,StoreError) as error: print(json.dumps({"ok":False,"error":error.code}))
 '''
 
 
@@ -52,13 +63,18 @@ def ssh(host, command):
 def call(args,action,**fields):
     # Reuse validation of explicit host/source/root intent.
     Host(args.ssh,args.source,args.root)
+    resume = shlex.join(['forge', 'migrate', 'resume', '--ssh', args.ssh,
+                         '--source', args.source, '--root', args.root, '--json'])
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action=='prepare' else 300)
-    require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed','The host operation failed. Use forge migrate resume to restore services after an interrupted capture.')
+    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume'} else 300)
+    require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
+            'The host operation failed. Resume maintenance with: ' + resume)
     value=json.loads(result.stdout)
     require(value.get('ok') is True,'migration_'+str(value.get('error','failed')),'Migration could not proceed: '+str(value.get('error','failed')))
+    if value.get('next_command') == 'forge migrate resume':
+        value['next_command'] = resume
     return value
 
 
@@ -111,6 +127,9 @@ def execute(args):
         require(args.ssh and args.source and args.root,'migration_host_required','Select --ssh, --source and --root for this host.')
         if args.migration_command in ('plan','resume'):
             return call(args,args.migration_command)
+        if args.migration_command=='activate':
+            require(args.apply,'migration_apply_required','One-way SQLite activation pauses new work, drains workers, verifies migration and restarts Forge. Supply --apply.')
+            return call(args,'activate',apply=True)
         if args.migration_command=='prepare':
             require(args.apply,'migration_apply_required','Preparing the private SQLite runtime may install compiler dependencies. Supply --apply.')
             return call(args,'prepare')
@@ -125,4 +144,4 @@ def execute(args):
     except (MigrationError, StoreError) as error:
         raise SetupError('migration_'+error.code,'Migration could not proceed: '+error.code) from None
     except (sqlite3.DatabaseError, KeyError, TypeError):
-        raise SetupError('migration_mapping_failed','The legacy records did not satisfy the import schema. Staging is retained for diagnosis; production was not switched.') from None
+        raise SetupError('migration_mapping_failed','Migration could not validate its records. Private staging and the maintenance journal are retained; use forge migrate plan and resume to inspect and continue.') from None

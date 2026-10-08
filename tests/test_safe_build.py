@@ -69,6 +69,7 @@ class SafeBuildTests(unittest.TestCase):
                 build.inner("test", ["false"], {"wait": .1})
             launch.assert_not_called()
 
+    @unittest.skipUnless(hasattr(os, 'pipe2'), 'Descriptor storage uses Linux pipe2')
     def test_descriptor_store_rejection_is_fatal(self):
         with mock.patch.dict(os.environ, {"NOTIFY_SOCKET": "/ignored"}), \
              mock.patch.object(build.socket, "socket"), \

@@ -22,13 +22,17 @@ from .runner import RunnerError
 
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
-                 dispatch, recovery=None, verification=None, waits=None, clock=time.time, retention_interval=3600):
+                 dispatch, recovery=None, verification=None, waits=None, requirements=None, operators=None,
+                 discovery=None, deployments=None, reconciliation=None, clock=time.time, retention_interval=3600):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
         self.store, self.clock, self.retention_interval = store, clock, retention_interval
         self.execution, self.observations, self.results = execution, observations, results
         self.merges, self.effects, self.dispatch = merges, effects, dispatch
         self.recovery, self.verification = recovery, verification
+        self.requirements, self.operators, self.discovery = requirements, operators, discovery
+        self.deployments = deployments
+        self.reconciliation = reconciliation
         from .wait_controller import WaitController
         self.waits = waits if waits is not None else WaitController(store, clock=clock)
 
@@ -94,9 +98,17 @@ class SqliteSupervisor:
             report = {'started_at': self.clock(), 'stages': {}}
             stages = [
                 ('execution', lambda: self._page('execution', self.execution, limit, '')),
-                ('observations', lambda: self._page('observations', self.observations, limit)),
-                ('waits', lambda: self._page('waits', self.waits, limit, '')),
             ]
+            if self.reconciliation is not None:
+                stages.append(('reconciliation', lambda: self._page('reconciliation', self.reconciliation, limit, '')))
+            if self.operators is not None:
+                stages.append(('operators', lambda: self._page('operators', self.operators, limit, '')))
+            stages.append(('observations', lambda: self._page('observations', self.observations, limit)))
+            if self.discovery is not None:
+                stages.append(('discovery', lambda: self._page('discovery', self.discovery, limit)))
+            if self.requirements is not None:
+                stages.append(('requirements', lambda: self._page('requirements', self.requirements, limit)))
+            stages.append(('waits', lambda: self._page('waits', self.waits, limit, '')))
             if self.verification is not None:
                 stages.append(('verification', lambda: self._page('verification', self.verification, limit, '')))
             stages.append(('results', lambda: self._page('results', self.results, limit, '')))
@@ -105,6 +117,10 @@ class SqliteSupervisor:
             stages.extend([
                 ('merges', lambda: self._page('merges', self.merges, limit)),
                 ('effects', lambda: self.effects.cycle(limit=limit)),
+            ])
+            if self.deployments is not None:
+                stages.append(('deployments', lambda: self._page('deployments', self.deployments, limit)))
+            stages.extend([
                 ('dispatch', lambda: self.dispatch.cycle(limit=limit)),
                 ('retention', self._retention),
             ])

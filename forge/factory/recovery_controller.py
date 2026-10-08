@@ -64,12 +64,15 @@ class RecoveryController:
         try:
             original = self.jobs.job(failed_job_id)
         except KeyError:
-            return {'failed_job_id': failed_job_id, 'pending': 'legacy_reconciliation'}
+            from ..store.migration_recovery import original_job
+            try:original=original_job(self.store,failed_job_id)
+            except KeyError:return {'failed_job_id': failed_job_id, 'pending': 'legacy_reconciliation'}
         if not original['cleanup']:
             return {'failed_job_id': failed_job_id, 'pending': 'cleanup'}
         if self.admission(original) is not True:
             return {'failed_job_id': failed_job_id, 'pending': 'repository_setup'}
         item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'],
+                        unit_state=original['unit_state'],reviewers_requested=original.get('reviewers_requested'),
                     candidate=original['candidate'])
         current_issue = Queries(self.store).issue(original['issue_key'])
         issue, requirements = self.github.issue(item)
@@ -143,7 +146,14 @@ class RecoveryController:
             'Investigation exceeded its execution deadline' if capture.get('timed_out')
             else 'Investigation did not return usable findings')
         args = dict(execution_fence=job['execution_fence'], input_manifest=job['input_manifest'], findings=findings)
-        original = self.jobs.job(job['input_manifest']['failed_job_id'])
+        try:original = self.jobs.job(job['input_manifest']['failed_job_id'])
+        except KeyError:
+            from ..store.migration_recovery import original_job
+            original_job(self.store,job['input_manifest']['failed_job_id'])
+            # Imported diagnostics do not supply the original complete launch
+            # authority needed to correct charges or accept a publication.
+            answer=self.commands.finish(self._command(job),recovery_job_id,**args,incomplete=incomplete)
+            return {'job_id':recovery_job_id,**answer}
         # A late publication is controller evidence, independent of any claims
         # in the investigation. Exact original assignment contracts still apply.
         verification = (report is not None and report['outcome'] == 'needs_human_verification'
@@ -152,7 +162,8 @@ class RecoveryController:
         if (original['role'] == 'build' and policy_current and job['unit_state'] == 'building'
                 and job['current_candidate_id'] is None
                 and job['input_manifest']['requirements_revision_id'] == original['input_manifest']['requirements_revision_id']):
-            item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'])
+            item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'],
+                        unit_state=original['unit_state'],reviewers_requested=original.get('reviewers_requested'),candidate=original.get('candidate'))
             issue, requirements = self.github.issue(item)
             if (issue.get('state') == 'open' and requirements == original['requirements']
                     and self._remote_admitted(issue, item)):
@@ -174,7 +185,8 @@ class RecoveryController:
         gates = []
         if (verification and policy_current and original['role'] in {'review', 'audit'}
                 and original['candidate_id'] == job['candidate_id'] == job['current_candidate_id']):
-            item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'])
+            item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'],
+                        unit_state=original['unit_state'],reviewers_requested=original.get('reviewers_requested'),candidate=original.get('candidate'))
             issue, requirements = self.github.issue(item)
             if (issue.get('state') == 'open' and requirements == original['requirements']
                     and self._remote_admitted(issue, item)

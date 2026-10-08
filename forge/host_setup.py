@@ -83,7 +83,11 @@ def install(root, bind=None, assume_yes=False):
 
 
 def update(root, bind=None, assume_yes=False):
-    if not (root / 'host-runtime.json').exists():
+    from .store.runtime import selected
+    from .store.configuration import Configuration
+    database = selected(root)
+    installed = Configuration(database).get('host-runtime.json') is not None if database else (root / 'host-runtime.json').exists()
+    if not installed:
         raise ValueError('This host has no Forge installation yet; run bin/forge setup first')
     preflight()
     if host_update.reconcile(root, bind, assume_yes) and Onboarding(root).view()['provider_connected']:
@@ -228,7 +232,8 @@ def connect_login(root, provider, *, api_key=False, token=False, import_login=No
         # GitHub credential, Docker socket or existing host authentication.
         # Intent precedes container creation; reset can find even an interrupted
         # login without relying on its parent terminal process.
-        write_json(root / 'state/harness-login-enabled.json', {'owner': login_owner(root)})
+        from .harnesses.accounts import mark_login
+        mark_login(root)
         setup.credentials._private()
         with tempfile.TemporaryDirectory(prefix='login-', dir=setup.credentials.root) as temporary:
             home = Path(temporary); home.chmod(0o700)
@@ -265,13 +270,20 @@ def connect_login(root, provider, *, api_key=False, token=False, import_login=No
         pending_login(setup, provider, generation, {'secret': secret, 'value': value, 'models': models, 'kind': kind})
     print('Sign-in saved locally. Waiting for the current supervisor cycle to finish…', flush=True)
     try:
-        with controller_lock(root, timeout=120):
+        from .sqlite_identity import identity_effect_lock
+        with identity_effect_lock(root), controller_lock(root, timeout=120):
             if setup.read()['generation'] != generation:
                 raise ValueError('Forge was reset during login; reconnect from the current setup')
             setup.connect(provider, api_key=secret if kind == 'api_key' else None, token=secret if kind == 'token' else None,
                           auth_value=value, models=models)
+            from .store.runtime import selected, writable
+            database = selected(root)
             ledger = root / 'state/factory/factory-ledger.json'
-            if ledger.exists():
+            if database is not None:
+                with database.write() as db:
+                    writable(db)
+                    db.execute('DELETE FROM provider_cooldowns WHERE provider=?', (provider,))
+            elif ledger.exists():
                 from .factory.ledger import Ledger
                 with Ledger(ledger.parent).transaction() as data:
                     data.get('provider_cooldowns', {}).pop(provider, None)
@@ -370,7 +382,7 @@ def main():
         if args.action == 'update':
             if not args.no_pull and host_update.pull():
                 # Run the reconciliation that shipped with the new source, not this one.
-                argv = [sys.executable, '-m', 'forge.host_setup', 'update', '--no-pull', '--root', str(root)]
+                argv = [sys.executable, '-m', 'forge.launch', 'forge.host_setup', 'update', '--no-pull', '--root', str(root)]
                 argv += ['--bind', args.bind] if args.bind else []
                 argv += ['--yes'] if args.yes else []
                 os.execv(sys.executable, argv)

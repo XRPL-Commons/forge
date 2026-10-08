@@ -87,7 +87,7 @@ def domain(name):
         return 'repository_access'
     if name.startswith('state/onboarding/') or name.startswith('setup/'):
         return 'setup'
-    if name in ('factory.json', 'runtime.json', 'host-runtime.json'):
+    if name in ('factory.json', 'runtime.json', 'host-runtime.json', 'host.json'):
         return 'configuration'
     if name.startswith('state/environment-'):
         return 'environment'
@@ -118,7 +118,7 @@ def sources(root):
                     if path.suffix in ('.json', '.jsonl', '.initialized', '.enabled'):
                         relative = path.relative_to(root).as_posix()
                         result[relative] = read_regular(path)
-    for name in ('factory.json', 'runtime.json', 'host-runtime.json'):
+    for name in ('factory.json', 'runtime.json', 'host-runtime.json', 'host.json'):
         if (root/name).exists():
             result[name] = read_regular(root/name)
     for name in result:

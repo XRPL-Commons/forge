@@ -109,9 +109,15 @@ shows the difference and asks, or stops unless you pass `--yes`. A failed build 
 canary leaves everything in use unchanged. An interrupted update converges when
 rerun.
 
-To roll back, check out the previous revision (printed by update and recorded in
-`<runtime-root>/host.json`) and run `bin/forge update --no-pull`. Earlier images
-and UI releases are reused when still present, and rebuilt otherwise.
+Before SQLite activation, a legacy installation can roll back by checking out
+the previous revision (printed by update and recorded in `<runtime-root>/host.json`)
+and running `bin/forge update --no-pull`. Earlier images and UI releases are reused
+when still present, and rebuilt otherwise.
+
+After SQLite activation, use a compatible forward update. The installation keeps
+its history and update records in SQLite; switching back to the JSON runtime or
+an older incompatible source is unsupported. The pre-migration copy is retained
+for diagnosis, not as a runtime rollback. See [the migration guide](store-migration.md).
 `bin/forge setup install` on an installed host performs the same reconciliation
 without fetching.
 

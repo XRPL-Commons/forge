@@ -1,6 +1,6 @@
 """Durable, at-least-once notification outbox. Enqueue never accesses the network.
 
-Run `python -m forge.notifications drain --state DIR` from an independent timer.
+Run `python -m forge.launch forge.notifications drain --state DIR` from an independent timer.
 Credentials arrive in that service's environment, never in event files. A successful
 relay request means accepted_by_relay, not confirmed phone delivery.
 """
@@ -22,7 +22,19 @@ CHANNELS = ('ntfy', 'gchat', 'relay')
 MAX_ATTEMPTS = 8
 
 
+def runtime_store(state):
+    from .store.runtime import selected
+    state = Path(state).absolute()
+    return selected(state.parent.parent) if state.name == 'notifications' and state.parent.name == 'state' else None
+
+
 def atomic_json(path, value):
+    from .legacy_writers import mutation
+    with mutation(path):
+        _atomic_json(path, value)
+
+
+def _atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix='.event-')
@@ -44,6 +56,18 @@ def atomic_json(path, value):
 
 
 def enqueue(state, message, now=None, event_key=None):
+    if runtime_store(state) is not None:
+        return _enqueue(state, message, now=now, event_key=event_key)
+    from .legacy_writers import mutation
+    with mutation(Path(state) / "outbox/event.json"):
+        return _enqueue(state, message, now=now, event_key=event_key)
+
+
+def _enqueue(state, message, now=None, event_key=None):
+    store = runtime_store(state)
+    if store is not None:
+        from .store.notifications import enqueue as sql_enqueue
+        return sql_enqueue(store, message, now=time.time() if now is None else now, event_key=event_key)
     if not message.strip():
         raise ValueError('message cannot be empty')
     state = Path(state)
@@ -107,6 +131,14 @@ def deliver(channel, event, env=None, runner=subprocess.run):
 
 
 def drain(state, sender=deliver, now=None, limit=2):
+    if runtime_store(state) is not None:
+        return _drain(state, sender=sender, now=now, limit=limit)
+    from .legacy_writers import mutation
+    with mutation(Path(state) / "outbox/event.json"):
+        return _drain(state, sender=sender, now=now, limit=limit)
+
+
+def _drain(state, sender=deliver, now=None, limit=2):
     state = Path(state)
     state.mkdir(parents=True, exist_ok=True)
     now = time.time() if now is None else now
@@ -115,6 +147,10 @@ def drain(state, sender=deliver, now=None, limit=2):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
+        store = runtime_store(state)
+        if store is not None:
+            from .store.notifications import drain as sql_drain
+            return sql_drain(store, sender, now=now, limit=limit)
         processed = 0
         quarantined = []
         for path in sorted((state / 'outbox').glob('*.json')):
