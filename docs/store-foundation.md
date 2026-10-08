@@ -106,17 +106,52 @@ selector. Import-only stores reject controller execution.
 
 Local integration tests compose the real row controllers with simulated GitHub
 and worker engines through build, review, audit, human approval and confirmed merge,
-including supervisor restarts. The combined local checkpoint passed 271 store
-regressions and 14 migration/runtime CLI tests on SQLite 3.53.1. This is not real
+including supervisor restarts and failure investigation before retry. The combined
+local checkpoint passed 328 store regressions and 14 migration/runtime CLI tests
+on SQLite 3.53.1. This is not real
 GitHub or production acceptance; Linux and full application qualification remain
 at the integrated batch boundary.
 
-Still required before selecting this runtime: recovery-worker scheduling;
-automatic memory/service escalation and durable environment selection; revision-bound
-dependency fulfillment and verification/operator actions; supporting-domain writers
+Still required before selecting this runtime: automatic memory/service escalation
+and durable environment selection; revision-bound dependency fulfillment and
+operator/API routing for verification and other actions; supporting-domain writers
 (discussions, deployment, configuration, identity and client operations); API/UI/CLI
 read adapters; managed-launcher guards, activation, fresh parity and live qualification.
 No legacy reconciliation gate is cleared merely because these adapters exist.
+
+### Recovery and verification adapters
+
+`RecoveryController` schedules one read-only investigation for each confirmed
+failure, including the third charged failure. The failure record, preserved
+structured diagnostics and recovery wait commit with that failure. Recovery owns
+an immutable link to the failed assignment and uses the normal runner's launch,
+capture and cleanup protocol. Its narrowly scoped gate exception permits investigation
+at budget exhaustion while preserving operator, ownership and readiness holds.
+An incomplete investigation records findings without charging another failure or
+scheduling another investigation. Two repeated failure patterns require an
+evidence-backed different approach before another ordinary attempt.
+
+A late publication can correct the original build charge only after the controller
+independently verifies the original assignment, branch, base, requirements and
+policy. Findings alone cannot publish, select a candidate or reset a budget. An
+investigation may request exact-candidate human or configured CI verification;
+that request cannot pass Review/Audit or refund a failure by itself.
+Imported historical failures remain under explicit legacy reconciliation.
+
+`VerificationController` completes configured CI verification only for the exact
+candidate and operator-selected check names/App identities. An explicit human
+confirmation records an attributed receipt; a GitHub PR approval is not proof
+that the requested verification ran. The typed command records candidate evidence
+and resolves its gate in one transaction. Subsequent worker assignments receive
+bounded verification receipts. Merge still rechecks CI, and human verification
+requires a later authorized GitHub approval. Generic gate resolution cannot bypass
+these verification commands.
+
+The supervisor accepts explicit recovery and verification adapters and pages them
+before normal dispatch. Its automatic wait stage releases elapsed provider/retry
+waits without clearing unrelated holds or changing failure history. Provider
+unavailability also records an account cooldown so another unit does not
+immediately reuse that unavailable account.
 
 ## Artifacts and retention
 

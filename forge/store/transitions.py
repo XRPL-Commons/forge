@@ -371,7 +371,7 @@ class Lifecycle:
             rule = codes.GATES[gate["code"]]
             if release != rule.release:
                 raise TransitionError("release rule does not match this gate")
-            if gate["code"] in {"operator_pause", "budget_exhausted"} or rule.release == "transition":
+            if gate["code"] in {"operator_pause", "budget_exhausted", "verification_human", "verification_ci"} or rule.release == "transition":
                 raise TransitionError("this gate requires its dedicated lifecycle command")
             self._release_evidence(gate, release, evidence)
             if gate["candidate_id"] and gate["candidate_id"] != unit["current_candidate_id"]:
@@ -626,6 +626,17 @@ class Lifecycle:
             if code in {'verification_human', 'verification_ci'} and candidate_id is None:
                 raise TransitionError('verification deferral requires an existing exact candidate')
             gate_id = self._open_gate(db, command, code, {**details, 'job_id': job_id}, member_id, candidate_id)
+            if code == 'provider_unavailable':
+                launch = db.execute('SELECT provider,provider_id,runner_config_json FROM job_launches WHERE job_id=?', (job_id,)).fetchone()
+                if launch is not None:
+                    config = json.loads(launch['runner_config_json'])
+                    account = config.get('provider_auth_file_env') or launch['provider_id'] or launch['provider']
+                    previous = db.execute('SELECT retry_at FROM provider_cooldowns WHERE account_ref=?', (account,)).fetchone()
+                    if previous is None or previous[0] <= details['retry_at']:
+                        db.execute('INSERT INTO provider_cooldowns(account_ref,provider,reason_code,retry_at,observed_at,source_job_id) '
+                            'VALUES(?,?,?,?,?,?) ON CONFLICT(account_ref) DO UPDATE SET provider=excluded.provider,reason_code=excluded.reason_code,'
+                            'retry_at=excluded.retry_at,observed_at=excluded.observed_at,source_job_id=excluded.source_job_id',
+                            (account, launch['provider'], str(details.get('reason') or 'provider_unavailable'), details['retry_at'], self.clock(), job_id))
             return {'accepted': True, 'charged': False, 'gate_id': gate_id}
         return self._apply(command, 'defer_job', payload, change)
 
@@ -635,7 +646,12 @@ class Lifecycle:
         payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest, evidence=evidence, charge=charge)
         def change(db, unit):
             job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
+            if job['role'] == 'recovery':
+                raise TransitionError('investigation failure requires finish_recovery, never another failure')
             self._result(db, command, job, evidence, "failure" if current else "stale_failure")
+            if current:
+                from .recovery import record_failure_facts
+                record_failure_facts(db, unit, job, evidence, self.clock(), store=self.store)
             charged = bool(current and charge)
             if charged:
                 charge_id = _id(command.request_id, "charge")
@@ -723,11 +739,18 @@ class Lifecycle:
             self._event(db, command, "candidate_superseded", {"candidate_id": candidate_id, "reason": reason, "evidence": evidence})
         db.execute("UPDATE units SET current_candidate_id = NULL, primary_gate_id = NULL, state = 'building' WHERE id = ?", (unit["id"],))
         db.execute("UPDATE unit_issues SET state = 'pending' WHERE unit_id = ? AND left_at IS NULL", (unit["id"],))
+        # Candidate invalidation cannot erase a mandatory diagnostic obligation.
+        # Move a retired candidate's recovery wait onto its singleton member.
+        for failed in db.execute("SELECT j.id FROM jobs j JOIN attempt_failures f ON f.attempt_id=j.attempt_id "
+                "WHERE j.unit_id=? AND f.recovery_required=1 AND f.investigation!='complete'", (unit['id'],)).fetchall():
+            if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='recovery_pending' AND resolved_at IS NULL "
+                              "AND json_extract(details_json,'$.job_id')=?", (unit['id'], failed['id'])).fetchone():
+                self._open_gate(db, command, 'recovery_pending', {'job_id': failed['id']}, self._singleton(db, unit)['id'])
         self._event(db, command, "phase_changed", {"before": unit["state"], "after": "building", "reason": reason})
 
     def invalidate_candidate(self, command, candidate_id, *, reason, evidence):
         """Invalidate exact candidate facts without removing an operator pause."""
-        if reason not in {"base_changed", "requirements_changed", "candidate_changed", "merge_conflict"}:
+        if reason not in {"base_changed", "requirements_changed", "candidate_changed", "policy_changed", "merge_conflict"}:
             raise TransitionError("unsupported invalidation reason")
         if not isinstance(evidence, dict) or evidence.get("verified") is not True:
             raise TransitionError("candidate invalidation requires verified evidence")
@@ -758,6 +781,9 @@ class Lifecycle:
             db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','technical_rejection',?)", (charge_id, job["attempt_id"], self.clock()))
             self._event(db, command, "budget_charged", {"charge_id": charge_id}, job_id=job_id)
             self._invalidate(db, command, unit, "technical_rejection", evidence)
+            from .recovery import record_failure_facts
+            record_failure_facts(db, unit, job, evidence, self.clock(), store=self.store, retry_stage='build')
+            self._open_gate(db, command, 'recovery_pending', {'job_id': job_id})
             if _charges(db, unit) >= 3:
                 self._open_gate(db, command, "budget_exhausted", {"limit": 3})
             return {"accepted": True, "charged": True, "phase": "building"}
@@ -771,6 +797,9 @@ class Lifecycle:
             self._live(unit)
             self._quiescent(db, unit["id"])
             self._singleton(db, unit)
+            from .recovery import pending_mandatory
+            if pending_mandatory(db, unit['id']):
+                raise TransitionError('mandatory investigations must complete before retry')
             if _charges(db, unit) == 0:
                 raise TransitionError("there are no failures to retry")
             self._fence(db, command)
@@ -791,6 +820,8 @@ class Lifecycle:
             job = db.execute("SELECT * FROM jobs WHERE id = ? AND unit_id = ?", (job_id, unit["id"])).fetchone()
             if job is None or not job["cleanup"] or job["outcome"] != "failure":
                 raise TransitionError("recovery requires a cleaned failed assignment")
+            if db.execute('SELECT 1 FROM attempt_failures WHERE attempt_id=? AND recovery_required=1', (job['attempt_id'],)).fetchone():
+                raise TransitionError('typed failures require their one recovery assignment')
             gates = [g for g in _gates(db, unit["id"]) if g["code"] == "recovery_pending" and json.loads(g["details_json"]).get("job_id") == job_id]
             if not gates:
                 raise TransitionError("assignment has no pending recovery")

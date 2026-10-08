@@ -2,6 +2,8 @@ import json
 import unittest
 
 from forge.store.models import Candidate, Command, TransitionError
+from forge.store.executions import Launch, ExecutionQueries
+from forge.store.recovery import Recovery
 from forge.store.transitions import manifest_hash
 from tests import test_store_transitions as helpers
 
@@ -16,6 +18,18 @@ class StoreCompletionTests(unittest.TestCase):
     fail = helpers.StoreTransitionTests.fail
     accept_build = helpers.StoreTransitionTests.accept_build
     add_independent_member = helpers.StoreTransitionTests.add_independent_member
+
+    def finish_recovery(self, failed_job):
+        recovery = Recovery(self.store, clock=lambda: 100.0)
+        job = recovery.reserve(self.command(), failed_job['job_id'], slot='recovery-1', execution_fence='recovery-fence',
+            launch=Launch('forge/recovery', 'controller[bot]', 'codex', 200, {}, {}))
+        recovery.collect(self.command(), job['job_id'], execution_fence='recovery-fence', capture={'result': None, 'logs': ''})
+        recovery.verify_cleanup(self.command(), job['job_id'], execution_fence='recovery-fence',
+                                evidence={'process_stopped': True, 'resources_released': True})
+        assigned = ExecutionQueries(self.store).job(job['job_id'])
+        return recovery.finish(self.command(), job['job_id'], execution_fence='recovery-fence',
+            input_manifest=assigned['input_manifest'], findings={'summary':'Investigated failure', 'pattern':'execution',
+                'evidence':['preserved result'], 'uncertainty':'', 'alternative':None})
 
     def observe(self, *, state='open', reason=None, date='2026-10-06T10:00:00Z', generation=1, title='Issue 1', requirements=None, labels=()):
         return self.lifecycle.observe_issue(self.command(), 'issue-1', state=state, state_reason=reason,
@@ -103,8 +117,13 @@ class StoreCompletionTests(unittest.TestCase):
         self.assertEqual(self.view()['state'], 'building')
         self.assertIsNone(self.view()['current_candidate_id'])
         self.assertEqual(self.view()['charged_failures'], 1)
-        self.assertEqual(self.view()['current_blocker']['code'], 'cleanup_pending')
+        self.assertEqual(self.view()['current_blocker']['code'], 'recovery_pending')
+        with self.store.read_snapshot() as db:
+            self.assertIsNotNone(db.execute("SELECT 1 FROM unit_gates WHERE code='cleanup_pending' AND resolved_at IS NULL").fetchone())
         self.cleanup(job)
+        with self.assertRaises(TransitionError):
+            self.reserve()
+        self.finish_recovery(job)
         self.reserve()
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM candidate_evidence WHERE verdict='fail'").fetchone()[0], 1)
@@ -125,6 +144,9 @@ class StoreCompletionTests(unittest.TestCase):
         with self.assertRaisesRegex(TransitionError, 'verified cleanup'):
             self.lifecycle.retry(self.command(), evidence={'approved': True})
         self.cleanup(job)
+        with self.assertRaisesRegex(TransitionError, 'mandatory'):
+            self.lifecycle.retry(self.command(), evidence={'approved': True})
+        self.finish_recovery(job)
         self.lifecycle.pause(self.command())
         result = self.lifecycle.retry(self.command(), evidence={'approved': True})
         self.assertEqual(result['budget_generation'], 2)
@@ -133,10 +155,14 @@ class StoreCompletionTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 1)
 
-    def test_recovery_can_correct_failure_after_cleanup_without_resetting_epoch(self):
+    def test_legacy_recovery_can_correct_failure_after_cleanup_without_resetting_epoch(self):
         job = self.reserve()
         self.fail(job)
         self.cleanup(job)
+        # Imported historical records retain the pre-adapter reconciliation path.
+        # Current failures must use their dedicated recovery assignment instead.
+        with self.store.write() as db:
+            db.execute('UPDATE attempt_failures SET recovery_required=0 WHERE attempt_id=?', (job['attempt_id'],))
         self.lifecycle.reconcile_recovery(self.command(), job['job_id'], evidence={'verified': True, 'cause': 'environment'}, reverse_charge=True)
         self.assertEqual(self.view()['budget_generation'], 1)
         self.assertEqual(self.view()['charged_failures'], 0)

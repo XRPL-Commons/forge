@@ -168,6 +168,26 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(self.view()['state'], 'merged')
         self.assertEqual(self.view()['merge_sha'], 'merge')
 
+    def test_policy_change_invalidates_candidate_and_preserves_operator_pause(self):
+        github = GitHub()
+        build = self.reserve()
+        self.accept_build(build)
+        self.cleanup(build)
+        self.lifecycle.pause(self.command())
+        selected = self.view()['current_candidate_id']
+        github.pr = lambda item, number: {'number': 1, 'merged': False, 'state': 'open', 'draft': False,
+            'head': {'sha': 'head', 'repo': {'id': 1}},
+            'base': {'sha': 'base', 'ref': 'main', 'repo': {'id': 1}}}
+        controller = ObservationController(self.store, github, admission=lambda item: True,
+                                           policy=lambda item: 'changed-policy', clock=lambda: 100)
+        controller.step('unit-1')
+        self.assertEqual(self.view()['state'], 'building')
+        self.assertIsNone(self.view()['current_candidate_id'])
+        self.assertEqual(self.view()['reason_code'], 'operator_pause')
+        self.assertEqual(self.view()['charged_failures'], 0)
+        with self.store.read_snapshot() as db:
+            self.assertIsNotNone(db.execute('SELECT id FROM candidates WHERE id=?', (selected,)).fetchone())
+
     def test_import_staging_never_calls_github(self):
         with self.store.write() as db:
             db.execute("INSERT INTO store_metadata VALUES('import_only','true')")

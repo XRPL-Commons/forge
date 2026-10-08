@@ -226,7 +226,7 @@ class StoreTransitionTests(unittest.TestCase):
         self.assertFalse(result['charged'])
         self.assertEqual(self.view()['charged_failures'], 3)
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM job_artifacts').fetchone()[0], 4)
+            self.assertEqual(db.execute("SELECT count(*) FROM job_artifacts WHERE kind='result'").fetchone()[0], 4)
 
     def test_resuming_paused_worker_keeps_cleanup_blocker_and_atomic_event_history(self):
         job = self.reserve()

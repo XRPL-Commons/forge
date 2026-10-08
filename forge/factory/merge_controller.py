@@ -105,7 +105,7 @@ class MergeAdmission:
                     return None
                 if gate['code'] == 'verification_human':
                     required = True
-                    item['verified_checks'].append({'created_at': gate['created_at'], 'proof': {'via': 'human'}})
+                    item['verified_checks'].append({'created_at': gate['resolved_at'], 'proof': {'via': 'human'}})
                 for check in gate['details'].get('ci', []):
                     ci[(check['name'], check['app_id'])] = check
         if ci and not ci_result(self.github.ci_evidence(item), item['candidate'], list(ci.values())):

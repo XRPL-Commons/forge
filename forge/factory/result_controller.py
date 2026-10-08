@@ -92,6 +92,8 @@ class ResultController:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot classify worker results')
         job = self.queries.job(job_id)
+        if job['role'] == 'recovery':
+            return {'job_id': job_id, 'pending': 'recovery_controller'}
         if job['outcome'] is not None:
             return {'job_id': job_id, 'outcome': job['outcome']}
         if job['captured_at'] is None or not job['cleanup']:

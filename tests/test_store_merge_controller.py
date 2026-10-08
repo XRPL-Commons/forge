@@ -7,6 +7,7 @@ from forge.factory.config import policy, validate
 from forge.factory.effect_controller import EffectController
 from forge.factory.github import GitHub
 from forge.factory.merge_controller import MergeAdmission, MergeController, candidate_snapshot
+from forge.factory.verification_controller import VerificationController
 from forge.store.db import Store
 from forge.store.effects import EffectQueries
 from forge.store.executions import Executions
@@ -34,7 +35,8 @@ class Remote:
         self.reviews = []
         self.runs = [dict(id=11, name='forge/review', app={'id': 101}, head_sha=HEAD, status='completed', conclusion='success'),
                      dict(id=12, name='forge/audit', app={'id': 102}, head_sha=HEAD, status='completed', conclusion='success')]
-        self.ci = {'head': HEAD, 'base': BASE, 'checks': {HEAD: [dict(name='Tests', app_id=201, status='completed', conclusion='success')]}}
+        self.ci = {'head': HEAD, 'base': BASE, 'observed_at': 300,
+                   'checks': {HEAD: [dict(id=13, name='Tests', app_id=201, status='completed', conclusion='success')]}}
         self.protected = True
         self.branch = 'main'
         self.reads = []
@@ -272,8 +274,9 @@ class MergeControllerTests(unittest.TestCase):
         gate = self.life.open_gate(self.command(), 'verification_ci', candidate_id=effect['candidate_id'],
             details={'ci': [{'name': 'Tests', 'app_id': 201}]})['gate_id']
         self.assertIsNone(self.admission(effect))
-        self.life.resolve_gate(self.command(), gate, release='evidence',
-            evidence={'verified': True, 'observed_at': self.now, 'candidate_id': effect['candidate_id']})
+        verifier = VerificationController(self.store, self.remote, profiles=lambda repo: [{'name': 'Tests', 'app_id': 201}],
+            policy=lambda item: policy(self.config), clock=lambda: self.now)
+        verifier.step(gate)
         self.assertIsNotNone(self.admission(effect))
         self.remote.ci['head'] = 'd' * 40
         self.assertIsNone(self.admission(effect))
@@ -281,16 +284,18 @@ class MergeControllerTests(unittest.TestCase):
         self.remote.ci['checks'][HEAD][0]['app_id'] = 202
         self.assertIsNone(self.admission(effect))
 
-    def test_human_verification_requires_approval_after_verification_request(self):
+    def test_human_verification_requires_approval_after_explicit_confirmation(self):
         effect = self.prepare_candidate()
         gate = self.life.open_gate(self.command(), 'verification_human', candidate_id=effect['candidate_id'],
                                    details={'summary': 'Verify migration'})['gate_id']
-        self.life.resolve_gate(self.command(), gate, release='evidence',
-            evidence={'verified': True, 'observed_at': self.now, 'candidate_id': effect['candidate_id']})
-        self.remote.approve(at=200)
+        self.remote.approve(at=325)
+        self.now = 350
+        verifier = VerificationController(self.store, self.remote, profiles=lambda repo: [],
+            policy=lambda item: policy(self.config), clock=lambda: self.now)
+        verifier.confirm_human(self.command(), gate, statement='Verified migration on the current revision.')
         self.assertIsNone(self.admission(effect))
         self.now = 400
-        self.remote.approve(identifier=2, at=350)
+        self.remote.approve(identifier=2, at=360)
         self.assertTrue(self.admission(effect)['human_approved'])
 
     def test_effect_driver_rechecks_approval_after_publishing_controller_check(self):

@@ -278,6 +278,22 @@ class SqliteSupervisorCompositionTests(unittest.TestCase):
         self.assertEqual(heartbeat['errors'], {'observations': {'count': 1, 'codes': ['GitHubUnavailable']}})
         self.assertNotIn('private remote details', json.dumps(heartbeat))
 
+    def test_optional_verification_and_recovery_are_paged_before_dispatch(self):
+        driver = self.driver()
+        driver.verification = RecordingStage('verification', self.calls, cursor='next-gate')
+        driver.recovery = RecordingStage('recovery', self.calls, cursor={'results': 'next-result', 'failures': 'next-failure'})
+        driver.cycle(limit=2)
+        self.assertEqual([name for name, _, _ in self.calls],
+            ['execution', 'observations', 'verification', 'results', 'recovery', 'merges', 'effects', 'dispatch'])
+        self.calls.clear()
+        restarted = self.driver()
+        restarted.verification = RecordingStage('verification', self.calls)
+        restarted.recovery = RecordingStage('recovery', self.calls)
+        restarted.cycle(limit=2)
+        cursors = {name: cursor for name, _, cursor in self.calls}
+        self.assertEqual(cursors['verification'], 'next-gate')
+        self.assertEqual(cursors['recovery'], {'results': 'next-result', 'failures': 'next-failure'})
+
     def test_staged_import_cannot_call_any_controller(self):
         from forge.store.models import TransitionError
         with self.store.write() as db:

@@ -149,7 +149,8 @@ class Executions(Lifecycle):
             _, current = self._job(db, unit, job_id, execution_fence, manifest)
             if not current:
                 raise TransitionError('execution assignment is no longer current')
-            if applicable_gates(db, unit, job['member_id'], job['candidate_id']):
+            from .recovery import execution_gates
+            if execution_gates(db, unit, job):
                 raise TransitionError('a gate prevents launching this assignment')
             if phase == 'running' and not (container_id or job['container_id']):
                 raise TransitionError('running requires the exact container identity')
@@ -183,7 +184,8 @@ class Executions(Lifecycle):
             db.execute("UPDATE jobs SET fenced=1,phase='collecting' WHERE id=?", (job_id,))
             if unit['state'] not in {'merged', 'closed', 'dissolved'}:
                 self._ensure_cleanup_gate(db, command, job_id, job['member_id'])
-                self._open_gate(db, command, 'result_pending', {'job_id': job_id}, job['member_id'], job['candidate_id'])
+                self._open_gate(db, command, 'result_pending', {'job_id': job_id}, job['member_id'],
+                                None if job['member_id'] else job['candidate_id'])
             self._event(db, command, 'execution_progress', {'phase': 'collecting', **payload}, job_id=job_id)
             return {'job_id': job_id, 'captured': True}
         return self._apply(command, 'collect_execution', payload, change)
@@ -265,7 +267,8 @@ class ExecutionQueries:
                 raise KeyError(job_id)
             job = dict(row)
             unit = dict(db.execute('SELECT * FROM units WHERE id=?', (job['unit_id'],)).fetchone())
-            job['launch_allowed'] = not applicable_gates(db, unit, job['member_id'], job['candidate_id'])
+            from .recovery import execution_gates
+            job['launch_allowed'] = not execution_gates(db, unit, job)
             for source, target in [('runner_config_json', 'runner_config'), ('policy_json', 'policy'),
                                    ('input_manifest_json', 'input_manifest')]:
                 job[target] = json.loads(job.pop(source))
@@ -295,6 +298,12 @@ class ExecutionQueries:
                 job['history']['failures'].append(dict(attempt=failure['attempt_id'], role=failure['role'],
                     cause=(failure['cause'] or '')[:2000], findings=json.loads(failure['findings_json']) if failure['findings_json'] else None))
             job['history']['failures'].reverse()
+            if job['candidate_id']:
+                from .verification import worker_receipts_in
+                job['history']['verified_checks'] = worker_receipts_in(db, job['candidate_id'])
+            if job['role'] == 'recovery':
+                from .recovery import failure_context
+                job['failure'] = failure_context(self.store, db, job['id'])
             return job
 
     def capture(self, job_id):

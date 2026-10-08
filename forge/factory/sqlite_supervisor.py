@@ -22,12 +22,15 @@ from .runner import RunnerError
 
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
-                 dispatch, clock=time.time, retention_interval=3600):
+                 dispatch, recovery=None, verification=None, waits=None, clock=time.time, retention_interval=3600):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
         self.store, self.clock, self.retention_interval = store, clock, retention_interval
         self.execution, self.observations, self.results = execution, observations, results
         self.merges, self.effects, self.dispatch = merges, effects, dispatch
+        self.recovery, self.verification = recovery, verification
+        from .wait_controller import WaitController
+        self.waits = waits if waits is not None else WaitController(store, clock=clock)
 
     @contextmanager
     def _lock(self):
@@ -89,15 +92,22 @@ class SqliteSupervisor:
         limit = _limit(limit)
         with self._lock():
             report = {'started_at': self.clock(), 'stages': {}}
-            stages = (
+            stages = [
                 ('execution', lambda: self._page('execution', self.execution, limit, '')),
                 ('observations', lambda: self._page('observations', self.observations, limit)),
-                ('results', lambda: self._page('results', self.results, limit, '')),
+                ('waits', lambda: self._page('waits', self.waits, limit, '')),
+            ]
+            if self.verification is not None:
+                stages.append(('verification', lambda: self._page('verification', self.verification, limit, '')))
+            stages.append(('results', lambda: self._page('results', self.results, limit, '')))
+            if self.recovery is not None:
+                stages.append(('recovery', lambda: self._page('recovery', self.recovery, limit)))
+            stages.extend([
                 ('merges', lambda: self._page('merges', self.merges, limit)),
                 ('effects', lambda: self.effects.cycle(limit=limit)),
                 ('dispatch', lambda: self.dispatch.cycle(limit=limit)),
                 ('retention', self._retention),
-            )
+            ])
             for name, run in stages:
                 try:
                     report['stages'][name] = run()
