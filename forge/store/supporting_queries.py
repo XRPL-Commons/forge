@@ -30,6 +30,31 @@ class SupportingQueries:
             return {'messages':[message(row) for row in page],
                     'before':page[0]['sequence'] if len(rows)>limit else None}
 
+    def inventory_scan(self, observation_id, *, after=None, limit=50):
+        """Read one page of captured scan facts without import archives."""
+        limit = _limit(limit)
+        if after is not None and not isinstance(after, str):
+            raise ValueError('after must be an issue key')
+        with self.store.read_snapshot() as db:
+            observation = db.execute("SELECT details_json,cursor FROM repository_observations WHERE id=? AND kind='inventory'", (observation_id,)).fetchone()
+            if observation is None:
+                return None
+            details = json.loads(observation['details_json'])
+            rows = db.execute('SELECT * FROM inventory_scan_issues WHERE observation_id=? ' +
+                              ('AND issue_key>? ' if after is not None else '') +
+                              'ORDER BY issue_key LIMIT ?',
+                              (observation_id, *((after,) if after is not None else ()), limit+1)).fetchall()
+            items = []
+            for row in rows[:limit]:
+                facts = json.loads(row['fields_json'])
+                if row['body_present']:
+                    facts['body'] = row['body']
+                items.append({'key':row['issue_key'], 'facts':facts})
+            return {'present':'scan' in details, 'header':details.get('scan'),
+                    'issues_present':details.get('scan_issues_present',False),
+                    'cursor':json.loads(observation['cursor']) if observation['cursor'] else None,
+                    'items':items, 'next_cursor':items[-1]['key'] if len(rows)>limit else None}
+
     def action(self, request_id):
         with self.store.read_snapshot() as db:
             row = db.execute('SELECT a.*,i.github_number,i.repository_id,r.full_name FROM issue_action_requests a '

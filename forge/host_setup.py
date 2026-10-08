@@ -83,6 +83,8 @@ def install(root, bind=None, assume_yes=False):
 
 
 def update(root, bind=None, assume_yes=False):
+    from .store.migration.cutover import maintenance_writable
+    maintenance_writable(root)
     from .store.runtime import selected
     from .store.configuration import Configuration
     database = selected(root)
@@ -380,6 +382,8 @@ def main():
     try:
         root = private_root(args.root)
         if args.action == 'update':
+            from .store.migration.cutover import maintenance_writable
+            maintenance_writable(root)
             if not args.no_pull and host_update.pull():
                 # Run the reconciliation that shipped with the new source, not this one.
                 argv = [sys.executable, '-m', 'forge.launch', 'forge.host_setup', 'update', '--no-pull', '--root', str(root)]

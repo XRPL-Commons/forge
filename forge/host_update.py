@@ -501,6 +501,8 @@ def qualify_runner(image, seccomp, profile, *, full=False):
 
 def reconcile(root, bind=None, assume_yes=False):
     """Install or update the host. Returns True when running workers need requalification."""
+    from .store.migration.cutover import maintenance_writable
+    maintenance_writable(root)
     root = Path(root)
     fresh = runtime_document(root, 'host-runtime.json') is None
     record = Record(root)

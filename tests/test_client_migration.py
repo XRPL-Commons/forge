@@ -106,3 +106,27 @@ print(json.dumps({'before':before}))
         parsed = parser().parse_args(command[1:])
         self.assertEqual((parsed.migration_command, parsed.ssh, parsed.source, parsed.root),
                          ('resume', 'forge', '/srv/forge source', '/srv/runtime'))
+
+    def test_forward_repair_requires_explicit_resume_and_pinned_revision(self):
+        base=['migrate','resume','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
+        with patch('forge_client.migration.call',return_value={'status':'active'}) as call:
+            for extra in (['--accept-tool-update'],['--source-revision','a'*40],
+                          ['--accept-tool-update','--source-revision','main']):
+                with self.assertRaises(SetupError):execute(parser().parse_args([*base,*extra]))
+            call.assert_not_called()
+            self.assertEqual(execute(parser().parse_args([*base,'--accept-tool-update','--source-revision','a'*40])),{'status':'active'})
+            self.assertEqual(call.call_args.kwargs,{'accept_tool_update':True,'source_revision':'a'*40})
+            with self.assertRaises(SetupError):
+                execute(parser().parse_args(['migrate','activate',*base[2:],'--accept-tool-update','--source-revision','a'*40]))
+
+    def test_remote_error_contains_safe_type_stage_and_complete_repair_command(self):
+        from types import SimpleNamespace
+        from forge_client.migration import call
+        args=parser().parse_args(['migrate','resume','--ssh','forge','--source','/srv/forge source','--root','/srv/runtime'])
+        response={'ok':False,'error':'unexpected_migration_failure','exception_type':'IntegrityError','stage':'importing'}
+        with patch('forge_client.migration.bundle',return_value=b''), patch('forge_client.migration.subprocess.run',
+                return_value=SimpleNamespace(returncode=0,stdout=json.dumps(response).encode())):
+            with self.assertRaises(SetupError) as error:call(args,'resume')
+        self.assertIn('IntegrityError at importing',str(error.exception))
+        self.assertIn("--source '/srv/forge source' --root /srv/runtime",str(error.exception))
+        self.assertIn('--accept-tool-update --source-revision <full-commit-sha>',str(error.exception))

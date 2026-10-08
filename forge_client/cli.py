@@ -46,6 +46,8 @@ def migration_commands():
         if action in ('prepare','activate'):
             properties['apply'] = {'type':'boolean','const':True}
             required.append('apply')
+        if action == 'resume':
+            properties.update(accept_tool_update={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
         if not remote:
             properties['batch'] = {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'default': 100}
         result[action] = {
@@ -109,6 +111,8 @@ def parser():
     for name in ('ssh','source','root','snapshot','destination'):
         migration.add_argument('--'+name)
     migration.add_argument('--apply', action='store_true', help='Authorize runtime preparation, capture, or one-way SQLite activation')
+    migration.add_argument('--accept-tool-update', action='store_true', help='resume: authorize a pinned source-only repair and reimport the same frozen snapshot before selection')
+    migration.add_argument('--source-revision', help='resume repair: full commit SHA to install by clean fast-forward, without restarting services')
     migration.add_argument('--batch', type=int, default=100)
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     sub.add_parser('commands')

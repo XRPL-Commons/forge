@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
    if p.is_absolute() or ".." in p.parts or p.parts[0]!="forge": raise ValueError("bad bundle")
   bundle.extractall(directory)
  sys.path.insert(0,directory)
- from forge.store.migration.host import run
+ from forge.store.migration.host import run,failure
  from forge.store.migration.snapshot import MigrationError
  from forge.store.db import StoreError,qualified_sqlite
  try:
@@ -35,12 +35,12 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
    from forge.store.migration.runtime import inspect
    prepared=inspect(request["root"])
   if prepared:
-   child="import json,sys;sys.path.insert(0,"+repr(directory)+");from forge.store.migration.host import run;from forge.store.migration.snapshot import MigrationError;from forge.store.db import StoreError\ntry: print(json.dumps({'ok':True,**run(json.load(sys.stdin))}))\nexcept (MigrationError,StoreError) as e: print(json.dumps({'ok':False,'error':e.code}))"
+   child="import json,sys;sys.path.insert(0,"+repr(directory)+");from forge.store.migration.host import run,failure;request=json.load(sys.stdin)\ntry: print(json.dumps({'ok':True,**run(request)}))\nexcept Exception as e: print(json.dumps(failure(e,request)))"
    completed=subprocess.run([sys.executable,"-I","-c",child],input=json.dumps(request),capture_output=True,text=True,timeout=1450,env={**os.environ,"LD_LIBRARY_PATH":prepared["library_directory"]})
    if completed.returncode or len(completed.stdout)>65536: raise MigrationError("qualified_migration_failed")
    print(completed.stdout.strip())
   else: print(json.dumps({"ok":True,**run(request)}))
- except (MigrationError,StoreError) as error: print(json.dumps({"ok":False,"error":error.code}))
+ except Exception as error: print(json.dumps(failure(error,request)))
 '''
 
 
@@ -72,7 +72,14 @@ def call(args,action,**fields):
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
             'The host operation failed. Resume maintenance with: ' + resume)
     value=json.loads(result.stdout)
-    require(value.get('ok') is True,'migration_'+str(value.get('error','failed')),'Migration could not proceed: '+str(value.get('error','failed')))
+    if value.get('ok') is not True:
+        import re
+        token=lambda key,default: value[key] if isinstance(value.get(key),str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',value[key]) else default
+        code,kind,stage=token('error','failed'),token('exception_type','Exception'),token('stage','unknown')
+        repair=resume+' --accept-tool-update --source-revision '+(getattr(args,'source_revision',None) or '<full-commit-sha>')
+        raise SetupError('migration_'+code,'Migration could not proceed: '+code+' ('+kind+' at '+stage+'). '
+            +'Resume maintenance with: '+resume+'. For corrected tools before selection: '+repair)
+
     if value.get('next_command') == 'forge migrate resume':
         value['next_command'] = resume
     return value
@@ -119,6 +126,14 @@ def execute(args):
     from forge.store.db import StoreError
     import sqlite3
     try:
+        repair=getattr(args,'accept_tool_update',False)
+        revision=getattr(args,'source_revision',None)
+        require(not (repair or revision) or args.migration_command=='resume','migration_repair_resume_required','Tool updates are only accepted by migrate resume before SQLite selection.')
+        require(not repair or revision is not None,'migration_repair_revision_required','Select the exact corrected source with --source-revision and --accept-tool-update.')
+        require(not revision or repair,'migration_repair_authorization_required','Supply --accept-tool-update to authorize this source revision.')
+        if revision:
+            import re
+            require(re.fullmatch(r'[0-9a-f]{40}',revision) is not None,'migration_repair_revision_required','Use a full lowercase commit SHA for --source-revision.')
         if args.migration_command in ('import','verify'):
             require(args.snapshot and args.destination,'migration_paths_required','Select --snapshot and --destination private directories.')
             from forge.store.migration.importer import Importer
@@ -126,7 +141,7 @@ def execute(args):
             return importer.run() if args.migration_command=='import' else importer.validate()
         require(args.ssh and args.source and args.root,'migration_host_required','Select --ssh, --source and --root for this host.')
         if args.migration_command in ('plan','resume'):
-            return call(args,args.migration_command)
+            return call(args,args.migration_command,**({'accept_tool_update':True,'source_revision':revision} if repair else {}))
         if args.migration_command=='activate':
             require(args.apply,'migration_apply_required','One-way SQLite activation pauses new work, drains workers, verifies migration and restarts Forge. Supply --apply.')
             return call(args,'activate',apply=True)
