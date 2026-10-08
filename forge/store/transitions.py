@@ -531,6 +531,19 @@ class Lifecycle:
         content = _json(evidence).encode()
         db.execute("INSERT INTO job_artifacts(job_id,kind,sequence,media_type,digest,content,size) VALUES(?,'result',0,'application/json',?,?,?)", (job["id"], hashlib.sha256(content).hexdigest(), content, len(content)))
         db.execute("UPDATE jobs SET phase = CASE WHEN cleanup=1 THEN 'cleaned' ELSE 'finished' END, outcome = ? WHERE id = ?", (outcome, job["id"]))
+        # Cards retain the validated plain-language summary, independently of
+        # lazy transcript artifacts. Stale or recovery results cannot replace
+        # the current delivery's explanation.
+        if outcome in {'success','failure','rejected','deferred'} and job['role'] in {'build','review','audit'}:
+            from ..factory.contracts import result as worker_result, summary as worker_summary
+            try:
+                report=worker_result(evidence.get('report'),{'id':job['id'],'role':job['role'],'candidate':{'key':job['candidate_id']}})
+                display=worker_summary(report,job['role'],self.clock())
+            except (ValueError,TypeError,KeyError):
+                display=None
+            if display:
+                db.execute('INSERT INTO unit_context(unit_id,summary_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET summary_json=excluded.summary_json',
+                           (command.unit_id,_json(display)))
         self._event(db, command, "attempt_finished", {"outcome": outcome}, job_id=job["id"])
         if not job['cleanup'] and _unit(db, command.unit_id)['state'] not in TERMINAL:
             self._ensure_cleanup_gate(db, command, job["id"], job["member_id"])
