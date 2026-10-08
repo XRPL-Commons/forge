@@ -373,7 +373,7 @@ class SetupCommandTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 host_setup.main()
         argv = execv.call_args.args[1]
-        self.assertEqual(argv[1:4], ['-m', 'forge.host_setup', 'update'])
+        self.assertEqual(argv[1:5], ['-m', 'forge.launch', 'forge.host_setup', 'update'])
         self.assertIn('--no-pull', argv)
         self.assertEqual(argv[argv.index('--bind') + 1], '100.64.0.7')
         self.assertIn('--yes', argv)

@@ -103,6 +103,12 @@ def digest(value):
 
 
 def write_json(path, value):
+    from .legacy_writers import mutation
+    with mutation(path):
+        _write_json(path, value)
+
+
+def _write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.settings-', dir=path.parent)
@@ -122,6 +128,17 @@ def write_json(path, value):
 
 
 class Settings:
+    def __new__(cls, root, **kwargs):
+        if cls is Settings:
+            from .store.runtime import selected
+            store = selected(root)
+            if store is not None:
+                from .sqlite_settings import SqliteSettings
+                instance = object.__new__(SqliteSettings)
+                instance.database = store
+                return instance
+        return object.__new__(cls)
+
     def __init__(self, root, *, client=None, clock=time.time):
         self.root = Path(root)
         self.path = self.root / 'factory.json'
@@ -132,6 +149,27 @@ class Settings:
 
     def load(self):
         return validate(read_json(self.path)) if self.path.exists() else json.loads(json.dumps(DEFAULT))
+
+    def configured(self):
+        return self.path.exists()
+
+    def generation(self):
+        return None
+
+    def save_config(self, config, *, expected_generation=None):
+        write_json(self.path, config)
+
+    def save_observation(self, value, *, expected_generation=None):
+        write_json(self.state / 'access.json', value)
+
+    def sync(self):
+        try:
+            return read_json(self.state / 'sync.json')
+        except (OSError, ValueError):
+            return {'status': 'never'}
+
+    def save_sync(self, value):
+        write_json(self.state / 'sync.json', value)
 
     def paused(self):
         root = self.root.parent if self.root.name == 'setup' else self.root
@@ -156,6 +194,7 @@ class Settings:
             raise ValueError('Factory reset is in progress')
         validate(config)
         with self.locked('config'):
+            generation = self.generation()
             if revision != digest(self.load()):
                 raise ValueError('Settings changed; reload before saving')
             # Access checks use the NEW connection configuration. Replacing an
@@ -172,7 +211,7 @@ class Settings:
                 # directory; its activation step has its own readiness gate.
                 if newly_enabled and self.root.name != 'setup' and not rows[row['id']]['protection_ready']:
                     raise ValueError(row['name'] + ': finish repository setup and check again before enabling')
-            write_json(self.path, config)
+            self.save_config(config, expected_generation=generation)
         return self.view()
 
     def refresh(self):
@@ -183,8 +222,9 @@ class Settings:
                 if self.paused():
                     return False
                 config, previous = self.load(), self.observation()
+                generation = self.generation()
                 start = self.clock()
-                write_json(self.state / 'sync.json', {'status': 'running', 'started_at': start})
+                self.save_sync({'status': 'running', 'started_at': start})
                 def collect(role):
                     connection = config['connections'].get(role)
                     if not connection:
@@ -205,8 +245,8 @@ class Settings:
                     roles = dict(pool.map(collect, ROLES))
                 if self.paused():
                     return False
-                write_json(self.state / 'access.json', {'roles': roles, 'observed_at': self.clock()})
-                write_json(self.state / 'sync.json', {'status': 'complete', 'finished_at': self.clock()})
+                self.save_observation({'roles': roles, 'observed_at': self.clock()}, expected_generation=generation)
+                self.save_sync({'status': 'complete', 'finished_at': self.clock()})
                 return True
         except BlockingIOError:
             return False
@@ -259,10 +299,7 @@ class Settings:
         repositories = RepositorySetup(self).views(repositories, config)
         for row in repositories:
             row['dispatch_allowed'] = row['enabled'] and row['access_ready'] and row['protection_ready']
-        try:
-            sync = read_json(self.state / 'sync.json')
-        except (OSError, ValueError):
-            sync = {'status': 'never'}
+        sync = self.sync()
         # A server crash must not leave the UI permanently showing "refreshing".
         try:
             with self.locked('sync', blocking=False):
@@ -270,7 +307,7 @@ class Settings:
                     sync = {**sync, 'status': 'interrupted'}
         except BlockingIOError:
             pass
-        return {'config': config, 'revision': digest(config), 'configured': self.path.exists(),
+        return {'config': config, 'revision': digest(config), 'configured': self.configured(),
                 'roles': role_views, 'repositories': sorted(repositories, key=lambda r: r['name'].lower()),
                 'sync': sync, 'config_file': 'factory.json'}
 
@@ -303,7 +340,7 @@ class Settings:
     def watch(self):
         while True:
             try:
-                if self.path.exists():
+                if self.configured():
                     self.refresh_all()
                 interval = self.load()['sync_interval_seconds']
             except (OSError, ValueError):

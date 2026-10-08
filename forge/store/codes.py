@@ -128,6 +128,7 @@ GATES: dict[str, Gate] = {
     'dependency': Gate('dependency', 'observation', EITHER),
     'recovery_pending': Gate('automatic', 'transition', ANY_SCOPE),
     'cleanup_pending': Gate('automatic', 'transition', ANY_SCOPE),
+    'result_pending': Gate('automatic', 'transition', ANY_SCOPE),
     'provider_unavailable': Gate('automatic', 'time', UNIT),
     'capacity': Gate('automatic', 'transition', UNIT),
     'retry_delay': Gate('automatic', 'time', EITHER),
@@ -154,12 +155,15 @@ ARTIFACT_KINDS = {
     'live_tail': 'raw',
     'ci_transcript': 'raw',
     'launch_input': 'durable',
+    'failure_evidence': 'durable',
+    'worker_capture': 'durable',
     'input_manifest': 'durable',
     'result': 'durable',
     'summary': 'durable',
 }
 
 EVENT_KINDS = frozenset({
+    'legacy_event', 'execution_progress', 'external_effect_changed',
     'unit_created', 'admitted', 'membership_changed', 'part_accepted',
     'candidate_selected', 'candidate_superseded', 'phase_changed',
     'gate_opened', 'gate_resolved', 'attempt_reserved', 'attempt_finished',

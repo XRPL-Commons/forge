@@ -13,7 +13,8 @@ dependencies = ["keyring>=25,<26"]
 forge = "forge_client.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["forge_client*"]
+include = ["forge_client", "forge_client.*", "forge", "forge.*"]
 
 [tool.setuptools.package-data]
 forge_client = ["skills/*/SKILL.md"]
+"forge.store" = ["schema/*.sql"]

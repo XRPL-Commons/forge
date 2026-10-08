@@ -6,6 +6,17 @@ It includes the shared stage and transition-event work from superseded
 [#168](https://github.com/XRPL-Commons/forge/issues/168) and the batch requirements
 of [#207](https://github.com/XRPL-Commons/forge/issues/207).
 
+## Delivery ownership refinement — 2026-10-08
+
+The operator agreed to [#217](https://github.com/XRPL-Commons/forge/issues/217):
+a persistent repository supervisor proposes coherent deliveries; one owning
+builder delegates parts to tracked subagents, integrates their outputs and owns
+one PR. One Review and one Audit assess the integrated candidate, repeating the
+required checks when evidence changes. Separate workers primarily serve separate
+PRs. Phase 6 must adapt the part/integration assignment topology accordingly;
+per-batch approval, exact dependency inputs, scoped gates and the shared failure
+budget stay in force. This follow-up does not delay the core SQLite switchover.
+
 ## Summary and review scope
 
 Move mutable controller state into one private SQLite database. Model each delivery

@@ -9,6 +9,7 @@ from __future__ import annotations
 from . import codes
 
 WORDING: dict[str, tuple[str, str | None]] = {
+    'result_pending': ('Checking the completed worker result', None),
     # Unit states
     'queued': ('Waiting to start', None),
     'building': ('Building', 'Building {parts}'),

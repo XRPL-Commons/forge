@@ -159,7 +159,7 @@ class Artifacts:
     def prune_raw_logs(self, *, now=None, batch=500):
         """Tombstone one bounded batch of eligible logs after 30 days.
 
-        No scheduler calls this method. Active work, current-candidate evidence,
+        The explicit SQLite supervisor schedules bounded pruning. Active work, current-candidate evidence,
         recovery/cleanup and explicitly pinned historical references are retained.
         """
         now = self.clock() if now is None else now
@@ -179,7 +179,7 @@ class Artifacts:
                 "AND (u.state IN ('merged','closed','dissolved') OR ((j.candidate_id IS NULL OR j.candidate_id IS NOT u.current_candidate_id) "
                 "AND NOT EXISTS (SELECT 1 FROM candidate_evidence e WHERE e.attempt_id=j.attempt_id AND e.candidate_id=u.current_candidate_id))) "
                 "AND NOT EXISTS (SELECT 1 FROM unit_gates g WHERE g.unit_id=u.id AND g.resolved_at IS NULL "
-                "AND g.code IN ('recovery_pending','cleanup_pending')) ORDER BY a.created_at,a.rowid LIMIT ?",
+                "AND g.code IN ('recovery_pending','cleanup_pending','result_pending')) ORDER BY a.created_at,a.rowid LIMIT ?",
                 (*raw, now - RAW_LOG_RETENTION_DAYS * 86400, now, batch),
             ).fetchall()
             for row in rows:

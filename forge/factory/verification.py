@@ -6,7 +6,7 @@ def configure(root, repository_id, checks, revision):
     """An explicit operator opt-in; repository content cannot change it."""
     from pathlib import Path
     from ..settings import Settings, digest, write_json
-    from .config import load, validate
+    from .config import load, validate, save
     settings = Settings(root)
     repo = next((r for r in settings.load()['repositories'] if str(r['id']) == repository_id), None)
     if not repo:
@@ -22,7 +22,7 @@ def configure(root, repository_id, checks, revision):
             profiles[repo['name']] = checks
         else:
             profiles.pop(repo['name'], None)
-        write_json(Path(root) / 'runtime.json', validate(current))
+        save(root, current, revision=revision)
     return {'ok': True, 'repository': repo['name'], 'checks': checks, 'runtime_revision': digest(current)}
 
 

@@ -43,6 +43,9 @@ let failedQuestions = new Set()
 //   "(fail)"    first time: Ember joins, then runs out of time
 //   "(auth)"    Bolt joins, cannot sign in, Ember joins instead and answers
 let turn = null
+// A spec can hold a transient presence phase while it checks the rendered UI.
+// null keeps the ordinary wall-clock script used by the other scenarios.
+let discussionElapsed = null
 const EMBER = { provider: 'claude', model: 'claude-sonnet-4-6', name: 'Ember', label: 'Claude' }
 const BOLT = { provider: 'codex', model: null, name: 'Bolt', label: 'Codex' }
 const LINES = ['Getting started', 'Reading issue #610', 'Searching the repository for `producer`']
@@ -82,7 +85,7 @@ function answer(agent, instead = null) {
 
 function advance() {
   if (!turn) return
-  const t = Date.now() - turn.started
+  const t = discussionElapsed ?? Date.now() - turn.started
   if (turn.kind === 'auth') {
     if (t < 1000) return
     if (t < 4000) return Object.assign(conversation, { status: 'running', presence: joined(BOLT, 1000, t) })
@@ -255,6 +258,16 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true })
   }
 
+  if (req.method === 'POST' && pathname === '/__discussion-time') {
+    const elapsed = body?.elapsed
+    if (elapsed !== null && (!Number.isFinite(elapsed) || elapsed < 0)) {
+      return send(res, 400, { ok: false })
+    }
+    discussionElapsed = elapsed
+    advance()
+    return send(res, 200, { ok: true })
+  }
+
   if (req.method === 'POST' && pathname === '/__scenario') {
     const name = body && typeof body === 'object' ? body.name : undefined
     if (typeof name === 'string' && name) scenario = name
@@ -268,6 +281,7 @@ const server = http.createServer(async (req, res) => {
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
     failedQuestions = new Set()
     turn = null
+    discussionElapsed = null
     return send(res, 200, { ok: true })
   }
 

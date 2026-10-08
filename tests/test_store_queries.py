@@ -11,8 +11,9 @@ class MemoryStore:
     def __init__(self):
         self.connection = sqlite3.connect(':memory:')
         self.connection.row_factory = sqlite3.Row
-        schema = Path(__file__).resolve().parents[1] / 'forge/store/schema/001_initial.sql'
-        self.connection.executescript(schema.read_text())
+        directory = Path(__file__).resolve().parents[1] / 'forge/store/schema'
+        for schema in sorted(directory.glob('*.sql')):
+            self.connection.executescript(schema.read_text())
         self.statements = []
         self.connection.set_trace_callback(self.statements.append)
 
