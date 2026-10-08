@@ -359,7 +359,7 @@ def main(argv=None):
             settings.watch()
             return
         if args.command == 'sync':
-            if not settings.path.exists():
+            if not settings.configured():
                 raise ValueError('factory.json does not exist')
             started = settings.refresh()
             result = settings.view()
@@ -369,7 +369,7 @@ def main(argv=None):
             return 0 if result['config']['connections'] and all(
                 result['roles'][role]['status'] == 'ok' for role in result['config']['connections']) else 1
         if args.command == 'validate':
-            if not settings.path.exists():
+            if not settings.configured():
                 raise ValueError('factory.json does not exist')
             settings.load()
             print('Configuration is valid')
@@ -380,4 +380,7 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    # Runtime adapters subclass the canonical module's classes. Running the
+    # local __main__ copy would skip initialization of that returned subclass.
+    from forge.settings import main as canonical_main
+    raise SystemExit(canonical_main())

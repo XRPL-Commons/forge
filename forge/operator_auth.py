@@ -286,4 +286,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # Keep CLI execution on the canonical module used by runtime adapters.
+    from forge.operator_auth import main as canonical_main
+    canonical_main()

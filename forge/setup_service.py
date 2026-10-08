@@ -521,4 +521,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # Runtime adapters subclass the canonical module's classes. Running the
+    # local __main__ copy would skip initialization of that returned subclass.
+    from forge.setup_service import main as canonical_main
+    canonical_main()
