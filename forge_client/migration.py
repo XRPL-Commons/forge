@@ -46,12 +46,12 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
 
 def bundle():
     import forge
+    from forge.store.migration.source import source_files
     root=Path(forge.__file__).parent
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:
-        for pattern in ('*.py','*.sql'):
-            for path in sorted(root.rglob(pattern)):
-                archive.writestr('forge/'+path.relative_to(root).as_posix(),path.read_bytes())
+        for path in source_files(root):
+            archive.writestr('forge/'+path.relative_to(root).as_posix(),path.read_bytes())
     return output.getvalue()
 
 
