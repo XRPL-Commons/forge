@@ -1,4 +1,7 @@
 import io
+import json
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -32,12 +35,40 @@ class MigrationCLITests(unittest.TestCase):
                 self.assertEqual(execute(args),{'status':action})
             self.assertEqual(call.call_args.args[1],action)
 
-    def test_transfer_bundle_contains_only_python_and_schema_source(self):
+    def test_transfer_bundle_contains_only_code_schema_and_harness_manifests(self):
         with zipfile.ZipFile(io.BytesIO(bundle())) as archive:
             names=archive.namelist()
             self.assertIn('forge/store/migration/host.py',names)
             self.assertIn('forge/store/schema/002_import_archive.sql',names)
-            self.assertTrue(all(n.startswith('forge/') and n.endswith(('.py','.sql')) for n in names))
+            self.assertIn('forge/harnesses/codex/manifest.json', names)
+            self.assertTrue(all(n.startswith('forge/') and (n.endswith(('.py','.sql')) or
+                Path(n).match('forge/harnesses/*/manifest.json')) for n in names))
+
+    def test_isolated_bundle_validates_runtime_and_binds_manifest_identity(self):
+        from forge.store.migration.importer import importer_version
+        with tempfile.TemporaryDirectory() as directory:
+            directory = str(Path(directory).resolve())
+            with zipfile.ZipFile(io.BytesIO(bundle())) as archive:
+                archive.extractall(directory)
+            script = '''import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from forge.factory.config import validate
+from forge.store.migration.importer import importer_version
+from forge.store.migration.cutover import package_version
+assert validate({})['provider']=='codex'
+before=importer_version()
+assert package_version(sys.argv[1])==before
+path=Path(sys.argv[1])/'forge/harnesses/codex/manifest.json'
+path.write_text(path.read_text()+'\\n')
+after=importer_version()
+assert after!=before and package_version(sys.argv[1])==after
+print(json.dumps({'before':before}))
+'''
+            result=subprocess.run([sys.executable,'-I','-c',script,directory],cwd=directory,
+                                  capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout)['before'],importer_version())
 
     def test_activate_requires_explicit_apply_and_routes_host_protocol(self):
         values=['migrate','activate','--ssh','forge','--source','/srv/source','--root','/srv/runtime']

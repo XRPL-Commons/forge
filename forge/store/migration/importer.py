@@ -5,10 +5,11 @@ from pathlib import Path
 
 from ..db import Store
 from .snapshot import Snapshot, MigrationError, decode, digest, encode
+from .source import source_files
 
 def importer_version():
     directory = Path(__file__).parent.parent.parent
-    paths = sorted(path for path in directory.rglob('*') if path.suffix in ('.py','.sql'))
+    paths = source_files(directory)
     return '1:' + digest(b''.join(path.relative_to(directory).as_posix().encode() + path.read_bytes() for path in paths))
 CHUNK = 1024 * 1024
 

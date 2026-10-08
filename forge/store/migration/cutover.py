@@ -16,6 +16,7 @@ from ..configuration import Configuration
 from ..db import Store, _fsync_directory, _new_file, qualified_sqlite
 from .importer import Importer, importer_version
 from .snapshot import MigrationError, Snapshot, capture, decode, digest, encode, operation_lock, read_regular, sources, uncleaned_auxiliary
+from .source import source_files
 
 STAGES = {'draining','stopping','capturing','importing','validated','selected','complete'}
 
@@ -33,7 +34,7 @@ def maintenance_writable(root):
 
 def package_version(source):
     directory=Path(source)/'forge'
-    paths=sorted(path for path in directory.rglob('*') if path.suffix in ('.py','.sql'))
+    paths=source_files(directory)
     return '1:'+digest(b''.join(path.relative_to(directory).as_posix().encode()+read_regular(path) for path in paths))
 
 
