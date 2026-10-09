@@ -91,3 +91,11 @@ Internal group edges use exact accepted member outputs, so an issue does not nee
 to close before its dependent child runs. Their readiness is enforced by the
 same delivery graph that pins the child's inputs. Independent children may run
 while another prerequisite remains blocked.
+
+### Planning diagnostics
+
+Completed worker captures keep structured results permanently. Their scrubbed terminal logs are stored separately, bounded to 64 KiB per execution. After 30 days, verified cleanup and lease release allow the supervisor to expire the log bytes while retaining their digest and expiry receipt. Expiring logs never changes the structured capture digest.
+
+A missing result artifact is reported as `triage_result_missing`; a present result with a wrong attempt, role or shape is `triage_result_invalid`. A valid non-pass result is `triage_worker_unsuccessful`. Semantic proposal rejection remains `triage_proposal_invalid`. A missing artifact alone does not identify a provider or harness failure; the retained diagnostic log supplies that evidence when available.
+
+Repository planning results have a 4 MiB limit shared by the installed provider adapters and host capture. Other worker results retain their 64 KiB limit.

@@ -4,7 +4,7 @@ import {
   LINE_LOOKS, LINE_RESERVED, LINE_STAGES, lineFill, lineMix, lineAnalyse, lineBlocker, lineDiff, lineGroups, lineHeadline, lineHeadlineText, lineReason, lineState, lineStation,
   lineSummary, lineTooltip, type LineState,
 } from '../../app/utils/factoryLine'
-import { factoryFreshness } from '../../app/utils/factory'
+import { factoryFreshness, readout } from '../../app/utils/factory'
 import { attentionKind } from '../e2e/attention-kind.mjs'
 
 const now = 1_000_000
@@ -22,7 +22,7 @@ function job(number: number, role: string, over: Record<string, unknown> = {}): 
   return {
     id: `job-${number}`, issue_key: `1:${number}`, repo_id: 1, repo: 'XRPL-Commons/academy', issue_number: number,
     role, slot: `${role}-1`, provider: 'claude', provider_id: null, model: null, phase: 'running', outcome: null,
-    cleanup: false, fenced: false, created_at: now - 200, deadline: now + 1600, observed_at: now - 10, started_at: now - 180, ...over,
+    cleanup: false, fenced: false, created_at: now - 200, deadline: now + 1600, observed_status: 'running', observed_at: now - 10, started_at: now - 180, ...over,
   }
 }
 
@@ -87,7 +87,7 @@ describe('lineState', () => {
     for (const snapshot of [
       view([item], [job(1, 'build')], { observation: { at: now - 1000, errors: [] } }),
       view([item], [job(1, 'build', { phase: 'launching' })]),
-      view([item], [job(1, 'build', { observed_at: now - 1000 })]),
+      view([item], [job(1, 'build', { observed_status: 'running', observed_at: now - 1000 })]),
     ]) {
       const state = lineState(snapshot, now)!
       expect(stageOf(state, '1:1')).toMatchObject({ running: false, status: 'Working' })
@@ -276,5 +276,32 @@ describe('factory freshness wording', () => {
     expect(factoryFreshness(view([], [], { active: false }), now)).toBe('Factory not running · last known state')
     expect(factoryFreshness(view([], [], { observation: { at: now - 1000 } }), now)).toBe('Updates delayed · last known state')
     expect(factoryFreshness(view([], []), now, true)).toBe('Reconnecting · last known state')
+  })
+})
+
+describe('worker capacity follows jobs rather than grouped issue cards', () => {
+  it('counts one shared owner once and keeps starting slots distinct from running ones', () => {
+    const grouped = [issue(1, { active: 'parent' }), issue(2, { active: 'parent' }), issue(3)]
+    const parent = job(1, 'build', { id: 'parent', phase: 'reserved', observed_at: null, observed_status: null })
+    const snapshot = view(grouped, [parent])
+    let state = lineState(snapshot, now)!
+    expect(lineAnalyse(state)).toMatchObject({ occupied: 1, running: 0, neck: null })
+    expect(lineHeadlineText(lineHeadline(lineAnalyse(state)))).toBe('1 of 4 slots in use')
+    expect(readout(snapshot, now)).toMatchObject({ occupied: 1, working: 0 })
+    parent.phase = 'running'; parent.observed_at = now - 5; parent.observed_status = 'running'
+    state = lineState(snapshot, now)!
+    expect(lineAnalyse(state)).toMatchObject({ occupied: 1, running: 1, neck: null })
+    expect(readout(snapshot, now)).toMatchObject({ occupied: 1, working: 1 })
+  })
+
+  it('counts every leased child in the summary even when only one issue card is shown', () => {
+    const workers = [job(1, 'build'), job(2, 'build', { slot: 'build-2' })]
+    const snapshot = view([issue(1, { active: 'job-1' })], [workers[0]], { summary: { workers, merged_day: 0 } })
+    expect(lineAnalyse(lineState(snapshot, now)!)).toMatchObject({ occupied: 2, running: 2 })
+    expect(readout(snapshot, now)).toMatchObject({ occupied: 2, working: 2 })
+    workers[1].observed_status = 'paused'
+    expect(lineAnalyse(lineState(snapshot, now)!)).toMatchObject({ occupied: 2, running: 1 })
+    workers[0].observed_at = now - 1000
+    expect(readout(snapshot, now)).toMatchObject({ occupied: 2, working: 0 })
   })
 })

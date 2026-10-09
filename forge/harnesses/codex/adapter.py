@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import runpy
 
+RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
+
 
 def prepare_tool_environment(directory, env):
     askpass = Path("/work/askpass")
@@ -55,10 +57,7 @@ def run(note, directory, env, result_schema):
     prompt = json.dumps(note) + '\nReturn your result as the final structured response. It will be validated by the supervisor.'
     completed = subprocess.run(args, input=prompt, text=True, env=env, check=False)
     output = Path('/work/final-result.json')
-    if output.is_file() and output.stat().st_size <= 65536:
-        # Atomic rename is the result handoff. Partial provider output is not a result.
-        json.loads(output.read_text())
-        output.replace('/work/result.json')
+    RESULTS['publish_result'](note, output)
     return completed.returncode
 
 

@@ -4,6 +4,7 @@ import json
 
 from .models import TransitionError
 from .runtime import writable
+from .codes import RAW_LOG_RETENTION_DAYS
 
 MUTABLE = {'deadline', 'container_id', 'capacity_wait_since', 'capture', 'fenced', 'cleanup'}
 
@@ -32,6 +33,21 @@ def save_in(db, domain, owner, job, now):
     capture = job.get('capture')
     capture_digest = runtime['capture_digest']
     if capture is not None:
+        # Runner.capture already scrubs credentials. Raw logs have a separate
+        # retention lifecycle and never contribute to the structured digest.
+        if domain == 'triage' and 'logs' in capture:
+            capture = dict(capture)
+            logs = capture.pop('logs')
+            if not isinstance(logs, str):
+                raise TransitionError('Auxiliary logs must be scrubbed text')
+            raw = logs.encode()[-65536:].decode(errors='ignore').encode()
+            digest = hashlib.sha256(raw).hexdigest()
+            prior = db.execute('SELECT digest FROM auxiliary_logs WHERE execution_id=?', (identifier,)).fetchone()
+            if prior is not None and prior['digest'] != digest:
+                raise TransitionError('Auxiliary logs cannot be replaced')
+            if prior is None:
+                db.execute('INSERT INTO auxiliary_logs VALUES(?,?,?,?,?,NULL)',
+                           (identifier, digest, raw, now, now + RAW_LOG_RETENTION_DAYS * 86400))
         payload = json.dumps(capture, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
         if len(payload) > 8 * 1048576:
             raise TransitionError('auxiliary capture exceeds its size limit')
@@ -102,3 +118,16 @@ def active(store, domain=None):
         if len(rows) > 100:
             raise TransitionError('auxiliary execution capacity exceeded')
         return [job_in(db, row[0]) for row in rows]
+
+
+def prune_logs_in(db, *, now, batch):
+    """Expire one bounded page, preserving log identity and structured captures."""
+    rows = db.execute('SELECT a.execution_id FROM auxiliary_logs a '
+        'JOIN auxiliary_executions e ON e.id=a.execution_id '
+        'WHERE a.expired_at IS NULL AND a.expires_at<=? AND e.cleanup=1 '
+        'AND NOT EXISTS(SELECT 1 FROM auxiliary_leases l WHERE l.execution_id=e.id) '
+        'ORDER BY a.expires_at,a.execution_id LIMIT ?', (now, batch)).fetchall()
+    for row in rows:
+        db.execute('UPDATE auxiliary_logs SET content=NULL,expired_at=? WHERE execution_id=?',
+                   (now, row['execution_id']))
+    return len(rows)

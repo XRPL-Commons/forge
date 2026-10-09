@@ -4,7 +4,7 @@
 // groupIssues() and the raw ledger fields it does not carry. Motion is never
 // simulated: committed event frames authorize movement between projected positions.
 import {
-  COLUMN_ROLES, NEXT_ROLE, groupIssues, mergedToday,
+  COLUMN_ROLES, NEXT_ROLE, groupIssues, mergedToday, workerUsage, type WorkerUsage,
   type CardModel, type ColumnRole, type FactoryView, type IssueGroups, type LedgerIssueView,
 } from './factory'
 
@@ -45,6 +45,7 @@ export interface LineItem {
 }
 
 export interface LineState {
+  usage: WorkerUsage
   items: LineItem[]
   slots: Record<ColumnRole, number>
   merged: number
@@ -56,7 +57,7 @@ export interface LineInfo {
   necks: Bottleneck[]
   neck: Bottleneck | null
   reasons: Record<AttentionReason, number>
-  // Machine slots holding an issue, and how many of them are running.
+  // Leased worker slots, and how many have fresh running observations.
   occupied: number
   running: number
   slots: number
@@ -175,7 +176,7 @@ export function lineState(view: FactoryView | null | undefined, now: number, gro
   }
   const slots = view.runtime?.slots ?? {}
   return {
-    items,
+    items, usage: workerUsage(view, now),
     slots: { build: Number(slots.build) || 0, review: Number(slots.review) || 0, audit: Number(slots.audit) || 0 },
     merged: mergedToday(view, now),
     repos: new Set(items.map(item => item.repo)).size,
@@ -196,16 +197,15 @@ export function lineAnalyse(state: LineState): LineInfo {
   const necks: Bottleneck[] = []
   for (const stage of COLUMN_ROLES) {
     const waiting = groups.queued.filter(item => item.next === stage).length
-    if (waiting > 0 && groups[stage].length >= state.slots[stage]) necks.push({ stage, waiting })
+    if (waiting > 0 && state.usage.roles[stage].occupied >= state.slots[stage]) necks.push({ stage, waiting })
   }
   necks.sort((a, b) => b.waiting - a.waiting)
   const reasons = Object.fromEntries(LINE_REASONS.map(reason => [reason, 0])) as Record<AttentionReason, number>
   for (const item of groups.attention) reasons[item.reason!] += 1
-  const working = [...groups.build, ...groups.review, ...groups.audit]
   return {
     necks, neck: necks[0] ?? null, reasons,
-    occupied: working.length,
-    running: working.filter(item => item.running).length,
+    occupied: state.usage.occupied,
+    running: state.usage.running,
     slots: COLUMN_ROLES.reduce((total, stage) => total + state.slots[stage], 0),
     attention: groups.attention.length,
   }
@@ -218,7 +218,8 @@ export function lineHeadline(info: LineInfo, account?: string | null): HeadlineP
   if (account) parts.push({ t: account, c: 'coral' })
   if (info.attention) parts.push({ t: `${info.attention} need${info.attention === 1 ? 's' : ''} you`, c: 'amber' })
   if (info.neck) parts.push({ t: `${LINE_SHORT_LABELS[info.neck.stage]} is the bottleneck, ${info.neck.waiting} waiting`, c: 'coral' })
-  else if (info.occupied) parts.push({ t: `${info.occupied} of ${info.slots} slots working`, c: 'text' })
+  else if (info.running) parts.push({ t: `${info.running} of ${info.slots} slots working`, c: 'text' })
+  else if (info.occupied) parts.push({ t: `${info.occupied} of ${info.slots} slots in use`, c: 'text' })
   else if (!info.attention) parts.push({ t: 'All quiet', c: 'muted' })
   return parts
 }
@@ -230,7 +231,7 @@ export function lineHeadlineText(parts: HeadlinePart[]): string {
 // One sentence for screen readers: the counts the strip draws.
 export function lineSummary(state: LineState, info: LineInfo): string {
   const groups = lineGroups(state.items)
-  const stage = (role: ColumnRole) => `${LINE_SHORT_LABELS[role]} ${groups[role].length} of ${state.slots[role]}`
+  const stage = (role: ColumnRole) => `${LINE_SHORT_LABELS[role]} ${state.usage.roles[role].occupied} of ${state.slots[role]}`
   return [
     `Queued ${groups.queued.length}`, ...COLUMN_ROLES.map(stage),
     `waiting to merge ${groups.approval.length}`, `merged today ${state.merged}`,

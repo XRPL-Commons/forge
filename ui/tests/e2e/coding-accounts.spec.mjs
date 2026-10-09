@@ -26,7 +26,7 @@ export default async function (page, { base, accounts }) {
 
   // Healthy: nothing.
   await page.goto(base + '/')
-  assert.equal(await headline(page), '2 need you · 1 of 4 slots working')
+  assert.equal(await headline(page), '2 need you · 1 of 4 slots in use')
   assert.equal(await page.locator(BAR).count(), 0)
   assert.equal(await page.locator(PILL).count(), 0)
 
@@ -48,7 +48,7 @@ export default async function (page, { base, accounts }) {
   // Header chip and strip headline.
   assert.equal((await page.locator(PILL).innerText()).trim(), '1 account down')
   await page.waitForFunction((s) => document.querySelector(s)?.getAttribute('aria-label')?.startsWith('Codex signed out'), STRIP, { timeout: 10000 })
-  assert.equal(await headline(page), 'Codex signed out · 2 need you · 1 of 4 slots working')
+  assert.equal(await headline(page), 'Codex signed out · 2 need you · 1 of 4 slots in use')
 
   // Issues page and the issue drawer carry it too.
   await page.goto(base + '/issues')

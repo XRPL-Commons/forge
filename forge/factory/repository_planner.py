@@ -103,9 +103,6 @@ class RepositoryPlanner:
                 return {'phase':'running'}
             if current['running']:return {'phase':'running'}
             capture=runner.capture(job)
-            # Planning keeps its structured proposal evidence. Raw terminal output
-            # is not required for acceptance and is not retained in this domain.
-            capture.pop('logs',None)
             try:job=self.plans.progress(job['id'],capture=capture,fenced=True)
             except TransitionError:
                 self.plans.progress(job['id'],fenced=True)
@@ -123,9 +120,12 @@ class RepositoryPlanner:
     def _finish(self,job):
         capture=job.get('capture') or {};result=capture.get('result')
         valid=(isinstance(result,dict) and result.get('attempt')==job['id'] and result.get('role')=='triage'
-            and result.get('outcome')=='pass' and isinstance(result.get('rows'),list))
+            and result.get('outcome') in ('pass','reject','unable','wait','blocked_environment')
+            and isinstance(result.get('rows'),list))
         error=None
-        if not valid:error='triage_result_invalid'
+        if result is None:error='triage_result_missing'
+        elif not valid:error='triage_result_invalid'
+        elif result['outcome']!='pass':error='triage_worker_unsuccessful'
         else:
             try:
                 self.plans.publish(job['proposal_id'],expected_version=1,rows=result['rows'],rationale=result.get('summary',''),

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from forge.factory.contracts import assignment_note
 from forge.factory.execution_controller import ExecutionController
 from forge.store.artifacts import Artifacts
-from forge.store.db import Store
+from forge.store.db import Store, StoreError
 from forge.store.executions import Executions, ExecutionQueries, Launch
 from forge.store.models import Candidate, Command, IdempotencyConflict, TransitionError
 from forge.store.transitions import manifest_hash, project_unit
@@ -103,6 +103,91 @@ class ExecutionTests(unittest.TestCase):
                               manifest_hash({'acceptance': ['works']}), manifest_hash(self.manifest))
         return self.life.finish_job(self.command(), job, execution_fence=fence, input_manifest=self.manifest,
             evidence={'head_oid': 'head', 'base_oid': 'base', 'pull_number': 1}, candidate=candidate)
+
+    def test_live_observation_records_engine_time_and_refreshes_without_changing_assignment(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        views = PipelineViews(self.store, clock=lambda: self.now)
+        self.assertIsNone(views.job(job)['observed_at'])
+        self.assertIsNone(views.job(job)['started_at'])
+        self.engine.after_start = lambda: self.engine.container.update(started_at=97.0)
+        self.controller.step(job)
+        self.assertEqual((views.job(job)['observed_at'], views.job(job)['observed_status'], views.job(job)['started_at']),
+                         (100.0, 'running', 97.0))
+        version = self.view()['version']
+        self.now = 110.0
+        self.controller.step(job)
+        self.assertEqual(views.job(job)['observed_at'], 110.0)
+        self.assertEqual(self.view()['version'], version)
+        self.now = 150.0
+        self.engine.inspect = lambda job: (_ for _ in ()).throw(OSError('engine unavailable'))
+        with self.assertRaises(OSError): self.controller.step(job)
+        self.assertEqual(views.job(job)['observed_at'], 110.0, 'unavailable observations must age normally')
+
+    def test_direct_observation_cannot_mutate_an_import_only_store(self):
+        job = self.reserve()
+        self.controller.step(job)
+        with self.store.write() as db:
+            before = dict(db.execute('SELECT * FROM job_execution_state WHERE job_id=?', (job,)).fetchone())
+            db.execute("INSERT INTO store_metadata VALUES('import_only','true')")
+        self.now = 110.0
+        with self.assertRaises(StoreError) as denied:
+            self.life.observe(job, execution_fence='fence', observation={**self.engine.container, 'status':'paused'})
+        self.assertEqual(denied.exception.code, 'runtime_inactive')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(dict(db.execute('SELECT * FROM job_execution_state WHERE job_id=?', (job,)).fetchone()), before)
+
+    def test_later_serial_inspection_can_have_an_earlier_wall_clock_timestamp(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        self.controller.step(job)
+        version = self.view()['version']
+        self.now = 95.0
+        self.engine.container.update(status='paused', running=False)
+        self.controller.step(job)
+        observed = PipelineViews(self.store).job(job)
+        self.assertEqual((observed['observed_at'], observed['observed_status']), (95.0, 'paused'))
+        self.assertEqual(self.view()['version'], version)
+
+    def test_observation_requires_time_and_status_together(self):
+        job = self.reserve()
+        self.controller.step(job)
+        for assignment in ('observed_at=NULL', 'observed_status=NULL'):
+            with self.store.write() as db:
+                with self.assertRaisesRegex(sqlite3.IntegrityError, 'both time and status'):
+                    db.execute('UPDATE job_execution_state SET '+assignment+' WHERE job_id=?', (job,))
+                row = db.execute('SELECT observed_at,observed_status FROM job_execution_state WHERE job_id=?', (job,)).fetchone()
+                self.assertEqual(tuple(row), (100.0, 'running'))
+
+    def test_observation_is_lease_and_container_fenced_and_retains_actual_paused_state(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        self.controller.step(job)
+        self.engine.container.update(status='paused', running=False)
+        self.now = 105.0
+        self.controller.step(job)
+        self.assertEqual(PipelineViews(self.store).job(job)['observed_status'], 'paused')
+        with self.assertRaises(TransitionError):
+            self.life.observe(job, execution_fence='wrong', observation=self.engine.container)
+        with self.assertRaises(TransitionError):
+            self.life.observe(job, execution_fence='fence', observation={**self.engine.container, 'id':'other'})
+        self.collect(job)
+        self.cleanup(job)
+        with self.assertRaises(TransitionError):
+            self.life.observe(job, execution_fence='fence', observation=self.engine.container)
+
+    def test_worker_summary_counts_leases_even_outside_the_requested_issue_page(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        self.controller.step(job)
+        views = PipelineViews(self.store)
+        full = views.factory()
+        scoped = views.factory(issue='absent')
+        self.assertEqual(scoped['jobs'], [])
+        self.assertEqual(scoped['summary']['workers'], full['summary']['workers'])
+        self.assertEqual([(row['id'],row['slot'],row['observed_status']) for row in scoped['summary']['workers']],
+                         [(job, 'slot', 'running')])
+        self.assertEqual(scoped['slots'], {'slot': job})
 
     def test_disabled_runtime_fences_reserved_job_without_starting_it(self):
         job = self.reserve()

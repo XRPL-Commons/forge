@@ -27,7 +27,7 @@ function job(over: Record<string, unknown> = {}): any {
     publisher: 'forge', branch: 'forge/601', target_branch: 'main',
     runner_config: null, candidate: null, policy: null, requirements: null,
     created_at: now - 200, deadline: now + 1600, phase: 'running', outcome: null,
-    cleanup: false, fenced: false, observed_at: now - 10, started_at: now - 180, ...over,
+    cleanup: false, fenced: false, observed_status: 'running', observed_at: now - 10, started_at: now - 180, ...over,
   }
 }
 
@@ -67,7 +67,7 @@ describe('phaseLabel', () => {
   })
 
   it('keeps the main working state separate from observation freshness', () => {
-    const stale = job({ observed_at: now - 500, last_observed: now - 500 })
+    const stale = job({ observed_status: 'running', observed_at: now - 500, last_observed: now - 500 })
     const v = view({ issues: [issue({ active: stale.id })], jobs: [stale] })
     expect(phaseLabel(v.issues[0], stale, v, now)).toBe('Working')
   })
@@ -235,11 +235,11 @@ describe('readout', () => {
 
   it('counts working slots, the queue, merges waiting and merged today', () => {
     // The recovery job is not a worker slot; the merges are 1 h, 3 d and 30 d old.
-    expect(readout(v, now)).toEqual({ working: 1, slots: 4, queued: 1, merging: 1, merged: 1 })
+    expect(readout(v, now)).toEqual({ occupied: 1, working: 1, slots: 4, queued: 1, merging: 1, merged: 1 })
   })
 
   it('reads zero everywhere on an empty factory, and nothing before the first snapshot', () => {
-    expect(readout(view(), now)).toEqual({ working: 0, slots: 4, queued: 0, merging: 0, merged: 0 })
+    expect(readout(view(), now)).toEqual({ occupied: 0, working: 0, slots: 4, queued: 0, merging: 0, merged: 0 })
     expect(readout(null, now)).toBeNull()
   })
 
@@ -274,6 +274,19 @@ describe('warnings', () => {
     const out = warnings({ factory: factory([{ phase: 'capacity', reason: 'Memory headroom is too low' }]) }, now, '/settings')
     expect(out[0]).toMatchObject({ to: '/settings#worker-capacity', label: 'Open worker capacity' })
     expect(destination('other', '/setup-help')).toEqual({ to: '', label: '' })
+  })
+
+  it('explains missing and invalid planning evidence as distinct failures', () => {
+    const errors = [
+      { phase: 'planning', reason: 'triage_result_missing' },
+      { phase: 'planning', reason: 'triage_result_invalid' },
+      { phase: 'planning', reason: 'triage_worker_unsuccessful' },
+    ]
+    expect(warnings({ factory: factory(errors) }, now, '/').map(item => item.text)).toEqual([
+      'The planning worker finished without a result.',
+      'The planning worker returned an invalid result.',
+      'The planning worker could not complete its proposal.',
+    ])
   })
 
   it('dedupes identical reasons and surfaces rejected actions', () => {

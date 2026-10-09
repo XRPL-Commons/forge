@@ -47,6 +47,55 @@ class RepositoryPlannerTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM auxiliary_leases').fetchone()[0],0)
         self.github.call.assert_not_called()
 
+    def test_missing_result_preserves_bounded_logs_outside_immutable_capture_until_retention(self):
+        import hashlib
+        import sqlite3
+        from forge.store.artifacts import Artifacts
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        self.runner.inspect.return_value={'status':'exited','running':False}
+        logs='prefix'*20000+'scrubbed worker diagnostic'
+        self.runner.capture.return_value={'result':None,'logs':logs,'missing':['valid result artifact']}
+        result=self.controller.drive(self.job)
+        self.assertEqual(result['error'],'triage_result_missing')
+        capture=self.plans.job('triage')['capture']
+        self.assertNotIn('logs',capture)
+        with self.store.read_snapshot() as db:
+            saved=dict(db.execute('SELECT * FROM auxiliary_logs').fetchone())
+            digest=db.execute('SELECT capture_digest FROM auxiliary_runtime').fetchone()[0]
+        self.assertLessEqual(len(saved['content']),65536)
+        self.assertTrue(saved['content'].endswith(b'scrubbed worker diagnostic'))
+        self.assertEqual(saved['digest'],hashlib.sha256(saved['content']).hexdigest())
+        retention=Artifacts(self.store)
+        self.assertEqual(retention.prune_raw_logs(now=self.now+30*86400-1),0)
+        with self.store.write() as db:
+            with self.assertRaises(sqlite3.IntegrityError):
+                db.execute("UPDATE auxiliary_logs SET content=x'00'")
+        self.assertEqual(retention.prune_raw_logs(now=self.now+30*86400),1)
+        self.assertEqual(retention.prune_raw_logs(now=self.now+30*86400),0)
+        with self.store.read_snapshot() as db:
+            expired=dict(db.execute('SELECT * FROM auxiliary_logs').fetchone())
+            self.assertIsNone(expired['content'])
+            self.assertEqual(expired['digest'],saved['digest'])
+            self.assertEqual(db.execute('SELECT capture_digest FROM auxiliary_runtime').fetchone()[0],digest)
+        self.assertEqual(self.plans.job('triage')['capture'],capture)
+
+    def test_uncleaned_logs_remain_available_and_invalid_identity_is_not_missing(self):
+        from forge.store.artifacts import Artifacts
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        capture={'result':{'attempt':'other','role':'triage','outcome':'pass','rows':[]},'logs':'diagnostic'}
+        self.plans.progress('triage',capture=capture,fenced=True)
+        self.assertEqual(Artifacts(self.store).prune_raw_logs(now=self.now+31*86400),0)
+        job=self.plans.progress('triage',cleanup=True)
+        self.assertEqual(self.controller._finish(job)['error'],'triage_result_invalid')
+        self.assertEqual(Artifacts(self.store).prune_raw_logs(now=self.now+31*86400),1)
+
+    def test_valid_unsuccessful_worker_report_is_not_invalid_output(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        job=self.plans.progress('triage',capture={'result':{
+            'attempt':'triage','role':'triage','outcome':'unable','rows':[]}},fenced=True,cleanup=True)
+        self.assertEqual(self.controller._finish(job)['error'],'triage_worker_unsuccessful')
+        self.assertEqual(self.plans.proposal(self.request['proposal_id'])['status'],'draft')
+
     def test_lost_publication_response_resumes_cleaned_capture_without_another_worker(self):
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         capture={'result':{'attempt':'triage','role':'triage','outcome':'pass','summary':'Keep work','rows':[{

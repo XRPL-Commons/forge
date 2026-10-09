@@ -13,6 +13,7 @@ import zlib
 
 from .artifacts import Artifacts, MAX_ARTIFACT_SIZE
 from .models import TransitionError
+from .runtime import writable
 from .transitions import Lifecycle, _json, applicable_gates
 
 
@@ -167,6 +168,31 @@ class Executions(Lifecycle):
             return {'job_id': job_id, 'phase': phase}
         return self._apply(command, 'execution_progress', dict(job_id=job_id, execution_fence=execution_fence,
                            phase=phase, container_id=container_id), change)
+
+    def observe(self, job_id, *, execution_fence, observation):
+        """Record a successful engine inspection under the exact capacity lease.
+
+        This refreshes liveness evidence, not lifecycle authority or unit version.
+        An unavailable engine leaves the previous observation to become stale.
+        """
+        status = 'missing' if observation is None else observation.get('status')
+        if status not in {'missing', 'created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'}:
+            raise TransitionError('unsupported container observation')
+        container = observation.get('id') if observation is not None else None
+        started = observation.get('started_at') if observation is not None else None
+        if observation is not None and (not isinstance(container, str) or not container):
+            raise TransitionError('container observation requires its identity')
+        if started is not None and (type(started) not in (int, float) or not math.isfinite(started)):
+            raise TransitionError('container start time must be finite')
+        with self.store.write() as db:
+            writable(db)
+            row = db.execute('SELECT e.container_id FROM jobs j JOIN job_leases l ON l.job_id=j.id '
+                'JOIN job_execution_state e ON e.job_id=j.id WHERE j.id=? AND l.execution_fence=? AND j.cleanup=0',
+                (job_id, execution_fence)).fetchone()
+            if row is None or (observation is not None and row['container_id'] is not None and row['container_id'] != container):
+                raise TransitionError('observation does not own the exact leased container')
+            db.execute('UPDATE job_execution_state SET container_id=COALESCE(container_id,?),observed_at=?,observed_status=?,started_at=COALESCE(?,started_at) WHERE job_id=?',
+                       (container, self.clock(), status, started, job_id))
 
     def collect(self, command, job_id, *, execution_fence, capture):
         """Commit capture and fence launch before reset; never accept worker claims."""

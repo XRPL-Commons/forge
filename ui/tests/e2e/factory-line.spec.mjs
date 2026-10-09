@@ -44,7 +44,7 @@ export default async function (page, { base, scenario }) {
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.goto(base + '/')
   // Default fixture: two failed issues, one build of four slots in use.
-  assert.equal(await headline(page), '2 need you · 1 of 4 slots working')
+  assert.equal(await headline(page), '2 need you · 1 of 4 slots in use')
 
   await scenario('factory-line')
   await page.goto(base + '/')

@@ -81,7 +81,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   const readout = page.locator('#readout')
   const value = async (id) => (await readout.locator(`[data-readout="${id}"]`).innerText()).replace(/\s+/g, ' ').trim()
   // The fixture's observation is days old, so no worker counts as working.
-  assert.equal(await value('working'), 'Working 0 of 4')
+  assert.equal(await value('working'), 'Working 0 of 4 · 1 slot in use')
   assert.equal(await value('queued'), 'Queued 5')
   assert.equal(await value('merging'), 'Waiting to merge 1')
   assert.equal(await value('attention'), 'Needs you 2')

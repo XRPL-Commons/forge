@@ -9,6 +9,8 @@ import uuid
 import selectors
 import runpy
 
+RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
+
 
 def error_message(text):
     text = text.lower()
@@ -43,7 +45,7 @@ def announcer():
         return None
 
 
-def collect(args, prompt, directory, env):
+def collect(args, prompt, directory, env, *, max_bytes=2*1024*1024):
     """Drain an unlimited transcript into a bounded tail; keep its final result."""
     with tempfile.TemporaryFile(mode='w+', dir='/work/home') as source:
         source.write(prompt); source.seek(0)
@@ -67,9 +69,9 @@ def collect(args, prompt, directory, env):
                     # lifetime. Bound retained memory, not completed work. The
                     # CLI's terminal result is at the end; incomplete leading
                     # JSON lines are ignored by invoke(). The runner still
-                    # enforces the execution deadline and 64 KiB result limit.
-                    while size > 2 * 1024 * 1024:
-                        excess = size - 2 * 1024 * 1024
+                    # enforces the execution deadline and role-specific result limit.
+                    while size > max_bytes:
+                        excess = size - max_bytes
                         first = chunks.popleft()
                         if len(first) > excess:
                             chunks.appendleft(first[excess:])
@@ -124,7 +126,8 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
     # executes only in the sandbox, with the checkout as an added working dir.
     prompt = ('The assigned repository is ' + str(directory) + '. Run repository commands with '
               'an explicit cd to that directory. The launch directory is trusted runner code.\n' + prompt)
-    code, raw = collect(args, prompt, launch, env)
+    code, raw = collect(args, prompt, launch, env,
+                        max_bytes=max(2*1024*1024, 2*RESULTS['result_limit'](note.get('role'))+65536))
     events = []
     for line in raw.splitlines():
         try:
@@ -155,10 +158,7 @@ def run(note, directory, env, result_schema):
     result, _ = invoke(note, directory, env, result_schema, prompt)
     if result is None:
         return 1
-    encoded = json.dumps(result)
-    if len(encoded.encode()) > 65536:
-        raise RuntimeError('Result exceeded its size limit')
-    temporary = Path('/work/final-result.json'); temporary.write_text(encoded); temporary.replace('/work/result.json')
+    RESULTS['write_result'](note, result)
     print(json.dumps({'type': 'claude.result', 'summary': str(result.get('summary', ''))[:4000]}), flush=True)
     return 0
 
