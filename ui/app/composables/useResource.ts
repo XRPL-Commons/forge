@@ -25,7 +25,7 @@ export function useResources() {
 
 /** One shared value and in-flight request per URL; one active poll owner per resource. */
 export function useResource<T>(key: MaybeRefOrGetter<string>, loader: (key: string) => Promise<T>,
-  options: { interval?: number; allowed?: () => boolean; maxAge?: number; server?: boolean; onChange?: (value: T) => void; onRead?: (value: T) => void } = {}) {
+  options: { interval?: number | false; allowed?: () => boolean; maxAge?: number; server?: boolean; onChange?: (value: T) => void; onRead?: (value: T) => void } = {}) {
   const store = useResources()
   const selected = computed(() => store.entry<T>(toValue(key)))
   const interval = options.interval ?? useRuntimeConfig().public.pollInterval
@@ -35,22 +35,22 @@ export function useResource<T>(key: MaybeRefOrGetter<string>, loader: (key: stri
     const entry = selected.value
     if (entry.listeners.values().next().value !== wake) return
     clearTimeout(entry.timer)
-    if (started && !hidden()) entry.timer = setTimeout(() => { void refresh() }, entry.error.value ? Math.max(interval, 15000) : interval)
+    if (started && !hidden() && interval !== false) entry.timer = setTimeout(() => { void refresh() }, entry.error.value ? Math.max(interval, 15000) : interval)
   }
   async function refresh(maxAge = 0): Promise<T | null> {
     if (options.allowed && !options.allowed()) { schedule(); return selected.value.data.value }
     const requested = toValue(key)
     const result = await store.load(requested, () => loader(requested), maxAge)
-    if (result !== null && requested === toValue(key)) options.onRead?.(result)
+    if (result !== null && requested === toValue(key) && selected.value.updatedAt.value && !selected.value.error.value) options.onRead?.(result)
     schedule(); return result
   }
   watch(() => selected.value.data.value, value => { if (value !== null) options.onChange?.(value) })
-  if (import.meta.server && options.server !== false) onServerPrefetch(() => refresh(options.maxAge ?? interval))
+  if (import.meta.server && options.server !== false) onServerPrefetch(() => refresh(options.maxAge ?? (interval || 5000)))
   function wake() { if (started && !hidden()) void refresh(100) }
   function visibility() { if (selected.value.listeners.values().next().value === wake) clearTimeout(selected.value.timer); if (!hidden()) wake() }
   function attach() {
     selected.value.listeners.add(wake)
-    if (!hidden()) void refresh(options.maxAge ?? interval)
+    if (!hidden()) void refresh(options.maxAge ?? (interval || 5000))
   }
   function start() {
     if (started || typeof document === 'undefined') return

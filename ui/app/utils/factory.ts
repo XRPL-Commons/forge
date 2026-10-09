@@ -69,6 +69,7 @@ export interface FactorySummary {
   deployed_day: number; waiting: number; deploy_failed: number
 }
 export interface FactoryView {
+  cursor?: string
   summary?: FactorySummary
   ok: true; controls_token: string; active: boolean
   operator: OperatorStatus | null
@@ -270,7 +271,7 @@ function stoppable(job: JobView | null): boolean {
 // production mean anything, so an untracked repository says nothing at all.
 // ---------------------------------------------------------------------------
 
-export function trackedRepositories(view: FactoryView | null | undefined): Set<number> {
+export function trackedRepositories(view: Pick<FactoryView, 'repositories'> | null | undefined): Set<number> {
   const tracked = new Set<number>()
   for (const repository of view?.repositories ?? []) if (repository.deployment?.profile) tracked.add(repository.id)
   return tracked
@@ -288,7 +289,7 @@ export function deploymentNote(issue: LedgerIssueView, tracked: Set<number>): st
 // the sentence reads without an age until then.
 export function deploymentLine(
   issue: LedgerIssueView | null | undefined,
-  view: FactoryView | null | undefined,
+  view: Pick<FactoryView, 'repositories'> | null | undefined,
   now: number,
 ): { text: string; runUrl: string | null } | null {
   if (!issue) return null

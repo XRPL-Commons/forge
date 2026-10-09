@@ -21,7 +21,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const api = useForgeApi()
   const route = useRoute()
 
-  interface Loaded { detail: IssueDetailResponse | null; fence: string | null; factory: FactoryView | null }
+  interface Loaded { detail: IssueDetailResponse | null; fence: string | null; factory: Pick<FactoryView, 'jobs' | 'issues' | 'repositories' | 'deployments'> | null }
 
   const submitting = ref(false)
   const environmentOpen = ref(false)
@@ -30,7 +30,14 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const verificationStatement = ref('')
   const verificationIdentity = ref<{ gate: string; revision: string; statement: string; id: string } | null>(null)
 
-  const factory = useFactory(() => '/api/factory?issue=' + encodeURIComponent(props.issueKey))
+  const requestedJob = computed<string | null>(() => {
+    const asked = route.query.job
+    const job = Array.isArray(asked) ? asked[0] : asked
+    return typeof job === 'string' && job ? job : null
+  })
+
+  const store = useFactoryStore()
+  const factory = useFactoryBoard()
   const poll = useResource<Omit<Loaded, 'factory'>>(() => `/api/issues?issue=${encodeURIComponent(props.issueKey)}`, async (path) => {
     try { return { detail: await api.get<IssueDetailResponse>(path, { timeout: 30000 }), fence: null } }
     catch (error) {
@@ -38,15 +45,36 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
       if (error instanceof ForgeApiError && error.status === 404) return { detail: null, fence: UNMANAGED }
       throw error
     }
-  }, { allowed: () => !submitting.value && !environmentOpen.value })
+  }, { interval: false, allowed: () => !submitting.value && !environmentOpen.value,
+    onRead: value => { if (value.detail) store.rememberDetail(value.detail) },
+  })
   const initial = import.meta.server ? poll.refresh(5000) : Promise.resolve()
   const mounted = ref(false)
-  onMounted(() => { mounted.value = true; poll.start(); factory.start() })
+  // A recovery run may outlive its issue inventory row. Only that explicit job link
+  // can load the old scoped run projection; normal issue detail already contains jobs.
+  const recovery = useFactory(() => '/api/factory?issue=' + encodeURIComponent(props.issueKey), {
+    server: false, allowed: () => poll.data.value?.fence === UNMANAGED && !!requestedJob.value,
+  })
+  onMounted(() => { mounted.value = true; poll.start(); factory.start(); recovery.start() })
   const loaded = computed<Loaded | null>(() => {
     const value = poll.data.value
-    return value ? { ...value, factory: factory.data.value?.ok === false ? null : factory.data.value } : null
+    if (!value) return null
+    const board = factory.data.value?.ok ? factory.data.value : null
+    const output = value.detail
+    return { ...value, factory: output ? { repositories: board?.repositories, deployments: output.deployments,
+      jobs: output.jobs, issues: output.factory_issue ? [output.factory_issue] : [] }
+      : recovery.data.value?.ok ? recovery.data.value : null }
   })
-  const detail = computed<IssueDetailView | null>(() => loaded.value?.detail?.issue ?? null)
+  const projection = computed(() => store.issues.value.get(props.issueKey))
+  const detail = computed<IssueDetailView | null>(() => {
+    const issue = loaded.value?.detail?.issue
+    if (!issue) return null
+    const latest = projection.value
+    // Feed summaries can update the visible status immediately, while changed bodies
+    // wait for their lazy detail read. Open decisions retain their original revision.
+    if (!submitting.value && !environmentOpen.value && latest && latest.content_hash === issue.content_hash && latest.revision !== issue.revision) return { ...issue, ...latest }
+    return issue
+  })
   watch(() => detail.value?.verification_request?.gate_id, (gate, previous) => {
     if (previous && gate !== previous) {
       verificationStatement.value = ''
@@ -238,7 +266,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   function isoTime(at: number): string { return new Date(at * 1000).toISOString() }
 
   const jobs = computed<JobView[]>(() => {
-    const live = (loaded.value?.factory?.jobs ?? []).filter(job => job.issue_key === props.issueKey)
+    const live = store.normalizeJobs((loaded.value?.factory?.jobs ?? []).filter(job => job.issue_key === props.issueKey))
     const row = (loaded.value?.factory?.issues ?? []).find(issue => issue.key === props.issueKey)
     const past = (row?.attempts ?? [])
       .filter(job => !live.some(running => running.id === job.id))
@@ -247,11 +275,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
       .sort((left, right) => (right.started_at ?? right.created_at ?? 0) - (left.started_at ?? left.created_at ?? 0))
   })
 
-  const requestedJob = computed<string | null>(() => {
-    const asked = route.query.job
-    const job = Array.isArray(asked) ? asked[0] : asked
-    return typeof job === 'string' && job ? job : null
-  })
+
   const selectedJob = computed<string | null>(() => requestedJob.value ?? detail.value?.active ?? jobs.value[0]?.id ?? null)
 
   const showOutput = computed(() => !!detail.value || !!requestedJob.value)

@@ -1,6 +1,7 @@
 import { ForgeApiError } from './useForgeApi'
 import type { FactoryView } from '~/utils/factory'
 export function useFactory(key: import('vue').MaybeRefOrGetter<string> = '/api/factory?section=board', options: { allowed?: () => boolean; server?: boolean } = {}) {
+  if (key === '/api/factory?section=board') return useFactoryBoard()
   const api = useForgeApi()
   return useResource<FactoryView | { ok: false; reason: string }>(key, async (path) => {
     try { return await api.get<FactoryView>(path) }

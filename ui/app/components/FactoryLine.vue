@@ -14,8 +14,8 @@ import { CUBE_INK as INK, drawCube, roundRect as rr, type CubeOptions } from '~/
 import { BAY_GLYPHS, GLYPH_INK, glyphMotion, type GlyphPart } from '~/utils/bayGlyphs'
 
 // The factory line: a 200px strip that draws the board as a toy factory.
-// Every cube is an issue from the last poll; a cube moves only when a poll
-// puts its issue somewhere else, and the machines only animate while a
+// Every cube comes from the shared change-feed projection; a cube moves when
+// a committed change puts its issue somewhere else. Machines animate while a
 // worker is actually running. The drawing is the "Toy factory" prototype,
 // ported onto live state from utils/factoryLine.ts.
 const props = defineProps<{ view: FactoryView | null; now: number; groups?: IssueGroups }>()
