@@ -466,8 +466,10 @@ class PipelineViews:
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
             if section in (None, 'board') and len(issues) < size:
-                failed = db.execute("SELECT x.id,d.observed_at FROM public_issue_index x "
-                    'JOIN issue_discovery_observations d ON d.issue_id=x.id '
+                # Discovery is sparse. Keep it as the outer input so an empty
+                # observation set does not classify the whole issue backlog.
+                failed = db.execute("SELECT x.id,d.observed_at FROM issue_discovery_observations d "
+                    'CROSS JOIN public_issue_index x ON x.id=d.issue_id '
                     "WHERE x.unit_id IS NULL AND x.public_status='attention' "
                     + ('AND x.id=? ' if issue is not None else '')
                     + 'ORDER BY d.observed_at DESC,x.id LIMIT ?',
@@ -489,8 +491,14 @@ class PipelineViews:
                 job_clauses.append(ISSUE_JOB_SCOPE);job_params.append(issue)
             job_ids=[] if section=='completed' else [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE '+' AND '.join(job_clauses)+' ORDER BY j.created_at DESC,j.id DESC LIMIT 100',job_params)]
             slots={r['slot']:r['job_id'] for r in db.execute('SELECT slot,job_id FROM job_launches l JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 ORDER BY slot LIMIT 256')}
-            counts=db.execute("SELECT COUNT(*) AS total,SUM("+COMPLETION_SQL+">=?) AS day,SUM("+COMPLETION_SQL+">=?) AS week FROM units u WHERE state='merged'",(self.clock()-86400,self.clock()-604800)).fetchone()
-            completed_count=db.execute('SELECT COUNT(*) FROM public_issue_index x WHERE '+completed).fetchone()[0]
+            # Both windows consume the same terminal event. Materialize that
+            # timestamp once instead of scanning retained unit history twice.
+            counts=db.execute("WITH completed AS MATERIALIZED (SELECT "+COMPLETION_SQL+
+                " AS at FROM units u WHERE state='merged') SELECT COUNT(*) AS total,SUM(at>=?) AS day,SUM(at>=?) AS week FROM completed",
+                (self.clock()-86400,self.clock()-604800)).fetchone()
+            # Count issue identities, so SQLite can omit blocker joins whose
+            # columns are irrelevant to the canonical terminal predicates.
+            completed_count=db.execute('SELECT COUNT(*) FROM (SELECT DISTINCT x.id FROM public_issue_index x WHERE '+completed+')').fetchone()[0]
             runner_count=db.execute('SELECT COUNT(*) FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) AND '+runner_filter).fetchone()[0]
             running=bool(db.execute("SELECT 1 FROM jobs WHERE phase='running' AND cleanup=0 LIMIT 1").fetchone())
             accounts=[]
