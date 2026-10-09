@@ -112,7 +112,8 @@ const {
               </p>
 
               <!-- What this issue waits for: one chip per dependency. -->
-              <div v-if="detail.dependencies.length" id="issue-dependencies" class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+              <LazyIssuePrerequisites v-if="detail.prerequisites?.length" :prerequisites="detail.prerequisites" />
+              <div v-else-if="detail.dependencies.length" id="issue-dependencies" class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
                 <span>Depends on</span>
                 <NuxtLink
                   v-for="number in detail.dependencies"

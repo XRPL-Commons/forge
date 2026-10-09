@@ -52,9 +52,11 @@ def order_in(db, *, issue_id, requirements_revision_id, prerequisites, actor_id,
     transaction. Until that read, the new order cannot authorize a launch or merge.
     """
     writable(db)
-    if not request_id or not actor_id or not isinstance(prerequisites, list) or len(prerequisites) > 100:
-        raise TransitionError('Ordering requires an actor, request and at most one hundred prerequisites')
+    if not request_id or not actor_id or not isinstance(prerequisites, list):
+        raise TransitionError('Ordering requires an actor, request and a prerequisite list')
     targets = sorted({reference(value) for value in prerequisites})
+    if len(_json(targets).encode()) > 32768:
+        raise TransitionError('Prerequisite references exceed the 32 KiB record limit')
     payload = dict(issue_id=issue_id, requirements_revision_id=requirements_revision_id, prerequisites=targets)
     previous = db.execute('SELECT * FROM prerequisite_orders WHERE request_id=?', (request_id,)).fetchone()
     if previous:

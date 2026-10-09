@@ -68,6 +68,20 @@ class GroupedLifecycleTests(unittest.TestCase):
         self.assertIsNone(admission(effect))
         changed[0]=False;held[0]=True
         self.assertIsNone(admission(effect))
+        held[0]=False
+        from forge.factory.merge_controller import MergeController
+        from forge.factory.effect_controller import EffectController
+        queued=MergeController(self.store,admission=admission,clock=lambda:100).step('batch')
+        self.github.merge.assert_not_called()
+        def merge(_effect):
+            self.github.pr.return_value.update(merged=True,state='closed',merge_commit_sha='f'*40)
+        self.github.merge.side_effect=merge
+        finished=EffectController(self.store,self.github,admission=admission,clock=lambda:100).step(queued['effect_id'])
+        self.assertEqual(finished['status'],'confirmed')
+        self.github.merge.assert_called_once()
+        with self.store.read_snapshot() as db:
+            self.assertEqual(tuple(db.execute("SELECT state,merge_sha FROM units WHERE id='batch'").fetchone()),('merged','f'*40))
+            self.assertEqual({row[0] for row in db.execute("SELECT state FROM unit_issues WHERE unit_id='batch'")},{'done'})
 
 
 if __name__=='__main__':unittest.main()

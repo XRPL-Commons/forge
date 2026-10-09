@@ -99,7 +99,7 @@ class PipelineViews:
 
     def _collections(self, db, issue, unit_id, candidate, *, detail, config):
         numbers={row[0] for row in db.execute('SELECT issue_number FROM revision_display_dependencies WHERE revision_id=? ORDER BY issue_number LIMIT 101',(issue['current_revision_id'],))}
-        numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? ORDER BY i.github_number LIMIT 101',(issue['id'],issue['current_revision_id'])))
+        numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? AND i.repository_id=? ORDER BY i.github_number LIMIT 101',(issue['id'],issue['current_revision_id'],issue['repository_id'])))
         if unit_id:
             source=db.execute('SELECT d.requirements_body,p.source_content_hash FROM dependency_observations d JOIN revision_presentation p ON p.revision_id=? WHERE d.unit_id=?',(issue['current_revision_id'],unit_id)).fetchone()
             if source and source['requirements_body']==source['source_content_hash']:
@@ -123,6 +123,38 @@ class PipelineViews:
                 if value['login'].lower() not in seen:
                     seen.add(value['login'].lower());reviewers.append({'login':value['login'],'name':value.get('name') or '', 'source':source})
         return sorted(numbers),pulls,reviewers
+
+    @staticmethod
+    def _prerequisites(db, issue, unit_id):
+        from .prerequisites import blocker, references
+        from ..store.repository_requirements import orders_in
+        check=db.execute('SELECT facts_json FROM dependency_checks WHERE unit_id=? AND requirements_revision_id=? ORDER BY generation DESC LIMIT 1',
+                         (unit_id,issue['current_revision_id'])).fetchone() if unit_id else None
+        facts={fact['reference']:fact for fact in json.loads(check[0])} if check else {}
+        refs=set(facts) | set(orders_in(db,issue['id'],issue['current_revision_id']))
+        if 'body' in issue:
+            refs.update(references(issue['body'],issue['repository']))
+        reasons={}
+        if unit_id and check is None:
+            # Imported observations remain explicit evidence until the first
+            # current prerequisite check replaces them.
+            for row in db.execute("SELECT kind,value_json FROM dependency_observation_members WHERE unit_id=?",(unit_id,)):
+                ref=issue['repository'].lower()+'#'+str(json.loads(row['value_json']))
+                refs.add(ref)
+                if row['kind']=='blocked':reasons[ref]='prerequisite_open'
+        if unit_id:
+            for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND member_id=? AND code='dependency' AND resolved_at IS NULL",
+                                   (unit_id,issue['lifecycle']['member_id'])):
+                reasons.update((row['reference'],row['reason']) for row in json.loads(gate[0]).get('blocked',[]))
+        result=[]
+        for ref in sorted(refs):
+            repository,number=ref.rsplit('#',1)
+            fact=facts.get(ref)
+            reason=reasons.get(ref) or (blocker(fact) if fact else 'prerequisite_unobserved')
+            result.append(dict(reference=ref,repository=repository,number=int(number),
+                kind=fact.get('kind') if fact else None,reason=reason,complete=reason is None,
+                url='https://github.com/'+repository+('/pull/' if fact and fact.get('kind')=='pull_request' else '/issues/')+number))
+        return result
 
     def _row(self, db, issue_id, *, detail=False, config):
         issue = Queries._issue(db, issue_id, include_body=detail)
@@ -165,11 +197,9 @@ class PipelineViews:
         held_by=[event for event in label_events if event['label'] in config['hold_labels'] and event['label'] in issue['labels']] or None
         display=db.execute('SELECT source_content_hash FROM revision_presentation WHERE revision_id=?',(issue['current_revision_id'],)).fetchone()
         checked=context['last_observed_at'] if context and ('legacy_reconciliation' in gates or unit['state'] in {'merged','closed','dissolved'}) else issue['observed_at'] if unit else None
-        blocked_dependencies=[]
-        if unit_id:
-            check=db.execute('SELECT facts_json FROM dependency_checks WHERE unit_id=? AND requirements_revision_id=? ORDER BY generation DESC LIMIT 1',(unit_id,issue['current_revision_id'])).fetchone()
-            if check:blocked_dependencies=[fact['number'] for fact in json.loads(check[0]) if fact['state']!='closed']
-            else:blocked_dependencies=[json.loads(value[0]) for value in db.execute("SELECT value_json FROM dependency_observation_members WHERE unit_id=? AND kind='blocked' ORDER BY position LIMIT 100",(unit_id,))]
+        prerequisites=self._prerequisites(db,issue,unit_id)
+        blocked_dependencies=[row['number'] for row in prerequisites
+                              if not row['complete'] and row['reason']!='prerequisite_unobserved' and row['repository']==issue['repository'].lower()]
         charges = db.execute("SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries b "
                              'JOIN attempts a ON a.id=b.attempt_id WHERE a.unit_id=? AND a.budget_generation=?',
                              (unit_id, unit['budget_generation'])).fetchone()[0] if unit else 0
@@ -211,7 +241,7 @@ class PipelineViews:
                          'override':json.loads(environment['override_json'] or 'null') if environment else None,
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
             pull_requests=pull_requests,
-            dependencies=dependency_numbers, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
+            dependencies=dependency_numbers, prerequisites=prerequisites, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
             delivery_id=unit_id if delivery_approved else None,
             active=active['id'] if active else None, attempts={'failed':charges,'limit':3} if charges else None, held_by=held_by)
         if detail:

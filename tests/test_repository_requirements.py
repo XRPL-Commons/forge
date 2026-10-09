@@ -68,6 +68,22 @@ class RepositoryRequirementsTests(unittest.TestCase):
         for reason in ('not_planned','duplicate',None):
             self.assertIsNotNone(blocker({**fact,'kind':'issue','state_reason':reason}))
 
+    def test_projection_names_cross_repository_blockers_without_guessing_local_numbers(self):
+        from forge.factory.store_views import PipelineViews
+        self.order(1,['other/repo#4'],'order1')
+        self.commands.dependencies(self.command(1),requirements_revision_id=self.revisions[1],generation=1,
+            facts=[{'reference':'other/repo#4','error':'prerequisite_inaccessible'}])
+        row=PipelineViews(self.store,clock=lambda:100).issues(key='i1')['issue']
+        self.assertEqual(row['prerequisites'],[dict(reference='other/repo#4',repository='other/repo',number=4,
+            kind=None,reason='prerequisite_inaccessible',complete=False,url='https://github.com/other/repo/issues/4')])
+        self.assertNotIn(4,row['dependencies'])
+        fact=dict(reference='other/repo#4',repository_id=2,github_id=44,number=4,kind='pull_request',state='closed',
+            state_reason=None,merged=False,updated_at='2026-10-09T12:00:00Z')
+        self.commands.dependencies(self.command(1),requirements_revision_id=self.revisions[1],generation=2,facts=[fact])
+        row=PipelineViews(self.store,clock=lambda:100).issues(key='i1')['issue']
+        self.assertEqual(row['prerequisites'][0]['reason'],'prerequisite_closed_unmerged')
+        self.assertEqual(row['prerequisites'][0]['url'],'https://github.com/other/repo/pull/4')
+
     def test_independent_environment_choices_keep_their_issue_identity(self):
         for number,tier,services in [(1,'standard',[]),(2,'full',['postgres'])]:
             self.commands.select_environment(self.command(number),requirements_revision_id=self.revisions[number],

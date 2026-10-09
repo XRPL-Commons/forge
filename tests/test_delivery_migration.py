@@ -30,6 +30,8 @@ class DeliveryMigrationTests(unittest.TestCase):
                     db.execute('INSERT INTO unit_environment_observations VALUES(?,?,?,?,?,?,?)',
                         ('u',choice,override,retry,memory,'env:full',hold))
                     db.execute("INSERT INTO unit_environment(unit_id,revision,choice,override,created_at,requirements_revision_id) VALUES('u',1,?,?,3,'new')",(choice,override))
+                    db.execute("INSERT INTO dependency_checks VALUES('check','u','m','new',1,1,?,3)",
+                        (json.dumps([{'number':7,'state':'closed','updated_at':'2026-10-09T00:00:00Z'}]),))
                     for role in ('build','review'):
                         member='m' if role=='build' else None
                         manifest=json.dumps({'requirements_revision_id':'old'}) if member else '{}'
@@ -47,4 +49,9 @@ class DeliveryMigrationTests(unittest.TestCase):
                 self.assertEqual(tuple(db.execute('SELECT member_id,requirements_revision_id,choice FROM unit_environment').fetchone()),('m','new',choice))
                 self.assertEqual(db.execute('SELECT choice_json FROM unit_environment_observations').fetchone()[0],choice)
                 self.assertNotIn('requirements_revision_id',[row[1] for row in db.execute('PRAGMA table_info(job_launches)')])
+                checks=db.execute('SELECT generation,clear,facts_json FROM dependency_checks ORDER BY generation').fetchall()
+                self.assertEqual(len(checks),2)
+                self.assertEqual(json.loads(checks[0]['facts_json'])[0]['state'],'closed')
+                self.assertEqual((checks[1]['generation'],checks[1]['clear']),(2,0))
+                self.assertEqual(json.loads(checks[1]['facts_json']),[{'reference':'example/repo#7','error':'prerequisite_unobserved'}])
                 self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())

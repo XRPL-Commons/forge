@@ -53,3 +53,20 @@ CREATE TRIGGER prerequisite_identity_no_update BEFORE UPDATE ON prerequisite_ide
 BEGIN SELECT RAISE(ABORT,'prerequisite identity cannot be rebound'); END;
 CREATE TRIGGER prerequisite_identity_no_delete BEFORE DELETE ON prerequisite_identities
 BEGIN SELECT RAISE(ABORT,'prerequisite identities are retained'); END;
+
+-- Earlier checks recorded only local issue numbers and open/closed state.
+-- Preserve those observations, then append a pending observation in the new
+-- format: neither immutable GitHub identity nor completion reason was recorded.
+INSERT INTO dependency_checks(id,unit_id,member_id,requirements_revision_id,generation,clear,facts_json,observed_at)
+SELECT c.id||':normalized24',c.unit_id,c.member_id,c.requirements_revision_id,c.generation+1,0,
+       (SELECT json_group_array(json_object('reference',lower(r.full_name)||'#'||json_extract(f.value,'$.number'),
+                                           'error','prerequisite_unobserved')) FROM json_each(c.facts_json) f),c.observed_at
+FROM dependency_checks c JOIN units u ON u.id=c.unit_id JOIN repositories r ON r.id=u.repository_id
+WHERE c.generation=(SELECT MAX(previous.generation) FROM dependency_checks previous WHERE previous.member_id=c.member_id)
+  AND json_array_length(c.facts_json)>0 AND json_extract(c.facts_json,'$[0].reference') IS NULL;
+UPDATE unit_gates SET details_json=json_set(details_json,'$.blocked',json(
+    (SELECT json_group_array(json_object('reference',lower(r.full_name)||'#'||f.value,'reason','prerequisite_unobserved'))
+     FROM units u JOIN repositories r ON r.id=u.repository_id,json_each(unit_gates.details_json,'$.blocked') f
+     WHERE u.id=unit_gates.unit_id)))
+WHERE code='dependency' AND json_extract(details_json,'$.source')='runtime_dependencies'
+  AND json_type(details_json,'$.blocked[0]')='integer';

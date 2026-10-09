@@ -36,6 +36,8 @@ export interface IssueEnvironment {
   editable: boolean
 }
 
+export interface IssuePrerequisite { reference: string; repository: string; number: number; kind: string | null; reason: string | null; complete: boolean; url: string }
+
 export interface IssueRow extends OperatorStatusSource {
   key: string; repo: string; repo_id: number; number: number; title: string
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
@@ -63,6 +65,7 @@ export interface IssueRow extends OperatorStatusSource {
   environment?: IssueEnvironment
   pull_requests: PullRequestRef[]
   dependencies: number[]
+  prerequisites?: IssuePrerequisite[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
   // Sent on list rows and the detail alike; older payloads omit them.
   attempts?: IssueAttempts | null
