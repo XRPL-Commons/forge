@@ -1,0 +1,33 @@
+{
+  "checked_at": "2026-10-09",
+  "opencode": {
+    "version": "2.0.26",
+    "source_revision": "9b4ec5714d481559990db0a816d5dec19541a814",
+    "package": "@opencode/cli",
+    "platforms": {
+      "linux-x64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.26.tgz",
+        "integrity": "sha512-UIA2/1Ik8HaN54C4xp7H+OHgRfq995XUixrX+kLmFs8EPn1fAcmn3OoiN+3c3Vc3jEV/LHmj0Cy1SL6nW4wdGw=="
+      },
+      "linux-arm64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.26.tgz",
+        "integrity": "sha512-IG316I8wVqndohzFAoWNeH83eMA8sKQFRtMeuk2Wfg4DU1haCSgzAJz3/gbytjwh6bXdWR7V3FCSrfjoraKDgw=="
+      }
+    }
+  },
+  "muse": {
+    "version": "1.4.4-R5419.1",
+    "manifest_url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.4-R5419.1&file=manifest.json",
+    "schema_fingerprint": "sha256:7c94f153c41659cb3f1bd3c3e04438be254644cb2a97d65d48edc7449b74858a",
+    "platforms": {
+      "linux-x64": {
+        "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.4-R5419.1&file=muse-x86-linux",
+        "sha256": "cfc9d068441ff46036ad6bbf30dd794043b25b7efb69648c92c022ccf65f7d19"
+      },
+      "linux-arm64": {
+        "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.4-R5419.1&file=muse-aarch64-linux",
+        "sha256": "bc1196793927baaf07535e9199d053ea3754b3bc658da1fec13d37f089cccd11"
+      }
+    }
+  }
+}

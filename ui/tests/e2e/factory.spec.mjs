@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { chooseMore } from './more-menu.mjs'
 
 const ORPHAN_RECOVERY_JOB = '33333333-3333-4333-8333-333333333333'
 const GITHUB_WARNING = 'GitHub observation or publication is unconfirmed'
@@ -59,7 +60,7 @@ function query(page, name) {
 // its one-line readout, cartoon cards only where the operator acts, one
 // detail route per card, a single message block above the strip, the stop
 // confirmation round-trip, stage moves and the reset fence.
-export default async function (page, { base, scenario, requests }) {
+export default async function (page, { base, scenario, requests, observeIssue }) {
   await page.goto(base + '/')
   await page.locator('#factory-line').waitFor()
   // The strip does the stat tiles' and stage columns' job now.
@@ -161,6 +162,9 @@ export default async function (page, { base, scenario, requests }) {
   // An internal run opens the same panel at its own job, and its Reset moved
   // in with it: the board's confirmation, the board's payload.
   // Investigations are drawn nowhere else, so they keep one collapsed line.
+  // The issue envelope must identify the recovery job's repository and issue.
+  await observeIssue('1:610', { key: '3:900', repo_id: 3, repo: 'XRPL-Commons/forge',
+    number: 900, url: 'https://github.com/XRPL-Commons/forge/issues/900', active: null })
   await page.goto(base + '/')
   await waitForText(page, 'Investigations and cleanup · 2')
   assert.equal(await page.locator('#runners .issue-card').count(), 0, 'investigations stay folded until asked for')
@@ -171,7 +175,7 @@ export default async function (page, { base, scenario, requests }) {
   panel = await openPanel(page, internal)
   assert.equal(query(page, 'issue'), '3:900')
   assert.equal(query(page, 'job'), ORPHAN_RECOVERY_JOB, 'an internal card opens at its own run')
-  await panel.getByRole('button', { name: 'Reset runner' }).click()
+  await chooseMore(page, panel, 'Reset runner…')
   const resetDialog = page.locator(CONFIRM)
   await resetDialog.waitFor({ timeout: 10000 })
   const confirmReset = resetDialog.getByRole('button', { name: 'Reset runner' })
@@ -203,7 +207,7 @@ export default async function (page, { base, scenario, requests }) {
   panel = page.locator(PANEL)
   await panel.waitFor({ timeout: 10000 })
   await waitForText(page, DETAIL_TITLE)
-  await panel.getByRole('button', { name: 'Stop attempt' }).click()
+  await chooseMore(page, panel, 'Stop attempt…')
   const stopDialog = page.locator(CONFIRM)
   await stopDialog.waitFor({ timeout: 10000 })
   await waitForText(page, 'Stop attempt?')
@@ -241,7 +245,8 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await occurrences(page, 'Waiting for a worker'), 0)
 
   await scenario('default')
-  await page.locator('#factory-line').waitFor({ timeout: 10000 })
+  // A reset suspends the cursor feed; its retry interval is fifteen seconds.
+  await page.locator('#factory-line').waitFor({ timeout: 20000 })
 
   // An unavailable authorization service cannot admit a new page load.
   await scenario('down')

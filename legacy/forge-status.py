@@ -498,6 +498,13 @@ class H(BaseHTTPRequestHandler):
             return
         if self._auth_get(u):
             return
+        if u.path == '/onboarding/cli/github/start' and self._auth_config and not self._session:
+            from forge.operator_auth import sign_in_destination
+            from urllib.parse import quote
+            if not sign_in_destination(self.path):
+                self.send_error(400);return
+            self._redirect('/auth/github/start?return_to=' + quote(self.path, safe=''))
+            return
         if not self._signed_in():
             return
         if u.path == '/api/connections':
@@ -511,6 +518,23 @@ class H(BaseHTTPRequestHandler):
             return
         if u.path.startswith('/api/') and u.path!='/api/onboarding' and runtime_control('factory_paused','state/factory-paused.json'):
             self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
+        if u.path in {'/onboarding/cli/github/start', '/onboarding/cli/github/callback'}:
+            from forge.installation_apps import RoleAppHandoff
+            try:
+                query = parse_qs(u.query)
+                expected = {'state'} if u.path.endswith('/start') else {'state', 'code'}
+                if set(query) != expected or any(len(v) != 1 for v in query.values()) or not self._session:
+                    raise ValueError('Invalid CLI registration handoff')
+                actor_id = self._session['operator']['id']
+                handoff = RoleAppHandoff(WD)
+                if u.path.endswith('/start'):
+                    self._send(handoff.page(query['state'][0], actor_id), 'text/html; charset=utf-8',
+                               headers={'Content-Security-Policy': "default-src 'none'; form-action https://github.com; frame-ancestors 'none'; base-uri 'none'"})
+                else:
+                    self._redirect(handoff.callback(query['state'][0], query['code'][0], actor_id))
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+                self._send('Registration did not complete. Return to the CLI and resume setup.', 'text/plain', status=400)
+            return
         if u.path == '/onboarding/github/callback':
             from forge.onboarding import Onboarding
             try:

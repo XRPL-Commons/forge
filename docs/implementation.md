@@ -40,10 +40,12 @@ role App credentials and dedicated identity-app secret it needs. The first
 adapter handles classic branch protection and conservative
 wildcard human CODEOWNERS gates; ruleset-only/merge-queue alternatives are held.
 
-The released standalone client configures sign-in/HTTPS on an existing host and
-prepares repositories through scoped connections. It does not include the full
-fresh-VM installation wizard proposed in #136; that work is not yet merged.
-See [the existing-host CLI prerequisites](cli-server-setup.md#prerequisites).
+The standalone client supports [fresh-host setup](cli-fresh-host.md), including
+selected SQLite initialization, operator-bound role App registration, coding
+accounts, repository verification and explicit Start. Its first-merge receipt
+requires the normal Build/Review/Audit pipeline and independent GitHub evidence.
+Existing hosts retain the [sign-in setup](cli-server-setup.md) and scoped
+repository workflows.
 
 ## Separate staged components
 

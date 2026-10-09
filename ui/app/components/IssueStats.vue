@@ -1,9 +1,26 @@
 <script setup lang="ts">
 import type { WorkbenchLook } from '~/utils/workbench'
+import type { StageTime } from '~/utils/liveWork'
+import type { StageId } from '~/utils/pipeline'
+import { elapsed } from '~/utils/factory'
 
 // Under the workbench: the stages this issue's cube has earned (the role the
-// pipeline stepper used to play) and the attempts it has left.
-defineProps<{ look: WorkbenchLook }>()
+// pipeline stepper used to play) and the attempts it has left. A stage whose
+// workers the factory view still lists says how long it took, or how long it
+// has run so far.
+const props = withDefaults(defineProps<{ look: WorkbenchLook; times?: Partial<Record<StageId, StageTime>>; now?: number }>(), { times: () => ({}), now: 0 })
+
+function duration(id: StageId, state: string): string {
+  const time = props.times[id]
+  if (!time) return ''
+  if (state === 'done' && time.took !== null) return elapsed(time.took)
+  if (state === 'current' && props.now) return elapsed(props.now - time.started)
+  return ''
+}
+function spoken(id: StageId, state: string): string {
+  const took = duration(id, state)
+  return took ? (state === 'done' ? `, took ${took}` : `, ${took} so far`) : ''
+}
 
 const SPOKEN = { done: 'passed', current: 'current stage', future: 'not reached' } as const
 </script>
@@ -19,7 +36,7 @@ const SPOKEN = { done: 'passed', current: 'current stage', future: 'not reached'
           :data-stage="badge.id"
           :data-state="badge.state"
           :aria-current="badge.state === 'current' ? 'step' : undefined"
-          :aria-label="`${badge.label}: ${SPOKEN[badge.state]}`"
+          :aria-label="`${badge.label}: ${SPOKEN[badge.state]}${spoken(badge.id, badge.state)}`"
           class="grid w-11 justify-items-center gap-0.5 text-[10px] leading-tight"
           :class="badge.state === 'future' ? 'text-muted/60' : badge.state === 'current' ? 'font-semibold text-white' : 'text-muted'"
         >
@@ -38,6 +55,7 @@ const SPOKEN = { done: 'passed', current: 'current stage', future: 'not reached'
             </template>
           </svg>
           {{ badge.label }}
+          <span v-if="duration(badge.id, badge.state)" class="text-[9px] font-normal text-muted" data-took>{{ duration(badge.id, badge.state) }}</span>
         </li>
       </ol>
     </div>

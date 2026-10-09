@@ -60,7 +60,8 @@ in setup like Codex and Claude Code. Its terminal login is `grok login --device-
 the API-key path uses `XAI_API_KEY`. It is dispatched only once `setup check` passes
 its authenticated sandbox probe, which fails closed when the strict sandbox, the
 private-file denial or the structured result cannot be verified. OpenCode remains a
-follow-up adapter.
+follow-up adapter. OpenCode and Muse Code distribution/auth findings and current
+qualification blockers are recorded in [optional provider qualification](optional-provider-qualification.md).
 
 ### Grok device sign-in
 

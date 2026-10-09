@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 export default async function (page, { base, requests, discussionTime }) {
   await page.addInitScript(() => { Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true }) })
   await page.goto(base + '/issues/1:610')
-  await page.getByRole('button', { name: 'Discuss blocker', exact: true }).click()
+  // Nothing blocks a running issue: the button asks, it does not call it a blocker.
+  assert.equal(await page.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 0)
+  await page.locator('#issue-ask').click()
   const prompt = page.getByRole('textbox', { name: 'Ask about this issue' })
-  // Discuss blocker opens the Discussion tab: a full-height chat whose caret
+  // Discuss opens the Discussion tab: a full-height chat whose caret
   // waits in the message box, on screen, and the URL says so.
   await page.waitForFunction(() => {
     const box = document.activeElement

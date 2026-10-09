@@ -7,9 +7,9 @@ calling it. Activation continues through RepositorySetup's existing gates.
 from forge_client.contracts import repository, requirements
 
 
-def describe(settings, target):
+def describe(settings, target, *, initial_setup=False):
     repository(target)
-    if settings.root.name == 'setup':
+    if settings.root.name == 'setup' and not initial_setup:
         raise ValueError('Finish initial Forge setup before adding repositories')
     if settings.paused():
         raise ValueError('Factory reset is in progress')

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "forge-agent-client"
 version = "0.1.0"
-description = "Local agent connections to an existing Forge server"
+description = "Local Forge installation and agent connections"
 requires-python = ">=3.10"
 dependencies = ["keyring>=25,<26"]
 

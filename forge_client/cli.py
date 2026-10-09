@@ -70,9 +70,52 @@ def migration_commands():
 
 
 def parser():
-    p = argparse.ArgumentParser(prog='forge', description='Connect a local agent to an existing Forge server.')
+    p = argparse.ArgumentParser(prog='forge', description='Install Forge factories and connect local agents.')
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
     sub = p.add_subparsers(dest='command', required=True)
+    fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
+    for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
+        command = fresh.add_parser(action, aliases=['sign-in'] if action == 'identity' else [],
+                                   help='Walk through GitHub sign-in setup' if action == 'identity' else
+                                   'Guided fresh-host installation' if action == 'new' else action.capitalize() + ' a saved host installation')
+        command.add_argument('--ssh', help='SSH account and destination; verified host key and root or noninteractive sudo required')
+        command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+        command.add_argument('--wait', type=int, default=0, help='Watch progress for at most 0–600 seconds')
+        if action in ('resume', 'network'):
+            command.add_argument('--upgrade-installer', action='store_true', help='Explicitly repair a stopped installation with this client implementation; keeps the pinned server source and completed stages')
+        if action == 'network':
+            command.add_argument('--apply', action='store_true', help='Install and initialize private Tailscale access')
+            command.add_argument('--hostname', help='Tailscale hostname; defaults to the factory name')
+        if action == 'identity':
+            command.add_argument('--operator', action='append', help='GitHub operator login; repeat for multiple accounts')
+            command.add_argument('--client-id', help='Dedicated identity OAuth App client ID')
+            mode = command.add_mutually_exclusive_group()
+            mode.add_argument('--apply', action='store_true')
+            mode.add_argument('--resume', action='store_true')
+            command.add_argument('--secret-stdin', action='store_true', help='Read the identity App secret privately from stdin')
+        if action in ('new', 'plan'):
+            command.add_argument('--name', help='Factory display name')
+            command.add_argument('--revision', help='Full Forge commit SHA; default main is resolved once and saved')
+            command.add_argument('--host-key', help='Verified ED25519 SHA256 fingerprint for this fresh VM')
+            command.add_argument('--new-run', action='store_true', help='Archive the local run and plan again after rebuilding the VM; never wipes the host')
+    for action in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
+        command = fresh.add_parser(action, help='Continue initial setup through the first verified merge' if action == 'continue' else action.capitalize() + ' initial factory setup')
+        command.add_argument('--ssh', required=True, help='The saved administrative SSH destination')
+        command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+        command.add_argument('--wait', type=int, default=0, help='Watch for at most 0–600 seconds')
+        if action not in ('continue', 'inspect'):
+            command.add_argument('--apply', action='store_true', help='Apply this explicit setup step')
+        if action == 'apps':
+            command.add_argument('--role', choices=('build', 'review', 'audit', 'controller'))
+            command.add_argument('--owner', help='GitHub organization or user that owns all four Apps')
+        if action == 'account':
+            command.add_argument('--provider', required=True, choices=('codex', 'claude', 'grok'))
+            command.add_argument('--kind', choices=('browser', 'api_key', 'token'), default='browser')
+            command.add_argument('--secret-stdin', action='store_true', help='Read only the selected provider credential from stdin')
+        if action in ('repository', 'pilot'):
+            command.add_argument('--repository', help='First GitHub OWNER/REPO; subsequent calls reuse it')
+        if action == 'pilot':
+            command.add_argument('--issue', type=int, help='Existing issue to complete normally; retries preserve this binding')
     connect = sub.add_parser('connect', help='Connect this computer to a Forge server (approve it in your browser)')
     connect.add_argument('server')
     connect.add_argument('--name', default='Local agent')
@@ -146,9 +189,30 @@ def parser():
 
 
 def execute(args):
+    if args.command == 'setup':
+        if args.setup_command in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
+            from .factory_setup import execute as setup_stage, wizard as finish_setup
+            from .install import Installation
+            if args.setup_command == 'continue':
+                if not args.json and sys.stdin.isatty():
+                    return finish_setup(Installation(args.ssh))
+                args.setup_command = 'inspect'
+            return setup_stage(args)
+        from .install import execute as install, wizard
+        if args.setup_command == 'sign-in':
+            args.setup_command = 'identity'
+        if args.setup_command == 'identity' and not args.json and sys.stdin.isatty() and not (args.apply or args.resume or args.secret_stdin):
+            from .identity import wizard as sign_in
+            from .install import Installation
+            require(args.ssh, 'ssh_required', 'Run forge setup sign-in --ssh HOST with your saved SSH destination.')
+            return sign_in(Installation(args.ssh), operator=args.operator, client_id=args.client_id)
+        if args.setup_command == 'new' and not args.json and sys.stdin.isatty():
+            return wizard(args)
+        return install(args)
     if args.command == 'migrate':
         from .migration import execute as migrate
         return migrate(args)
+
     if args.command == 'skill':
         from importlib.resources import files
         return {'skill': files('forge_client').joinpath('skills/forge-repositories/SKILL.md').read_text()}
@@ -156,8 +220,9 @@ def execute(args):
         from .bootstrap import setup
         return setup(args)
     if args.command == 'commands':
-        return {'commands': ['connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
-                'schema_version': 1, 'repository_commands': repository_commands(),
+        from .install import schemas
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+                'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(),
                 'planning_commands': {'triage': {'usage':'forge triage OWNER/REPO --server HTTPS_ORIGIN --request-id STABLE_ID --json','capability':'repositories:triage'}, 'planning': {'usage':'forge planning OWNER/REPO --server HTTPS_ORIGIN [--proposal ID] [--row ID] [--after CURSOR] [--action-file PATH] --json','read_capability':'repositories:read','write_capability':'repositories:triage'}},
                 'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
@@ -245,9 +310,17 @@ def main(argv=None):
         if args.command == 'skill' and not args.json:
             print(result['skill'])
             return 0
+        if args.command == 'setup' and not args.json:
+            from .identity import display
+            if display(result, args.ssh):
+                return 0
         print(json.dumps({'ok': True, **result}, sort_keys=True))
         return 0
     except SetupError as error:
+        if args.command == 'setup' and args.setup_command in ('identity', 'sign-in') and not args.json:
+            from .identity import display_error
+            display_error(error, args.ssh)
+            return 1
         print(json.dumps({'ok': False, 'error': error.code, 'reason': str(error)}))
         return 1
     except (Exception, KeyboardInterrupt):

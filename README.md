@@ -23,6 +23,7 @@ On macOS or Linux with Python 3.10+, Git and
 ```sh
 uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
 forge --help
+forge setup new --help
 forge server setup --help
 ```
 
@@ -34,6 +35,7 @@ not install or start the Forge server. No PyPI release is currently published.
 
 | Command | Run it on | Purpose |
 | --- | --- | --- |
+| `forge setup new` | Your computer or the external agent's computer | Wizard or JSON plan for a fresh Ubuntu 24.04 host; apply/status/resume use the same installation workflow |
 | `forge migrate` | Your computer or the external agent’s computer | Rehearse a private SQLite import, or activate it through a resumable one-way migration |
 | `forge server setup` | Your computer or the external agent's computer | Configure operator sign-in and private HTTPS on an existing Tailscale host over SSH |
 | `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
@@ -44,9 +46,11 @@ GitHub CLI prerequisites, then [agent connections](docs/agent-connections.md) to
 approve a scoped external agent connection. Connections require an unlocked
 macOS Keychain or Linux Secret Service for local credential storage.
 
-The local CLI currently configures sign-in and HTTPS on an **existing server**.
-Complete fresh-server installation and onboarding through this entry point remain
-in [#136](https://github.com/XRPL-Commons/forge/issues/136).
+The CLI also supports [fresh-host installation](docs/cli-fresh-host.md). Run
+`forge setup new` for the guided path from a fresh VM to a first verified merge;
+`forge setup continue --ssh USER@HOST` resumes factory setup after sign-in.
+Each stage has JSON operations for agents. The CLI handles SSH and transfers,
+keeps GitHub administration local, and asks explicitly before Start.
 For repository setup on an existing server:
 
 ```sh

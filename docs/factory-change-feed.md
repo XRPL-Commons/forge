@@ -58,7 +58,12 @@ transitions retain their own event kinds.
 - `cursor`: the sequence captured with the detail response.
 
 These fields remove the ordinary detail page's second `factory?issue` request.
-Output remains a separate request made only when the operator opens a run.
+Output remains a separate request. An open issue automatically reads its active
+worker’s bounded live tail for the activity bubble and output panel. Historical
+output is fetched when the operator opens it; the board never reads worker tails.
+Concurrent live reads coalesce per job and cache for three seconds. One ten-second
+deadline covers engine inventory, inspection and logs; unrelated jobs do not wait
+on that read. Captured logs take precedence once the worker has been collected.
 
 ## Read cost and consistency
 
@@ -66,7 +71,8 @@ Output remains a separate request made only when the operator opens a run.
 across nested configuration, repository and worker reads in a public projection.
 The outer session closes before returning the response. It neither caches data
 between requests nor allows a mutation through that store during the projection.
-A long-poll wait uses autocommit reads and opens the response snapshot only after
+The output projection closes its metadata snapshot before reading a live engine
+tail. A long-poll wait uses autocommit reads and opens the response snapshot only after
 the wait ends, so it does not prevent WAL checkpoint progress.
 
 ## Shared UI state
@@ -78,7 +84,8 @@ cancellable long poll; hidden pages pause it and the last consumer releases it.
 
 Mounted detail views refresh for their affected events, resyncs and the shared
 25-second observation deadline.
-Bodies and output stay lazy. A second scoped factory request is reserved for an
+Issue bodies and historical output stay lazy. Active issue output is shared by
+the bubble and output panel. A second scoped factory request is reserved for an
 explicit orphan-run link whose issue is no longer available in managed inventory.
 
 When a viewer leaves or hides the page, the client aborts its poll. Nitro closes

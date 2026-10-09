@@ -2,7 +2,7 @@
 const {
   environmentOpen, environmentRequest, detail, busy, rendered, html, descriptionOpen,
   environmentSectionOpen, hasFindings, issueUrl, jobs, selectedJob, outputOpen, activityOpen,
-  pullUrl, localTime, isoTime, saveEnvironment, eventLabel, pullLabel,
+  pullUrl, localTime, isoTime, saveEnvironment, eventLabel, pullLabel, output, order,
 } = useIssueDetailContext()
 </script>
 <template>
@@ -20,10 +20,33 @@ const {
             >{{ pullLabel(pull) }} ↗</a>
           </p>
 
-          <div class="mt-3">
-            <IssueReviewFindings v-if="hasFindings" :detail="detail!" />
+          <LazyIssueDelivery v-if="detail.delivery_id" :issue-key="detail.key" />
 
-            <IssueSection v-if="detail.environment" id="issue-environment-section" v-model:open="environmentSectionOpen" title="Worker environment">
+          <div id="issue-sections" class="mt-3 flex flex-col border-b border-line">
+            <IssueReviewFindings v-if="hasFindings" :detail="detail!" :style="{ order: order('findings') }" />
+
+            <IssueWorkerOutput
+              v-if="selectedJob || jobs.length"
+              v-model:open="outputOpen"
+              :jobs="jobs"
+              :selected-job="selectedJob"
+              :output="output.data.value"
+              :error="output.error.value"
+              :updated-at="output.updatedAt.value"
+              :style="{ order: order('output') }"
+            />
+
+            <!-- Collapsed by default but always rendered, so the server-rendered
+                 description is in the page from the first paint. -->
+            <IssueSection v-if="detail.body || detail.body_truncated" id="issue-description" v-model:open="descriptionOpen" title="Description" :unmount-on-hide="false" :style="{ order: order('description') }">
+              <div class="rounded-xl border border-line bg-panel p-4">
+                <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
+                <MarkdownBody v-if="html != null" :html="html" />
+                <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
+              </div>
+            </IssueSection>
+
+            <IssueSection v-if="detail.environment" id="issue-environment-section" v-model:open="environmentSectionOpen" title="Worker environment" :style="{ order: order('environment') }">
               <IssueEnvironmentCard
                 v-model:open="environmentOpen"
                 :environment="detail.environment"
@@ -33,29 +56,15 @@ const {
               />
             </IssueSection>
 
-            <!-- Collapsed by default but always rendered, so the server-rendered
-                 description is in the page from the first paint. -->
-            <IssueSection id="issue-description" v-model:open="descriptionOpen" title="Description" :unmount-on-hide="false">
-              <div class="rounded-xl border border-line bg-panel p-4">
-                <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
-                <MarkdownBody v-if="html != null" :html="html" />
-                <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
-              </div>
+            <IssueSection v-if="detail.history.length" id="issue-activity" v-model:open="activityOpen" title="Recent activity" :style="{ order: order('activity') }">
+              <ul class="flex flex-col gap-2 text-xs">
+                <li v-for="(event, index) in detail.history" :key="`${event.at}-${index}`">
+                  <time :datetime="isoTime(event.at)" class="text-muted">{{ localTime(event.at) }}</time>
+                  <span class="ml-2 text-white">{{ eventLabel(event.kind) }}</span>
+                  <p v-if="event.reason" class="text-muted wrap-anywhere">{{ event.reason }}</p>
+                </li>
+              </ul>
             </IssueSection>
           </div>
-
-          <LazyIssueDelivery v-if="detail.delivery_id" :issue-key="detail.key" />
-          <IssueWorkerOutput v-model:open="outputOpen" :jobs="jobs" :selected-job="selectedJob" />
-          <IssueSection id="issue-activity" v-model:open="activityOpen" title="Recent activity" class="border-b">
-            <ul v-if="detail.history.length" class="flex flex-col gap-2 text-xs">
-              <li v-for="(event, index) in detail.history" :key="`${event.at}-${index}`">
-                <time :datetime="isoTime(event.at)" class="text-muted">{{ localTime(event.at) }}</time>
-                <span class="ml-2 text-white">{{ eventLabel(event.kind) }}</span>
-                <p v-if="event.reason" class="text-muted wrap-anywhere">{{ event.reason }}</p>
-              </li>
-            </ul>
-            <p v-else class="text-xs text-muted">No Forge activity yet.</p>
-          </IssueSection>
-
   </template>
 </template>

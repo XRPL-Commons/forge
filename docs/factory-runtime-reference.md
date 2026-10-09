@@ -43,12 +43,11 @@ Existing evidence: [launcher routing](../bin/forge),
 
 Use guided Settings or the supported CLI to configure the instance. The examples
 in `examples/` describe configuration values; copying them over a selected
-instance's old JSON files does not update its settings. New installations and
-pre-cutover compatibility use those files until explicit
-[SQLite activation](store-migration.md). The released local `forge server setup`
-configures identity and HTTPS on an existing host; the complete fresh-VM CLI
-wizard in #136 is not yet merged. See its
-[existing-host prerequisites](cli-server-setup.md#prerequisites).
+instance's old JSON files does not update its settings. Fresh CLI installations
+initialize selected SQLite before starting services. Pre-cutover instances use
+the [explicit migration](store-migration.md) workflow. Use
+[fresh-host setup](cli-fresh-host.md) for a new VM, or `forge server setup` to
+configure identity and HTTPS on an existing host.
 
 - GitHub connections and selected repository IDs belong to the `factory.json` domain.
 - Runner image, policy references, capacity, deadlines, human reviewers and merge

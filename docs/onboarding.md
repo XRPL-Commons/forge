@@ -15,9 +15,9 @@ flowchart TD
 
 ## Host installation
 
-Start with the [host installation instructions](installation.md). The current release installs from a checkout on a prepared Linux host; the complete fresh-VM CLI wizard is still separate work, so do not assume `forge setup new` is available.
+Start with `forge setup new` on your computer. The [fresh-host wizard](cli-fresh-host.md) handles SSH and installation, then guides private HTTPS, sign-in, GitHub Apps, a coding account and your first repository. It asks before **Start Forge** and follows your chosen issue to its first verified merge. Resume after sign-in with `forge setup continue --ssh HOST`.
 
-Open your Forge address after installation. Follow the [operator sign-in guide](operator-sign-in.md) if sign-in is not configured, then use **Onboarding** to finish GitHub and repository setup.
+You can also open your Forge address to use **Onboarding**. For an existing server, follow the [operator sign-in guide](operator-sign-in.md) if sign-in is not configured. The [host reference](installation.md) covers manually managed installations.
 
 Keep administrator credentials on the operator's computer or in the trusted setup process. Forge's workers never need your personal GitHub administrator token.
 
@@ -72,7 +72,7 @@ For existing protections, adjust the matched rule rather than importing duplicat
 
 ## Coding provider accounts
 
-Forge ships Codex, Claude Code and Grok Build. Open **Settings → Coding accounts** and use the displayed host-terminal instructions to connect an account. Provider login is separate from GitHub App access and operator sign-in.
+Forge ships Codex, Claude Code and Grok Build. During initial CLI setup, the wizard runs account login on the host for you. On an active factory, open **Settings → Coding accounts** and use the displayed instructions to connect an account. Provider login is separate from GitHub App access and operator sign-in.
 
 Back in Onboarding, **Verify repository** checks accounts and worker isolation. It makes small real model calls, which can consume provider usage; unchanged successful account checks can be reused for fifteen minutes.
 

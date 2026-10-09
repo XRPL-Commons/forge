@@ -26,6 +26,8 @@ export interface JobView {
   outcome: string | null; cleanup: boolean; fenced: boolean
   capacity_wait_since?: number | null; created_at: number; deadline: number
   started_at: number | null; observed_at: number | null; last_observed?: number
+  // The branch the worker pushes to; older payloads omit it.
+  branch?: string | null
 }
 
 export function jobIncludesIssue(job: JobView, issueKey: string): boolean {

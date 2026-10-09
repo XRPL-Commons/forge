@@ -73,6 +73,20 @@ def user_manager():
                          '(sudo loginctl enable-linger ' + getpass.getuser() + '), then rerun setup; see docs/installation.md') from None
 
 
+def initialize(root):
+    """Prepare the qualified SQLite authority before fresh-install services."""
+    from .store.db import qualified_sqlite
+    if not qualified_sqlite():
+        from .store.migration.runtime import prepare
+        prepared = prepare(root)
+        environment = {**os.environ, 'LD_LIBRARY_PATH': prepared['library_directory']}
+        os.execve(sys.executable, [sys.executable, '-m', 'forge.launch', 'forge.host_setup',
+                                  'initialize', '--root', str(root)], environment)
+    from .store.fresh import initialize as initialize_store
+    store = initialize_store(root)
+    print('SQLite initialized for instance ' + store.instance_id)
+
+
 def install(root, bind=None, assume_yes=False):
     """Idempotent: installs a new host or converges an existing one to this checkout.
 
@@ -363,7 +377,7 @@ def status(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=['install', 'update', 'login', 'check', 'status', 'full-environment'], default=None)
+    parser.add_argument('action', nargs='?', choices=['initialize', 'install', 'update', 'login', 'check', 'status', 'full-environment'], default=None)
     parser.add_argument('provider', nargs='?', choices=list(manifests()))
     parser.add_argument('--root', default=str(Path.home() / '.local/share/forge'))
     parser.add_argument('--bind', help='Operator UI address: loopback (default) or a private tailnet address; kept across updates')
@@ -379,6 +393,8 @@ def main():
     os.umask(0o077)
     try:
         root = private_root(args.root)
+        if args.action == 'initialize':
+            initialize(root)
         if args.action == 'update':
             from .store.migration.cutover import maintenance_writable
             maintenance_writable(root)
