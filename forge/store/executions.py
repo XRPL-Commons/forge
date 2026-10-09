@@ -13,6 +13,7 @@ import zlib
 
 from .artifacts import Artifacts, MAX_ARTIFACT_SIZE
 from .models import TransitionError
+from .runtime import writable
 from .transitions import Lifecycle, _json, applicable_gates
 
 
@@ -184,6 +185,7 @@ class Executions(Lifecycle):
         if started is not None and (type(started) not in (int, float) or not math.isfinite(started)):
             raise TransitionError('container start time must be finite')
         with self.store.write() as db:
+            writable(db)
             row = db.execute('SELECT e.container_id FROM jobs j JOIN job_leases l ON l.job_id=j.id '
                 'JOIN job_execution_state e ON e.job_id=j.id WHERE j.id=? AND l.execution_fence=? AND j.cleanup=0',
                 (job_id, execution_fence)).fetchone()

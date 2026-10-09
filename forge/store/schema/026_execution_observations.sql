@@ -6,5 +6,4 @@ ALTER TABLE job_execution_state ADD COLUMN observed_status TEXT
 ALTER TABLE job_execution_state ADD COLUMN started_at REAL;
 CREATE TRIGGER execution_observation_consistent BEFORE UPDATE ON job_execution_state
 WHEN (NEW.observed_at IS NULL) != (NEW.observed_status IS NULL)
-    OR NEW.observed_at < OLD.observed_at
-BEGIN SELECT RAISE(ABORT,'execution observations require ordered time and status'); END;
+BEGIN SELECT RAISE(ABORT,'execution observations require both time and status'); END;
