@@ -115,12 +115,14 @@ class OperatorTests(unittest.TestCase):
         request=self.request('environment',environment={'mode':'standard','services':[]})
         before=self.view()['fencing_generation']
         self.assertTrue(self.actions.step(request)['applied'])
-        self.assertEqual(self.view()['fencing_generation'],before+1)
+        self.assertEqual(self.view()['fencing_generation'],before)
         with self.store.read_snapshot() as db:
-            self.assertEqual(json.loads(db.execute("SELECT override_json FROM unit_environment_observations WHERE unit_id='u'").fetchone()[0]),{'mode':'standard','services':[]})
+            self.assertEqual(json.loads(db.execute("SELECT override_json FROM issue_environment_observations WHERE issue_id='i'").fetchone()[0]),{'mode':'standard','services':[]})
             self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='operator_sync' AND resolved_at IS NULL").fetchone()[0],0)
+        applied_version=self.view()['version']
         self.actions.step(request)
-        self.assertEqual(self.view()['fencing_generation'],before+1)
+        self.assertEqual(self.view()['version'],applied_version)
+        self.assertEqual(self.view()['fencing_generation'],before)
 
     def test_stop_job_immediately_fences_and_is_attributed_without_github_write(self):
         job=self.reserve();identifier=self.actions.stop_job(job,'Stop this run')
