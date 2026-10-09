@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "logs": "{\"runner\": \"alive\", \"attempt\": \"44444444-4444-4444-8444-444444444444\", \"at\": 1789999990}\n{\"type\": \"forge.activity\", \"id\": \"toolu_1789999880\", \"tool\": \"Bash\", \"input\": {\"command\": \"timeout 300 safe-build pnpm build 2>&1 | tail -20\"}, \"at\": 1789999880}\nvite v7 building for production...\n{\"runner\": \"alive\", \"attempt\": \"44444444-4444-4444-8444-444444444444\", \"at\": 1789999996}",
+  "text": "{\"type\": \"forge.activity\", \"id\": \"toolu_1789999880\", \"tool\": \"Bash\", \"input\": {\"command\": \"timeout 300 safe-build pnpm build 2>&1 | tail -20\"}, \"at\": 1789999880}\nvite v7 building for production...",
+  "live": true,
+  "at": 1790000000,
+  "running": true,
+  "activity": {
+    "text": "Running pnpm build",
+    "tool": "Bash",
+    "at": 1789999880
+  },
+  "heartbeat_at": 1789999996
+}

@@ -91,10 +91,26 @@ def command_line(command):
             tokens = segment.split()
         while tokens and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]):
             tokens = tokens[1:]  # Environment assignments may carry credentials.
+        tokens = unwrapped(tokens)
         if not tokens or PurePosixPath(tokens[0]).name in ("cd", "export", "set", "true", "echo", "printf", "pwd"):
             continue
         return program_line(PurePosixPath(tokens[0]).name, tokens)
     return INSPECTING
+
+
+# Wrappers say how a command runs, not what it does: `timeout 300 safe-build
+# pnpm build` is "Running pnpm build". Their options, assignments and
+# durations go with them.
+WRAPPERS = ("timeout", "safe-build", "nice", "nohup", "time", "stdbuf", "env", "command", "exec")
+WRAPPER_ARGUMENT = re.compile(r"-.*|[A-Za-z_][A-Za-z0-9_]*=.*|[0-9.]+[smhd]?")
+
+
+def unwrapped(tokens):
+    while len(tokens) > 1 and PurePosixPath(tokens[0]).name in WRAPPERS:
+        tokens = tokens[1:]
+        while len(tokens) > 1 and WRAPPER_ARGUMENT.fullmatch(tokens[0]):
+            tokens = tokens[1:]
+    return tokens
 
 
 def program_line(program, tokens):

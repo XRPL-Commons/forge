@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { chooseMore, moreItems } from './more-menu.mjs'
 
 const RECOVERY_JOB = '22222222-2222-4222-8222-222222222222'
 // The mock serves one detail fixture per scenario (`issues.issue.json`): the
@@ -170,13 +171,11 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await specLink.getAttribute('target'), '_blank')
   assert.equal(await page.locator('.forge-markdown input[type="checkbox"]').isDisabled(), true)
 
-  // Worker output is there for the working issue, loads when it is opened,
-  // and shows the captured log as text — never as markup.
+  // A working issue opens its worker output from the start (the running job
+  // is what there is to see), and shows the log as text, never as markup.
   await scenario('default')
   await page.goto(base + '/issues/1%3A610')
   await waitForText(page, DETAIL_TITLE)
-  assert.equal(await page.locator('pre').count(), 0, 'output is loaded on expand, not on load')
-  await page.getByRole('button', { name: 'Worker output' }).click()
   await waitForText(page, 'line <b>two</b>')
   const pre = page.locator('pre')
   assert.match(await pre.innerText(), /line one\nline <b>two<\/b>\nline three/)
@@ -199,11 +198,10 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Queued for Forge')
 
   // …and for a job the issue is not running: the recovery investigation of
-  // 1:604 is reachable by its own link, output included.
-  // Stop the previous page's output polling before clearing the request log.
-  // Otherwise a poll between scenario reset and navigation pollutes this assertion.
-  await page.getByRole('button', { name: 'Worker output' }).click()
-  await pre.waitFor({ state: 'hidden' })
+  // 1:604 is reachable by its own link, output included. A running job's
+  // output keeps polling while the page is open (the bubble reads it), so
+  // leave the page before clearing the request log.
+  await load('about:blank')
   await scenario('default')
   await page.goto(`${base}/issues/1%3A604?job=${RECOVERY_JOB}`)
   await waitForText(page, DETAIL_TITLE)
@@ -250,7 +248,9 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await links.getByRole('link', { name: 'PR #30 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/30')
   assert.equal(await actionBar.getByRole('link').count(), 0, 'GitHub links are not action buttons')
-  assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
+  // Stopping ends work: it waits behind More, not as a loose red button.
+  assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 0)
+  assert.deepEqual(await moreItems(page, actionBar), ['Stop attempt…'])
   // A running build: the cube works at Build, which is its current badge,
   // and nothing is needed from the operator.
   assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #610, Build stage, working')
@@ -259,8 +259,13 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await page.locator('#issue-stages li').count(), 5)
   assert.equal(await page.locator('#issue-pipeline').count(), 0, 'the workbench replaces the pipeline stepper')
   assert.equal((await page.locator('#issue-nothing-needed').innerText()).trim(), 'Nothing needed from you right now.')
-  // Discussing the blocker is one more button in the same bar.
-  assert.equal(await actionBar.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 1)
+  // Nothing blocks it, so the conversation is offered as a question, not a blocker.
+  assert.equal(await actionBar.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 0)
+  assert.equal((await actionBar.locator('#issue-ask').innerText()).trim(), 'Discuss')
+  // Without live output the bubble keeps Forge's own summary of the stage,
+  // and nothing above it repeats the badge.
+  assert.equal((await page.locator('#issue-headline').innerText()).trim(), 'Writing the change')
+  assert.equal(await page.locator('#issue-stage-note').count(), 0)
   await page.getByRole('button', { name: 'Description' }).click()
   await page.locator('.forge-markdown').waitFor()
   const barBox = await actionBar.boundingBox()
@@ -444,7 +449,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('default')
   await page.goto(base + '/issues/1%3A610')
   await waitForText(page, DETAIL_TITLE)
-  await page.getByRole('button', { name: 'Stop attempt' }).click()
+  await chooseMore(page, page.locator('#issue-actions'), 'Stop attempt…')
   await waitForText(page, 'Stop attempt?')
   const confirmStop = page.getByRole('dialog').getByRole('button', { name: 'Stop attempt' })
   assert.equal(await confirmStop.isDisabled(), true)

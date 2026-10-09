@@ -375,7 +375,7 @@ class ContainerRunner:
         except OSError:
             raise RunnerCapacity({'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}) from None
 
-    def observe(self, job, current=None):
+    def observe(self, job, current=None, lines=100):
         """Bounded running output is an observation, never a completion result."""
         current = current or self.inspect(job)
         observation = {'at': time.time(), 'execution': current, 'logs': '', 'missing': []}
@@ -384,7 +384,7 @@ class ContainerRunner:
             return observation
         secrets = self._scrub_values(job)
         try:
-            observation['logs'] = scrub(self.call(['logs', '--tail', '100', current['id']],
+            observation['logs'] = scrub(self.call(['logs', '--tail', str(int(lines)), current['id']],
                 combine=True, timeout=5, max_output=262144).stdout.decode(errors='replace')[-65536:], secrets)
         except RunnerError:
             observation['missing'].append('running output')

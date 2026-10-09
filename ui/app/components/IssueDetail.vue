@@ -6,7 +6,10 @@ import { issueTab, tabQuery, type IssueTab } from '~/utils/discussion'
 import { statusBadge } from '~/utils/tones'
 import { issuePipeline, type PipelineView } from '~/utils/pipeline'
 import { workbenchLook } from '~/utils/workbench'
+import { persona } from '~/utils/personas'
 import { panelQuery } from '~/utils/panel'
+import { actionPlan, bubbleFor, liveness, serverAge, stageTimes, workFacts, type OutputView } from '~/utils/liveWork'
+import type { DropdownMenuItem } from '@nuxt/ui'
 import {
   ACTION_LABELS, approvalLines, attentionNote, blockingIssues, statusLabel, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
   pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerReason, summaryBlock,
@@ -23,8 +26,6 @@ import {
 const props = withDefaults(defineProps<{ issueKey: string; fill?: 'container' | 'viewport' }>(), { fill: 'viewport' })
 
 const UNMANAGED = 'This issue is not in a managed repository. Refresh the issue list.'
-// The way forward, in the order the issue list names it (rowPrimary).
-const PRIMARY_ACTIONS: IssueAction[] = ['assign_reviewer', 'retry', 'recheck', 'resume', 'queue']
 
 const api = useForgeApi()
 const route = useRoute()
@@ -120,7 +121,7 @@ const summary = computed(() => summaryBlock(detail.value))
 const pipeline = computed(() => (detail.value ? issuePipeline(detail.value) : null))
 // The workbench: the issue's cube, its mood and props, the stages it earned
 // and the attempts it has left — all from the same payload.
-const look = computed(() => (detail.value ? workbenchLook(detail.value) : null))
+const look = computed(() => (detail.value ? workbenchLook(detail.value, { stalled: live.value.state === 'stalled' }) : null))
 const badge = computed(() => statusBadge(detail.value?.status ?? 'queued'))
 // The open prerequisites a blocked issue waits on: the action area names each
 // one, and each opens that issue.
@@ -141,11 +142,13 @@ const environmentSectionOpen = ref(false)
 const conversation = ref<{ focus: () => boolean } | null>(null)
 const plainOpen = ref(false)
 const PLAIN_CLAMP = 220
-const plainLong = computed(() => (summary.value?.plain ?? '').length > PLAIN_CLAMP)
+const plainLong = computed(() => (bubble.value?.plain ?? '').length > PLAIN_CLAMP)
 const holds = computed(() => heldByLines(detail.value?.held_by))
 // The worker environment is always one of the collapsed sections: when it is
-// what stopped the issue, the summary above already says so.
-const hasFindings = computed(() => !!summary.value?.details || reviews.value.length > 0)
+// what stopped the issue, the summary above already says so. Findings are
+// the worker's prose and the reviews; a status line alone is not a finding.
+const hasFindings = computed(() => reviews.value.length > 0
+  || (!!summary.value?.details && ![summary.value.headline, summary.value.plain, bubble.value?.headline ?? ''].some(line => line.trim() === summary.value!.details.trim())))
 
 const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
 function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
@@ -157,15 +160,26 @@ function pullUrl(number: number) { return `https://github.com/${detail.value?.re
 const canAssign = computed(() => !!detail.value?.actions.includes('assign_reviewer'))
 const decisions = computed(() => (detail.value?.actions ?? []).filter(action => action !== 'assign_reviewer'))
 // One primary button: approving when Forge waits for it, else the decision
-// that moves the issue on, else repository setup when that is the blocker.
+// that moves the issue on, else repository setup when that is the blocker,
+// else — when a person is needed but no decision fits — talking it through.
+// Reversible decisions sit beside it; ending work waits behind "More".
 const setupNeeded = computed(() => !!(detail.value?.setup_needed || detail.value?.merge_blocker))
-const primary = computed<'approve' | 'setup' | IssueAction | null>(() => {
-  if (approval.value) return 'approve'
-  const action = PRIMARY_ACTIONS.find(item => (detail.value?.actions ?? []).includes(item as never))
-  if (action) return action
-  return setupNeeded.value ? 'setup' : null
+const plan = computed(() => (detail.value
+  ? actionPlan(detail.value, { setupNeeded: setupNeeded.value, internalJob: !!internalJob.value, agent: activeJob.value?.provider ? persona(activeJob.value.provider).name : null })
+  : null))
+const primary = computed(() => plan.value?.primary ?? null)
+const secondary = computed(() => (plan.value?.secondary ?? []).filter(action => action !== 'assign_reviewer'))
+// The conversation proposes decisions; talking is what it already is.
+const conversationPrimary = computed(() => (primary.value && !['approve', 'setup', 'discuss'].includes(primary.value) ? primary.value as IssueAction : null))
+const moreItems = computed<DropdownMenuItem[][]>(() => {
+  const items: DropdownMenuItem[] = []
+  for (const action of plan.value?.destructive ?? []) {
+    if (action === 'stop') items.push({ label: `${ACTION_LABELS.stop}…`, icon: 'i-lucide-square', color: 'error', disabled: busy.value, onSelect: () => ask('stop') })
+    if (action === 'reset') items.push({ label: 'Reset runner…', icon: 'i-lucide-rotate-ccw', color: 'error', disabled: busy.value, onSelect: askReset })
+    if (action === 'close') items.push({ label: `${ACTION_LABELS.close}…`, icon: 'i-lucide-circle-x', color: 'error', disabled: busy.value, onSelect: () => ask('close') })
+  }
+  return items.length ? [items] : []
 })
-const secondary = computed(() => decisions.value.filter(action => action !== primary.value))
 const closeOpen = computed(() => decision.value === 'close')
 const assigning = ref(false)
 const assignRequest = useSubmission()
@@ -203,9 +217,12 @@ function closeReviewer() {
 // appears once mounted; the sentence itself renders either way.
 const now = ref(0)
 let ticker: ReturnType<typeof setInterval> | undefined
+const nowMs = ref(0)
+// Every second while visible: "alive 4s ago" is the worker's pulse.
 onMounted(() => {
-  now.value = Math.floor(Date.now() / 1000)
-  ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 5000)
+  const tick = () => { nowMs.value = Date.now(); now.value = Math.floor(nowMs.value / 1000) }
+  tick()
+  ticker = setInterval(() => { if (!document.hidden) tick() }, 1000)
 })
 onBeforeUnmount(() => clearInterval(ticker))
 const reviewRequested = computed(() => reviewRequestText(detail.value?.reviewers_requested, now.value))
@@ -385,8 +402,55 @@ async function confirmReset(reason: string) {
   await poll.refresh()
 }
 
+// The worker's own output. The bubble reads its live activity too, so it is
+// polled while the issue's running job is selected even with the section
+// closed; the server caches the container read, so polls stay cheap.
+const activeJob = computed<JobView | null>(() => jobs.value.find(job => job.id === detail.value?.active) ?? null)
+const liveSelected = computed(() => !!detail.value?.active && selectedJob.value === detail.value.active && detail.value.status === 'working')
 const outputOpen = ref(false)
+// A running job's output is what there is to see: open it once per job.
+watch(() => (liveSelected.value ? selectedJob.value : null), (job) => { if (job) outputOpen.value = true }, { immediate: true })
+const output = useResource<OutputView>(
+  () => `/api/factory/output?id=${encodeURIComponent(selectedJob.value ?? '')}`,
+  path => api.get(path, { timeout: 15000 }),
+  { allowed: () => (outputOpen.value || liveSelected.value) && !!selectedJob.value, server: false },
+)
+onMounted(output.start)
+const liveOutput = computed(() => (liveSelected.value ? output.data.value : null))
+const heartbeatAge = computed(() => (nowMs.value ? serverAge(liveOutput.value?.heartbeat_at, liveOutput.value, output.updatedAt.value, nowMs.value) : null))
+const live = computed(() => liveness(heartbeatAge.value))
+const bubble = computed(() => (detail.value && look.value ? bubbleFor({
+  detail: detail.value, job: activeJob.value, stage: look.value.stage, output: liveOutput.value,
+  activityAge: nowMs.value ? serverAge(liveOutput.value?.activity?.at, liveOutput.value, output.updatedAt.value, nowMs.value) : null,
+  heartbeatAge: heartbeatAge.value,
+}) : null))
+const facts = computed(() => (activeJob.value && detail.value?.status === 'working' ? workFacts(activeJob.value, detail.value.attempts, now.value) : null))
+const times = computed(() => stageTimes(jobs.value))
+// The note above the bench only when it says something the badge and the
+// bubble do not: "Failed" under "Needs attention", never "Building" twice.
+// While a worker runs, the bubble is the stage.
+const stageNote = computed(() => {
+  const note = detail.value?.status === 'working' ? '' : (pipeline.value?.note ?? '').trim()
+  const shown = [detail.value ? statusLabel(detail.value) : '', bubble.value?.headline ?? '', bubble.value?.plain ?? '']
+  return note && !shown.some(line => line.trim().toLowerCase() === note.toLowerCase()) ? note : ''
+})
+const statusReason = computed(() => {
+  const reason = detail.value?.status === 'working' ? '' : (detail.value?.operator_status?.reason ?? '').trim()
+  const shown = [bubble.value?.headline ?? '', bubble.value?.plain ?? '', stageNote.value, detail.value ? statusLabel(detail.value) : '']
+  return reason && !shown.some(line => line.trim().toLowerCase() === reason.toLowerCase()) ? reason : ''
+})
 const activityOpen = ref(false)
+// Sections in the order the state makes them relevant: a running worker's
+// output first; the findings first when something stopped.
+const SECTION_ORDER: Record<string, string[]> = {
+  working: ['output', 'findings', 'description', 'environment', 'activity'],
+  attention: ['findings', 'output', 'description', 'environment', 'activity'],
+  other: ['findings', 'description', 'environment', 'output', 'activity'],
+}
+function order(section: string): number {
+  const status = detail.value?.status ?? 'other'
+  return (SECTION_ORDER[status] ?? SECTION_ORDER.other!).indexOf(section)
+}
 
 // `reason` prefills the dialog, e.g. with what a discussion proposed.
 const decisionReason = ref('')
@@ -559,7 +623,7 @@ const rootClass = computed(() => {
         >{{ statusLabel(detail) }}</UBadge>
       </div>
 
-      <p v-if="detail.operator_status?.reason" id="issue-status-reason" class="mt-1 text-sm text-muted">{{ detail.operator_status.reason }}</p>
+      <p v-if="statusReason" id="issue-status-reason" class="mt-1 text-sm text-muted">{{ statusReason }}</p>
 
       <UTabs
         :model-value="tab"
@@ -581,27 +645,37 @@ const rootClass = computed(() => {
           </span>
         </template>
         <template #details>
-          <p v-if="pipeline" id="issue-attempt-line" class="mb-3 text-xs" :class="NOTE_TONE[pipeline.state]">
-            <span id="issue-stage-note">{{ pipeline.note }}</span>
-            <template v-if="pipeline.attempts">
-              <span class="text-muted" aria-hidden="true"> · </span>
+          <p v-if="stageNote || (pipeline?.attempts && !facts)" id="issue-attempt-line" class="mb-3 text-xs" :class="pipeline ? NOTE_TONE[pipeline.state] : ''">
+            <span v-if="stageNote" id="issue-stage-note">{{ stageNote }}</span>
+            <template v-if="pipeline?.attempts && !facts">
+              <span v-if="stageNote" class="text-muted" aria-hidden="true"> · </span>
               <span id="issue-attempts" class="text-muted">{{ pipeline.attempts }}</span>
             </template>
           </p>
 
-          <!-- The next step: the cube on its workbench says what is going on;
-               directly under it, how to move the issue on — to completion, or
-               out of Forge with Close issue. -->
+          <!-- The next step: the cube on its workbench says what is going on
+               (while a worker runs, what it is doing right now); directly
+               under it, who is on it and how to move the issue on. -->
           <section id="issue-next" class="flex flex-col gap-3" aria-labelledby="issue-next-title">
             <h2 id="issue-next-title" class="sr-only">Next step</h2>
             <IssueWorkbench v-if="look" :look="look">
-              <p v-if="summary?.headline" id="issue-headline" class="text-[15px] leading-snug font-semibold text-balance text-white">{{ summary.headline }}</p>
+              <p v-if="bubble?.headline" id="issue-headline" class="text-[15px] leading-snug font-semibold text-balance text-white wrap-anywhere" :data-live="bubble.segments ? 'true' : undefined">
+                <template v-if="bubble.segments">
+                  <template v-for="(part, index) in bubble.segments" :key="index">
+                    <code v-if="part.code" class="rounded bg-black/30 px-1 py-px font-mono text-[13px] font-medium text-mint-100">{{ part.text }}</code>
+                    <template v-else>{{ part.text }}</template>
+                  </template>
+                </template>
+                <template v-else>{{ bubble.headline }}</template>
+                <template v-if="bubble.since">{{ ' ' }}</template>
+                <span v-if="bubble.since" id="issue-activity-since" class="ml-1.5 text-xs font-normal text-muted">{{ bubble.since }}</span>
+              </p>
               <p
-                v-if="summary?.plain"
+                v-if="bubble?.plain"
                 id="issue-plain"
                 class="text-sm text-[#c5cad1] wrap-anywhere"
-                :class="[summary?.headline ? 'mt-1.5' : '', plainLong && !plainOpen ? 'line-clamp-3' : '']"
-              >{{ summary.plain }}</p>
+                :class="[bubble?.headline ? 'mt-1.5' : '', plainLong && !plainOpen ? 'line-clamp-3' : '']"
+              >{{ bubble.plain }}</p>
               <UButton
                 v-if="plainLong"
                 size="xs"
@@ -614,8 +688,35 @@ const rootClass = computed(() => {
               <ul v-if="holds.length" id="issue-held-by" class="mt-1.5 text-xs text-muted">
                 <li v-for="line in holds" :key="line">{{ line }}</li>
               </ul>
-              <p v-if="!summary && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
+              <p v-if="live.state !== 'unknown'" id="issue-liveness" class="mt-1.5 inline-flex items-center gap-1.5 text-xs" :class="live.state === 'stalled' ? 'text-amber-200' : 'text-muted'" :data-state="live.state">
+                <span aria-hidden="true" class="size-1.5 rounded-full" :class="live.state === 'stalled' ? 'bg-amber-200' : 'bg-mint-400 motion-safe:animate-pulse'" />
+                {{ live.text }}
+              </p>
+              <p v-if="!bubble?.headline && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
             </IssueWorkbench>
+
+            <!-- Who is on it, for how long and where the work lands. -->
+            <dl v-if="facts" id="issue-work" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 rounded-xl border border-line bg-panel px-3 py-2.5 text-xs">
+              <dt class="text-muted">Worker</dt>
+              <dd id="issue-worker" class="flex min-w-0 items-center gap-1.5 text-white">
+                <AgentAvatar :provider="facts.provider" :mood="live.state === 'stalled' ? 'left' : 'busy'" :size="18" />
+                <span class="font-semibold" data-persona-name>{{ facts.who }}</span>
+                <span class="truncate text-muted">· {{ facts.model }}</span>
+              </dd>
+              <dt class="text-muted">Attempt</dt>
+              <dd id="issue-work-attempt" class="text-white">{{ facts.attempt }}</dd>
+              <template v-if="facts.timing">
+                <dt class="text-muted">Time</dt>
+                <dd id="issue-work-time" :class="facts.overdue ? 'text-amber-200' : 'text-white'">{{ facts.timing }}</dd>
+              </template>
+              <template v-if="facts.branch || candidatePull">
+                <dt class="text-muted">Lands in</dt>
+                <dd class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <code v-if="facts.branch" id="issue-work-branch" class="truncate font-mono text-white">{{ facts.branch }}</code>
+                  <a v-if="candidatePull" :href="pullUrl(candidatePull.number)" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">{{ pullLabel(candidatePull) }} ↗</a>
+                </dd>
+              </template>
+            </dl>
 
             <div id="issue-action-block" class="flex flex-col gap-2.5">
               <section v-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
@@ -627,7 +728,7 @@ const rootClass = computed(() => {
                 <p class="text-muted">{{ detail.decision_request.evidence }}</p>
                 <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
               </section>
-              <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
+              <p v-if="approval && (sentToGitHub || !bubble?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
               <ul
                 v-if="approvals.length"
                 id="issue-approvals"
@@ -684,9 +785,11 @@ const rootClass = computed(() => {
                 <p v-else class="text-muted">Run these steps on the current PR revision, then approve on GitHub if they pass. If they fail, comment on the PR and retry with the findings.</p>
               </section>
 
-              <!-- One primary way forward (or a calm line when there is none),
-                   smaller secondary decisions, then stopping the attempt. -->
-              <!-- Dropped work asks nothing: the only way back is on GitHub. -->
+              <!-- One primary way forward (or a calm line saying none is
+                   needed), the reversible decisions beside it, and ending
+                   the work (Stop, Reset, Close) behind More, each confirmed
+                   in its own dialog. Dropped work asks nothing: the only way
+                   back is on GitHub. -->
               <div v-if="detail.status === 'dropped'" id="issue-actions" class="flex flex-wrap items-center gap-2">
                 <span id="issue-nothing-needed" data-dropped class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
                   <UIcon name="i-lucide-archive" class="size-4 shrink-0" aria-hidden="true" />
@@ -701,9 +804,14 @@ const rootClass = computed(() => {
                 </span>
               </div>
               <div v-else id="issue-actions" class="flex flex-wrap items-center gap-2">
+                <span v-if="detail.status === 'attention' && (primary === 'discuss' || !primary)" id="issue-needs-person" class="inline-flex min-h-8 basis-full items-center gap-2 text-sm text-amber-200">
+                  <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
+                  {{ attentionNote(detail) }}
+                </span>
                 <UButton v-if="primary === 'approve'" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
                 <UButton v-else-if="primary === 'assign_reviewer'" color="primary" :disabled="busy" @click="askReviewer">{{ ACTION_LABELS.assign_reviewer }}</UButton>
                 <UButton v-else-if="primary === 'setup'" :to="detail.setup_url" color="primary">Repository setup →</UButton>
+                <UButton v-else-if="primary === 'discuss'" color="primary" icon="i-lucide-messages-square" @click="tab = 'discussion'">{{ plan?.ask }}</UButton>
                 <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ ACTION_LABELS[primary] }}</UButton>
                 <span v-else-if="detail.status === 'blocked'" id="issue-nothing-needed" data-blocked class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-1 gap-y-0.5 text-sm text-muted">
                   <UIcon name="i-lucide-link-2" class="mr-1 size-4 shrink-0" aria-hidden="true" />
@@ -722,11 +830,7 @@ const rootClass = computed(() => {
                   </template>
                   <span v-else>Starts by itself when the issues it waits on close.</span>
                 </span>
-                <span v-else-if="detail.status === 'attention'" id="issue-needs-person" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-amber-200">
-                  <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
-                  {{ attentionNote(detail) }}
-                </span>
-                <span v-else id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
+                <span v-else-if="detail.status !== 'attention'" id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
                   <span aria-hidden="true" class="size-2 rounded-full bg-mint-400" />
                   {{ look?.mood === 'happy' ? 'Done. Nothing left to do.' : 'Nothing needed from you right now.' }}
                 </span>
@@ -748,46 +852,31 @@ const rootClass = computed(() => {
                   @click="askReviewer"
                 >{{ ACTION_LABELS.assign_reviewer }}</UButton>
                 <UButton
+                  v-if="primary !== 'discuss'"
+                  id="issue-ask"
                   size="sm"
                   color="neutral"
                   variant="outline"
+                  icon="i-lucide-messages-square"
                   @click="tab = 'discussion'"
-                >Discuss blocker</UButton>
+                >{{ plan?.ask }}</UButton>
                 <UButton v-if="setupNeeded && primary !== 'setup'" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
-                <span v-if="(detail.active && detail.status === 'working') || internalJob" class="ml-auto flex flex-wrap items-center gap-1">
+                <UDropdownMenu v-if="moreItems.length" :items="moreItems" :content="{ align: 'end' }">
                   <UButton
-                    v-if="detail.active && detail.status === 'working'"
+                    id="issue-more"
                     size="sm"
-                    color="error"
+                    color="neutral"
                     variant="ghost"
+                    icon="i-lucide-ellipsis"
+                    class="ml-auto"
+                    aria-label="More actions"
                     :disabled="busy"
-                    @click="ask('stop')"
-                  >{{ ACTION_LABELS.stop }}</UButton>
-                  <UButton
-                    v-if="internalJob"
-                    size="sm"
-                    color="error"
-                    variant="ghost"
-                    :disabled="busy"
-                    @click="askReset"
-                  >Reset runner</UButton>
-                </span>
+                  >More</UButton>
+                </UDropdownMenu>
               </div>
 
-              <!-- The quiet way out, and how fresh this is. -->
-              <div id="issue-meta" class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-dashed border-line pt-2 text-xs text-muted">
-                <UButton
-                  v-if="detail.closable"
-                  id="issue-close"
-                  size="xs"
-                  color="error"
-                  variant="ghost"
-                  icon="i-lucide-circle-x"
-                  class="-ml-2"
-                  :disabled="busy"
-                  @click="ask('close')"
-                >Close issue…</UButton>
-                <span v-else />
+              <!-- How fresh this is. -->
+              <div id="issue-meta" class="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t border-dashed border-line pt-2 text-xs text-muted">
                 <div id="issue-checked" class="flex flex-wrap items-center gap-1">
                   <span v-if="checkingSince" role="status">Checking GitHub…</span>
                   <span v-else-if="checked">{{ checked }}</span>
@@ -799,10 +888,10 @@ const rootClass = computed(() => {
             </div>
           </section>
 
-          <IssueStats v-if="look" :look="look" class="mt-4" />
+          <IssueStats v-if="look" :look="look" :times="times" :now="now" class="mt-4" />
 
           <!-- Everything else, quieter: where the work lives on GitHub, then
-               collapsed sections. -->
+               the sections that have something in them, most relevant first. -->
           <p id="issue-links" class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <a :href="issueUrl" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">GitHub issue ↗</a>
             <a
@@ -816,8 +905,8 @@ const rootClass = computed(() => {
             >{{ pullLabel(pull) }} ↗</a>
           </p>
 
-          <div class="mt-3">
-            <IssueSection v-if="hasFindings" id="issue-details" v-model:open="detailsOpen" title="Review findings">
+          <div id="issue-sections" class="mt-3 flex flex-col border-b border-line">
+            <IssueSection v-if="hasFindings" id="issue-details" v-model:open="detailsOpen" title="Review findings" :style="{ order: order('findings') }">
               <p v-if="summary?.details" id="issue-explanation" class="whitespace-pre-line text-sm text-muted wrap-anywhere">{{ summary.details }}</p>
               <div v-if="reviews.length" id="issue-reviews" class="mt-3 flex flex-col gap-2">
                 <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
@@ -840,7 +929,28 @@ const rootClass = computed(() => {
               </div>
             </IssueSection>
 
-            <IssueSection v-if="detail.environment" id="issue-environment-section" v-model:open="environmentSectionOpen" title="Worker environment">
+            <IssueWorkerOutput
+              v-if="selectedJob || jobs.length"
+              v-model:open="outputOpen"
+              :jobs="jobs"
+              :selected-job="selectedJob"
+              :output="output.data.value"
+              :error="output.error.value"
+              :updated-at="output.updatedAt.value"
+              :style="{ order: order('output') }"
+            />
+
+            <!-- Collapsed by default but always rendered, so the server-rendered
+                 description is in the page from the first paint. -->
+            <IssueSection v-if="detail.body || detail.body_truncated" id="issue-description" v-model:open="descriptionOpen" title="Description" :unmount-on-hide="false" :style="{ order: order('description') }">
+              <div class="rounded-xl border border-line bg-panel p-4">
+                <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
+                <MarkdownBody v-if="html != null" :html="html" />
+                <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
+              </div>
+            </IssueSection>
+
+            <IssueSection v-if="detail.environment" id="issue-environment-section" v-model:open="environmentSectionOpen" title="Worker environment" :style="{ order: order('environment') }">
               <IssueEnvironmentCard
                 v-model:open="environmentOpen"
                 :environment="detail.environment"
@@ -850,28 +960,16 @@ const rootClass = computed(() => {
               />
             </IssueSection>
 
-            <!-- Collapsed by default but always rendered, so the server-rendered
-                 description is in the page from the first paint. -->
-            <IssueSection id="issue-description" v-model:open="descriptionOpen" title="Description" :unmount-on-hide="false">
-              <div class="rounded-xl border border-line bg-panel p-4">
-                <!-- Loaded lazily on navigation: say nothing until it arrives, not "no description". -->
-                <MarkdownBody v-if="html != null" :html="html" />
-                <p v-if="detail.body_truncated" class="mt-2 text-xs text-amber-200">Description shortened. Open on GitHub to read the full issue.</p>
-              </div>
+            <IssueSection v-if="detail.history.length" id="issue-activity" v-model:open="activityOpen" title="Recent activity" :style="{ order: order('activity') }">
+              <ul class="flex flex-col gap-2 text-xs">
+                <li v-for="(event, index) in detail.history" :key="`${event.at}-${index}`">
+                  <time :datetime="isoTime(event.at)" class="text-muted">{{ localTime(event.at) }}</time>
+                  <span class="ml-2 text-white">{{ eventLabel(event.kind) }}</span>
+                  <p v-if="event.reason" class="text-muted wrap-anywhere">{{ event.reason }}</p>
+                </li>
+              </ul>
             </IssueSection>
           </div>
-
-          <IssueWorkerOutput v-model:open="outputOpen" :jobs="jobs" :selected-job="selectedJob" />
-          <IssueSection id="issue-activity" v-model:open="activityOpen" title="Recent activity" class="border-b">
-            <ul v-if="detail.history.length" class="flex flex-col gap-2 text-xs">
-              <li v-for="(event, index) in detail.history" :key="`${event.at}-${index}`">
-                <time :datetime="isoTime(event.at)" class="text-muted">{{ localTime(event.at) }}</time>
-                <span class="ml-2 text-white">{{ eventLabel(event.kind) }}</span>
-                <p v-if="event.reason" class="text-muted wrap-anywhere">{{ event.reason }}</p>
-              </li>
-            </ul>
-            <p v-else class="text-xs text-muted">No Forge activity yet.</p>
-          </IssueSection>
         </template>
         <template #discussion>
           <IssueConversation
@@ -880,7 +978,7 @@ const rootClass = computed(() => {
             :active="tab === 'discussion'"
             :issue-key="detail.key"
             :actions="decisions"
-            :primary="typeof primary === 'string' && primary !== 'approve' && primary !== 'setup' ? primary : null"
+            :primary="conversationPrimary"
             :disabled="busy"
             @act="(action, reason) => action === 'assign_reviewer' ? askReviewer() : ask(action, reason)"
             @attention="value => chat = value"
@@ -942,7 +1040,16 @@ const rootClass = computed(() => {
       <div v-if="internalJob" id="job-actions" class="mt-4 flex flex-wrap items-center gap-2">
         <UButton size="sm" color="error" variant="ghost" :disabled="busy" @click="askReset">Reset runner</UButton>
       </div>
-      <IssueWorkerOutput v-if="showOutput" v-model:open="outputOpen" :jobs="jobs" :selected-job="selectedJob" class="mt-4" />
+      <IssueWorkerOutput
+        v-if="showOutput"
+        v-model:open="outputOpen"
+        :jobs="jobs"
+        :selected-job="selectedJob"
+        :output="output.data.value"
+        :error="output.error.value"
+        :updated-at="output.updatedAt.value"
+        class="mt-4"
+      />
     </template>
 
     <!-- Reset targets the run, not the issue, so it lives outside the block
