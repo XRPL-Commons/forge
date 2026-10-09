@@ -67,7 +67,7 @@ def parser():
     p = argparse.ArgumentParser(prog='forge', description='Connect a local agent to an existing Forge server.')
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
     sub = p.add_subparsers(dest='command', required=True)
-    connect = sub.add_parser('connect')
+    connect = sub.add_parser('connect', help='Connect this computer to a Forge server (approve it in your browser)')
     connect.add_argument('server')
     connect.add_argument('--name', default='Local agent')
     connect.add_argument('--repo', action='append', default=[])
@@ -75,10 +75,10 @@ def parser():
     connect.add_argument('--read-only', action='store_true')
     connect.add_argument('--resume', action='store_true')
     connect.add_argument('--wait', type=int, default=0)
-    auth = sub.add_parser('auth').add_subparsers(dest='auth_command', required=True)
-    auth.add_parser('status').add_argument('server')
-    sub.add_parser('disconnect').add_argument('server')
-    requirements = sub.add_parser('requirements')
+    auth = sub.add_parser('auth', help='Check this computer’s connection to a Forge server').add_subparsers(dest='auth_command', required=True)
+    auth.add_parser('status', help='Show whether the saved connection is still valid').add_argument('server')
+    sub.add_parser('disconnect', help='Forget a saved Forge server connection').add_argument('server')
+    requirements = sub.add_parser('requirements', help='Show what a repository needs before Forge can work on it')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
     for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue'):
@@ -96,7 +96,7 @@ def parser():
         if action == 'setup':
             command.add_argument('--apply', action='store_true', help='Apply the local preparation plan')
             command.add_argument('--enable', action='store_true', help='Enable automation after verification')
-    server = sub.add_parser('server').add_subparsers(dest='server_command', required=True)
+    server = sub.add_parser('server', help='Configure an existing Forge host over SSH').add_subparsers(dest='server_command', required=True)
     setup = server.add_parser('setup', help='Bootstrap operator sign-in on an existing host over SSH')
     setup.add_argument('--ssh', required=True, help='Explicit SSH host alias or user@hostname; known host key required')
     setup.add_argument('--source', required=True, help='Absolute Forge source directory on that host')
@@ -117,7 +117,7 @@ def parser():
     migration.add_argument('--source-revision', help='Full commit SHA for an upgrade or an explicitly authorized resume repair')
     migration.add_argument('--batch', type=int, default=100)
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
-    sub.add_parser('commands')
+    sub.add_parser('commands', help='List every command as JSON for agents')
     sub.add_parser('skill', help='Print the bundled Forge repository agent skill')
     return p
 
