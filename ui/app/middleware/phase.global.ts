@@ -59,7 +59,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
     if (payload.phase === 'active') return
     let factory: { ok?: boolean; active?: boolean }
     try {
-      factory = await request<{ ok?: boolean; active?: boolean }>('/api/factory', { headers: { accept: 'application/json' } })
+      factory = await request<{ ok?: boolean; active?: boolean }>('/api/factory', { headers: { accept: 'application/json' }, timeout: 5000 })
     } catch {
       return
     }

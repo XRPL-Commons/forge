@@ -1,25 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 
-export default async function (page, { base, scenario }) {
+export default async function (page, { base, scenario, observeIssue }) {
   await scenario('approval')
-  const fixture = JSON.parse(await readFile(new URL('./fixtures/approval/issues.issue.json', import.meta.url)))
-  let resolved = false
-  await page.route('**/api/issues?*', async route => {
-    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
-    const body = await response.json()
-    if (new URL(route.request().url()).searchParams.has('issue')) {
-      if (resolved) {
-        body.issue.approval = null
-        body.issue.actions = []
-        body.issue.status = 'completed'
-      }
-    } else {
-      body.issues = [fixture.issue]
-      body.total = 1
-    }
-    await route.fulfill({ response, json: body })
-  })
+  await observeIssue('1:614', {}, { list: true })
   await page.goto(base + '/issues')
   await page.getByRole('link', { name: 'Approve…', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Approve the pull request' })
@@ -44,20 +27,13 @@ export default async function (page, { base, scenario }) {
   await popup.close()
   await page.waitForFunction(() => document.body.innerText.includes('Waiting for your approval on GitHub'))
   assert.equal(await dialog.count(), 0)
-  resolved = true
+  await observeIssue('1:614', { approval: null, actions: [], status: 'completed' })
   await page.waitForFunction(() => !document.body.innerText.includes('Waiting for your approval on GitHub'))
   assert.equal(await page.getByRole('button', { name: 'Approve…', exact: true }).count(), 0)
 
-  await page.unroute('**/api/issues?*')
-  await page.route('**/api/issues?issue=*', async route => {
-    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
-    const body = await response.json()
-    body.issue.approval = null
-    body.issue.actions = []
-    body.issue.merge_blocker = { reason: 'GitHub refused to merge: branch rules still block it' }
-    body.issue.summary = { headline: 'The merge is blocked', plain: body.issue.merge_blocker.reason }
-    await route.fulfill({ response, json: body })
-  })
+  await observeIssue('1:614', { approval: null, actions: [],
+    merge_blocker: { reason: 'GitHub refused to merge: branch rules still block it' },
+    summary: { headline: 'The merge is blocked', plain: 'GitHub refused to merge: branch rules still block it' } })
   await page.goto(base + '/issues/1%3A614?approve=1')
   await page.getByText('The merge is blocked', { exact: true }).waitFor()
   assert.equal(await page.getByRole('button', { name: 'Approve…', exact: true }).count(), 0)

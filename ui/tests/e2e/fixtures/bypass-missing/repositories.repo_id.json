@@ -35,7 +35,8 @@
                 "name": "Forge review baseline",
                 "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
                 "id": 10,
-                "source_type": "ruleset"
+                "source_type": "Repository",
+                "bypass_actors_visible": true
               }
             ]
           },
@@ -50,7 +51,8 @@
                 "name": "Forge review baseline",
                 "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
                 "id": 10,
-                "source_type": "ruleset"
+                "source_type": "Repository",
+                "bypass_actors_visible": true
               }
             ]
           }
@@ -61,7 +63,8 @@
             "name": "Forge review baseline",
             "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
             "id": 10,
-            "source_type": "ruleset"
+            "source_type": "Repository",
+            "bypass_actors_visible": true
           }
         ],
         "errors": [],
@@ -75,7 +78,9 @@
               "kind": "ruleset",
               "name": "Forge review baseline",
               "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
-              "id": 10
+              "id": 10,
+              "source_type": "Repository",
+              "bypass_actors_visible": true
             }
           ],
           "controller_app_id": 4959034
@@ -100,7 +105,8 @@
                 "name": "Forge review baseline",
                 "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
                 "id": 10,
-                "source_type": "ruleset"
+                "source_type": "Repository",
+                "bypass_actors_visible": true
               }
             ]
           },
@@ -115,7 +121,8 @@
                 "name": "Forge review baseline",
                 "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
                 "id": 10,
-                "source_type": "ruleset"
+                "source_type": "Repository",
+                "bypass_actors_visible": true
               }
             ]
           }
@@ -126,7 +133,8 @@
             "name": "Forge review baseline",
             "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
             "id": 10,
-            "source_type": "ruleset"
+            "source_type": "Repository",
+            "bypass_actors_visible": true
           }
         ],
         "errors": [],
@@ -140,7 +148,9 @@
               "kind": "ruleset",
               "name": "Forge review baseline",
               "url": "https://github.com/XRPL-Commons/hackathon/rules/10",
-              "id": 10
+              "id": 10,
+              "source_type": "Repository",
+              "bypass_actors_visible": true
             }
           ]
         },

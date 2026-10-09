@@ -4,6 +4,7 @@ import {
   LINE_LOOKS, LINE_RESERVED, LINE_STAGES, lineFill, lineMix, lineAnalyse, lineBlocker, lineDiff, lineGroups, lineHeadline, lineHeadlineText, lineReason, lineState, lineStation,
   lineSummary, lineTooltip, type LineState,
 } from '../../app/utils/factoryLine'
+import { factoryFreshness } from '../../app/utils/factory'
 import { attentionKind } from '../e2e/attention-kind.mjs'
 
 const now = 1_000_000
@@ -78,6 +79,20 @@ describe('lineState', () => {
     const state = lineState(busy(), now)!
     expect(stageOf(state, '1:1')!.running).toBe(true)
     expect(stageOf(state, '1:2')!.running).toBe(false)
+  })
+
+  it('keeps canonical status but never animates stale or non-running observations', () => {
+    const canonical = { code: 'working', label: 'Working', reason: 'Building the candidate' }
+    const item = issue(1, { active: 'job-1', operator_status: canonical })
+    for (const snapshot of [
+      view([item], [job(1, 'build')], { observation: { at: now - 1000, errors: [] } }),
+      view([item], [job(1, 'build', { phase: 'launching' })]),
+      view([item], [job(1, 'build', { observed_at: now - 1000 })]),
+    ]) {
+      const state = lineState(snapshot, now)!
+      expect(stageOf(state, '1:1')).toMatchObject({ running: false, status: 'Working' })
+      expect(lineAnalyse(state).running).toBe(0)
+    }
   })
 
   it('reads capacities from the runtime, not from constants', () => {
@@ -251,5 +266,15 @@ describe('stage looks', () => {
     expect(lineMix('#000000', '#ffffff', 1)).toBe('#ffffff')
     expect(lineMix('#000000', '#ffffff', 0.5)).toBe('#808080')
     expect(lineMix('#000000', '#ffffff', 2)).toBe('#ffffff')
+  })
+})
+
+
+describe('factory freshness wording', () => {
+  it('separates heartbeat freshness from a stopped factory and a disconnected page', () => {
+    expect(factoryFreshness(view([], []), now)).toBe('Live · checked 10 sec ago')
+    expect(factoryFreshness(view([], [], { active: false }), now)).toBe('Factory not running · last known state')
+    expect(factoryFreshness(view([], [], { observation: { at: now - 1000 } }), now)).toBe('Updates delayed · last known state')
+    expect(factoryFreshness(view([], []), now, true)).toBe('Reconnecting · last known state')
   })
 })

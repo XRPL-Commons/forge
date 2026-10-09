@@ -5,7 +5,7 @@ function checkOk(status: number, payload: any, fallback: string) {
   if (payload && payload.ok === false) throw new ForgeApiError(status, payload.reason ?? fallback)
 }
 
-export interface GetOptions { timeout?: number }
+export interface GetOptions { timeout?: number; signal?: AbortSignal }
 
 export function useForgeApi() {
   const current = token()
@@ -28,7 +28,7 @@ export function useForgeApi() {
     try {
       response = await $fetch.raw<T & { ok?: boolean; reason?: string; controls_token?: string }>(path, {
         method: 'GET', credentials: 'same-origin',
-        headers: { ...forwarded, ...(cached ? { 'If-None-Match': cached.etag } : {}) }, signal: AbortSignal.timeout(options.timeout ?? 15000) })
+        headers: { ...forwarded, ...(cached ? { 'If-None-Match': cached.etag } : {}) }, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeout ?? 15000)]) : AbortSignal.timeout(options.timeout ?? 15000) })
     } catch (error: any) {
       const status = error?.response?.status ?? 0, reason = error?.response?._data?.reason
       if (status === 401) {

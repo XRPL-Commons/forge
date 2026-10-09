@@ -23,9 +23,9 @@ export default async function (page, { base }) {
   await page.goto(base + '/setup-help')
   await waitForText(page, 'Forge setup help')
 
-  // The tab title uses the new naming ("Setup help · Forge"), and the page
+  // The tab title uses the new naming ("Getting set up · Forge"), and the page
   // itself says what it is before the rendered document starts.
-  assert.equal(await page.title(), 'Setup help · Forge')
+  assert.equal(await page.title(), 'Getting set up · Forge')
   // CSS text-transform:uppercase renders the eyebrow visually as "HELP";
   // the DOM text content (what the markup actually says) stays "Help".
   assert.equal((await page.locator('#help-eyebrow').textContent())?.trim(), 'Help')
@@ -53,6 +53,23 @@ export default async function (page, { base }) {
   // <script> — same defence the issue body renderer gets.
   assert.equal(await page.locator('.forge-help script').count(), 0)
 
+  // A real same-origin asset is requested and decoded, with reserved space.
+  const hero = page.locator('.forge-help img').first()
+  await hero.scrollIntoViewIfNeeded()
+  await hero.evaluate(img => img.decode())
+  assert.equal(await hero.getAttribute('src'), '/_ui/help-assets/setup-hero.svg')
+  assert.equal(await hero.getAttribute('alt'), 'Four role cubes')
+  assert.equal(await hero.getAttribute('loading'), 'lazy')
+  assert.ok(await hero.evaluate(img => img.complete && img.naturalWidth === 600))
+  assert.equal(await page.locator('.forge-help img').count(), 1, 'external images must be stripped')
+  const asset = await page.request.get(base + '/_ui/help-assets/setup-hero.svg')
+  assert.equal(asset.status(), 200)
+  assert.match(asset.headers()['content-type'], /^image\/svg\+xml/)
+  assert.equal(asset.headers()['x-content-type-options'], 'nosniff')
+  for (const name of ['unknown.svg', 'constructor', '__proto__', 'package.json', '%2e%2e%2fpackage.json']) {
+    assert.equal((await page.request.get(base + '/_ui/help-assets/' + name)).status(), 404)
+  }
+
   // The header's help icon reaches this same page from anywhere in the app.
   await page.goto(base + '/')
   await page.getByRole('link', { name: 'Help' }).click()
@@ -65,16 +82,21 @@ export default async function (page, { base }) {
   // header rather than hidden underneath it.
   await page.goto(base + '/setup-help#host-installation')
   await waitForText(page, 'Forge setup help')
-  await page.waitForFunction(() => {
+  // Native fragment scrolling and the router's pending navigation can settle
+  // on adjacent frames. Assert the settled position, not a transient first hit.
+  await page.waitForFunction(async () => {
     const el = document.getElementById('host-installation')
-    return !!el && el.getBoundingClientRect().top < 200
+    if (!el) return false
+    const before = el.getBoundingClientRect().top
+    await new Promise(requestAnimationFrame)
+    await new Promise(requestAnimationFrame)
+    const after = el.getBoundingClientRect().top
+    return after >= 0 && after < 200 && Math.abs(after - before) < 1
   }, null, { timeout: 10000 })
-  const rect = await page.locator('#host-installation').evaluate((el) => el.getBoundingClientRect().top)
-  assert.ok(rect >= 0 && rect < 200, `#host-installation should be scrolled near the top, got ${rect}`)
 
   // Guide navigation is client-side; the diagrams are actual SVGs and tables
   // remain structured HTML. Reload and Back preserve the selected guide.
-  await page.getByRole('link', { name: 'Issue states and blockers', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'How an issue moves', exact: true }).click()
   await page.waitForURL(base + '/setup-help?topic=workflow')
   await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
   assert.equal(await page.locator('.help-diagram svg').count(), 3)
@@ -82,7 +104,7 @@ export default async function (page, { base }) {
   await page.getByRole('button', { name: 'Fit diagram', exact: true }).first().click()
   assert.equal(await page.getByRole('button', { name: 'Actual size', exact: true }).getAttribute('aria-pressed'), 'true')
   await page.getByRole('button', { name: 'Actual size', exact: true }).click()
-  assert.equal(await page.getByRole('link', { name: 'Issue states and blockers', exact: true }).getAttribute('aria-current'), 'page')
+  assert.equal(await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'How an issue moves', exact: true }).getAttribute('aria-current'), 'page')
   await page.reload()
   await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
   for (const width of [320, 390, 1440]) {
@@ -90,10 +112,11 @@ export default async function (page, { base }) {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `workflow overflow at ${width}`)
     await page.screenshot({ path: `/tmp/forge-help-${width}.png`, fullPage: true })
   }
-  await page.getByRole('link', { name: 'Discussing an issue', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'Talking to a worker', exact: true }).click()
   await page.waitForURL(base + '/setup-help?topic=discussions')
   await page.locator('.forge-help h1').waitFor()
-  assert.equal(await page.locator('.help-diagram').count(), 0)
+  await page.locator('.help-diagram svg').nth(1).waitFor({ timeout: 30000 })
+  assert.equal(await page.locator('.help-diagram svg').count(), 2)
   await page.goBack()
   await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
 
@@ -102,16 +125,37 @@ export default async function (page, { base }) {
   assert.equal(invalid.status(), 404)
   await page.goto(base + '/setup-help?topic=unknown')
   await waitForText(page, 'Help topic not found')
-  await page.getByRole('link', { name: 'Setup help', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'Getting set up', exact: true }).click()
   await waitForText(page, 'Forge setup help')
 
   // A guide fetch failure offers retry without losing the guide menu.
   await page.route('**/_ui/help?topic=runtime', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"statusMessage":"Unavailable"}' }))
-  await page.getByRole('link', { name: 'Workers and capacity', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'Workers, accounts and merging', exact: true }).click()
   await waitForText(page, 'Guide unavailable')
   await page.unroute('**/_ui/help?topic=runtime')
   await page.getByRole('button', { name: 'Try again' }).click()
-  await waitForText(page, 'Running the durable factory')
+  await waitForText(page, 'Workers, accounts and merging')
+
+  // Every guide's bundled assets decode at phone width in both colour schemes.
+  // The app's existing dark shell is unchanged; illustrations support either scheme.
+  for (const colorScheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' })
+    for (const topic of ['setup', 'workflow', 'discussions', 'runtime']) {
+      await page.setViewportSize({ width: 320, height: 900 })
+      await page.goto(base + '/setup-help?topic=' + topic)
+      await page.locator('.forge-help img').first().waitFor()
+      for (const img of await page.locator('.forge-help img').all()) {
+        await img.scrollIntoViewIfNeeded()
+        await img.evaluate(el => el.decode())
+        assert.ok(await img.evaluate(el => el.naturalWidth > 0 && el.clientWidth <= innerWidth))
+      }
+      const expectedDiagrams = { setup: 0, workflow: 3, discussions: 2, runtime: 3 }[topic]
+      if (expectedDiagrams) await page.locator('.help-diagram svg').nth(expectedDiagrams - 1).waitFor({ timeout: 30000 })
+      assert.equal(await page.getByText('Diagram unavailable.', { exact: false }).count(), 0, 'all diagrams must render')
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${topic} ${colorScheme} overflow`)
+      await page.screenshot({ path: `/tmp/forge-help-${topic}-${colorScheme}.png`, fullPage: true })
+    }
+  }
 
   // On a phone-width viewport nothing scrolls sideways.
   await page.setViewportSize({ width: 390, height: 844 })

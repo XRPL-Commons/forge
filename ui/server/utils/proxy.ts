@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http'
 export const MAX_ACTION_BODY = 262144
 export const MAX_RESPONSE_BODY = 1024 * 1024
 export const UPSTREAM_TIMEOUT_MS = 30000
@@ -10,7 +11,7 @@ const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'loc
   'referrer-policy', 'x-content-type-options', 'etag', 'x-forge-request-id']
 
 type Headers = Record<string, string | undefined>
-export interface GuardInput { method: string; headers: Headers; contentLength: number; publicOrigin?: string }
+export interface GuardInput { method: string; headers: Headers; contentLength?: number; publicOrigin?: string }
 export type GuardResult = { ok: true } | { ok: false; status: number; reason: string }
 
 export function proxyPaths(path: string): boolean {
@@ -72,7 +73,8 @@ export function guardAction({ method, headers, contentLength, publicOrigin }: Gu
   if (site !== undefined && site !== '' && site !== 'same-origin') return { ok: false, status: 403, reason: 'Cross-site action rejected' }
   if (!headers['x-forge-action']) return { ok: false, status: 403, reason: 'Action token missing' }
   if (!((headers['content-type'] ?? '').split(';')[0] ?? '').trim().startsWith('application/json')) return { ok: false, status: 415, reason: 'Actions are JSON' }
-  if (!(contentLength > 0 && contentLength <= MAX_ACTION_BODY)) return { ok: false, status: 413, reason: 'Action body too large' }
+  const size = guardBodyLength(contentLength, MAX_ACTION_BODY)
+  if (!size.ok) return size
   return { ok: true }
 }
 
@@ -148,7 +150,48 @@ export function clientPath(path: string): boolean {
 export function guardClient({ method, headers, contentLength }: GuardInput): GuardResult {
   if (method !== 'POST') return { ok: false, status: 405, reason: 'Client requests use POST' }
   if (headers.origin || headers.cookie) return { ok: false, status: 403, reason: 'Use local client credentials' }
-  if ((headers['content-type'] ?? '').split(';')[0]?.trim() !== 'application/json' || headers['transfer-encoding']) return { ok: false, status: 415, reason: 'Client requests are JSON' }
-  if (!(contentLength > 0 && contentLength <= 16384)) return { ok: false, status: 413, reason: 'Client request too large' }
+  if ((headers['content-type'] ?? '').split(';')[0]?.trim() !== 'application/json') return { ok: false, status: 415, reason: 'Client requests are JSON' }
+  const size = guardBodyLength(contentLength, 16384)
+  if (!size.ok) return size
   return { ok: true }
+}
+
+
+export function guardBodyLength(length: number | undefined, maximum: number): GuardResult {
+  // A missing length is a bounded stream, not an oversized request.
+  if (length === undefined) return { ok: true }
+  if (!Number.isSafeInteger(length) || length < 0) return { ok: false, status: 400, reason: 'Invalid request length' }
+  if (length === 0) return { ok: false, status: 400, reason: 'Request body is empty' }
+  return length > maximum ? { ok: false, status: 413, reason: 'Action body too large' } : { ok: true }
+}
+
+export class RequestBodyError extends Error {
+  constructor(public status: number, message: string) { super(message) }
+}
+
+export function readRequestBody(request: IncomingMessage, maximum: number, signal: AbortSignal): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let length = 0
+    const clean = () => {
+      request.off('data', data); request.off('end', end); request.off('aborted', aborted); request.off('error', aborted)
+      signal.removeEventListener('abort', timeout)
+    }
+    const fail = (status: number, message: string) => {
+      clean(); request.pause(); reject(new RequestBodyError(status, message))
+    }
+    const data = (chunk: Buffer | string) => {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      length += value.length
+      if (length > maximum) return fail(413, 'Action body too large')
+      chunks.push(value)
+    }
+    const end = () => { clean(); length ? resolve(Buffer.concat(chunks, length)) : reject(new RequestBodyError(400, 'Request body is empty')) }
+    const aborted = () => fail(400, 'Request body was interrupted')
+    const timeout = () => fail(408, 'Request body timed out')
+    if (signal.aborted) return timeout()
+    if (request.aborted || request.destroyed) return aborted()
+    request.on('data', data); request.once('end', end); request.once('aborted', aborted); request.once('error', aborted)
+    signal.addEventListener('abort', timeout, { once: true })
+  })
 }

@@ -164,7 +164,7 @@ class Queries:
                 'next_cursor': page[-1]['id'] if len(rows) > limit else None,
             }
 
-    def events(self, *, after=0, limit=50, unit_id=None):
+    def events(self, *, after=0, limit=50, unit_id=None, include_payload=True):
         limit = _limit(limit)
         if type(after) is not int or after < 0:
             raise ValueError('after must be a nonnegative event sequence')
@@ -175,14 +175,15 @@ class Queries:
         with self.store.read_snapshot() as connection:
             rows = connection.execute(
                 'SELECT sequence, transaction_id, unit_id, issue_id, job_id, '
-                'kind, at, actor_id, payload_json FROM events WHERE '
+                'kind, at, actor_id' + (', payload_json' if include_payload else '') + ' FROM events WHERE '
                 + ' AND '.join(clauses) + ' ORDER BY sequence LIMIT ?',
                 (*parameters, limit + 1),
             ).fetchall()
             items = []
             for row in rows[:limit]:
                 item = dict(row)
-                item['payload'] = json.loads(item.pop('payload_json'))
+                if include_payload:
+                    item['payload'] = json.loads(item.pop('payload_json'))
                 items.append(item)
             return {
                 'items': items,

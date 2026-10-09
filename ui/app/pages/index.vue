@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, isProgressStatus, readout, warnings,
+  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, factoryFreshness, groupIssues, isFresh, isProgressStatus, readout, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
 import { lineAnalyse, lineState } from '~/utils/factoryLine'
@@ -17,6 +17,7 @@ const router = useRouter()
 // A {ok:false, reason} answer is a state, not a failed request: it replaces
 // the payload, so the page shows the fence instead of a stale factory.
 const poll = useFactory()
+const transition = useFactoryStore().transition
 
 const now = useClock()
 onMounted(poll.start)
@@ -25,14 +26,8 @@ const fence = computed(() => { const payload = poll.data.value; return payload &
 const view = computed(() => { const payload = poll.data.value; return payload && payload.ok !== false ? payload : null })
 const connectionLost = computed(() => !!poll.error.value && !!poll.data.value)
 const fresh = computed(() => isFresh(view.value, now.value))
-const observedAt = computed(() => (view.value?.observation as { at?: number } | undefined)?.at ?? null)
 
-const freshness = computed(() => {
-  if (connectionLost.value) return 'Reconnecting · last known state'
-  if (!view.value) return 'Connecting…'
-  if (fresh.value && observedAt.value) return `Live · checked ${elapsed(now.value - observedAt.value)} ago`
-  return 'Updates delayed · last known state'
-})
+const freshness = computed(() => factoryFreshness(view.value, now.value, connectionLost.value))
 
 // At most one message block above the factory line: connection lost -> the
 // freshness pill only; otherwise the banner(s); otherwise the operator
@@ -250,7 +245,7 @@ watch(() => panel.value.key, (key, before) => {
     </div>
 
     <template v-if="view">
-      <FactoryLine id="factory-line" class="mt-5 scroll-mt-32" :view="view" :now="now" :groups="groups" @open="open" @attention="showAttention" />
+      <FactoryLine id="factory-line" class="mt-5 scroll-mt-32" :view="view" :now="now" :groups="groups" :transition="transition" @open="open" @attention="showAttention" />
 
       <p v-if="counts" id="readout" class="readout mt-3 flex flex-wrap gap-x-5 gap-y-1 border-y border-line py-2 text-xs text-muted tabular-nums sm:justify-end">
         <span data-readout="working">Working <NuxtLink to="/issues?show=working" class="font-semibold text-white hover:underline" :aria-label="`${counts.working} of ${counts.slots} slots working`">{{ counts.working }}</NuxtLink> of {{ counts.slots }}</span>

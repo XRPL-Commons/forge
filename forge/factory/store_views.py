@@ -3,6 +3,7 @@
 These are HTTP/UI views, never a writable legacy ledger. Bodies, diagnostics and
 worker artifacts are fetched only through detail/output requests.
 """
+from functools import wraps
 import json
 import math
 import time
@@ -20,9 +21,12 @@ LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 
 
 
 def action_revision(db, issue_id):
-    issue = Queries._issue(db, issue_id)
+    return _issue_revision(Queries._issue(db, issue_id))
+
+
+def _issue_revision(issue):
     lifecycle = issue['lifecycle']
-    return manifest_hash({'issue': issue_id, 'issue_version': issue['version'],
+    return manifest_hash({'issue': issue['id'], 'issue_version': issue['version'],
                           'unit': lifecycle['unit_id'], 'unit_version': lifecycle['unit_version'],
                           'candidate': lifecycle['candidate_id'], 'reason': lifecycle['reason_code']})
 
@@ -59,6 +63,14 @@ def _event(row, fields=('at','kind','reason')):
 # Actual terminal event time, including normalized imported events. Observation
 # timestamps can advance after completion and cannot reorder completed cards.
 COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND (e.kind IN ('merged','closed','dissolved') OR (e.kind='legacy_event' AND json_extract(e.payload_json,'$.legacy_kind') IN ('merged','cancelled'))) ORDER BY e.sequence DESC LIMIT 1),0)"
+
+
+def projection(method):
+    @wraps(method)
+    def read(self, *args, **kwargs):
+        with self.store.read_session():
+            return method(self, *args, **kwargs)
+    return read
 
 
 class PipelineViews:
@@ -194,7 +206,7 @@ class PipelineViews:
                          'override':json.loads(environment['override_json'] or 'null') if environment else None,
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
             pull_requests=pull_requests,
-            dependencies=dependency_numbers, fresh=fresh, revision=action_revision(db,issue_id), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
+            dependencies=dependency_numbers, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
             active=active['id'] if active else None, attempts={'failed':charges,'limit':3} if charges else None, held_by=held_by)
         if detail:
             row['body'] = issue['body']
@@ -219,6 +231,36 @@ class PipelineViews:
     def _public(row):
         return {key:value for key,value in row.items() if not key.startswith('_')}
 
+    def _factory_issue(self, db, row, *, completed_at=None):
+        unit, reason = row['_unit'], row['reason_code']
+        if unit is None:
+            return None
+        if completed_at is None:
+            completed_at = db.execute('SELECT '+COMPLETION_SQL+' FROM units u WHERE u.id=?', (unit['id'],)).fetchone()[0]
+        candidate=db.execute('SELECT pull_number,head_oid FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone() if unit['current_candidate_id'] else None
+        deployed=failed=None
+        delivery=db.execute("SELECT * FROM deployment_observations WHERE candidate_id=? ORDER BY (status='success') DESC,observed_at DESC LIMIT 1",(unit['current_candidate_id'],)).fetchone()
+        if delivery:
+            context=json.loads(delivery['details_json'])
+            if delivery['status']=='success':deployed={'commit':delivery['commit_oid'],'at':delivery['observed_at'],'via':context.get('via','github')}
+            elif delivery['status']=='failure':failed={'sha':delivery['commit_oid'],'at':delivery['observed_at'],'run_url':context.get('run_url')}
+        events=db.execute('SELECT kind,at,payload_json FROM events WHERE unit_id=? ORDER BY sequence DESC LIMIT 3',(unit['id'],)).fetchall()
+        history=[_event(e,('at','kind','provider','model')) for e in reversed(events)]
+        if unit['state'] in {'merged','closed','dissolved'} and completed_at and not any(e['kind'] in {'merged','cancelled','closed','dissolved'} for e in history):
+            history.insert(0,{'kind':'merged' if unit['state']=='merged' else 'cancelled','at':completed_at})
+        attention={'approval_required':'approve','verification_human':'verify','budget_exhausted':'failed',
+            'approach_required':'approach','decision_required':'question','environment':'env','repository_setup':'env'}.get(reason)
+        return {**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code','operator_status')},
+            'state':row['ledger_state'] or ('cancelled' if unit['state'] in {'closed','dissolved'} else 'merged' if unit['state']=='merged' else 'hold'),
+            'reason':row['explanation'] if reason else None,'failure_count':(row['attempts'] or {}).get('failed',0),
+            'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,
+            'last_summary':row['_last_summary'],'history':history,'created_at':unit['created_at'],'last_observed':row['last_checked'],
+            'hold_kind':reason,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
+            'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
+            'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
+            'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':completed_at or None}
+
+    @projection
     def issues(self, *, repo_id=None, state='open', query='', page=1, key=None):
         if state not in {'open','all','completed','dropped','backlog','queued','working','attention','waiting','blocked'} or type(page) is not int or not 1<=page<=10000 or not isinstance(query,str) or len(query)>200:
             raise ValueError('Invalid issue view')
@@ -233,7 +275,16 @@ class PipelineViews:
                     at=observed['fetched_at'] if observed else None,error=observed['error_code'] if observed else None))
             if key is not None:
                 row=self._row(db,key,detail=True,config=config)
-                return dict(issue=self._public(row),repositories=scopes,actions=self._actions(db,key))
+                job_ids = [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) '
+                    'AND EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=?) '
+                    'ORDER BY j.created_at DESC,j.id DESC LIMIT 100', (key,))]
+                from .changes import cursor
+                from ..store.operations import deployment_views
+                deployments = {identifier: dict(name=value['name'], **{field:(value.get('observed') or {}).get(field)
+                               for field in ('live','deploy','error')}) for identifier,value in deployment_views(self.store).items()}
+                return dict(issue=self._public(row),repositories=scopes,actions=self._actions(db,key),
+                            jobs=[self.job(identifier) for identifier in job_ids], cursor=cursor(self.store, db),
+                            factory_issue=self._factory_issue(db, row), deployments=deployments)
             clauses,parameters=['r.enabled=1'],[]
             if repo_id is not None:
                 clauses.append('i.repository_id=?');parameters.append(repo_id)
@@ -264,6 +315,7 @@ class PipelineViews:
                     'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':issue[0],
                     'started_at':row['started_at'],'observed_at':row['captured_at'],'last_observed':row['captured_at']}
 
+    @projection
     def output(self, job_id):
         self.job(job_id)
         with self.store.read_snapshot() as db:
@@ -278,6 +330,7 @@ class PipelineViews:
             return {'logs':value}
         except ArtifactExpired as error:return {'logs':'','expired_at':error.expired_at}
 
+    @projection
     def factory(self, *, section=None, issue=None, limit=None, before=None):
         """Bounded Activity sections and SQL aggregate counters.
 
@@ -315,29 +368,8 @@ class PipelineViews:
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
             issues=[]
             for selected in rows[:size]:
-                row=self._row(db,selected['id'],config=config);unit=row['_unit'];reason=row['reason_code']
-                candidate=db.execute('SELECT pull_number,head_oid FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone() if unit['current_candidate_id'] else None
-                deployed=failed=None
-                delivery=db.execute("SELECT * FROM deployment_observations WHERE candidate_id=? ORDER BY (status='success') DESC,observed_at DESC LIMIT 1",(unit['current_candidate_id'],)).fetchone()
-                if delivery:
-                    context=json.loads(delivery['details_json'])
-                    if delivery['status']=='success':deployed={'commit':delivery['commit_oid'],'at':delivery['observed_at'],'via':context.get('via','github')}
-                    elif delivery['status']=='failure':failed={'sha':delivery['commit_oid'],'at':delivery['observed_at'],'run_url':context.get('run_url')}
-                events=db.execute('SELECT kind,at,payload_json FROM events WHERE unit_id=? ORDER BY sequence DESC LIMIT 3',(unit['id'],)).fetchall()
-                history=[_event(e,('at','kind','provider','model')) for e in reversed(events)]
-                if unit['state'] in {'merged','closed','dissolved'} and selected['completed_at'] and not any(e['kind'] in {'merged','cancelled','closed','dissolved'} for e in history):
-                    history.insert(0,{'kind':'merged' if unit['state']=='merged' else 'cancelled','at':selected['completed_at']})
-                attention={'approval_required':'approve','verification_human':'verify','budget_exhausted':'failed',
-                    'approach_required':'approach','decision_required':'question','environment':'env','repository_setup':'env'}.get(reason)
-                issues.append({**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code','operator_status')},
-                    'state':row['ledger_state'] or ('cancelled' if unit['state'] in {'closed','dissolved'} else 'merged' if unit['state']=='merged' else 'hold'),
-                    'reason':row['explanation'] if reason else None,'failure_count':(row['attempts'] or {}).get('failed',0),
-                    'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,
-                    'last_summary':row['_last_summary'],'history':history,'created_at':unit['created_at'],'last_observed':row['last_checked'],
-                    'hold_kind':reason,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
-                    'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
-                    'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
-                    'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':selected['completed_at'] or None})
+                row=self._row(db,selected['id'],config=config)
+                issues.append(self._factory_issue(db, row, completed_at=selected['completed_at']))
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
             if section in (None, 'board') and len(issues) < size:
@@ -396,6 +428,9 @@ class PipelineViews:
         summary=dict(completed_count=completed_count,runner_count=runner_count,runners_running=running,
             workers=[{key:j.get(key) for key in ('role','phase','cleanup','fenced','outcome','observed_at','last_observed')} for j in jobs],
             merged_day=counts['day'] or 0,merged_week=counts['week'] or 0,merged_total=counts['total'],deployed_day=deployed_day,waiting=waiting_count,deploy_failed=failed_count)
-        return dict(active=True,operator=operator,repositories=repositories,observation=observation,actions=actions,
+        from .changes import cursor as change_cursor
+        with self.store.read_snapshot() as db:
+            current_cursor = change_cursor(self.store, db)
+        return dict(cursor=current_cursor,active=True,operator=operator,repositories=repositories,observation=observation,actions=actions,
             issues=issues,jobs=jobs,slots=slots,deployments=deployments,runtime=config,runtime_revision=digest(config),
             coding_accounts=accounts,summary=summary,next=cursor)

@@ -92,3 +92,23 @@ class InventoryRefreshTests(RuntimeFixture):
         self.inventory.record(self.settings.view()['repositories'][0],self.remote)
         self.assertEqual(views.issues(key=key)['issue']['held_by'][0]['login'],'second-operator')
         self.assertEqual(self.github.label_events.call_count,2)
+
+    def test_inventory_and_discovery_changes_append_public_entity_events_once(self):
+        repo = dict(id=10, name='example/project', enabled=True)
+        self.inventory.record(repo, self.remote)
+        def events():
+            with self.database.read_snapshot() as db:
+                return [dict(row) for row in db.execute("SELECT * FROM events WHERE issue_id='10:1' ORDER BY sequence")]
+        first = events()
+        self.assertEqual(first[-1]['kind'], 'issue_observed')
+        self.inventory.record(repo, self.remote)
+        self.assertEqual(events(), first)
+        self.inventory.failure('10:1', 'requirements_stale')
+        failed = events()
+        self.assertEqual(len(failed), len(first)+1)
+        self.inventory.failure('10:1', 'requirements_stale')
+        self.assertEqual(events(), failed)
+        self.inventory.clear_failure('10:1')
+        self.assertEqual(len(events()), len(failed)+1)
+        self.inventory.clear_failure('10:1')
+        self.assertEqual(len(events()), len(failed)+1)

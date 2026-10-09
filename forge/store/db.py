@@ -5,6 +5,7 @@ Connections belong to short context managers, not to the Store object.
 """
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -116,6 +117,7 @@ class Store:
         self.path = self.directory / "forge.sqlite3"
         self.anchor_path = self.directory / "instance.json"
         self.instance_id = None
+        self._reader = ContextVar("forge_store_reader", default=None)
 
     @classmethod
     def create(cls, private_root, instance_id=None):
@@ -277,7 +279,29 @@ class Store:
                 connection.close()
 
     @contextmanager
+    def read_session(self):
+        """Share one snapshot across the nested readers of a public projection.
+
+        The session is explicit, scoped to this Store and execution context, and
+        closes before returning the response. It never caches state between reads.
+        """
+        current = self._reader.get()
+        if current is not None:
+            yield current
+            return
+        with self.read_snapshot() as connection:
+            token = self._reader.set(connection)
+            try:
+                yield connection
+            finally:
+                self._reader.reset(token)
+
+    @contextmanager
     def read_snapshot(self):
+        current = self._reader.get()
+        if current is not None:
+            yield current
+            return
         with self._connection(read_only=True) as connection:
             connection.execute("PRAGMA query_only=ON")
             connection.execute("BEGIN DEFERRED")
@@ -290,6 +314,8 @@ class Store:
 
     @contextmanager
     def write(self):
+        if self._reader.get() is not None:
+            raise StoreError("read_session_write", "A public read session cannot perform mutations")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:

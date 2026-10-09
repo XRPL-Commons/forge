@@ -7,6 +7,10 @@ from .store.runtime import writable
 
 
 class SqliteSettings(Settings):
+    def view(self, *, config=None):
+        with self.database.read_session():
+            return super().view(config=config)
+
     @property
     def domain(self):
         return self.authority.domain('factory.json')

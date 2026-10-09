@@ -18,7 +18,7 @@ async function waitUntil(condition, what, timeout = 10000) {
   }
 }
 
-export default async function (page, { base, scenario, requests }) {
+export default async function (page, { base, scenario, requests, observeIssue }) {
   const load = page.goto.bind(page)
   page.goto = async (...args) => {
     const response = await load(...args)
@@ -73,25 +73,18 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(await panel.locator('[data-blocking="590"]').getAttribute('href'), '/?issue=1:590')
 
   // Worker discoveries can be overridden, with a reason and a current revision.
-  let snapshot, submitted, applied = false
-  await page.route('**/api/issues?issue=*', async route => {
-    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
-    snapshot = await response.json()
-    Object.assign(snapshot.issue, {
-      actions: applied ? ['pause'] : ['start_anyway'],
-      status: applied ? 'queued' : 'blocked',
-      dependencies: applied ? [] : [590, 601],
-      explanation: applied ? 'Queued for Forge.' : 'Waiting for #590, #601.',
-      summary: applied ? { headline: 'Waiting for a builder', plain: 'Work can proceed.' } : snapshot.issue.summary,
-    })
-    await route.fulfill({ response, json: snapshot })
+  let submitted
+  await observeIssue('1:612', {
+    actions: ['start_anyway'], status: 'blocked', dependencies: [590, 601],
+    explanation: 'Waiting for #590, #601.',
   })
   await page.route('**/api/issues/action', async route => {
     submitted = route.request().postDataJSON()
-    applied = true
-    await route.fulfill({ json: { ...snapshot, ok: true, request: 'dependency-override',
-      issue: { ...snapshot.issue, actions: ['pause'], status: 'queued', dependencies: [],
-        summary: { headline: 'Waiting for a builder', plain: 'Work can proceed.' } } } })
+    const applied = await observeIssue('1:612', {
+      actions: ['pause'], status: 'queued', dependencies: [],
+      explanation: 'Queued for Forge.', summary: { headline: 'Waiting for a builder', plain: 'Work can proceed.' },
+    })
+    await route.fulfill({ json: { ...applied, ok: true, request: 'dependency-override' } })
   })
   await page.goto(base + '/issues/1%3A612')
   assert.equal(await page.getByRole('link', { name: 'Edit dependencies on GitHub ↗' }).getAttribute('href'),

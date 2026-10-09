@@ -78,13 +78,16 @@ def call(args,action,**fields):
         import re
         token=lambda key,default: value[key] if isinstance(value.get(key),str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',value[key]) else default
         code,kind,stage=token('error','failed'),token('exception_type','Exception'),token('stage','unknown')
+        if action=='upgrade' and code=='drain_configuration_changed':
+            raise SetupError('migration_'+code,'Runtime settings changed while maintenance was draining. The CLI kept the newer settings. '
+                'Switch off agents explicitly before continuing, then resume with: '+resume)
         if action=='upgrade':
             raise SetupError('migration_'+code,'Schema upgrade could not proceed: '+code+' ('+kind+' at '+stage+'). Resume with: '+resume)
         repair=resume+' --accept-tool-update --source-revision '+(getattr(args,'source_revision',None) or '<full-commit-sha>')
         raise SetupError('migration_'+code,'Migration could not proceed: '+code+' ('+kind+' at '+stage+'). '
             +'Resume maintenance with: '+resume+'. For corrected tools before selection: '+repair)
 
-    if value.get('next_command') == 'forge migrate resume':
+    if value.get('next_command') in {'forge migrate resume', 'forge migrate upgrade'}:
         value['next_command'] = resume
     return value
 

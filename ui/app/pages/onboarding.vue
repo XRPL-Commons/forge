@@ -409,7 +409,7 @@ function activityFor(target: string): string | null {
       </template>
 
       <p class="mt-8 text-[13px] text-muted">
-        <NuxtLink class="underline-offset-4 hover:underline" to="/setup-help">Setup help</NuxtLink>
+        <NuxtLink class="underline-offset-4 hover:underline" to="/setup-help">Getting set up</NuxtLink>
         <span v-if="!resetting"> · <NuxtLink class="underline-offset-4 hover:underline" to="/reset">Reset Forge</NuxtLink></span>
       </p>
     </div>
