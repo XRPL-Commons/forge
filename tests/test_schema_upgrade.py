@@ -126,12 +126,12 @@ class UpgradeHostTests(SchemaUpgradeTests):
             self.assertEqual(len([x for x in self.calls if x[0]=='install']), 1)
 
     def test_worker_race_restores_services_before_source_or_schema_changes(self):
-        with patch.object(self.upgrader, 'blockers', side_effect=[[], ['uncleaned_jobs'], ['uncleaned_jobs']]):
+        with patch.object(self.upgrader, 'blockers', side_effect=[[], [], ['uncleaned_jobs'], ['uncleaned_jobs']]):
             result = self.upgrader.run(revision='b'*40, apply=True)
-        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['status'], 'draining')
         self.assertEqual(self.current, 'a'*40)
         self.assertEqual(len(self.active), 3)
-        self.assertFalse(self.upgrader.path.exists())
+        self.assertEqual(self.upgrader.read()['stage'], 'draining')
         self.assertFalse(any(x[0] in {'update','install'} for x in self.calls))
 
     def test_explicit_new_release_repairs_failed_deployment(self):
@@ -153,3 +153,139 @@ class UpgradeHostTests(SchemaUpgradeTests):
         with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
             self.upgrader.run(revision='b'*40, apply=True)
         self.assertEqual(self.calls, [])
+
+    def runtime(self, **changes):
+        from forge.store.configuration import Configuration
+        from forge.store.migration.drain import Drain
+        with upgrade.connection(self.store, write=bool(changes)) as db:
+            revision, settings, credential = Drain.current(db)
+            if changes:
+                db.execute('BEGIN IMMEDIATE')
+                revision = Configuration(self.store).replace_in(db, 'runtime.json', {**settings, **changes},
+                    expected_revision=revision, credential_ref=credential)
+                db.commit()
+                settings.update(changes)
+            return revision, settings
+
+    def test_apply_drains_then_restores_only_owned_field_before_updater(self):
+        self.runtime(enabled=True, model='before')
+        workers = [True]
+        with patch.object(self.upgrader, 'blockers', side_effect=lambda store:['uncleaned_jobs'] if workers[0] else []):
+            result = self.upgrader.run(revision='b'*40, apply=True)
+            self.assertEqual(result['status'], 'draining')
+            self.assertEqual(result['next_command'], 'forge migrate upgrade')
+            self.assertEqual(self.runtime()[1], dict(enabled=False, model='before'))
+            self.assertEqual(self.calls, [])
+            self.assertEqual(len(self.active), 3)
+            self.runtime(model='operator-choice')
+            workers[0] = False
+            def update(*args, **kwargs):
+                from types import SimpleNamespace
+                self.assertEqual(self.runtime()[1], dict(enabled=True, model='operator-choice'))
+                return SimpleNamespace(returncode=0)
+            with patch.object(self.host, 'run', side_effect=update):
+                result = self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(result['status'], 'upgraded')
+        self.assertTrue(self.upgrader.read()['drain']['restored'])
+
+    def test_operator_reenable_is_preserved_and_requires_explicit_disable(self):
+        self.runtime(enabled=True)
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.upgrader.run(revision='b'*40, apply=True)
+            self.runtime(enabled=True, model='operator-choice')
+            before = self.runtime()
+            with self.assertRaisesRegex(MigrationError, 'drain_configuration_changed'):
+                self.upgrader.run(revision='b'*40, apply=True)
+            self.assertEqual(self.runtime(), before)
+            self.assertEqual(self.calls, [])
+            self.runtime(enabled=False)
+            self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'draining')
+
+    def test_disable_commit_is_recognized_after_lost_progress(self):
+        self.runtime(enabled=True)
+        with patch.object(self.upgrader, 'blockers', side_effect=[[], OSError('disconnect')]):
+            with self.assertRaises(OSError):self.upgrader.run(revision='b'*40, apply=True)
+        revision, settings = self.runtime()
+        self.assertFalse(settings['enabled'])
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'draining')
+        self.assertEqual(self.runtime()[0], revision)
+
+    def test_disable_rollback_after_journal_is_resumable(self):
+        from forge.store.configuration import Configuration
+        self.runtime(enabled=True)
+        original = Configuration.replace_in
+        def interrupt(*args, **kwargs):
+            original(*args, **kwargs)
+            raise OSError('disconnect before commit')
+        with patch.object(Configuration, 'replace_in', side_effect=interrupt, autospec=True):
+            with self.assertRaises(OSError):self.upgrader.run(revision='b'*40, apply=True)
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(self.upgrader.read()['stage'], 'draining')
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'draining')
+        self.assertFalse(self.runtime()[1]['enabled'])
+
+    def test_restore_commit_is_not_replayed_over_a_later_operator_change(self):
+        self.runtime(enabled=True)
+        save = self.upgrader.save
+        def interrupt(value, stage):
+            if value.get('drain', {}).get('restored'):
+                raise OSError('disconnect after restoration commit')
+            return save(value, stage)
+        with patch.object(self.upgrader, 'save', side_effect=interrupt):
+            with self.assertRaises(OSError):self.upgrader.run(revision='b'*40, apply=True)
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(self.upgrader.read()['stage'], 'reconciling')
+        self.runtime(enabled=False, model='operator-choice')
+        revision = self.runtime()[0]
+        self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(self.runtime(), (revision, dict(enabled=False, model='operator-choice')))
+
+    def test_new_release_inherits_unfinished_drain_and_restores_original_intent(self):
+        self.runtime(enabled=True)
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.upgrader.run(revision='b'*40, apply=True)
+        self.assertFalse(self.runtime()[1]['enabled'])
+        self.upgrader.run(revision='c'*40, apply=True)
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(self.current, 'c'*40)
+
+    def test_actual_schema19_can_drain_before_target_binary_can_open_store(self):
+        with patch('forge.store.db._migrations', return_value=self.original[:19]):
+            self.store = storage.Store.create(self.root/'schema19')
+            with self.store.write() as db:
+                db.executemany('INSERT INTO store_metadata VALUES(?,?)', [('runtime_root',str(self.root)),('runtime_active','true')])
+        (self.root/'state/storage').write_text('forge-sqlite-v1\n'+str(self.store.root)+'\n'+self.store.instance_id+'\n')
+        self.runtime(enabled=True)
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            first = self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(first['current_schema'], 19)
+        self.assertEqual(first['status'], 'draining')
+        self.assertFalse(self.runtime()[1]['enabled'])
+        self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(upgrade.inspect(self.store)['current_schema'], len(self.original))
+
+    def test_partially_restarted_updater_drains_new_workers_before_retry(self):
+        from types import SimpleNamespace
+        self.runtime(enabled=True)
+        def partial_update(*args, **kwargs):
+            self.active = ['forge-supervisor.service', 'forge-extra.timer']
+            return SimpleNamespace(returncode=1)
+        with patch.object(self.host, 'run', side_effect=partial_update):
+            with self.assertRaisesRegex(MigrationError, 'upgrade_host_update_failed'):
+                self.upgrader.run(revision='b'*40, apply=True)
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.calls.clear()
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            result = self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(result['status'], 'draining')
+        self.assertFalse(self.runtime()[1]['enabled'])
+        self.assertEqual(self.current, 'b'*40)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.active, ['forge-supervisor.service', 'forge-extra.timer'])
+        result = self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(result['status'], 'upgraded')
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(set(self.active), {'forge-status.service','forge-ui.service','forge-supervisor.service','forge-extra.timer'})

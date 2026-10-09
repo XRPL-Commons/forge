@@ -54,11 +54,25 @@ class Upgrade:
         value = json.loads(read_regular(self.path, limit=65536))
         if (value.get('protocol') != 1 or value.get('root') != str(self.root)
                 or value.get('source') != str(self.host.source) or value.get('authorized') is not True
-                or value.get('stage') not in {'stopping', 'installing', 'migrating', 'reconciling', 'complete'}
+                or value.get('stage') not in {'draining', 'stopping', 'installing', 'migrating', 'reconciling', 'complete'}
                 or not all(isinstance(value.get(key), str) and re.fullmatch(r'[a-f0-9]{40}', value[key]) for key in ('previous_revision','source_revision'))
                 or not isinstance(value.get('services'), list)
                 or any(not isinstance(unit,str) or not re.fullmatch(r'forge[-a-z0-9]*\.(service|timer)',unit) for unit in value['services'])):
             raise MigrationError('invalid_schema_upgrade_journal')
+        drain = value.get('drain')
+        if drain is not None:
+            if (not isinstance(drain, dict) or type(drain.get('original_enabled')) is not bool
+                    or 'disable' not in drain or type(drain.get('restored', False)) is not bool):
+                raise MigrationError('invalid_schema_upgrade_journal')
+            for field in ('disable', 'restore'):
+                change = drain.get(field)
+                if change is not None and (not isinstance(change, dict)
+                        or any(type(change.get(key)) is not int or change[key] < low
+                               for key, low in (('before_revision', 0), ('after_revision', 1)))
+                        or any(not isinstance(change.get(key), str) or not re.fullmatch(r'[a-f0-9]{64}', change[key])
+                               for key in ('before_digest', 'after_digest'))
+                        or change.get('enabled') is not (field == 'restore')):
+                    raise MigrationError('invalid_schema_upgrade_journal')
         return value
 
     def save(self, value, stage):
@@ -88,13 +102,29 @@ class Upgrade:
                     return {'status': 'upgraded', **self.status()}
             else:
                 plan = self.status()
-                if plan['blockers']:
-                    return {'status': 'blocked', **plan}
                 self.host.prepare_source_update(plan['source_revision'], revision, tool_version)
                 value = dict(protocol=1, root=str(self.root), source=str(self.host.source), authorized=True,
                              previous_revision=plan['source_revision'], source_revision=revision,
                              tool_version=tool_version, services=sorted(set(self.host.units()) | set(previous['services'] if previous else [])),
                              started_at=time.time())
+                from .drain import Drain
+                Drain(self, store).start(value, previous)
+            if value['stage'] == 'reconciling' and self.host.units():
+                # A failed updater can already have restarted the supervisor.
+                # Re-enter maintenance before retrying any host changes so its
+                # newly owned workers finish through the normal cleanup path.
+                if self.host.identity() != revision or package_version(self.host.source) != tool_version:
+                    raise MigrationError('upgrade_source_changed')
+                previous = value
+                value = {key:item for key,item in value.items() if key != 'drain'}
+                value['services'] = sorted(set(value['services']) | set(self.host.units()))
+                from .drain import Drain
+                Drain(self, store).start(value, previous)
+            if value['stage'] == 'draining':
+                from .drain import Drain
+                Drain(self, store).start(value)
+                if self.blockers(store):
+                    return {'status': 'draining', **self.status(), 'next_command': 'forge migrate upgrade'}
                 self.save(value, 'stopping')
             if value['stage'] == 'stopping':
                 if value['services']:
@@ -104,8 +134,8 @@ class Upgrade:
                 if self.blockers(store):
                     if value['services']:
                         self.host.command('systemctl', '--user', 'start', *value['services'])
-                    self.path.unlink()
-                    return {'status': 'blocked', **self.status()}
+                    self.save(value, 'draining')
+                    return {'status': 'draining', **self.status(), 'next_command': 'forge migrate upgrade'}
                 self.save(value, 'installing')
             if value['stage'] == 'installing':
                 self.host.quiet()
@@ -121,6 +151,8 @@ class Upgrade:
             if value['stage'] == 'reconciling':
                 if self.host.identity() != revision or package_version(self.host.source) != tool_version:
                     raise MigrationError('upgrade_source_changed')
+                from .drain import Drain
+                Drain(self, store).restore(value)
                 # The supported updater rebuilds the UI and converges units. It
                 # is repeatable after a disconnect, including after DB commit.
                 result = self.host.run([str(self.host.source/'bin/forge'), 'update', '--root', str(self.root), '--no-pull'],

@@ -273,12 +273,22 @@ forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
 
 The first command reports the current and target schemas and any workers still
 awaiting cleanup. The second verifies that the CLI bundle matches the selected
-release, stops managed writers, advances the checkout, and applies the pending
-migrations in one transaction. It then runs the normal host updater and restarts
-services. It preserves identities, issue history and worker budgets.
+release, then temporarily disables new agent work through the versioned runtime
+configuration. Existing workers continue to finish and clean up; new merge sends
+wait too, while already-sent merge outcomes can still be reconciled. If workers
+remain, it returns `status: draining` and a complete `next_command` promptly.
+Run that command again when they have finished. The supervisor cannot refill
+capacity while the drain setting remains in place.
 
-If it reports `uncleaned_jobs`, let the current workers finish and repeat the
-command. If the connection drops or the update fails, repeat the **same apply
+Once cleanup is complete, the CLI stops managed writers, advances the checkout,
+and applies pending migrations in one transaction. It restores the original
+`enabled` value before the normal updater restarts services. Restoration changes
+only that field and preserves other settings edited during the drain. If an
+operator re-enables agents before draining completes, the CLI reports
+`drain_configuration_changed` and keeps the newer choice; switch agents off
+explicitly before resuming. Identities, issue history and worker budgets remain.
+
+If the connection drops or the update fails, repeat the **same apply
 command with the same release SHA**. The private maintenance receipt records
 whether the schema committed, so a retry finishes deployment without repeating
 the data change. An invalid timestamp or failed integrity check rolls back the

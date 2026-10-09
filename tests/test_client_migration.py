@@ -25,6 +25,18 @@ class MigrationCLITests(unittest.TestCase):
             execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
             self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
 
+    def test_upgrade_draining_reply_contains_the_complete_pinned_resume_command(self):
+        from types import SimpleNamespace
+        from forge_client.migration import call
+        args = parser().parse_args(['migrate','upgrade','--ssh','forge','--source','/srv/source',
+            '--root','/srv/runtime','--apply','--source-revision','a'*40])
+        reply = dict(ok=True,status='draining',next_command='forge migrate upgrade')
+        with patch('forge_client.migration.bundle', return_value=b'code'), \
+                patch('forge_client.migration.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps(reply).encode())):
+            result = call(args, 'upgrade', apply=True, source_revision=args.source_revision)
+        self.assertEqual(result['next_command'], 'forge migrate upgrade --ssh forge --source /srv/source '
+            '--root /srv/runtime --json --apply --source-revision '+'a'*40)
+
     def test_runtime_preparation_requires_apply_and_never_invokes_capture(self):
         values=['migrate','prepare','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
         with patch('forge_client.migration.call',return_value={'status':'runtime_ready'}) as call:
