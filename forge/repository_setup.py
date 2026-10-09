@@ -95,6 +95,8 @@ class RepositorySetup:
         environment_snapshot = environments.snapshot()
         data, now = self.read(), self.settings.clock()
         profiles = {r['id']: r.get('deployment') for r in config['repositories']}
+        from .factory.config import load as runtime_config, merge_mode
+        runtime = runtime_config(self.settings.authority.root,scope=self.settings.scope)
         entries = self.proposals()
         result = []
         for row in rows:
@@ -112,7 +114,7 @@ class RepositorySetup:
             if not row.get('access_ready'):
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
-            result.append({**row, 'protection_status': status, 'protection_ready': status == 'ready',
+            result.append({**row, 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
                            'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
                            'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",

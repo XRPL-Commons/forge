@@ -12,7 +12,7 @@ from ..store.artifacts import Artifacts, ArtifactExpired
 from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
 from ..store.transitions import manifest_hash
-from .config import validate
+from .config import validate, merge_mode
 from .status_projection import operator_status
 
 
@@ -199,7 +199,7 @@ class PipelineViews:
             actions=actions, closable=fresh and issue['github_state']=='open' and not pending,
             setup_needed=reason=='repository_setup', environment_blocker=environment_block.get('detail') or environment_block.get('summary'),
             decision_request=decision,
-            approval=approval,
+            approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
             verification_request={**verification_view,'can_confirm':fresh and reason=='verification_human'} if verification_view else None,
             approvals=approvals, last_checked=checked, merge_blocker={'reason':merge_block.get('reason') or wording} if merge_block else None,
             environment={'choice':json.loads(environment['choice_json'] or 'null') if environment else None,

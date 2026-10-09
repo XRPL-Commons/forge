@@ -436,3 +436,31 @@ finish their current step; the supervisor blocks the next dispatch or merge.
 A reviewer assigned by Forge's recorded human-review action is still a reviewer
 while that candidate awaits approval or merge. That assignment does not transfer
 implementation ownership. Other assignees continue to block new work.
+
+
+### Repository merge policy
+
+The selected runtime configuration stores `repository_merge_policies` as a map
+from immutable GitHub repository ID strings to `human` or `auto`. Missing IDs
+mean `human`. The old global `human_required` field is retained for legacy import
+and the retired JSON supervisor; live SQLite admission uses the repository map.
+The global `merge_enabled` switch still gates every merge.
+
+`policy(config, repository_id, repository_name=...)` returns a candidate policy
+bound to the repository ID, its effective mode, human reviewer eligibility,
+merge method and only that repository's verification checks. Candidate hashes
+exclude unrelated repository policies. Dispatch, result acceptance, verification
+and fresh merge authorization must use this same function.
+
+Schema 25 and legacy import normalize existing settings consistently. An enabled
+legacy auto setting is copied only to IDs present in the matching configured
+repository document. Explicit per-repository entries win; new IDs default to
+human. Schema upgrade appends a configuration revision and retains prior content
+and credential references.
+
+The CLI's `/api/client/policy` write requires the separately approved
+`repositories:policy` capability. It compares the runtime revision and commits
+the configuration revision, attributed audit record and idempotent operation
+receipt together. Grant revocation is serialized against that effect. Read-only
+connections can inspect policy. Browser Settings and issue details display it;
+neither exposes a policy editor.

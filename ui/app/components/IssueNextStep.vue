@@ -44,6 +44,9 @@ const {
                 <p class="text-muted">{{ detail.decision_request.evidence }}</p>
                 <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
               </section>
+              <p v-if="detail.merge_policy" id="issue-merge-policy" class="text-xs text-muted">
+                Merge policy · {{ detail.merge_policy === 'auto' ? 'Automatic after checks pass; audit or verification may require human approval.' : 'Human approval required.' }}
+              </p>
               <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
               <ul
                 v-if="approvals.length"

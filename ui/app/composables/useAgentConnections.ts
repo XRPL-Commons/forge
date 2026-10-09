@@ -13,6 +13,7 @@ export interface ConnectionRequest {
 interface ConnectionsView { enabled: boolean; connections: AgentConnection[]; reason?: string }
 export const agentCapabilityLabels: Record<string, string> = {
   'repositories:read': 'Read repository setup and readiness',
+  'repositories:policy': 'Set repository merge policy (automatic or human approval)',
   'repositories:prepare': 'Request repository verification',
   'repositories:activate': 'Enable or disable repository automation',
 }

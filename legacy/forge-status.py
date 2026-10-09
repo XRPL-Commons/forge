@@ -211,7 +211,7 @@ class H(BaseHTTPRequestHandler):
         from forge.operator_auth import OperatorAuth
         paths = {'/api/client/device', '/api/client/token', '/api/client/refresh',
                  '/api/client/status', '/api/client/disconnect', '/api/client/requirements',
-                 '/api/client/authorize', '/api/client/read', '/api/client/operation'}
+                 '/api/client/authorize', '/api/client/read', '/api/client/operation', '/api/client/policy'}
         if self.path not in paths:
             return False
         try:
@@ -250,6 +250,9 @@ class H(BaseHTTPRequestHandler):
                 fields(value, ('repository', 'instance', 'generation', 'capability'))
                 clients.authorize(bearer, value['repository'], value['capability'], value['instance'], value['generation'])
                 result = {'authorized': True}
+            elif self.path == '/api/client/policy':
+                from forge.repository_merge_policy import ClientMergePolicy
+                result = ClientMergePolicy(settings_service(), clients).request(bearer, value)
             elif self.path in ('/api/client/read', '/api/client/operation'):
                 from forge.client_repositories import ClientRepositories, OPERATIONS
                 # Fence before opening repository state, including malformed or
@@ -620,7 +623,7 @@ class H(BaseHTTPRequestHandler):
                 if query and query != {'summary':['1']}: raise ValueError('Invalid settings view')
                 result=settings_service().view()
                 if query:
-                    fields=('id','name','enabled','configured','access','access_ready','protection_ready','protection_status','protection_previous_status','dispatch_allowed','setup_url')
+                    fields=('id','name','enabled','configured','access','access_ready','protection_ready','protection_status','protection_previous_status','dispatch_allowed','setup_url','merge_policy')
                     result['repositories']=[{key:row[key] for key in fields if key in row} for row in result['repositories']]
                 result.update(ok=True,controls_token=self._action_token)
                 self._send(json.dumps(result))

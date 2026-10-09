@@ -80,11 +80,31 @@ flowchart TD
 
 A green worker result alone is not merge permission. Forge checks its App-bound Review and Audit evidence, required CI, verification, repository protections and current ownership; unresolved changes requested also prevent merging.
 
-Human approval is required when factory policy or Audit requires it. A counted review must come from an eligible person with repository write access (and the configured reviewer list, if any); bots and the pull request author do not count.
+Merge policy is set per repository and defaults to `human`, which requires one counted approval. Explicit `auto` permits a merge after CI, Review and Audit pass; Audit or verification can still require human approval. Settings shows the effective policy read-only. A counted review must come from an eligible person with repository write access (and the configured reviewer list, if any); bots and the pull request author do not count.
 
 The approval must follow acceptance of the current candidate and match its exact head commit. The issue panel shows the reviews found and whether each counted.
 
 Changes to the head, base, requirements or policy invalidate earlier candidate evidence. Forge reads approvals again just before merging and sends GitHub the expected head SHA, so a new commit cannot slip through using an old approval.
+
+Set or inspect the policy through the CLI:
+
+```sh
+forge connect https://forge.example --repo OWNER/REPO --policy
+forge repo policy OWNER/REPO --server https://forge.example
+forge repo policy OWNER/REPO auto --server https://forge.example
+forge repo policy OWNER/REPO human --server https://forge.example
+```
+
+The connection approval explicitly includes permission to set merge policy.
+Existing connections keep their previously approved permissions. The policy is
+stored by GitHub repository ID, so a rename does not transfer it to another
+repository. The global merge switch remains a separate prerequisite.
+
+On upgrade, an enabled legacy automatic-merge setting is preserved only for
+already configured repository IDs. Other existing repositories and all new
+repositories require human approval unless explicitly configured otherwise.
+Changing a repository's effective policy invalidates its previous candidate
+evidence; changing another repository's policy does not.
 
 ### Why the Controller has a bypass
 

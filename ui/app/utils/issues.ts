@@ -58,6 +58,7 @@ export interface IssueRow extends OperatorStatusSource {
   // read it, and when Forge last read GitHub for this issue. Older payloads omit them.
   approvals?: IssueApproval[]
   last_checked?: number | null
+  merge_policy?: 'auto' | 'human'
   merge_blocker?: { reason: string } | null
   environment?: IssueEnvironment
   pull_requests: PullRequestRef[]

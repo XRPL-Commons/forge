@@ -25,7 +25,7 @@ DEFAULT = {
     # together exceed 256 (pthread_create: Resource temporarily unavailable).
     'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 1024,
     'environment_tiers': {}, 'repository_environments': {},
-    'repository_verification': {},
+    'repository_verification': {}, 'repository_merge_policies': {},
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -138,6 +138,11 @@ def validate(value):
         validate({**tier, 'environment_tiers': {}, 'repository_environments': {}})
     from .environments import validate_profiles
     validate_profiles(config['repository_environments'])
+    policies = config['repository_merge_policies']
+    if (not isinstance(policies,dict) or len(policies)>10000
+            or any(not isinstance(key,str) or not re.fullmatch(r'[1-9][0-9]*',key)
+                   or int(key)>=2**53 or not isinstance(mode,str) or mode not in {'auto','human'} for key,mode in policies.items())):
+        raise ValueError('Repository merge policies map immutable GitHub IDs to auto or human')
     from .verification import validate_profiles as validate_verification
     validate_verification(config['repository_verification'])
     return config
@@ -166,8 +171,28 @@ def save(root, config, *, revision=None, scope=None, storage_revision=None):
     return config
 
 
-def policy(config):
-    value = {key: config[key] for key in ('human_required', 'human_reviewers', 'merge_method')}
-    if config.get('repository_verification'):
-        value['repository_verification'] = config['repository_verification']
-    return value
+def legacy_merge_policies(config, repositories):
+    """Freeze an already enabled legacy auto policy to currently configured IDs."""
+    mode = 'auto' if config.get('merge_enabled') is True and config.get('human_required') is False else 'human'
+    policies = {str(repo['id']):mode for repo in repositories}
+    policies.update(config.get('repository_merge_policies',{}))
+    return {**config,'repository_merge_policies':policies}
+
+
+def merge_mode(config, repository_id):
+    if type(repository_id) is not int or not 0<repository_id<2**53:
+        raise ValueError('Merge policy requires an immutable GitHub repository ID')
+    return config.get('repository_merge_policies',{}).get(str(repository_id),'human')
+
+
+def policy(config, repository_id=None, *, repository_name=None):
+    if repository_id is None:
+        # The retired JSON supervisor has no per-repository policy contract.
+        value = {key: config[key] for key in ('human_required', 'human_reviewers', 'merge_method')}
+        if config.get('repository_verification'):
+            value['repository_verification'] = config['repository_verification']
+        return value
+    mode = merge_mode(config,repository_id)
+    return dict(repository_id=repository_id,merge_policy=mode,human_required=mode=='human',
+                human_reviewers=config['human_reviewers'],merge_method=config['merge_method'],
+                verification_checks=config.get('repository_verification',{}).get(repository_name,[]))

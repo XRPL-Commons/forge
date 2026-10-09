@@ -86,3 +86,27 @@ Administrative credentials remain with local `gh` and are never sent to Forge.
 The [GitHub ruleset API](https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset)
 and [organization ruleset API](https://docs.github.com/en/rest/orgs/rules#update-an-organization-repository-ruleset)
 describe the write permissions needed by the operator.
+
+
+## Repository merge policy
+
+```sh
+forge connect https://forge.example --repo OWNER/REPO --policy
+forge repo policy OWNER/REPO --server https://forge.example --json
+forge repo policy OWNER/REPO auto --server https://forge.example --json
+forge repo policy OWNER/REPO human --server https://forge.example --json
+```
+
+`--policy` requests the separate `repositories:policy` capability in the browser
+approval. Existing default connections can inspect policy but cannot change it.
+The default mode is `human` (one counted approval). `auto` still requires CI,
+Review and Audit, and cannot bypass explicit human verification or an Audit
+request for a person. Settings displays the effective policy read-only.
+
+A write first reads the current revision and uses compare-and-set. Agents can
+supply `--revision` and a stable `--request-id` (32 lowercase hexadecimal
+characters) to replay the exact same decision after losing a response. A reused
+ID with different inputs is rejected. A stale revision requires a fresh read and
+new decision; the CLI does not overwrite a concurrent configuration change.
+Repeatedly setting the already explicit mode does not create another runtime
+configuration revision.

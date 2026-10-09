@@ -11,7 +11,7 @@ from .github import GitHub
 
 def repository_commands():
     commands = {}
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules', 'policy'):
         properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
                       'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
         required = ['repository', 'server']
@@ -20,16 +20,20 @@ def repository_commands():
                               wait={'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 120})
         if action == 'setup':
             properties.update(apply={'type': 'boolean', 'default': False}, enable={'type': 'boolean', 'default': False})
+        if action == 'policy':
+            properties.update(mode={'enum':['auto','human']},revision={'type':'string','pattern':'^[a-f0-9]{64}$'},request_id={'type':'string','pattern':'^[a-f0-9]{32}$'})
         if action == 'issues':
             properties['page'] = {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 1}
         if action == 'issue':
             properties['number'] = {'type': 'integer', 'minimum': 1}
             required.append('number')
         commands[action] = {
-            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action == 'issue' else '') + ' --server HTTPS_ORIGIN --json',
-            'capability': 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
+            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action == 'issue' else ' [auto|human]' if action == 'policy' else '') + ' --server HTTPS_ORIGIN --json',
+            'capability': 'repositories:policy' if action == 'policy' else 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
             'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
         }
+        if action == 'policy':
+            commands[action]['read_capability'] = 'repositories:read'
     return commands
 
 
@@ -73,6 +77,7 @@ def parser():
     connect.add_argument('--repo', action='append', default=[])
     connect.add_argument('--owner', action='append', default=[])
     connect.add_argument('--read-only', action='store_true')
+    connect.add_argument('--policy', action='store_true', help='Request permission to set repository merge policy; requires explicit browser approval')
     connect.add_argument('--resume', action='store_true')
     connect.add_argument('--wait', type=int, default=0)
     auth = sub.add_parser('auth', help='Check this computer’s connection to a Forge server').add_subparsers(dest='auth_command', required=True)
@@ -81,11 +86,15 @@ def parser():
     requirements = sub.add_parser('requirements', help='Show what a repository needs before Forge can work on it')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules', 'policy'):
         command = repo.add_parser(action)
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+        if action == 'policy':
+            command.add_argument('mode',nargs='?',choices=('auto','human'),help='Omit to inspect the effective policy')
+            command.add_argument('--revision',help='Exact runtime revision to compare before writing')
+            command.add_argument('--request-id',help='Stable 32-character hexadecimal ID for replaying an exact policy decision')
         if action == 'issue':
             command.add_argument('number', type=int)
         if action == 'issues':
@@ -154,7 +163,10 @@ def execute(args):
                 scope['repositories'].append({k: repo[k] for k in ('id', 'name')})
             for login in args.owner:
                 scope['owners'].append(github.owner(login))
-            value = client.begin(args.name, list(CAPABILITIES[:1] if args.read_only else CAPABILITIES), scope)
+            require(not (args.read_only and args.policy),'invalid_scope','Choose read-only access or request policy writes.')
+            requested = list(CAPABILITIES[:1] if args.read_only else CAPABILITIES[:3])
+            if args.policy: requested.append('repositories:policy')
+            value = client.begin(args.name, requested, scope)
             if not args.json:
                 print('Approve code ' + value['user_code'] + ' at ' + value['verification_uri_complete'])
                 webbrowser.open(value['verification_uri_complete'])
@@ -168,6 +180,9 @@ def execute(args):
             from .workflow import Workflow
             github = GitHub()
             target = {k: v for k, v in github.repository(args.repository).items() if k in ('id', 'name')}
+            if args.repo_command == 'policy':
+                from .merge_policy import execute as merge_policy
+                return merge_policy(client,target,args.mode,revision=args.revision,request_id=args.request_id)
             if args.repo_command == 'fix-rules':
                 from .rule_fixes import fixes
                 return fixes(client.read(target, 'repository'))
