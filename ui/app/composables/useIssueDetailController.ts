@@ -353,8 +353,9 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const activeJob = computed<JobView | null>(() => jobs.value.find(job => job.id === detail.value?.active) ?? null)
   const liveSelected = computed(() => !!detail.value?.active && selectedJob.value === detail.value.active && detail.value.status === 'working')
   const outputOpen = ref(false)
-  // A running job's output is what there is to see: open it once per job.
-  watch(() => (liveSelected.value ? selectedJob.value : null), (job) => { if (job) outputOpen.value = true }, { immediate: true })
+  // Open after mount so SSR and the hydration render both start collapsed.
+  // Opening during setup leaves the SSR hidden attribute on the content.
+  watch(() => (mounted.value && liveSelected.value ? selectedJob.value : null), (job) => { if (job) outputOpen.value = true }, { immediate: true })
   const output = useResource<OutputView>(
     () => `/api/factory/output?id=${encodeURIComponent(selectedJob.value ?? '')}`,
     path => api.get(path, { timeout: 15000 }),
