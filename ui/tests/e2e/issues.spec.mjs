@@ -173,6 +173,9 @@ export default async function (page, { base, scenario, requests, observeIssue })
 
   // A working issue opens its worker output from the start (the running job
   // is what there is to see), and shows the log as text, never as markup.
+  // End the previous page's polling ownership before resetting the request log.
+  // Otherwise its last conditional read can precede this page's initial fetch.
+  await load('about:blank')
   await scenario('default')
   await page.goto(base + '/issues/1%3A610')
   await waitForText(page, DETAIL_TITLE)
@@ -226,6 +229,8 @@ export default async function (page, { base, scenario, requests, observeIssue })
   // losing the log with the issue would strand the operator.
   await page.getByRole('button', { name: 'Worker output' }).click()
   await pre.waitFor({ state: 'hidden' })
+  // A live job still polls for its activity bubble when its panel is closed.
+  await load('about:blank')
   await scenario('orphan-job')
   await page.goto(`${base}/issues/9%3A999?job=${RECOVERY_JOB}`)
   await waitForText(page, 'This issue is not in a managed repository. Refresh the issue list.')
