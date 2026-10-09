@@ -123,6 +123,12 @@ class SqliteSetupTests(unittest.TestCase):
         old_generation = active_generation(self.root)
         with self.database.write() as db:
             db.execute("INSERT INTO environment_scans(id,repository_id,source_revision,status,created_at) VALUES('pre-reset',10,'old','running',1)")
+        from forge.mutation_audit import MutationAudit
+        audit = MutationAudit(self.database, '/api/runtime')
+        audit.result({'ok': True, 'private': 'never-store-this-response'})
+        audit.finish()
+        with self.database.read_snapshot() as db:
+            saved_audit = dict(db.execute('SELECT * FROM operator_audit WHERE request_id=?', (audit.request_id,)).fetchone())
         self.setup.queue('reset', generation=old_generation)
         service.tick()
         self.assertEqual(self.setup.read()['phase'], 'setup')
@@ -134,6 +140,10 @@ class SqliteSetupTests(unittest.TestCase):
         from forge.settings import read_json
         self.assertEqual(read_json(self.setup.credentials.root / 'index.json'), {})
         with self.database.read_snapshot() as db:
+            retained_audit = dict(db.execute('SELECT * FROM operator_audit WHERE request_id=?', (audit.request_id,)).fetchone())
+            self.assertEqual(retained_audit, saved_audit)
+            self.assertNotIn('never-store-this-response', str(retained_audit))
+            self.assertNotIn('s' * 40, str(list(db.execute('SELECT * FROM operator_audit'))))
             self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_executions').fetchone()[0], 3)
             self.assertGreater(db.execute('SELECT COUNT(*) FROM auxiliary_artifacts').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_leases').fetchone()[0], 0)

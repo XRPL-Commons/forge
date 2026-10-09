@@ -72,9 +72,15 @@ def identity_effect_lock(root):
 
 
 def audit_in(db, clock, action, *, operator=None, connection=None, request_id=None, outcome='applied', details=None):
-    db.execute('INSERT INTO operator_audit(operator_id,connection_id,request_id,action,outcome,at,details_json) '
-               'VALUES(?,?,?,?,?,?,?)', (str(operator['id']) if operator else None, connection,
-                 request_id or str(uuid.uuid4()), action, outcome, clock(), _json(details or {})))
+    from .mutation_audit import current
+    context = current()
+    if context:
+        context.details['effect_recorded'] = True
+    db.execute('INSERT INTO operator_audit(operator_id,session_id,connection_id,request_id,action,outcome,at,details_json) '
+               'VALUES(?,?,?,?,?,?,?,?)', (str(operator['id']) if operator else context.operator if context else None,
+                 context.session if context else None, connection or (context.connection if context else None),
+                 request_id or (context.request_id if context else str(uuid.uuid4())), action, outcome, clock(),
+                 _json({'kind': 'identity_effect', **(details or {})})))
 
 
 class SqliteOperatorAuth:
@@ -229,7 +235,14 @@ class SqliteOperatorAuth:
     def audit(self, session, route):
         with self.sqlite_store.write() as db:
             active_in(db)
-            audit_in(db, self.clock, route, operator=session['operator'], outcome='admitted')
+            from .mutation_audit import MutationAudit
+            context = MutationAudit(self.sqlite_store, route, clock=self.clock)
+            row = db.execute('SELECT id FROM operator_sessions WHERE operator_id=? AND csrf=?',
+                             (str(session['operator']['id']), session['csrf'])).fetchone()
+            context.bind(session=session, session_id=row[0] if row else None)
+            from .mutation_audit import _insert
+            _insert(db, self.clock, request_id=context.request_id, action=route, outcome='started',
+                    details={**context.details, 'kind': 'request_started'}, operator=context.operator, session=context.session)
 
 
 class SqliteClientConnections:
@@ -266,6 +279,9 @@ class SqliteClientConnections:
         row = db.execute('SELECT * FROM client_connections WHERE access_hash=?', (digest(token),)).fetchone()
         need(valid_connection_in(db, row, context['generation'], self.clock()) and row['access_expires'] > self.clock(),
              'invalid_token', 'Connection expired or was revoked. Connect again.', 401)
+        from .mutation_audit import current
+        if current():
+            current().bind(grant=self._public(row, 'active'))
         return dict(row)
 
     def _rate_in(self, db, kind, subject, *, increment=True):
@@ -365,6 +381,10 @@ class SqliteClientConnections:
         return {'status': 'approved', 'id': identifier}
 
     def _issue_in(self, db, row):
+        from .mutation_audit import current
+        if current():
+            current().bind(grant=self._public(row, 'active'))
+            current().details['effect_recorded'] = True
         access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         db.execute('UPDATE client_connections SET access_hash=?,access_expires=?,refresh_hash=?,idle_expires=?,last_used_at=? WHERE id=?',
             (digest(access), self.clock() + ACCESS_SECONDS, digest(refresh), min(row['expires_at'], self.clock() + IDLE_SECONDS), self.clock(), row['id']))
@@ -563,8 +583,12 @@ class SqliteClientRepositories:
                 db.execute('INSERT INTO client_operations(id,request_id,connection_id,repository_id,kind,status,payload_json,created_at,updated_at) '
                            "VALUES(?,?,?,?,?,'pending',?,?,?)", (value['id'], value['id'], grant['id'],
                             repository['id'] if repository else None, value['action'], _json(binding), self.settings.clock(), self.settings.clock()))
-                audit_in(db, self.settings.clock, 'client_repository_' + value['action'], operator=grant['operator'],
-                         connection=grant['id'], request_id=value['id'], outcome='admitted')
+                from .mutation_audit import current, MutationAudit
+                audit = current() or MutationAudit(self.sqlite_store, '/api/client/operation', clock=self.settings.clock)
+                audit.bind(grant=grant)
+                audit.describe(value)
+                audit.details['command_request_id'] = value['id']
+                audit.finish_in(db, 'accepted', 'accepted')
                 row = db.execute('SELECT * FROM client_operations WHERE id=?', (value['id'],)).fetchone()
             result = self.public(self._record(row))
         if result['status'] == 'pending':
@@ -595,9 +619,18 @@ class SqliteClientRepositories:
                        (*parameters, self.settings.clock(), identifier))
             if values.get('status') in {'complete', 'failed'}:
                 audit_in(db, self.settings.clock, 'client_repository_' + row['kind'], connection=row['connection_id'],
-                         request_id=identifier, outcome=values['status'], details={'error': values.get('error')})
+                         request_id=identifier, outcome=values['status'], details={'kind': 'operation_effect', 'error_code': values.get('error')})
 
     def run(self, token, value):
+        from .mutation_audit import MutationAudit, request_context
+        binding = self._get(value['id'])['request']
+        audit = MutationAudit(self.sqlite_store, '/api/client/operation', clock=self.settings.clock)
+        audit.bind(grant={'operator': binding['operator'], 'id': binding['client']})
+        audit.describe(value)
+        with request_context(audit):
+            return self._run(token, value)
+
+    def _run(self, token, value):
         from .client_repositories import OPERATIONS
         from .repository_requirements import describe
         from .settings import digest as config_digest

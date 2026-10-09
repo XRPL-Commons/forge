@@ -559,6 +559,8 @@ const rootClass = computed(() => {
         >{{ statusLabel(detail) }}</UBadge>
       </div>
 
+      <p v-if="detail.operator_status?.reason" id="issue-status-reason" class="mt-1 text-sm text-muted">{{ detail.operator_status.reason }}</p>
+
       <UTabs
         :model-value="tab"
         :items="TABS"

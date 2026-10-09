@@ -2,6 +2,7 @@
 // renders a CardModel, every banner is produced by warnings(), so no component
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
+import { operatorLabel, operatorReason, type OperatorStatusSource } from './operatorStatus'
 import type { CodingAccount } from './accounts'
 import { ago, clampTitle, reviewerMentions, shortCommit } from './format'
 import type { PortraitLook } from './cube'
@@ -26,7 +27,7 @@ export interface JobView {
 
 export interface LedgerEvent { kind: string; provider?: string; model?: string | null; [key: string]: unknown }
 
-export interface LedgerIssueView {
+export interface LedgerIssueView extends OperatorStatusSource {
   key: string; repo_id: number; repo: string; number: number; title: string
   attempts?: Array<Pick<JobView, 'id' | 'role' | 'outcome' | 'phase' | 'created_at' | 'started_at'>>
   state: IssueState; reason: string | null; active: string | null; failure_count: number
@@ -87,7 +88,7 @@ export interface FactoryView {
   coding_accounts?: CodingAccount[]
 }
 
-export interface CardModel {
+export interface CardModel extends OperatorStatusSource {
   key: string
   // Anchor target and FLIP key: "issue-<repo_id>-<number>", or "job-<id>" for
   // an internal row, whose issue key may already belong to a rendered issue.
@@ -126,11 +127,6 @@ export const NEXT_ROLE: Record<string, ColumnRole> = { ready: 'build', built: 'r
 export const COLUMN_ROLES: ColumnRole[] = ['build', 'review', 'audit']
 export const COLUMN_TITLES: Record<ColumnRole, string> = { build: 'Build', review: 'Review', audit: 'Security audit' }
 
-const STATE_LABELS: Record<string, string> = {
-  ready: 'Queued', built: 'Queued', reviewed: 'Queued', audited: 'Ready to merge',
-  approval_needed: 'Approval needed', investigating: 'Investigating', hold: 'On hold',
-  failed: 'Needs attention', merged: 'Merged', cancelled: 'Cancelled',
-}
 const PROVIDER_LABELS: Record<string, string> = { claude: 'Claude Code', codex: 'Codex' }
 const ATTENTION_STATES = ['approval_needed', 'hold', 'failed']
 
@@ -164,9 +160,7 @@ export function waitingOnDependencies(issue: LedgerIssueView | null | undefined)
 }
 
 export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, view: FactoryView | null | undefined, now: number): string {
-  if (!job && issue?.ownership_wait) return issue.ownership_wait.headline
-  if (!job && issue && isDropped(issue)) return 'No longer needed'
-  if (!job && waitingOnDependencies(issue)) return 'Waiting on ' + issue!.blocked_dependencies!.map(n => '#' + n).join(', ')
+  if (issue) return operatorLabel(issue)
   if (job) {
     if (job.capacity_wait_since) return 'Waiting for memory'
     if (isRunning(view, job, now)) return 'Working'
@@ -175,7 +169,7 @@ export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, v
     if (job.phase === 'external') return 'Merging'
     return 'Finishing'
   }
-  return STATE_LABELS[issue?.state ?? ''] ?? 'Waiting'
+  return 'Waiting'
 }
 
 const JOB_ROLE_LABELS: Record<JobRole, string> = { build: 'Build', review: 'Review', audit: 'Security audit', recovery: 'Investigation', merge: 'Merge' }
@@ -208,6 +202,8 @@ function latestProvider(issue: LedgerIssueView | null): string | null {
 }
 
 export function reasonText(issue: LedgerIssueView | null, job: JobView | null): string {
+  const canonical = operatorReason(issue)
+  if (canonical !== undefined) return canonical
   if (job?.capacity_wait_since) return 'Waiting for memory. Forge will start this worker automatically when space is available.'
   if (!job && issue?.ownership_wait) return issue.ownership_wait.plain
   if (!job && waitingOnDependencies(issue)) return issue!.dependency_reason ?? ''
@@ -312,6 +308,7 @@ function issueCard(issue: LedgerIssueView, job: JobView | null, view: FactoryVie
     repo: issue.repo,
     number: issue.number,
     title: clampTitle(issue.title || `Issue #${issue.number}`),
+    operator_status: issue.operator_status,
     phaseLabel: phaseLabel(issue, job, view, now),
     providerLine: providerLine(job),
     reason: reasonText(issue, job),

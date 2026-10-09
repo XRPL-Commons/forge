@@ -41,11 +41,12 @@ class Onboarding:
         return self.client or AppClient(environ=self.credentials.environment())
 
     def settings(self):
-        return Settings(self.root / 'setup', client=self.api(), clock=self.clock)
+        return Settings(self.root, scope='setup', client=self.api(), clock=self.clock)
 
     def initialize(self, data):
         if not data:
-            active = (self.root / 'state/factory-v2.enabled').exists()
+            from .configuration_authority import ConfigurationAuthority
+            active = ConfigurationAuthority(self.root).active()
             data.update(version=1, generation=str(uuid.uuid4()), phase='active' if active else 'setup',
                         apps={}, checks={}, probe_jobs=[], operation=None, error=None)
         elif data.get('phase') == 'legacy':
@@ -57,17 +58,35 @@ class Onboarding:
             self.initialize(data)
             return deepcopy(data)
 
+    def _runtime(self, scope, *, host_default=False):
+        from .configuration_authority import ConfigurationAuthority
+        authority = ConfigurationAuthority(self.root, scope=scope)
+        row = authority.runtime()
+        revisions = getattr(self, '_runtime_revisions', {})
+        revisions[authority.scope] = row['revision'] if row else 0
+        self._runtime_revisions = revisions
+        if row is None and host_default:
+            row = authority.snapshot('host-runtime.json')
+        return runtime_config(row['settings'] if row else {})
+
     def runtime(self):
-        path = self.root / ('runtime.json' if (self.root / 'state/factory-v2.enabled').exists() else 'setup/runtime.json')
-        host = self.root / 'host-runtime.json'
-        config = read_json(path) if path.exists() else read_json(host) if host.exists() else {}
+        config = self._runtime('active', host_default=True)
         return runtime_config({**config, 'enabled': False, 'merge_enabled': False})
 
     def active_runtime(self):
-        return runtime_config(read_json(self.root / 'runtime.json'))
+        return self._runtime('live')
 
     def save_runtime(self, config, *, active):
-        write_json(self.root / ('runtime.json' if active else 'setup/runtime.json'), config)
+        from .configuration_authority import ConfigurationAuthority
+        scope = 'live' if active else 'setup'
+        authority = ConfigurationAuthority(self.root, scope=scope)
+        domain = authority.domain('runtime.json')
+        revisions = getattr(self, '_runtime_revisions', {})
+        if scope not in revisions:
+            row = authority.snapshot(domain)
+            revisions[scope] = row['revision'] if row else 0
+        revisions[scope] = authority.replace(domain, runtime_config(config), expected_revision=revisions[scope])
+        self._runtime_revisions = revisions
 
     def provider_health(self):
         from .factory.ledger import Ledger

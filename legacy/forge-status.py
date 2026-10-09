@@ -15,6 +15,7 @@ PORT = 8787
 HOME = str(Path.home())
 WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
 from forge.view_cache import ViewCache
+from forge.mutation_audit import RequestReplay
 VIEWS = ViewCache()
 CONTROLS_TOKEN = secrets.token_urlsafe(32)
 # Proof that a request came through the operator UI, not from another local
@@ -50,20 +51,13 @@ def runtime_control(name, legacy_path):
 
 
 def setup_phase():
-    from forge.store.runtime import selected
-    store=selected(WD)
-    if store is not None:
-        with store.read_snapshot() as db:
-            row=db.execute("SELECT phase FROM setup_instances WHERE scope='live'").fetchone()
-            return row[0] if row else None
-    path=Path(WD)/'state/onboarding/setup.json'
-    return json.loads(path.read_text()).get('phase') if path.is_file() else None
+    from forge.configuration_authority import ConfigurationAuthority
+    return ConfigurationAuthority(WD).phase()
 
 
 def settings_service():
     from forge.settings import Settings
-    from forge.onboarding import Onboarding
-    return Settings(WD) if runtime_control('factory_active','state/factory-v2.enabled') else Onboarding(WD).settings()
+    return Settings(WD, scope='active')
 
 
 class H(BaseHTTPRequestHandler):
@@ -71,6 +65,13 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _send(self, body, ctype="application/json", headers=None, status=200, etag=None):
+        audit = getattr(self, '_mutation_audit', None)
+        if audit is not None:
+            try:
+                audit.result(json.loads(body), status)
+            except (ValueError, TypeError):
+                audit.result(None, status)
+            audit.finish()
         data = body if isinstance(body, bytes) else body.encode()
         # Validators are private to each client; no response is stored by a
         # browser/proxy cache. Include the action token in the digest so a
@@ -83,6 +84,7 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send_response(status)
+        if audit is not None: self.send_header('X-Forge-Request-ID', audit.caller_id)
         if etag: self.send_header('ETag', etag)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -93,6 +95,13 @@ class H(BaseHTTPRequestHandler):
             self.send_header(key,value)
         self.end_headers()
         self.wfile.write(data)
+
+    def send_error(self, code, message=None, explain=None):
+        audit = getattr(self, '_mutation_audit', None)
+        if audit is not None:
+            audit.result(None, code)
+            audit.finish()
+        return super().send_error(code, message, explain)
 
     def _cached(self, key, build):
         etag, body = VIEWS.response(WD, key, build, self._action_token, self.headers.get('If-None-Match'))
@@ -145,6 +154,9 @@ class H(BaseHTTPRequestHandler):
         self._session_token = read_cookie(self.headers.get('Cookie', ''), SESSION_COOKIE)
         self._session = self._auth.session(self._session_token) if self._auth_config else None
         self._action_token = self._session['csrf'] if self._session else CONTROLS_TOKEN
+        if getattr(self, '_mutation_audit', None):
+            from forge.operator_auth import digest
+            self._mutation_audit.bind(session=self._session, session_id=digest(self._session_token) if self._session else None)
         if self._auth_config and self._public_host() != urlparse(self._auth_config['origin']).netloc:
             self.send_error(403)
             return False
@@ -211,6 +223,8 @@ class H(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', '0'))
             need(0 < length <= 16384, status=413)
             value = json.loads(self.rfile.read(length))
+            if getattr(self, '_mutation_audit', None):
+                self._mutation_audit.describe(value)
             auth = OperatorAuth(WD)
             config = auth.config()
             need(config and self._public_host() == urlparse(config['origin']).netloc,
@@ -253,8 +267,12 @@ class H(BaseHTTPRequestHandler):
                 clients.authorize(bearer, value['repository'], 'repositories:read', value['instance'], value['generation'])
             self._send(json.dumps({'ok': True, **result}))
         except ConnectionError as exc:
+            if getattr(self, '_mutation_audit', None):
+                self._mutation_audit.failed(exc.code)
             self._send(json.dumps({'ok': False, 'error': exc.code, 'reason': str(exc)}), status=exc.status)
         except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+            if getattr(self, '_mutation_audit', None):
+                self._mutation_audit.failed('operation_interrupted', uncertain=True)
             self._send(json.dumps({'ok': False, 'error': 'temporarily_unavailable',
                                    'reason': 'Client connection could not be verified.'}), status=503)
         return True
@@ -263,6 +281,22 @@ class H(BaseHTTPRequestHandler):
         return 'github:'+str(self._session['operator']['id']) if self._session else 'local:control-capability'
 
     def do_POST(self):
+        from forge.store.runtime import selected
+        from forge.mutation_audit import MutationAudit, request_context
+        store = selected(WD)
+        self._mutation_audit = MutationAudit(store, self.path, request_id=self.headers.get('X-Forge-Request-ID')) if store else None
+        with request_context(self._mutation_audit):
+            try:
+                return self._dispatch_POST()
+            except RequestReplay as exc:
+                self._send(json.dumps({'ok': False, 'error': 'request_already_recorded',
+                    'reason': str(exc), 'receipt': exc.receipt}), status=409)
+            finally:
+                if self._mutation_audit is not None:
+                    self._mutation_audit.finish()
+                self._mutation_audit = None
+
+    def _dispatch_POST(self):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         if self._client_post():
@@ -288,7 +322,12 @@ class H(BaseHTTPRequestHandler):
             maximum = 262144 if self.path == '/api/runtime' else 8192
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
-            if self._session:
+            if self._mutation_audit is not None:
+                self._mutation_audit.describe(value)
+                if not self._session:
+                    self._mutation_audit.details['actor'] = 'local:control-capability'
+                self._mutation_audit.start()
+            elif self._session:
                 self._auth.audit(self._session, self.path)
             if self.path.startswith('/api/connections/'):
                 from forge.client_connections import ClientConnections, fields
@@ -353,7 +392,7 @@ class H(BaseHTTPRequestHandler):
             if self.path == '/api/issues/action':
                 from forge.factory.issue_actions import decide, IMMEDIATE
                 from forge.factory.issues import IssueInventory
-                if not isinstance(value,dict) or set(value)!={'key','action','revision','reason'}:
+                if not isinstance(value,dict) or set(value) not in ({'key','action','revision','reason'}, {'key','action','revision','reason','request_id'}):
                     raise ValueError('Expected issue, action, current revision, and decision')
                 identifier=decide(WD,**value,actor_id=self._operator_actor())
                 result=IssueInventory(WD).view(key=value['key']) if value['action'] in IMMEDIATE else {}
@@ -429,9 +468,15 @@ class H(BaseHTTPRequestHandler):
                 settings_service().start_refresh()
                 self._send(json.dumps({'ok':True,'message':'Access refresh requested'}));return
             raise ValueError('invalid_action_request')
+        except RequestReplay:
+            raise
         except (ValueError,TypeError) as exc:
+            if self._mutation_audit is not None:
+                self._mutation_audit.failed('invalid_request')
             self._send(json.dumps({'ok':False,'reason':str(exc)}))
         except (OSError,ImportError,RuntimeError,subprocess.SubprocessError):
+            if self._mutation_audit is not None:
+                self._mutation_audit.failed('operation_interrupted', uncertain=True)
             self._send(json.dumps({'ok':False,'reason':'Operation unavailable; check server configuration'}))
 
     def do_GET(self):

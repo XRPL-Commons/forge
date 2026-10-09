@@ -61,7 +61,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal((await page.locator('#issue-status').innerText()).trim(), 'No longer needed')
   assert.equal(await page.locator('#issue-workbench').getAttribute('data-mood'), 'rest')
 
-  // Recently completed: dropped work says so, instead of Cancelled or Merged.
+  // Recently completed distinguishes dropped work from completed work.
   await scenario('dropped')
   await page.goto(base + '/')
   const CARDS = '#completed article.issue-card'
@@ -69,7 +69,7 @@ export default async function (page, { base, scenario, requests }) {
   const dropped = page.locator(`${CARDS}[data-key="1:821"]`)
   assert.equal((await dropped.locator('[data-status-chip]').innerText()).trim(), 'No longer needed')
   assert.match(await dropped.locator('canvas').getAttribute('data-look'), /^queued rest/)
-  // A merge stays a merge, whatever GitHub says about how it closed.
-  assert.equal((await page.locator(`${CARDS}[data-key="1:820"] [data-status-chip]`).innerText()).trim(), 'Merged')
-  assert.equal((await page.locator(`${CARDS}[data-key="1:825"] [data-status-chip]`).innerText()).trim(), 'Merged')
+  // Merged issues stay Completed, whatever GitHub says about how they closed.
+  assert.equal((await page.locator(`${CARDS}[data-key="1:820"] [data-status-chip]`).innerText()).trim(), 'Completed')
+  assert.equal((await page.locator(`${CARDS}[data-key="1:825"] [data-status-chip]`).innerText()).trim(), 'Completed')
 }

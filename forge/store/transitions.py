@@ -267,6 +267,8 @@ class Lifecycle:
             (_id(command.request_id, "decision"), command.request_id, command.unit_id, command.actor_id,
              command.expected_version, operation, _json(payload), _json(result), self.clock()),
         )
+        from ..mutation_audit import command_effect_in
+        command_effect_in(db, command, clock=self.clock)
         after = self._lifecycle_summary(projected)
         if before != after:
             self._event(db, command, "lifecycle_changed", {"before": before, "after": after})

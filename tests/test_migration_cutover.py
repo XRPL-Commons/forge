@@ -285,6 +285,9 @@ else:
         from forge.store.db import StoreError
         settings, auth = Settings(self.root), OperatorAuth(self.root)
         self.cutover.activate()
+        for read in (settings.load, settings.configured, settings.authority.phase):
+            with self.assertRaisesRegex(StoreError, 'legacy state access is disabled'):
+                read()
         with self.assertRaisesRegex(StoreError, 'legacy state access is disabled'):
             settings.save_config({'changed':True})
         with self.assertRaisesRegex(StoreError, 'legacy state access is disabled'):

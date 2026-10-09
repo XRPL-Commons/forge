@@ -85,10 +85,8 @@ def install(root, bind=None, assume_yes=False):
 def update(root, bind=None, assume_yes=False):
     from .store.migration.cutover import maintenance_writable
     maintenance_writable(root)
-    from .store.runtime import selected
-    from .store.configuration import Configuration
-    database = selected(root)
-    installed = Configuration(database).get('host-runtime.json') is not None if database else (root / 'host-runtime.json').exists()
+    from .configuration_authority import ConfigurationAuthority
+    installed = ConfigurationAuthority(root).snapshot('host-runtime.json') is not None
     if not installed:
         raise ValueError('This host has no Forge installation yet; run bin/forge setup first')
     preflight()

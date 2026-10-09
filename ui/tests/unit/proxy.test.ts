@@ -233,3 +233,12 @@ describe('local client routes', () => {
     expect(upstreamHeaders(headers, 'POST', '127.0.0.1:8788', 'proxy').authorization).toBeUndefined()
   })
 })
+
+
+describe('mutation request identity', () => {
+  it('forwards a caller request identity and returns the server receipt header', () => {
+    const identifier = 'a75b2d4e-6861-44f1-a9cc-6c44ba21092d'
+    expect(upstreamHeaders({ 'x-forge-request-id': identifier }, 'POST', '127.0.0.1:8788')['x-forge-request-id']).toBe(identifier)
+    expect(responseHeaders(new Headers({ 'x-forge-request-id': identifier }))).toContainEqual(['x-forge-request-id', identifier])
+  })
+})

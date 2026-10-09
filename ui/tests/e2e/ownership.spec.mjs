@@ -7,7 +7,7 @@ export default async function (page, { base, scenario }) {
   await page.goto(base + '/')
   const link = page.locator('.factory-line [data-line-issue="1:610"]')
   await link.waitFor({ state: 'attached' })
-  assert.match(await link.textContent(), /On hold · Owned by someone else/)
+  assert.match(await link.textContent(), /Blocked · Someone else is working on this issue/)
   assert.equal(await page.locator('#owned, #waiting, #needs-attention').count(), 0)
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 1000 })

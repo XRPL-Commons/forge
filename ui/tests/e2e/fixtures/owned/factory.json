@@ -44,7 +44,13 @@
       "blocked_dependencies": [
         658
       ],
-      "dependency_reason": "Waiting for #658."
+      "dependency_reason": "Waiting for #658.",
+      "operator_status": {
+        "code": "blocked",
+        "label": "Blocked",
+        "reason_code": "ownership_conflict",
+        "reason": "Someone else is working on this issue"
+      }
     }
   ],
   "jobs": [],

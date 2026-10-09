@@ -95,6 +95,8 @@ const HEART = 'M6 10.4 1.9 6.4A2.5 2.5 0 0 1 6 3.1a2.5 2.5 0 0 1 4.1 3.3Z'
             <template v-else>{{ view.title }}</template>
           </component>
 
+          <p v-if="view.statusReason" class="mt-1 text-xs text-muted" data-status-reason>{{ view.statusReason }}</p>
+
           <p v-if="view.headline || view.plain" class="mt-1 line-clamp-2" :class="compact ? 'text-xs' : 'text-sm'" data-story>
             <span class="text-white/85">{{ view.headline }}</span>
             <span v-if="view.plain" class="text-muted">{{ ` ${view.plain}` }}</span>

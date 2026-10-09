@@ -8,12 +8,8 @@ from .store.runtime import writable
 
 class SqliteSettings(Settings):
     @property
-    def scope(self):
-        return 'setup' if self.root.name == 'setup' else 'live'
-
-    @property
     def domain(self):
-        return 'setup/factory.json' if self.scope == 'setup' else 'factory.json'
+        return self.authority.domain('factory.json')
 
     def load(self):
         row = Configuration(self.database).get(self.domain)
@@ -39,19 +35,15 @@ class SqliteSettings(Settings):
             if (row[0] if row else '') != expected:
                 raise ValueError('Factory setup changed while the operation was running')
 
-    def save_config(self, config, *, expected_generation=None):
+    def save_config(self, config, *, expected_generation=None, expected_revision=None):
         validate(config)
-        payload = json.dumps(config, sort_keys=True, separators=(',', ':'), allow_nan=False)
-        if len(payload.encode()) > 65536:
-            raise ValueError('Configuration exceeds its size limit')
+        if expected_revision is None:
+            _, expected_revision = self.config_snapshot()
         with self.database.write() as db:
             writable(db)
             self._generation(db, expected_generation)
-            current = db.execute('SELECT COALESCE(MAX(revision),0) FROM configuration WHERE domain=? AND subject=?',
-                                 (self.domain, 'instance')).fetchone()
-            db.execute('UPDATE configuration SET active=0 WHERE domain=? AND subject=? AND active=1', (self.domain, 'instance'))
-            db.execute('INSERT INTO configuration VALUES(?,?,?,?,?,?,?)',
-                       (self.domain, 'instance', current[0] + 1 if current else 1, 1, payload, None, self.clock()))
+            Configuration(self.database, clock=self.clock).replace_in(
+                db, self.domain, config, expected_revision=expected_revision)
             if self.scope == 'live':
                 db.execute('UPDATE repositories SET enabled=0')
                 for repo in config['repositories']:

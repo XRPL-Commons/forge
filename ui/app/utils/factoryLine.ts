@@ -139,6 +139,7 @@ export function lineState(view: FactoryView | null | undefined, now: number, gro
     items.push({
       id: card.key, number: card.number, repo: card.repo, repoId: issue?.repo_id ?? null,
       stage, running: card.running, status: card.phaseLabel, card, ...extra,
+      ...(card.operator_status ? { status: card.operator_status.label } : {}),
     })
   }
   for (const role of COLUMN_ROLES) {
@@ -227,8 +228,11 @@ export function lineSummary(state: LineState, info: LineInfo): string {
 
 export function lineTooltip(item: LineItem, showRepo: boolean): string {
   const name = item.number != null ? `#${item.number}` : item.id
-  const parts = [name, LINE_STAGE_LABELS[item.stage]]
-  if (item.status && item.status !== LINE_STAGE_LABELS[item.stage]) parts.push(item.status)
+  const canonical = item.card.operator_status
+  const label = canonical?.label ?? LINE_STAGE_LABELS[item.stage]
+  const reason = canonical?.reason ?? item.status
+  const parts = [name, label]
+  if (reason && reason !== label) parts.push(reason)
   if (showRepo) parts.push(item.repo)
   return parts.join(' · ')
 }

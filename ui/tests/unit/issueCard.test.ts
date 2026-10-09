@@ -60,7 +60,7 @@ describe('waiting on other issues', () => {
     const card = rowCardView(row({
       status: 'blocked', explanation: 'Waiting for #90, #101.', summary: null, actions: [], dependencies: [90, 101], attempts: null, pull_requests: [],
     }), now)
-    expect(card.status).toEqual({ label: 'Waiting on #90, #101', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
+    expect(card.status).toEqual({ label: 'Blocked', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
     expect(card.look).toMatchObject({ mood: 'patient', beacon: false, zzz: false })
     expect(portraitKey(card.look)).not.toMatch(/beacon/)
   })
@@ -69,7 +69,7 @@ describe('waiting on other issues', () => {
     expect(ledgerLook({ state: 'ready', blocked_dependencies: [658] }, null, false)).toMatchObject({ mood: 'patient', beacon: false })
     const blocked = ledger({ key: '1:612', number: 612, state: 'ready', failure_count: 0, candidate: null, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
     const card = groupIssues(view([blocked]), now).waiting[0]!
-    expect(modelCardView(card, now).status).toEqual({ label: 'Waiting on #658', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
+    expect(modelCardView(card, now).status).toEqual({ label: 'Blocked', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
     // A failed issue that also names prerequisites still needs you.
     expect(ledgerLook({ state: 'failed', blocked_dependencies: [658] }, null, false)).toMatchObject({ mood: 'worried', beacon: true })
   })
@@ -91,7 +91,7 @@ describe('no longer needed', () => {
       expect(modelCardView(card, now).status).toEqual({ label: 'No longer needed', color: 'neutral', icon: 'i-lucide-archive', dim: true })
     }
     const cancelled = groupIssues(view([ledger({ state: 'cancelled', closed_as: 'completed', failure_count: 0, history })]), now).completed[0]!
-    expect(modelCardView(cancelled, now).status).toEqual({ label: 'Cancelled', color: 'neutral' })
+    expect(modelCardView(cancelled, now).status).toEqual({ label: 'Completed', color: 'neutral' })
     // A merge is never dropped, whatever GitHub says about the close.
     expect(ledgerLook({ state: 'merged', closed_as: 'not_planned' }, null, false)).toMatchObject({ mood: 'happy', confetti: true })
   })

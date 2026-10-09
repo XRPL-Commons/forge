@@ -139,25 +139,37 @@ class Settings:
                 return instance
         return object.__new__(cls)
 
-    def __init__(self, root, *, client=None, clock=time.time):
-        self.root = Path(root)
+    def __init__(self, root, *, client=None, clock=time.time, scope=None):
+        from .configuration_authority import ConfigurationAuthority
+        self.authority = ConfigurationAuthority(root, scope=scope, database=getattr(self, 'database', None))
+        self.root = self.authority.path
+        self.scope = self.authority.scope
         self.path = self.root / 'factory.json'
         self.state = self.root / 'state' / 'github-access'
         from .credentials import Credentials
-        self.client = client or AppClient(environ=Credentials(root).environment())
+        self.client = client or AppClient(environ=Credentials(self.authority.root).environment())
         self.clock = clock
 
     def load(self):
-        return validate(read_json(self.path)) if self.path.exists() else json.loads(json.dumps(DEFAULT))
+        return self.config_snapshot()[0]
 
     def configured(self):
-        return self.path.exists()
+        return self.authority.snapshot(self.authority.domain('factory.json')) is not None
 
     def generation(self):
         return None
 
-    def save_config(self, config, *, expected_generation=None):
-        write_json(self.path, config)
+    def config_snapshot(self):
+        row = self.authority.snapshot(self.authority.domain('factory.json'))
+        return (validate(row['settings']) if row else json.loads(json.dumps(DEFAULT)),
+                row['revision'] if row else 0)
+
+    def save_config(self, config, *, expected_generation=None, expected_revision=None):
+        from .legacy_writers import mutation
+        with mutation(self.path):
+            if expected_revision is None:
+                _, expected_revision = self.config_snapshot()
+            self.authority.replace(self.authority.domain('factory.json'), config, expected_revision=expected_revision)
 
     def save_observation(self, value, *, expected_generation=None):
         write_json(self.state / 'access.json', value)
@@ -172,7 +184,7 @@ class Settings:
         write_json(self.state / 'sync.json', value)
 
     def paused(self):
-        root = self.root.parent if self.root.name == 'setup' else self.root
+        root = self.authority.root
         return (root / 'state/factory-paused.json').exists()
 
     @contextmanager
@@ -195,13 +207,14 @@ class Settings:
         validate(config)
         with self.locked('config'):
             generation = self.generation()
-            if revision != digest(self.load()):
+            previous_config, storage_revision = self.config_snapshot()
+            if revision != digest(previous_config):
                 raise ValueError('Settings changed; reload before saving')
             # Access checks use the NEW connection configuration. Replacing an
             # App cannot inherit the previous App's successful observation.
             view = self.view(config=config)
             rows = {r['id']: r for r in view['repositories']}
-            old = {r['id']: r for r in self.load()['repositories']}
+            old = {r['id']: r for r in previous_config['repositories']}
             for row in config['repositories']:
                 previous = old.get(row['id'], {})
                 newly_enabled = row['enabled'] and (not previous.get('enabled') or previous.get('name') != row['name'])
@@ -209,9 +222,9 @@ class Settings:
                     raise ValueError(row['name'] + ': verify access for every role before enabling')
                 # Initial onboarding stores a selection in its non-live setup
                 # directory; its activation step has its own readiness gate.
-                if newly_enabled and self.root.name != 'setup' and not rows[row['id']]['protection_ready']:
+                if newly_enabled and self.scope != 'setup' and not rows[row['id']]['protection_ready']:
                     raise ValueError(row['name'] + ': finish repository setup and check again before enabling')
-            self.save_config(config, expected_generation=generation)
+            self.save_config(config, expected_generation=generation, expected_revision=storage_revision)
         return self.view()
 
     def refresh(self):

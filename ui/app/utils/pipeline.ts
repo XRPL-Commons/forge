@@ -32,7 +32,7 @@ export const STAGES: { id: StageId; label: string; short: string }[] = [
 ]
 
 export type PipelineRow = Pick<IssueRow, 'status' | 'explanation' | 'actions' | 'pull_requests'>
-  & Partial<Pick<IssueRow, 'summary' | 'attempts' | 'approval' | 'merge_blocker' | 'environment_blocker' | 'decision_request' | 'ledger_state' | 'reason_code'>>
+  & Partial<Pick<IssueRow, 'summary' | 'attempts' | 'approval' | 'merge_blocker' | 'environment_blocker' | 'decision_request' | 'ledger_state' | 'reason_code' | 'stage_code' | 'operator_status'>>
   & { reviews?: IssueReview[] | null }
 
 // Codes from issues.py presentation(); human-readable explanations can change.
@@ -73,6 +73,19 @@ function stoppedAt(row: PipelineRow): StageId {
 }
 
 function locate(row: PipelineRow): { at: StageId | null; state: PipelineView['state']; note: string } {
+  if (row.operator_status) {
+    const { code, reason_code, reason } = row.operator_status
+    if (code === 'completed') return { at: reason_code === 'merged' ? 'merged' : null, state: 'done', note: reason }
+    if (code === 'dropped') return { at: null, state: 'closed', note: reason }
+    if (code === 'backlog') return { at: 'queued', state: 'upcoming', note: reason }
+    const stage: Record<string, StageId> = {
+      queued: 'queued', building: 'build', integrating: 'build', reviewing: 'review', auditing: 'audit', merging: 'approval',
+    }
+    const at = stage[row.stage_code ?? ''] ?? reached(row, false)
+    const state = code === 'working' ? 'active'
+      : code === 'attention' ? (reason_code === 'budget_exhausted' ? 'failed' : 'blocked') : 'waiting'
+    return { at, state, note: reason }
+  }
   const code = row.reason_code ?? ''
   const actions = row.actions ?? []
   const failures = row.attempts?.failed ?? 0

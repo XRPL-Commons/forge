@@ -152,7 +152,7 @@ class Service:
         return bool(op.get('providers')) and bool(op.get('image')) and op['image'] == self.setup.runtime()['image']
 
     def complete(self, data, op):
-        config = load(self.root) if data['phase'] == 'active' else self.setup.runtime()
+        config = self.setup.active_runtime() if data['phase'] == 'active' else self.setup.runtime()
         checks, scope = data.get('provider_checks', {}), op.get('providers')
         identifiers = [entry['id'] for entry in config['provider_pool']]
         passed = [key for key, value in checks.items() if value == 'passed']

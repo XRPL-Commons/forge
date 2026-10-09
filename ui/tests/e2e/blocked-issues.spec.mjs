@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 // An issue waiting on other issues has its own status, `blocked`: a calm chip
-// naming what it waits on, a patient cube tied to its prerequisites, its own
+// labelled Blocked, a patient cube tied to its prerequisites, its own
 // Show filter, and an action area that asks nothing of the operator.
 
 function waitForText(page, text) {
@@ -33,11 +33,11 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/issues')
   await waitForText(page, 'Show course progress on the dashboard')
 
-  // The chip names the open prerequisites, calmly, with a link icon beside
-  // the words; the cube waits patiently and is never lit amber.
+  // The chip names the broad status, calmly, with a link icon beside
+  // the words; prerequisites remain in the details and the cube waits patiently.
   const card = page.locator('[data-key="1:612"]')
   const chip = card.locator('[data-status-chip]')
-  assert.equal((await chip.innerText()).trim(), 'Waiting on #590, #601')
+  assert.equal((await chip.innerText()).trim(), 'Blocked')
   assert.equal(await chip.getAttribute('data-tone'), 'calm')
   assert.ok(await chip.locator('.iconify, svg, span[class*="i-lucide"]').count() >= 1, 'the chip carries an icon, not colour alone')
   const look = await card.locator('canvas.cube-portrait').getAttribute('data-look')
@@ -61,7 +61,7 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal((await nothing.innerText()).replace(/\s+/g, ' ').trim(), 'Nothing needed from you. Starts by itself when #590 and #601 close.')
   assert.equal(await nothing.locator('[data-blocking="590"]').getAttribute('href'), '/issues/1%3A590')
   assert.equal(await nothing.locator('[data-blocking="601"]').getAttribute('href'), '/issues/1%3A601')
-  assert.equal((await page.locator('#issue-status').innerText()).trim(), 'Waiting on #590, #601')
+  assert.equal((await page.locator('#issue-status').innerText()).trim(), 'Blocked')
   assert.equal(await page.locator('#issue-workbench').getAttribute('data-mood'), 'patient')
   assert.match(await page.locator('#issue-workbench').getAttribute('aria-label'), /waiting on other issues$/)
   assert.equal(await page.locator('#issue-bubble.attention').count(), 0)

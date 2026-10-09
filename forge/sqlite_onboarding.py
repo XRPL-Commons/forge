@@ -10,9 +10,7 @@ from .credentials import Credentials
 from .state import StateError
 from .sqlite_identity import identity_effect_lock, audit_in
 from .store.runtime import selected, writable
-from .store.configuration import Configuration
 from .store.auxiliary import save_in, job_in
-from .factory.config import load, save, validate
 
 
 def control_in(db, name, enabled, now, details=None):
@@ -104,24 +102,12 @@ class SqliteOnboarding(Onboarding):
 
     def initialize(self, data):
         if not data:
-            with self.database.read_snapshot() as db:
-                row = db.execute("SELECT enabled FROM runtime_controls WHERE name='factory_active'").fetchone()
-            data.update(version=1, generation=str(uuid.uuid4()), phase='active' if row and row[0] else 'setup',
+            from .configuration_authority import ConfigurationAuthority
+            active = ConfigurationAuthority(self.root, database=self.database).active()
+            data.update(version=1, generation=str(uuid.uuid4()), phase='active' if active else 'setup',
                         apps={}, checks={}, probe_jobs=[], operation=None, error=None)
         elif data.get('phase') == 'legacy':
             data['phase'] = 'setup'
-
-    def runtime(self):
-        data = self.store.read()
-        domain = 'runtime.json' if data.get('phase') == 'active' else 'setup/runtime.json'
-        value = Configuration(self.database).get(domain) or Configuration(self.database).get('host-runtime.json')
-        return validate({**(value['settings'] if value else {}), 'enabled': False, 'merge_enabled': False})
-
-    def active_runtime(self):
-        return load(self.root)
-
-    def save_runtime(self, config, *, active):
-        return save(self.root if active else self.root / 'setup', config)
 
     def provider_health(self):
         with self.database.read_snapshot() as db:
