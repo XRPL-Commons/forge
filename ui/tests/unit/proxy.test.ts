@@ -135,6 +135,7 @@ describe('responseHeaders', () => {
     // The upstream's own hardening headers survive the proxy hop.
     headers.set('referrer-policy', 'no-referrer')
     headers.set('x-content-type-options', 'nosniff')
+    headers.set('server-timing', 'cache_hit;dur=0.125, request;dur=1.250')
     headers.set('x-secret', 'nope')
     const out = responseHeaders(headers)
     expect(out).toEqual([
@@ -143,6 +144,7 @@ describe('responseHeaders', () => {
       ['content-type', 'application/json'],
       ['location', '/next'],
       ['referrer-policy', 'no-referrer'],
+      ['server-timing', 'cache_hit;dur=0.125, request;dur=1.250'],
       ['set-cookie', 'a=1'],
       ['set-cookie', 'b=2'],
       ['x-content-type-options', 'nosniff'],

@@ -8,7 +8,7 @@ export const UPSTREAM_TIMEOUT_MS = 30000
 // hardening headers; dropping them would silently weaken every proxied
 // response relative to what the Python server sends directly.
 const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'location', 'cache-control',
-  'referrer-policy', 'x-content-type-options', 'etag', 'x-forge-request-id']
+  'referrer-policy', 'x-content-type-options', 'etag', 'x-forge-request-id', 'server-timing']
 
 type Headers = Record<string, string | undefined>
 export interface GuardInput { method: string; headers: Headers; contentLength?: number; publicOrigin?: string }

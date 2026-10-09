@@ -102,3 +102,31 @@ The projected views supply the start and end positions. A sequence is consumed o
 Initial views, resyncs, idle responses and batches containing any event older than the 1.5-second motion
 window snap to current positions; the UI does not invent intermediate stages or
 replay omitted history.
+
+## HTTP timing evidence
+
+Authenticated cached GETs (`/api/factory`, including `section=board` and
+`section=completed`; `/api/issues`; `/api/delivery`) return `Server-Timing`.
+The UI proxy forwards it on both 200 and 304 responses. All values are durations
+in milliseconds; the header contains no repository, issue, user, or token data.
+
+- `projection` measures the projection callback, when it actually runs.
+- `cache_miss` measures the full cache response operation when that callback runs,
+  including projection, serialization, state fingerprinting, and lock waiting.
+- `cache_hit` measures reuse of a serialized response without projection.
+- `cache_validated` measures an unchanged validator check that skips both the
+  projection and the serialized body lookup. This can succeed after eviction.
+- `conditional` measures the final conditional-response decision when HTTP 304
+  is returned. It does not replace or hide any projection/cache measurements.
+- `request` runs from GET handler entry through response preparation, including
+  authorization. It excludes request parsing, socket transfer, network latency,
+  and UI proxy work, including compression. Nested durations must not be added.
+
+A cache miss does not establish a cold process: expiration, eviction, changed
+state, and a different query can also cause one. Record cold-process evidence
+separately. While normally signed in, inspect these headers in browser DevTools
+Network for the board and completed-history requests. Keep browser/network
+measurements separate from these server durations. No cookie export or extra
+agent grant is needed. The existing `ui/tools/measure-pages.mjs` starts a fresh
+unauthenticated context; its results do not qualify authenticated production
+requests.
