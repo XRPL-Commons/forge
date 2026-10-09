@@ -35,7 +35,7 @@ export default defineEventHandler(async (event) => {
     if (!(result instanceof Buffer)) { setResponseStatus(event, 502); return { ok: false, reason: 'Upstream response too large' } }
     setResponseStatus(event, upstream.status)
     for (const [name, value] of responseHeaders(upstream.headers)) appendResponseHeader(event, name, value)
-    if (req.method === 'GET' && ['/api/issues', '/api/factory'].includes(path.split('?')[0] ?? '')) {
+    if (req.method === 'GET' && ['/api/issues', '/api/factory', '/api/factory/changes'].includes(path.split('?')[0] ?? '')) {
       appendResponseHeader(event, 'vary', 'Accept-Encoding')
       const compressed = await compressJson(result, headers['accept-encoding'], upstream.headers.get('content-type'), upstream.status)
       if (compressed) { setResponseHeader(event, 'content-encoding', 'gzip'); return compressed }

@@ -18,6 +18,11 @@ class StoreInventory:
         self.store, self.settings, self.github = store, settings, github
         self.config, self.clock = config, clock
 
+    def _observed(self, db, key, **payload):
+        db.execute('INSERT INTO events(transaction_id,issue_id,kind,at,actor_id,payload_json) VALUES(?,?,?,?,?,?)',
+                   (str(uuid.uuid4()), key, 'issue_observed', self.clock(), 'supervisor:inventory',
+                    json.dumps({'source': 'inventory', **payload})))
+
     def failure(self, key, reason):
         """Persist one bounded observation, with a retry delay, for this issue."""
         if reason not in {'requirements_stale', 'remote_timestamp_invalid', 'admission_conflict'}:
@@ -27,16 +32,20 @@ class StoreInventory:
             writable(db)
             row = db.execute('SELECT current_revision_id FROM issues WHERE id=?', (key,)).fetchone()
             if row:
+                previous = db.execute('SELECT revision_id,reason_code FROM issue_discovery_observations WHERE issue_id=?', (key,)).fetchone()
                 db.execute('INSERT INTO issue_discovery_observations VALUES(?,?,?,?,?) '
                            'ON CONFLICT(issue_id) DO UPDATE SET revision_id=excluded.revision_id,'
                            'reason_code=excluded.reason_code,observed_at=excluded.observed_at,retry_after=excluded.retry_after',
                            (key, row[0], reason, now, now + self.config['availability_retry_seconds']))
+                if previous is None or tuple(previous) != (row[0], reason):
+                    self._observed(db, key, reason_code=reason)
         return reason
 
     def clear_failure(self, key):
         with self.store.write() as db:
             writable(db)
-            db.execute('DELETE FROM issue_discovery_observations WHERE issue_id=?', (key,))
+            if db.execute('DELETE FROM issue_discovery_observations WHERE issue_id=?', (key,)).rowcount:
+                self._observed(db, key, reason_code=None)
 
     def _label_display(self, repo, key, labels):
         labels_hash=digest(sorted(labels))
@@ -59,6 +68,7 @@ class StoreInventory:
             if current and sorted(json.loads(current[0]))==sorted(labels):
                 from ..store.presentation import record_label_display
                 record_label_display(db,key,labels,events)
+                self._observed(db, key, labels_hash=labels_hash)
 
     def record(self, repo, remote, requirements=None):
         """Inventory facts cannot overwrite a live unit's ordered observations.
@@ -129,6 +139,13 @@ class StoreInventory:
             db.execute('UPDATE issues SET github_state=?,state_reason=?,current_revision_id=?,remote_updated_at=?,collection_generation=collection_generation+1,'
                        'labels_json=?,assignees_json=?,assignee_types_json=?,observed_at=?,reopened_version=?,version=version+1 WHERE id=?',
                        (state, facts['state_reason'], revision, updated, json.dumps(labels), json.dumps(people), json.dumps(types), self.clock(), reopened, key))
+            observed = (state, facts['state_reason'], revision, updated, sorted(labels), sorted(people), types)
+            before = ((previous['github_state'], previous['state_reason'], previous['current_revision_id'],
+                       previous['remote_updated_at'], sorted(json.loads(previous['labels_json'])),
+                       sorted(json.loads(previous['assignees_json'])), json.loads(previous['assignee_types_json']))
+                      if previous else None)
+            if before != observed:
+                self._observed(db, key, revision_id=revision)
         self._label_display(repo,key,labels)
         if complete_requirements(requirements):self.clear_failure(key)
         return key

@@ -1,5 +1,7 @@
 # Operator API contracts and page behaviors (for the Nuxt rebuild)
 
+Current selected-runtime extension: [SQLite factory change feed and shared detail metadata](../../factory-change-feed.md).
+
 Date: 2026-09-22. Source of truth: `legacy/forge-status.py` (server), `forge/factory/control.py`, `forge/factory/issues.py`, `forge/factory/issue_actions.py`, `forge/factory/operator_status.py`, `forge/factory/ledger.py`, `forge/factory/config.py`, `forge/factory/github.py`, `forge/onboarding.py`, `forge/setup_service.py`, `forge/repository_setup.py`, `forge/settings.py`, `forge/setup_help.py`, `forge/navigation.py`, `forge/polling.py`, the legacy pages (`legacy/factory.html`, `legacy/issues.js`, `legacy/issues.html`, `legacy/settings.html`, `legacy/repository-setup.js`, `legacy/repository-setup.html`, `legacy/onboarding.html`, `legacy/markdown.js`) and the browser fixtures in `tests/browser_*.cjs`.
 
 Conventions: types are TypeScript-style. `number` timestamps are Unix seconds (float) unless noted. Fields marked "(unverified)" were not confirmed end to end. Copy inside quotes is exact user-facing text.
