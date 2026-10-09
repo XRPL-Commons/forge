@@ -11,7 +11,7 @@ from .github import GitHub
 
 def repository_commands():
     commands = {}
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules'):
         properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
                       'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
         required = ['repository', 'server']
@@ -81,7 +81,7 @@ def parser():
     requirements = sub.add_parser('requirements')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules'):
         command = repo.add_parser(action)
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
@@ -168,6 +168,9 @@ def execute(args):
             from .workflow import Workflow
             github = GitHub()
             target = {k: v for k, v in github.repository(args.repository).items() if k in ('id', 'name')}
+            if args.repo_command == 'fix-rules':
+                from .rule_fixes import fixes
+                return fixes(client.read(target, 'repository'))
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
                 return client.read(target, 'repository' if args.repo_command == 'inspect' else args.repo_command,
                                    getattr(args, 'number', None), getattr(args, 'page', 1))
@@ -187,6 +190,14 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         result = execute(args)
+        if args.command == 'repo' and args.repo_command == 'fix-rules' and not args.json:
+            print(result['instruction'])
+            for fix in result['fixes']:
+                print('\n' + fix['title'])
+                print(fix['command'] or '\n'.join(str(i + 1) + '. ' + step for i, step in enumerate(fix['steps'])))
+            if not result['fixes']:
+                print('No failing review rules in the latest Forge observation.')
+            return 0
         if args.command == 'skill' and not args.json:
             print(result['skill'])
             return 0

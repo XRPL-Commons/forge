@@ -89,6 +89,7 @@ export interface ProtectionSource {
   kind: 'classic' | 'ruleset'; name: string; url: string; id?: number | null; source_type?: string | null
   // Classic sources missing the controller bypass carry the current bypass list, when GitHub exposed it.
   bypass_allowances?: BypassAllowances | null
+  bypass_actors_visible?: boolean
 }
 export interface ProtectionRequirement { id: 'readable' | 'reviews' | 'stale'; label: string; passed: boolean; detail: string; sources: ProtectionSource[] }
 export interface ProtectionReport {
@@ -426,11 +427,11 @@ export function bypassSourceLabel(source: ProtectionSource, branch: string | nul
 // Replacing `bypass_pull_request_allowances` replaces the whole list, so the
 // command keeps whoever GitHub reported as already allowed.
 export function classicBypassCommand(repo: string, branch: string, slug: string, allowances?: BypassAllowances | null): string {
-  if (!allowances) return ''
+  if (!allowances || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9-]+$/.test(slug)) return ''
   const apps = [...new Set([...allowances.apps, slug])]
   const value = { users: allowances.users, teams: allowances.teams, apps }
   const body = JSON.stringify({ bypass_pull_request_allowances: value }).replaceAll("'", "'\\''")
-  return `gh api -X PATCH repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_pull_request_reviews --input - <<< '${body}'`
+  return `gh api -X PATCH repos/${repo}/branches/${encodeURIComponent(branch).replace(/[!'()*]/g, value => '%' + value.charCodeAt(0).toString(16).toUpperCase())}/protection/required_pull_request_reviews --input - <<< '${body}'`
 }
 
 export function rulesetHref(row: RepositoryRow, revision: string): string {
@@ -577,4 +578,19 @@ export function deploymentCard(
     error: [deployment.error, profile ? observed?.error : null].filter(Boolean).join(' · '),
     note: deployment.reread_requested ? 'A re-read is queued for the next cycle.' : '',
   }
+}
+
+
+export function rulesetBypassCommand(repo: string, source: ProtectionSource, appId?: number): string {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(appId) || !appId || appId < 1 || !Number.isSafeInteger(source.id) || !source.id || source.id < 1 || source.bypass_actors_visible !== true) return ''
+  const path = source.source_type === 'Repository' ? `repos/${repo}/rulesets/${source.id}`
+    : source.source_type === 'Organization' ? `orgs/${repo.split('/')[0]}/rulesets/${source.id}` : null
+  if (!path) return ''
+  const expression = 'if (.bypass_actors | type) != "array" or (.rules | type) != "array" or .target != "branch" '
+    + 'then error("Full branch ruleset and bypass list required") else '
+    + '{name,target,enforcement,conditions,rules,bypass_actors: '
+    + '(.bypass_actors + (if any(.bypass_actors[]; .actor_type == "Integration" and .actor_id == '
+    + appId + ') then [] else [{actor_type:"Integration",actor_id:' + appId
+    + ',bypass_mode:"pull_request"}] end))} end'
+  return `forge_rules=$(gh api ${path} | jq -e '${expression}') &&\nprintf '%s\\n' "$forge_rules" | gh api --method PUT ${path} --input -`
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, groupIssues, isFresh, isProgressStatus, readout, warnings,
+  COLUMN_ROLES, COLUMN_TITLES, destination, elapsed, factoryFreshness, groupIssues, isFresh, isProgressStatus, readout, warnings,
   type CardModel, type ColumnRole, type FactoryView, type Warning,
 } from '~/utils/factory'
 import { lineAnalyse, lineState } from '~/utils/factoryLine'
@@ -25,14 +25,8 @@ const fence = computed(() => { const payload = poll.data.value; return payload &
 const view = computed(() => { const payload = poll.data.value; return payload && payload.ok !== false ? payload : null })
 const connectionLost = computed(() => !!poll.error.value && !!poll.data.value)
 const fresh = computed(() => isFresh(view.value, now.value))
-const observedAt = computed(() => (view.value?.observation as { at?: number } | undefined)?.at ?? null)
 
-const freshness = computed(() => {
-  if (connectionLost.value) return 'Reconnecting · last known state'
-  if (!view.value) return 'Connecting…'
-  if (fresh.value && observedAt.value) return `Live · checked ${elapsed(now.value - observedAt.value)} ago`
-  return 'Updates delayed · last known state'
-})
+const freshness = computed(() => factoryFreshness(view.value, now.value, connectionLost.value))
 
 // At most one message block above the factory line: connection lost -> the
 // freshness pill only; otherwise the banner(s); otherwise the operator

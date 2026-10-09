@@ -141,6 +141,14 @@ export function isFresh(view: FactoryView | null | undefined, now: number): bool
   return age >= -5 && age < maxAge(view?.runtime)
 }
 
+export function factoryFreshness(view: FactoryView | null, now: number, disconnected = false): string {
+  if (disconnected) return 'Reconnecting · last known state'
+  if (!view) return 'Connecting…'
+  if (!view.active) return 'Factory not running · last known state'
+  const observed = view.observation?.at
+  return isFresh(view, now) && observed ? `Live · checked ${elapsed(now - observed)} ago` : 'Updates delayed · last known state'
+}
+
 export function jobFor(view: FactoryView | null | undefined, issue: LedgerIssueView): JobView | null {
   if (!issue.active) return null
   return (view?.jobs ?? []).find(job => job.id === issue.active && !job.cleanup && !job.outcome) ?? null

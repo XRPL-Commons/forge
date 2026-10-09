@@ -7,7 +7,9 @@
 // behavior of keeping each `set-cookie` as its own entry. The
 // `responseHeaders` test below depends on that real behavior.
 import { describe, it, expect } from 'vitest'
-import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped } from '../../server/utils/proxy'
+import { PassThrough } from 'node:stream'
+import type { IncomingMessage } from 'node:http'
+import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
   host: '100.111.151.38:8787', origin: 'http://100.111.151.38:8787', 'sec-fetch-site': 'same-origin',
@@ -240,5 +242,43 @@ describe('mutation request identity', () => {
     const identifier = 'a75b2d4e-6861-44f1-a9cc-6c44ba21092d'
     expect(upstreamHeaders({ 'x-forge-request-id': identifier }, 'POST', '127.0.0.1:8788')['x-forge-request-id']).toBe(identifier)
     expect(responseHeaders(new Headers({ 'x-forge-request-id': identifier }))).toContainEqual(['x-forge-request-id', identifier])
+  })
+})
+
+
+describe('bounded request bodies', () => {
+  const stream = () => new PassThrough() as unknown as IncomingMessage
+  it('accepts a missing content length while still enforcing a streamed bound', async () => {
+    expect(guardAction({ ...base, contentLength: undefined })).toEqual({ ok: true })
+    const request = stream()
+    const result = readRequestBody(request, 8, new AbortController().signal)
+    request.emit('data', Buffer.from('{')); request.emit('data', Buffer.from('}')); request.emit('end')
+    expect((await result).toString()).toBe('{}')
+    expect(request.listenerCount('data')).toBe(0)
+  })
+  it('rejects a chunked body as soon as it exceeds the bound', async () => {
+    const request = stream()
+    const result = readRequestBody(request, 2, new AbortController().signal)
+    request.emit('data', Buffer.from('123'))
+    await expect(result).rejects.toMatchObject({ status: 413 })
+    expect(request.listenerCount('data')).toBe(0)
+  })
+  it('returns 400 for declared and streamed empty bodies', async () => {
+    expect(guardAction({ ...base, contentLength: 0 })).toMatchObject({ status: 400 })
+    const request = stream()
+    const result = readRequestBody(request, 8, new AbortController().signal)
+    request.emit('end')
+    await expect(result).rejects.toMatchObject({ status: 400 })
+  })
+  it('handles aborted and slow bodies before any upstream fetch', async () => {
+    const request = stream()
+    const result = readRequestBody(request, 8, new AbortController().signal)
+    request.emit('aborted')
+    await expect(result).rejects.toMatchObject({ status: 400 })
+    const slow = stream(); const controller = new AbortController()
+    const waiting = readRequestBody(slow, 8, controller.signal)
+    controller.abort()
+    await expect(waiting).rejects.toMatchObject({ status: 408 })
+    expect(slow.listenerCount('data')).toBe(0)
   })
 })

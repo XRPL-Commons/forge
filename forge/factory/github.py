@@ -587,7 +587,9 @@ class GitHub:
                 mode = None
             if mode in ('always', 'pull_requests_only', 'exempt'):
                 continue
-            (missing if mode == 'never' else unknown).append(source)
+            (missing if mode == 'never' else unknown).append(
+                {**source, 'bypass_actors_visible': isinstance(found.get('bypass_actors'), list)}
+                if mode == 'never' else source)
         if missing:
             return {'status': 'missing', 'sources': missing, 'controller_app_id': app_id, 'detail':
                     f'Add the Forge controller App (ID {app_id}) as a pull request bypass actor, or Forge cannot merge approved work.'}
