@@ -12,13 +12,21 @@ from ..store.artifacts import Artifacts, ArtifactExpired
 from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
 from ..store.transitions import manifest_hash
-from .config import validate
+from .config import validate, merge_mode
 from .live_output import summarize
 from .status_projection import operator_status
 
 
 LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 'reviewing': 'built',
                 'auditing': 'reviewed', 'merging': 'audited', 'merged': 'merged', 'closed': 'cancelled', 'dissolved': 'cancelled'}
+
+
+# Public history can use an imported job's explicit member identity even when
+# its original requirements revision was never recorded. This does not create
+# an execution pin or select a member from the unit's current membership.
+JOB_MEMBER_SCOPE = "(m.id IN (SELECT p.member_id FROM job_members p WHERE p.job_id=j.id) OR " \
+    "(m.id=j.member_id AND NOT EXISTS(SELECT 1 FROM job_members p WHERE p.job_id=j.id)))"
+ISSUE_JOB_SCOPE = 'EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=? AND '+JOB_MEMBER_SCOPE+')'
 
 
 def action_revision(db, issue_id):
@@ -99,7 +107,7 @@ class PipelineViews:
 
     def _collections(self, db, issue, unit_id, candidate, *, detail, config):
         numbers={row[0] for row in db.execute('SELECT issue_number FROM revision_display_dependencies WHERE revision_id=? ORDER BY issue_number LIMIT 101',(issue['current_revision_id'],))}
-        numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? ORDER BY i.github_number LIMIT 101',(issue['id'],issue['current_revision_id'])))
+        numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? AND i.repository_id=? ORDER BY i.github_number LIMIT 101',(issue['id'],issue['current_revision_id'],issue['repository_id'])))
         if unit_id:
             source=db.execute('SELECT d.requirements_body,p.source_content_hash FROM dependency_observations d JOIN revision_presentation p ON p.revision_id=? WHERE d.unit_id=?',(issue['current_revision_id'],unit_id)).fetchone()
             if source and source['requirements_body']==source['source_content_hash']:
@@ -124,15 +132,48 @@ class PipelineViews:
                     seen.add(value['login'].lower());reviewers.append({'login':value['login'],'name':value.get('name') or '', 'source':source})
         return sorted(numbers),pulls,reviewers
 
+    @staticmethod
+    def _prerequisites(db, issue, unit_id):
+        from .prerequisites import blocker, references
+        from ..store.repository_requirements import orders_in
+        check=db.execute('SELECT facts_json FROM dependency_checks WHERE unit_id=? AND requirements_revision_id=? ORDER BY generation DESC LIMIT 1',
+                         (unit_id,issue['current_revision_id'])).fetchone() if unit_id else None
+        facts={fact['reference']:fact for fact in json.loads(check[0])} if check else {}
+        refs=set(facts) | set(orders_in(db,issue['id'],issue['current_revision_id']))
+        if 'body' in issue:
+            refs.update(references(issue['body'],issue['repository']))
+        reasons={}
+        if unit_id and check is None:
+            # Imported observations remain explicit evidence until the first
+            # current prerequisite check replaces them.
+            for row in db.execute("SELECT kind,value_json FROM dependency_observation_members WHERE unit_id=?",(unit_id,)):
+                ref=issue['repository'].lower()+'#'+str(json.loads(row['value_json']))
+                refs.add(ref)
+                if row['kind']=='blocked':reasons[ref]='prerequisite_open'
+        if unit_id:
+            for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND member_id=? AND code='dependency' AND resolved_at IS NULL",
+                                   (unit_id,issue['lifecycle']['member_id'])):
+                reasons.update((row['reference'],row['reason']) for row in json.loads(gate[0]).get('blocked',[]))
+        result=[]
+        for ref in sorted(refs):
+            repository,number=ref.rsplit('#',1)
+            fact=facts.get(ref)
+            reason=reasons.get(ref) or (blocker(fact) if fact else 'prerequisite_unobserved')
+            result.append(dict(reference=ref,repository=repository,number=int(number),
+                kind=fact.get('kind') if fact else None,reason=reason,complete=reason is None,
+                url='https://github.com/'+repository+('/pull/' if fact and fact.get('kind')=='pull_request' else '/issues/')+number))
+        return result
+
     def _row(self, db, issue_id, *, detail=False, config):
         issue = Queries._issue(db, issue_id, include_body=detail)
         life = issue['lifecycle']
         unit_id = life['unit_id'] or life['historical_unit_id']
         unit = dict(db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()) if unit_id else None
-        jobs = db.execute("SELECT id,role,phase,outcome,cleanup,fenced,created_at FROM jobs WHERE unit_id=? "
-                          'ORDER BY created_at DESC,id DESC LIMIT 6', (unit_id,)).fetchall() if unit_id else []
+        scope = ISSUE_JOB_SCOPE
+        jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + scope +
+                          ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id,issue_id)).fetchall() if unit_id else []
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
-        cleanup = bool(unit_id and db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0 LIMIT 1', (unit_id,)).fetchone())
+        cleanup = bool(unit_id and db.execute('SELECT 1 FROM jobs j WHERE j.unit_id=? AND j.cleanup=0 AND ' + scope + ' LIMIT 1', (unit_id,issue_id)).fetchone())
         pending = db.execute("SELECT 1 FROM issue_action_requests WHERE issue_id=? AND status='pending' LIMIT 1", (issue_id,)).fetchone() is not None
         display_candidate_id=life['candidate_id'] or (unit['current_candidate_id'] if unit else None)
         candidate = db.execute('SELECT * FROM candidates WHERE id=?', (display_candidate_id,)).fetchone() if display_candidate_id else None
@@ -144,7 +185,7 @@ class PipelineViews:
         context=db.execute('SELECT * FROM unit_context WHERE unit_id=?',(unit_id,)).fetchone() if unit_id else None
         gates={}
         if unit_id:
-            for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'])):
+            for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'],life['member_id'])):
                 value=json.loads(gate['details_json']);gates[gate['code']]=(dict(gate),value.get('value',value))
         decision=gates.get('decision_required',(None,None))[1]
         verification=gates.get('verification_human') or gates.get('verification_ci')
@@ -164,11 +205,9 @@ class PipelineViews:
         held_by=[event for event in label_events if event['label'] in config['hold_labels'] and event['label'] in issue['labels']] or None
         display=db.execute('SELECT source_content_hash FROM revision_presentation WHERE revision_id=?',(issue['current_revision_id'],)).fetchone()
         checked=context['last_observed_at'] if context and ('legacy_reconciliation' in gates or unit['state'] in {'merged','closed','dissolved'}) else issue['observed_at'] if unit else None
-        blocked_dependencies=[]
-        if unit_id:
-            check=db.execute('SELECT facts_json FROM dependency_checks WHERE unit_id=? AND requirements_revision_id=? ORDER BY generation DESC LIMIT 1',(unit_id,issue['current_revision_id'])).fetchone()
-            if check:blocked_dependencies=[fact['number'] for fact in json.loads(check[0]) if fact['state']!='closed']
-            else:blocked_dependencies=[json.loads(value[0]) for value in db.execute("SELECT value_json FROM dependency_observation_members WHERE unit_id=? AND kind='blocked' ORDER BY position LIMIT 100",(unit_id,))]
+        prerequisites=self._prerequisites(db,issue,unit_id)
+        blocked_dependencies=[row['number'] for row in prerequisites
+                              if not row['complete'] and row['reason']!='prerequisite_unobserved' and row['repository']==issue['repository'].lower()]
         charges = db.execute("SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries b "
                              'JOIN attempts a ON a.id=b.attempt_id WHERE a.unit_id=? AND a.budget_generation=?',
                              (unit_id, unit['budget_generation'])).fetchone()[0] if unit else 0
@@ -181,7 +220,7 @@ class PipelineViews:
             legacy = 'investigating'
         elif reason:
             legacy = 'hold'
-        environment = db.execute('SELECT choice_json,override_json,environment_hold_json FROM unit_environment_observations WHERE unit_id=?', (unit_id,)).fetchone() if unit_id else None
+        environment = db.execute('SELECT choice_json,override_json,environment_hold_json FROM issue_environment_observations WHERE issue_id=?', (issue_id,)).fetchone() if unit_id else None
         if environment and environment['environment_hold_json'] and unit['state'] in {'merged','closed','dissolved'}:
             environment_block=json.loads(environment['environment_hold_json'])
         fresh = not issue.get('body_truncated') and issue['observed_at'] is not None and 0 <= self.clock()-issue['observed_at'] < 300
@@ -192,23 +231,26 @@ class PipelineViews:
         if isinstance(written,dict) and written.get('headline'):
             from .contracts import clamp,plain_text,HEADLINE_LIMIT
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
+        delivery_approved = bool(unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone())
         row = dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
             title=issue['title'], content_hash=display[0] if display else issue['content_hash'], body_truncated=bool(issue.get('body_truncated')),
             state=issue['github_state'], state_reason=issue['state_reason'], updated_at=issue['remote_updated_at'],
             labels=issue['labels'], assignees=issue['assignees'], assignee_types=issue['assignee_types'], status=status, reason_code=reason, operator_status=operator,
             stage_code=life['stage_code'], lifecycle=life, ledger_state=legacy, explanation=wording,
             summary=summary,
-            actions=actions, closable=fresh and issue['github_state']=='open' and not pending,
+            actions=actions, closable=fresh and issue['github_state']=='open' and not pending and not delivery_approved,
+            delivery_approved=delivery_approved,
             setup_needed=reason=='repository_setup', environment_blocker=environment_block.get('detail') or environment_block.get('summary'),
             decision_request=decision,
-            approval=approval,
+            approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
             verification_request={**verification_view,'can_confirm':fresh and reason=='verification_human'} if verification_view else None,
             approvals=approvals, last_checked=checked, merge_blocker={'reason':merge_block.get('reason') or wording} if merge_block else None,
             environment={'choice':json.loads(environment['choice_json'] or 'null') if environment else None,
                          'override':json.loads(environment['override_json'] or 'null') if environment else None,
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
             pull_requests=pull_requests,
-            dependencies=dependency_numbers, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
+            dependencies=dependency_numbers, prerequisites=prerequisites, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
+            delivery_id=unit_id if delivery_approved else None,
             active=active['id'] if active else None, attempts={'failed':charges,'limit':3} if charges else None, held_by=held_by)
         if detail:
             row['body'] = issue['body']
@@ -278,7 +320,7 @@ class PipelineViews:
             if key is not None:
                 row=self._row(db,key,detail=True,config=config)
                 job_ids = [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) '
-                    'AND EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=?) '
+                    'AND '+ISSUE_JOB_SCOPE+' '
                     'ORDER BY j.created_at DESC,j.id DESC LIMIT 100', (key,))]
                 from .changes import cursor
                 from ..store.operations import deployment_views
@@ -304,18 +346,53 @@ class PipelineViews:
 
     def job(self, job_id):
         with self.store.read_snapshot() as db:
-            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name,'
-                '(SELECT issue_id FROM unit_issues WHERE unit_id=j.unit_id ORDER BY joined_at LIMIT 1) AS issue_key '
+            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name '
                 'FROM jobs j LEFT JOIN job_launches l ON l.job_id=j.id LEFT JOIN job_execution_state e ON e.job_id=j.id '
                 'LEFT JOIN job_public_metadata p ON p.job_id=j.id JOIN units u ON u.id=j.unit_id JOIN repositories r ON r.id=u.repository_id WHERE j.id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
-            issue=db.execute('SELECT github_number FROM issues WHERE id=?',(row['issue_key'],)).fetchone()
+            members=[dict(member) for member in db.execute('SELECT m.id AS member_id,m.issue_id AS issue_key,i.github_number AS issue_number '
+                'FROM jobs j JOIN unit_issues m ON m.unit_id=j.unit_id AND '+JOB_MEMBER_SCOPE+' '
+                'JOIN issues i ON i.id=m.issue_id WHERE j.id=? ORDER BY m.id',(job_id,))]
+            assignment=db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?',(job_id,)).fetchone()
+            child=db.execute('SELECT d.delegation_key,p.builder_id,p.parent_job_id FROM job_delegations d JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?',(job_id,)).fetchone()
+            singular=members[0] if len(members)==1 else None
             return {**{k:row[k] for k in ('id','role','slot','provider','provider_id','model','phase','outcome','created_at','deadline','branch')},
                     'phase':row['source_phase'] or row['phase'],'execution_phase':row['phase'],
                     'cleanup':bool(row['cleanup']),'fenced':bool(row['source_fenced'] if row['source_fenced'] is not None else row['fenced']),
-                    'execution_fenced':bool(row['fenced']),'issue_key':row['issue_key'],
-                    'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':issue[0],
+                    'execution_fenced':bool(row['fenced']),'issue_key':singular['issue_key'] if singular else None,
+                    'unit_id':row['unit_id'],'members':members,
+                    'builder_id':assignment['builder_id'] if assignment else child['builder_id'] if child else None,
+                    'builder_stage':assignment['stage'] if assignment else 'child' if child else None,
+                    'parent_job_id':child['parent_job_id'] if child else None,
+                    'delegation_key':child['delegation_key'] if child else None,
+                    'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':singular['issue_number'] if singular else None,
                     'started_at':row['started_at'],'observed_at':row['captured_at'],'last_observed':row['captured_at']}
+
+    @projection
+    def delivery(self, issue_key, *, after=''):
+        """Lazy, bounded execution tree without logs, notes or request payloads."""
+        from ..store.delivery import DeliveryQueries
+        if not isinstance(after,str) or len(after)>200:
+            raise ValueError('Invalid delivery history cursor')
+        with self.store.read_snapshot() as db:
+            issue = Queries._issue(db, issue_key)
+            unit_id = issue['lifecycle']['unit_id'] or issue['lifecycle']['historical_unit_id']
+            if not unit_id or not db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone():
+                raise ValueError('This issue has no approved delivery')
+            tree = DeliveryQueries(self.store).tree(unit_id,after=after,limit=50)
+            members = [dict(row) for row in db.execute('SELECT m.id,m.issue_id AS issue_key,m.state,i.github_number AS number,r.title '
+                'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=m.requirements_revision_id '
+                'WHERE m.unit_id=? AND m.left_at IS NULL ORDER BY i.github_number',(unit_id,))]
+            unit = db.execute('SELECT state,current_candidate_id FROM units WHERE id=?',(unit_id,)).fetchone()
+            candidate = db.execute('SELECT pull_number FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone()
+            outputs = {row['member_id']:row for row in tree['outputs']}
+            for member in members:
+                member['output_commit'] = outputs.get(member['id'],{}).get('commit_oid')
+            return dict(unit_id=unit_id,version=tree['version'],state=unit['state'],repo_id=issue['repository_id'],
+                repo=issue['repository'],builder_id=tree['builder']['id'] if tree['builder'] else None,
+                candidate_pr=candidate[0] if candidate else None,members=members,
+                jobs=[self.job(job['id']) for job in tree['jobs']],next_cursor=tree['next_cursor'],
+                charged_failures=tree['charged_failures'],failure_limit=3)
 
     def output(self, job_id):
         with self.store.read_session() as db:
@@ -389,8 +466,10 @@ class PipelineViews:
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
             if section in (None, 'board') and len(issues) < size:
-                failed = db.execute("SELECT x.id,d.observed_at FROM public_issue_index x "
-                    'JOIN issue_discovery_observations d ON d.issue_id=x.id '
+                # Discovery is sparse. Keep it as the outer input so an empty
+                # observation set does not classify the whole issue backlog.
+                failed = db.execute("SELECT x.id,d.observed_at FROM issue_discovery_observations d "
+                    'CROSS JOIN public_issue_index x ON x.id=d.issue_id '
                     "WHERE x.unit_id IS NULL AND x.public_status='attention' "
                     + ('AND x.id=? ' if issue is not None else '')
                     + 'ORDER BY d.observed_at DESC,x.id LIMIT ?',
@@ -409,11 +488,17 @@ class PipelineViews:
             runner_filter="(j.role='recovery' OR j.fenced=1 OR j.outcome IS NOT NULL OR NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.unit_id=j.unit_id AND m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved')))"
             if section=='runners':job_clauses.append(runner_filter)
             if issue is not None:
-                job_clauses.append('EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=?)');job_params.append(issue)
+                job_clauses.append(ISSUE_JOB_SCOPE);job_params.append(issue)
             job_ids=[] if section=='completed' else [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE '+' AND '.join(job_clauses)+' ORDER BY j.created_at DESC,j.id DESC LIMIT 100',job_params)]
             slots={r['slot']:r['job_id'] for r in db.execute('SELECT slot,job_id FROM job_launches l JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 ORDER BY slot LIMIT 256')}
-            counts=db.execute("SELECT COUNT(*) AS total,SUM("+COMPLETION_SQL+">=?) AS day,SUM("+COMPLETION_SQL+">=?) AS week FROM units u WHERE state='merged'",(self.clock()-86400,self.clock()-604800)).fetchone()
-            completed_count=db.execute('SELECT COUNT(*) FROM public_issue_index x WHERE '+completed).fetchone()[0]
+            # Both windows consume the same terminal event. Materialize that
+            # timestamp once instead of scanning retained unit history twice.
+            counts=db.execute("WITH completed AS MATERIALIZED (SELECT "+COMPLETION_SQL+
+                " AS at FROM units u WHERE state='merged') SELECT COUNT(*) AS total,SUM(at>=?) AS day,SUM(at>=?) AS week FROM completed",
+                (self.clock()-86400,self.clock()-604800)).fetchone()
+            # Count issue identities, so SQLite can omit blocker joins whose
+            # columns are irrelevant to the canonical terminal predicates.
+            completed_count=db.execute('SELECT COUNT(*) FROM (SELECT DISTINCT x.id FROM public_issue_index x WHERE '+completed+')').fetchone()[0]
             runner_count=db.execute('SELECT COUNT(*) FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) AND '+runner_filter).fetchone()[0]
             running=bool(db.execute("SELECT 1 FROM jobs WHERE phase='running' AND cleanup=0 LIMIT 1").fetchone())
             accounts=[]

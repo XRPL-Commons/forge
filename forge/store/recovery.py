@@ -1,7 +1,9 @@
 """One investigation per failed assignment; findings never authorize publication.
 
-Recovery leases bypass only their own recovery wait and the failure budget. Any
-operator, ownership, setup or other applicable gate still blocks the worker.
+Recovery leases bypass their own recovery wait and the failure budget. Operator,
+ownership and setup gates still block the worker. Closure, changed requirements
+and invalidated current outputs stop implementation but cannot erase the
+diagnostic obligation against preserved inputs.
 Publication recovery is a separate controller-verified command, bound to the
 original build assignment, which corrects its original charge exactly once.
 """
@@ -31,15 +33,35 @@ def record_failure_facts(db, unit, job, evidence, now, *, store, retry_stage=Non
     _artifact(db, job['id'], 'failure_evidence', _json({**evidence, 'logs_excerpt': excerpt}).encode(), now)
 
 
+def recovery_manifest_in(db, failed):
+    manifest = dict(failed_job_id=failed['id'], failed_attempt_id=failed['attempt_id'],
+                    failed_input_manifest_hash=manifest_hash(json.loads(failed['input_manifest_json'])))
+    members = [dict(row) for row in db.execute('SELECT member_id,requirements_revision_id FROM job_members WHERE job_id=? ORDER BY member_id', (failed['id'],))]
+    if failed['member_id'] is not None:
+        manifest['requirements_revision_id'] = next(member['requirements_revision_id'] for member in members if member['member_id']==failed['member_id'])
+    else:
+        manifest['members'] = members
+    return manifest
+
+
 def pending_mandatory(db, unit_id):
     return db.execute("SELECT 1 FROM attempt_failures WHERE unit_id=? AND recovery_required=1 AND investigation!='complete' LIMIT 1", (unit_id,)).fetchone() is not None
 
 
-def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recovery_job_id=None):
+def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recovery_job_id=None, *, diagnostic=True):
     gates = applicable_gates(db, unit, member_id, candidate_id)
     blocked = []
     for gate in gates:
         details = json.loads(gate['details_json'])
+        if diagnostic and (
+                gate['code'] == 'external_change' and gate['id'] is None and details.get('reason') == 'issue_closed'
+                or gate['code'] == 'membership_decision' and details.get('reason') in {
+                    'member_closed', 'requirements_changed', 'requirements_revision_changed'}
+                or gate['code'] == 'dependency' and gate['id'] is None
+                   and details.get('reason') == 'prerequisite_output_pending'):
+            # These gates retain the approved implementation scope. A recovery
+            # reads its original failure and cannot change that scope.
+            continue
         if gate['code'] == 'budget_exhausted':
             continue
         if gate['code'] == 'recovery_pending' and details.get('job_id') == failed_job_id:
@@ -123,7 +145,6 @@ class Recovery(Executions):
         payload = dict(failed_job_id=failed_job_id, slot=slot, execution_fence=execution_fence, launch=launch.payload())
         def change(db, unit):
             self._live(unit)
-            member = self._singleton(db, unit)
             failed = db.execute('SELECT j.*,a.input_manifest_json FROM jobs j JOIN attempts a ON a.id=j.attempt_id '
                                 'WHERE j.id=? AND j.unit_id=?', (failed_job_id, unit['id'])).fetchone()
             failure = db.execute('SELECT * FROM attempt_failures WHERE attempt_id=?', (failed['attempt_id'],)).fetchone() if failed else None
@@ -132,22 +153,20 @@ class Recovery(Executions):
                 raise TransitionError('recovery requires an uninvestigated cleaned confirmed failure')
             if db.execute('SELECT 1 FROM recovery_assignments WHERE failed_job_id=?', (failed_job_id,)).fetchone():
                 raise TransitionError('failed assignment already has its investigation')
-            if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0', (unit['id'],)).fetchone():
+            if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0 AND (member_id IS NULL OR member_id IS ? OR ? IS NULL)', (unit['id'],failed['member_id'],failed['member_id'])).fetchone():
                 raise TransitionError('prior workers require verified cleanup')
             gates = db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND code='recovery_pending' AND resolved_at IS NULL", (unit['id'],)).fetchall()
             if not any(json.loads(row[0]).get('job_id') == failed_job_id for row in gates):
                 raise TransitionError('failed assignment no longer awaits recovery')
-            if recovery_gates(db, unit, failed_job_id, member['id'], unit['current_candidate_id']):
+            if recovery_gates(db, unit, failed_job_id, failed['member_id'], unit['current_candidate_id']):
                 raise TransitionError('an applicable gate blocks recovery')
             attempt_id, job_id = _id(command.request_id, 'attempt'), _id(command.request_id, 'job')
-            manifest = dict(failed_job_id=failed_job_id, failed_attempt_id=failed['attempt_id'],
-                failed_input_manifest_hash=manifest_hash(json.loads(failed['input_manifest_json'])),
-                requirements_revision_id=member['requirements_revision_id'])
+            manifest = recovery_manifest_in(db, failed)
             db.execute('INSERT INTO attempts(id,unit_id,member_id,membership_generation,assignment_generation,input_manifest_json,budget_generation,created_at) '
-                'VALUES(?,?,?,?,?,?,?,?)', (attempt_id, unit['id'], member['id'], unit['membership_generation'], unit['fencing_generation'],
+                'VALUES(?,?,?,?,?,?,?,?)', (attempt_id, unit['id'], failed['member_id'], unit['membership_generation'], unit['fencing_generation'],
                                            _json(manifest), unit['budget_generation'], self.clock()))
             db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,candidate_id,role,phase,created_at) VALUES(?,?,?,?,?,'recovery','reserved',?)",
-                       (job_id, unit['id'], attempt_id, member['id'], unit['current_candidate_id'], self.clock()))
+                       (job_id, unit['id'], attempt_id, failed['member_id'], unit['current_candidate_id'], self.clock()))
             db.execute('INSERT INTO job_leases(slot,job_id,execution_fence,acquired_at) VALUES(?,?,?,?)', (slot, job_id, execution_fence, self.clock()))
             db.execute('INSERT INTO recovery_assignments VALUES(?,?,?,?)', (job_id, failed_job_id, failed['attempt_id'], self.clock()))
             insert_launch(db, job_id, slot, execution_fence, payload['launch'], self.clock())
@@ -163,9 +182,7 @@ class Recovery(Executions):
             raise TransitionError('findings require the cleaned exact recovery assignment')
         failed = dict(db.execute('SELECT j.*,a.input_manifest_json,a.budget_generation AS failed_budget FROM jobs j '
                                 'JOIN attempts a ON a.id=j.attempt_id WHERE j.id=?', (assignment['failed_job_id'],)).fetchone())
-        expected = dict(failed_job_id=failed['id'], failed_attempt_id=failed['attempt_id'],
-                        failed_input_manifest_hash=manifest_hash(json.loads(failed['input_manifest_json'])),
-                        requirements_revision_id=input_manifest.get('requirements_revision_id'))
+        expected = recovery_manifest_in(db, failed)
         if input_manifest != expected:
             raise TransitionError('investigation does not identify the exact failed input')
         current = bool(current and not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id))
@@ -183,7 +200,8 @@ class Recovery(Executions):
             if json.loads(gate['details_json']).get('job_id') == failed['id']:
                 self._resolve(db, command, gate['id'], {'investigation_job_id': job['id'], 'incomplete': findings['incomplete']})
         approach = False
-        if current and not publication:
+        implementation = not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job['id'], diagnostic=False)
+        if current and not publication and implementation:
             related = db.execute('SELECT f.findings_json FROM attempt_failures f JOIN attempts a ON a.id=f.attempt_id '
                 'WHERE f.unit_id=? AND a.budget_generation=? AND EXISTS(SELECT 1 FROM budget_entries b WHERE b.attempt_id=a.id AND b.kind=\'charge\') '
                 'AND NOT EXISTS(SELECT 1 FROM budget_entries b WHERE b.attempt_id=a.id AND b.kind=\'correction\') ORDER BY f.position',
@@ -219,7 +237,7 @@ class Recovery(Executions):
         def change(db, unit):
             job, failed, current = self._owned_recovery(db, unit, job_id, execution_fence, input_manifest)
             answer = self._finish(db, command, unit, job, failed, current, findings)
-            if current and gates:
+            if current and gates and not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
                 if unit['current_candidate_id'] is None:
                     raise TransitionError('verification requires an exact current candidate')
                 for gate in gates:
@@ -238,18 +256,32 @@ class Recovery(Executions):
             job, failed, current = self._owned_recovery(db, unit, job_id, execution_fence, input_manifest)
             if not current:
                 return {**self._finish(db, command, unit, job, failed, False, findings), 'corrected': False}
-            if failed['role'] != 'build' or unit['current_candidate_id'] is not None or unit['state'] != 'building':
-                raise TransitionError('only the current failed build can recover its publication')
+            if recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
+                return {**self._finish(db, command, unit, job, failed, True, findings), 'corrected': False}
+            owner = db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(failed['id'],)).fetchone()
+            child = db.execute('SELECT 1 FROM job_delegations WHERE job_id=?',(failed['id'],)).fetchone()
+            expected_phase = 'integrating' if owner else 'building'
+            if (failed['role'] != 'build' or child or (owner and owner['stage'] != 'integration')
+                    or unit['current_candidate_id'] is not None or unit['state'] != expected_phase):
+                raise TransitionError('only the current failed publisher can recover its publication')
             original = json.loads(failed['input_manifest_json'])
-            member = self._singleton(db, unit)
-            revision = db.execute('SELECT requirements_hash FROM issue_revisions WHERE id=?', (member['requirements_revision_id'],)).fetchone()
+            if owner:
+                from .delivery import Delivery
+                expected = Delivery._builder_manifest_in(db,unit,'integration',original.get('base_oid'),original.get('policy_hash'))
+                requirements_current = original == expected
+                requirements_hash = expected['requirements_hash']
+                Delivery._publication_target_in(expected,candidate)
+            else:
+                member = self._singleton(db, unit)
+                requirements_current = member['requirements_revision_id'] == original.get('requirements_revision_id')
+                requirements_hash = db.execute('SELECT requirements_hash FROM issue_revisions WHERE id=?', (member['requirements_revision_id'],)).fetchone()[0]
             launch = db.execute('SELECT branch FROM job_launches WHERE job_id=?', (failed['id'],)).fetchone()
             observed = evidence.get('observed_at')
             if (evidence.get('verified') is not True or evidence.get('failed_job_id') != failed['id']
                     or type(observed) not in (int, float) or not self.clock()-60 <= observed <= self.clock()
-                    or member['requirements_revision_id'] != original.get('requirements_revision_id')
+                    or not requirements_current
                     or candidate.base_oid != original.get('base_oid') or candidate.policy_hash != original.get('policy_hash')
-                    or candidate.input_manifest_hash != manifest_hash(original) or candidate.requirements_hash != revision[0]
+                    or candidate.input_manifest_hash != manifest_hash(original) or candidate.requirements_hash != requirements_hash
                     or launch is None or candidate.branch != launch[0]
                     or any(evidence.get(key) != getattr(candidate, key) for key in ('head_oid','base_oid','pull_number','policy_hash','requirements_hash','input_manifest_hash'))):
                 raise TransitionError('publication proof does not match the original failed assignment')
@@ -270,7 +302,7 @@ class Recovery(Executions):
             db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,attempt_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,?,'publication','pass',?,?,?)",
                 (_id(command.request_id,'evidence'),unit['id'],candidate_id,failed['attempt_id'],command.actor_id,self.clock(),_json(evidence)))
             db.execute("UPDATE units SET state='reviewing',current_candidate_id=? WHERE id=?", (candidate_id,unit['id']))
-            db.execute("UPDATE unit_issues SET state='built' WHERE id=?", (member['id'],))
+            db.execute("UPDATE unit_issues SET state='built' WHERE unit_id=? AND left_at IS NULL", (unit['id'],))
             self._event(db, command, 'candidate_selected', {'candidate_id':candidate_id,'source':'verified_recovery'},job_id=failed['id'])
             for gate in gates:
                 self._open_gate(db, command, gate['code'], gate['details'], candidate_id=candidate_id)

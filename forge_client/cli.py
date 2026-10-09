@@ -11,7 +11,7 @@ from .github import GitHub
 
 def repository_commands():
     commands = {}
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
         properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
                       'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
         required = ['repository', 'server']
@@ -20,16 +20,22 @@ def repository_commands():
                               wait={'type': 'integer', 'minimum': 0, 'maximum': 600, 'default': 120})
         if action == 'setup':
             properties.update(apply={'type': 'boolean', 'default': False}, enable={'type': 'boolean', 'default': False})
+        if action == 'policy':
+            properties.update(mode={'enum':['auto','human']},revision={'type':'string','pattern':'^[a-f0-9]{64}$'},request_id={'type':'string','pattern':'^[a-f0-9]{32}$'})
+        if action == 'delivery':
+            properties['after'] = {'type': 'string', 'default': '', 'description': 'Continue from next_cursor'}
         if action == 'issues':
             properties['page'] = {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 1}
-        if action == 'issue':
+        if action in ('issue', 'delivery'):
             properties['number'] = {'type': 'integer', 'minimum': 1}
             required.append('number')
         commands[action] = {
-            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action == 'issue' else '') + ' --server HTTPS_ORIGIN --json',
-            'capability': 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
+            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action in ('issue', 'delivery') else ' [auto|human]' if action == 'policy' else '') + ' --server HTTPS_ORIGIN --json',
+            'capability': 'repositories:policy' if action == 'policy' else 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
             'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
         }
+        if action == 'policy':
+            commands[action]['read_capability'] = 'repositories:read'
     return commands
 
 
@@ -116,6 +122,8 @@ def parser():
     connect.add_argument('--repo', action='append', default=[])
     connect.add_argument('--owner', action='append', default=[])
     connect.add_argument('--read-only', action='store_true')
+    connect.add_argument('--policy', action='store_true', help='Request permission to set repository merge policy; requires explicit browser approval')
+    connect.add_argument('--triage', action='store_true', help='Request explicit approval to plan issue changes and compose, change, dissolve or resume deliveries')
     connect.add_argument('--resume', action='store_true')
     connect.add_argument('--wait', type=int, default=0)
     auth = sub.add_parser('auth', help='Check this computer’s connection to a Forge server').add_subparsers(dest='auth_command', required=True)
@@ -124,13 +132,19 @@ def parser():
     requirements = sub.add_parser('requirements', help='Show what a repository needs before Forge can work on it')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
         command = repo.add_parser(action)
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
-        if action == 'issue':
+        if action == 'policy':
+            command.add_argument('mode',nargs='?',choices=('auto','human'),help='Omit to inspect the effective policy')
+            command.add_argument('--revision',help='Exact runtime revision to compare before writing')
+            command.add_argument('--request-id',help='Stable 32-character hexadecimal ID for replaying an exact policy decision')
+        if action in ('issue', 'delivery'):
             command.add_argument('number', type=int)
+        if action == 'delivery':
+            command.add_argument('--after', default='', help='Continue execution history from its next_cursor')
         if action == 'issues':
             command.add_argument('--page', type=int, default=1)
         if action in ('setup', 'verify', 'enable', 'disable'):
@@ -139,6 +153,17 @@ def parser():
         if action == 'setup':
             command.add_argument('--apply', action='store_true', help='Apply the local preparation plan')
             command.add_argument('--enable', action='store_true', help='Enable automation after verification')
+    triage = sub.add_parser('triage', help='Request a read-only proposal for every open issue in a repository')
+    triage.add_argument('repository'); triage.add_argument('--server', required=True)
+    triage.add_argument('--request-id', required=True, help='Stable request identity for safe replay')
+    triage.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    planning = sub.add_parser('planning', help='Inspect repository notes, edit proposals and explicitly approve changes')
+    planning.add_argument('repository'); planning.add_argument('--server', required=True)
+    planning.add_argument('--proposal'); planning.add_argument('--row'); planning.add_argument('--after')
+    planning.add_argument('--action-file', help='JSON operation: rules, note, edit or accept; preview with planning first')
+    planning.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    from .delivery import add_parser as delivery_parser
+    delivery_parser(sub)
     server = sub.add_parser('server', help='Configure an existing Forge host over SSH').add_subparsers(dest='server_command', required=True)
     setup = server.add_parser('setup', help='Bootstrap operator sign-in on an existing host over SSH')
     setup.add_argument('--ssh', required=True, help='Explicit SSH host alias or user@hostname; known host key required')
@@ -197,9 +222,12 @@ def execute(args):
         from .bootstrap import setup
         return setup(args)
     if args.command == 'commands':
+        from .delivery import commands as delivery_commands
+        from .planning import commands as planning_commands
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
-                'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(),
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+                'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
+                'planning_commands': planning_commands(),
                 'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],
@@ -219,7 +247,11 @@ def execute(args):
                 scope['repositories'].append({k: repo[k] for k in ('id', 'name')})
             for login in args.owner:
                 scope['owners'].append(github.owner(login))
-            value = client.begin(args.name, list(CAPABILITIES[:1] if args.read_only else CAPABILITIES), scope)
+            require(not (args.read_only and (args.policy or args.triage)), 'invalid_scope', 'Choose read-only access or request policy or triage writes.')
+            requested = list(CAPABILITIES[:1] if args.read_only else CAPABILITIES[:3])
+            if args.policy: requested.append('repositories:policy')
+            if args.triage: requested.append('repositories:triage')
+            value = client.begin(args.name, requested, scope)
             if not args.json:
                 print('Approve code ' + value['user_code'] + ' at ' + value['verification_uri_complete'])
                 webbrowser.open(value['verification_uri_complete'])
@@ -229,13 +261,33 @@ def execute(args):
             return client.status()
         if args.command == 'disconnect':
             return client.disconnect()
+        if args.command in ('triage','planning'):
+            from pathlib import Path
+            target = {k:v for k,v in GitHub().repository(args.repository).items() if k in ('id','name')}
+            if args.command == 'triage':
+                return client.request('planning',target,operation='action',payload={'action':'triage','request_id':args.request_id})
+            if args.action_file:
+                payload=json.loads(Path(args.action_file).read_text())
+                require(isinstance(payload,dict),'invalid_planning_operation','Provide a JSON planning operation.')
+                return client.request('planning',target,operation='action',payload=payload)
+            payload={k:v for k,v in {'proposal_id':args.proposal,'row_id':args.row,'after':args.after}.items() if v is not None}
+            return client.request('planning',target,operation='read',payload=payload)
+        if args.command == 'delivery':
+            from .delivery import execute as delivery
+            target={k:v for k,v in GitHub().repository(args.repository).items() if k in ('id','name')}
+            return delivery(client,target,args)
         if args.command == 'repo':
             from .workflow import Workflow
             github = GitHub()
             target = {k: v for k, v in github.repository(args.repository).items() if k in ('id', 'name')}
+            if args.repo_command == 'policy':
+                from .merge_policy import execute as merge_policy
+                return merge_policy(client,target,args.mode,revision=args.revision,request_id=args.request_id)
             if args.repo_command == 'fix-rules':
                 from .rule_fixes import fixes
                 return fixes(client.read(target, 'repository'))
+            if args.repo_command == 'delivery':
+                return client.read(target, 'delivery', args.number, after=args.after)
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
                 return client.read(target, 'repository' if args.repo_command == 'inspect' else args.repo_command,
                                    getattr(args, 'number', None), getattr(args, 'page', 1))

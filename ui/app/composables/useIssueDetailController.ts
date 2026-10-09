@@ -3,7 +3,7 @@ import { actionPlan, bubbleFor, liveness, serverAge, stageTimes, workFacts, type
 import type { DropdownMenuItem } from '@nuxt/ui'
 import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
-import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
+import { deploymentLine, jobIncludesIssue, type FactoryView, type JobView } from '~/utils/factory'
 import { issueTab } from '~/utils/discussion'
 import { statusBadge } from '~/utils/tones'
 import { issuePipeline, type PipelineView } from '~/utils/pipeline'
@@ -281,7 +281,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   function isoTime(at: number): string { return new Date(at * 1000).toISOString() }
 
   const jobs = computed<JobView[]>(() => {
-    const live = store.normalizeJobs((loaded.value?.factory?.jobs ?? []).filter(job => job.issue_key === props.issueKey))
+    const live = store.normalizeJobs((loaded.value?.factory?.jobs ?? []).filter(job => jobIncludesIssue(job, props.issueKey)))
     const row = (loaded.value?.factory?.issues ?? []).find(issue => issue.key === props.issueKey)
     const past = (row?.attempts ?? [])
       .filter(job => !live.some(running => running.id === job.id))

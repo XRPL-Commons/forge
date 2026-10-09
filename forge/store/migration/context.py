@@ -24,7 +24,7 @@ def normalize(importer, ledger):
                last_observed_at=value.get('last_observed'),settled_observed=value.get('settled_observed'),
                observation_interruptions=value.get('budget_interruptions',0),
                **{column:json_text(value.get(field)) for column,field in CONTEXT_FIELDS})
-        insert(db,'unit_environment_observations',unit_id=identifier,label=value.get('environment_label'),
+        insert(db,'issue_environment_observations',issue_id=key,label=value.get('environment_label'),
                **{column:json_text(value.get(field)) for column,field in ENVIRONMENT_FIELDS})
         insert(db,'dependency_observations',unit_id=identifier,requirements_body=value.get('dependency_body'),
                evidence=value.get('dependency_evidence'),reason=value.get('dependency_reason'),checked_at=value.get('dependencies_checked_at'))
@@ -77,7 +77,7 @@ def check(importer):
             for column,field in [('reason','reason'),('checks_settled','checks_settled'),('last_observed_at','last_observed'),('settled_observed','settled_observed')]:
                 require(row[column]==value.get(field),'unit_context')
             require(row['observation_interruptions']==value.get('budget_interruptions',0),'unit_context')
-            row=db.execute('SELECT * FROM unit_environment_observations WHERE unit_id=?',(identifier,)).fetchone()
+            row=db.execute('SELECT * FROM issue_environment_observations WHERE issue_id=?',(key,)).fetchone()
             require(row is not None and row['label']==value.get('environment_label'),'unit_environment')
             for column,field in ENVIRONMENT_FIELDS:
                 require((decode(row[column]) if row[column] is not None else None)==value.get(field),'unit_environment')

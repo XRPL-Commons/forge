@@ -35,12 +35,12 @@ class ClientRepositories:
                                       value['instance'], value['generation'])
 
     def read(self, token, value):
-        fields(value, ('repository', 'instance', 'generation', 'section', 'number', 'page'))
+        fields(value, ('repository', 'instance', 'generation', 'section', 'number', 'page') + (('after',) if isinstance(value,dict) and value.get('section') == 'delivery' else ()))
         self.authorize(token, value, 'repositories:read')
         section = value['section']
-        need(section in ('repository', 'activity', 'issues', 'issue'))
+        need(section in ('repository', 'activity', 'issues', 'issue', 'delivery'))
         need(type(value['page']) is int and 1 <= value['page'] <= 10000)
-        need(positive(value['number']) if section == 'issue' else value['number'] is None)
+        need(positive(value['number']) if section in ('issue','delivery') else value['number'] is None)
         target = value['repository']
         requirements = describe(self.settings, target)
         if section == 'repository':
@@ -48,6 +48,13 @@ class ClientRepositories:
             result = {'requirements': requirements,
                       'repository': next((r for r in rows if r['id'] == target['id']), None),
                       'connections': self.settings.view()['roles']}
+        elif section == 'delivery':
+            from .factory.control import public_views
+            need(isinstance(value['after'],str) and len(value['after']) <= 200)
+            service = public_views(self.settings.root)
+            need(service is not None, 'runtime_unavailable', 'Delivery history requires the active SQLite runtime.')
+            result = service.delivery(f"{target['id']}:{value['number']}",after=value['after'])
+            need(result['repo_id'] == target['id'], 'repository_mismatch', 'Delivery belongs to another repository.')
         elif section == 'activity':
             from .factory.control import view
             state = view(self.settings.root)

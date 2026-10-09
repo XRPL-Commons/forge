@@ -13,8 +13,8 @@ from urllib.error import HTTPError
 
 from .contracts import SetupError, require, repository, positive
 
-PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements', 'authorize', 'read', 'operation'}
-CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate')
+PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements', 'authorize', 'read', 'operation', 'policy', 'planning', 'delivery'}
+CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy', 'repositories:triage')
 TOKEN = re.compile(r'[A-Za-z0-9_-]{43}')
 
 
@@ -61,8 +61,11 @@ class Transport:
                     code = result.get('error')
                     allowed = {'authorization_pending', 'slow_down', 'access_denied', 'expired_token', 'invalid_grant',
                                'invalid_token', 'sign_in_required', 'setup_required', 'insufficient_scope', 'scope_changed',
-                               'connection_changed', 'operation_conflict', 'operation_capacity'}
-                    raise SetupError(code if code in allowed else 'connection_failed', 'Forge did not authorize this client request.')
+                               'connection_changed', 'operation_conflict', 'operation_capacity', 'revision_changed', 'repository_not_configured'}
+                    message = {'revision_changed':'Runtime settings changed. Read the current policy and make a new decision.',
+                               'repository_not_configured':'Configure this repository in Forge before changing its merge policy.'}.get(code,
+                               'Forge did not authorize this client request.')
+                    raise SetupError(code if code in allowed else 'connection_failed', message)
                 return result
         except SetupError:
             raise
@@ -291,5 +294,5 @@ class Client:
                 'connection_changed', 'Connect to the current Forge instance again.')
         require(self.request('authorize', target, capability=capability) == {'authorized': True})
 
-    def read(self, target, section='repository', number=None, page=1):
-        return self.request('read', target, section=section, number=number, page=page)
+    def read(self, target, section='repository', number=None, page=1, *, after=''):
+        return self.request('read', target, section=section, number=number, page=page, **({'after': after} if section == 'delivery' else {}))

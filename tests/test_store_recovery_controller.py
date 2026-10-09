@@ -79,9 +79,9 @@ class RecoveryControllerTests(unittest.TestCase):
             repository_id=1, repository_name='owner/repo', issue_number=1, title='Fix issue', body='Body',
             requirements='github-requirements', observed_at=90)
         self.jobs = ExecutionQueries(self.store)
-        self.execution = ExecutionController(self.store, self.runner, self.github,
+        self.execution = ExecutionController(self.store, self.runner, self.github, enabled=lambda: True,
             admission=lambda job: True, clock=lambda: self.now)
-        self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config), clock=lambda: self.now)
+        self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config,1,repository_name='owner/repo'), clock=lambda: self.now)
         self.dispatch = DispatchController(self.store, self.runner, config=self.config,
             prepare=GitHubPrepare(self.github, self.config), admission=lambda snapshot: True, clock=lambda: self.now)
         self.recovery = self.driver()
@@ -230,7 +230,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.recovery.schedule('imported-job-without-launch')['pending'], 'legacy_reconciliation')
         member = self.view()['members'][0]
         manifest = dict(requirements_revision_id=member['requirements_revision_id'], base_oid='b' * 40,
-                        policy_hash=digest(policy(self.config)))
+                        policy_hash=digest(policy(self.config,1,repository_name='owner/repo')))
         # Historical/imported jobs have lifecycle facts without typed launches.
         old = self.life.reserve_job(self.command(), 'build', slot='old-slot', execution_fence='old-fence',
                                    input_manifest=manifest, member_id=member['id'])['job_id']
@@ -282,7 +282,7 @@ class RecoveryControllerTests(unittest.TestCase):
         effects = EffectController(self.store, self.github, admission=merge_admission, clock=clock)
         driver = SqliteSupervisor(self.store, execution=self.execution,
             observations=ObservationController(self.store, self.github, admission=lambda item: True,
-                policy=lambda item: digest(policy(self.config)), clock=clock),
+                policy=lambda item: digest(policy(self.config,1,repository_name='owner/repo')), clock=clock),
             results=self.results, recovery=self.recovery,
             merges=MergeController(self.store, admission=merge_admission, clock=clock), effects=effects,
             dispatch=self.dispatch, clock=clock)

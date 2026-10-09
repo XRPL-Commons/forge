@@ -35,6 +35,7 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'label_hold': ('On hold by a GitHub label; removing it clears this hold', 'On hold by the "{label}" label; removing it clears this hold'),
     'membership_decision': ('Waiting for a decision about which issues stay in this unit', None),
     'operator_sync': ("Applying the operator's decision on GitHub", None),
+    'triage_sync': ('Applying the approved triage decision on GitHub', None),
     'external_change': ('Paused after a change made outside Forge', None),
     'ownership_conflict': ('Someone else is working on this issue', '{login} is working on this issue'),
     'budget_exhausted': ('Stopped after three failed attempts; choose how to continue', None),

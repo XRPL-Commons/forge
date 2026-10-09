@@ -2,6 +2,7 @@
 from copy import deepcopy
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from forge.factory.config import policy, validate
 from forge.factory.effect_controller import EffectController
@@ -43,6 +44,8 @@ class Remote:
         self.open_pulls = []
         self.on_check = None
         self.merge_calls = 0
+        self.prerequisites = {}
+        self.bindings_read = []
 
     def probe(self, kind):
         self.reads.append(kind)
@@ -72,6 +75,11 @@ class Remote:
     def pulls(self, item):
         self.probe('pulls')
         return deepcopy(self.open_pulls)
+
+    def prerequisite(self, reference, binding=None):
+        self.probe('prerequisite')
+        self.bindings_read.append(deepcopy(binding))
+        return deepcopy(self.prerequisites[reference])
 
     def pr(self, item, number):
         self.probe('pr')
@@ -141,9 +149,9 @@ class MergeControllerTests(unittest.TestCase):
             return dict(db.execute('SELECT * FROM candidates WHERE id=?', (self.view()['current_candidate_id'],)).fetchone())
 
     def prepare_candidate(self, *, human_required=False, audit_required=False):
-        self.config['human_required'] = human_required
+        self.config['repository_merge_policies']={'1':'human' if human_required else 'auto'}
         build_manifest = dict(requirements_revision_id=self.admitted['revision_id'], base_oid=BASE,
-                              policy_hash=manifest_hash(policy(self.config)))
+                              policy_hash=manifest_hash(policy(self.config,1,repository_name='owner/repo')))
         job = self.life.reserve_job(self.command(), 'build', slot='build-1', execution_fence='build-fence',
                                    input_manifest=build_manifest, member_id=self.admitted['member_id'])['job_id']
         candidate = Candidate(10, 'forge/issue-1-test', HEAD, BASE, build_manifest['policy_hash'],
@@ -275,7 +283,7 @@ class MergeControllerTests(unittest.TestCase):
             details={'ci': [{'name': 'Tests', 'app_id': 201}]})['gate_id']
         self.assertIsNone(self.admission(effect))
         verifier = VerificationController(self.store, self.remote, profiles=lambda repo: [{'name': 'Tests', 'app_id': 201}],
-            policy=lambda item: policy(self.config), clock=lambda: self.now)
+            policy=lambda item: policy(self.config,1,repository_name='owner/repo'), clock=lambda: self.now)
         verifier.step(gate)
         self.assertIsNotNone(self.admission(effect))
         self.remote.ci['head'] = 'd' * 40
@@ -291,7 +299,7 @@ class MergeControllerTests(unittest.TestCase):
         self.remote.approve(at=325)
         self.now = 350
         verifier = VerificationController(self.store, self.remote, profiles=lambda repo: [],
-            policy=lambda item: policy(self.config), clock=lambda: self.now)
+            policy=lambda item: policy(self.config,1,repository_name='owner/repo'), clock=lambda: self.now)
         verifier.confirm_human(self.command(), gate, statement='Verified migration on the current revision.')
         self.assertIsNone(self.admission(effect))
         self.now = 400
@@ -328,15 +336,100 @@ class MergeControllerTests(unittest.TestCase):
 
     def test_fresh_approval_observation_is_visible_for_exact_candidate(self):
         from forge.factory.store_views import PipelineViews
-        effect=self.prepare_candidate(human_required=True)
-        self.remote.approve()
-        self.assertTrue(self.admission(effect)['human_approved'])
-        row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
-        self.assertTrue(any(review['counted'] for review in row['approvals']))
-        self.remote.approve(identifier=2,state='CHANGES_REQUESTED')
-        self.assertIsNone(self.admission(effect))
+        self.prepare_candidate(human_required=True)
+        controller=MergeController(self.store, admission=self.admission, clock=lambda:self.now)
+        self.remote.approve(state='CHANGES_REQUESTED')
+        self.assertEqual(controller.step('u')['pending'], 'authorization')
         row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
         self.assertTrue(any(review['state']=='CHANGES_REQUESTED' for review in row['approvals']))
+        self.remote.approve(identifier=2)
+        self.assertIn('effect_id', controller.step('u'))
+        row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
+        self.assertTrue(any(review['counted'] for review in row['approvals']))
+
+    def prerequisite(self, reference='other/repo#2', **changes):
+        fact=dict(reference=reference, repository_id=2, github_id=202, number=2,
+                  kind='issue', state='closed', state_reason='completed', merged=False,
+                  updated_at='2026-10-10T00:00:00Z') | changes
+        self.remote.prerequisites[reference]=fact
+        with self.store.write() as db:
+            db.execute('INSERT INTO prerequisite_identities VALUES(?,?,?,?,?,?)',
+                (reference, fact['repository_id'], fact['github_id'], fact['number'], fact['kind'], 100))
+        return fact
+
+    def test_merge_prerequisites_are_fresh_typed_and_bound(self):
+        self.remote.issue_value['body']='Depends on other/repo#2'
+        fact=self.prerequisite()
+        effect=self.prepare_candidate()
+        self.assertIsNotNone(self.admission(effect))
+        for change in ({'state':'open'}, {'state_reason':'not_planned'}, {'state_reason':'duplicate'},
+                       {'state_reason':None}, {'repository_id':3}, {'github_id':999},
+                       {'number':3}, {'kind':'pull_request', 'merged':True},
+                       {'error':'prerequisite_inaccessible'}):
+            with self.subTest(change=change):
+                self.remote.prerequisites[fact['reference']]=fact | change
+                self.assertIsNone(self.admission(effect))
+        self.assertTrue(all(binding['github_id']==202 for binding in self.remote.bindings_read))
+
+    def test_closed_pr_requires_merge_and_unknown_binding_cannot_authorize_merge(self):
+        self.remote.issue_value['body']='Depends on other/repo#2 and other/repo#3'
+        first=self.prerequisite(kind='pull_request')
+        self.remote.prerequisites['other/repo#3']=dict(first, reference='other/repo#3', number=3, github_id=203, kind='issue')
+        effect=self.prepare_candidate()
+        self.assertIsNone(self.admission(effect))
+        first['merged']=True
+        self.assertIsNone(self.admission(effect))
+        self.prerequisite('other/repo#3', number=3, github_id=203)
+        self.assertIsNotNone(self.admission(effect))
+
+    def test_prerequisite_reopened_after_check_prevents_merge(self):
+        self.remote.issue_value['body']='Depends on other/repo#2'
+        fact=self.prerequisite()
+        self.prepare_candidate()
+        queued=self.controller.step('u')
+        self.remote.on_check=lambda: fact.update(state='open')
+        driver=EffectController(self.store,self.remote,admission=self.admission,clock=lambda:self.now)
+        driver.step(queued['effect_id'])
+        self.assertEqual(self.remote.merge_calls,0)
+
+    def test_renamed_self_reference_and_persisted_order_are_checked(self):
+        from forge.store.repository_requirements import order_in
+        with self.store.write() as db:
+            order_in(db, issue_id='i', requirements_revision_id=self.admitted['revision_id'],
+                prerequisites=['old/name#1'], actor_id='operator', request_id='order')
+            # Model the observer's earlier completion, before the remote reopens.
+            db.execute("UPDATE unit_gates SET resolved_at=100,resolution='observation' WHERE code='dependency'")
+        self.prerequisite('old/name#1',repository_id=1,number=1,github_id=101)
+        effect=self.prepare_candidate()
+        self.assertIsNone(self.admission(effect))
+
+    def test_persisted_prerequisite_is_rechecked_without_a_body_reference(self):
+        self.life.admit_issue(request_id='dependency-admit',actor_id='operator',unit_id='other-unit',issue_id='other-issue',
+            repository_id=2,repository_name='other/repo',issue_number=2,title='Prerequisite',body='',requirements='other',observed_at=90)
+        self.life.observe_issue(Command('dependency-closed','observer','other-unit',1),'other-issue',
+            state='closed',state_reason='completed',title='Prerequisite',body='',requirements='other',
+            remote_updated_at='2026-10-10T00:00:00Z',generation=1)
+        with self.store.write() as db:
+            db.execute('INSERT INTO issue_dependencies VALUES(?,?,?,?,?,?,?)',
+                ('dependency','i',self.admitted['revision_id'],'other-issue','operator','{}',100))
+        fact=self.prerequisite()
+        effect=self.prepare_candidate()
+        self.assertIsNotNone(self.admission(effect))
+        fact['state']='open'
+        self.assertIsNone(self.admission(effect))
+
+    def test_admission_never_writes_or_advances_versions(self):
+        self.remote.issue_value['body']='Depends on other/repo#2'
+        self.prerequisite()
+        effect=self.prepare_candidate(human_required=True)
+        self.remote.approve()
+        before=self.view()['version']
+        self.remote.probe=lambda kind:self.remote.reads.append(kind)
+        with patch.object(self.store,'write',side_effect=AssertionError('admission wrote to store')):
+            observed=self.admission.evaluate_observation(effect)
+        self.assertTrue(observed['authorization']['approved'])
+        self.assertTrue(observed['approval_observation']['reviews'][0]['counted'])
+        self.assertEqual(before,self.view()['version'])
 
 
 if __name__ == '__main__':

@@ -74,5 +74,6 @@
   "discussion_model": null,
   "environment_tiers": {},
   "repository_environments": {},
-  "repository_verification": {}
+  "repository_verification": {},
+  "repository_merge_policies": {}
 }

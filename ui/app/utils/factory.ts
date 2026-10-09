@@ -17,7 +17,10 @@ export type IssueState = 'ready' | 'built' | 'reviewed' | 'audited' | 'approval_
   | 'investigating' | 'hold' | 'failed' | 'merged' | 'cancelled'
 
 export interface JobView {
-  id: string; issue_key: string; repo_id: number; repo: string; issue_number: number
+  id: string; issue_key: string | null; repo_id: number; repo: string; issue_number: number | null
+  unit_id?: string; members?: Array<{ member_id: string; issue_key: string; issue_number: number }>
+  builder_id?: string | null; builder_stage?: 'planning' | 'integration' | 'child' | null
+  parent_job_id?: string | null; delegation_key?: string | null
   role: JobRole; slot: string; provider: string; provider_id: string | null; model: string | null
   phase: 'reserved' | 'created' | 'launching' | 'running' | 'stopping' | 'cleaned' | 'external'
   outcome: string | null; cleanup: boolean; fenced: boolean
@@ -25,6 +28,10 @@ export interface JobView {
   started_at: number | null; observed_at: number | null; last_observed?: number
   // The branch the worker pushes to; older payloads omit it.
   branch?: string | null
+}
+
+export function jobIncludesIssue(job: JobView, issueKey: string): boolean {
+  return job.members ? job.members.some(member => member.issue_key === issueKey) : job.issue_key === issueKey
 }
 
 export interface LedgerEvent { kind: string; provider?: string; model?: string | null; [key: string]: unknown }
@@ -359,13 +366,14 @@ export function doneAt(issue: LedgerIssueView): number | null {
 // /issues/<issue_key>?job=<id>, which Task 7 renders.
 export function toCard(job: JobView, view: FactoryView, now: number): CardModel {
   const running = isRunning(view, job, now)
+  const navigationIssue = job.issue_key ?? job.members?.[0]?.issue_key
   return {
-    key: job.issue_key,
+    key: job.issue_key ?? `delivery-${job.unit_id ?? job.id}`,
     id: `job-${job.id}`,
-    to: `/issues/${encodeURIComponent(job.issue_key)}?job=${job.id}`,
+    to: navigationIssue ? `/issues/${encodeURIComponent(navigationIssue)}?job=${job.id}` : '/issues',
     repo: job.repo,
     number: null,
-    title: clampTitle(job.issue_key),
+    title: job.issue_key ? clampTitle(job.issue_key) : `Delivery · ${job.members?.length ?? 0} issues`,
     phaseLabel: phaseLabel(null, job, view, now),
     providerLine: providerLine(job),
     reason: '',

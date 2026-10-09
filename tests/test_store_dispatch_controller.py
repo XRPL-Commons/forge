@@ -102,7 +102,7 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(job['phase'], 'reserved')
         self.assertEqual(job['requirements'], 'github-requirements')
         self.assertEqual(job['input_manifest']['base_oid'], BASE)
-        self.assertEqual(job['input_manifest']['policy_hash'], manifest_hash(policy(self.config)))
+        self.assertEqual(job['input_manifest']['policy_hash'], manifest_hash(policy(self.config,1,repository_name='owner/repo')))
         self.assertEqual(job['slot'], 'build-1')
         self.assertEqual(job['deadline'], 2800)
         self.assertTrue(job['branch'].startswith('forge/issue-1-'))
@@ -234,7 +234,7 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(review['branch'], job['branch'])
         self.assertEqual(review['input_manifest']['candidate_id'], review['candidate_id'])
         self.assertEqual(review['ci_evidence']['verified'], {'head': HEAD, 'base': BASE})
-        self.assertEqual(review['review_policy'], policy(self.config))
+        self.assertEqual(review['review_policy'], policy(self.config,1,repository_name='owner/repo'))
 
     def test_existing_draft_resumes_branch_and_pr(self):
         self.github.draft = {'branch': 'forge/issue-1-existing', 'pr': 9}

@@ -84,11 +84,9 @@ class Verification(Lifecycle):
         if any(row['code'] not in {'verification_human', 'verification_ci', 'approval_required'}
                for row in applicable_gates(db, unit, candidate_id=candidate['id'])):
             raise TransitionError('a hold or readiness gate prevents verification release')
-        members = db.execute('SELECT r.requirements_hash FROM unit_issues m '
-                             'JOIN issue_revisions r ON r.id=m.requirements_revision_id '
-                             'WHERE m.unit_id=? AND m.left_at IS NULL LIMIT 2', (unit['id'],)).fetchall()
-        if len(members) != 1 or members[0][0] != candidate['requirements_hash']:
-            raise TransitionError('verification currently requires the exact singleton requirements')
+        from .candidate_scope import scope_in
+        if scope_in(db,unit)['requirements_hash']!=candidate['requirements_hash']:
+            raise TransitionError('Verification requires the current complete requirements scope')
         if len(_json(proof).encode()) > 60000:
             raise TransitionError('verification proof exceeds its size limit')
         return dict(gate), dict(candidate)
@@ -164,14 +162,11 @@ class VerificationQueries:
             unit = dict(db.execute('SELECT * FROM units WHERE id=?', (gate['unit_id'],)).fetchone())
             candidate = dict(db.execute('SELECT * FROM candidates WHERE id=?', (gate['candidate_id'],)).fetchone())
             repository = db.execute('SELECT * FROM repositories WHERE id=?', (unit['repository_id'],)).fetchone()
-            members = db.execute('SELECT i.github_number,r.requirements_json FROM unit_issues m JOIN issues i ON i.id=m.issue_id '
-                                'JOIN issue_revisions r ON r.id=m.requirements_revision_id '
-                                'WHERE m.unit_id=? AND m.left_at IS NULL LIMIT 2', (unit['id'],)).fetchall()
-            if len(members) != 1:
-                raise TransitionError('verification currently requires a unit of one')
+            from .candidate_scope import scope_in
+            scope=scope_in(db,unit)
             from .operator_views import reviewer_request_in
             return dict(gate=dict(gate), unit=unit, unit_state=unit['state'],reviewers_requested=reviewer_request_in(db,candidate['id']),identity=candidate, repo=repository['full_name'], repo_id=repository['id'],
-                        number=members[0]['github_number'], requirements=json.loads(members[0]['requirements_json']),
+                        **scope,
                         target_branch=unit['base_branch'], details=json.loads(gate['details_json']),
                         candidate=dict(key=candidate['id'], pr=candidate['pull_number'], head=candidate['head_oid'],
                                        base=candidate['base_oid'], branch=candidate['branch']))

@@ -113,6 +113,7 @@ export interface RepositoryRow {
   protection_previous_status: 'ready' | 'needs_setup' | null
   protection_last_known: ProtectionReport | null
   rules_url: string; setup_url: string
+  merge_policy?: 'auto' | 'human'
   deployment?: DeploymentRow
   environment?: RepositoryEnvironment
 }

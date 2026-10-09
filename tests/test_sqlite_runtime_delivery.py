@@ -16,7 +16,7 @@ from forge.settings import Settings, digest
 from forge.store.queries import Queries
 from tests.test_settings import configured
 from tests.test_sqlite_identity import selected_store
-from tests.test_store_sqlite_supervisor import GitHub as DeliveryGitHub, Runner, MERGE
+from tests.test_store_sqlite_supervisor import GitHub as DeliveryGitHub, Runner as DeliveryRunner, MERGE
 
 
 class GitHub(DeliveryGitHub):
@@ -35,6 +35,10 @@ class GitHub(DeliveryGitHub):
             return [deepcopy(self.remote)] if 'state=open' in path else []
         return super().call(role, item, method, path)
 
+    def pages(self, role, item, path, key=None):
+        assert role=='controller' and path=='/issues?state=open' and key is None
+        return self.call(role,item,'GET',path)
+
     def collaborators(self, item):
         return []
 
@@ -43,6 +47,27 @@ class GitHub(DeliveryGitHub):
 
     def environment_label(self, item, issue, target):
         self.remote['labels'] = [label for label in self.remote['labels'] if not label.startswith('env:')] + [target]
+
+
+class Runner(DeliveryRunner):
+    """The selected runtime also executes the repository's read-only triage job."""
+    def __init__(self,github):
+        super().__init__(github)
+        self.planning_contexts={}
+
+    def prepare(self,job,token):
+        super().prepare(job,token)
+        if job['role']=='triage':
+            self.planning_contexts[job['id']]=deepcopy(job['context'])
+
+    def capture(self,job):
+        if job['role']!='triage':
+            return super().capture(job)
+        return {'result':{'version':1,'attempt':job['id'],'role':'triage','outcome':'pass',
+            'summary':'Keep the current delivery plan','rows':[
+                {'action':'keep','members':[issue['issue_id']],'reason':'Existing work remains useful',
+                 'rule_quote':None,'parameters':{}} for issue in self.planning_contexts[job['id']]['issues']]},
+            'logs':'Read-only planning complete','execution':{'exit_code':0}}
 
 
 class SelectedRuntimeDeliveryTests(unittest.TestCase):
@@ -81,7 +106,7 @@ class SelectedRuntimeDeliveryTests(unittest.TestCase):
                 if isinstance(value, dict):
                     self.assertNotIn('error', value, (name, value))
                     for item in value.get('items', []):
-                        self.assertNotIn('error', item, (name, item))
+                        self.assertIsNone(item.get('error'), (name, item))
             return report
 
         parts = components(root, runner=runner, github=github, clock=lambda: now[0])
@@ -92,14 +117,14 @@ class SelectedRuntimeDeliveryTests(unittest.TestCase):
         unit_id = issue['lifecycle']['unit_id']
         self.assertIsNotNone(unit_id)
         self.assertEqual(Queries(store).unit(unit_id)['state'], 'building')
-        self.assertEqual(runner.launched, [])
+        self.assertEqual(runner.launched, ['triage'])
         for expected in ('reviewing', 'auditing', 'merging'):
             tick()
             self.assertEqual(Queries(store).unit(unit_id)['state'], expected)
         self.assertEqual(Queries(store).unit(unit_id)['reason_code'], 'approval_required')
         self.assertEqual(github.merge_calls, 0)
-        self.assertEqual(runner.launched, ['build', 'review', 'audit'])
-        self.assertEqual(runner.cleaned, runner.launched)
+        self.assertEqual(runner.launched, ['triage', 'build', 'review', 'audit'])
+        self.assertCountEqual(runner.cleaned, runner.launched)
         self.assertIn('env:standard', github.remote['labels'])
         from forge.factory.first_merge import proof
         pilot = dict(repository={'id':1,'name':'owner/repo'}, number=1, started_at=99, clock=lambda:now[0])
@@ -117,9 +142,12 @@ class SelectedRuntimeDeliveryTests(unittest.TestCase):
         self.assertEqual(proof(root, **{**pilot, 'started_at':now[0]})['status'], 'waiting')
         tick()
         self.assertEqual(github.merge_calls, 1)
-        self.assertEqual(runner.launched, ['build', 'review', 'audit'])
+        self.assertEqual(runner.launched, ['triage', 'build', 'review', 'audit'])
         self.assertEqual(runner.containers, {})
         with store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT status FROM repository_triage_runs').fetchone()[0], 'complete')
+            self.assertEqual(db.execute('SELECT status FROM triage_proposals').fetchone()[0], 'proposed')
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM triage_proposal_rows WHERE status='accepted'").fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT merge_sha FROM units WHERE id=?', (unit_id,)).fetchone()[0], MERGE)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM job_leases').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0], 0)

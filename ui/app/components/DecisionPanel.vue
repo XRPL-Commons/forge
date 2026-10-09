@@ -10,6 +10,7 @@ import {
 const props = defineProps<{ open: boolean; action: IssueAction; detail: IssueDetail; error?: string | null; reason?: string; pending?: boolean }>()
 const emit = defineEmits<{ submit: [decision: { action: IssueAction; reason: string }]; close: [] }>()
 
+const batchRetry = computed(() => props.action === 'retry' && props.detail.delivery_approved)
 const needsReason = computed(() => decisionNeedsReason(props.action))
 
 // A reversible decision still records why it was taken, so an empty reason
@@ -25,9 +26,9 @@ function confirm(reason: string) {
   <ConfirmDialog
     :key="`${detail.key}:${action}`"
     :open="open"
-    :title="`${ACTION_LABELS[action]}?`"
-    :text="ACTION_EFFECTS[action]"
-    :confirm-label="ACTION_LABELS[action]"
+    :title="batchRetry ? 'Retry whole delivery?' : `${ACTION_LABELS[action]}?`"
+    :text="batchRetry ? 'This resets the shared three-failure budget for every member of this delivery. Accepted work and history remain recorded.' : ACTION_EFFECTS[action]"
+    :confirm-label="batchRetry ? 'Retry whole delivery' : ACTION_LABELS[action]"
     reason-label="What changed?"
     :require-reason="needsReason"
     :initial-reason="reason ?? ''"

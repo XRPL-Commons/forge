@@ -39,7 +39,7 @@ class Launch:
         for value in (self.runner_config, self.policy, self.context):
             if not isinstance(value, dict) or len(_json(value).encode()) > 65536:
                 raise TransitionError('launch configuration must be a bounded object')
-        if set(self.context) - {'review_policy', 'ci_evidence', 'verification_checks', 'resume_branch', 'resume_pr'}:
+        if set(self.context) - {'review_policy', 'ci_evidence', 'verification_checks', 'resume_branch', 'resume_pr', 'resume_head', 'publication_author'}:
             raise TransitionError('unsupported launch context field')
         return asdict(self)
 
@@ -95,19 +95,15 @@ def insert_launch(db, job_id, slot, execution_fence, payload, now):
         raise TransitionError('provider account is unavailable or still leased')
     if payload['deadline'] <= now:
         raise TransitionError('launch deadline must be in the future')
-    members = db.execute('SELECT m.requirements_revision_id FROM unit_issues m JOIN jobs j ON j.unit_id=m.unit_id '
-                         'WHERE j.id=? AND m.left_at IS NULL LIMIT 2', (job_id,)).fetchall()
-    if len(members) != 1:
-        raise TransitionError('worker launch currently requires a unit of one')
     candidate = db.execute('SELECT c.branch FROM jobs j JOIN candidates c ON c.id=j.candidate_id WHERE j.id=?', (job_id,)).fetchone()
     if candidate and candidate[0] != payload['branch']:
         raise TransitionError('launch branch must match the assigned candidate')
     db.execute(
         'INSERT INTO job_launches(job_id,slot,execution_fence,branch,publisher,provider,provider_id,model,'
-        'runner_config_json,policy_json,context_json,deadline,requirements_revision_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        'runner_config_json,policy_json,context_json,deadline) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
         (job_id, slot, execution_fence, payload['branch'], payload['publisher'], payload['provider'],
          payload['provider_id'], payload['model'], _json(payload['runner_config']), _json(payload['policy']),
-         _json(payload['context']), payload['deadline'], members[0][0]),
+         _json(payload['context']), payload['deadline']),
     )
     db.execute('INSERT INTO job_execution_state(job_id) VALUES(?)', (job_id,))
     pool = payload['runner_config'].get('provider_pool') or []
@@ -118,15 +114,15 @@ def insert_launch(db, job_id, slot, execution_fence, payload, now):
                    'generation=runtime_controls.generation+1', (str((position + 1) % len(pool)), now))
 
 
-def _artifact(db, job_id, kind, content, now):
+def _artifact(db, job_id, kind, content, now, *, sequence=0, media_type=None):
     if len(content) > MAX_ARTIFACT_SIZE:
         raise TransitionError('worker capture exceeds the supported artifact size')
     packed = zlib.compress(content, 6)
     codec, stored = ('zlib', packed) if len(packed) < len(content) else ('identity', content)
     db.execute(
         'INSERT INTO job_artifacts(job_id,kind,sequence,media_type,digest,content,size,codec,raw_size,created_at,expires_at) '
-        'VALUES(?,?,0,?,?,?,?,?,?,?,?)',
-        (job_id, kind, 'text/plain' if kind == 'logs' else 'application/json',
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+        (job_id, kind, sequence, media_type or ('text/plain' if kind == 'logs' else 'application/json'),
          hashlib.sha256(content).hexdigest(), stored, len(stored), codec, len(content), now,
          now + 30 * 86400 if kind == 'logs' else None),
     )
@@ -176,7 +172,14 @@ class Executions(Lifecycle):
         """Commit capture and fence launch before reset; never accept worker claims."""
         if not isinstance(capture, dict) or not isinstance(capture.get('logs', ''), str):
             raise TransitionError('capture requires structured output and text logs')
-        structured = {key: value for key, value in capture.items() if key != 'logs'}
+        bundle = capture.get('worktree_bundle')
+        from ..factory.delegation_artifacts import MAX_BUNDLE_SIZE
+        if bundle is not None and (not isinstance(bundle, bytes) or not 0 < len(bundle) <= MAX_BUNDLE_SIZE):
+            raise TransitionError('delegated output exceeds the supported bundle size')
+        structured = {key: value for key, value in capture.items() if key not in {'logs', 'worktree_bundle'}}
+        if bundle is not None:
+            structured['bundle'] = {'digest': hashlib.sha256(bundle).hexdigest(), 'size': len(bundle),
+                                    'chunks': (len(bundle) + MAX_ARTIFACT_SIZE - 1) // MAX_ARTIFACT_SIZE}
         content, logs = _json(structured).encode(), capture.get('logs', '').encode()
         if max(len(content), len(logs)) > MAX_ARTIFACT_SIZE:
             raise TransitionError('worker capture exceeds the supported artifact size')
@@ -189,6 +192,12 @@ class Executions(Lifecycle):
             now = self.clock()
             _artifact(db, job_id, 'worker_capture', content, now)
             _artifact(db, job_id, 'logs', logs, now)
+            if bundle is not None:
+                if not db.execute('SELECT 1 FROM job_delegations WHERE job_id=?', (job_id,)).fetchone():
+                    raise TransitionError('only a tracked child can return a worktree bundle')
+                for sequence, offset in enumerate(range(0, len(bundle), MAX_ARTIFACT_SIZE)):
+                    _artifact(db, job_id, 'worktree_bundle', bundle[offset:offset + MAX_ARTIFACT_SIZE], now,
+                              sequence=sequence, media_type='application/x-git-bundle')
             db.execute('UPDATE job_execution_state SET captured_at=?,capture_authorized=? WHERE job_id=?',
                        (now, int(not job['fenced']), job_id))
             db.execute("UPDATE jobs SET fenced=1,phase='collecting' WHERE id=?", (job_id,))
@@ -263,7 +272,7 @@ class ExecutionQueries:
         with self.store.read_snapshot() as db:
             row = db.execute(
                 'SELECT j.*, l.slot,l.execution_fence,l.branch,l.publisher,l.provider,l.provider_id,l.model,'
-                'l.deadline,l.requirements_revision_id,l.runner_config_json,l.policy_json,l.context_json,e.container_id,e.captured_at,'
+                'l.deadline,l.runner_config_json,l.policy_json,l.context_json,e.container_id,e.captured_at,'
                 'e.capture_authorized,e.result_revoked,u.state AS unit_state,u.current_candidate_id,'
                 'u.version AS unit_version,u.base_branch AS target_branch,'
                 'u.fencing_generation,u.membership_generation,u.budget_generation,r.id AS repo_id,r.full_name AS repo,'
@@ -290,18 +299,38 @@ class ExecutionQueries:
                                         head=identity['head_oid'], base=identity['base_oid'], requirements=identity['requirements_hash'])
             from .operator_views import reviewer_request_in
             job['reviewers_requested']=reviewer_request_in(db,job['candidate_id']) if job['candidate_id']==job['current_candidate_id'] else None
-            # The singleton adapter pins the original membership, even after its
-            # unit is closed or the issue is admitted elsewhere.
-            members = db.execute('SELECT m.id,i.github_number,m.issue_id '
-                                 'FROM unit_issues m JOIN issues i ON i.id=m.issue_id '
-                                 'WHERE m.unit_id=? ORDER BY m.joined_at,m.id LIMIT 2', (job['unit_id'],)).fetchall()
-            if len(members) != 1:
-                raise TransitionError('worker assignment currently requires a unit of one')
-            member = members[0]
-            requirements = db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?', (job['requirements_revision_id'],)).fetchone()[0]
-            job.update(issue_number=member['github_number'], issue_key=member['issue_id'],
-                       requirements=json.loads(requirements),
-                       history={'failures': [], 'retry_plan': None, 'verified_checks': []})
+            # Every assignment reads its immutable scope; later membership edits
+            # cannot change the requirements that were handed to this execution.
+            members = db.execute('SELECT m.id AS member_id,i.github_number AS issue_number,m.issue_id AS issue_key,'
+                                 'p.requirements_revision_id,r.requirements_json,r.title,r.body '
+                                 'FROM job_members p JOIN unit_issues m ON m.id=p.member_id '
+                                 'JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=p.requirements_revision_id '
+                                 'WHERE p.job_id=? ORDER BY m.id', (job_id,)).fetchall()
+            job['members'] = [{**dict(member), 'requirements': json.loads(member['requirements_json'])} for member in members]
+            for member in job['members']:
+                del member['requirements_json']
+            if not members:
+                raise TransitionError('worker assignment has no pinned issue scope')
+            # Singular fields remain only for singular assignments. Grouped
+            # consumers use members and cannot accidentally authorize the first.
+            if len(members) == 1:
+                job.update({key: job['members'][0][key] for key in
+                            ('issue_number', 'issue_key', 'requirements_revision_id', 'requirements')})
+            else:
+                job.update(issue_number=None, issue_key=None, requirements_revision_id=None,
+                           requirements=[{key: member[key] for key in ('member_id', 'requirements_revision_id', 'requirements')}
+                                         for member in job['members']])
+            assignment = db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?', (job_id,)).fetchone()
+            if assignment:
+                job.update(builder_id=assignment['builder_id'], builder_stage=assignment['stage'])
+            delegation = db.execute('SELECT d.*,p.builder_id,p.parent_job_id,p.plan_json FROM job_delegations d '
+                                    'JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?', (job_id,)).fetchone()
+            if delegation:
+                job['delegation'] = {key: delegation[key] for key in
+                                     ('plan_id', 'builder_id', 'parent_job_id', 'delegation_key', 'worktree_key')}
+                job['delegation']['scope'] = next(child['scope'] for child in json.loads(delegation['plan_json'])['children']
+                                                  if child['key'] == delegation['delegation_key'])
+            job['history'] = {'failures': [], 'retry_plan': None, 'verified_checks': []}
             context = db.execute('SELECT retry_plan_json FROM unit_context WHERE unit_id=?', (job['unit_id'],)).fetchone()
             if context and context[0]:
                 job['history']['retry_plan'] = json.loads(context[0])
@@ -321,3 +350,46 @@ class ExecutionQueries:
     def capture(self, job_id):
         """Result evaluators explicitly request evidence after selecting one job."""
         return json.loads(Artifacts(self.store).read(job_id, 'worker_capture').content)
+
+    def bundle(self, job_id):
+        from ..factory.delegation_artifacts import MAX_BUNDLE_SIZE
+        capture = self.capture(job_id)
+        metadata = capture.get('bundle') or {}
+        count = metadata.get('chunks')
+        if type(count) is not int or not 1 <= count <= MAX_BUNDLE_SIZE // MAX_ARTIFACT_SIZE:
+            raise TransitionError('child output has no complete bounded bundle')
+        content = b''.join(Artifacts(self.store).read(job_id, 'worktree_bundle', sequence).content for sequence in range(count))
+        if len(content) != metadata.get('size') or hashlib.sha256(content).hexdigest() != metadata.get('digest'):
+            raise TransitionError('child output bundle identity differs from capture')
+        return content
+
+    def input_refs(self, job):
+        """Topological closure of immutable output refs, never current outputs."""
+        manifest = job['failure']['input_manifest'] if job['role'] == 'recovery' else job['input_manifest']
+        wanted = manifest.get('prerequisite_outputs', manifest.get('part_outputs', []))
+        ordered, seen, visiting = [], set(), set()
+        def visit(output):
+            identity = output['output_id']
+            if identity in seen:
+                return
+            if identity in visiting:
+                raise TransitionError('assigned output dependency cycle')
+            visiting.add(identity)
+            with self.store.read_snapshot() as db:
+                row = db.execute('SELECT o.*,j.id AS job_id,a.input_manifest_json FROM part_outputs o '
+                                 'JOIN jobs j ON j.attempt_id=o.attempt_id JOIN attempts a ON a.id=o.attempt_id '
+                                 'WHERE o.id=?', (identity,)).fetchone()
+            if row is None or any(row[key] != output[key] for key in ('member_id', 'commit_oid', 'input_manifest_hash')):
+                raise TransitionError('assigned child output is unavailable')
+            for prerequisite in json.loads(row['input_manifest_json'])['prerequisite_outputs']:
+                visit(prerequisite)
+            ordered.append({**output, 'job_id': row['job_id']})
+            visiting.remove(identity); seen.add(identity)
+        for output in wanted:
+            visit(output)
+        return ordered
+
+    def input_bundles(self, references):
+        # Keep at most one bounded bundle in controller memory during IPC.
+        for reference in references:
+            yield {**reference, 'content': self.bundle(reference['job_id'])}

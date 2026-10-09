@@ -33,7 +33,7 @@ class MigratedRecoveryTests(unittest.TestCase):
         self.github.publisher=lambda role:role+'[bot]'
         self.github.token=lambda role,repo_id,worker:'ephemeral-token'
         self.runner=Runner(self.github)
-        self.execution=ExecutionController(self.store,self.runner,self.github,admission=lambda _:True,clock=lambda:self.now)
+        self.execution=ExecutionController(self.store,self.runner,self.github,enabled=lambda: True,admission=lambda _:True,clock=lambda:self.now)
         self.recovery=RecoveryController(self.store,self.runner,self.github,config=self.config,admission=lambda _:True,clock=lambda:self.now)
         return 'failure-'+str(count-1)
 

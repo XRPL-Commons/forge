@@ -106,7 +106,7 @@ class ReconciliationController:
                 return blocked('legacy_candidate_unverified')
             base=self.github.call('controller',item,'GET','/branches/'+quote(target,safe='')).get('commit',{}).get('sha')
             if not isinstance(base,str) or not base:return blocked('legacy_candidate_base_unverified')
-            current_policy=manifest_hash(policy(self.config))
+            current_policy=manifest_hash(policy(self.config,unit['repository_id'],repository_name=item['repo']))
             reason=('legacy_retry' if phase=='building' else
                 'requirements_changed' if selected['requirements_hash']!=requirements else
                 'policy_changed' if selected['policy_hash']!=current_policy else

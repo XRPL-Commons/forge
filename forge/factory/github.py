@@ -67,20 +67,22 @@ class GitHub:
                     'installation_id': matches[0]['installation_id']}
         return connection
 
-    def token(self, role, repo_id, *, worker=False, extra=None):
+    def token(self, role, repo_id, *, worker=False, extra=None, read_only=False):
         connection = self.connection(role, repo_id)
-        key = (role, repo_id, worker, digest(connection), digest(extra or {}))
+        key = (role, repo_id, worker, read_only, digest(connection), digest(extra or {}))
         cached = self.tokens.get(key)
         if not worker and cached and cached[1] > self.clock():
             return cached[0]
         permissions = ({'metadata': 'read', 'contents': 'read', 'issues': 'read', 'pull_requests': 'read'}
                        if role == 'recovery' else dict(ROLE_PERMISSIONS[role]))
-        if worker and role in ('review', 'audit'):
+        if read_only or worker and role in ('review', 'audit'):
             # Worker findings are published by the supervisor after validation.
             permissions = {'metadata': 'read', 'contents': 'read', 'issues': 'read', 'pull_requests': 'read'}
         if role == 'controller' and not worker:
             permissions['administration'] = 'read'
         # Optional grants widen one call only; a role's baseline stays mintable.
+        if read_only and any(value != 'read' for value in (extra or {}).values()):
+            raise ValueError('Read-only worker credentials cannot be widened')
         permissions.update(extra or {})
         try:
             value = self.client.request('POST', f"/app/installations/{connection['installation_id']}/access_tokens",
@@ -101,6 +103,40 @@ class GitHub:
                                        self.token(role, repo['repo_id'], extra=extra), payload)
         except AccessError as error:
             raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
+
+    def prerequisite(self, ref, binding=None):
+        """Read one installed repository target, including PR merge provenance."""
+        from ..store.repository_requirements import reference
+        ref = reference(ref)
+        name, number = ref.rsplit('#', 1)
+        number = int(number)
+        observation = self.settings.observation()['roles'].get('controller', {})
+        repositories = observation.get('repositories', [])
+        matches = [row for row in repositories if (row['id'] == binding['repository_id'] if binding
+                   else row['name'].lower() == name)]
+        if len(matches) != 1:
+            return {'reference': ref, 'error': 'prerequisite_inaccessible'}
+        selected = matches[0]
+        item = {'repo_id': selected['id'], 'repo': selected['name'], 'number': number}
+        try:
+            repository = self.call('controller', item, 'GET', '')
+            if repository['id'] != item['repo_id']:
+                return {'reference': ref, 'error': 'prerequisite_identity_changed'}
+            remote = self.call('controller', item, 'GET', '/issues/' + str(number))
+            kind = 'pull_request' if 'pull_request' in remote else 'issue'
+            merged = False
+            if kind == 'pull_request':
+                pull = self.pr(item, number)
+                if pull['number'] != number or pull['base']['repo']['id'] != repository['id']:
+                    return {'reference': ref, 'error': 'prerequisite_identity_changed'}
+                merged = pull['merged']
+            return dict(reference=ref, repository_id=repository['id'], github_id=remote['id'], number=remote['number'],
+                        kind=kind, state=remote['state'], state_reason=remote.get('state_reason'),
+                        merged=merged, updated_at=remote['updated_at'])
+        except GitHubBudgetExhausted:
+            raise
+        except GitHubUnavailable:
+            return {'reference': ref, 'error': 'prerequisite_inaccessible'}
 
     def pages(self, role, repo, suffix, key=None):
         rows = []
@@ -293,6 +329,13 @@ class GitHub:
         try:
             pr = self.pr(job, matches[0]['number'])
             value = candidate(pr, job, requirements, policy)
+            if job.get('builder_stage') == 'integration':
+                manifest = job['input_manifest']
+                inputs = [row['commit_oid'] for row in manifest['part_outputs']] + [row['head_oid'] for row in manifest['existing_candidates']]
+                if manifest.get('previous_publication'):
+                    inputs.append(manifest['previous_publication']['head_oid'])
+                if any(not self.contains(job, head, value['head']) for head in inputs):
+                    return None
             value['branch'] = pr['head']['ref']
             return value
         except (ValueError, TypeError, KeyError):

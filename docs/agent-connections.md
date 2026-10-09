@@ -170,11 +170,20 @@ Other scoped commands:
 | `repo activity` | Factory health timing and this repository's issue/job state |
 | `repo issues --page N` | Paginated observed issues |
 | `repo issue OWNER/REPO NUMBER` | Observed issue detail and decisions |
+| `repo delivery OWNER/REPO NUMBER [--after JOB_ID]` | Approved delivery members, builder and bounded child execution history |
 
 All take `OWNER/REPO`, `--server HTTPS_ORIGIN` and `--json`. Reads reuse UI services
 and expose observation freshness. Verification refreshes observations; cached
 issue reads do not launch work. Results omit other repositories and raw worker
 logs. The API does not expose host administration or generic worker controls.
+
+Repository planning and notes use `forge triage` and `forge planning`; membership
+previews use `forge delivery inspect`. Their mutations require the separately
+approved `repositories:triage` grant. Merge-policy reads use the existing read
+grant, while `forge repo policy OWNER/REPO auto|human` requires
+`repositories:policy`. Neither grant supplies GitHub administration credentials.
+See [planning](repository-planning.md), [delivery actions](delivery-execution.md#change-membership-explicitly)
+and [merge policy](factory-runtime.md#what-permits-a-merge).
 
 ## Shared agent skill
 

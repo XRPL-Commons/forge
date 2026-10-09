@@ -34,7 +34,7 @@ class ReconciliationTests(unittest.TestCase):
         self.config=validate({'enabled':True,'image':'sha256:'+'1'*64})
         if candidate:
             self.issue['state']=phase
-            self.issue['candidate']=dict(pr=12,head='head',base='base',policy=manifest_hash(policy(self.config)),requirements='requirements-hash',key='identity',build_attempt='build',accepted_at=12,branch='work')
+            self.issue['candidate']=dict(pr=12,head='head',base='base',policy=manifest_hash(policy(self.config,1,repository_name='owner/repo')),requirements='requirements-hash',key='identity',build_attempt='build',accepted_at=12,branch='work')
             self.ledger['jobs']['build']=dict(id='build',issue_key='1:1',role='build',cleanup=True,fenced=True,slot='slot',created_at=11,phase='cleaned',outcome='accepted',branch='work',target_branch='main')
         importer=Importer(self.snapshot(),self.base/'staging');importer.run();self.store=importer.store
         self.now=2000000000.0

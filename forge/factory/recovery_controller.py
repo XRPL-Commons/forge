@@ -19,7 +19,7 @@ from ..store.transitions import manifest_hash
 from .config import policy, validate
 from .contracts import digest, result
 from .github import GitHubUnavailable
-from .ownership import ownership
+from .ownership import ownership, publication_context
 from .result_controller import ResultController
 from .runner import ContainerRunner, RunnerError
 
@@ -71,15 +71,7 @@ class RecoveryController:
             return {'failed_job_id': failed_job_id, 'pending': 'cleanup'}
         if self.admission(original) is not True:
             return {'failed_job_id': failed_job_id, 'pending': 'repository_setup'}
-        item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'],
-                        unit_state=original['unit_state'],reviewers_requested=original.get('reviewers_requested'),
-                    candidate=original['candidate'])
-        current_issue = Queries(self.store).issue(original['issue_key'])
-        issue, requirements = self.github.issue(item)
-        labels = {row['name'] if isinstance(row, dict) else row for row in issue.get('labels', [])}
-        if (issue.get('state') != 'open' or requirements != current_issue['requirements']
-                or labels.intersection(self.config['hold_labels'])
-                or ownership(issue, item, item['repo'], self.github.pulls(item))):
+        if not self._fresh_members(original, current=True, diagnostic=True):
             return {'failed_job_id': failed_job_id, 'pending': 'issue_reconciliation'}
         with self.store.read_snapshot() as db:
             occupied = {row[0] for row in db.execute('SELECT slot FROM job_leases UNION SELECT slot FROM discussion_leases')}
@@ -99,11 +91,26 @@ class RecoveryController:
             return {'failed_job_id': failed_job_id, 'pending': 'repository_setup'}
         context = {key: original[key] for key in ('review_policy', 'verification_checks', 'ci_evidence') if key in original}
         launch = Launch(original['branch'], publisher, entry['provider'],
-                        self.clock() + config['timeout_seconds']['recovery'], config, policy(config),
+                        self.clock() + config['timeout_seconds']['recovery'], config, policy(config, original['repo_id'], repository_name=original['repo']),
                         entry['id'], entry['model'], context)
         answer = self.commands.reserve(self._command(original), failed_job_id, slot=slot,
                                        execution_fence=str(uuid.uuid4()), launch=launch)
         return {'failed_job_id': failed_job_id, 'reserved': True, **answer}
+
+    def _fresh_members(self, job, *, current=False, diagnostic=False):
+        members = job.get('members') or [{'issue_number': job['issue_number'], 'issue_key': job['issue_key'], 'requirements': job['requirements']}]
+        pulls = self.github.pulls(job)
+        for member in members:
+            wanted = Queries(self.store).issue(member['issue_key'])['requirements'] if current else member['requirements']
+            item = dict(repo=job['repo'], repo_id=job['repo_id'], number=member['issue_number'],
+                        unit_state=job['unit_state'], reviewers_requested=job.get('reviewers_requested'), candidate=job['candidate'])
+            item = publication_context(self.store, job['unit_id'], item)
+            remote, requirements = self.github.issue(item)
+            states = {'open', 'closed'} if diagnostic else {'open'}
+            if (remote.get('state') not in states or requirements != wanted
+                    or not self._remote_admitted(remote, item, pulls)):
+                return False
+        return True
 
     @staticmethod
     def _incomplete(reason):
@@ -111,10 +118,10 @@ class RecoveryController:
                     headline='The investigation could not finish',
                     plain='Forge could not establish the cause of this failure. Its existing failure budget is unchanged.')
 
-    def _remote_admitted(self, issue, item):
+    def _remote_admitted(self, issue, item, pulls=None):
         labels = {row['name'] if isinstance(row, dict) else row for row in issue.get('labels', [])}
         return (not labels.intersection(self.config['hold_labels'])
-                and ownership(issue, item, item['repo']) is None)
+                and ownership(issue, item, item['repo'], pulls) is None)
 
     def finish(self, recovery_job_id):
         self._active()
@@ -158,19 +165,20 @@ class RecoveryController:
         # in the investigation. Exact original assignment contracts still apply.
         verification = (report is not None and report['outcome'] == 'needs_human_verification'
                         and len(json.dumps(report).encode()) <= 60000)
-        policy_current = original['input_manifest'].get('policy_hash') == digest(policy(self.config))
-        if (original['role'] == 'build' and policy_current and job['unit_state'] == 'building'
+        policy_current = original['input_manifest'].get('policy_hash') == digest(policy(self.config, original['repo_id'], repository_name=original['repo']))
+        if (original['role'] == 'build' and not original.get('delegation') and original.get('builder_stage') != 'planning'
+                and policy_current and job['unit_state'] in {'building', 'integrating'}
                 and job['current_candidate_id'] is None
-                and job['input_manifest']['requirements_revision_id'] == original['input_manifest']['requirements_revision_id']):
+                and (original.get('builder_stage') == 'integration' or
+                     job['input_manifest'].get('requirements_revision_id') == original['input_manifest'].get('requirements_revision_id'))):
             item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'],
                         unit_state=original['unit_state'],reviewers_requested=original.get('reviewers_requested'),candidate=original.get('candidate'))
-            issue, requirements = self.github.issue(item)
-            if (issue.get('state') == 'open' and requirements == original['requirements']
-                    and self._remote_admitted(issue, item)):
+            requirements = original['requirements']
+            if self._fresh_members(original):
                 publication = self.github.publication(original, requirements, original['input_manifest']['policy_hash'])
                 if publication and publication['base'] == original['input_manifest']['base_oid']:
                     identity = Candidate(publication['pr'], publication['branch'], publication['head'], publication['base'],
-                        original['input_manifest']['policy_hash'], manifest_hash(requirements), manifest_hash(original['input_manifest']))
+                        original['input_manifest']['policy_hash'], original['input_manifest'].get('requirements_hash', manifest_hash(requirements)), manifest_hash(original['input_manifest']))
                     evidence = dict(verified=True, head_oid=identity.head_oid, base_oid=identity.base_oid,
                                     pull_number=identity.pull_number, failed_job_id=original['id'], observed_at=self.clock(),
                                     policy_hash=identity.policy_hash, requirements_hash=identity.requirements_hash,
@@ -187,9 +195,7 @@ class RecoveryController:
                 and original['candidate_id'] == job['candidate_id'] == job['current_candidate_id']):
             item = dict(repo=original['repo'], repo_id=original['repo_id'], number=original['issue_number'],
                         unit_state=original['unit_state'],reviewers_requested=original.get('reviewers_requested'),candidate=original.get('candidate'))
-            issue, requirements = self.github.issue(item)
-            if (issue.get('state') == 'open' and requirements == original['requirements']
-                    and self._remote_admitted(issue, item)
+            if (self._fresh_members(original)
                     and ResultController._current_pr(self.github.pr(item, original['candidate']['pr']), original)):
                 args['findings'] = report
                 incomplete = False

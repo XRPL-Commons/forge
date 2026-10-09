@@ -77,7 +77,7 @@ class ExecutionTests(unittest.TestCase):
         self.controller = self.driver()
 
     def driver(self):
-        return ExecutionController(self.store, self.engine, GitHub(), admission=lambda job: True, clock=lambda: self.now)
+        return ExecutionController(self.store, self.engine, GitHub(), enabled=lambda: True, admission=lambda job: True, clock=lambda: self.now)
 
     def view(self):
         with self.store.read_snapshot() as db:
@@ -103,6 +103,14 @@ class ExecutionTests(unittest.TestCase):
                               manifest_hash({'acceptance': ['works']}), manifest_hash(self.manifest))
         return self.life.finish_job(self.command(), job, execution_fence=fence, input_manifest=self.manifest,
             evidence={'head_oid': 'head', 'base_oid': 'base', 'pull_number': 1}, candidate=candidate)
+
+    def test_disabled_runtime_fences_reserved_job_without_starting_it(self):
+        job = self.reserve()
+        self.controller.enabled = lambda: False
+        self.controller.step(job)
+        self.assertEqual(self.engine.creates, 0)
+        self.assertEqual(self.engine.starts, 0)
+        self.assertTrue(self.queries.job(job)['cleanup'])
 
     def test_launch_and_lease_are_one_transaction_and_idempotency_binds_config(self):
         command = self.command()

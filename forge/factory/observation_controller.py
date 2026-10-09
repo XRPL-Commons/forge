@@ -1,4 +1,4 @@
-"""Ordered GitHub observations for current SQLite units of one.
+"""Ordered GitHub observations for every current SQLite delivery member.
 
 Collection generations are reserved before network reads. A late response cannot
 replace a newer observation. All issue facts, holds and readiness changes commit
@@ -12,7 +12,7 @@ from ..store.models import Command, TransitionError
 from ..store.queries import Queries
 from ..store.transitions import Lifecycle, TERMINAL
 from .github import GitHubUnavailable
-from .ownership import ownership
+from .ownership import ownership, active_publication_matches
 
 
 class ObservationController:
@@ -23,13 +23,14 @@ class ObservationController:
         self.commands = Lifecycle(store, clock=clock)
         self.queries = Queries(store)
 
-    def _snapshot(self, unit_id):
+    def _snapshot(self, unit_id, member_id):
         unit = self.queries.unit(unit_id)
         if unit['state'] in TERMINAL:
             return None
-        if len(unit['members']) != 1:
-            raise TransitionError('observation currently requires a unit of one')
-        issue = self.queries.issue(unit['members'][0]['issue_id'])
+        member=next((row for row in unit['members'] if row['id']==member_id),None)
+        if member is None:
+            return None
+        issue=self.queries.issue(member['issue_id'])
         with self.store.read_snapshot() as db:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot observe live GitHub state')
@@ -39,7 +40,8 @@ class ObservationController:
                     candidate={'pr': candidate['pull_number'],'key':candidate['id']} if candidate else None,unit_state=unit['state'])
         from ..store.operator_views import ownership_context
         item=ownership_context(self.store,item,unit['current_candidate_id'])
-        return unit, issue, candidate, item
+        from .ownership import publication_context
+        return unit, issue, candidate, publication_context(self.store,unit_id,item)
 
     def _generation(self, issue):
         key = 'observation_generation:' + issue['id']
@@ -66,18 +68,25 @@ class ObservationController:
         return {'unit_id': unit['id'], 'pending': 'external_change'}
 
     def step(self, unit_id):
-        with self.store.read_snapshot() as db:
-            requested = db.execute('SELECT r.issue_id,r.requested_at FROM operator_observation_requests r '
-                'JOIN unit_issues m ON m.issue_id=r.issue_id WHERE m.unit_id=? AND m.left_at IS NULL', (unit_id,)).fetchone()
-        outcome = self._step(unit_id)
-        if requested and not outcome.get('stale') and not outcome.get('pending'):
-            with self.store.write() as db:
-                db.execute('DELETE FROM operator_observation_requests WHERE issue_id=? AND requested_at=?',
-                           (requested['issue_id'], requested['requested_at']))
-        return outcome
+        unit=self.queries.unit(unit_id)
+        if unit['state'] in TERMINAL:
+            return {'unit_id':unit_id,'terminal':True}
+        outcomes={}
+        for member in unit['members']:
+            issue_id=member['issue_id']
+            with self.store.read_snapshot() as db:
+                requested=db.execute('SELECT requested_at FROM operator_observation_requests WHERE issue_id=?',(issue_id,)).fetchone()
+            outcome=self._step_member(unit_id,member['id'])
+            outcomes[member['id']]=outcome
+            if requested and not outcome.get('stale') and not outcome.get('pending'):
+                with self.store.write() as db:
+                    db.execute('DELETE FROM operator_observation_requests WHERE issue_id=? AND requested_at=?',(issue_id,requested[0]))
+        if len(outcomes)==1:
+            return next(iter(outcomes.values()))
+        return {'unit_id':unit_id,'members':outcomes}
 
-    def _step(self, unit_id):
-        snapshot = self._snapshot(unit_id)
+    def _step_member(self, unit_id, member_id):
+        snapshot = self._snapshot(unit_id, member_id)
         if snapshot is None:
             return {'unit_id': unit_id, 'terminal': True}
         unit, issue, candidate, item = snapshot
@@ -102,7 +111,9 @@ class ObservationController:
         # or candidate reads are unavailable. It cannot clear ownership/readiness.
         conflict = allowed = None
         if not terminal and pr_error is None:
-            conflict = ownership(remote, item, item['repo'], self.github.pulls(item)) is not None
+            pulls = [pr for pr in self.github.pulls(item)
+                     if not active_publication_matches(self.store, unit_id, pr)]
+            conflict = ownership(remote, item, item['repo'], pulls) is not None
             allowed = self.admission(item)
             if type(allowed) is not bool:
                 raise TransitionError('admission adapter must return a verified boolean')
@@ -115,7 +126,7 @@ class ObservationController:
                             if isinstance(row, dict) and row.get('type')})
         if outcome.get('stale'):
             return {'unit_id': unit_id, 'stale': True}
-        current = self._snapshot(unit_id)
+        current = self._snapshot(unit_id, member_id)
         if current is None:
             return {'unit_id': unit_id, 'terminal': True}
         unit, issue, selected, item = current
@@ -147,6 +158,8 @@ class ObservationController:
                         'base_oid': selected['base_oid']})}
             if pr.get('merged') is not False:
                 raise GitHubUnavailable('Candidate merge state is unverified')
+            if remote['state'] == 'open' and active_publication_matches(self.store, unit_id, pr):
+                return {'unit_id': unit_id, 'observed': True, 'publishing': True}
             if not exact_head:
                 return self._external_change(unit, 'candidate_head_changed')
             proof.update(verified=True, merged=False, candidate_id=selected['id'],
@@ -161,6 +174,12 @@ class ObservationController:
                     return {'unit_id': unit_id, **self.commands.invalidate_candidate(self._command(unit),
                         selected['id'], reason=reason, evidence=proof)}
         if remote['state'] == 'closed' and remote.get('state_reason') in {'completed', 'not_planned', 'duplicate'}:
+            if unit['delivery_approved']:
+                with self.store.read_snapshot() as db:
+                    existing=db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='membership_decision' AND resolved_at IS NULL",(unit_id,member_id)).fetchone()
+                if not existing:
+                    self.commands.open_gate(self._command(unit),'membership_decision',member_id=member_id,details={'reason':'member_closed','state_reason':remote['state_reason']})
+                return {'unit_id':unit_id,'pending':'membership_decision'}
             return {'unit_id': unit_id, **self.commands.close_unit(self._command(unit),
                 close_code='github_' + remote['state_reason'], evidence=proof)}
         return {'unit_id': unit_id, 'observed': True}

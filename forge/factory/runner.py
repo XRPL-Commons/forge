@@ -259,7 +259,7 @@ class ContainerRunner:
             value = str(Path(self.environ['FORGE_CREDENTIAL_ROOT']) / 'runner-seccomp.json')
         return Path(value or '')
 
-    def prepare(self, job, token):
+    def prepare(self, job, token, *, bundles=()):
         current = self.inspect(job)
         if not current or current['status'] != 'created' or job['fenced']:
             raise RunnerError('Only an unstarted owned execution can receive an assignment')
@@ -297,7 +297,10 @@ class ContainerRunner:
                 json.dump({'github_token': token, 'values': secret_values(credentials.get('FORGE_HARNESS_AUTH'))}, stream)
         # A job built by a caller that predates roles still gets an assignment.
         role = job.get('role')
-        if role == 'discussion':
+        if role == 'triage':
+            from .contracts import triage_note
+            note = triage_note(job)
+        elif role == 'discussion':
             from .discussions import note as discussion_note
             note = discussion_note(job)
         else:
@@ -312,6 +315,14 @@ class ContainerRunner:
                 member.size, member.mode, member.uid, member.gid = len(raw), 0o600, 1000, 1000
                 archive.addfile(member, io.BytesIO(raw))
         self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
+        for index, bundle in enumerate(bundles):
+            content = io.BytesIO()
+            with tarfile.open(fileobj=content, mode='w') as archive:
+                raw = bundle['content']
+                member = tarfile.TarInfo('input-' + str(index) + '.bundle')
+                member.size, member.mode, member.uid, member.gid = len(raw), 0o400, 1000, 1000
+                archive.addfile(member, io.BytesIO(raw))
+            self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
 
     def refresh_auth(self, current):
         if self.config.get('provider', 'codex') == 'codex' and self.config.get('codex_parallel_auth'):
@@ -405,14 +416,18 @@ class ContainerRunner:
         if current is None:
             return {'result': None, 'logs': '', 'missing': ['container and worker-local evidence']}
         captured = {'result': None, 'logs': '', 'missing': []}
+        # A complete repository proposal is normalized into many rows; ordinary
+        # worker reports retain their small result boundary.
+        result_limit = 4 * 1048576 if job.get('role') == 'triage' else 65536
+        archive_limit = result_limit + 65536
         secrets = self._scrub_values(job)
         try:
-            raw = self.call(['cp', current['id'] + ':/work/result.json', '-'], max_output=131072).stdout
-            if len(raw) > 131072:
+            raw = self.call(['cp', current['id'] + ':/work/result.json', '-'], max_output=archive_limit).stdout
+            if len(raw) > archive_limit:
                 raise ValueError('Oversized result')
             with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
                 entries = archive.getmembers()
-                if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 65536:
+                if len(entries) != 1 or not entries[0].isfile() or entries[0].size > result_limit:
                     raise ValueError('Invalid result artifact')
                 captured['result'] = json.loads(scrub(archive.extractfile(entries[0]).read().decode(), secrets), object_pairs_hook=unique)
         except (RunnerError, ValueError, tarfile.TarError, UnicodeError):
@@ -421,6 +436,17 @@ class ContainerRunner:
             captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace')[-65536:], secrets)
         except RunnerError:
             captured['missing'].append('runner logs')
+        if job.get('delegation') is not None:
+            from .delegation_artifacts import MAX_BUNDLE_SIZE
+            try:
+                raw = self.call(['cp', current['id'] + ':/work/output.bundle', '-'], max_output=MAX_BUNDLE_SIZE + 65536).stdout
+                with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                    entries = archive.getmembers()
+                    if len(entries) != 1 or not entries[0].isfile() or not 0 < entries[0].size <= MAX_BUNDLE_SIZE:
+                        raise ValueError('Invalid delegated output artifact')
+                    captured['worktree_bundle'] = archive.extractfile(entries[0]).read()
+            except (RunnerError, ValueError, tarfile.TarError):
+                captured['missing'].append('delegated output bundle')
         captured['execution'] = current
         return captured
 

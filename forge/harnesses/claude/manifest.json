@@ -18,5 +18,6 @@
     "managed-settings.json": "/etc/claude-code/managed-settings.json"
   },
   "token_env": "CLAUDE_CODE_OAUTH_TOKEN",
-  "token_command": "claude setup-token"
+  "token_command": "claude setup-token",
+  "delegation": "managed_children"
 }

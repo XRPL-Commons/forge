@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 from forge.factory.config import policy, validate
 from forge.factory.dispatch_controller import DispatchController, GitHubPrepare
@@ -33,6 +34,15 @@ class GitHub(BaseGitHub):
         if isinstance(value, Exception):
             raise value
         return deepcopy(value), 'dependency-requirements'
+
+    def prerequisite(self,ref,binding=None):
+        number=int(ref.rsplit('#',1)[1])
+        observed=self.remote if number==1 else self.dependencies[number]
+        if isinstance(observed,Exception):
+            return {'reference':ref,'error':'prerequisite_inaccessible'}
+        return dict(reference=ref,repository_id=1,github_id=1000+number,number=number,
+            kind='pull_request' if 'pull_request' in observed else 'issue',
+            state=observed['state'],state_reason=observed.get('state_reason'),merged=observed.get('merged',False),updated_at=observed['updated_at'])
 
     def environment_label(self, item, remote, label):
         self.labels_sent += 1
@@ -82,7 +92,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
 
     def dependency(self,state='open',number=2):
         self.github.remote['body']='Depends on #'+str(number)
-        self.github.dependencies[number]=dict(number=number,state=state,updated_at='2026-10-08T01:00:00Z')
+        self.github.dependencies[number]=dict(number=number,state=state,state_reason='completed' if state=='closed' else None,updated_at='2026-10-08T01:00:00Z')
 
     def test_choice_is_durable_and_dispatch_refreshes_version(self):
         launched=self.dispatch.step('u')
@@ -98,7 +108,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.dependency()
         self.assertFalse(self.controller.observe('u')['dependencies_clear'])
         self.assertEqual(self.dispatch.step('u')['reason'],'dependency')
-        self.github.dependencies[2]['state']='closed'
+        self.github.dependencies[2].update(state='closed',state_reason='completed')
         self.assertTrue(self.controller.observe('u')['dependencies_clear'])
         job_id=self.dispatch.step('u')['job_id']
         self.github.dependencies[2]['state']='open'
@@ -110,22 +120,48 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.dependency()
         self.controller.observe('u')
         self.github.dependencies[2]=GitHubUnavailable('offline')
-        with self.assertRaises(GitHubUnavailable):
-            self.controller.observe('u')
+        self.assertFalse(self.controller.observe('u')['dependencies_clear'])
         self.assertEqual(self.snapshot()['reason'],'dependency')
 
     def test_pr_and_self_reference_never_prove_prerequisite(self):
         self.dependency('closed')
         self.github.dependencies[2]['pull_request']={ 'url':'test' }
-        with self.assertRaises(GitHubUnavailable):
-            self.controller.observe('u')
+        self.assertFalse(self.controller.observe('u')['dependencies_clear'])
         self.github.remote['body']='Depends on #1'
         self.assertFalse(self.controller.observe('u')['dependencies_clear'])
+
+    def test_verified_worker_dependency_is_rechecked_after_reopening(self):
+        self.dependency('closed')
+        self.github.remote['body']=''
+        self.commands.open_gate(self.command(),'dependency',member_id=self.member,
+            details={'requirements':self.github.requirements,'issues':[2]})
+        self.assertTrue(self.controller.observe('u')['dependencies_clear'])
+        self.github.dependencies[2]['state']='open'
+        self.assertFalse(self.controller.observe('u')['dependencies_clear'])
+
+    def test_explicitly_dismissed_worker_dependency_does_not_return(self):
+        self.commands.open_gate(self.command(),'dependency',member_id=self.member,
+            details={'requirements':self.github.requirements,'issues':[2]})
+        self.commands.clear_declared_dependencies(self.command(),requirements_revision_id=self.revision,
+            evidence={'reason':'Operator removed the worker-declared prerequisite'})
+        self.assertTrue(self.controller.observe('u')['dependencies_clear'])
+
+    def test_prepare_excludes_only_exact_active_publication_from_ownership(self):
+        owned={'number':10}
+        unrelated={'number':11}
+        self.github.open_pulls=[owned,unrelated]
+        with patch('forge.factory.ownership.active_publication_matches',side_effect=lambda store,unit,pr:pr==owned), \
+                patch('forge.factory.requirements_controller.ownership',return_value='human_owned') as ownership:
+            self.assertIsNone(self.controller._prepare_member(self.snapshot()))
+            self.assertEqual(ownership.call_args.args[3],[unrelated])
+        self.github.remote['labels']=['hold']
+        with patch('forge.factory.ownership.active_publication_matches',return_value=True):
+            self.assertIsNone(self.controller._prepare_member(self.snapshot()))
 
     def test_obsolete_and_out_of_order_dependency_proof(self):
         self.commands.dependencies(self.command(),requirements_revision_id=self.revision,generation=2,facts=[])
         stale=self.commands.dependencies(self.command(),requirements_revision_id=self.revision,generation=1,
-            facts=[dict(number=2,state='open',updated_at='2026-10-08T01:00:00Z')])
+            facts=[dict(reference='owner/repo#2',repository_id=1,github_id=1002,number=2,kind='issue',state='open',state_reason=None,merged=False,updated_at='2026-10-08T01:00:00Z')])
         self.assertTrue(stale['stale'])
         with self.assertRaises(TransitionError):
             self.commands.dependencies(self.command(),requirements_revision_id='old',generation=3,facts=[])
@@ -154,7 +190,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
     def test_confirmed_oom_retries_next_tier_without_charge(self):
         first=self.dispatch.step('u')['job_id']
         self.capture(first,oom=True)
-        results=ResultController(self.store,self.github,policy=lambda _:policy(self.config),requirements=self.controller,clock=lambda:self.now)
+        results=ResultController(self.store,self.github,policy=lambda _:policy(self.config,1,repository_name='owner/repo'),requirements=self.controller,clock=lambda:self.now)
         result=results.step(first)
         self.assertEqual(result['retry'],'memory')
         second=self.dispatch.step('u')['job_id']
@@ -211,7 +247,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             learned=db.execute('SELECT * FROM memory_profiles').fetchone()
             self.assertEqual((learned['role'],learned['memory_bytes'],learned['source_job_id']),('build',8*1024**3,job['id']))
-            self.assertIsNone(db.execute('SELECT memory_retry_json FROM unit_environment_observations').fetchone()[0])
+            self.assertIsNone(db.execute('SELECT memory_retry_json FROM issue_environment_observations').fetchone()[0])
 
     def test_persisted_dependency_proof_is_revision_bound_and_holds_remain(self):
         self.dependency('closed')
@@ -245,8 +281,9 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.controller.observe('u')
         self.assertEqual(self.snapshot()['reason'],'dependency')
 
-    def test_complete_observation_rejects_pull_request_even_empty_marker(self):
+    def test_pull_request_marker_requires_verified_merge_completion(self):
         self.dependency('closed')
         self.github.dependencies[2]['pull_request']={}
-        with self.assertRaises(GitHubUnavailable):
-            self.controller.observe('u')
+        self.assertFalse(self.controller.observe('u')['dependencies_clear'])
+        self.github.dependencies[2]['merged']=True
+        self.assertTrue(self.controller.observe('u')['dependencies_clear'])

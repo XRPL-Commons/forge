@@ -14,12 +14,21 @@ CONTROLS = {
 }
 
 
+def configuration_value(source,name):
+    value=source.json(name)
+    if name in ('runtime.json','setup/runtime.json','host-runtime.json'):
+        from ...factory.config import legacy_merge_policies
+        factory='setup/factory.json' if name=='setup/runtime.json' else 'factory.json'
+        value=legacy_merge_policies(value,source.json(factory,{}).get('repositories',[]))
+    return value
+
+
 def normalize(importer):
     mapped = set()
     names = [name for name in CONFIGURATION if name in importer.source.entries]
     batches(importer,'normalized:configuration',names,lambda db,name:
             insert(db,'configuration',domain=name,subject='instance',revision=1,active=1,
-                   settings_json=json_text(importer.source.json(name)),created_at=importer.source.manifest['captured_at']))
+                   settings_json=json_text(configuration_value(importer.source,name)),created_at=importer.source.manifest['captured_at']))
     mapped.update(names)
 
     def control(db, name):
@@ -75,7 +84,7 @@ def check(importer):
     for name in CONFIGURATION:
         if name in importer.source.entries:
             value = Configuration(importer.store).get(name)
-            if not value or value['settings']!=importer.source.json(name):
+            if not value or value['settings']!=configuration_value(importer.source,name):
                 raise MigrationError('configuration_parity_mismatch')
             counters['configuration']+=1
     with importer.store.read_snapshot() as db:

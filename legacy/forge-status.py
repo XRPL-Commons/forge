@@ -211,7 +211,7 @@ class H(BaseHTTPRequestHandler):
         from forge.operator_auth import OperatorAuth
         paths = {'/api/client/device', '/api/client/token', '/api/client/refresh',
                  '/api/client/status', '/api/client/disconnect', '/api/client/requirements',
-                 '/api/client/authorize', '/api/client/read', '/api/client/operation'}
+                 '/api/client/authorize', '/api/client/read', '/api/client/operation', '/api/client/policy', '/api/client/planning', '/api/client/delivery'}
         if self.path not in paths:
             return False
         try:
@@ -250,6 +250,15 @@ class H(BaseHTTPRequestHandler):
                 fields(value, ('repository', 'instance', 'generation', 'capability'))
                 clients.authorize(bearer, value['repository'], value['capability'], value['instance'], value['generation'])
                 result = {'authorized': True}
+            elif self.path == '/api/client/delivery':
+                from forge.delivery_actions import ClientDelivery
+                result = ClientDelivery(WD, clients).request(bearer, value)
+            elif self.path == '/api/client/policy':
+                from forge.repository_merge_policy import ClientMergePolicy
+                result = ClientMergePolicy(settings_service(), clients).request(bearer, value)
+            elif self.path == '/api/client/planning':
+                from forge.factory.planning_service import client_request
+                result = client_request(WD, clients, bearer, value)
             elif self.path in ('/api/client/read', '/api/client/operation'):
                 from forge.client_repositories import ClientRepositories, OPERATIONS
                 # Fence before opening repository state, including malformed or
@@ -303,7 +312,7 @@ class H(BaseHTTPRequestHandler):
             return
         if not self._operator_guard() or not self._signed_in():
             return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -369,6 +378,11 @@ class H(BaseHTTPRequestHandler):
             phase=setup_phase() if self.path=='/api/runtime' else None
             if self.path == '/api/runtime' and phase is not None and phase!='active':
                 raise ValueError('Use guided setup until the factory has started')
+            if self.path == '/api/repositories/planning':
+                from forge.factory.planning_service import PlanningService
+                if not isinstance(value,dict) or set(value)!={'repository_id','operation'}:raise ValueError('Expected a repository planning operation')
+                result=PlanningService(WD,actor_id=self._operator_actor()).action(value['repository_id'],value['operation'])
+                self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/discussion':
                 from forge.factory.discussions import Discussions
                 service = Discussions(WD)
@@ -389,6 +403,13 @@ class H(BaseHTTPRequestHandler):
                 if service is None:raise ValueError('Explicit verification requires the SQLite runtime')
                 receipt=service.verify(value['key'],value['revision'],value['gate_id'],value['statement'],request_id=value['request_id'])
                 self._send(json.dumps({'ok':True,'receipt':receipt,'controls_token':self._action_token}));return
+            if self.path == '/api/issues/delivery':
+                from forge.delivery_actions import request as delivery_request
+                from forge.factory.store_operator import selected_service
+                service=selected_service(WD,actor_id=self._operator_actor())
+                if service is None:raise ValueError('Delivery decisions require the SQLite runtime')
+                result=delivery_request(service,value)
+                self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/action':
                 from forge.factory.issue_actions import decide, IMMEDIATE
                 from forge.factory.issues import IssueInventory
@@ -541,6 +562,16 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':self._action_token}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Setup state is unavailable; inspect the supervisor service'}))
+        elif u.path == '/api/repositories/planning':
+            from forge.factory.planning_service import PlanningService
+            try:
+                query=parse_qs(u.query)
+                if set(query)-{'repository_id','proposal_id','row_id','after'} or 'repository_id' not in query or any(len(v)!=1 for v in query.values()):raise ValueError('Invalid planning view')
+                args={k:v[0] for k,v in query.items()};args['repository_id']=int(args['repository_id'])
+                result=PlanningService(WD,actor_id=self._operator_actor()).read(**args)
+                self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}))
+            except (ValueError,KeyError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Repository planning is unavailable. Refresh to try again.'}))
         elif u.path == '/api/issues/discussion':
             from forge.factory.discussions import Discussions
             try:
@@ -551,6 +582,16 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
             except (ValueError, KeyError, OSError, RuntimeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Conversation unavailable. Refresh the issue and try again.'}))
+        elif u.path == '/api/issues/delivery':
+            try:
+                from forge.factory.store_operator import selected_service
+                query=parse_qs(u.query)
+                if set(query)!={'key'} or len(query['key'])!=1:raise ValueError('Expected one issue key')
+                service=selected_service(WD,actor_id=self._operator_actor())
+                if service is None:raise ValueError('Delivery decisions require the SQLite runtime')
+                self._send(json.dumps({'ok':True,**service.membership(query['key'][0])}))
+            except (ValueError,KeyError,RuntimeError) as error:
+                self._send(json.dumps({'ok':False,'reason':str(error)}),status=409)
         elif u.path == '/api/issues':
             from forge.factory.issues import IssueInventory
             try:
@@ -565,6 +606,18 @@ class H(BaseHTTPRequestHandler):
                 self._cached(('issues',)+tuple(sorted(args.items())), lambda: service.view(**args))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
+        elif u.path == '/api/delivery':
+            try:
+                from forge.factory.control import public_views
+                query = parse_qs(u.query, keep_blank_values=True)
+                if set(query)-{'issue','after'} or 'issue' not in query or any(len(v)!=1 for v in query.values()):
+                    raise ValueError('Expected an issue and optional delivery history cursor')
+                service = public_views(WD)
+                if service is None: raise ValueError('Delivery history requires the active SQLite runtime')
+                self._cached(('delivery',query['issue'][0],query.get('after',[''])[0]),
+                             lambda: service.delivery(query['issue'][0],after=query.get('after',[''])[0]))
+            except (OSError,ValueError,KeyError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Delivery history is unavailable. Refresh to try again.'}))
         elif u.path == '/api/factory/changes':
             try:
                 from forge.factory.control import public_views
@@ -644,7 +697,7 @@ class H(BaseHTTPRequestHandler):
                 if query and query != {'summary':['1']}: raise ValueError('Invalid settings view')
                 result=settings_service().view()
                 if query:
-                    fields=('id','name','enabled','configured','access','access_ready','protection_ready','protection_status','protection_previous_status','dispatch_allowed','setup_url')
+                    fields=('id','name','enabled','configured','access','access_ready','protection_ready','protection_status','protection_previous_status','dispatch_allowed','setup_url','merge_policy')
                     result['repositories']=[{key:row[key] for key in fields if key in row} for row in result['repositories']]
                 result.update(ok=True,controls_token=self._action_token)
                 self._send(json.dumps(result))

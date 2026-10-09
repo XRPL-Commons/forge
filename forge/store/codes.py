@@ -112,12 +112,13 @@ CANDIDATE = frozenset({'candidate'})
 ANY_SCOPE = EITHER | CANDIDATE
 
 GATES: dict[str, Gate] = {
-    'operator_pause': Gate('intent', 'operator', UNIT),
-    'operator_backlog': Gate('intent', 'operator', UNIT),
+    'operator_pause': Gate('intent', 'operator', EITHER),
+    'operator_backlog': Gate('intent', 'operator', EITHER),
     # Operator decision (2026-10-05): removing the hold label resumes the work.
     'label_hold': Gate('intent', 'observation', EITHER),
     'membership_decision': Gate('intent', 'operator', EITHER),
-    'operator_sync': Gate('intent', 'observation', UNIT),
+    'operator_sync': Gate('intent', 'observation', EITHER),
+    'triage_sync': Gate('intent', 'observation', frozenset({'member'})),
     'external_change': Gate('intent', 'operator', EITHER),
     'ownership_conflict': Gate('intent', 'observation', EITHER),
     'budget_exhausted': Gate('decision', 'operator', UNIT),
@@ -160,6 +161,7 @@ ARTIFACT_KINDS = {
     'launch_input': 'durable',
     'failure_evidence': 'durable',
     'worker_capture': 'durable',
+    'worktree_bundle': 'durable',
     'input_manifest': 'durable',
     'result': 'durable',
     'summary': 'durable',

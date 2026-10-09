@@ -36,6 +36,8 @@ export interface IssueEnvironment {
   editable: boolean
 }
 
+export interface IssuePrerequisite { reference: string; repository: string; number: number; kind: string | null; reason: string | null; complete: boolean; url: string }
+
 export interface IssueRow extends OperatorStatusSource {
   key: string; repo: string; repo_id: number; number: number; title: string
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
@@ -50,6 +52,7 @@ export interface IssueRow extends OperatorStatusSource {
   // Whether Forge can drop this issue: close its pull request and close the
   // issue as not planned. Never one of `actions`; older payloads omit it.
   closable?: boolean
+  delivery_approved?: boolean
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null
@@ -58,10 +61,12 @@ export interface IssueRow extends OperatorStatusSource {
   // read it, and when Forge last read GitHub for this issue. Older payloads omit them.
   approvals?: IssueApproval[]
   last_checked?: number | null
+  merge_policy?: 'auto' | 'human'
   merge_blocker?: { reason: string } | null
   environment?: IssueEnvironment
   pull_requests: PullRequestRef[]
   dependencies: number[]
+  prerequisites?: IssuePrerequisite[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
   // Sent on list rows and the detail alike; older payloads omit them.
   attempts?: IssueAttempts | null
@@ -93,6 +98,7 @@ export interface IssueAttempts { failed: number; limit: number }
 // A GitHub label that paused the issue, who applied it and when (ISO time).
 export interface IssueLabelHold { label: string; login: string | null; at: string }
 export interface IssueDetail extends IssueRow {
+  delivery_id?: string | null
   body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
   // Detail only: the list view carries neither the collaborators nor the request.
   reviewers: Reviewer[]; default_reviewers: string[]; reviewers_requested: ReviewRequest | null
