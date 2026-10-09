@@ -35,7 +35,7 @@ export default async function (page, { base, scenario, requests }) {
   const merged = page.locator(`${CARDS}[data-key="1:825"]`)
   assert.equal(await merged.locator('canvas').getAttribute('aria-hidden'), 'true')
   assert.match(await merged.locator('canvas').getAttribute('data-look'), /^merged happy bow confetti$/)
-  assert.equal((await merged.locator('[data-status-chip]').innerText()).trim(), 'Merged')
+  assert.equal((await merged.locator('[data-status-chip]').innerText()).trim(), 'Completed')
   assert.match(await merged.locator('[data-fact="age"]').innerText(), /^Merged .+ ago$/)
   const closed = page.locator(`${CARDS}[data-key="1:821"]`)
   assert.doesNotMatch(await closed.locator('canvas').getAttribute('data-look'), /bow|confetti/)

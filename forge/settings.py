@@ -151,10 +151,10 @@ class Settings:
         self.clock = clock
 
     def load(self):
-        return validate(read_json(self.path)) if self.path.exists() else json.loads(json.dumps(DEFAULT))
+        return self.config_snapshot()[0]
 
     def configured(self):
-        return self.path.exists()
+        return self.authority.snapshot(self.authority.domain('factory.json')) is not None
 
     def generation(self):
         return None
@@ -165,9 +165,11 @@ class Settings:
                 row['revision'] if row else 0)
 
     def save_config(self, config, *, expected_generation=None, expected_revision=None):
-        if expected_revision is None:
-            _, expected_revision = self.config_snapshot()
-        self.authority.replace(self.authority.domain('factory.json'), config, expected_revision=expected_revision)
+        from .legacy_writers import mutation
+        with mutation(self.path):
+            if expected_revision is None:
+                _, expected_revision = self.config_snapshot()
+            self.authority.replace(self.authority.domain('factory.json'), config, expected_revision=expected_revision)
 
     def save_observation(self, value, *, expected_generation=None):
         write_json(self.state / 'access.json', value)

@@ -38,6 +38,8 @@ class ConfigurationAuthority:
             with self.database.read_snapshot() as db:
                 row = db.execute("SELECT phase FROM setup_instances WHERE scope='live'").fetchone()
                 return row[0] if row else None
+        from .store.runtime import require_legacy
+        require_legacy(self.root)
         from .settings import read_json
         path = self.root / 'state/onboarding/setup.json'
         return read_json(path).get('phase') if path.is_file() else None
@@ -56,6 +58,8 @@ class ConfigurationAuthority:
         self._check_domain(domain)
         if self.database is not None:
             return Configuration(self.database).get(domain)
+        from .store.runtime import require_legacy
+        require_legacy(self.root)
         from .settings import read_json, digest
         path = self.root / domain
         if not path.exists():
@@ -75,8 +79,10 @@ class ConfigurationAuthority:
             return Configuration(self.database).replace(domain, value, expected_revision=expected_revision,
                                                         credential_ref=credential_ref)
         from .settings import write_json, digest
-        current = self.snapshot(domain)
-        if expected_revision != (current['revision'] if current else 0):
-            raise ConfigurationConflict('Configuration changed; reload before saving')
-        write_json(self.root / domain, value)
+        from .legacy_writers import mutation
+        with mutation(self.root / domain):
+            current = self.snapshot(domain)
+            if expected_revision != (current['revision'] if current else 0):
+                raise ConfigurationConflict('Configuration changed; reload before saving')
+            write_json(self.root / domain, value)
         return digest(value)
