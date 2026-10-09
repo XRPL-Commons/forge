@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge.credentials import Credentials
-from forge.factory.codex_auth import snapshot, expires_at, MARGIN, renew_in_container
+from forge.factory.codex_auth import snapshot, expires_at, MARGIN, renew_in_container, renewable
 from forge.factory.config import validate
 from forge.factory.providers import available
 from forge.factory.runner import ContainerRunner
@@ -130,6 +130,43 @@ class SharedAuthTests(unittest.TestCase):
         runner = ContainerRunner(validate({'codex_parallel_auth': True}))
         runner.call = Mock(side_effect=AssertionError('must not read worker auth'))
         self.assertEqual(runner.refresh_auth({'id': 'worker'}), 'controller_managed')
+
+    def test_an_access_only_copy_never_replaces_the_managed_login(self):
+        # Live incident: parallel auth was switched off while access-only workers ran;
+        # their copy was saved back and the login could no longer renew.
+        import hashlib
+        stored = Path(self.credentials.environment()[REF]).read_bytes()
+        copy = {'auth_mode': 'chatgptAuthTokens', 'tokens': {**login()['tokens'], 'refresh_token': ''}}
+        def tar(text):
+            content = io.BytesIO()
+            with tarfile.open(fileobj=content, mode='w') as archive:
+                raw = text.encode(); member = tarfile.TarInfo('f'); member.size = len(raw)
+                archive.addfile(member, io.BytesIO(raw))
+            return Mock(stdout=content.getvalue())
+        def call(argv, **kwargs):
+            return tar(hashlib.sha256(stored).hexdigest()) if argv[1].endswith('.forge-auth-origin') else tar(json.dumps(copy))
+        config = validate({'provider': 'codex', 'provider_auth_file_env': REF, 'provider_environment': []})
+        runner = ContainerRunner(config, environ=self.credentials.environment())
+        runner.call = Mock(side_effect=call)
+        self.assertEqual(runner.refresh_auth({'id': 'worker'}), 'access_only')
+        self.assertEqual(self.current(), login())
+
+    def test_renewable_logins(self):
+        self.assertIsNone(renewable(login()))
+        self.assertEqual(renewable({'auth_mode': 'chatgptAuthTokens', 'tokens': login()['tokens']}), 'access_only')
+        self.assertEqual(renewable({'auth_mode': 'chatgpt', 'tokens': {**login()['tokens'], 'refresh_token': ''}}), 'access_only')
+        self.assertEqual(renewable(None), 'unreadable')
+
+    def test_a_login_that_cannot_renew_stops_dispatch_and_says_why(self):
+        from forge.factory.supervisor import Supervisor
+        self.credentials.put(REF, json.dumps({'auth_mode': 'chatgptAuthTokens', 'tokens': {**login()['tokens'], 'refresh_token': ''}}), file=True)
+        ledger = Ledger(self.root / 'state/factory')
+        settings = Mock(); settings.root = self.root
+        config = validate({'provider': 'codex', 'provider_auth_file_env': REF, 'provider_environment': []})
+        Supervisor(ledger, Mock(), Mock(), settings, config, clock=lambda: 1000).check_logins()
+        cooldown = ledger.read()['provider_cooldowns']['codex']
+        self.assertEqual((cooldown['reason'], cooldown['detail']), ('blocked_auth', 'login_access_only'))
+        self.assertGreater(cooldown['until'], 1000)
 
     def test_new_jobs_wait_for_legacy_writer_then_run_in_parallel(self):
         entry = {'id': 'codex', 'provider': 'codex', 'model': None,

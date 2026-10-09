@@ -367,8 +367,11 @@ class ControllerBaselineTests(unittest.TestCase):
             with self.subTest(app_id=app_id), self.assertRaises(ValueError):
                 ruleset('main', app_id)
 
-    def test_only_pinned_controller_gets_pull_request_bypass(self):
+    def test_admin_bypass_and_pinned_controller_are_shared_by_download_and_client(self):
         for app_id in (4, 4959034):
             value = baseline('main', app_id)
             self.assertEqual(value, ruleset('main', app_id))
-            self.assertEqual(value['bypass_actors'], [{'actor_id': app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'}])
+            self.assertEqual(value['bypass_actors'], [
+                {'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'},
+                {'actor_id': app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
+            ])

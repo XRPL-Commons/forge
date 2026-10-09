@@ -55,6 +55,7 @@ class GitHubFacts:
         return value
     def pr(self, item, number): return copy.deepcopy(self.pull)
     def check(self, *args): self.checks.append(args); return len(self.checks)
+    def settle_checks(self, item, candidate, summary): self.settled = getattr(self, 'settled', []) + [candidate['key']]; return 1
     def verdict(self, job, report): return self.check(job, report)
     def human(self, *args): return self.approved, False
     def approvals(self, *args):
@@ -233,6 +234,22 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.state(), 'merged')
         self.assertEqual(self.ledger.read()['issues'][self.key]['merge_gate']['kind'], 'ready')
 
+    def test_a_refused_merge_does_not_pin_a_later_conflict(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit')
+        def refuse(item):
+            raise GitHubUnavailable('GitHub refused to merge: branch rules still block it', status=405)
+        self.github.merge = refuse
+        self.cycle()
+        merge_job = self.ledger.read()['issues'][self.key]['active']
+        self.assertEqual(self.ledger.read()['jobs'][merge_job]['role'], 'merge')
+        self.github.pull['mergeable'] = False
+        self.cycle()
+        data = self.ledger.read()
+        self.assertEqual(data['jobs'][merge_job]['outcome'], 'superseded')
+        self.assertEqual(self.active()['role'], 'build')
+        self.assertEqual(self.ledger.failure_count(data['issues'][self.key]), 0)
+
     def test_technical_gate_is_not_a_missing_human_approval(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
         self.finish('review'); self.cycle(); self.finish('audit', human='required')
@@ -265,6 +282,51 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(AtomicStore(self.temp.name, 'check-requests').read(), {})
         with self.assertRaises(ValueError):
             request_check(self.temp.name + '/host', 'unknown#1')
+
+    def test_entering_approval_is_recorded_once(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required')
+        self.cycle(); self.cycle()
+        changes = [e for e in self.ledger.read()['events'] if e['kind'] == 'state_changed']
+        self.assertEqual([(e['previous'], e['state']) for e in changes], [('audited', 'approval_needed')])
+
+    def test_approval_priority_cannot_starve_the_rotation(self):
+        from forge.factory.supervisor import Supervisor
+        self.assertGreater(Supervisor.PRIORITY_OBSERVE_SECONDS, 2 * 84)  # longer than two measured cycles
+
+    def test_a_stopped_candidate_settles_its_checks_once(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        with self.ledger.transaction() as data:
+            data['issues'][self.key]['active'] = None
+        self.ledger.hold(self.key, 'Paused by an operator')
+        self.cycle(); self.cycle()
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(getattr(self.github, 'settled', []), [item['candidate']['key']])
+        self.assertEqual(item['checks_settled'], item['candidate']['key'])
+
+    def test_an_unreadable_pull_request_preserves_open_work(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
+        def gone(item, number): raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=404)
+        before = self.ledger.read()['issues'][self.key]
+        self.github.pr = gone
+        self.assertTrue(self.cycle()['errors'])
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual((item['state'], item['candidate'], item['evidence']),
+                         (before['state'], before['candidate'], before['evidence']))
+
+    def test_a_closed_issue_whose_pull_request_is_gone_is_cancelled(self):
+        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
+        self.finish('review'); self.cycle(); self.finish('audit', human='required'); self.cycle()
+        def gone(item, number): raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=404)
+        self.github.pr = gone; self.github.closed = True
+        self.assertFalse(self.cycle()['errors'])
+        item = self.ledger.read()['issues'][self.key]
+        self.assertEqual(item['state'], 'cancelled')
+        self.assertEqual(item['github_observation']['issue']['state'], 'closed')
+        self.assertIsNone(item['github_observation']['issue']['state_reason'])
+        self.assertIsNone(item['candidate'])
+        self.assertFalse(self.cycle()['errors'])
 
     def test_external_merge_clears_an_old_failure_alert(self):
         self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()

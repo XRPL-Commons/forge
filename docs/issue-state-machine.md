@@ -56,7 +56,7 @@ The authoritative enum and next-role mapping are in
 | `built` | Candidate accepted; Review is next or active. | Verified Review pass for the current candidate. |
 | `reviewed` | Review accepted; Audit is next or active. | Verified Audit pass for the current candidate. |
 | `audited` | Technical audit accepted; merge gates remain. | Supervisor verifies checks, protection and human policy, then confirms merge. |
-| `approval_needed` | Current candidate needs a human decision. | Supervisor observes the required current GitHub approval and rechecks merge gates. |
+| `approval_needed` | Current candidate needs approval or external verification. | A fresh GitHub approval or configured CI success resumes remaining reviews; completed technical reviews and merge gates still apply. |
 | `investigating` | A charged attempt failed; Recovery investigates. | Findings allow a retry at the appropriate milestone or require a hold. |
 | `hold` | Explicit operator, environment, protection or recovery stop. | The hold-specific repair/recheck or an allowed operator decision. |
 | `failed` | Three charged failures exhausted the current budget. | Explicit retry with a recorded approach and fresh eligibility checks. |
@@ -79,10 +79,18 @@ stateDiagram-v2
     built --> reviewed: Review pass verified
     reviewed --> audited: Audit pass verified
     audited --> approval_needed: human approval required
+    built --> approval_needed: external verification requested
+    reviewed --> approval_needed: external verification requested
+    approval_needed --> built: verification confirmed; Review remains
+    approval_needed --> reviewed: verification confirmed; Audit remains
     audited --> merged: merge gates pass and GitHub confirms merge
     approval_needed --> merged: current approval and merge gates pass
     merged --> [*]
 ```
+
+Verification requests include exact steps and why workers cannot perform them.
+They consume no failure budget. See [external verification](human-verification.md)
+for approval freshness, failed-check retries and the per-repository CI opt-in.
 
 Discovery can also place an issue directly on `hold`, for example when existing
 work requires explicit adoption. A changed candidate, base, requirements or policy

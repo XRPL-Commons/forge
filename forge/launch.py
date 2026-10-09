@@ -1,0 +1,68 @@
+"""Select the qualified host interpreter environment before opening SQLite."""
+import os
+from pathlib import Path
+import runpy
+import sys
+
+
+def launch(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    script = bool(argv and argv[0] == '--script')
+    if script:
+        argv.pop(0)
+    if not argv:
+        raise SystemExit('A Forge module or --script path is required')
+    target, arguments = argv[0], argv[1:]
+    options = arguments[:arguments.index('--')] if '--' in arguments else arguments
+    root = os.environ.get('FORGE_ROOT')
+    for index, value in enumerate(options):
+        if value == '--root':
+            if index + 1 >= len(options) or options[index + 1].startswith('--'):
+                raise SystemExit('--root needs a path')
+            root = options[index + 1]
+        elif value.startswith('--root='):
+            root = value.split('=', 1)[1]
+        else:
+            continue
+        if not root:
+            raise SystemExit('--root needs a path')
+    if not root and target == 'forge.host_setup':
+        root = str(Path.home() / '.local/share/forge')
+    if target == 'forge.notifications':
+        state = os.environ.get('FORGE_NOTIFY_STATE', 'state/notifications')
+        for index, value in enumerate(options):
+            if value == '--state':
+                if index + 1 >= len(options) or options[index + 1].startswith('--'):
+                    raise SystemExit('--state needs a path')
+                state = options[index + 1]
+            elif value.startswith('--state='):
+                state = value.split('=', 1)[1]
+        state = Path(state).absolute()
+        root = str(state.parent.parent) if state.name == 'notifications' and state.parent.name == 'state' else None
+    if root:
+        from .store.db import qualified_sqlite
+        if not qualified_sqlite():
+            from .store.migration.runtime import inspect
+            prepared = inspect(Path(root))
+            if prepared:
+                library = prepared['library_directory']
+                if os.environ.get('LD_LIBRARY_PATH') == library:
+                    raise SystemExit('The prepared SQLite runtime did not load; run forge migrate prepare again')
+                environment = {**os.environ, 'LD_LIBRARY_PATH': library}
+                command = [sys.executable, '-m', 'forge.launch', *(['--script'] if script else []), target, *arguments]
+                os.execve(sys.executable, command, environment)
+            elif os.path.lexists(Path(root) / 'state/storage'):
+                raise SystemExit('SQLite runtime qualification is required; run forge migrate prepare')
+        from .store.runtime import selected
+        selected(root)  # Refuse missing, mismatched or inactive selected state before startup.
+    sys.argv = [target, *arguments]
+    if script:
+        runpy.run_path(target, run_name='__main__')
+    else:
+        if not target.startswith('forge.'):
+            raise SystemExit('Only Forge modules may be launched')
+        runpy.run_module(target, run_name='__main__', alter_sys=True)
+
+
+if __name__ == '__main__':
+    launch()

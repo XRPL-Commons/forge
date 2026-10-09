@@ -85,6 +85,17 @@ class Deployments:
     BACKOFF = 600
     FAILURE_LIMIT = 3
 
+    def __new__(cls, root, **kwargs):
+        if cls is Deployments:
+            from .store.runtime import selected
+            store = selected(root)
+            if store is not None:
+                from .sqlite_deployments import SqliteDeployments
+                value = object.__new__(SqliteDeployments)
+                value.database = store
+                return value
+        return object.__new__(cls)
+
     def __init__(self, root, *, runner, github, settings, clock=time.time):
         self.root = Path(root)
         self.store = AtomicStore(self.root / 'state', 'deployments')
@@ -192,18 +203,14 @@ class Deployments:
             data = self.read()
             if self.live(data) is not None:
                 return
-        self.start(config, data)
+        if config.get('enabled'):
+            self.start(config, data)
 
     def start(self, config, data):
         # Internal investigations must not consume capacity reserved for a
         # larger pipeline retry waiting for existing workers to drain.
-        from .factory.memory import pending
-        from .factory.ledger import Ledger
-        ledger_root = self.root / 'state/factory'
-        if config.get('memory_tiers') and (ledger_root / 'factory-ledger.json').exists():
-            if any(self.settings.admission(item['repo'])['allowed']
-                   for item in pending(Ledger(ledger_root).read(), config)):
-                return
+        if self.memory_draining(config):
+            return
         if self.leased(config):
             return  # The coding account is held by a pipeline worker; retry next cycle.
         for row in self.settings.view()['repositories']:
@@ -231,6 +238,14 @@ class Deployments:
                       summary=None, reason=None, observation=None)
             self.drive(str(row['id']))
             return  # One strategist at a time; the next repository waits a cycle.
+
+    def memory_draining(self, config):
+        from .factory.memory import pending
+        from .factory.ledger import Ledger
+        ledger_root = self.root / 'state/factory'
+        return bool(config.get('memory_tiers') and (ledger_root / 'factory-ledger.json').exists()
+                    and any(self.settings.admission(item['repo'])['allowed']
+                            for item in pending(Ledger(ledger_root).read(), config)))
 
     def observe(self, github, ledger, reader):
         """One bounded read per confirmed profile, then a verdict per merged issue."""

@@ -16,6 +16,31 @@ Raw audit output, registry metadata and logs must not be committed unless the is
 explicitly requests those files. Summarize relevant evidence in the worker result,
 PR description or issue discussion.
 
+## Waiting for prerequisite issues
+
+An open prerequisite is an automatic dependency wait. A builder returns
+`waiting_on_issues`, with `issues: [90]` and `evidence` quoting the part of the
+assigned issue that names `#90`. These must be issue numbers in the same repository;
+self references and pull requests are rejected. Other build outcomes use `issues: []`
+and `evidence: null`. Older runner results remain readable.
+
+Forge verifies the quote and reads the prerequisite issues from GitHub. It combines
+worker discoveries with dependencies parsed from the issue description, releases
+the worker, and shows **Waiting for prerequisite issues**. This consumes no failure
+budget and creates no environment hold or operator question. When every prerequisite
+closes, a build starts automatically and continues the existing branch or draft.
+An unavailable GitHub response keeps admission blocked until it can be verified.
+
+The issue panel offers **Start anyway…** when only worker-reported prerequisites
+are blocking. It requires an operator reason, records the cleared issue numbers in
+history, and passes the reason to the next build. It preserves the failure budget
+and all normal admission, review and merge checks. Explicit dependencies in the
+issue description still apply. **Edit dependencies on GitHub** opens the issue;
+editing its description also invalidates discoveries based on the old wording.
+
+Use `blocked_environment/dependency_access` for package registry, repository or
+network access failures. Use `needs_decision` for an actual human choice.
+
 ## Continuing existing drafts
 
 Before a build without a candidate, Forge finds open PRs from this installation's

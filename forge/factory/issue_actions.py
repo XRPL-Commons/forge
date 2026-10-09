@@ -9,18 +9,21 @@ import uuid
 from ..settings import Settings
 from ..state import AtomicStore, StateError
 from .config import load
-from .contracts import references_issue
+from .contracts import claims_issue, issue_dependencies, digest
 from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision as issue_revision, decision_labels, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD, Ledger
 
-ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'assign_reviewer', 'environment'}
-IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck'}
+ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway', 'assign_reviewer', 'environment', 'close'}
+IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway'}
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
-def decide(root, *, key, action, revision: str, reason, request_id=None):
+def decide(root, *, key, action, revision: str, reason, request_id=None, actor_id=None):
     """Accept a decision without a GitHub call or waiting for the controller lease."""
+    from .store_operator import selected_service
+    service=selected_service(root,actor_id=actor_id)
+    if service is not None:return service.request(key,action,revision,reason,request_id=request_id)
     if not isinstance(action, str) or action not in IMMEDIATE:
         return request(root, key=key, action=action, revision=revision, reason=reason, request_id=request_id)
     if not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
@@ -67,7 +70,7 @@ def decide(root, *, key, action, revision: str, reason, request_id=None):
             add = ['hold']
         elif action == 'backlog':
             remove = [service.config['ready_label']]
-        elif action in ('queue', 'resume', 'retry'):
+        elif action in ('queue', 'resume', 'retry', 'start_anyway'):
             add = [service.config['ready_label']]
             if action == 'resume':
                 remove = ['hold']
@@ -83,17 +86,26 @@ def decide(root, *, key, action, revision: str, reason, request_id=None):
         else:
             item.update(state='ready' if action == 'retry' else stage, reason=None, retry_plan=reason.strip())
             item.pop('operator_hold', None)
+            if action != 'retry' and item.get('verification_request'):
+                item.update(state='approval_needed', reason=item['verification_request']['what'])
         if action == 'retry':
             item.update(budget_start=len(item['failures']), evidence={})
+            item.pop('verification_request', None)
+            item.pop('verified_checks', None)
             answer = item.pop('decision_request', None)
             if answer:
                 ledger.event(data, item, 'decision_answered', decision=answer, reason=reason.strip())
+        if action == 'start_anyway':
+            cleared_dependencies = item['declared_dependencies'][:]
+            for field in ('declared_dependencies', 'dependency_body', 'dependency_evidence', 'dependencies_checked_at'):
+                item.pop(field, None)
         for field in ('prerequisite_hold', 'environment_hold', 'blocked_dependencies', 'dependency_reason'):
             item.pop(field, None)
         item.update(retry_after=0, last_observed=0, decision_version=item.get('decision_version', 0) + 1,
                     operator_sync={'request': identifier, 'action': action, 'add': sorted(adds), 'remove': sorted(removes)})
         ledger.event(data, item, 'human_retry' if action == 'retry' else 'operator_' + action,
-                     reason=reason.strip(), request=identifier, decision=decision)
+                     reason=reason.strip(), request=identifier, decision=decision,
+                     **({'issues': cleared_dependencies} if action == 'start_anyway' else {}))
     return identifier
 
 
@@ -113,7 +125,12 @@ def reviewer_logins(reason):
     return logins
 
 
-def request(root, *, key, action, revision: str, reason, request_id=None, environment=None):
+def request(root, *, key, action, revision: str, reason, request_id=None, environment=None, actor_id=None):
+    from .store_operator import selected_service
+    service=selected_service(root,actor_id=actor_id)
+    if service is not None:return service.request(key,action,revision,reason,request_id=request_id,environment=environment)
+    if action == 'start_anyway' and environment is None:
+        return decide(root, key=key, action=action, revision=revision, reason=reason, request_id=request_id)
     if not isinstance(action, str) or action not in ACTIONS or not isinstance(key, str) or not isinstance(revision, str) or not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
         raise ValueError('Choose an issue action and record the decision.')
     if action == 'environment':
@@ -134,7 +151,8 @@ def request(root, *, key, action, revision: str, reason, request_id=None, enviro
                 return request_id
     inventory = IssueInventory(root)
     row = inventory.view(key=key)['issue']
-    allowed = row.get('environment', {}).get('editable', False) if action == 'environment' else action in row['actions']
+    allowed = (row.get('environment', {}).get('editable', False) if action == 'environment'
+               else row.get('closable', False) if action == 'close' else action in row['actions'])
     if row['revision'] != revision or not allowed:
         raise ValueError('This issue changed or needs a fresh check. Review it again before continuing.')
     store = AtomicStore(Path(root) / 'state/issues', 'actions')
@@ -169,7 +187,7 @@ class IssueActions:
             repo = next((r for r in self.settings.view()['repositories'] if r['id'] == item['repo_id'] and r['name'] == item['repo']), None)
             if not repo or not repo.get('enabled') or not repo.get('access_ready'):
                 raise ValueError('Repository identity or access changed.')
-            if pending['action'] in ('queue', 'resume', 'retry', 'recheck'):
+            if pending['action'] in ('queue', 'resume', 'retry', 'recheck', 'start_anyway'):
                 self.prerequisites(item, decision_labels(issue, item), item)
             for name in pending['add']:
                 if name not in labels(issue):
@@ -182,7 +200,7 @@ class IssueActions:
                 raise GitHubUnavailable('GitHub has not confirmed the issue labels.')
             if confirmed['state'] != 'open':
                 raise ValueError('Issue closed on GitHub.')
-            if pending['action'] in ('queue', 'resume', 'retry', 'recheck'):
+            if pending['action'] in ('queue', 'resume', 'retry', 'recheck', 'start_anyway'):
                 self.prerequisites(item, confirmed, item)
         except ValueError as error:
             with self.ledger.transaction() as data:
@@ -235,18 +253,22 @@ class IssueActions:
         held = labels(issue).intersection(self.config['hold_labels'])
         if held - {'hold'}:
             raise ValueError('Resolve the dependency label before releasing this hold.')
-        for number in dependencies(issue.get('body')):
+        for number in issue_dependencies(issue.get('body'), item):
             related = self.github.call('controller', decision, 'GET', f'/issues/{number}')
             if related.get('number') != number or related.get('state') != 'closed':
                 raise ValueError(f'Issue #{number} must be completed first.')
         owned = (item.get('candidate') or {}).get('pr') if item else None
         pulls = self.github.pulls(decision)
+        # Only a PR that says it resolves this issue is existing work; a passing
+        # mention in another PR's description is not (the same rule as ownership).
         linked = [p for p in pulls if p['number'] != owned
-                  and references_issue(p.get('body'), decision['repo'], decision['number'])]
+                  and claims_issue(p.get('body'), decision['repo'], decision['number'])]
         if linked:
             publisher = self.github.publisher('build')
-            if any(not own_build_pr(p, decision['repo_id'], decision['number'], publisher) for p in linked):
-                raise ValueError('An existing pull request needs review before Forge starts another attempt.')
+            other = [p for p in linked if not own_build_pr(p, decision['repo_id'], decision['number'], publisher)]
+            if other:
+                raise ValueError(f"Pull request #{other[0]['number']} says it resolves this issue. Review or close it "
+                                 'before Forge starts another attempt.')
         if not owned and (issue.get('assignees') or 'wip' in labels(issue)):
             raise ValueError('Existing work or an assignee needs review before Forge starts another attempt.')
         if not self.settings.admission(decision['repo'])['allowed']:
@@ -266,10 +288,16 @@ class IssueActions:
         if not repo or not repo.get('access_ready'):
             raise ValueError('Repository identity or access changed.')
         item = data['issues'].get(decision['key'])
-        if item and (item['active'] or any(j['issue_key'] == decision['key'] and not j['cleanup'] for j in data['jobs'].values())):
+        if decision['action'] != 'close' and item and (item['active'] or any(j['issue_key'] == decision['key'] and not j['cleanup'] for j in data['jobs'].values())):
             raise ValueError('Wait for the active attempt and its cleanup before changing the queue.')
         value, requirements = self.github.issue(decision)
         issue = facts(value)
+        if decision['action'] == 'close':
+            # Replay-safe: a restarted controller finds the issue already closed and finishes.
+            if issue['state'] == 'open' and issue_revision(issue, item) != decision['revision']:
+                raise ValueError('This issue changed. Refresh it before applying the decision.')
+            self.close(identifier, decision, item, value)
+            return
         if issue['state'] != 'open':
             raise ValueError('This issue is closed.')
         plan = decision.get('plan')
@@ -389,6 +417,8 @@ class IssueActions:
             else:
                 previous = current.get('operator_hold') or current.get('environment_hold') or current.get('prerequisite_hold') or {}
                 current.update(state=previous.get('state', 'ready'), reason=None)
+                if current.get('verification_request'):
+                    current.update(state='approval_needed', reason=current['verification_request']['what'])
                 current.pop('operator_hold', None)
                 current.pop('prerequisite_hold', None)
                 current.pop('environment_hold', None)
@@ -397,6 +427,30 @@ class IssueActions:
             current.pop('operator_request', None)
             current['github_observation'] = {'at': time.time(), 'issue': facts(confirmed)}
             self.ledger.event(state, current, 'operator_' + decision['action'], reason=decision['reason'], request=identifier)
+
+    def close(self, identifier, decision, item, github_issue):
+        """Drop the issue: close Forge's pull request, then the issue as not planned.
+
+        Stops a running attempt; the next cycle cleans up its runner. Branches are kept."""
+        pull = ((item or {}).get('candidate') or {}).get('pr')
+        if pull:
+            current = self.github.call('controller', decision, 'GET', f'/pulls/{pull}')
+            if isinstance(current, dict) and current.get('state') == 'open' and not current.get('merged'):
+                self.github.call('controller', decision, 'PATCH', f'/pulls/{pull}', {'state': 'closed'})
+        if github_issue['state'] == 'open':
+            self.github.call('controller', decision, 'POST', f"/issues/{decision['number']}/comments",
+                             {'body': 'Closed from Forge as not planned: ' + decision['reason']})
+            self.github.call('controller', decision, 'PATCH', f"/issues/{decision['number']}",
+                             {'state': 'closed', 'state_reason': 'not_planned'})
+            github_issue = {**github_issue, 'state': 'closed', 'state_reason': 'not_planned'}
+        if item is None:
+            return
+        self.ledger.cancel(decision['key'], 'Closed as not planned: ' + decision['reason'], github_issue=github_issue)
+        with self.ledger.transaction() as state:
+            current = state['issues'][decision['key']]
+            current.pop('operator_request', None)
+            current['ownership_wait'] = None
+            self.ledger.event(state, current, 'operator_close', reason=decision['reason'], request=identifier)
 
     def assign_reviewer(self, identifier, decision, item):
         """Hand the candidate to a human through GitHub's own review request.
@@ -419,7 +473,13 @@ class IssueActions:
     def validate_action(self, action, issue, item):
         state = (item or {}).get('state')
         held = labels(issue).intersection(self.config['hold_labels'])
-        if action == 'retry' and not (state == 'failed' or (state == 'hold' and (
+        if action == 'start_anyway' and (not item or state != 'ready' or held
+                or not item.get('declared_dependencies') or not item.get('blocked_dependencies')
+                or issue.get('body_truncated')
+                or item.get('dependency_body') != (issue.get('content_hash') or digest(issue.get('body') or ''))
+                or set(dependencies(issue.get('body'))) & set(item['blocked_dependencies'])):
+            raise ValueError('Only worker-declared prerequisites can be cleared here. Edit explicit dependencies on GitHub.')
+        if action == 'retry' and not ((state == 'approval_needed' and (item or {}).get('verification_request')) or state == 'failed' or (state == 'hold' and (
                 (item or {}).get('reason') == APPROACH_HOLD or (item or {}).get('decision_request')))):
             raise ValueError('Retry is only for failed attempts or a hold that waits for a new approach.')
         if action in ('queue', 'backlog', 'pause') and (held or state in ('failed', 'merged', 'approval_needed', 'investigating')):

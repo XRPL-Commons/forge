@@ -140,7 +140,7 @@ class SettingsHTTPTests(unittest.TestCase):
             inventory.return_value.view.return_value = {'issue': {'status': 'queued'}, 'actions': [], 'repositories': []}
             value={'key':'1:1','action':'queue','revision':'current','reason':'Operator decision'}
             handler=self.handler('/api/issues/action', value); handler.do_POST()
-            request.assert_called_once_with(dashboard.WD, **value)
+            request.assert_called_once_with(dashboard.WD, **value, actor_id='local:control-capability')
             self.assertEqual(json.loads(handler._send.call_args.args[0])['issue']['status'], 'queued')
             request.reset_mock()
             handler=self.handler('/api/issues/action', {**value,'force':True}); handler.do_POST()

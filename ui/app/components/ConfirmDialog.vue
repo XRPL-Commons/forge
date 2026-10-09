@@ -9,17 +9,26 @@ const props = withDefaults(defineProps<{
   // Shown inside the dialog when the action was refused, so the operator can
   // correct it without losing what they typed.
   error?: string | null
-}>(), { reasonLabel: 'Decision or reason', requireReason: true, error: null })
+  // Prefills the reason, e.g. with the reason a discussion proposed.
+  initialReason?: string
+  // True while the confirmed request is in flight: the button spins, nothing
+  // can be submitted twice, and the dialog stays open until Forge answers.
+  pending?: boolean
+  pendingLabel?: string
+}>(), { reasonLabel: 'Decision or reason', requireReason: true, error: null, initialReason: '', pending: false, pendingLabel: '' })
 
 const emit = defineEmits<{ confirm: [reason: string]; close: [] }>()
-const reason = ref('')
+const reason = ref(props.initialReason)
 const ready = computed(() => !props.requireReason || reason.value.trim().length > 0)
 
-watch(() => props.open, (open) => { if (open) reason.value = '' })
+watch(() => props.open, (open) => { if (open) reason.value = props.initialReason })
 
 function submit() {
-  if (!ready.value) return
+  if (!ready.value || props.pending) return
   emit('confirm', reason.value.trim())
+}
+function dismiss() {
+  if (!props.pending) emit('close')
 }
 </script>
 
@@ -29,7 +38,8 @@ function submit() {
     :title="title"
     :description="text"
     :close="false"
-    @update:open="value => !value && emit('close')"
+    :dismissible="!pending"
+    @update:open="value => !value && dismiss()"
   >
     <template #body>
       <UAlert v-if="error" class="mb-3" role="alert" color="error" variant="subtle" :description="error" />
@@ -41,13 +51,25 @@ function submit() {
         :rows="3"
         class="mt-1 w-full"
         :required="requireReason"
+        :disabled="pending"
       />
     </template>
     <template #footer>
-      <div class="flex justify-end gap-2">
-        <UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton>
-        <UButton color="primary" :disabled="!ready" @click="submit">{{ confirmLabel }}</UButton>
-      </div>
+      <DialogFooter>
+        <template #secondary>
+          <UButton color="neutral" variant="ghost" :disabled="pending" @click="dismiss">Close</UButton>
+        </template>
+        <template #primary>
+          <UButton
+            color="primary"
+            data-confirm
+            :loading="pending"
+            :disabled="!ready || pending"
+            :aria-busy="pending"
+            @click="submit"
+          >{{ pending && pendingLabel ? pendingLabel : confirmLabel }}</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>

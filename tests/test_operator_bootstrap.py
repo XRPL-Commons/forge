@@ -248,7 +248,7 @@ class ClientTests(unittest.TestCase):
         self.assertIn('ClearAllForwardings=yes', argv)
         self.assertIn('-a', argv)
         self.assertEqual(shlex.split(argv[-1]), ['cd', source, '&&', 'exec', 'python3', '-m',
-                                                'forge.operator_bootstrap', '--root', '/srv/private'])
+                                                'forge.launch', 'forge.operator_bootstrap', '--root', '/srv/private'])
         self.assertNotIn('GH_TOKEN', options['environ'])
         self.assertNotIn('GITHUB_TOKEN', options['environ'])
         self.assertEqual(options['payload']['secret'], SECRET)

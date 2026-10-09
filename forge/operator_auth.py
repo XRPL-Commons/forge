@@ -128,6 +128,15 @@ def github_identity(config, code, verifier):
 
 
 class OperatorAuth:
+    def __new__(cls, root, *, store=None, **kwargs):
+        if cls is OperatorAuth:
+            from .store.runtime import selected
+            chosen = store if store is not None else selected(root)
+            if chosen is not None:
+                from .sqlite_identity import SqliteOperatorAuth
+                return SqliteOperatorAuth(root, store=chosen, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, root, *, clock=time.time, identity=github_identity):
         directory = Path(root) / 'state/operator-auth'
         if directory.is_symlink():
@@ -277,4 +286,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # Keep CLI execution on the canonical module used by runtime adapters.
+    from forge.operator_auth import main as canonical_main
+    canonical_main()

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from copy import deepcopy
 from .providers import available as provider_available
+from .accounts import cooldown_since
 import time
 import json
 import uuid
@@ -157,7 +158,7 @@ class Ledger:
                     # Failed builds can publish a useful draft without an accepted
                     # candidate. Continue that assigned branch instead of
                     # orphaning its PR on a fresh branch after investigation.
-                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed', 'needs_decision', 'services_retry')
+                    if (previous['outcome'] in ('blocked_environment', 'waiting', 'failed', 'needs_decision', 'services_retry', 'waiting_on_issues')
                             or ((runner_config or {}).get('memory_tiers') and confirmed(capture, report))):
                         retry = {'role': role, 'branch': previous['branch']}
             # GitHub's open draft is the truth about where the work is; the last
@@ -181,7 +182,8 @@ class Ledger:
                    'phase': 'reserved', 'outcome': None, 'cleanup': False, 'fenced': False,
                    'history': {'failures': [{'attempt': f['attempt'], 'role': f['role'], 'cause': f['cause'][:2000],
                                              'findings': deepcopy(f.get('findings'))} for f in issue['failures'][-3:]],
-                               'retry_plan': issue['retry_plan']}}
+                               'retry_plan': issue['retry_plan'],
+                               'verified_checks': deepcopy(issue.get('verified_checks', []))}}
             if retry and retry['role'] == role:
                 job['resume_branch'] = retry.get('branch') if role == 'build' else None
             if role == 'build' and existing_draft and not issue['candidate']:
@@ -234,6 +236,8 @@ class Ledger:
                 candidate = {**candidate, 'accepted_at': self.clock()}
                 issue['candidate'] = candidate
                 issue['evidence'] = {}
+                issue.pop('verified_checks', None)
+                issue.pop('verification_request', None)
             elif job['candidate'] != issue['candidate']:
                 raise StateError('Candidate changed during execution')
             issue['state'] = PASS_STATE[job['role']]
@@ -284,6 +288,12 @@ class Ledger:
         charged. Review and audit run again on the updated head."""
         with self.transaction() as data:
             issue = data['issues'][key]
+            job = data['jobs'].get(issue['active']) if issue['active'] else None
+            if job and job['role'] == 'merge' and job['outcome'] is None:
+                # A merge request GitHub refused leaves its job open; nothing merged, so
+                # it must not pin a conflicted candidate forever (thegame #53/#57/#64).
+                job.update(outcome='superseded', fenced=True)
+                issue['active'] = None
             if issue['active'] or not issue['candidate']:
                 return False
             plan = (f'The pull request now conflicts with the latest {target}. Update the existing branch from {target}, '
@@ -389,6 +399,76 @@ class Ledger:
             self.event(data, issue, 'memory_escalated', attempt=identifier, previous=used, memory=target, detail=detail[:2000])
             return True
 
+    def request_verification(self, identifier, verification, *, candidate=None, summary=None):
+        """A revision-bound human/CI gate, never a substitute for technical review."""
+        with self.transaction() as data:
+            job = data['jobs'][identifier]
+            issue = data['issues'][job['issue_key']]
+            if job['outcome'] is not None:
+                return False
+            if job['role'] == 'recovery':
+                if issue['active'] or issue['state'] not in ('investigating', 'failed', 'built'):
+                    raise StateError('Obsolete investigation cannot request verification')
+                if (not issue['failures'] or issue['failures'][-1]['attempt'] != job['failure']['attempt']
+                        or issue['failures'][-1].get('investigation') != identifier):
+                    raise StateError('Only the current failure can be reclassified')
+                failure = next(f for f in issue['failures'] if f['attempt'] == job['failure']['attempt'])
+                failure.update(charged=False, investigation='complete', correction='Acceptance check needs external verification')
+            elif issue['active'] != identifier:
+                raise StateError('Obsolete attempt cannot request verification')
+            elif candidate is None and job['candidate'] != issue['candidate']:
+                raise StateError('Candidate changed during execution')
+            if candidate is not None:
+                issue.update(candidate={**candidate, 'accepted_at': self.clock()}, evidence={})
+                issue.pop('verified_checks', None)
+            if not issue['candidate']:
+                raise StateError('Verification requires a published candidate')
+            # A review/audit paused midway is rerun with the verified evidence.
+            resume = 'reviewed' if issue['evidence'].get('review', {}).get('outcome') == 'pass' and job['role'] != 'review' else 'built'
+            request = {**deepcopy(verification), 'checks': verification.get('checks', []),
+                       'candidate': issue['candidate']['key'], 'attempt': identifier,
+                       'created_at': self.clock(), 'resume_state': resume}
+            issue.update(state='approval_needed', active=None, reason=verification['what'], verification_request=request)
+            issue.pop('merge_gate', None)
+            job['outcome'] = 'needs_human_verification'
+            self.remember(issue, summary)
+            self.event(data, issue, 'verification_requested', attempt=identifier, verification=request, reason=verification['what'])
+            return True
+
+    def complete_verification(self, key, request, proof):
+        with self.transaction() as data:
+            issue = data['issues'][key]
+            if (issue.get('verification_request') != request or issue['state'] != 'approval_needed'
+                    or issue['active'] or issue['candidate']['key'] != request['candidate']):
+                raise StateError('Verification changed; observe the candidate again')
+            record = {**deepcopy(request), 'proof': deepcopy(proof), 'verified_at': self.clock()}
+            issue.setdefault('verified_checks', []).append(record)
+            issue.update(state=request['resume_state'], reason=None)
+            issue.pop('verification_request', None)
+            issue.pop('merge_gate', None)
+            self.event(data, issue, 'verification_completed', verification=record)
+
+    def wait_on_issues(self, identifier, numbers, evidence, body, blocked, summary=None):
+        """Release the worker while prerequisites finish, without spending a retry."""
+        from .contracts import digest
+        with self.transaction() as data:
+            job, issue = self._current(data, identifier)
+            if job['outcome'] is not None:
+                return
+            if job['role'] != 'build':
+                raise StateError('Only a build can declare prerequisites')
+            previous = issue.get('declared_dependencies', []) if issue.get('dependency_body') == digest(body or '') else []
+            issue.update(state='ready', active=None, reason=None,
+                         declared_dependencies=sorted(set(previous) | set(numbers)),
+                         dependency_evidence=evidence, dependency_body=digest(body or ''),
+                         blocked_dependencies=blocked,
+                         dependency_reason=('Waiting for ' + ', '.join('#' + str(n) for n in blocked) + '.') if blocked else None)
+            issue.pop('dependencies_checked_at', None)
+            job['outcome'] = 'waiting_on_issues'
+            self.remember(issue, summary)
+            self.event(data, issue, 'dependencies_declared', attempt=identifier, issues=numbers,
+                       reason=evidence)
+
     def request_decision(self, identifier, decision, summary=None):
         """A question stops dispatch without charging a failure or starting review."""
         with self.transaction() as data:
@@ -492,9 +572,10 @@ class Ledger:
                 issue.update(active=None, reason=reason, retry_after=self.clock() if pooled and reason in ('blocked_auth', 'blocked_quota') else until)
             if reason in ('blocked_auth', 'blocked_quota'):
                 if pooled:
+                    since = cooldown_since(data, job['provider'], reason, self.clock())
                     cooldowns = data.setdefault('provider_cooldowns', {})
                     cooldowns[job['provider']] = {'until': max(cooldowns.get(job['provider'], {}).get('until', 0), until),
-                                                 'reason': reason, 'attempt': identifier}
+                                                 'reason': reason, 'attempt': identifier, 'since': since}
                 else:
                     data['provider_retry_after'] = max(data.get('provider_retry_after', 0), until)
             self.event(data, issue, 'availability_wait', attempt=identifier, reason=reason,
@@ -511,6 +592,8 @@ class Ledger:
                 candidate = {**candidate, 'accepted_at': self.clock()}
             issue.update(state='hold' if hold else 'built' if candidate else 'ready', candidate=candidate or issue['candidate'],
                          evidence={}, reason=reason)
+            issue.pop('verification_request', None)
+            issue.pop('verified_checks', None)
             self.event(data, issue, 'candidate_invalidated', reason=reason)
             if hold:
                 self.event(data, issue, 'held', reason=reason)
@@ -573,9 +656,18 @@ class Ledger:
             issue.pop('prerequisite_hold', None)
             self.event(data, issue, 'protection_restored')
 
-    def cancel(self, key, reason):
+    def cancel(self, key, reason, *, closed_as=None, github_issue=None):
         with self.transaction() as data:
             issue = data['issues'][key]
+            if github_issue is not None and issue['state'] != 'merged':
+                from .issues import facts
+                if github_issue.get('state') != 'closed':
+                    raise ValueError('Cancellation closure evidence must be a closed GitHub issue')
+                issue['github_observation'] = {'at': self.clock(),
+                    'issue': facts({**github_issue, 'number': issue['number']})}
+                closed_as = github_issue.get('state_reason')
+            if (closed_as or github_issue is not None) and issue['state'] != 'merged':
+                issue['closed_as'] = closed_as  # GitHub's state_reason: completed, not_planned, duplicate
             if issue['state'] in ('cancelled', 'merged'):
                 return
             if issue['active']:
@@ -618,11 +710,14 @@ class Ledger:
             raise ValueError('Human retry must record a decision')
         with self.transaction() as data:
             issue = data['issues'][key]
-            if issue['state'] not in {'failed', 'hold', 'cancelled'} or issue['active']:
+            verification = issue['state'] == 'approval_needed' and issue.get('verification_request')
+            if (issue['state'] not in {'failed', 'hold', 'cancelled'} and not verification) or issue['active']:
                 raise StateError('Issue does not need a human retry decision')
             if any(j['issue_key'] == key and not j['cleanup'] for j in data['jobs'].values()):
                 raise StateError('Reset old executions before retrying')
             issue.update(state='ready', budget_start=len(issue['failures']), retry_plan=reason, reason=None, evidence={})
+            issue.pop('verification_request', None)
+            issue.pop('verified_checks', None)
             decision = issue.pop('decision_request', None)
             if decision:
                 self.event(data, issue, 'decision_answered', decision=decision, reason=reason, request=request_id)

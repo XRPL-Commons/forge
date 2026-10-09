@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   destination, elapsed, groupIssues, isFresh, isRunning, jobFor, maxAge,
-  breakdown, deploymentLine, isProgressStatus, jobSummary, phaseLabel, reasonText, toCard, warnings,
+  readout, deploymentLine, isProgressStatus, jobSummary, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
+import { lineAnalyse, lineState } from '../../app/utils/factoryLine'
 
 const now = 1_000_000
 
@@ -65,21 +66,22 @@ describe('phaseLabel', () => {
     expect(phaseLabel(v.issues[0], running, v, now)).toBe('Working')
   })
 
-  it('reports a stale running job as Last seen working', () => {
+  it('keeps the main working state separate from observation freshness', () => {
     const stale = job({ observed_at: now - 500, last_observed: now - 500 })
     const v = view({ issues: [issue({ active: stale.id })], jobs: [stale] })
-    expect(phaseLabel(v.issues[0], stale, v, now)).toBe('Last seen working')
+    expect(phaseLabel(v.issues[0], stale, v, now)).toBe('Working')
   })
 
-  it('reports a capacity wait as Waiting for memory', () => {
+  it('keeps capacity details in the reason rather than the main state', () => {
     const waiting = job({ capacity_wait_since: now - 30 })
     const v = view({ issues: [issue({ active: waiting.id })], jobs: [waiting] })
-    expect(phaseLabel(v.issues[0], waiting, v, now)).toBe('Waiting for memory')
+    expect(phaseLabel(v.issues[0], waiting, v, now)).toBe('Working')
+    expect(reasonText(v.issues[0], waiting)).toContain('Waiting for memory')
   })
 
   it('falls back to the issue state when there is no job', () => {
     const v = view()
-    expect(phaseLabel(issue({ state: 'approval_needed' }), null, v, now)).toBe('Approval needed')
+    expect(phaseLabel(issue({ state: 'approval_needed' }), null, v, now)).toBe('Needs attention')
     expect(phaseLabel(issue({ state: 'ready' }), null, v, now)).toBe('Queued')
   })
 })
@@ -193,12 +195,7 @@ describe('groupIssues', () => {
     ] }), now)
     expect(split.attention.map(c => c.key)).toEqual(['1:622', '1:623'])
     expect(split.held.map(c => c.key)).toEqual(['1:620', '1:621'])
-    expect(split.held[0]!.phaseLabel).toBe('On hold')
-    // The breakdown row still counts every state that needs the operator.
-    expect(breakdown(view({ issues: [
-      issue({ key: '1:620', number: 620, state: 'hold', reason: 'Paused by an operator' }),
-      issue({ key: '1:622', number: 622, state: 'approval_needed' }),
-    ] }), now).find(row => row.id === 'attention')!.value).toBe(2)
+    expect(split.held[0]!.phaseLabel).toBe('Blocked')
   })
 
   it('leaves the held group empty when nothing is on hold', () => {
@@ -217,16 +214,16 @@ describe('groupIssues', () => {
   })
 })
 
-describe('breakdown', () => {
+describe('readout', () => {
   const running = job()
   const recovery = job({ id: 'rec-fresh', issue_key: '3:900', role: 'recovery', slot: 'recovery-1', model: null })
   const v = view({
     issues: [
       issue({ key: '1:601', number: 601, active: running.id }),
       issue({ key: '1:602', number: 602, state: 'built' }),
-      issue({ key: '1:604', number: 604, state: 'failed' }),
-      issue({ key: '1:605', number: 605, state: 'hold', reason: 'Forge environment needs attention (resources)' }),
-      issue({ key: '1:607', number: 607, state: 'hold', reason: 'Repeated failure requires a supported change of approach' }),
+      issue({ key: '1:604', number: 604, state: 'failed', attention_kind: 'failed' }),
+      issue({ key: '1:605', number: 605, state: 'hold', reason: 'Forge environment needs attention (resources)', attention_kind: 'env' }),
+      issue({ key: '1:607', number: 607, state: 'hold', reason: 'Repeated failure requires a supported change of approach', attention_kind: 'approach' }),
       issue({ key: '1:608', number: 608, state: 'audited' }),
       issue({ key: '2:606', number: 606, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 3600 }] }),
       issue({ key: '2:609', number: 609, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'merged', history: [{ kind: 'merged', at: now - 3 * 86400 }] }),
@@ -236,27 +233,20 @@ describe('breakdown', () => {
     observation: { at: now, errors: [{ phase: 'github', reason: 'GitHub refused to merge x/y#1: branch rules still block it' }] },
   })
 
-  it('returns one row per state with a meaning derived from the ledger', () => {
-    const rows = breakdown(v, now)
-    expect(rows.map(r => r.id)).toEqual(['working', 'queued', 'merging', 'attention', 'merged'])
-    const byId = Object.fromEntries(rows.map(r => [r.id, r]))
-    expect(byId.working).toMatchObject({ value: 1, detail: 'of 4 slots', meaning: '1 of 2 building · 0 of 1 reviewing · 0 of 1 auditing · 1 investigating', to: '#columns' })
-    expect(byId.queued).toMatchObject({ value: 1, detail: 'waiting for a worker', meaning: 'Waiting for a free worker' })
-    expect(byId.merging).toMatchObject({ value: 1, detail: 'approved, not merged', meaning: '1 refused by branch rules', tone: 'warn', to: '#finishing' })
-    expect(byId.attention).toMatchObject({ value: 3, detail: 'awaiting you', meaning: '1 failed · 1 memory · 1 retry limit', tone: 'warn', to: '#needs-attention' })
-    expect(byId.merged).toMatchObject({ label: 'Merged today', value: 1, detail: 'in the last 24 h', meaning: '2 in the last 7 days · 3 tracked in all · deployment not tracked', to: '#completed' })
+  it('counts working slots, the queue, merges waiting and merged today', () => {
+    // The recovery job is not a worker slot; the merges are 1 h, 3 d and 30 d old.
+    expect(readout(v, now)).toEqual({ working: 1, slots: 4, queued: 1, merging: 1, merged: 1 })
   })
 
-  it('keeps the inline detail of every box a fixed phrase', () => {
-    const empty = breakdown(view(), now)
-    expect(empty.map(r => r.detail)).toEqual(
-      ['of 4 slots', 'waiting for a worker', 'approved, not merged', 'awaiting you', 'in the last 24 h'])
-    expect(empty.map(r => r.detail)).toEqual(breakdown(v, now).map(r => r.detail))
+  it('reads zero everywhere on an empty factory, and nothing before the first snapshot', () => {
+    expect(readout(view(), now)).toEqual({ working: 0, slots: 4, queued: 0, merging: 0, merged: 0 })
+    expect(readout(null, now)).toBeNull()
   })
 
-  it('reports a paused dispatch on the queued row', () => {
-    const paused = breakdown(view({ ...v, runtime: { ...v.runtime, enabled: false } }), now)
-    expect(paused[1]).toMatchObject({ id: 'queued', detail: 'dispatch is paused', meaning: 'Dispatch is paused', tone: 'muted' })
+  it('agrees with the strip on how many issues need the operator', () => {
+    const state = lineState(v, now)!
+    // 1:604 failed, 1:605 and 1:607 held for a reason the strip names.
+    expect(lineAnalyse(state).attention).toBe(3)
   })
 })
 
@@ -364,20 +354,9 @@ describe('deployment verdicts', () => {
     deployments: { 1: { name: 'XRPL-Commons/academy', live: { commit: 'abc1234def', at: now - 60 }, deploy: null, error: null } },
   })
 
-  it('turns the merged box into a deployed box once a profile is confirmed', () => {
-    const row = breakdown(tracked, now).find(entry => entry.id === 'merged')!
-    expect(row).toMatchObject({
-      label: 'Deployed today', value: 1, detail: 'in the last 24 h',
-      // 1:702 alone is waiting: 1:701 is live, 1:703 is counted as failed
-      // beside it, and 2:704 belongs to a repository nobody tracks.
-      meaning: '1 merged and waiting · 1 deploy failed', to: '#completed', tone: 'warn',
-    })
-  })
-
-  it('keeps the merged box, and says so, while nothing is tracked', () => {
-    const row = breakdown(view({ repositories: repositories([]), issues: tracked.issues }), now).find(entry => entry.id === 'merged')!
-    expect(row).toMatchObject({ label: 'Merged today', value: 4, detail: 'in the last 24 h' })
-    expect(row.meaning.endsWith(' · deployment not tracked')).toBe(true)
+  it('counts every merge of the day in the readout, deployed or not', () => {
+    expect(readout(tracked, now)!.merged).toBe(4)
+    expect(readout(view({ repositories: repositories([]), issues: tracked.issues }), now)!.merged).toBe(4)
   })
 
   it('notes the deployment on completed cards, and only for a tracked repository', () => {
@@ -410,11 +389,17 @@ describe('issues waiting on dependencies', () => {
     const groups = groupIssues(v, now)
     expect(groups.columns.build.map(c => c.key)).toEqual(['1:613'])
     expect(groups.waiting.map(c => c.key)).toEqual(['1:612'])
-    expect(groups.waiting[0]).toMatchObject({ phaseLabel: 'Waiting on #658', reason: 'Waiting for #658.' })
+    expect(groups.waiting[0]).toMatchObject({ phaseLabel: 'Blocked', reason: 'Waiting for #658.' })
   })
 
   it('are not counted as queued for a worker', () => {
-    expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(1)
+    expect(readout(v, now)!.queued).toBe(1)
+  })
+
+  it('never land in the attention crate or count toward Needs you', () => {
+    const groups = groupIssues(v, now)
+    expect([...groups.attention, ...groups.held].map(c => c.key)).not.toContain('1:612')
+    expect(lineAnalyse(lineState(v, now, groups)!).attention).toBe(0)
   })
 })
 
@@ -425,10 +410,10 @@ describe('issues owned by someone else', () => {
 
   it('shows the owner before dependencies and excludes it from the worker queue', () => {
     const groups = groupIssues(v, now)
-    expect(groups.owned[0]).toMatchObject({ phaseLabel: owner.headline, reason: owner.plain })
+    expect(groups.owned[0]).toMatchObject({ phaseLabel: 'Blocked', reason: owner.plain })
     expect(groups.waiting).toEqual([])
     expect(groups.columns.build).toEqual([])
-    expect(breakdown(v, now).find(row => row.id === 'queued')?.value).toBe(0)
+    expect(readout(v, now)!.queued).toBe(0)
   })
 
   it('returns to dependency waiting when ownership clears', () => {
@@ -437,11 +422,18 @@ describe('issues owned by someone else', () => {
     expect(groups.waiting).toHaveLength(1)
   })
 
-  it('keeps a running worker visible until it finishes', () => {
+  it('keeps ownership blocked while a running worker remains visible', () => {
     const live = job()
-    const groups = groupIssues(view({ issues: [{ ...owned, active: live.id }], jobs: [live] }), now)
-    expect(groups.owned).toEqual([])
-    expect(groups.columns.build[0]?.phaseLabel).toBe('Working')
+    for (const operator_status of [undefined, {
+      code: 'blocked', label: 'Blocked', reason_code: 'ownership_conflict', reason: owner.plain,
+    }]) {
+      const groups = groupIssues(view({ issues: [{ ...owned, active: live.id, operator_status }], jobs: [live] }), now)
+      expect(groups.owned).toEqual([])
+      // A visible worker does not override the issue's current ownership gate.
+      expect(groups.columns.build[0]).toMatchObject({
+        phaseLabel: 'Blocked', running: true, jobId: live.id, stoppable: true,
+      })
+    }
   })
 })
 

@@ -146,6 +146,13 @@ issue and a merged issue.
   `protection.bypass.status` `missing` (naming the Forge review baseline
   ruleset) or `ready`. Exercises the controller bypass line in Setup details.
 
+## bypass-classic/
+
+- `repositories.repo_id.json` — `bypass-missing/` with the missing bypass on
+  classic branch protection only (current bypass list: the `release-bot` App)
+  and the controller slug `forge-controller-2d9a0cef`. Exercises the classic
+  branch protection instructions and copyable `gh api` command.
+
 ## setup/
 
 - `onboarding.json` — phase `setup`, Step 1 (GitHub) state: build/review
@@ -304,8 +311,8 @@ output has not.
   with a pull request (`#30`, `kind:"candidate"`), a Forge-authored `summary` (headline "Writing
   the change") and two reviews carrying the worker contract's own outcomes: a
   `pass` `review` whose summary runs past its lead sentence, and a `reject`
-  `audit`. Exercises the issue detail's action bar ("GitHub ↗", "PR #30 ↗")
-  and, inside "Details" (open by default), its clamped review rows with the "More" toggle and
+  `audit`. Exercises the issue detail's links ("GitHub issue ↗", "PR #30 ↗")
+  and, inside "Review findings" (collapsed by default), its clamped review rows with the "More" toggle and
   the per-verdict chips ("Passed" / "Rejected").
 
 ## summarised/
@@ -318,12 +325,23 @@ output has not.
   `human_required:true` and a `human_reason` (the "Passed · needs a person"
   chip, whose text is the reason, not the summary's "PASS.") and an `unable`
   `audit`, for the "Could not review" chip. `attempts:{failed:3,limit:3}`
-  drives the "3 of 3 attempts failed" line, `held_by` (`forge:hold` by
+  drives the "attempt 3 of 3 failed" note, `held_by` (`forge:hold` by
   `maintainer`) the "Labelled forge:hold by @maintainer on Sep 21" line, and `pull_requests` carries one of
   each `kind` (`#30` candidate, `#26` forge_attempt, `#25` external) for the
   "PR #30" / "Earlier Forge draft #26" / "Other PR #25" chips. Exercises Issue #47: the headline
   and description above the action bar, and the worker's full text in
-  "Details" below it.
+  "Review findings" (collapsed) below it. The failed `audit` puts the
+  workbench cube at Security, worried, with "attempt 3 of 3 failed" and no
+  attempts left.
+
+## close-issue/
+
+- `issues.issue.json` — the `summarised` issue (`1:620`, failed, three of
+  three attempts) with `closable:true` and no label hold: the "Close issue…"
+  action and its dialog, and the narrow-width screenshot of the panel.
+- `issues-action.post.json` — the accepted close decision
+  (`{ok:true, request:"close-request-1"}`, no `issue`), so the page shows
+  "Decision submitted. Waiting for confirmation."
 
 ## deployment/
 
@@ -354,7 +372,8 @@ tracked repository (Task 5).
   clock — the spec asserts the label and the meaning, not the number.
 - `issues.issue.json` — `GET /api/issues?issue=2:606`, the completed detail
   behind the deployed verdict, so `/issues/2:606` renders its own page and the
-  Deployment line under the title.
+  Deployment line under the title. Its explanation is the server's
+  "Completed and merged.", so the workbench shows the merged cube.
 
 ## down (not a fixture directory)
 
@@ -381,3 +400,22 @@ node -e "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))" <file>
 ```
 
 - `check-rejected/` — `stale` row plus a refused `POST /api/repositories/check` (`{ok:false}`); repository-setup asserts the auto-check is retried once checks are accepted again.
+
+## factory-line/
+
+`factory.json` only: the default factory plus a full Build stage for the
+factory line strip. Issue `1:617` holds the second build slot (job
+`44444444-…`), so `1:611`, `1:615` and `1:618` wait in front of a full
+Build; `1:619` waits on `#601`; `1:720` is paused (asleep on the shelf);
+`1:721` (environment), `1:722` (change of approach) and `1:730` (approval
+needed) join the two failed issues, so five issues need the operator.
+
+## completed-many/
+
+`factory.json` only: the default factory with `2:606` replaced by 25 completed
+issues, `1:801`–`1:825` ("Completed issue 01"–"25"), one minute apart and
+stored oldest first; every seventh is cancelled rather than merged. The mock
+answers `GET /api/factory?section=completed&limit=N&before=<cursor>` with one
+page of them, newest first, plus `next` (see `completedPage()` in
+`mock-api.mjs`), so `completed.spec.mjs` can check the Recently completed lazy
+load page by page.

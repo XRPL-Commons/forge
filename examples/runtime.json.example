@@ -71,6 +71,8 @@
     }
   ],
   "codex_parallel_auth": false,
+  "discussion_model": null,
   "environment_tiers": {},
-  "repository_environments": {}
+  "repository_environments": {},
+  "repository_verification": {}
 }

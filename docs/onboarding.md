@@ -89,9 +89,14 @@ during onboarding. The wizard guides you through Repository, App access, Review
 rules and Enable, with Back and Cancel available throughout. Deployment tracking
 and test database evidence live on the repository’s details page. The download targets the default branch observed by Forge. It adds
 the two review requirements above and a pull-request-only bypass for the verified
-controller App. GitHub does not count the read-only Review and Audit Apps toward
+controller App, plus an always-allowed bypass for repository administrators
+(`RepositoryRole` ID `5`). This keeps the added baseline from blocking admin
+merges allowed by your existing rules. It does not copy custom or maintainer
+bypasses from other rulesets. GitHub does not count the read-only Review and Audit Apps toward
 its native approval count. Forge verifies their evidence before the controller
-merges. Developers' pull requests still need the repository's required approvals.
+merges. Developers without a bypass still need the repository's required approvals.
+All other matching rulesets and branch protections still apply. Updating Forge
+changes future downloads; it does not modify baselines already imported on GitHub.
 
 On GitHub, open the repository's Settings → Rules → Rulesets and choose New
 ruleset → Import a ruleset. Select the downloaded JSON, review it and save. If

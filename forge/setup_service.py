@@ -23,6 +23,9 @@ from .factory.ledger import Ledger
 from .factory.runner import ContainerRunner, RunnerError, RunnerCapacity
 from .factory.supervisor import Supervisor
 
+# How often a queued or running conversation is driven between cycles.
+DISCUSSION_POLL_SECONDS = 4
+
 
 PROBE_FAILURE_MESSAGES = {
     'provider_login_expired': 'The server login has expired. Run bin/forge setup login {provider} on the server',
@@ -61,12 +64,24 @@ def probe_failure_message(capture, provider, *, timed_out=False):
 
 
 class Service:
+    def __new__(cls, root, **kwargs):
+        if cls is Service:
+            from .store.runtime import selected
+            if selected(root) is not None:
+                from .sqlite_setup_service import SqliteService
+                return object.__new__(SqliteService)
+        return object.__new__(cls)
+
     def __init__(self, root, *, runner=ContainerRunner, github=GitHub):
         self.root = Path(root)
         self.setup = Onboarding(root)
         self.runner_class, self.github_class = runner, github
         self.next_cycle = 0
         self.next_sync = 0
+        self.next_discussion = 0
+        # Names this process: a discussion worker an earlier one started and
+        # that is gone without an answer was orphaned by a restart.
+        self.boot = uuid.uuid4().hex
 
     def runner(self, config):
         # The runner finds <root>/runner-seccomp.json through FORGE_CREDENTIAL_ROOT.
@@ -122,12 +137,22 @@ class Service:
         return any(not job['cleanup'] and (job.get('runner_config') or {}).get('provider_auth_file_env') in references
                    for job in records['jobs'].values())
 
+    def drain(self, scope):
+        config = load(self.root)
+        ledger = Ledger(self.root / 'state/factory')
+        with controller_lock(self.root):
+            supervisor = Supervisor(ledger, self.runner(config), self.github_class(Settings(self.root), config), Settings(self.root), config)
+            for job in ledger.read()['jobs'].values():
+                if not job['cleanup'] and job['role'] != 'merge':
+                    supervisor.execution(job)
+            return self.draining(scope, config, ledger.read())
+
     def runner_verified(self, op):
         """Worker isolation is a property of the image the last qualification covered."""
         return bool(op.get('providers')) and bool(op.get('image')) and op['image'] == self.setup.runtime()['image']
 
     def complete(self, data, op):
-        config = load(self.root) if data['phase'] == 'active' else self.setup.runtime()
+        config = self.setup.active_runtime() if data['phase'] == 'active' else self.setup.runtime()
         checks, scope = data.get('provider_checks', {}), op.get('providers')
         identifiers = [entry['id'] for entry in config['provider_pool']]
         passed = [key for key, value in checks.items() if value == 'passed']
@@ -139,7 +164,7 @@ class Service:
             verified = any(checks.get(i) == 'passed' for i in scope)
         if config['provider_pool']:
             config['provider_ready'] = passed
-            write_json(self.root / ('runtime.json' if data['phase'] == 'active' else 'setup/runtime.json'), config)
+            self.setup.save_runtime(config, active=data['phase'] == 'active')
         self.update(op, probe_jobs=data['probe_jobs'], provider_checks=checks, provider_errors=data.get('provider_errors', {}),
                     probe_error=None, checks={**data['checks'], 'provider': 'passed' if verified else 'failed', 'runner': 'passed'},
                     qualification={'key': self.setup.qualification_key(data), 'at': self.setup.clock(),
@@ -159,21 +184,17 @@ class Service:
         if op['step'] == 'prepare':
             for job in data['probe_jobs']:
                 self.runner(job['runner_config']).reset(job)
+                job['cleanup'] = True
+            if data['probe_jobs']:
+                self.update(op, probe_jobs=data['probe_jobs'])
             scope = op.get('providers')
             if data['phase'] == 'active' and op['action'] == 'harness_check':
                 # Drain normally before probing shared login credentials. A full
                 # check blocks new dispatch while cleanup continues; a scoped one
                 # waits only for the workers holding the checked login, and tick()
                 # keeps dispatching the harnesses outside the scope.
-                config = load(self.root)
-                ledger = Ledger(self.root / 'state/factory')
-                with controller_lock(self.root):
-                    supervisor = Supervisor(ledger, self.runner(config), self.github_class(Settings(self.root), config), Settings(self.root), config)
-                    for job in ledger.read()['jobs'].values():
-                        if not job['cleanup'] and job['role'] != 'merge':
-                            supervisor.execution(job)
-                    if self.draining(scope, config, ledger.read()):
-                        return
+                if self.drain(scope):
+                    return
             config = self.setup.runtime() if op['action'] == 'harness_check' else self.access(data)
             self.runner(config).ready()
             if op['action'] == 'check' and self.setup.qualified(data):
@@ -245,6 +266,7 @@ class Service:
             return
         if job['kind'] == 'provider':
             capture = runner.capture(job)
+            job['capture'] = capture
             if current['running'] or current['exit_code'] != 0 or capture['result'] != {'ready': True, 'attempt': job['id']}:
                 error = probe_failure_message(capture, job['runner_config']['provider'], timed_out=current['running'])
         elif not current['running']:
@@ -348,7 +370,7 @@ class Service:
         data = self.setup.read()
         op = data.get('operation')
         from .factory.discussions import Discussions
-        discussions = Discussions(self.root, runner=self.runner)
+        discussions = Discussions(self.root, runner=self.runner, boot=self.boot)
         if op:
             # Setup/reset must not race a discussion's rotating provider login.
             with controller_lock(self.root):
@@ -400,7 +422,11 @@ class Service:
                 return
             # A crash between fencing and recording reset requires an explicit retry.
             return
-        if data['phase'] != 'active' or time.monotonic() < self.next_cycle:
+        if data['phase'] != 'active':
+            return
+        if time.monotonic() < self.next_cycle:
+            if not op:
+                self.converse(discussions)
             return
         with controller_lock(self.root):
             settings, config = Settings(self.root), load(self.root)
@@ -445,6 +471,28 @@ class Service:
                 except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
                     pass  # Durable discussion intent is retried; never corrupt deployment state.
             self.next_cycle = time.monotonic() + config['cycle_seconds']
+            self.next_discussion = time.monotonic() + DISCUSSION_POLL_SECONDS
+
+    def converse(self, discussions):
+        """Between cycles, keep a live conversation moving.
+
+        A cycle runs every cycle_seconds (30 s by default), so a question used to
+        wait up to a cycle for its worker and a finished answer up to another
+        before the operator saw it (measured: 16-54 s and about 25 s). Only
+        discussions tick here; pipeline dispatch still waits for the cycle, and
+        Discussions.tick itself defers to pipeline work waiting to launch.
+        """
+        if time.monotonic() < self.next_discussion or not discussions.live():
+            return
+        self.next_discussion = time.monotonic() + DISCUSSION_POLL_SECONDS
+        try:
+            with controller_lock(self.root):
+                settings, config = Settings(self.root), load(self.root)
+                github = self.github_class(settings, config)
+                github.deadline = time.monotonic() + 10
+                discussions.tick(config, github, settings)
+        except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
+            pass  # The next cycle retries; durable intent stays in the thread.
 
 
 def main():
@@ -473,4 +521,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # Runtime adapters subclass the canonical module's classes. Running the
+    # local __main__ copy would skip initialization of that returned subclass.
+    from forge.setup_service import main as canonical_main
+    canonical_main()

@@ -24,6 +24,19 @@ def own_build_pr(pr, repo_id, number, publisher):
             and ((pr.get('base') or {}).get('repo') or {}).get('id') == repo_id)
 
 
+def classic_allowances(value):
+    """Current classic bypass list as names, so a replacement can keep it; None if unreadable."""
+    if not isinstance(value, dict) or not all(kind in value for kind in ('users', 'teams', 'apps')):
+        return None
+    names = {}
+    for kind, key in (('users', 'login'), ('teams', 'slug'), ('apps', 'slug')):
+        rows = value[kind]
+        if not isinstance(rows, list) or not all(isinstance(r, dict) and isinstance(r.get(key), str) for r in rows):
+            return None
+        names[kind] = [r[key] for r in rows]
+    return names
+
+
 class GitHubUnavailable(RuntimeError):
     def __init__(self, message, *, status=None):
         super().__init__(message)
@@ -363,6 +376,25 @@ class GitHub:
             raise GitHubUnavailable('Published check has not been verified')
         return verified[0]['id']
 
+    def settle_checks(self, item, candidate_value, summary):
+        """Conclude Forge's still-running checks on a candidate that stopped moving.
+
+        A held or failed issue otherwise left forge/audit and forge/merge-policy
+        'in progress' for weeks (tokenlab PR #28). 'cancelled' still blocks a
+        required check, unlike 'neutral'; a resumed attempt publishes afresh."""
+        roles = {'forge/review': 'review', 'forge/audit': 'audit', 'forge/merge-policy': 'controller'}
+        runs = self.pages('controller', item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
+        settled = 0
+        for run in runs:
+            role = roles.get(run.get('name'))
+            if not role or run.get('status') == 'completed' or run.get('app', {}).get('id') != self.connection(role)['app_id']:
+                continue
+            self.call(role, item, 'PATCH', '/check-runs/' + str(run['id']), {
+                'status': 'completed', 'conclusion': 'cancelled',
+                'output': {'title': run['name'] + ': stopped', 'summary': summary[:60000]}})
+            settled += 1
+        return settled
+
     def verdict(self, job, report):
         candidate_value = job['candidate']
         marker = '<!-- forge-verdict ' + job['id'] + ' -->'
@@ -399,6 +431,10 @@ class GitHub:
                 latest[review['user']['login'].lower()] = review
         allowlist = {n.lower() for n in self.runtime['human_reviewers']}
         after = (item.get('candidate') or {}).get('accepted_at', 0)
+        verification_times = [v['created_at'] for v in item.get('verified_checks', []) if v.get('proof', {}).get('via') == 'human']
+        if item.get('verification_request'):
+            verification_times.append(item['verification_request']['created_at'])
+        verification_after = max(verification_times, default=0)
         def submitted(review):
             try:
                 return datetime.fromisoformat(review['submitted_at'].replace('Z', '+00:00')).timestamp()
@@ -417,6 +453,8 @@ class GitHub:
                 why = 'Approved an earlier commit'
             elif after and (at is None or at <= int(after)):
                 why = 'Approved before the current change was accepted'
+            elif verification_after and (at is None or at <= int(verification_after)):
+                why = 'Approved before the verification request'
             elif allowlist and name not in allowlist:
                 why = 'Not on the approver list in Settings'
             elif not allowlist and not self.can_write(item, review['user']['login']):
@@ -534,7 +572,8 @@ class GitHub:
             if source['kind'] == 'classic':
                 apps = (review.get('bypass_pull_request_allowances') or {}).get('apps') or []
                 if not any(isinstance(a, dict) and a.get('id') == app_id for a in apps):
-                    missing.append(source)
+                    allowances = classic_allowances(review.get('bypass_pull_request_allowances'))
+                    missing.append({**source, 'bypass_allowances': allowances} if allowances else source)
                 continue
             if source.get('id') in seen:
                 continue

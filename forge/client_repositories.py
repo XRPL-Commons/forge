@@ -15,6 +15,15 @@ OPERATIONS = {'verify': 'repositories:prepare', 'enable': 'repositories:activate
 
 
 class ClientRepositories:
+    def __new__(cls, settings, clients, *, store=None, **kwargs):
+        if cls is ClientRepositories:
+            from .store.runtime import selected
+            chosen = store if store is not None else selected(settings.root)
+            if chosen is not None:
+                from .sqlite_identity import SqliteClientRepositories
+                return SqliteClientRepositories(settings, clients, store=chosen, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, settings, clients, *, setup=None, launch=None):
         self.settings, self.clients = settings, clients
         self.setup = setup or RepositorySetup(settings)

@@ -65,6 +65,7 @@ class GitHub:
             if self.lose_response:
                 self.lose_response = False
                 raise GitHubUnavailable('Connection lost after commit')
+        if method == 'PATCH' and path == '/issues/1': self.value['state'] = 'closed'
         if method == 'DELETE': self.value['labels'] = [l for l in self.value['labels'] if l['name'] != unquote(path.split('/')[-1])]
         return {}
 
@@ -469,8 +470,11 @@ class WorklistTests(unittest.TestCase):
         identifier, decision = self.decision('retry', 'Continue the existing draft')
         item = self.ledger.read()['issues']['1:1']
         self.github.prs[0]['user']['login'] = 'another[bot]'
-        with self.assertRaisesRegex(ValueError, 'existing pull request'):
+        with self.assertRaisesRegex(ValueError, 'Pull request #22 says it resolves this issue'):
             self.actions.prerequisites(decision, self.github.value, item)
+        self.github.prs[0]['body'] = 'Phase 1 no longer waits on #1; only phase 3 does.'
+        self.actions.prerequisites(decision, self.github.value, item)  # a mention is not a claim
+        self.github.prs[0].update(body='Fixes #1')
         self.github.prs[0]['user']['login'] = 'build[bot]'
         self.actions.apply(identifier, decision)
         self.assertEqual(self.ledger.read()['issues']['1:1']['state'], 'ready')
@@ -566,6 +570,97 @@ class WorklistTests(unittest.TestCase):
         self.github.available=True; self.inventory.refresh()
         self.assertTrue(self.inventory.view()['complete'])
         self.assertIsNone(self.inventory.view()['repositories'][0]['error'])
+
+    def test_close_drops_the_issue_and_its_pull_request(self):
+        self.awaiting_approval(); self.refresh()
+        self.assertTrue(self.inventory.view(key='1:1')['issue']['closable'])
+        identifier, decision = self.decision('close', reason='Superseded by #9')
+        self.actions.apply(identifier, decision)
+        self.assertEqual([c for c in self.github.calls if c[0] in ('POST', 'PATCH')], [
+            ('PATCH', '/pulls/30', {'state': 'closed'}),
+            ('POST', '/issues/1/comments', {'body': 'Closed from Forge as not planned: Superseded by #9'}),
+            ('PATCH', '/issues/1', {'state': 'closed', 'state_reason': 'not_planned'})])
+        data = self.ledger.read()
+        self.assertEqual(data['issues']['1:1']['state'], 'cancelled')
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'dropped')
+        # A restarted controller replays the decision without commenting twice.
+        self.actions.apply(identifier, decision)
+        self.assertEqual(len([c for c in self.github.calls if c[0] in ('POST', 'PATCH')]), 3)
+        self.refresh()
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'dropped')
+
+    def test_issues_closed_as_not_planned_are_dropped_not_completed(self):
+        self.tracked()
+        for reason, status in (('not_planned', 'dropped'), ('duplicate', 'dropped'), ('completed', 'completed'), (None, 'completed')):
+            with self.subTest(reason=reason):
+                self.github.value.update(state='closed', state_reason=reason)
+                self.refresh()
+                row = self.inventory.view(key='1:1')['issue']
+                self.assertEqual(row['status'], status)
+                self.assertFalse(row['closable'])
+        self.github.value.update(state='closed', state_reason='not_planned'); self.refresh()
+        self.assertEqual([r['key'] for r in self.inventory.view(state='dropped')['issues']], ['1:1'])
+        self.assertEqual(self.inventory.view(state='completed')['issues'], [])
+        self.assertEqual(self.inventory.view(state='open')['issues'], [])
+
+    def test_closing_from_forge_records_the_reason(self):
+        self.awaiting_approval(); self.refresh()
+        identifier, decision = self.decision('close', reason='Superseded by #9')
+        self.actions.apply(identifier, decision)
+        self.assertEqual(self.ledger.read()['issues']['1:1']['closed_as'], 'not_planned')
+
+    def test_a_hold_label_is_on_hold_not_attention(self):
+        self.tracked(hold='Waiting for dry-run evidence')
+        self.github.value['labels'].append({'name': 'hold'}); self.refresh()
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['status'], row['actions']), ('waiting', ['resume']))
+
+    def test_a_close_the_ledger_saw_wins_over_a_stale_open_copy(self):
+        self.tracked(hold='Configure two approving reviews and stale-approval dismissal before dispatch'); self.refresh()
+        for reason, status in (('completed', 'completed'), ('not_planned', 'dropped'), ('duplicate', 'dropped'), (None, 'completed')):
+            with self.subTest(reason=reason):
+                self.ledger.cancel('1:1', 'Issue closed externally',
+                    github_issue={**self.github.value, 'state': 'closed', 'state_reason': reason})
+                row = self.inventory.view(key='1:1')['issue']
+                self.assertEqual(row['state'], 'closed')
+                self.assertEqual(row['status'], status)
+                self.assertFalse(row['closable'])
+                self.assertEqual(row['actions'], [])
+
+    def test_operator_stopped_open_issue_can_resume(self):
+        self.tracked(); self.refresh()
+        from forge.factory.control import queue, requests
+        job = self.ledger.reserve('1:1', 'build', 'worker-1', publisher='builder[bot]', policy='policy', timeout=600)
+        queue(self.root, 'stop', job['id'], 'Operator stopped this attempt')
+        requests(self.root, self.ledger)
+        self.ledger.release(job['id'])
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['state'], row['status'], row['actions']), ('open', 'attention', ['resume']))
+        self.assertEqual(row['summary']['headline'], 'The previous attempt was stopped')
+
+    def test_newer_inventory_reopen_wins_over_ledger_closure(self):
+        self.tracked(); self.refresh()
+        self.ledger.cancel('1:1', 'Issue closed externally',
+            github_issue={**self.github.value, 'state': 'closed', 'state_reason': 'not_planned'})
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['status'], 'dropped')
+        self.refresh()  # GitHub now returns an open issue after the recorded closure.
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['state'], row['status'], row['actions']), ('open', 'attention', ['resume']))
+
+    def test_newer_direct_reopen_wins_over_ledger_closure(self):
+        self.tracked(); self.refresh()
+        self.ledger.cancel('1:1', 'Issue closed externally',
+            github_issue={**self.github.value, 'state': 'closed', 'state_reason': 'completed'})
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['github_observation'] = {'at': time.time(), 'issue': facts(self.github.value)}
+        row = self.inventory.view(key='1:1')['issue']
+        self.assertEqual((row['state'], row['status'], row['actions']), ('open', 'attention', ['resume']))
+
+    def test_close_works_for_an_issue_forge_never_tracked(self):
+        identifier, decision = self.decision('close', reason='Not needed')
+        self.actions.apply(identifier, decision)
+        self.assertEqual(self.github.value['state'], 'closed')
+        self.assertNotIn('1:1', self.ledger.read()['issues'])
 
     def test_assign_reviewer_requests_the_review_and_assigns_the_issue(self):
         self.awaiting_approval()

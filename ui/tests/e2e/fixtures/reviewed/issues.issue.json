@@ -15,6 +15,7 @@
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
     "status": "working",
+    "reason_code": "build",
     "explanation": "Building",
     "actions": [],
     "setup_needed": false,

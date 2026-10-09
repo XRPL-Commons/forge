@@ -79,26 +79,22 @@ export default async function (page, { base, scenario, requests }) {
   const controller = page.locator('#connections [data-key="controller"]')
   assert.equal((await controller.locator('[data-badge]').innerText()).trim(), 'Connected')
 
-  // Activity: the merged box becomes the deployed box, and says what is still
-  // waiting behind it.
+  // Activity: each Recently completed card carries its deployment verdict in
+  // a word, and only for a tracked repository.
   await page.goto(base + '/')
-  const box = page.locator('[data-breakdown="merged"]')
-  await page.waitForFunction(
-    () => document.querySelector('[data-breakdown="merged"]')?.innerText.includes('Deployed today'),
-    null,
-    { timeout: 10000 },
-  )
-  // Only the tracked repository's merge with no verdict is waiting: the
-  // failed one is counted beside it, the untracked repository's is not counted.
-  assert.equal(await box.getAttribute('title'), '1 merged and waiting · 1 deploy failed')
-
-  // The completed card carries the same verdict in one word.
-  await page.locator('#completed summary').click()
-  await waitForText(page, 'deployed')
+  await page.locator('#completed [data-key="2:606"] [data-fact="deployment"]').waitFor({ timeout: 10000 })
+  const verdicts = await page.locator('#completed .issue-card').evaluateAll(cards => Object.fromEntries(
+    cards.map(card => [card.dataset.key, card.querySelector('[data-fact="deployment"]')?.textContent.trim() ?? ''])))
+  assert.deepEqual(verdicts, { '2:606': 'deployed', '2:607': 'waiting for deploy', '2:608': 'deploy failed' })
 
   // Issue page: one Deployment line, in the words of the verdict.
   await page.goto(base + '/issues/2%3A606')
   await waitForText(page, 'Normalize webhook signature verification')
   const line = (await page.locator('#issue-deployment').innerText()).trim()
   assert.ok(line.startsWith('Deployment · Deployed · commit abc1234 read from the live site'), line)
+  // A merged issue: the cube is done, every stage earned, nothing left to do.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #606, Merged stage, merged')
+  assert.deepEqual(await page.locator('#issue-stages li').evaluateAll(items => items.map(item => item.dataset.state)),
+    ['done', 'done', 'done', 'done', 'done'])
+  assert.equal((await page.locator('#issue-nothing-needed').innerText()).trim(), 'Done. Nothing left to do.')
 }

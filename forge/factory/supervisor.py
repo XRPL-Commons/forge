@@ -5,17 +5,18 @@ has a preceding durable intent; ambiguous responses are reconciled on later cycl
 """
 from copy import deepcopy
 from pathlib import Path
+import re
 import time
 import json
 
-from .contracts import NEXT_ROLE, ROLES, dependencies, candidate, digest, result, environment_key, summary as plain_summary
+from .contracts import NEXT_ROLE, ROLES, dependencies, issue_dependencies, candidate, digest, result, environment_key, summary as plain_summary
 from .config import policy
 from .ownership import ownership
 from .memory import allocation as memory_allocation, confirmed as memory_confirmed, pending as memory_pending
 from .capacity import memory_bytes
 from .providers import available as provider_available
 from .github import GitHubUnavailable, GitHubBudgetExhausted
-from .ledger import DecisionChanged
+from .ledger import APPROACH_HOLD, DecisionChanged
 from .runner import RunnerError, RunnerUnavailable, RunnerCapacity, ContainerRunner
 from ..state import AtomicStore, StateError
 
@@ -60,6 +61,7 @@ class Supervisor:
         # Enforce the observation deadline at the API boundary, not just
         # between issues: one slow reconciliation must not spend launch time.
         cycle_deadline = self.github.deadline
+        self.check_logins()
         observe_until = cycle_deadline - budget / 2
         # Even paused/disabled factories must finish teardown and reconciliation.
         for job in self.ledger.read()['jobs'].values():
@@ -87,8 +89,14 @@ class Supervisor:
                 finally:
                     self.ledger.job_update(job['id'], last_observed=self.clock())
         requested = self.check_requests()
+        # Issues waiting for a human jump the queue at most every PRIORITY_OBSERVE_SECONDS.
+        # Each costs a dozen GitHub reads, and at 45 s (shorter than a cycle) three of
+        # them used the whole observation budget every cycle and starved the rotation.
+        now = self.clock()
+        awaiting = lambda i: (i['state'] in ('approval_needed', 'audited')
+                              and now - i.get('last_observed', 0) >= self.PRIORITY_OBSERVE_SECONDS)
         for item in sorted(self.ledger.read()['issues'].values(), key=lambda i: (
-                not bool(i.get('operator_sync')), i['key'] not in requested, i.get('last_observed', 0))):
+                not bool(i.get('operator_sync')), i['key'] not in requested, not awaiting(i), i.get('last_observed', 0))):
             if time.monotonic() >= observe_until:
                 break
             # Merged and cancelled issues change rarely (a reopen); observing them
@@ -216,7 +224,8 @@ class Supervisor:
                                                                                       'It could not read them from GitHub. Repair the connection, then recheck this issue.'}, job))
                             self.ledger.job_update(job['id'], fenced=True, phase='stopping', capture={'result': None, 'logs': '', 'missing': []})
                             return
-                        self.ledger.job_update(job['id'], ci_evidence=ci, review_policy=policy(self.config))
+                        self.ledger.job_update(job['id'], ci_evidence=ci, review_policy=policy(self.config),
+                                               verification_checks=self.config['repository_verification'].get(job['repo'], []))
                         job = self.ledger.read()['jobs'][job['id']]
                         if job.get('candidate') and job['role'] != 'recovery':
                             self.github.check(job, 'controller', job['candidate'], job['candidate']['key'], None, 'Candidate is being processed')
@@ -343,6 +352,17 @@ class Supervisor:
                 recovered = self.github.publication(original, item['requirements'], original['policy'])
                 if recovered:
                     self.ledger.recover_publication(original['id'], recovered)
+            if report and report['outcome'] == 'needs_human_verification':
+                current = self.ledger.read()['issues'][item['key']]
+                selected = current.get('candidate')
+                if (selected and current_issue['state'] == 'open' and original['requirements'] == requirements
+                        and original['policy'] == digest(policy(self.config))
+                        and ((original['role'] == 'build' and selected.get('build_attempt') == original['id'])
+                             or (original.get('candidate') or {}).get('key') == selected['key'])):
+                    pr = self.github.pr(current, selected['pr'])
+                    if self.verification_candidate_current(selected, pr):
+                        self.request_verification(job, report)
+                        return
             findings = (report if report and report['outcome'] == 'pass' else self.incomplete('Investigation did not return usable findings'))
             self.ledger.findings(job['id'], findings, summary=self.card(findings, job))
             return
@@ -352,19 +372,35 @@ class Supervisor:
         if issue['state'] != 'open':
             with self.ledger.transaction() as data:
                 data['issues'][item['key']]['ownership_wait'] = None
-            self.ledger.cancel(item['key'], 'Issue closed externally; reconcile any published PR separately')
+            self.ledger.cancel(item['key'], 'Issue closed externally; reconcile any published PR separately',
+                              github_issue=issue)
             return
         if requirements != job['requirements'] or job['policy'] != digest(policy(self.config)):
             self.invalidate(item['key'], 'Requirements or policy changed during the attempt')
             self.update_requirements(item['key'], requirements)
             return
         if job['role'] == 'build':
+            if report and report['outcome'] == 'waiting_on_issues':
+                body = issue.get('body') or ''
+                evidence = report['evidence'].strip()
+                if evidence in body and all(re.search(rf'(?<![\w/])#{n}\b', evidence) for n in report['issues']):
+                    numbers = sorted(set(issue_dependencies(body, item)) | set(report['issues']))
+                    blocked = self.blocked_dependencies(item, numbers)
+                    self.ledger.wait_on_issues(job['id'], report['issues'], evidence, body, blocked,
+                                              summary=self.card(report, job))
+                    return
+                # Ungrounded claims cannot install a durable dependency wait.
+                self.ledger.fail(job['id'], 'Dependency evidence must quote the issue requirements and name each prerequisite')
+                return
             if report and report['outcome'] == 'needs_decision':
                 self.ledger.request_decision(job['id'], report['decision'], summary=self.card(report, job))
                 return
             published = self.github.publication(job, requirements, job['policy'])
             if published:
-                self.ledger.accept(job['id'], candidate=published, summary=self.card(report, job))
+                if report and report['outcome'] == 'needs_human_verification':
+                    self.request_verification(job, report, candidate=published)
+                else:
+                    self.ledger.accept(job['id'], candidate=published, summary=self.card(report, job))
                 return
         else:
             current = self.github.pr(item, job['candidate']['pr'])
@@ -376,6 +412,9 @@ class Supervisor:
                 return
             if current['base']['sha'] != job['candidate']['base']:
                 return  # Reconciliation creates a fresh candidate and reruns review.
+            if report and report['outcome'] == 'needs_human_verification':
+                self.request_verification(job, report)
+                return
             if report and report['outcome'] in ('pass', 'reject'):
                 check_id = self.github.verdict(job, report)
                 # Verify revision again after publication; stale results are only history.
@@ -406,6 +445,47 @@ class Supervisor:
                               'plain': 'The worker stopped without a usable result. Nothing was merged. '
                                        'Forge investigates the failure before trying again.'}, job))
 
+    def request_verification(self, job, report, *, candidate=None):
+        wanted = report['verification'].get('checks', [])
+        allowed = {c['name']: c for c in self.config['repository_verification'].get(job['repo'], [])}
+        ci = [allowed[name] for name in wanted] if wanted and all(name in allowed for name in wanted) else []
+        self.ledger.request_verification(job['id'], {**report['verification'], 'ci': ci},
+                                         candidate=candidate, summary=self.card(report, job))
+
+    @staticmethod
+    def verification_candidate_current(selected, pr):
+        return (pr.get('state') == 'open' and not pr.get('draft') and not pr.get('merged')
+                and pr['head']['sha'] == selected['head'] and pr['base']['sha'] == selected['base'])
+
+    def verification_gate(self, item):
+        from .verification import ci_result
+        request = item['verification_request']
+        selected = item['candidate']
+        if request['candidate'] != selected['key']:
+            self.invalidate(item['key'], 'Verification belongs to an earlier candidate')
+            return
+        pr = self.github.pr(item, selected['pr'])
+        if not self.verification_candidate_current(selected, pr):
+            return
+        approvals = self.github.approvals(item, pr)
+        blocked = any(a['state'] == 'CHANGES_REQUESTED' for a in approvals)
+        if request.get('ci'):
+            snapshot = self.github.ci_evidence({**item, 'candidate': selected})
+            passed = ci_result(snapshot, selected, request['ci']) and not blocked
+            proof = {'via': 'ci', 'checks': request['ci'], 'observed_at': self.clock()}
+        else:
+            counted = [a for a in approvals if a['counted'] and (a.get('at') or 0) > int(request['created_at'])]
+            passed = bool(counted) and not blocked
+            proof = {'via': 'human', 'approvals': counted}
+        with self.ledger.transaction() as data:
+            data['issues'][item['key']]['merge_gate'] = {'candidate': selected['key'],
+                'kind': 'verification_ci' if request.get('ci') else 'approval',
+                'reason': request['what'], 'approvals': approvals}
+        self.github.check(item, 'controller', selected, selected['key'], None,
+                          'External verification pending: ' + request['what'])
+        if passed and self.verification_candidate_current(selected, self.github.pr(item, selected['pr'])):
+            self.ledger.complete_verification(item['key'], request, proof)
+
     def invalidate(self, key, reason, *, candidate=None, hold=False):
         item = self.ledger.read()['issues'][key]
         old = item.get('candidate')
@@ -414,6 +494,14 @@ class Supervisor:
             gate = candidate or {**old, 'head': pr['head']['sha']}
             self.github.check(item, 'controller', gate, gate['key'], None, reason)
         self.ledger.invalidate(key, reason, candidate=candidate, hold=hold)
+
+    def closed_issue_with_unreadable_candidate(self, item, issue):
+        self.ledger.cancel(item['key'], 'Issue closed externally', github_issue=issue)
+        with self.ledger.transaction() as data:
+            current = data['issues'][item['key']]
+            current['candidate'] = None
+            current['evidence'] = {}
+        self.github.labels(self.ledger.read()['issues'][item['key']])
 
     def pause_external_change(self, item, reason):
         self.invalidate(item['key'], reason, hold=True)
@@ -438,17 +526,24 @@ class Supervisor:
             current['ownership_wait'] = owner
         return owner is None
 
-    def dependency_ready(self, item, issue):
+    def blocked_dependencies(self, item, numbers):
         blocked = []
-        for number in dependencies(issue.get('body')):
+        for number in numbers:
             value = self.github.call('controller', item, 'GET', f'/issues/{number}')
             if (not isinstance(value, dict) or value.get('number') != number
                     or 'pull_request' in value or value.get('state') not in ('open', 'closed')):
                 raise GitHubUnavailable('Prerequisite issue could not be verified')
             if value['state'] != 'closed':
                 blocked.append(number)
+        return blocked
+
+    def dependency_ready(self, item, issue):
+        blocked = self.blocked_dependencies(item, issue_dependencies(issue.get('body'), item))
         with self.ledger.transaction() as data:
             current = data['issues'][item['key']]
+            if current.get('dependency_body') != digest(issue.get('body') or ''):
+                for field in ('declared_dependencies', 'dependency_body', 'dependency_evidence'):
+                    current.pop(field, None)
             if current.get('blocked_dependencies', []) != blocked:
                 self.ledger.event(data, current, 'dependencies_checked', blocked=blocked)
             current['blocked_dependencies'] = blocked
@@ -477,11 +572,33 @@ class Supervisor:
         if item.get('operator_request'):
             return  # An interrupted decision must finish before observing new eligibility.
         issue, requirements = self.github.issue(item)
+        candidate_value = item.get('candidate')
+        if (candidate_value and candidate_value.get('pr') and not item.get('active')
+                and item['state'] in ('hold', 'failed', 'cancelled')
+                and item.get('checks_settled') != candidate_value.get('key')):
+            reason = item.get('reason') or 'Forge stopped working on this candidate.'
+            self.github.settle_checks(item, candidate_value, 'Forge is not working on this pull request right now: '
+                                      + str(reason)[:500] + ' A new attempt publishes fresh checks.')
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['checks_settled'] = candidate_value.get('key')
+        held_by = sorted({l['name'] for l in issue.get('labels', [])}.intersection(self.config['hold_labels']))
+        if held_by != item.get('label_hold', []):
+            # Recorded so views without GitHub access (the Activity strip) know a pause is deliberate.
+            with self.ledger.transaction() as data:
+                data['issues'][item['key']]['label_hold'] = held_by
         if self.ledger.migrate_protection_hold(item['key']):
             item = self.ledger.read()['issues'][item['key']]
         candidate_value = item['candidate']
         if candidate_value:
-            pr = self.github.pr(item, candidate_value['pr'])
+            try:
+                pr = self.github.pr(item, candidate_value['pr'])
+            except GitHubUnavailable as error:
+                if getattr(error, 'status', None) != 404 or issue['state'] != 'closed':
+                    raise
+                # A 404 can also mean lost App access. Only confirmed issue
+                # closure lets us discard the candidate; open work stays intact.
+                self.closed_issue_with_unreadable_candidate(item, issue)
+                return
             if pr.get('merged'):
                 with self.ledger.transaction() as data:
                     current = data['issues'][item['key']]
@@ -500,18 +617,50 @@ class Supervisor:
         if issue['state'] != 'open':
             with self.ledger.transaction() as data:
                 data['issues'][item['key']]['ownership_wait'] = None
-            self.ledger.cancel(item['key'], 'Issue closed externally')
+            self.ledger.cancel(item['key'], 'Issue closed externally', github_issue=issue)
             self.github.labels(self.ledger.read()['issues'][item['key']])
             return
         ownership_clear = self.ownership_ready(item, issue, fresh=item['state'] in ('audited', 'approval_needed'))
         if not ownership_clear and not item.get('active'):
             return
+        if item['state'] == 'hold' and item.get('reason') == APPROACH_HOLD and not item.get('active'):
+            # Attempts that stopped only because the issue's own prerequisites were
+            # open are not failures of approach (thegame #99, #104): wait for them,
+            # with a fresh budget, instead of asking for a new approach.
+            findings = ' '.join(str(((j.get('capture') or {}).get('result') or {}).get(k) or '')
+                                for j in self.ledger.read()['jobs'].values()
+                                if j['issue_key'] == item['key'] and j['role'] == 'recovery'
+                                and isinstance((j.get('capture') or {}).get('result'), dict)
+                                for k in ('headline', 'summary'))
+            named = [n for n in dependencies(issue.get('body')) if re.search(rf'(?<![\w/])#{n}\b', findings)]
+            if named and re.search(r'prerequisite|depend|wait', findings, re.I):
+                self.ledger.retry(item['key'], 'Earlier attempts stopped for open prerequisites; waiting for '
+                                  + ', '.join('#' + str(n) for n in named))
+                self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
+        if item['state'] == 'hold' and item.get('decision_request') and not item.get('active'):
+            # A worker that asked "should this wait for #90?" when the issue itself
+            # names #90 as a prerequisite: Forge's own dependency wait answers it.
+            asked = item['decision_request']
+            text = ' '.join(str(asked.get(k) or '') for k in ('question', 'recommendation', 'evidence'))
+            named = [n for n in dependencies(issue.get('body')) if re.search(rf'(?<![\w/])#{n}\b', text)]
+            if named:
+                self.ledger.retry(item['key'], 'Waits for prerequisites named in the issue: '
+                                  + ', '.join('#' + str(n) for n in named))
+                self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
         if item.get('environment_hold') and item['state'] == 'hold':
             labels = {label['name'] for label in issue.get('labels', [])}
             if labels.intersection(self.config['hold_labels']):
                 self.ledger.hold(item['key'], 'Issue carries an explicit hold or dependency label')
                 return
             held = item['environment_hold']
+            if held['blocker'] == 'dependency_access' and dependencies(issue.get('body')):
+                # Workers reported "wait for #N" as an access problem. Once Forge can
+                # read the prerequisites itself, the ordinary dependency wait applies.
+                if self.ledger.resume_environment(item['key'], 'The issue names prerequisite issues; waiting on them instead'):
+                    self.reconcile(self.ledger.read()['issues'][item['key']])
+                return
             if held['blocker'] == 'services':
                 # Older installations held missing databases for manual approval.
                 # Resume once under the same bounded policy as a new blocker.
@@ -599,13 +748,21 @@ class Supervisor:
                 return
         if item['active'] and self.ledger.read()['jobs'][item['active']]['role'] != 'merge':
             return
+        if item.get('verification_request') and item['state'] == 'approval_needed':
+            self.verification_gate(item)
+            self.github.labels(self.ledger.read()['issues'][item['key']])
+            return
         if ownership_clear and item['state'] in ('audited', 'approval_needed'):
             self.merge(item, pr)
         self.github.labels(self.ledger.read()['issues'][item['key']])
 
     def merge(self, item, pr):
         audit = item['evidence'].get('audit', {})
-        required = self.config['human_required'] or audit.get('human_required') == 'required'
+        verified = [v for v in item.get('verified_checks', []) if v['candidate'] == item['candidate']['key']]
+        required = self.config['human_required'] or audit.get('human_required') == 'required' or any(v['proof']['via'] == 'human' for v in verified)
+        ci = {c['name']: c for v in verified for c in v.get('ci', [])}
+        from .verification import ci_result
+        ci_passed = not ci or ci_result(self.github.ci_evidence({**item, 'candidate': item['candidate']}), item['candidate'], list(ci.values()))
         approvals = self.github.approvals(item, pr)
         blocked = any(a['state'] == 'CHANGES_REQUESTED' for a in approvals)
         approved = any(a['counted'] for a in approvals) and not blocked
@@ -616,6 +773,8 @@ class Supervisor:
             reason = 'A current GitHub review requests changes'
         elif required and not approved:
             reason = audit.get('human_reason') or 'An authorized human must approve the current candidate'
+        elif not ci_passed:
+            reason = 'The configured verification checks must pass for this candidate'
         elif not self.github.gates(item):
             reason = 'Current review and audit checks must match the accepted evidence'
         elif not self.github.protections(item, item['candidate']):
@@ -643,7 +802,10 @@ class Supervisor:
         if reason:
             self.github.check(item, 'controller', item['candidate'], external, None, reason)
             with self.ledger.transaction() as data:
-                data['issues'][item['key']].update(state='approval_needed', reason=reason)
+                current = data['issues'][item['key']]
+                if current['state'] != 'approval_needed':
+                    self.ledger.event(data, current, 'state_changed', previous=current['state'], state='approval_needed')
+                current.update(state='approval_needed', reason=reason)
             return
         if not self.config['merge_enabled'] or not self.config['enabled'] or not self.settings.admission(item['repo'])['allowed']:
             self.github.check(item, 'controller', item['candidate'], external, None, 'Automatic merge is paused by configuration')
@@ -675,6 +837,36 @@ class Supervisor:
         if verified.get('merged'):
             current = self.ledger.read()['issues'][item['key']]
             self.ledger.accept(current['active'], evidence={'pr': pr['number'], 'sha': verified.get('merge_commit_sha')})
+
+    def check_logins(self):
+        """Stop dispatching to a Codex login that can no longer renew, and say so.
+
+        Without this, workers discovered it one 401 at a time while the operator
+        saw only a quiet cooldown."""
+        root = getattr(self.settings, 'root', None)
+        if root is None:
+            return
+        from ..credentials import Credentials
+        from .codex_auth import renewable
+        pool = self.config.get('provider_pool') or [{k: self.config.get(k) for k in ('provider', 'provider_auth_file_env')}]
+        for entry in pool:
+            reference = entry.get('provider_auth_file_env')
+            if entry.get('provider') != 'codex' or not reference:
+                continue
+            try:
+                path = Credentials(root).environment(only=[reference]).get(reference)
+                problem = renewable(json.loads(Path(path).read_text())) if path else 'missing'
+            except (OSError, ValueError):
+                problem = 'unreadable'
+            if not problem:
+                continue
+            from .accounts import cooldown_since
+            with self.ledger.transaction() as data:
+                cooldowns = data.setdefault('provider_cooldowns', {})
+                current = cooldowns.get('codex') or {}
+                since = cooldown_since(data, 'codex', 'blocked_auth', self.clock())
+                cooldowns['codex'] = {**current, 'reason': 'blocked_auth', 'detail': 'login_' + problem, 'since': since,
+                                      'until': max(current.get('until', 0), self.clock() + self.config['availability_retry_seconds'])}
 
     def check_requests(self, done=None):
         """Issues the operator asked to check now (after approving on GitHub, say)."""
@@ -832,7 +1024,8 @@ class Supervisor:
                             if not self.dependencies_recently_clear(item) and not self.dependency_ready(item, issue):
                                 continue
                             if issue['state'] != 'open':
-                                self.ledger.cancel(item['key'], 'Issue closed externally')
+                                self.ledger.cancel(item['key'], 'Issue closed externally',
+                                                   github_issue=issue)
                                 continue
                             if requirements != item['requirements']:
                                 self.invalidate(item['key'], 'Issue requirements changed')
@@ -895,6 +1088,7 @@ class Supervisor:
 
     DISCOVERY_INTERVAL = 300
     SETTLED_STATES = ('merged', 'cancelled')
+    PRIORITY_OBSERVE_SECONDS = 300
     SETTLED_OBSERVE_SECONDS = 3600
 
     def discovery_due(self):

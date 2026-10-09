@@ -3,7 +3,7 @@ import threading
 import time
 import uuid
 
-from .factory.config import load, validate
+from .factory.config import load, validate, save
 from .factory.environments import probe
 from .factory.github import GitHub, GitHubUnavailable
 from .settings import digest, read_json, write_json
@@ -18,6 +18,12 @@ def read_optional(path):
 
 
 class RepositoryEnvironments:
+    def __new__(cls, settings, **kwargs):
+        if cls is RepositoryEnvironments and getattr(settings, 'database', None) is not None:
+            from .sqlite_environments import SqliteRepositoryEnvironments
+            return object.__new__(SqliteRepositoryEnvironments)
+        return object.__new__(cls)
+
     def __init__(self, settings, *, github_class=GitHub):
         self.settings = settings
         self.root = settings.root.parent if settings.root.name == 'setup' else settings.root
@@ -84,7 +90,7 @@ class RepositoryEnvironments:
                     raise ValueError('Database requirements changed. Reload and review them again.')
                 config = load(self.root)
                 config['repository_environments'].pop(str(repo_id), None)
-                write_json(self.root / 'runtime.json', validate(config))
+                save(self.root, config)
         else:
             raise ValueError('Choose scan or confirm for database requirements.')
 
@@ -139,4 +145,4 @@ class RepositoryEnvironments:
                 raise ValueError('Database workers are unavailable on this host. Ask the Forge administrator to enable them.')
             config['repository_environments'][key] = {
                 **{k: proposal[k] for k in ('services', 'evidence', 'head')}, 'confirmed_at': self.settings.clock(), 'default': True}
-            write_json(self.root / 'runtime.json', validate(config))
+            save(self.root, config)

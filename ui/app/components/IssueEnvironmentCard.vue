@@ -48,10 +48,14 @@ function toggle(service: string, checked: boolean | 'indeterminate') {
       </fieldset>
       <p v-if="!environment.full_available" class="text-xs text-amber-200">Database workers are unavailable on this host.</p>
       <UAlert v-if="error" role="alert" color="error" variant="subtle" :description="error" />
-      <div class="flex flex-wrap gap-2">
-        <UButton type="submit" :loading="busy" :disabled="busy || (mode === 'full' && (!selected.length || !environment.full_available))">Save for this issue</UButton>
-        <UButton color="neutral" variant="outline" :disabled="busy" @click="emit('update:open', false)">Cancel</UButton>
-      </div>
+      <DialogFooter>
+        <template #secondary>
+          <UButton color="neutral" variant="outline" :disabled="busy" @click="emit('update:open', false)">Cancel</UButton>
+        </template>
+        <template #primary>
+          <UButton type="submit" :loading="busy" :disabled="busy || (mode === 'full' && (!selected.length || !environment.full_available))">Save for this issue</UButton>
+        </template>
+      </DialogFooter>
     </form>
   </section>
 </template>

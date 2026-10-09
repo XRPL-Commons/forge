@@ -5,7 +5,8 @@ component (runner image, isolation policies, egress, operator UI, services) is
 compared with what this source wants; only what changed is rebuilt, qualified,
 replaced and restarted. Every new artifact is built and the runner canary passes
 before anything in use is touched, so a failed update leaves the host as it was.
-Rolling back is the same operation on an older checkout.
+An interrupted update is resumed by rerunning. Selected SQLite installations
+require a compatible forward update; older JSON-only source is not a rollback.
 """
 import difflib
 import hashlib
@@ -13,6 +14,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import runpy
 import shutil
@@ -26,6 +28,7 @@ import urllib.request
 from .onboarding import Onboarding
 from .settings import read_json, write_json
 from .factory.control import controller_lock, ControllerBusy
+from .configuration_authority import RUNTIME_DOMAINS
 
 SOURCE = Path(__file__).resolve().parent.parent
 NODE_IMAGE = 'node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6'
@@ -137,13 +140,18 @@ class Record:
     never mistakes its own output for an operator's hand edit."""
 
     def __init__(self, root):
+        self.root = Path(root)
         self.path = Path(root) / RECORD
-        self.data = read_json(self.path) if self.path.exists() else {}
+        snapshot = runtime_snapshot(root, RECORD)
+        self.revision = snapshot['revision'] if snapshot else 0
+        self.credential_ref = snapshot['credential_ref'] if snapshot else None
+        self.data = snapshot['settings'] if snapshot else {}
         self.data.setdefault('managed', {})
 
     def save(self, **values):
         self.data.update(values)
-        write_json(self.path, self.data)
+        self.revision = save_runtime_document(self.root, RECORD, self.data,
+                                             expected_revision=self.revision, credential_ref=self.credential_ref)
 
     def managed(self, path, content):
         self.data['managed'][str(path)] = digest_bytes(content)
@@ -179,8 +187,72 @@ def ensure_upstream_secret(root):
     return path
 
 
+def runtime_snapshot(root, name):
+    """Read settings and their revision together; keep that revision until saving."""
+    from .configuration_authority import ConfigurationAuthority
+    return ConfigurationAuthority(root).snapshot(name)
+
+
+def runtime_document(root, name):
+    row = runtime_snapshot(root, name)
+    return row['settings'] if row else None
+
+
+def save_runtime_document(root, name, value, *, expected_revision, credential_ref=None):
+    from .configuration_authority import ConfigurationAuthority
+    return ConfigurationAuthority(root).replace(name, value, expected_revision=expected_revision,
+                                                 credential_ref=credential_ref)
+
+
 def ui_container(root):
     return 'forge-ui-' + hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:12]
+
+
+def qualify_sqlite_services(root, source, *, run=subprocess.run):
+    """Read-only cutover gate for the deployed source and managed launchers."""
+    from .store.migration.snapshot import MigrationError
+    from .store.migration.runtime import inspect as inspect_runtime
+    from .store.migration.importer import importer_version
+    root, source = Path(root).absolute(), Path(source).absolute()
+    prepared = inspect_runtime(root, run=run)
+    environment = {**os.environ, 'PYTHONPATH': str(source)}
+    if prepared:
+        environment['LD_LIBRARY_PATH'] = prepared['library_directory']
+    probe = ('import json; from forge.store.db import qualified_sqlite; '
+             'from forge.store.migration.importer import importer_version; '
+             'print(json.dumps({"qualified":qualified_sqlite(),"source":importer_version()}))')
+    result = run(['/usr/bin/python3', '-c', probe], env=environment, cwd=str(source), capture_output=True, text=True, timeout=30)
+    try:
+        receipt = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise MigrationError('service_runtime_unqualified') from None
+    if result.returncode or not isinstance(receipt, dict) or receipt.get('qualified') is not True or receipt.get('source') != importer_version():
+        raise MigrationError('service_source_or_runtime_mismatch')
+    launcher = source / 'bin/forge'
+    status = source / 'legacy/forge-status.py'
+    if (not launcher.is_file() or launcher.is_symlink() or not status.is_file() or status.is_symlink()
+            or 'forge.launch forge.setup_service' not in launcher.read_text()):
+        raise MigrationError('legacy_launcher_detected')
+    for name in ('forge-status.service', 'forge-supervisor.service'):
+        observed = run(['systemctl', '--user', 'show', name, '-p', 'ExecStart', '-p', 'Environment', '--no-pager'],
+                       capture_output=True, text=True, timeout=30)
+        properties = dict(line.split('=', 1) for line in observed.stdout.splitlines() if '=' in line)
+        start = properties.get('ExecStart', '')
+        commands = re.findall(r'argv\[\]=(.*?)(?:\s;|$)', start)
+        paths = re.findall(r'(?:\{|\s)path=(.*?)(?:\s;|$)', start)
+        expected = (['/usr/bin/python3', '-m', 'forge.launch', '--script', str(status)] if name == 'forge-status.service'
+                    else [str(launcher), 'service', '--root', str(root)])
+        try:
+            arguments = shlex.split(commands[0]) if len(commands) == 1 else []
+            environment = dict(value.split('=', 1) for value in shlex.split(properties.get('Environment', '')))
+            executable = shlex.split(paths[0]) if len(paths) == 1 else []
+        except ValueError:
+            arguments, environment, executable = [], {}, []
+        if (observed.returncode or arguments != expected or executable != [expected[0]]
+                or environment.get('PYTHONPATH') != str(source) or environment.get('FORGE_ROOT') != str(root)):
+            raise MigrationError('service_launcher_unqualified')
+    return {'qualified': True, 'source': receipt['source'], 'launchers': ['forge-status', 'forge-supervisor'],
+            'library_directory': prepared['library_directory'] if prepared else None}
 
 
 def desired_units(root, bind):
@@ -202,14 +274,16 @@ def desired_units(root, bind):
     # Only the public address reaches the UI container. Identity credentials
     # and session state stay in the controller's private state directory.
     auth_root = root / 'state/operator-auth'
-    if (auth_root / 'auth.json').exists() or (auth_root / 'auth.initialized').exists():
+    if (root / 'state/storage').exists() or (auth_root / 'auth.json').exists() or (auth_root / 'auth.initialized').exists():
         from forge.operator_auth import OperatorAuth
-        origin = OperatorAuth(root).config()['origin']
-        from urllib.parse import urlsplit
-        ui[-3:-3] = ['--env', 'NITRO_FORGE_PUBLIC_ORIGIN=' + origin,
-                     '--env', 'NITRO_ALLOWED_HOSTS=' + urlsplit(origin).netloc]
+        identity = OperatorAuth(root).config()
+        if identity:
+            origin = identity['origin']
+            from urllib.parse import urlsplit
+            ui[-3:-3] = ['--env', 'NITRO_FORGE_PUBLIC_ORIGIN=' + origin,
+                         '--env', 'NITRO_ALLOWED_HOSTS=' + urlsplit(origin).netloc]
     return {
-        'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
+        'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 -m forge.launch --script ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
                              python + ['FORGE_BIND_ADDRESS=127.0.0.1', 'FORGE_PORT=' + str(API_PORT),
                                        'FORGE_UPSTREAM_SECRET_FILE=' + str(root / UPSTREAM_SECRET)]),
         'forge-ui': unit('Forge operator UI', ' '.join(unit_quote(part) for part in ui),
@@ -339,26 +413,28 @@ def switch_runtime(root, image, profile):
     """Point every runtime configuration at the qualified image, between supervisor cycles."""
     try:
         with controller_lock(root, timeout=120):
-            for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
-                path = Path(root) / name
-                if path.exists():
-                    config = read_json(path)
+            for name in RUNTIME_DOMAINS:
+                snapshot = runtime_snapshot(root, name)
+                if snapshot is not None:
+                    config = snapshot['settings']
                     if config.get('image') != image or config.get('apparmor_profile') != profile:
                         config.update(image=image, apparmor_profile=profile)
-                        write_json(path, config)
+                        save_runtime_document(root, name, config, expected_revision=snapshot['revision'],
+                                              credential_ref=snapshot['credential_ref'])
     except ControllerBusy:
         raise ValueError('The supervisor stayed busy for two minutes; nothing was switched. Rerun bin/forge update.') from None
 
 
 def switch_full_environment(root, image):
     with controller_lock(root, timeout=120):
-        for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
-            path = Path(root) / name
-            if path.exists():
-                config = read_json(path)
+        for name in RUNTIME_DOMAINS:
+            snapshot = runtime_snapshot(root, name)
+            if snapshot is not None:
+                config = snapshot['settings']
                 tiers = config.setdefault('environment_tiers', {})
                 tiers['full'] = {**{'memory': '4g', 'cpus': 2}, **tiers.get('full', {}), 'image': image}
-                write_json(path, config)
+                save_runtime_document(root, name, config, expected_revision=snapshot['revision'],
+                                      credential_ref=snapshot['credential_ref'])
 
 
 def install_full_environment(root):
@@ -429,8 +505,10 @@ def qualify_runner(image, seccomp, profile, *, full=False):
 
 def reconcile(root, bind=None, assume_yes=False):
     """Install or update the host. Returns True when running workers need requalification."""
+    from .store.migration.cutover import maintenance_writable
+    maintenance_writable(root)
     root = Path(root)
-    fresh = not (root / 'host-runtime.json').exists()
+    fresh = runtime_document(root, 'host-runtime.json') is None
     record = Record(root)
     units = Path.home() / '.config/systemd/user'
     bind = resolve_bind(root, bind, units)
@@ -443,7 +521,7 @@ def reconcile(root, bind=None, assume_yes=False):
     seccomp, seccomp_inputs = seccomp_policy(root, record)
     apparmor = (SOURCE / 'deploy/runner' / (APPARMOR_PROFILE + '.apparmor')).read_bytes()
     installed_apparmor = APPARMOR_TARGET.read_bytes() if APPARMOR_TARGET.exists() else None
-    current_runtime = read_json(root / 'host-runtime.json') if not fresh else {}
+    current_runtime = runtime_document(root, 'host-runtime.json') if not fresh else {}
     # The recorded image covers an update interrupted after switching but before
     # it finished: the rerun still requalifies.
     runtime_changed = (fresh or seccomp is not None or installed_apparmor != apparmor
@@ -559,8 +637,12 @@ def reconcile(root, bind=None, assume_yes=False):
         # Written last: a failed installation can be repeated without a false success marker.
         config = Onboarding(root).runtime()
         config.update(image=image, apparmor_profile=APPARMOR_PROFILE)
-        write_json(root / 'host-runtime.json', config)
+        save_runtime_document(root, 'host-runtime.json', config, expected_revision=0)
     elif record.data['previous'].get('source') not in (None, source):
-        print('Updated to ' + (source or 'unknown')[:12] + '. To roll back: git checkout '
-              + record.data['previous']['source'][:12] + ' && bin/forge update --no-pull')
+        from .store.runtime import selected
+        if selected(root) is not None:
+            print('Updated to ' + (source or 'unknown')[:12] + '. SQLite history is retained; use a compatible forward update for recovery.')
+        else:
+            print('Updated to ' + (source or 'unknown')[:12] + '. To roll back: git checkout '
+                  + record.data['previous']['source'][:12] + ' && bin/forge update --no-pull')
     return runtime_changed and not fresh

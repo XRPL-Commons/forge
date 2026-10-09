@@ -82,6 +82,24 @@ class ReconcileTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
+    def test_import_maintenance_blocks_reconcile_before_any_host_action(self):
+        self.host.root = self.host.root.resolve()
+        (self.host.root / '.migration-cutover.json').write_text(json.dumps({'stage':'importing'}))
+        with self.assertRaisesRegex(ValueError, 'cutover_maintenance_in_progress'):
+            self.host.reconcile()
+        self.assertEqual(self.host.calls, [])
+
+    def test_update_maintenance_blocks_source_pull_before_reconciliation(self):
+        root = self.host.root.resolve()
+        (root / '.migration-cutover.json').write_text(json.dumps({'stage':'importing'}))
+        with patch('sys.argv', ['forge','update','--root',str(root)]), \
+                patch.object(host_update, 'pull') as pull, \
+                patch.object(host_setup, 'update') as update, \
+                patch('sys.stderr', io.StringIO()):
+            self.assertEqual(host_setup.main(), 1)
+        pull.assert_not_called()
+        update.assert_not_called()
+
     def test_fresh_install_runs_the_operator_ui_in_front_of_a_loopback_api(self):
         self.host.reconcile()
         status, ui = self.host.unit('forge-status'), self.host.unit('forge-ui')
@@ -373,7 +391,7 @@ class SetupCommandTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 host_setup.main()
         argv = execv.call_args.args[1]
-        self.assertEqual(argv[1:4], ['-m', 'forge.host_setup', 'update'])
+        self.assertEqual(argv[1:5], ['-m', 'forge.launch', 'forge.host_setup', 'update'])
         self.assertIn('--no-pull', argv)
         self.assertEqual(argv[argv.index('--bind') + 1], '100.64.0.7')
         self.assertIn('--yes', argv)

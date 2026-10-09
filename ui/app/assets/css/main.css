@@ -12,6 +12,12 @@
   --color-sky-200: #abcfff;
   --color-amber-200: #ecc486;
   --color-rose-200: #f0a6a6;
+  --color-coral: #ef7d64;
+  /* A cube's colour at each pipeline stage: the factory line's LINE_LOOKS fills (utils/cube.ts STAGE_FILL). */
+  --color-stage-queued: #a3aab4; --color-stage-build: #4fc3d6; --color-stage-review: #6a97ee;
+  --color-stage-audit: #a58bef; --color-stage-approval: #d3e4ef; --color-stage-merged: #7fd6a0;
+  /* The issue workbench's speech bubble. */
+  --color-bubble: #1f242b; --color-bubble-line: #3a414b;
   --color-role-build: #94bfff; --color-role-review: #c9a4f4; --color-role-audit: #80d7bd;
   --color-role-merge: #edbd77; --color-role-controller: #edbd77; --color-role-recovery: #c0cbcd;
 }

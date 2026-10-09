@@ -8,7 +8,7 @@ import time
 from ..settings import Settings, read_json, write_json
 from ..state import AtomicStore
 from .config import load
-from .contracts import HEADLINE_LIMIT, MAX_FAILURES, claims_issue, clamp, digest, plain_text, dependencies
+from .contracts import HEADLINE_LIMIT, MAX_FAILURES, claims_issue, clamp, digest, plain_text, dependencies, issue_dependencies
 from .github import GitHub, GitHubUnavailable
 from .ledger import Ledger
 from .ledger import APPROACH_HOLD
@@ -27,7 +27,7 @@ def facts(issue):
     return {'number': issue['number'], 'title': issue.get('title', ''),
             'body': (issue.get('body') or '')[:16000],
             'content_hash': digest(issue.get('body') or ''), 'body_truncated': len(issue.get('body') or '') > 16000,
-            'state': issue['state'], 'updated_at': issue.get('updated_at'),
+            'state': issue['state'], 'state_reason': issue.get('state_reason'), 'updated_at': issue.get('updated_at'),
             'labels': sorted(labels(issue)),
             'assignees': [a['login'] for a in issue.get('assignees', [])],
             'assignee_types': {a['login']: a.get('type') for a in issue.get('assignees', [])}}
@@ -39,6 +39,8 @@ def revision(issue, item):
     tracked = {k: (item or {}).get(k) for k in ('state', 'active', 'candidate', 'budget_start', 'operator_hold', 'prerequisite_hold', 'environment_hold', 'decision_request', 'environment_override', 'environment_choice', 'environment_retry')}
     if (item or {}).get('decision_version'):
         tracked['decision_version'] = item['decision_version']
+    tracked['verification_request'] = (item or {}).get('verification_request')
+    tracked.update({k: (item or {}).get(k) for k in ('declared_dependencies', 'dependency_body', 'blocked_dependencies')})
     return digest({'github': public, 'ledger': tracked})
 
 
@@ -62,6 +64,8 @@ SUMMARIES = {
                'The pull request was merged and the issue is closed. Nothing more is needed here.'),
     'closed': ('The issue is closed on GitHub',
                'This issue was closed outside Forge. Forge is not working on it.'),
+    'dropped': ('No longer needed',
+                'This issue was closed as not planned or as a duplicate. Forge is not working on it, and reopening it on GitHub brings it back.'),
     'applying': ('Applying your decision',
                  'Forge has your decision and is confirming it on GitHub. It carries on by itself once that is done.'),
     'build': ('Writing the change',
@@ -102,6 +106,10 @@ SUMMARIES = {
                       'Forge tried the same idea more than once and it did not work. Describe a different approach on the issue, then retry it.'),
     'approval_needed': ('Waiting for a person to approve the pull request',
                         'The change is finished and needs a human approval before it can be merged. {why} Approve it on GitHub, or ask someone to review it.'),
+    'verification': ('Waiting for a verification check',
+                     'Run the requested check and approve the pull request if it passes. Forge then completes the remaining reviews. If it fails, record the findings and retry.'),
+    'verification_ci': ('Waiting for CI verification',
+                       'Forge checks the configured workflow results automatically. The remaining reviews resume when those checks pass for this revision.'),
     'built': ('Built and waiting for review',
               'The change is written and its pull request is open. Forge starts the review when a reviewer is free.'),
     'reviewed': ('Reviewed and waiting for the security check',
@@ -212,7 +220,13 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     cleanup = bool(item.get('cleanup_pending'))
     if issue['state'] == 'closed' or item.get('state') == 'merged':
         merged = item.get('state') == 'merged'
-        state, detail, case = 'completed', 'Completed and merged.' if merged else 'Closed on GitHub.', 'merged' if merged else 'closed'
+        closed_as = issue.get('state_reason') or item.get('closed_as')
+        if not merged and closed_as in ('not_planned', 'duplicate'):
+            # Dropped work is not finished work: keep it out of "completed".
+            state, case = 'dropped', 'dropped'
+            detail = 'No longer needed: closed as a duplicate.' if closed_as == 'duplicate' else 'No longer needed: closed as not planned.'
+        else:
+            state, detail, case = 'completed', 'Completed and merged.' if merged else 'Closed on GitHub.', 'merged' if merged else 'closed'
     elif item.get('operator_request'):
         state, detail, case = 'waiting', 'Applying your decision. Forge will confirm it before continuing.', 'applying'
     elif item.get('active') and not (item.get('active_role') == 'merge' and (owner or gate.get('kind') in ('approval', 'blocked', 'refused'))):
@@ -223,7 +237,8 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
     elif held:
         state, detail, case = 'attention', 'Paused by ' + ', '.join(sorted(held)) + ' on GitHub.', 'label_hold'
         if held == {'hold'}:
-            actions = ['resume']
+            # A deliberate pause is on hold, not a request for attention.
+            state, actions = 'waiting', ['resume']
         else:
             detail += ' Resolve the dependency before releasing this hold.'
     elif item.get('environment_hold'):
@@ -253,13 +268,22 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             actions, case = ['retry'], 'approach_hold'
     elif merge_blocked:
         state, detail, case = 'attention', gate.get('reason') or 'GitHub has not allowed this merge.', 'merge_blocked'
+    elif item.get('state') == 'approval_needed' and item.get('verification_request'):
+        automatic = bool(item['verification_request'].get('ci'))
+        state, detail, case = ('waiting' if automatic else 'attention'), item['verification_request']['what'], ('verification_ci' if automatic else 'verification')
+        actions = (['retry'] if automatic else ['assign_reviewer', 'retry']) if owned_pr else []
     elif item.get('state') == 'approval_needed':
         state, detail, case = 'attention', 'The pull request needs a human review.', 'approval_needed'
         # Asking a named human for that review is the only decision on offer;
         # the approval itself still has to reach Forge through GitHub.
         actions = ['assign_reviewer'] if owned_pr else []
     elif item.get('blocked_dependencies'):
-        state, detail, case = 'waiting', item.get('dependency_reason'), 'dependencies'
+        state, detail, case = 'blocked', item.get('dependency_reason'), 'dependencies'
+        if (item.get('state') == 'ready' and item.get('declared_dependencies')
+                and item.get('dependency_body') == (issue.get('content_hash') or digest(issue.get('body') or ''))
+                and not issue.get('body_truncated')
+                and not set(dependencies(issue.get('body'))) & set(item['blocked_dependencies'])):
+            actions = ['start_anyway']
     elif item.get('state') in ('built', 'reviewed', 'audited', 'investigating'):
         state, detail = 'queued', {'built': 'Waiting for review.', 'reviewed': 'Waiting for security review.', 'audited': 'Checking merge requirements.', 'investigating': 'Waiting for a failure investigation.'}[item['state']]
         actions, case = (['pause'] if item['state'] != 'investigating' else []), item['state']
@@ -278,13 +302,18 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
         actions = []
     if not repo.get('enabled') or not repo.get('access_ready'):
         actions = []
-        if state not in ('completed', 'working'):
+        if state not in ('completed', 'dropped', 'working'):
             state, detail, case = 'attention', 'Repository access or activation needs attention.', 'repo_blocked'
+    # Dropping the issue is always the alternative to finishing it, never the next step.
+    closable = fresh and state not in ('completed', 'dropped') and case not in ('applying', 'repo_blocked')
     summary = ({'headline': 'The merge is blocked', 'plain': detail} if case == 'merge_blocked'
                else owner if case == 'external' else summary_for(case, item, held))
-    return {'status': state, 'explanation': detail, 'summary': summary, 'actions': actions, 'setup_needed': setup or not repo.get('access_ready'),
+    return {'status': state, 'reason_code': case, 'ledger_state': item.get('state'),
+            'explanation': detail, 'summary': summary, 'actions': actions, 'closable': closable, 'setup_needed': setup or not repo.get('access_ready'),
             'approval': {'pr': owned_pr, 'reason': gate.get('reason') or item.get('reason') or 'Review the pull request changes.'}
-                        if case == 'approval_needed' and owned_pr and human_approval else None,
+                        if owned_pr and ((case == 'approval_needed' and human_approval)
+                                         or (case == 'verification' and not item['verification_request'].get('ci'))) else None,
+            'verification_request': item.get('verification_request'),
             'approvals': [{k: a.get(k) for k in ('login', 'state', 'at', 'counted', 'why')} for a in gate.get('approvals') or []],
             'last_checked': item.get('last_observed'),
             'merge_blocker': {'reason': detail} if case == 'merge_blocked' else None,
@@ -298,7 +327,7 @@ def presentation(issue, item, repo, runtime, prs=(), *, fresh=True):
             'pull_requests': [{'number': p['number'], 'title': p.get('title', ''), 'kind': kind(p)} for p in linked],
             'attempts': attempts(item) if attempts(item)['failed'] else None,
             'held_by': [h for h in (issue.get('label_events') or []) if h.get('label') in held] or None,
-            'dependencies': dependencies(issue.get('body')), 'fresh': fresh,
+            'dependencies': issue_dependencies(issue.get('body'), item, content_hash=issue.get('content_hash')), 'fresh': fresh,
             'reviewers_requested': {k: v for k, v in (item.get('reviewers_requested') or {}).items()
                                     if k in ('logins', 'at')} or None}
 
@@ -319,6 +348,11 @@ class IssueInventory:
             return {'repositories': {}}
 
     def refresh(self, force=False):
+        from ..store.runtime import selected
+        store = selected(self.root)
+        if store is not None:
+            from .store_inventory import StoreInventory
+            return StoreInventory(store, self.settings, self.github, config=self.runtime, clock=self.clock).refresh(force)
         try:
             with self.settings.locked('issue-inventory', blocking=False):
                 if self.settings.paused():
@@ -395,11 +429,25 @@ class IssueInventory:
         except BlockingIOError:
             pass
 
+    REFRESH_SPACING = 30
+    _refresh_started = 0.0  # per process: every GET used to start a thread
+    _refresh_lock = threading.Lock()
+
     def start_refresh(self, force=False):
+        now = time.monotonic()
+        with IssueInventory._refresh_lock:
+            if not force and now - IssueInventory._refresh_started < self.REFRESH_SPACING:
+                return
+            IssueInventory._refresh_started = now
         threading.Thread(target=self.refresh, args=(force,), daemon=True).start()
 
     def view(self, *, repo_id=None, state='open', query='', page=1, key=None):
-        if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting') or type(page) is not int or page < 1:
+        from ..store.runtime import selected
+        store=selected(self.root)
+        if store is not None:
+            from .store_views import PipelineViews
+            return PipelineViews(store,repositories=lambda:self.settings.view()['repositories'],runtime=lambda:load(self.root),clock=self.clock).issues(repo_id=repo_id,state=state,query=query,page=page,key=key)
+        if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting', 'blocked', 'dropped') or type(page) is not int or page < 1:
             raise ValueError('Choose a valid issue view')
         data = self.read()
         ledger = Ledger(self.root / 'state/factory').read()
@@ -460,7 +508,7 @@ class IssueInventory:
                                    or (a.get('at') or 0) >= latest]
                         return {'issue': row, 'repositories': scopes, 'actions': actions}
                     continue
-                if state == 'open' and row['status'] == 'completed' or state == 'completed' and row['status'] != 'completed':
+                if state == 'open' and row['status'] in ('completed', 'dropped') or state == 'completed' and row['status'] != 'completed':
                     continue
                 if state not in ('open', 'completed', 'all') and row['status'] != state:
                     continue
@@ -469,16 +517,16 @@ class IssueInventory:
                 rows.append(row)
         if key is not None:
             raise ValueError('This issue is not in a managed repository. Refresh the issue list.')
-        order = {'attention': 0, 'working': 1, 'waiting': 2, 'queued': 3, 'backlog': 4, 'completed': 5}
+        order = {'attention': 0, 'working': 1, 'waiting': 2, 'blocked': 3, 'queued': 4, 'backlog': 5, 'completed': 6, 'dropped': 7}
         rows.sort(key=lambda r: (order[r['status']], r['repo'].lower(), r['number']))
         return {'issues': [{k: v for k, v in r.items() if k not in ('body', 'history', 'reviews', 'reviewers', 'default_reviewers', 'reviewers_requested')} for r in rows[(page-1)*50:page*50]],
                 'total': len(rows), 'page': page, 'pages': max(1, (len(rows)+49)//50), 'repositories': scopes,
                 'complete': all(r['complete'] and r['fresh'] for r in scopes if repo_id is None or r['id'] == repo_id), 'actions': self.action_statuses()}
 
     def action_statuses(self):
-        with AtomicStore(self.root / 'state/issues', 'actions').transaction() as data:
-            ordered = sorted(data.items(), key=lambda pair: pair[1]['created_at'])
-            recent = {key for key, value in ordered[-20:]}
-            return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message'),
-                     'at': value.get('created_at')}
-                    for key, value in ordered if value['status'] == 'pending' or key in recent]
+        data = AtomicStore(self.root / 'state/issues', 'actions').read()
+        ordered = sorted(data.items(), key=lambda pair: pair[1]['created_at'])
+        recent = {key for key, value in ordered[-20:]}
+        return [{'id': key, 'key': value['key'], 'status': value['status'], 'message': value.get('message'),
+                 'at': value.get('created_at')}
+                for key, value in ordered if value['status'] == 'pending' or key in recent]

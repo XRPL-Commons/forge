@@ -101,3 +101,63 @@ class FactorySectionsTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in detail['jobs']], ['build'])
         for kwargs in ({'section': 'secret'}, {'section': 'board', 'issue': '1:1'}):
             with self.assertRaises(ValueError): select_view(self.payload(), **kwargs)
+
+    def completed_payload(self, count=25):
+        payload = self.payload()
+        rows = [{'key': f'2:{number}', 'repo_id': 2, 'state': 'merged' if number % 4 else 'cancelled', 'active': None,
+                 'title': f'Done {number}', 'history': [{'kind': 'merged' if number % 4 else 'cancelled', 'at': 1000 + number},
+                                                        {'kind': 'deployment_checked', 'at': 5000}]}
+                for number in range(count)]
+        # One completed issue with no completion event sorts last.
+        rows.append({'key': '2:999', 'repo_id': 2, 'state': 'merged', 'active': None, 'title': 'Old', 'history': []})
+        return {**payload, 'issues': [*payload['issues'], *rows]}
+
+    def test_completed_pages_newest_first_with_a_stable_cursor(self):
+        from forge.factory.control import select_view
+        payload = self.completed_payload()
+        first = select_view(payload, section='completed', limit='10')
+        self.assertEqual([row['key'] for row in first['issues']], [f'2:{n}' for n in range(24, 14, -1)])
+        self.assertEqual(first['issues'][0]['completed_at'], 1024)
+        self.assertEqual(first['jobs'], [])
+        self.assertEqual(first['next'], "1015:2:15")
+        # A newer completion between two page reads does not shift the next page.
+        newer = {'key': '2:500', 'repo_id': 2, 'state': 'merged', 'active': None, 'title': 'New',
+                 'history': [{'kind': 'merged', 'at': 9999}]}
+        grown = {**payload, 'issues': [*payload['issues'], newer]}
+        second = select_view(grown, section='completed', limit=10, before=first['next'])
+        self.assertEqual([row['key'] for row in second['issues']], [f'2:{n}' for n in range(14, 4, -1)])
+        third = select_view(payload, section='completed', limit=10, before=second['next'])
+        self.assertEqual([row['key'] for row in third['issues']], [*(f'2:{n}' for n in range(4, -1, -1)), '1:2', '2:999'])
+        self.assertIsNone(third['next'])
+        self.assertIsNone(third['issues'][-1]['completed_at'])
+        exact = select_view(self.completed_payload(8), section='completed', limit=10)
+        self.assertEqual(len(exact['issues']), 10)
+        self.assertIsNone(exact['next'])
+        self.assertEqual(payload, self.completed_payload(), 'paging must not mutate durable input')
+
+    def test_unpaged_completed_view_is_unchanged_and_bad_paging_is_refused(self):
+        from forge.factory.control import select_view
+        unpaged = select_view(self.completed_payload(), section='completed')
+        self.assertEqual(len(unpaged['issues']), 27)
+        self.assertNotIn('next', unpaged)
+        for kwargs in ({'section': 'completed', 'limit': 0}, {'section': 'completed', 'limit': 51},
+                       {'section': 'completed', 'limit': 'ten'}, {'section': 'completed', 'before': '1:2:3'},
+                       {'section': 'completed', 'limit': 10, 'before': 'later:2:1'},
+                       {'section': 'completed', 'limit': 10, 'before': '1015'},
+                       {'section': 'board', 'limit': 10}, {'issue': '1:1', 'limit': 10}):
+            with self.assertRaises(ValueError, msg=kwargs): select_view(self.completed_payload(), **kwargs)
+
+    def test_view_keeps_the_cancellation_time_in_the_history_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ledger = Ledger(root / 'state/factory')
+            key = ledger.discover({'id': 1, 'name': 'example/project'}, 1, 'requirements')
+            ledger.cancel(key, 'Closed on GitHub')
+            with ledger.transaction() as data:
+                for _ in range(4):
+                    ledger.event(data, data['issues'][key], 'deployment_checked')
+            with patch('forge.factory.control.Settings') as settings, \
+                    patch('forge.factory.operator_status.overview', return_value={}):
+                settings.return_value.view.return_value = {'repositories': []}
+                result = view(root)
+            self.assertEqual([e['kind'] for e in result['issues'][0]['history']], ['cancelled'] + ['deployment_checked'] * 3)

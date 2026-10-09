@@ -4,6 +4,7 @@
       <AppHeader />
       <SettingsTabs v-if="showSettingsTabs" />
     </div>
+    <AccountAlertBar />
     <main class="mx-auto max-w-[1600px] px-4 py-6 sm:px-7">
       <slot />
     </main>

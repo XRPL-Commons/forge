@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { assertPrimaryFarRight } from './dialog-footer.mjs'
 
 export default async function (page, { base, scenario, requests }) {
   await scenario('needs-decision')
@@ -15,6 +16,7 @@ export default async function (page, { base, scenario, requests }) {
   const dialog = page.getByRole('dialog')
   const confirm = dialog.getByRole('button', { name: 'Retry attempt', exact: true })
   assert.equal(await confirm.isDisabled(), true)
+  await assertPrimaryFarRight(dialog, { primary: 'Retry attempt', secondary: 'Close' })
   await dialog.getByLabel('What changed?').fill('Remove the dependency and replace its usage')
   await confirm.click()
   await page.waitForFunction(() => !document.querySelector('[role="dialog"]'))

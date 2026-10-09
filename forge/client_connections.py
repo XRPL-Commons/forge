@@ -57,6 +57,15 @@ def active_generation(root):
     from pathlib import Path
     from .onboarding import Onboarding
     root = Path(root)
+    from .store.runtime import selected
+    database = selected(root)
+    if database is not None:
+        with database.read_snapshot() as db:
+            paused = db.execute("SELECT enabled FROM runtime_controls WHERE name='factory_paused'").fetchone()
+            state = db.execute("SELECT generation,phase FROM setup_instances WHERE scope='live'").fetchone()
+        need(state is not None and state['phase'] == 'active' and not (paused and paused[0]),
+             'setup_required', 'Finish initial setup or reset before connecting an agent.', 409)
+        return state['generation']
     need((root / 'state/factory-v2.enabled').exists() and not (root / 'state/factory-paused.json').exists(),
          'setup_required', 'Finish initial setup or reset before connecting an agent.', 409)
     state = Onboarding(root).store.read()
@@ -89,6 +98,15 @@ def target_identity(root, target):
 
 
 class ClientConnections:
+    def __new__(cls, root, *, store=None, **kwargs):
+        if cls is ClientConnections:
+            from .store.runtime import selected
+            chosen = store if store is not None else selected(root)
+            if chosen is not None:
+                from .sqlite_identity import SqliteClientConnections
+                return SqliteClientConnections(root, store=chosen, **kwargs)
+        return super().__new__(cls)
+
     def __init__(self, root, *, auth=None, generation=None, owner_check=verify_owner, identity=None):
         self.root = root
         self.auth = auth or OperatorAuth(root)

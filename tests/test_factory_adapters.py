@@ -165,6 +165,20 @@ class AdapterTests(unittest.TestCase):
         github.runtime['human_reviewers'] = ['maintainer']
         self.assertTrue(github.human({}, pr)[0])
 
+    def test_settling_checks_cancels_only_forges_own_unfinished_runs(self):
+        github, _, _ = self.github()
+        github.connection = lambda role: {'app_id': {'review': 2, 'audit': 3, 'controller': 4}[role]}
+        github.pages = Mock(return_value=[
+            {'id': 1, 'name': 'forge/audit', 'status': 'in_progress', 'app': {'id': 3}},
+            {'id': 2, 'name': 'forge/merge-policy', 'status': 'in_progress', 'app': {'id': 4}},
+            {'id': 3, 'name': 'forge/review', 'status': 'completed', 'app': {'id': 2}},
+            {'id': 4, 'name': 'ci', 'status': 'in_progress', 'app': {'id': 99}},
+            {'id': 5, 'name': 'forge/audit', 'status': 'in_progress', 'app': {'id': 77}}])
+        github.call = Mock()
+        self.assertEqual(github.settle_checks({}, {'head': 'a' * 40}, 'Paused'), 2)
+        calls = [(c.args[0], c.args[2], c.args[3], c.args[4]['conclusion']) for c in github.call.call_args_list]
+        self.assertEqual(calls, [('audit', 'PATCH', '/check-runs/1', 'cancelled'), ('controller', 'PATCH', '/check-runs/2', 'cancelled')])
+
     def test_shared_repository_allows_human_access_and_owner_chosen_checks(self):
         github, _, _ = self.github()
         protection = {'required_pull_request_reviews': {'dismiss_stale_reviews':True,
@@ -263,6 +277,22 @@ class AdapterTests(unittest.TestCase):
             runner._bounded([sys.executable,'-c','import sys;sys.stdout.write("x"*1048576)'],
                             {}, None, 5, 1024)
 
+    def test_verification_requires_a_new_approval_even_after_reviews_resume(self):
+        github, _, _ = self.github(); github.runtime['human_reviewers'] = ['human']
+        review = {'id': 1, 'state': 'APPROVED', 'commit_id': 'a' * 40,
+                  'user': {'login': 'human', 'type': 'User'}, 'submitted_at': '2026-09-11T10:00:00Z'}
+        github.pages = Mock(return_value=[review])
+        pr = {'number': 2, 'head': {'sha': 'a' * 40}, 'user': {'login': 'builder[bot]'}}
+        request = {'created_at': 1789120800.5}
+        item = {'candidate': {'accepted_at': 1789120790}, 'verification_request': request}
+        self.assertEqual(github.approvals(item, pr)[0]['why'], 'Approved before the verification request')
+        item['verified_checks'] = [{**item.pop('verification_request'), 'proof': {'via': 'human'}}]
+        self.assertFalse(github.human(item, pr)[0])
+        review['submitted_at'] = '2026-09-11T10:00:01Z'
+        self.assertTrue(github.human(item, pr)[0])
+        review['state'] = 'DISMISSED'
+        self.assertFalse(github.human(item, pr)[0])
+
     def test_egress_rejects_private_dns_results_and_unlisted_domains(self):
         spec=importlib.util.spec_from_file_location('fixture_egress',Path(__file__).resolve().parents[1]/'deploy/runner/egress.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -325,8 +355,9 @@ class WorkerContractTests(unittest.TestCase):
             self.assertEqual(shape['properties']['headline']['maxLength'], HEADLINE_LIMIT)
             self.assertEqual(shape['properties']['plain']['maxLength'], PLAIN_LIMIT)
             self.assertFalse(shape['additionalProperties'])
-            self.assertEqual(set(shape['properties']) - {'version', 'attempt', 'role', 'outcome', 'blocker',
-                                                         'summary', 'headline', 'plain', 'decision', 'required_services'}, set(ROLE_FIELDS[role]))
+            optional_build = {'issues', 'evidence'} if role == 'build' else set()
+            self.assertEqual(set(shape['properties']) - optional_build - {'version', 'attempt', 'role', 'outcome', 'blocker',
+                                                         'summary', 'headline', 'plain', 'decision', 'required_services', 'verification'}, set(ROLE_FIELDS[role]))
 
     def test_assignment_instructions_teach_the_tone_with_examples(self):
         from forge.factory.contracts import assignment_note

@@ -60,7 +60,7 @@ export default async function (page, { base, scenario, requests }) {
 
   // Each issue is its own card, and its one button says what opening it is for:
   // the decision it waits on, else its progress, else just opening it.
-  assert.equal(await page.locator('article.issue-row').count(), 6)
+  assert.equal(await page.locator('article.issue-card').count(), 6)
   assert.equal(await page.locator('[data-key="1:610"]').getByRole('link', { name: 'View progress' }).count(), 1)
   assert.equal(await page.locator('[data-key="1:613"]').getByRole('link', { name: 'Recheck readiness' }).count(), 1)
   assert.equal(await page.locator('[data-key="1:609"]').getByRole('link', { name: 'Queue for Forge' }).count(), 1)
@@ -79,6 +79,18 @@ export default async function (page, { base, scenario, requests }) {
   const held = await facts('2:585')
   assert.deepEqual(held.slice(0, 2), ['Depends on #584', 'On hold: hold'])
   assert.equal(await page.locator('[data-key="1:609"] [data-fact^="pr-"]').count(), 0, 'no pull request fact without a pull request')
+
+  // Each card leads with the issue's cube, the same character as its
+  // workbench: decorative, so hidden from assistive technology. Failed
+  // attempts read as hearts beside the words, and a hold sleeps.
+  const cube = page.locator('[data-key="1:613"] canvas.cube-portrait')
+  assert.equal(await cube.getAttribute('aria-hidden'), 'true')
+  assert.match(await cube.getAttribute('data-look'), /beacon/)
+  assert.match(await cube.getAttribute('data-look'), /scorch-1/)
+  assert.equal(await page.locator('[data-key="1:613"] [data-fact="attempts"] [data-heart="lost"]').count(), 1)
+  assert.equal(await page.locator('[data-key="1:613"] [data-fact="attempts"] [data-heart="left"]').count(), 2)
+  assert.match(await page.locator('[data-key="2:585"] canvas').getAttribute('data-look'), / sleep .*zzz/)
+  assert.match(await page.locator('[data-key="1:610"] canvas').getAttribute('data-look'), /^build busy hat/)
 
   // The whole card opens the issue: a click on its story lands on the issue,
   // and the title link carries a visible focus ring for the keyboard.
@@ -225,19 +237,28 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(orphanOutputs.filter(entry => !entry.etag).length, 1)
   assert.ok(orphanOutputs.every(entry => entry.query.id === RECOVERY_JOB), 'every fetch uses the orphaned ?job= id')
 
-  // The issue's one action bar sits under the title, above the description:
-  // the decisions, then where the work lives on GitHub, then Stop. The review
-  // summaries below it are clamped until "More" is pressed.
+  // The issue's one action bar sits in the next step, above the description:
+  // the decisions, then Stop. Where the work lives on GitHub is a row of small
+  // links under it. The review summaries below are clamped until "More" is pressed.
   await scenario('reviewed')
   await page.goto(base + '/issues/1%3A610')
   await waitForText(page, DETAIL_TITLE)
   const actionBar = page.locator('#issue-actions')
-  assert.equal(await actionBar.getByRole('link', { name: 'GitHub' }).getAttribute('href'),
+  const links = page.locator('#issue-links')
+  assert.equal(await links.getByRole('link', { name: 'GitHub issue ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/issues/610')
-  assert.equal(await actionBar.getByRole('link', { name: 'PR #30' }).getAttribute('href'),
+  assert.equal(await links.getByRole('link', { name: 'PR #30 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/30')
+  assert.equal(await actionBar.getByRole('link').count(), 0, 'GitHub links are not action buttons')
   assert.equal(await actionBar.getByRole('button', { name: 'Stop attempt' }).count(), 1)
-  assert.equal(await page.getByRole('link', { name: 'Open on GitHub ↗' }).count(), 0, 'the links row at the bottom is gone')
+  // A running build: the cube works at Build, which is its current badge,
+  // and nothing is needed from the operator.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #610, Build stage, working')
+  assert.equal(await page.locator('#issue-workbench').getAttribute('role'), 'img')
+  assert.equal(await page.locator('#issue-stages [aria-current="step"]').getAttribute('data-stage'), 'build')
+  assert.equal(await page.locator('#issue-stages li').count(), 5)
+  assert.equal(await page.locator('#issue-pipeline').count(), 0, 'the workbench replaces the pipeline stepper')
+  assert.equal((await page.locator('#issue-nothing-needed').innerText()).trim(), 'Nothing needed from you right now.')
   // Discussing the blocker is one more button in the same bar.
   assert.equal(await actionBar.getByRole('button', { name: 'Discuss blocker', exact: true }).count(), 1)
   await page.getByRole('button', { name: 'Description' }).click()
@@ -246,9 +267,11 @@ export default async function (page, { base, scenario, requests }) {
   const bodyBox = await page.locator('.forge-markdown').boundingBox()
   assert.ok(barBox.y + barBox.height <= bodyBox.y, 'the action bar must sit above the description')
 
-  // The review rows live inside Details, open from the start, and each chip is
-  // that reviewer's own verdict — a passed review reads "Passed" whatever the
-  // issue's status is.
+  // The review rows live inside Review findings, collapsed at first, and each
+  // chip is that reviewer's own verdict — a passed review reads "Passed"
+  // whatever the issue's status is.
+  assert.equal(await page.locator('#issue-reviews').count(), 0, 'review findings start collapsed')
+  await page.getByRole('button', { name: 'Review findings' }).click()
   await waitForText(page, 'The change is correct')
   const reviewRows = page.locator('#issue-reviews > div')
   assert.equal(await reviewRows.count(), 2)
@@ -279,7 +302,22 @@ export default async function (page, { base, scenario, requests }) {
   const summaryBox = await page.locator('#issue-plain').boundingBox()
   const actionsBox = await page.locator('#issue-actions').boundingBox()
   assert.ok(summaryBox.y + summaryBox.height <= actionsBox.y, 'the summary must sit above the action bar')
+  // The way forward is one primary button; the technical text stays collapsed.
+  assert.equal(await actionBar.getByRole('button', { name: 'Retry attempt' }).count(), 1)
+  assert.equal(await page.locator('#issue-explanation').count(), 0, 'the worker’s full text starts collapsed')
+  // The security review that could not finish is where the cube stopped: it
+  // worries at Security, lit amber, with every life spent.
+  assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #620, Security stage, needs attention')
+  assert.equal(await page.locator('#issue-workbench').getAttribute('data-mood'), 'worried')
+  assert.match(await page.locator('#issue-bubble').getAttribute('class'), /attention/)
+  assert.equal(await page.locator('#issue-stages [aria-current="step"]').getAttribute('data-stage'), 'audit')
+  assert.deepEqual(await page.locator('#issue-stages li').evaluateAll(items => items.map(item => item.dataset.state)),
+    ['done', 'done', 'current', 'future', 'future'])
+  assert.equal((await page.locator('#issue-lives-text').innerText()).trim(), '0 of 3 left')
+  assert.equal(await page.locator('#issue-lives svg[data-lost]').count(), 3)
+  assert.equal((await page.locator('#issue-stage-note').innerText()).trim(), 'Failed')
 
+  await page.getByRole('button', { name: 'Review findings' }).click()
   await waitForText(page, 'ENEEDAUTH')
   assert.match(await page.locator('#issue-explanation').innerText(), /pipeline\.ts/)
   const detailsBox = await page.locator('#issue-details').boundingBox()
@@ -292,17 +330,17 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal((await verdicts.first().innerText()).includes('PASS.'), false)
   assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
 
-  // Three failed attempts out of three, under the status badge.
-  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), '3 of 3 attempts failed')
+  // Three failed attempts out of three, in the header's attempt line.
+  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), 'attempt 3 of 3 failed')
   // …and the label that paused it, with who applied it and when.
   assert.equal((await page.locator('#issue-held-by').innerText()).trim(), 'Labelled forge:hold by @maintainer on Sep 21')
 
   // Each pull request is named for what it is to the issue.
-  const pulls = page.locator('#issue-actions')
-  assert.equal(await pulls.getByRole('link', { name: 'PR #30' }).count(), 1)
-  assert.equal(await pulls.getByRole('link', { name: 'Earlier Forge draft #26' }).getAttribute('href'),
+  const pulls = page.locator('#issue-links')
+  assert.equal(await pulls.getByRole('link', { name: 'PR #30 ↗' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Earlier Forge draft #26 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/26')
-  assert.equal(await pulls.getByRole('link', { name: 'Other PR #25' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Other PR #25 ↗' }).count(), 1)
 
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')
@@ -446,13 +484,13 @@ export default async function (page, { base, scenario, requests }) {
   await waitForText(page, 'Add and enable a repository to see its issues here.')
   const addRepository = page.getByRole('link', { name: 'Add repository →' })
   assert.equal(await addRepository.getAttribute('href'), '/settings/repositories?add=1')
-  assert.equal(await page.locator('.issue-row').count(), 0)
+  assert.equal(await page.locator('.issue-card').count(), 0)
 
   // A reset fence replaces the list on the next poll and hides every row.
   await scenario('paused')
   await page.goto(base + '/issues')
   await waitForText(page, 'Factory reset is in progress')
-  assert.equal(await page.locator('.issue-row').count(), 0)
+  assert.equal(await page.locator('.issue-card').count(), 0)
   assert.equal(
     await page.evaluate(() => document.body.innerText.split('Factory reset is in progress').length - 1), 1,
     'the fence is stated once',

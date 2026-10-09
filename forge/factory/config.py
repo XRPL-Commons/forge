@@ -25,14 +25,20 @@ DEFAULT = {
     # together exceed 256 (pthread_create: Resource temporarily unavailable).
     'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 1024,
     'environment_tiers': {}, 'repository_environments': {},
+    'repository_verification': {},
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
     'provider': 'codex', 'model': None, 'provider_pool': [], 'provider_ready': None,
+    # Issue conversations only: a faster model per provider, e.g. {"claude": "claude-haiku-4-5"}.
+    # Null keeps each pool entry's own model. Pipeline roles never use it.
+    'discussion_model': None,
     'codex_parallel_auth': False,
     'ready_label': 'ready', 'hold_labels': ['hold', 'blocked'],
     'merge_method': 'squash',
 }
+
+MODEL = r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}'
 
 
 def validate(value):
@@ -44,8 +50,13 @@ def validate(value):
         raise ValueError('Expected runtime version 1')
     if config['provider'] not in manifests():
         raise ValueError('Provider must name an installed harness')
-    if config['model'] is not None and (not isinstance(config['model'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', config['model'])):
+    if config['model'] is not None and (not isinstance(config['model'], str) or not re.fullmatch(MODEL, config['model'])):
         raise ValueError('Invalid provider model')
+    quick = config['discussion_model']
+    if quick is not None and (not isinstance(quick, dict) or len(quick) > 20
+            or any(provider not in manifests() for provider in quick)
+            or any(not isinstance(v, str) or not re.fullmatch(MODEL, v) for v in quick.values())):
+        raise ValueError('discussion_model maps installed providers to model names')
     pool = config['provider_pool']
     if not isinstance(pool, list) or len(pool) > 20:
         raise ValueError('Configure at most twenty provider/model entries')
@@ -127,13 +138,36 @@ def validate(value):
         validate({**tier, 'environment_tiers': {}, 'repository_environments': {}})
     from .environments import validate_profiles
     validate_profiles(config['repository_environments'])
+    from .verification import validate_profiles as validate_verification
+    validate_verification(config['repository_verification'])
     return config
 
 
-def load(root):
-    path = Path(root) / 'runtime.json'
-    return validate(read_json(path) if path.exists() else {})
+def load(root, *, scope=None, host_default=False):
+    from ..configuration_authority import ConfigurationAuthority
+    row = ConfigurationAuthority(root, scope=scope).runtime(host_default=host_default)
+    return validate(row['settings'] if row else {})
+
+
+def save(root, config, *, revision=None, scope=None, storage_revision=None):
+    from ..settings import digest
+    from ..configuration_authority import ConfigurationAuthority
+    from ..store.configuration import ConfigurationConflict
+    config = validate(config)
+    authority = ConfigurationAuthority(root, scope=scope)
+    domain = authority.domain('runtime.json')
+    previous = authority.snapshot(domain)
+    current = validate(previous['settings'] if previous else {})
+    if revision is not None and revision != digest(current):
+        raise ConfigurationConflict('Runtime settings changed; reload before saving')
+    authority.replace(domain, config, expected_revision=(storage_revision if storage_revision is not None
+                                                         else previous['revision'] if previous else 0),
+                      credential_ref=previous['credential_ref'] if previous else None)
+    return config
 
 
 def policy(config):
-    return {key: config[key] for key in ('human_required', 'human_reviewers', 'merge_method')}
+    value = {key: config[key] for key in ('human_required', 'human_reviewers', 'merge_method')}
+    if config.get('repository_verification'):
+        value['repository_verification'] = config['repository_verification']
+    return value

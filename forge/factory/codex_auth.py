@@ -41,6 +41,21 @@ def account(auth):
     return value
 
 
+def renewable(auth):
+    """None when this is a managed login Forge can keep renewing, else why not.
+
+    A worker's access-only copy ('chatgptAuthTokens', no refresh token) must never
+    become the stored login: it works until its access token expires, then never
+    again (live incident, 24 Sep to 4 Oct).
+    """
+    if not isinstance(auth, dict):
+        return 'unreadable'
+    tokens = auth.get('tokens') or {}
+    if auth.get('auth_mode') == 'chatgptAuthTokens' or not tokens.get('refresh_token'):
+        return 'access_only'
+    return None
+
+
 def snapshot(root, reference, valid_until, renew, *, clock=time.time):
     """Return an access-only credential valid beyond the entire worker deadline.
 

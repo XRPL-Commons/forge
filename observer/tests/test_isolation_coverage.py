@@ -17,8 +17,12 @@ class MirrorTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.mirror = Path(self.temp.name, 'mirror.git')
+        self.mirror = Path(self.temp.name, 'mirror.git').resolve()
         subprocess.run(['git', 'init', '--bare', '-q', str(self.mirror)], check=True)
+        # macOS Git adds filesystem preferences; this fixture models the
+        # minimal Linux mirror expected by the production isolation boundary.
+        for key in ('core.ignorecase', 'core.precomposeunicode'):
+            subprocess.run(['git', '-C', str(self.mirror), 'config', '--unset-all', key], check=False)
         subprocess.run(['git', '-C', str(self.mirror), 'remote', 'add', 'origin', 'git@github.com:X/y.git'], check=True)
         for path in [self.mirror, *self.mirror.rglob('*')]:
             path.chmod(0o700 if path.is_dir() else 0o600)

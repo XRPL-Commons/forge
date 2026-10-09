@@ -23,7 +23,16 @@ def ownership(issue, item, repo, prs=()):
                          'or remove its link to this issue, to let Forge work on it.'}
     # The operator can assign a human to review Forge's existing candidate.
     # That recorded request is not a handoff of implementation ownership.
-    reviewers = set((item.get('reviewers_requested') or {}).get('logins', [])) if owned_pr and item.get('state') in ('audited', 'approval_needed') else set()
+    request = item.get('reviewers_requested') or {}
+    if 'candidate_id' in request:
+        # Only a preserved Forge issue assignment on this exact current
+        # candidate exempts a human assignee. A review request alone never does.
+        identity = (item.get('candidate') or {}).get('key') or item.get('candidate_id')
+        allowed = (owned_pr and request.get('issue_assignment') is True and request['candidate_id']==identity
+                   and (item.get('unit_state') or item.get('state'))=='merging')
+        reviewers = set(request.get('logins', [])) if allowed else set()
+    else:
+        reviewers = set(request.get('logins', [])) if owned_pr and item.get('state') in ('audited', 'approval_needed') else set()
     people = []
     for assignee in issue.get('assignees') or []:
         login = assignee.get('login', '') if isinstance(assignee, dict) else assignee

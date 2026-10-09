@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { withAttentionKinds } from './attention-kind.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES_DIR = path.join(__dirname, 'fixtures')
@@ -28,7 +29,92 @@ let savedFactory = null
 let savedRepositoryView = null
 let savedIssue = null
 let connectedAgents = []
+// Coding-account health served on every /api/factory read (POST /__accounts),
+// so a spec can take an account down on any scenario's board.
+let codingAccounts = null
 let conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
+// Questions whose first reply already failed: "(fail)" fails once, then answers.
+let failedQuestions = new Set()
+// The reply in progress, scripted on the clock like the real presence model:
+// Forge looks for someone available, an agent joins and works, then answers
+// or leaves. Each poll reads where the script has got to.
+//   plain       finding → Ember joins, three activity lines → answer
+//   "(hold)"    finding → Ember joins and keeps working until stopped
+//   "(fail)"    first time: Ember joins, then runs out of time
+//   "(auth)"    Bolt joins, cannot sign in, Ember joins instead and answers
+let turn = null
+// A spec can hold a transient presence phase while it checks the rendered UI.
+// null keeps the ordinary wall-clock script used by the other scenarios.
+let discussionElapsed = null
+const EMBER = { provider: 'claude', model: 'claude-sonnet-4-6', name: 'Ember', label: 'Claude' }
+const BOLT = { provider: 'codex', model: null, name: 'Bolt', label: 'Codex' }
+const LINES = ['Getting started', 'Reading issue #610', 'Searching the repository for `producer`']
+const ANSWER = 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)'
+// "(long)": an answer well past six lines, which the chat folds behind Show more.
+const LONG_ANSWER = ['The last attempt failed because the shared type is incorrect.', '',
+  ...Array.from({ length: 9 }, (_, i) => `- Finding ${i + 1}: the consumer in module ${i + 1} still reads the old field.`), '',
+  'The final line of the long answer.'].join('\n')
+
+function startTurn(question, kind) {
+  turn = { question, kind, started: Date.now() }
+  Object.assign(conversation, { status: 'queued', reason: 'Looking for someone available', partial: '',
+    presence: { phase: 'finding', waiting_since: Date.now() / 1000, code: 'busy', reason: 'Another conversation is using the discussion worker; one runs at a time' } })
+}
+
+function joined(agent, since, t, instead = null) {
+  const at = turn.started / 1000 + since / 1000
+  const lines = LINES.filter((_, i) => t >= since + i * 700).map((text, i) => ({ at: at + i * 0.7, text }))
+  // Like Forge: answering from the saved evidence until it searches the repository.
+  const mode = lines.some(line => line.text.startsWith('Searching the repository')) ? 'code' : 'evidence'
+  return { phase: 'joined', agent, joined_at: at, activity: lines, instead_of: instead, mode }
+}
+
+function leave(reason, text, agent, extra = {}) {
+  conversation.messages.push({ id: `left-${conversation.messages.length + 1}`, sequence: conversation.messages.length + 1, role: 'system', event: 'left',
+    reason, text, agent, reply_to: turn.question, at: Date.now() / 1000, ...extra })
+}
+
+function answer(agent, instead = null) {
+  const lines = LINES.map((text, i) => ({ at: turn.started / 1000 + 1 + i, text }))
+  conversation.messages.push({ id: `11111111-2222-4333-8444-${555555555555 + conversation.messages.filter(m => m.role === 'assistant').length}`, sequence: conversation.messages.length + 1, role: 'assistant',
+    text: turn.kind === 'long' ? LONG_ANSWER : ANSWER, agent, instead_of: instead, activity: [...lines, { at: turn.started / 1000 + 4, text: 'Writing the answer' }],
+    proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
+  Object.assign(conversation, { status: 'idle', reason: null, partial: '', presence: { phase: 'answered', agent, at: Date.now() / 1000 } })
+  turn = null
+}
+
+function advance() {
+  if (!turn) return
+  const t = discussionElapsed ?? Date.now() - turn.started
+  if (turn.kind === 'auth') {
+    if (t < 1000) return
+    if (t < 4000) return Object.assign(conversation, { status: 'running', presence: joined(BOLT, 1000, t) })
+    if (!turn.left) {
+      turn.left = true
+      leave('auth', "Bolt can't sign in: the Codex login expired. Reconnect it in Settings → Coding accounts.", BOLT,
+        { link: { to: '/settings/harnesses', label: 'Settings → Coding accounts' }, retrying: true })
+    }
+    if (t < 6500) return Object.assign(conversation, { status: 'queued', presence: { phase: 'finding', waiting_since: turn.started / 1000 + 4, code: 'switching', reason: 'Finding someone else to answer', instead_of: BOLT } })
+    if (t < 9000) return Object.assign(conversation, { status: 'running', presence: joined(EMBER, 6500, t, BOLT) })
+    return answer(EMBER, BOLT)
+  }
+  if (t < 1200) return
+  if (turn.kind === 'fail' && t >= 3000) {
+    leave('timeout', 'Ember ran out of time after 10 min', EMBER)
+    Object.assign(conversation, { status: 'unavailable', reason: 'Ember ran out of time after 10 min', partial: '',
+      presence: { phase: 'left', reason: 'timeout', text: 'Ember ran out of time after 10 min', agent: EMBER, at: Date.now() / 1000 } })
+    turn = null
+    return
+  }
+  // "(slow)": Ember has been reading the code for over 90 s, until stopped.
+  if (turn.kind === 'slow') {
+    const working = joined(EMBER, 1200, t)
+    return Object.assign(conversation, { status: conversation.status === 'cancelling' ? 'cancelling' : 'running',
+      presence: { ...working, joined_at: Date.now() / 1000 - 95, mode: 'code' } })
+  }
+  if (turn.kind === 'hold' || t < 6000) return Object.assign(conversation, { status: conversation.status === 'cancelling' ? 'cancelling' : 'running', presence: joined(EMBER, 1200, t) })
+  answer(EMBER)
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -110,6 +196,28 @@ function withToken(payload) {
   return payload
 }
 
+// /api/factory?section=completed&limit=N&before=<cursor>: one page of the
+// fixture's completed issues, as forge/factory/control.py completed_page()
+// answers it — newest first by completion time, then key; the cursor names
+// the last row returned (`<at>:<key>`), and `next` is null on the last page.
+function completedAt(issue) {
+  const events = (issue.history ?? []).filter(event => event.kind === 'merged' || event.kind === 'cancelled')
+  return events.length ? events[events.length - 1].at : 0
+}
+function completedPage(fixture, query) {
+  const limit = Number(query.limit)
+  const later = (a, b) => (completedAt(b) - completedAt(a)) || (a.key < b.key ? 1 : a.key > b.key ? -1 : 0)
+  let rows = (fixture.issues ?? []).filter(issue => ['merged', 'cancelled'].includes(issue.state) && !issue.active).sort(later)
+  if (query.before) {
+    const split = query.before.indexOf(':')
+    const at = Number(query.before.slice(0, split)), key = query.before.slice(split + 1)
+    rows = rows.filter(issue => completedAt(issue) < at || (completedAt(issue) === at && issue.key < key))
+  }
+  const page = rows.slice(0, limit).map(issue => ({ ...issue, completed_at: completedAt(issue) || null }))
+  const last = page[page.length - 1]
+  return { ...fixture, issues: page, jobs: [], next: rows.length > limit ? `${completedAt(last)}:${last.key}` : null }
+}
+
 function record(req, pathname, query, body) {
   requests.push({ method: req.method, path: pathname, query, body: body ?? null, cookie: req.headers.cookie ?? null, etag: req.headers['if-none-match'] ?? null })
 }
@@ -145,6 +253,21 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, requests)
   }
 
+  if (req.method === 'POST' && pathname === '/__accounts') {
+    codingAccounts = body && typeof body === 'object' && Array.isArray(body.accounts) ? body.accounts : null
+    return send(res, 200, { ok: true })
+  }
+
+  if (req.method === 'POST' && pathname === '/__discussion-time') {
+    const elapsed = body?.elapsed
+    if (elapsed !== null && (!Number.isFinite(elapsed) || elapsed < 0)) {
+      return send(res, 400, { ok: false })
+    }
+    discussionElapsed = elapsed
+    advance()
+    return send(res, 200, { ok: true })
+  }
+
   if (req.method === 'POST' && pathname === '/__scenario') {
     const name = body && typeof body === 'object' ? body.name : undefined
     if (typeof name === 'string' && name) scenario = name
@@ -153,8 +276,12 @@ const server = http.createServer(async (req, res) => {
     savedFactory = null
     savedRepositoryView = null
     savedIssue = null
+    codingAccounts = null
     connectedAgents = []
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
+    failedQuestions = new Set()
+    turn = null
+    discussionElapsed = null
     return send(res, 200, { ok: true })
   }
 
@@ -200,18 +327,32 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/issues/discussion') {
     record(req, pathname, query, body)
     if (req.method === 'POST') {
+      let request = 'discussion-decision'
       if (body.action === 'send') {
-        conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text: body.message })
-        // A message containing "(hold)" leaves the reply in progress so a
-        // spec can exercise stopping it; anything else is answered at once.
-        if (body.message.includes('(hold)')) Object.assign(conversation, { status: 'running', reason: 'Agent is reading the saved evidence', partial: 'Reading the saved evidence' })
-        else conversation.messages.push({ id: '11111111-2222-4333-8444-555555555555', sequence: conversation.messages.length + 1, role: 'assistant',
-          text: 'The last attempt failed because the shared type is incorrect. Fix that producer first. [View attempt](/issues/1:610?job=example)',
-          proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } })
-      } else if (body.action === 'cancel') Object.assign(conversation, { status: 'cancelled', reason: 'Reply stopped', partial: '' })
+        const text = body.message.trim()
+        // Like Forge: the same words as the unanswered question are never a
+        // second copy; after a failed reply they are Try again.
+        const asked = conversation.messages.findLast(m => m.role !== 'system')
+        if (asked?.role === 'user' && asked.text === text) {
+          request = asked.id
+          if (!turn) startTurn(asked.id, 'answer')
+        } else {
+          conversation.messages.push({ id: body.request_id, sequence: conversation.messages.length + 1, role: 'user', text })
+          const failing = text.includes('(fail)') && !failedQuestions.has(text)
+          if (failing) failedQuestions.add(text)
+          startTurn(body.request_id, text.includes('(hold)') ? 'hold' : text.includes('(slow)') ? 'slow' : text.includes('(long)') ? 'long' : text.includes('(auth)') ? 'auth' : failing ? 'fail' : 'answer')
+        }
+      } else if (body.action === 'cancel') {
+        const agent = conversation.presence?.agent ?? null
+        const text = agent ? `You stopped ${agent.name}` : 'You stopped the request'
+        if (turn) leave('cancelled', text, agent)
+        turn = null
+        Object.assign(conversation, { status: 'cancelled', reason: text, partial: '', presence: { phase: 'left', reason: 'cancelled', text, agent, at: Date.now() / 1000 } })
+      }
       else if (body.action === 'apply') conversation.messages.find(m => m.id === body.message_id).receipt = 'discussion-decision'
-      return send(res, 200, withToken({ ok: true, request: 'discussion-decision' }))
+      return send(res, 200, withToken({ ok: true, request }))
     }
+    advance()
     return send(res, 200, withToken({ ok: true, ...conversation }))
   }
 
@@ -243,12 +384,17 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET') {
     record(req, pathname, query, body)
-    const fixture = base === 'settings' && savedSettings ? savedSettings
+    let fixture = base === 'settings' && savedSettings ? savedSettings
       : base === 'factory' && savedFactory ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
+    if (base === 'factory') fixture = withAttentionKinds(fixture)
+    if (base === 'factory' && codingAccounts && fixture.ok !== false) fixture = { ...fixture, coding_accounts: codingAccounts }
+    if (base === 'factory' && query.section === 'completed' && query.limit && fixture.ok !== false) {
+      return send(res, 200, withToken(completedPage(fixture, query)))
+    }
     const headers = {}
     if (base === 'repositories-ruleset') {
       headers['content-disposition'] = `attachment; filename="forge-review-rules-${query.repo_id ?? ''}.json"`

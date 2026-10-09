@@ -29,7 +29,11 @@ def role_properties(note):
     """Role-specific result fields: a fifth role is one line here."""
     candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
     return {
-        'build': {'decision': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
+        'build': {'issues': {'type': 'array', 'maxItems': 20, 'items': {'type': 'integer', 'minimum': 1},
+                             'description': 'Same-repository prerequisite issue numbers for waiting_on_issues; empty otherwise.'},
+                  'evidence': {'type': ['string', 'null'], 'maxLength': 2000,
+                               'description': 'Exact quote from the assigned issue naming every prerequisite as #N; null otherwise.'},
+                  'decision': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
             **{k: {'type': 'string', 'minLength': 1, 'maxLength': 4000}
                for k in ('question', 'recommendation', 'evidence')},
             'options': {'type': 'array', 'minItems': 2, 'maxItems': 6,
@@ -77,10 +81,18 @@ def schema(note):
              'plain': {'type': 'string', 'maxLength': PLAIN_LIMIT}}
     props.update(role_properties(note))
     if note['role'] in ('build', 'review', 'audit', 'recovery'):
+        props['outcome']['enum'].append('needs_human_verification')
+        props['verification'] = {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
+            'what': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
+            'why': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
+            'checks': {'type': 'array', 'maxItems': 20, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 200}}},
+            'required': ['what', 'why', 'checks'], 'additionalProperties': False}]}
         props['required_services'] = {'type': 'array', 'maxItems': 3,
                                       'items': {'type': 'string', 'enum': ['mongodb', 'postgres', 'redis']}}
     if note['role'] == 'build':
-        props['outcome']['enum'].append('needs_decision')
+        props['outcome']['enum'].extend(['needs_decision', 'waiting_on_issues'])
+        props['outcome']['description'] = ('Use waiting_on_issues for open prerequisite issues, not needs_decision '
+                                          'or blocked_environment. dependency_access is for registry, repository or network access failures.')
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 

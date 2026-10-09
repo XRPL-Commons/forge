@@ -48,7 +48,7 @@ class Host:
         executable = shutil.which('ssh')
         require(executable, 'ssh_missing', 'Install the OpenSSH client and configure the selected host.')
         # Every argument is local intent. The server cannot return a shell command.
-        remote = 'cd ' + shlex.quote(self.source) + ' && exec python3 -m forge.operator_bootstrap --root ' + shlex.quote(self.root)
+        remote = 'cd ' + shlex.quote(self.source) + ' && exec python3 -m forge.launch forge.operator_bootstrap --root ' + shlex.quote(self.root)
         argv = [executable, '-T', '-a', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                 '-o', 'ConnectTimeout=15', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardX11=no', self.ssh, remote]
         environment = {key: value for key, value in os.environ.items()

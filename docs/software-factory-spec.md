@@ -111,6 +111,13 @@ candidate key. Audit additionally reports `human_required` (`required`,
 `evidence`, `uncertainty`, and an optional alternative with `change`, `reason`,
 and supporting `evidence`. Invalid/partial output is not a successful verdict.
 
+Any worker role can report `needs_human_verification` with bounded `verification`
+fields: `what`, `why`, and optional configured CI `checks`. A valid published
+candidate is required. Forge pauses at `approval_needed`, records the exact steps,
+and resumes the remaining technical reviews only after verification. Approval
+must be newer than the request; it cannot stand in for a passing technical verdict.
+See [external verification](human-verification.md) for the contract and threat model.
+
 Review/Audit workers have read-only repository tokens. The supervisor verifies
 revision identity, publishes their verdict under the respective App, verifies that
 publication, and then accepts the milestone. Publications carry an attempt or

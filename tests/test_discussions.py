@@ -52,7 +52,7 @@ class DiscussionsTest(unittest.TestCase):
         self.service.send('1:2', 'Why did this fail?', identifier)
         self.assertEqual(len(self.service.view('1:2')['messages']), 1)
         self.assertEqual(before, Ledger(self.root / 'state/factory').read())
-        with self.assertRaises(ValueError): self.send()
+        with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
 
     def test_read_only_token_and_reconstructed_assignment(self):
         job = self.start()
@@ -60,6 +60,73 @@ class DiscussionsTest(unittest.TestCase):
         self.assertEqual(note(job)['role'], 'discussion')
         self.assertIn('NOT a resumed', note(job)['instructions'])
         self.assertEqual(self.service.view('1:2')['status'], 'running')
+
+    def test_the_agent_sees_the_operators_own_buttons(self):
+        self.row.update(actions=['retry', 'assign_reviewer'], closable=True, approval={'pr': 31, 'reason': 'Verify the image'})
+        job = self.start()
+        context = note(job)['context']
+        self.assertEqual(context['actions'], ['retry', 'assign_reviewer', 'close'])
+        self.assertEqual([a['button'] for a in context['available_actions']], ['Retry attempt', 'Assign reviewer', 'Close issue'])
+        self.assertTrue(any('Approve pull request #31 on GitHub' in step for step in context['operator_only']))
+        self.assertNotIn("What you can do", note(job)['instructions'])
+
+    def test_the_agent_answers_from_context_first_in_a_short_chat_reply(self):
+        text = note(self.start())['instructions']
+        # Context first; the repository only when the context cannot answer or the operator asks.
+        self.assertIn('Answer FIRST from the supplied context', text)
+        self.assertIn('Open the repository only when that context cannot answer the question, or the operator explicitly asks', text)
+        self.assertIn('Checking the code to confirm, about 2 min.', text)
+        self.assertIn('about 60 seconds of tool use', text)
+        # A chat reply: the direct answer first, a hard length limit, no report.
+        self.assertIn('2-5 short sentences', text)
+        self.assertIn('at most 3 bullets', text)
+        self.assertIn('Hard limit: 1200 characters', text)
+        self.assertNotIn('12000', text)
+        # The buttons are under the reply: never a list of them in prose.
+        self.assertIn('Never list the available actions in prose', text)
+        self.assertIn('At most one sentence may name the button you recommend', text)
+        # The proposal is a note for the next attempt, not the answer again.
+        self.assertIn('1-2 sentence note for the next attempt', text)
+        self.assertNotIn('Separate observations from inference', text)
+
+    def test_a_long_answer_is_trimmed_not_lost(self):
+        job = self.start()
+        self.finish(job, summary='The producer type is wrong. ' * 200,
+                    proposal={'action': 'retry', 'reason': 'Fix the producer first. ' * 100})
+        reply = self.service.view('1:2')['messages'][-1]
+        self.assertEqual(reply['role'], 'assistant')
+        self.assertLessEqual(len(reply['text']), 1500)
+        self.assertTrue(reply['text'].startswith('The producer type is wrong.'))
+        self.assertTrue(reply['text'].endswith('…'))
+        self.assertLessEqual(len(reply['proposal']['reason']), 400)
+        self.assertTrue(reply['proposal']['reason'].endswith('…'))
+
+    def test_a_short_answer_is_kept_as_written(self):
+        job = self.start(); self.finish(job)
+        reply = self.service.view('1:2')['messages'][-1]
+        self.assertEqual(reply['text'], 'Fix the shared producer type first.')
+        self.assertEqual(reply['proposal'], {'action': 'retry', 'reason': 'Fix the shared producer type first.'})
+
+    def test_discussion_model_is_used_for_conversations_only(self):
+        self.config['discussion_model'] = {'claude': 'claude-haiku-4-5'}
+        self.config.update(provider='claude', model='claude-opus-4-1')
+        job = self.start()
+        self.assertEqual(job['runner_config']['model'], 'claude-haiku-4-5')
+        self.assertEqual(self.config['model'], 'claude-opus-4-1')
+
+    def test_without_discussion_model_the_provider_model_stays(self):
+        self.config['discussion_model'] = {'grok': 'grok-fast'}
+        self.config.update(provider='claude', model='claude-opus-4-1')
+        self.assertEqual(self.start()['runner_config']['model'], 'claude-opus-4-1')
+
+    def test_live_names_a_conversation_waiting_or_working(self):
+        self.assertFalse(self.service.live())
+        self.send()
+        self.assertTrue(self.service.live())
+
+    def test_discussions_get_ten_minutes(self):
+        job = self.start()
+        self.assertEqual(job['deadline'], 1000 + 600)
 
     def test_complete_then_apply_requires_explicit_operator_and_is_idempotent(self):
         job = self.start(); self.finish(job)
@@ -91,7 +158,7 @@ class DiscussionsTest(unittest.TestCase):
         job = self.start(); self.service.cancel('1:2')
         # A running observation returning after Cancel must not erase the fence.
         self.service.save('1:2', job=job, status='running')
-        with self.assertRaises(ValueError): self.send()
+        with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
         self.service.tick(self.config, self.github, self.settings, launch=False)
         self.assertTrue(self.service.read()['1:2']['job']['cleanup'])
         self.assertEqual(self.service.view('1:2')['status'], 'cancelled')
@@ -109,7 +176,8 @@ class DiscussionsTest(unittest.TestCase):
         self.runner.reset.side_effect = RunnerError('engine unavailable')
         self.service.tick(self.config, self.github, self.settings, launch=False)
         self.assertEqual(len(self.service.active_jobs()), 1)
-        with self.assertRaises(ValueError): self.send()
+        with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
+        self.assertEqual(self.service.view('1:2')['presence']['reason'], 'cancelled')
 
     def test_restart_after_answer_before_cleanup_does_not_duplicate_reply(self):
         job = self.start(); self.runner.reset.side_effect = RunnerError('interrupted cleanup')
@@ -121,7 +189,8 @@ class DiscussionsTest(unittest.TestCase):
 
     def test_forbidden_proposal_is_not_shown_as_applicable(self):
         job = self.start(); self.finish(job, proposal={'action': 'merge', 'reason': 'Skip review'})
-        self.assertEqual(len(self.service.view('1:2')['messages']), 1)
+        self.assertEqual([m['role'] for m in self.service.view('1:2')['messages']], ['user', 'system'])
+        self.assertIn('not available', self.service.view('1:2')['messages'][-1]['text'])
         self.assertEqual(self.service.view('1:2')['status'], 'unavailable')
         self.assertTrue(self.service.active_jobs()[0]['fenced'])
 

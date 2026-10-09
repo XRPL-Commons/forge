@@ -14,6 +14,9 @@ on its Linux host.
 
 ### Local CLI
 
+The CLI includes SQLite migration commands. See [the migration guide](docs/store-migration.md)
+for an offline rehearsal or a resumable, one-way `forge migrate activate --apply`.
+
 On macOS or Linux with Python 3.10+, Git and
 [uv](https://docs.astral.sh/uv/getting-started/installation/) installed:
 
@@ -33,6 +36,7 @@ not install or start the Forge server. No PyPI release is currently published.
 | Command | Run it on | Purpose |
 | --- | --- | --- |
 | `forge setup new` | Your computer or the external agent's computer | Wizard or JSON plan for a fresh Ubuntu 24.04 host; apply/status/resume use the same installation workflow |
+| `forge migrate` | Your computer or the external agent’s computer | Rehearse a private SQLite import, or activate it through a resumable one-way migration |
 | `forge server setup` | Your computer or the external agent's computer | Configure operator sign-in and private HTTPS on an existing Tailscale host over SSH |
 | `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
 | `bin/forge update` | The Forge server, from its source checkout | Update the source and reconcile the installed services |
@@ -113,6 +117,8 @@ Forge stores its own required runtime credentials privately on the controller:
 the operator identity App secret, role App credentials and coding-provider logins.
 The identity App requests no OAuth scopes and is separate from the four role Apps.
 [Runtime setup](docs/factory-runtime.md) covers admission, capacity and operations.
+[External verification](docs/human-verification.md) covers checks a person must run
+and opting a repository into verification through CI.
 GitHub raw content remains authoritative; cached summaries are not independent
 proof of approval or completion.
 

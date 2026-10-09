@@ -84,11 +84,19 @@ class Bootstrap:
         info = self.root.stat()
         need(info.st_uid == os.getuid() and not info.st_mode & 0o077,
              'invalid_root', 'The runtime must be private and owned by the SSH service account.')
-        need((self.root / 'host-runtime.json').is_file(), 'installation_required', 'Install this host with bin/forge setup before configuring sign-in.')
+        from .configuration_authority import ConfigurationAuthority
+        authority = ConfigurationAuthority(self.root)
+        self.database = authority.database
+        installed = authority.snapshot('host-runtime.json') is not None
+        need(installed, 'installation_required', 'Install this host with bin/forge setup before configuring sign-in.')
         self.auth = OperatorAuth(self.root)
 
     def generation(self):
-        setup = read_json(self.root / 'state/onboarding/setup.json')
+        if self.database:
+            from .onboarding import Onboarding
+            setup = Onboarding(self.root).read()
+        else:
+            setup = read_json(self.root / 'state/onboarding/setup.json')
         need(setup.get('phase') in ('setup', 'active') and isinstance(setup.get('generation'), str),
              'reset_in_progress', 'Wait for the current Forge setup or reset to finish.')
         return setup['generation']
@@ -121,7 +129,7 @@ class Bootstrap:
 
     @contextmanager
     def locked(self):
-        path = self.root / 'state/operator-auth/bootstrap.lock'
+        path = self.database.root / '.operator-bootstrap.lock' if self.database else self.root / 'state/operator-auth/bootstrap.lock'
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'a') as stream:
             try:
@@ -142,22 +150,24 @@ class Bootstrap:
              'invalid_request', 'Invalid bootstrap target.')
         need(request['action'] == 'apply' or request['secret'] is None, 'invalid_request', 'Only apply may receive an identity-app secret.')
         with self.locked():
-            view = self.snapshot(target)
-            if request['action'] == 'plan':
-                return {'status': 'configured' if view['configured'] else 'planned', **view}
-            need(request['revision'] == view['revision'], 'plan_changed', 'The host changed. Read a new plan before applying sign-in setup.')
-            need(view['client_id'] is not None, 'identity_app_required', 'Register a dedicated identity-only GitHub OAuth App and supply its client ID.')
-            if not view['configured']:
-                need(request['action'] == 'apply' and isinstance(request['secret'], str)
-                     and re.fullmatch('[a-fA-F0-9]{40}', request['secret']),
-                     'identity_secret_required', 'Supply the OAuth App client secret through the hidden prompt or --secret-stdin; never use a GitHub access token.')
-                try:
-                    self.auth.configure(view['origin'], view['client_id'], request['secret'], view['operators'],
-                                        if_unconfigured=True)
-                except AuthError:
-                    raise BootstrapError('plan_changed', 'Sign-in was configured concurrently. Read a new plan.') from None
-            request['secret'] = None
-            need(self.generation() == view['generation'], 'plan_changed', 'Forge was reset during setup. Read a new plan and resume.')
+            from .sqlite_identity import identity_effect_lock
+            with identity_effect_lock(self.root):
+                view = self.snapshot(target)
+                if request['action'] == 'plan':
+                    return {'status': 'configured' if view['configured'] else 'planned', **view}
+                need(request['revision'] == view['revision'], 'plan_changed', 'The host changed. Read a new plan before applying sign-in setup.')
+                need(view['client_id'] is not None, 'identity_app_required', 'Register a dedicated identity-only GitHub OAuth App and supply its client ID.')
+                if not view['configured']:
+                    need(request['action'] == 'apply' and isinstance(request['secret'], str)
+                         and re.fullmatch('[a-fA-F0-9]{40}', request['secret']),
+                         'identity_secret_required', 'Supply the OAuth App client secret through the hidden prompt or --secret-stdin; never use a GitHub access token.')
+                    try:
+                        self.auth.configure(view['origin'], view['client_id'], request['secret'], view['operators'],
+                                            if_unconfigured=True)
+                    except AuthError:
+                        raise BootstrapError('plan_changed', 'Sign-in was configured concurrently. Read a new plan.') from None
+                request['secret'] = None
+                need(self.generation() == view['generation'], 'plan_changed', 'Forge was reset during setup. Read a new plan and resume.')
             # No git pull, factory reset/start, App permission changes or shell from a response.
             try:
                 self.command([str(SOURCE / 'bin/forge'), 'update', '--root', str(self.root), '--no-pull', '--bind', '127.0.0.1'], timeout=300)

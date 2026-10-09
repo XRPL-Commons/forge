@@ -102,12 +102,30 @@ def dependencies(body):
             continue
         if fenced:
             continue
-        match = re.search(r'\b(?:blocked by\b|depends on\b|dependency:)', line, re.I)
-        if match:
-            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
+        for match in [*re.finditer(START, line, re.I), *re.finditer(r'^[\W_]*follows\b', line, re.I)]:
+            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
                               maxsplit=1, flags=re.I)[0]
             numbers.update(int(n) for n in re.findall(r'(?<![\w/])#([1-9]\d*)\b', clause))
+        numbers.update(int(n) for n in re.findall(FIRST, line, re.I))
     return sorted(numbers)
+
+
+def issue_dependencies(body, item=None, *, content_hash=None):
+    """Worker discoveries apply only to the requirements they quote."""
+    item = item or {}
+    declared = (item.get('declared_dependencies', [])
+                if item.get('dependency_body') == (content_hash or digest(body or '')) else [])
+    return sorted(set(dependencies(body)) | set(declared))
+
+
+# Statements that something must finish before this issue starts. Written for
+# how people phrase it ("Do not start until #90 is closed", "#101 must be
+# merged first"), never for mentions or downstream links ("blocks #5", "see #3").
+START = (r'\b(?:blocked (?:by|on)\b|depends on\b|dependency:|dependencies:|prerequisites?:'
+         r'|(?:do not|don\'t|cannot|can\'t) (?:start|begin) (?:until|before)\b|wait(?:s|ing)? (?:for|on|until)\b'
+         r'|(?:start|begin)s? (?:only )?after\b)')
+FIRST = (r'(?<![\w/])#([1-9]\d*)\s+(?:must|needs to|has to|should)\s+(?:be\s+)?'
+         r'(?:merged|closed|done|finished|completed|landed|shipped|land|ship|merge)\b[^.;]*?\bfirst\b')
 
 
 def references_issue(body, repo, number):
@@ -165,14 +183,39 @@ def result(value, job):
     common = {'version', 'attempt', 'role', 'outcome', 'summary'}
     # Older image contracts remain readable during a rolling upgrade: a worker
     # launched from the previous image writes neither blocker nor plain language.
-    common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services') if key in value}
+    common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services', 'verification') if key in value}
     role = job['role']
+    if role == 'build':
+        common |= {key for key in ('issues', 'evidence') if key in value}
     if (set(value) != common | set(ROLE_FIELDS.get(role, ())) or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != role
-            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision'}
+            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision', 'needs_human_verification', 'waiting_on_issues'}
             or any(not isinstance(value[k], str) or not value[k].strip()
                    for k in ('summary', 'headline', 'plain') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
+    verification = value.get('verification')
+    if value['outcome'] == 'needs_human_verification':
+        if (role not in ROLES or not isinstance(verification, dict)
+                or set(verification) not in ({'what', 'why'}, {'what', 'why', 'checks'})
+                or any(not isinstance(verification[k], str) or not verification[k].strip() or len(verification[k]) > 4000
+                       for k in ('what', 'why'))):
+            raise ValueError('Verification needs exact steps and an explanation of why workers cannot run them')
+        checks = verification.get('checks', [])
+        if (not isinstance(checks, list) or len(checks) > 20
+                or any(not isinstance(c, str) or not c.strip() or len(c) > 200 for c in checks)
+                or len(set(checks)) != len(checks)):
+            raise ValueError('Verification checks must name distinct configured CI checks')
+    elif verification is not None:
+        raise ValueError('Only needs_human_verification can request verification')
+    if value['outcome'] == 'waiting_on_issues':
+        numbers, evidence = value.get('issues'), value.get('evidence')
+        if (role != 'build' or not isinstance(numbers, list) or not 1 <= len(numbers) <= 20
+                or any(type(n) is not int or n <= 0 or n == job.get('issue_number') for n in numbers)
+                or len(set(numbers)) != len(numbers)
+                or not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 2000):
+            raise ValueError('A dependency wait needs same-repository issue numbers and a requirements quote')
+    elif role == 'build' and (value.get('issues', []) != [] or value.get('evidence') is not None):
+        raise ValueError('Only waiting_on_issues can carry dependency evidence')
     decision = value.get('decision')
     if value['outcome'] == 'needs_decision':
         if (role != 'build' or not isinstance(decision, dict)
@@ -242,6 +285,7 @@ def assignment_note(job):
         base['resume_pr'] = job['resume_pr']
     base['review_policy'] = job.get('review_policy', {})
     base['ci_evidence'] = job.get('ci_evidence')
+    base['verification_checks'] = job.get('verification_checks', [])
     base['environment'] = {k: (job.get('runner_config') or {}).get(k, default)
                            for k, default in (('environment_tier', 'standard'), ('services', []))}
     base['instructions'] = (
@@ -280,8 +324,25 @@ def assignment_note(job):
         'the command and stops the servers. Run servers and tests in the same tool invocation. '
         'Use MONGODB_URI, DATABASE_URL, REDIS_URL and MONGOMS_SYSTEM_BINARY supplied for those services. '
         'Do not download servers, use Docker, or connect to another job or production database.')
+    base['instructions'] += (
+        ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
+        'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
+        'Do everything else you can verify, then return needs_human_verification with verification containing '
+        'what (exact commands, synthetic inputs and expected result), why (why workers cannot run it), and checks []. '
+        'Builders must publish the candidate using the normal submission procedure before requesting verification. '
+        'If configured verification_checks perform that exact check, name them in checks; Forge verifies their '
+        'publisher and result at this candidate revision. Otherwise leave checks empty for a human check. '
+        'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
+        'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
+        'Never return blocked_environment or reject only because a check needs access outside the worker.')
     if job['role'] == 'build':
         base['instructions'] += (
+            ' If an open issue in this repository must finish first, return waiting_on_issues with issues '
+            'listing its issue numbers and evidence quoting the assigned issue requirements. Do not include '
+            'this issue itself, pull requests, or issues from another repository. Forge checks their state '
+            'and resumes automatically once they close; this is not a decision or an environment blocker. '
+            'Reserve dependency_access for unavailable package registries, repository access or network access. '
+            'For other outcomes use issues [] and evidence null. '
             ' If the requirements cannot be met by changing code, or the outcome is an approval, exception '
             'or policy choice, do not open a PR. Return needs_decision with decision containing the question, '
             'two to six options, a recommendation and the key evidence in prose. For other outcomes set decision null. '
@@ -303,10 +364,14 @@ def assignment_note(job):
             ' Evaluate only the assigned head and base. Do not edit or push code. Return pass, reject '
             'with actionable findings, or unable. Include the assigned candidate key in your result. '
             'The supervisor publishes the verified verdict under your role App identity. '
-            'For audit, report human_required separately as required, not_required, or unknown, with a reason.')
+            'For audit, report human_required separately as required, not_required, or unknown, with a reason. '
+            'When the code is sound but a required check needs a person (see above), pass, and in audit set '
+            'human_required to required with human_reason giving the exact verification steps.')
     else:
         base['instructions'] += (
             ' Investigate the failed attempt using the included evidence and lifecycle history. '
+            'If attempts failed only because a required check needs a person (see above), say so and propose '
+            'delivering the change with those exact verification steps for a human, not an environment repair. '
             'Read only: no edits, comments, labels, merges, or launches. State the underlying pattern, '
             'evidence, remaining uncertainty, and a concrete alternative with its justification, if any. '
             'A fresh session or reworded prompt is not a different approach.')

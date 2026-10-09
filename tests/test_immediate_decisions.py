@@ -34,6 +34,50 @@ class ImmediateDecisionTests(unittest.TestCase):
     def reserve(self):
         return self.ledger.reserve('1:1', 'build', 'build-1', publisher='build[bot]', policy='policy', timeout=60)
 
+    def worker_dependency(self):
+        from forge.factory.contracts import digest
+        self.tracked()
+        self.github.value['body'] = 'Use the foundation from #90.'
+        with self.ledger.transaction() as data:
+            data['issues']['1:1'].update(declared_dependencies=[90], blocked_dependencies=[90],
+                dependency_body=digest(self.github.value['body']), dependency_evidence=self.github.value['body'],
+                dependency_reason='Waiting for #90.', failures=[{'attempt': 'old', 'role': 'build', 'cause': 'old'}], budget_start=0)
+
+    def test_start_anyway_records_reason_and_clears_only_worker_dependencies(self):
+        self.worker_dependency()
+        self.refresh(); row = self.inventory.view(key='1:1')['issue']
+        identifier = self.decide('start_anyway', reason='Foundation API is already available')
+        self.assertNotIn('declared_dependencies', self.item())
+        self.assertNotIn('blocked_dependencies', self.item())
+        self.assertEqual(self.item()['budget_start'], 0)
+        self.assertEqual(self.item()['failures'], [{'attempt': 'old', 'role': 'build', 'cause': 'old'}])
+        self.assertEqual(self.item()['retry_plan'], 'Foundation API is already available')
+        self.assertFalse(self.github.calls)
+        events = [e for e in self.ledger.read()['events'] if e.get('request') == identifier]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['kind'], 'operator_start_anyway')
+        self.assertEqual(events[0]['issues'], [90])
+        self.decide('start_anyway', request_id=identifier, revision=row['revision'], reason='Foundation API is already available')
+        with self.assertRaises(StateError): self.reserve()
+        self.sync()
+        self.reserve()
+
+    def test_start_anyway_cannot_bypass_new_explicit_dependency(self):
+        self.worker_dependency()
+        self.decide('start_anyway')
+        self.github.value['body'] += '\nDepends on #8.'
+        self.sync()
+        self.assertEqual(self.item()['state'], 'hold')
+        with self.assertRaises(StateError): self.reserve()
+
+    def test_start_anyway_rejects_stale_declarations_and_empty_reason(self):
+        self.worker_dependency()
+        with self.assertRaises(ValueError): self.decide('start_anyway', reason=' ')
+        self.refresh(); row = self.inventory.view(key='1:1')['issue']
+        with self.ledger.transaction() as data:
+            data['issues']['1:1']['declared_dependencies'] = [91]
+        with self.assertRaises(ValueError): self.decide('start_anyway', revision=row['revision'])
+
     def test_queue_updates_inventory_without_github_or_pending_receipt(self):
         identifier = self.decide('queue')
         self.assertEqual(self.item()['state'], 'ready')
@@ -88,6 +132,23 @@ class ImmediateDecisionTests(unittest.TestCase):
         self.assertFalse(self.item()['evidence'])
         self.assertNotIn('decision_request', self.item())
         self.assertIn('decision_answered', [e['kind'] for e in self.ledger.read()['events']])
+
+    def test_releasing_a_hold_restores_verification_and_retry_records_failed_check(self):
+        self.tracked()
+        verification = {'what': 'Check the PDF header', 'why': 'Requires the release image', 'ci': []}
+        with self.ledger.transaction() as data:
+            data['issues']['1:1'].update(state='hold', candidate={'pr': 7},
+                environment_hold={'state': 'approval_needed'}, verification_request=verification,
+                verified_checks=[{'proof': {'via': 'human'}}])
+        self.decide('recheck')
+        self.assertEqual(self.item()['state'], 'approval_needed')
+        self.assertEqual(self.item()['verification_request'], verification)
+        self.assertEqual(self.inventory.view(key='1:1')['issue']['reason_code'], 'verification')
+        self.decide('retry', reason='The export returns HTML instead of a PDF')
+        self.assertEqual(self.item()['state'], 'ready')
+        self.assertNotIn('verification_request', self.item())
+        self.assertNotIn('verified_checks', self.item())
+        self.assertEqual(self.item()['retry_plan'], 'The export returns HTML instead of a PDF')
 
     def test_stale_revision_and_active_or_cleaning_worker_are_refused(self):
         self.tracked(); self.github.value['labels'].append({'name': 'ready'})

@@ -62,6 +62,8 @@ async function copy(kind: 'login' | 'check' | 'token') {
     <template #body>
       <div v-if="harness" class="space-y-3 text-sm">
         <template v-if="!harness.connected">
+          <p class="text-muted">Sign-in requires Forge’s installed runner image and Docker access for the Forge service account.</p>
+          <p v-if="harness.id === 'grok'" class="text-muted">Forge checks Grok’s sign-in sandbox before browser authorization and gives a repair command if it needs attention.</p>
           <p class="text-muted">Run this command in a terminal on the Forge VM, as the Forge service account. Follow the harness’s sign-in instructions.</p>
           <pre ref="loginCommand" class="rounded-lg border border-line bg-bg p-3 text-[13px] whitespace-pre-wrap break-words">{{ harness.login_command }}</pre>
           <UButton color="neutral" variant="outline" @click="copy('login')">{{ loginLabel }}</UButton>
@@ -85,9 +87,11 @@ async function copy(kind: 'login' | 'check' | 'token') {
       </div>
     </template>
     <template #footer>
-      <div class="flex justify-end">
-        <UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton>
-      </div>
+      <DialogFooter>
+        <template #secondary>
+          <UButton color="neutral" variant="ghost" @click="emit('close')">Close</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>

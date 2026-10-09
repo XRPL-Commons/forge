@@ -40,3 +40,19 @@ Hosts that followed the earlier manual runbook have their own `forge-ui.service`
 and a `forge-status.service` edited for port 8788. Run `bin/forge update` once.
 It shows each difference against the managed definition and asks before replacing
 it. After that, update owns these units.
+
+## Status polling and freshness
+
+The status service caches `/api/factory` and `/api/issues` views in memory.
+Conditional requests compare a validator derived from runtime-file modification
+times and sizes, query arguments, the operator's action token, and a short clock
+bucket. An unchanged request returns 304 before rebuilding or serializing the
+view. Authentication and reset checks still run on every request. A service
+restart invalidates validators; time-derived fields refresh within ten seconds.
+
+Concurrent polls share view builds. Inventory refresh starts at most once every
+30 seconds per process unless an operator explicitly requests a refresh. Status
+reads do not rewrite operator-request or issue-action stores. The UI proxy uses
+gzip for large status JSON when the client accepts it, and sets
+`Vary: Accept-Encoding`. Hidden tabs suspend automatic and Check now polling;
+returning to the tab triggers a fresh read.

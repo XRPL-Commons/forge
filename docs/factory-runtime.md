@@ -5,14 +5,18 @@ For lifecycle diagrams, waiting reasons and operator actions, see the
 
 The implementation lives in `forge/factory`; it is Forge's only operating mode. The operator UI is a separate
 `forge-ui` service on the tailnet address, and `forge-status` serves only the JSON
-API on localhost; see `docs/ui-deployment.md`. Settings edits
-`factory.json` and `runtime.json` with validation and conflict detection.
+API on localhost; see [UI deployment](ui-deployment.md). Settings edits versioned
+configuration through the selected storage authority, with validation and conflict
+detection. On migrated instances, `factory.json` and `runtime.json` are logical
+configuration domain names in SQLite, not mutable files.
 
 Queue, Pause, Return to backlog, Release hold, Retry and Recheck readiness apply
-immediately under the issue ledger lock. The API returns the updated issue; the
-UI does not wait for a supervisor cycle. Decisions require a current revision and
-are refused while a worker or its cleanup is active. Each decision is recorded
-in issue history.
+through durable, revision-checked decisions in the selected store. The API returns
+the updated issue; the UI does not wait for a supervisor cycle. Decisions require
+a current revision and are recorded in issue history. Pause
+can be accepted while work is active: it fences the assignment immediately, then
+waits for cleanup and verified GitHub synchronization. Actions that require an
+idle issue remain unavailable until work and cleanup finish.
 
 The supervisor prioritizes these issues on its next observation, verifies live
 repository access, dependencies, existing work and review rules, and synchronizes
@@ -20,21 +24,45 @@ the ready/hold labels. No worker can reserve an issue until this succeeds. A
 GitHub outage leaves the chosen state visible and prevents dispatch; a failed
 prerequisite puts the issue on hold with its reason. A decision version prevents
 older supervisor observations from overwriting a newer operator choice.
-Reviewer requests and environment overrides retain their durable external-action
-flow, as do requests queued before this update.
+Reviewer requests and environment overrides retain their durable action flow.
+Imported pending decisions without current authorization are preserved as
+interrupted after a fresh GitHub read; they are not replayed. Review the current
+issue, then resubmit the intended action or explicitly resume its migration pause.
+
+The [security guide](../SECURITY.md#isolation-status) holds the canonical
+live/staged/retired inventory. Supported `bin/forge` commands enter
+`forge.launch`; the setup service selects the SQLite controller after cutover.
+A saved `legacy` onboarding phase becomes `setup`, never a tmux supervisor.
+Existing evidence: [launcher routing](../bin/forge),
+[service selection](../forge/setup_service.py), and the
+[retired-phase regression](../tests/test_onboarding.py).
 
 ## Configuration
 
-Copy `examples/factory.json.example` and `examples/runtime.json.example` into your
-private runtime directory. Both start with automation disabled. Never commit these
-copies, App keys, provider authentication, or `state/`.
+Use guided Settings or the supported CLI to configure the instance. The examples
+in `examples/` describe configuration values; copying them over a selected
+instance's old JSON files does not update its settings. New installations and
+pre-cutover compatibility use those files until explicit
+[SQLite activation](store-migration.md). The released local `forge server setup`
+configures identity and HTTPS on an existing host; the complete fresh-VM CLI
+wizard in #136 is not yet merged. See its
+[existing-host prerequisites](cli-server-setup.md#prerequisites).
 
-- GitHub connections and selected repository IDs belong in `factory.json`.
-- Runner image, policy references, capacity, deadlines, human reviewers, and merge
-  controls belong in `runtime.json`.
-- Credentials stay in private server environment variables or referenced files.
-- Issue history, assignments, runner ownership and operator requests live under
-  `state/factory/`, outside every disposable workspace. Back up that directory.
+- GitHub connections and selected repository IDs belong to the `factory.json` domain.
+- Runner image, policy references, capacity, deadlines, human reviewers and merge
+  controls belong to the `runtime.json` domain. Setup has separate staged domains.
+- Credentials stay in private referenced files; configuration stores references.
+- Selected lifecycle, configuration, identity, assignments and operator requests
+  live in the private SQLite store located by `state/storage`, outside workers.
+  Back it up coherently with instance metadata and referenced credentials. Do not
+  copy only a live database's main file or use the frozen JSON capture as a backup.
+
+The database uses WAL with FULL durability. The launcher validates the selected
+instance, schema and qualified SQLite runtime; failure does not restore JSON
+access. SQLite qualification applies to the library linked to the service
+interpreter. Repair it through `forge migrate prepare`; do not bypass the launcher
+or delete `state/storage` to regain access. Never commit runtime state, App keys
+or provider authentication.
 
 Defaults (`forge/factory/config.py`) are 4 Build, 2 Review, 1 Audit and 1 Recovery
 slot, with 4 GiB and two CPUs per job. Role slots are upper limits. Total concurrency is automatic:
@@ -63,7 +91,7 @@ failures, timeouts and text appearing only in logs do not escalate. Memory retri
 consume no coding-failure allowance and do not create code investigations. At the
 largest tier the issue stays on an environment hold for operator attention.
 
-The ledger remembers successful allocations by repository ID and role. Existing
+The selected store remembers successful allocations by repository ID and role. Existing
 memory-failure evidence also prevents retrying that issue at a known-small limit.
 This is a role-level approximation of workload type: a review may run a full build.
 A larger pending retry takes precedence over new small jobs; workers already
@@ -76,8 +104,8 @@ work before reporting memory exhaustion, the new harness checks out that remote
 branch, including commits newer than the last accepted candidate. Unpublished
 changes in a disposable container cannot be recovered after its removal. Deploy
 the updated harness image before enabling tiers. Changing runtime policy does
-not resize or interrupt existing containers. The installation ledger stores
-`memory_profiles` and per-issue `memory_retry`; back it up with the rest of state.
+not resize or interrupt existing containers. The selected store retains memory profiles and retry evidence; include that
+history in the coherent state backup.
 
 Build times out after 45 minutes, Review/Audit after 20, Recovery after 10.
 The graceful-stop limit is 10 seconds. The supervisor polls every 30 seconds and
@@ -97,12 +125,16 @@ that provider and use another without consuming the issue failure budget. Empty
 pools preserve the legacy single-provider configuration. Explicit `provider_ready`
 entries fence unverified reconnects until qualification completes.
 
+`discussion_model` (default `null`) optionally names a faster model per provider
+for issue conversations only, for example `{"claude": "claude-haiku-4-5"}`.
+Providers it does not name, and every pipeline role, keep the pool entry's model.
+
 Credentials stay in the private installation store. Refreshable OAuth credentials
 are serialized per reference and saved using compare-and-swap before teardown;
 API-key and long-lived-token jobs retain full configured concurrency. Refreshed
 credentials never replace a newer manual login or mutate an external imported login file.
 
-Set `codex_parallel_auth: true` in `runtime.json` to share an existing ChatGPT
+Set `codex_parallel_auth: true` in runtime settings (`runtime.json` domain) to share an existing ChatGPT
 subscription across Codex workers. The controller gives each worker an access-only
 `chatgptAuthTokens` snapshot, without the refresh token. It checks that the access
 token lasts beyond the job deadline plus five minutes. When needed, the pinned
@@ -127,7 +159,7 @@ docker build -f deploy/runner/Dockerfile -t forge-runner:local .
 docker image inspect forge-runner:local --format '{{.Id}}'
 ```
 
-Put the returned immutable `sha256:...` image ID in `runtime.json`. The adapter manifests
+Set the returned immutable `sha256:...` image ID through runtime Settings. The adapter manifests
 pin both coding harnesses; for a reproducible production build also pin `NODE_IMAGE` and
 `PYTHON_IMAGE` by digest. `.dockerignore` admits only the runner source and image
 policy, so a build cannot accidentally send runtime credentials to the daemon.
@@ -295,8 +327,10 @@ removes only its uniquely named resources.
 
 Guided setup's Start activates the factory. For a CLI-only installation, the commands
 below do the same. The setup supervisor and the CLI share `state-supervisor.lock`, and
-`state/factory-v2.enabled` records the activation. Do not operate two separate runtime
-roots against the same repositories: the file lock is local, not a distributed claim.
+the selected store's `factory_active` runtime control records activation. The
+`state/factory-v2.enabled` marker applies only before SQLite selection. Do not
+operate two separate runtime roots against the same repositories: the file lock
+is local, not a distributed claim.
 
 ```sh
 bin/forge factory validate --root /var/lib/forge
@@ -331,13 +365,17 @@ evidence-supported alternative; absent one, the issue is held before another try
 An investigator's classification is a diagnosis, not proof: uncertainty stays in
 its record, and the supervisor independently validates any recovered publication.
 
-The ledger is a serialized local JSON store with atomic fsync/replace and an
-initialization marker. It is not a distributed database. Missing/corrupt initialized
-state fails closed. Losing the entire state directory requires explicit execution
-and GitHub reconciliation before reinitializing; do not create a blank ledger over
-running work. History has no automatic deletion policy in this version, so monitor
-its size and back it up. Captured output is bounded and redacted on a best-effort
-basis, but remains private diagnostic data rather than public source material.
+The selected runtime uses local SQLite transactions, not whole-ledger JSON
+rewrites. Missing or corrupt selected state fails closed. Losing that state
+requires explicit execution and GitHub reconciliation before reinitializing;
+do not create a blank database over running work. Recovery proceeds forward;
+the pre-migration JSON copy is diagnostic only.
+
+The supervisor prunes eligible raw logs after 30 days, retaining active work,
+current-candidate evidence, recovery/cleanup and pinned references. Events and
+structured results are kept. Expired log metadata remains identifiable. Captured
+output is bounded and redacted on a best-effort basis, but remains private
+operational data. See [security and backup boundaries](../SECURITY.md).
 
 A verified merge or external issue closure clears current attention even when old
 failure findings remain. Cleanup faults appear as runner/resource work, not as a

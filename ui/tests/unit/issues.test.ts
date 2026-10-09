@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES,
+  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
-  activityAge, rowFacts, rowPrimary, rowStory,
+  activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -21,12 +21,6 @@ const row = (over: Partial<IssueRow> = {}): IssueRow => ({
 })
 
 describe('copy maps', () => {
-  it('names every status the list and detail can render', () => {
-    expect(STATUS_NAMES).toEqual({
-      backlog: 'Backlog', queued: 'Queued', working: 'Working',
-      attention: 'Needs attention', completed: 'Completed', waiting: 'Waiting',
-    })
-  })
   it('labels every decision, including stop', () => {
     expect(ACTION_LABELS.queue).toBe('Queue for Forge')
     expect(ACTION_LABELS.backlog).toBe('Return to backlog')
@@ -54,7 +48,9 @@ describe('copy maps', () => {
       { value: 'queued', label: 'Queued' },
       { value: 'working', label: 'Working' },
       { value: 'waiting', label: 'Waiting' },
+      { value: 'blocked', label: 'Waiting on other issues' },
       { value: 'completed', label: 'Completed' },
+      { value: 'dropped', label: 'No longer needed' },
     ])
   })
 })
@@ -403,5 +399,37 @@ describe('list filters in the URL', () => {
   it('round-trips', () => {
     const state = { show: 'attention', repo: '7', q: 'login', page: 4 }
     expect(filtersFromQuery(filterQuery(state))).toEqual(state)
+  })
+})
+
+describe('waiting on other issues', () => {
+  const blocked = { status: 'blocked' as const, explanation: 'Waiting for #90, #101.', dependencies: [85, 90, 101] }
+  it('names the open prerequisites, from the explanation first, then the body', () => {
+    expect(blockingIssues(blocked)).toEqual([90, 101])
+    expect(blockingIssues({ ...blocked, explanation: '' })).toEqual([85, 90, 101])
+    expect(blockingIssues({ ...blocked, status: 'queued' })).toEqual([])
+  })
+  it('keeps the main blocked label separate from dependency details', () => {
+    expect(statusLabel(blocked)).toBe('Blocked')
+    expect(statusLabel({ ...blocked, explanation: '', dependencies: [] })).toBe('Blocked')
+    expect(statusLabel({ status: 'waiting', explanation: 'Waiting for #9.', dependencies: [9] })).toBe('Waiting')
+  })
+  it('sorts after other waits and before queued work, as the server does', () => {
+    expect(STATUS_ORDER).toEqual(['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped'])
+  })
+  it('is only opened, never asked to decide anything', () => {
+    expect(rowAction({ status: 'blocked', actions: [], approval: null } as any, null)).toBe('Open')
+  })
+})
+
+describe('attentionNote', () => {
+  it('says a person is needed and points at the note, never "nothing needed"', () => {
+    const summary = { headline: 'Held until a person verifies the release image', plain: '' }
+    expect(attentionNote({ summary, explanation: null, environment_blocker: 'Verify the release image' } as any))
+      .toBe('A person needs to verify this. See the note above.')
+    expect(attentionNote({ summary, explanation: null, environment_blocker: null } as any))
+      .toBe('A person needs to look at this. See the note above.')
+    expect(attentionNote({ summary: null, explanation: null, environment_blocker: null } as any))
+      .toBe('A person needs to look at this. Discuss the blocker to work out what.')
   })
 })

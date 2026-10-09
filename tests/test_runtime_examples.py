@@ -46,5 +46,19 @@ class RuntimeExampleTests(unittest.TestCase):
                 self.assertIn(item['name'], text, doc)
 
 
+class DiscussionModelTests(unittest.TestCase):
+    def test_discussion_model_defaults_to_the_provider_default(self):
+        self.assertIsNone(DEFAULT['discussion_model'])
+        self.assertIsNone(validate({})['discussion_model'])
+
+    def test_discussion_model_maps_installed_providers_to_models(self):
+        self.assertEqual(validate({'discussion_model': {'claude': 'claude-haiku-4-5'}})['discussion_model'],
+                         {'claude': 'claude-haiku-4-5'})
+        for bad in ('claude-haiku-4-5', {'nobody': 'fast'}, {'claude': ''}, {'claude': None},
+                    {'claude': 'two words'}, ['claude'], {'claude': 'x' * 200}):
+            with self.assertRaisesRegex(ValueError, 'discussion_model'):
+                validate({'discussion_model': bad})
+
+
 if __name__ == '__main__':
     unittest.main()

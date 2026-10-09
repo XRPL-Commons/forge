@@ -86,7 +86,7 @@ class DeploymentTests(unittest.TestCase):
         self.github = FakeGitHub()
         self.settings = FakeSettings([{'id': 7, 'name': 'example/site', 'enabled': True,
                                        'access_ready': True, 'dispatch_allowed': True}])
-        self.config = {'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'engine': '/usr/bin/docker',
+        self.config = {'enabled': True, 'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'engine': '/usr/bin/docker',
                        'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'],
                        'grace_seconds': 10, 'proxy': 'http://forge-egress:3128', 'provider': 'codex'}
 
@@ -161,6 +161,18 @@ class DeploymentTests(unittest.TestCase):
         self.deployments().tick(self.config)
         self.assertFalse(self.engine)
         self.assertEqual(self.entry()['status'], 'proposed')
+
+    def test_disabled_factory_finishes_owned_worker_without_starting_replacement(self):
+        self.second_repository()
+        self.deployments().tick(self.config)
+        identifier = self.finish(7)
+        self.deployments().tick({**self.config, 'enabled': False})
+        self.assertEqual(self.entry(7)['status'], 'proposed')
+        self.assertEqual(self.resets, [identifier])
+        self.assertFalse(self.engine)
+        self.assertNotIn('8', self.deployments().read()['repositories'])
+        self.deployments().tick({**self.config, 'enabled': False})
+        self.assertFalse(self.engine)
 
     def test_only_one_strategist_runs_at_a_time(self):
         self.second_repository()
@@ -620,6 +632,24 @@ class ServiceHookTests(unittest.TestCase):
         service.next_cycle = 0
         self.cycle(service, side_effect=TypeError('constructor'))  # A construction failure is swallowed too.
         self.assertIsNone(self.setup.view()['error'])
+
+    def test_a_live_conversation_moves_between_cycles(self):
+        from forge.factory.discussions import Discussions
+        service = self.activated()
+        self.cycle(service)
+        self.assertGreater(service.next_cycle, time.monotonic())
+        with patch.object(Discussions, 'live', return_value=False), patch.object(Discussions, 'tick') as tick:
+            service.next_discussion = 0
+            service.tick()
+            tick.assert_not_called()
+        with patch.object(Discussions, 'live', return_value=True), patch.object(Discussions, 'tick') as tick, \
+                patch('forge.setup_service.Supervisor') as supervisor:
+            service.next_discussion = 0
+            service.tick()
+            service.tick()  # Driven every few seconds, not every service tick.
+            self.assertEqual(tick.call_count, 1)
+            self.assertTrue(tick.call_args.kwargs.get('launch', True))
+            supervisor.assert_not_called()  # Pipeline dispatch still waits for the cycle.
 
     def test_tick_is_skipped_while_a_setup_operation_is_pending(self):
         import uuid

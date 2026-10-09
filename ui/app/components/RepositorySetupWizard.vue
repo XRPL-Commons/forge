@@ -61,7 +61,7 @@ async function next() {
       </section>
       <RepositoryAccessPanel v-else-if="step === 1" :connections="connections" :access-description="accessDescription" :access-note="accessNote" />
       <template v-else-if="row && step === 2">
-        <RepositoryRulesPanel :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" instructions @download="downloaded = true" />
+        <RepositoryRulesPanel :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" :controller-slug="view?.connections?.controller?.app_slug" instructions @download="downloaded = true" />
         <p id="checked-at" class="mt-3 text-xs text-muted">{{ checkedAtText(report, localTime) }}</p>
       </template>
       <section v-else-if="row && step === 3" class="mt-4">
@@ -72,13 +72,17 @@ async function next() {
       <p v-else class="mt-4 text-sm text-muted">Loading repository…</p>
     </template>
     <template #footer>
-      <div class="flex w-full items-center justify-between gap-2">
-        <div class="flex gap-1">
+      <DialogFooter>
+        <template #start>
           <UButton color="neutral" variant="ghost" :disabled="step === 0 || busy" @click="back">Back</UButton>
+        </template>
+        <template #secondary>
           <UButton color="neutral" variant="ghost" @click="close">Cancel</UButton>
-        </div>
-        <UButton :disabled="disabled" :loading="waiting || enabling" @click="next">{{ primary }}</UButton>
-      </div>
+        </template>
+        <template #primary>
+          <UButton :disabled="disabled" :loading="waiting || enabling" @click="next">{{ primary }}</UButton>
+        </template>
+      </DialogFooter>
     </template>
   </UModal>
 </template>
