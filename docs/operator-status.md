@@ -17,7 +17,9 @@ SQLite Activity rows, issue list/detail responses, and `forge repo activity`,
 wording. `reason_code` identifies the selected lifecycle gate, current stage,
 or completion reason; `reason` is its separate explanation. Untracked issues
 have a null reason code. `stage_code` remains the lifecycle stage, even while a
-gate blocks it.
+gate blocks it. The main label does not assert that no process is running: a
+worker can remain visible while an ownership gate shows **Blocked**. Its job
+status and cleanup are separate facts.
 
 The server builds this object once in `factory/status_projection.py`; Activity,
 list and detail reuse it. CLI reads return the scoped API response unchanged.

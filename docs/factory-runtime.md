@@ -11,10 +11,12 @@ detection. On migrated instances, `factory.json` and `runtime.json` are logical
 configuration domain names in SQLite, not mutable files.
 
 Queue, Pause, Return to backlog, Release hold, Retry and Recheck readiness apply
-through durable, revision-checked decisions in the selected store. The API returns the updated issue; the
-UI does not wait for a supervisor cycle. Decisions require a current revision and
-are refused while a worker or its cleanup is active. Each decision is recorded
-in issue history.
+through durable, revision-checked decisions in the selected store. The API returns
+the updated issue; the UI does not wait for a supervisor cycle. Decisions require
+a current revision and are recorded in issue history. Pause
+can be accepted while work is active: it fences the assignment immediately, then
+waits for cleanup and verified GitHub synchronization. Actions that require an
+idle issue remain unavailable until work and cleanup finish.
 
 The supervisor prioritizes these issues on its next observation, verifies live
 repository access, dependencies, existing work and review rules, and synchronizes
@@ -22,16 +24,29 @@ the ready/hold labels. No worker can reserve an issue until this succeeds. A
 GitHub outage leaves the chosen state visible and prevents dispatch; a failed
 prerequisite puts the issue on hold with its reason. A decision version prevents
 older supervisor observations from overwriting a newer operator choice.
-Reviewer requests and environment overrides retain their durable external-action
-flow, as do requests queued before this update.
+Reviewer requests and environment overrides retain their durable action flow.
+Imported pending decisions without current authorization are preserved as
+interrupted after a fresh GitHub read; they are not replayed. Review the current
+issue, then resubmit the intended action or explicitly resume its migration pause.
+
+The [security guide](../SECURITY.md#isolation-status) holds the canonical
+live/staged/retired inventory. Supported `bin/forge` commands enter
+`forge.launch`; the setup service selects the SQLite controller after cutover.
+A saved `legacy` onboarding phase becomes `setup`, never a tmux supervisor.
+Existing evidence: [launcher routing](../bin/forge),
+[service selection](../forge/setup_service.py), and the
+[retired-phase regression](../tests/test_onboarding.py).
 
 ## Configuration
 
 Use guided Settings or the supported CLI to configure the instance. The examples
 in `examples/` describe configuration values; copying them over a selected
 instance's old JSON files does not update its settings. New installations and
-pre-cutover compatibility may still use those files until explicit
-[SQLite activation](store-migration.md).
+pre-cutover compatibility use those files until explicit
+[SQLite activation](store-migration.md). The released local `forge server setup`
+configures identity and HTTPS on an existing host; the complete fresh-VM CLI
+wizard in #136 is not yet merged. See its
+[existing-host prerequisites](cli-server-setup.md#prerequisites).
 
 - GitHub connections and selected repository IDs belong to the `factory.json` domain.
 - Runner image, policy references, capacity, deadlines, human reviewers and merge
@@ -44,7 +59,10 @@ pre-cutover compatibility may still use those files until explicit
 
 The database uses WAL with FULL durability. The launcher validates the selected
 instance, schema and qualified SQLite runtime; failure does not restore JSON
-access. Never commit runtime state, App keys or provider authentication.
+access. SQLite qualification applies to the library linked to the service
+interpreter. Repair it through `forge migrate prepare`; do not bypass the launcher
+or delete `state/storage` to regain access. Never commit runtime state, App keys
+or provider authentication.
 
 Defaults (`forge/factory/config.py`) are 4 Build, 2 Review, 1 Audit and 1 Recovery
 slot, with 4 GiB and two CPUs per job. Role slots are upper limits. Total concurrency is automatic:
@@ -73,7 +91,7 @@ failures, timeouts and text appearing only in logs do not escalate. Memory retri
 consume no coding-failure allowance and do not create code investigations. At the
 largest tier the issue stays on an environment hold for operator attention.
 
-The ledger remembers successful allocations by repository ID and role. Existing
+The selected store remembers successful allocations by repository ID and role. Existing
 memory-failure evidence also prevents retrying that issue at a known-small limit.
 This is a role-level approximation of workload type: a review may run a full build.
 A larger pending retry takes precedence over new small jobs; workers already
