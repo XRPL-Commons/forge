@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 from forge.factory.config import policy, validate
 from forge.factory.dispatch_controller import DispatchController, GitHubPrepare
@@ -128,6 +129,34 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.assertFalse(self.controller.observe('u')['dependencies_clear'])
         self.github.remote['body']='Depends on #1'
         self.assertFalse(self.controller.observe('u')['dependencies_clear'])
+
+    def test_verified_worker_dependency_is_rechecked_after_reopening(self):
+        self.dependency('closed')
+        self.github.remote['body']=''
+        self.commands.open_gate(self.command(),'dependency',member_id=self.member,
+            details={'requirements':self.github.requirements,'issues':[2]})
+        self.assertTrue(self.controller.observe('u')['dependencies_clear'])
+        self.github.dependencies[2]['state']='open'
+        self.assertFalse(self.controller.observe('u')['dependencies_clear'])
+
+    def test_explicitly_dismissed_worker_dependency_does_not_return(self):
+        self.commands.open_gate(self.command(),'dependency',member_id=self.member,
+            details={'requirements':self.github.requirements,'issues':[2]})
+        self.commands.clear_declared_dependencies(self.command(),requirements_revision_id=self.revision,
+            evidence={'reason':'Operator removed the worker-declared prerequisite'})
+        self.assertTrue(self.controller.observe('u')['dependencies_clear'])
+
+    def test_prepare_excludes_only_exact_active_publication_from_ownership(self):
+        owned={'number':10}
+        unrelated={'number':11}
+        self.github.open_pulls=[owned,unrelated]
+        with patch('forge.factory.ownership.active_publication_matches',side_effect=lambda store,unit,pr:pr==owned), \
+                patch('forge.factory.requirements_controller.ownership',return_value='human_owned') as ownership:
+            self.assertIsNone(self.controller._prepare_member(self.snapshot()))
+            self.assertEqual(ownership.call_args.args[3],[unrelated])
+        self.github.remote['labels']=['hold']
+        with patch('forge.factory.ownership.active_publication_matches',return_value=True):
+            self.assertIsNone(self.controller._prepare_member(self.snapshot()))
 
     def test_obsolete_and_out_of_order_dependency_proof(self):
         self.commands.dependencies(self.command(),requirements_revision_id=self.revision,generation=2,facts=[])

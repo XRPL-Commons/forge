@@ -52,7 +52,7 @@ class RuntimeRequirements(Executions):
         return dict(row)
 
     def dependencies(self,command,*,requirements_revision_id,generation,facts):
-        if (type(generation) is not int or generation<1 or not isinstance(facts,list) or len(facts)>100
+        if (type(generation) is not int or generation<1 or not isinstance(facts,list)
                 or len(_json(facts).encode())>60000):
             raise TransitionError('dependency observation must be a bounded ordered collection')
         from .repository_requirements import reference
@@ -65,7 +65,7 @@ class RuntimeRequirements(Executions):
             if ref!=fact['reference']:
                 raise TransitionError('Dependency references must be canonical')
             if fact.get('error'):
-                if fact['error'] not in {'prerequisite_inaccessible','prerequisite_identity_changed'}:
+                if fact['error'] not in {'prerequisite_inaccessible','prerequisite_identity_changed','prerequisite_unobserved'}:
                     raise TransitionError('Unknown prerequisite observation error')
             elif fact.get('kind')=='internal':
                 if not isinstance(fact.get('member_id'),str) or fact.get('output_id') is not None and not isinstance(fact['output_id'],str):
@@ -96,11 +96,12 @@ class RuntimeRequirements(Executions):
             if not required<=set(refs):
                 raise TransitionError('Dependency observation omits persisted prerequisites')
             own=db.execute('SELECT lower(r.full_name)||\'#\'||i.github_number FROM issues i JOIN repositories r ON r.id=i.repository_id WHERE i.id=?',(member['issue_id'],)).fetchone()[0]
+            own_identity=db.execute('SELECT repository_id,github_number FROM issues WHERE id=?',(member['issue_id'],)).fetchone()
             blocked=[]
             for fact in facts:
                 # Internal output readiness belongs to the approved delivery graph.
                 reason=None if fact.get('kind')=='internal' else blocker(fact)
-                if fact['reference']==own:
+                if fact['reference']==own or (fact.get('repository_id'),fact.get('number'))==tuple(own_identity):
                     reason='prerequisite_cycle'
                 if not fact.get('error') and fact['kind']=='internal':
                     from .delivery_inputs import dependencies_in,current_output_in

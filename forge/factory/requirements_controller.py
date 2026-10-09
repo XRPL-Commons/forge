@@ -14,7 +14,6 @@ from ..store.runtime import writable
 from ..store.runtime_requirements import RuntimeRequirements, _memory
 from ..store.transitions import manifest_hash
 from .config import validate
-from .contracts import issue_dependencies
 from .effect_controller import EffectController
 from .environments import choose
 from .github import GitHubUnavailable
@@ -64,41 +63,14 @@ class RuntimeRequirementsController:
             return db.execute('SELECT generation FROM runtime_controls WHERE name=?', (name,)).fetchone()[0]
 
     def _dependencies(self, snapshot, remote):
-        unit_id = snapshot['unit']['id']
-        revision = snapshot['member']['requirements_revision_id']
-        from .prerequisites import references
-        from ..store.repository_requirements import orders_in
-        refs=set(references(remote.get('body'),snapshot['issue']['repository']))
-        with self.store.read_snapshot() as db:
-            refs.update(orders_in(db,snapshot['member']['issue_id'],revision))
-            refs.update(row[0] for row in db.execute('SELECT lower(r.full_name)||\'#\'||i.github_number FROM issue_dependencies d '
-                'JOIN issues i ON i.id=d.prerequisite_issue_id JOIN repositories r ON r.id=i.repository_id '
-                'WHERE d.issue_id=? AND d.requirements_revision_id=?',(snapshot['member']['issue_id'],revision)))
-            for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND member_id=? AND code='dependency' AND resolved_at IS NULL", (unit_id,snapshot['member']['id'])):
-                details=json.loads(gate[0])
-                if details.get('requirements')==snapshot['issue']['requirements']:
-                    refs.update(snapshot['issue']['repository'].lower()+'#'+str(n) for n in details.get('issues',[]))
-            internal={row['reference']:row['id'] for row in db.execute('SELECT m.id,lower(r.full_name)||\'#\'||i.github_number AS reference '
-                'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN repositories r ON r.id=i.repository_id '
-                'WHERE m.unit_id=? AND m.left_at IS NULL AND m.id!=?',(unit_id,snapshot['member']['id']))}
-            from ..store.delivery_inputs import dependencies_in,current_output_in
-            approved=set(dependencies_in(db,snapshot['unit'],snapshot['member']['id']))
-            if any(internal[ref] not in approved for ref in refs if ref in internal):
-                raise TransitionError('Requirements declare a member dependency absent from the approved composition')
-            bindings={row['reference']:dict(row) for row in db.execute('SELECT * FROM prerequisite_identities WHERE reference IN ('+','.join('?' for _ in refs)+')',tuple(refs))} if refs else {}
-        if len(refs)>100:
-            raise TransitionError('Issue prerequisites exceed the bounded observation limit')
-        generation=self._generation(unit_id)
-        facts=[]
-        for ref in sorted(refs):
-            if ref in internal:
-                with self.store.read_snapshot() as db:
-                    output=current_output_in(db,snapshot['unit'],internal[ref])
-                facts.append(dict(reference=ref,kind='internal',member_id=internal[ref],output_id=output['id'] if output else None))
-            else:
-                facts.append(self.github.prerequisite(ref,bindings.get(ref)))
-        result = self.commands.dependencies(self._command(snapshot), requirements_revision_id=revision,
-                                             generation=generation, facts=facts)
+        from .prerequisites import collect
+        observation = collect(self.store, self.github, unit_id=snapshot['unit']['id'],
+            member_id=snapshot['member']['id'],
+            requirements_revision_id=snapshot['member']['requirements_revision_id'], body=remote.get('body'))
+        generation = self._generation(snapshot['unit']['id'])
+        result = self.commands.dependencies(self._command(snapshot),
+            requirements_revision_id=snapshot['member']['requirements_revision_id'],
+            generation=generation, facts=observation['facts'])
         return result.get('clear', False)
 
     @staticmethod
@@ -192,10 +164,12 @@ class RuntimeRequirementsController:
     def _prepare_member(self,snapshot):
         fresh,requirements=self.github.issue(self._item(snapshot))
         labels={row['name'] if isinstance(row,dict) else row for row in fresh.get('labels',[])}
-        from .ownership import publication_context
+        from .ownership import publication_context, active_publication_matches
         item=publication_context(self.store,snapshot['unit']['id'],self._item(snapshot))
+        pulls = [pr for pr in self.github.pulls(item)
+                 if not active_publication_matches(self.store, snapshot['unit']['id'], pr)]
         if (requirements!=snapshot['issue']['requirements'] or labels.intersection(self.config['hold_labels'])
-                or ownership(fresh,item,item['repo'],self.github.pulls(item))):
+                or ownership(fresh,item,item['repo'],pulls)):
             return None
         return self._observe_member(snapshot)
 

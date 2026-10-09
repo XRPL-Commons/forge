@@ -61,32 +61,43 @@ class MergeAdmission:
         self.store, self.github = store, github
         self.config, self.repository_ready, self.clock = config, repository_ready, clock
 
-    def evaluate(self, effect):
+    def evaluate_observation(self, effect):
+        """Return authorization and display evidence without writing the store."""
+        observation = None
+        def result(authorization):
+            return {'authorization': authorization, 'approval_observation': observation}
+
         item = candidate_snapshot(self.store, effect['unit_id'])
         if item is None or item['candidate_id'] != effect['candidate_id']:
-            return None
+            return result(None)
         config = self.config()
         if not isinstance(config, dict) or any(key not in config for key in ('human_required', 'human_reviewers', 'merge_method')):
-            return None
+            return result(None)
         identity = item['identity']
         effective_policy=policy(config,item['repo_id'],repository_name=item['repo'])
         if (not config.get('enabled') or not config.get('merge_enabled')
                 or self.repository_ready(item['repo']) is not True
                 or digest(effective_policy) != identity['policy_hash']):
-            return None
+            return result(None)
         if item['requirements_hash']!=identity['requirements_hash']:
-            return None
+            return result(None)
         pulls=self.github.pulls(item)
         for member in item['members']:
             scoped={**item,'number':member['number'],'requirements':member['requirements']}
             issue,requirements=self.github.issue(scoped)
             if issue.get('state')!='open' or requirements!=member['requirements']:
-                return None
+                return result(None)
             labels={label['name'] if isinstance(label,dict) else label for label in issue.get('labels',[])}
             if labels.intersection(config.get('hold_labels',['hold','blocked'])):
-                return None
+                return result(None)
             if ownership(issue,scoped,item['repo'],pulls) is not None:
-                return None
+                return result(None)
+            from .prerequisites import collect
+            prerequisites = collect(self.store, self.github, unit_id=item['unit_id'],
+                member_id=member['member_id'], requirements_revision_id=member['requirements_revision_id'],
+                body=issue.get('body'), require_bindings=True)
+            if prerequisites['blocked']:
+                return result(None)
         pr = self.github.pr(item, identity['pull_number'])
         if (pr.get('number') != identity['pull_number'] or pr.get('state') != 'open'
                 or pr.get('draft') is not False or pr.get('merged') is not False or pr.get('mergeable') is not True
@@ -96,44 +107,44 @@ class MergeAdmission:
                 or (pr.get('head') or {}).get('repo', {}).get('id') != item['repo_id']
                 or (pr.get('base') or {}).get('repo', {}).get('id') != item['repo_id']
                 or self.github.target(item) != item['candidate']['base_ref']):
-            return None
+            return result(None)
         audit = item['evidence'].get('audit', {})
         if (audit.get('human_required') not in {'required', 'not_required'}
                 or any(type(item['evidence'].get(role, {}).get('check_id')) is not int for role in ('review', 'audit'))):
-            return None
+            return result(None)
         required = effective_policy['human_required'] or audit['human_required'] == 'required'
         ci = {}
         for gate in item['gates']:
             if gate['code'] in {'verification_ci', 'verification_human'}:
                 if gate['resolved_at'] is None:
-                    return None
+                    return result(None)
                 if gate['code'] == 'verification_human':
                     required = True
                     item['verified_checks'].append({'created_at': gate['resolved_at'], 'proof': {'via': 'human'}})
                 for check in gate['details'].get('ci', []):
                     ci[(check['name'], check['app_id'])] = check
         if ci and not ci_result(self.github.ci_evidence(item), item['candidate'], list(ci.values())):
-            return None
+            return result(None)
         if not self.github.gates(item) or not self.github.protections(item, item['candidate']):
-            return None
+            return result(None)
         # Approval reads are last; the effect driver repeats this check directly
         # before the exact-head merge request after publishing its check.
         reviews = self.github.approvals(item, pr)
-        from ..store.presentation import record_approval_display
-        from ..store.runtime import writable
-        with self.store.write() as db:
-            writable(db)
-            if db.execute('SELECT 1 FROM units WHERE id=? AND current_candidate_id=?',(item['unit_id'],identity['id'])).fetchone():
-                record_approval_display(db,identity['id'],reviews,self.clock())
+        observation = {'unit_id': item['unit_id'], 'candidate_id': identity['id'],
+                       'reviews': reviews, 'observed_at': self.clock()}
         if any(review['state'] == 'CHANGES_REQUESTED' for review in reviews):
-            return None
+            return result(None)
         human = any(review['counted'] for review in reviews)
         if required and not human:
-            return None
-        return dict(verified=True, merge_enabled=True, approved=True, checks_passed=True, protection_ready=True,
+            return result(None)
+        return result(dict(verified=True, merge_enabled=True, approved=True, checks_passed=True, protection_ready=True,
             candidate_id=identity['id'], head_oid=identity['head_oid'], base_oid=identity['base_oid'],
             policy_hash=identity['policy_hash'], requirements_hash=identity['requirements_hash'],
-            observed_at=self.clock(), human_approved=human)
+            observed_at=self.clock(), human_approved=human))
+
+
+    def evaluate(self, effect):
+        return self.evaluate_observation(effect)['authorization']
 
     __call__ = evaluate
 
@@ -156,7 +167,21 @@ class MergeController:
                              "AND status IN ('pending','uncertain','merged') LIMIT 1", (unit_id, item['candidate_id'])).fetchone()
         if row:
             return {'unit_id': unit_id, 'effect_id': row[0]}
-        authorization = self.admission(item)
+        if isinstance(self.admission, MergeAdmission):
+            evaluated = self.admission.evaluate_observation(item)
+            authorization = evaluated['authorization']
+            observation = evaluated['approval_observation']
+            if observation is not None:
+                from ..store.presentation import record_approval_display
+                from ..store.runtime import writable
+                with self.store.write() as db:
+                    writable(db)
+                    if db.execute('SELECT 1 FROM units WHERE id=? AND current_candidate_id=?',
+                            (observation['unit_id'], observation['candidate_id'])).fetchone():
+                        record_approval_display(db, observation['candidate_id'],
+                            observation['reviews'], observation['observed_at'])
+        else:
+            authorization = self.admission(item)
         if authorization is None:
             return {'unit_id': unit_id, 'pending': 'authorization'}
         # A human-required audit creates a gate in the same commit as its pass.

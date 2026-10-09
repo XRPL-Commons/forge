@@ -1,30 +1,10 @@
 """Explicit prerequisite references and their GitHub completion semantics."""
-import re
-
-from ..store.repository_requirements import reference
-from .contracts import START
-
-_REF = r'(?:https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/|(?<![\w/#])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#)([1-9][0-9]*)\b'
-_FIRST = re.compile(_REF + r'\s+(?:must|needs to|has to|should)\s+(?:be\s+)?(?:merged|closed|done|finished|completed|landed|shipped|land|ship|merge)\b[^.;]*?\bfirst\b', re.I)
+import json
+from .contracts import dependency_references
 
 
 def references(body, repository):
-    found = set()
-    fenced = False
-    for line in (body or '').splitlines():
-        if line.lstrip().startswith(('```', '~~~')):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
-        matches = list(_FIRST.finditer(line))
-        for start in re.finditer(START + r'|^[\W_]*follows\b', line, re.I):
-            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:',
-                              line[start.end():], maxsplit=1, flags=re.I)[0]
-            matches.extend(re.finditer(_REF, clause))
-        for match in matches:
-            found.add(reference((match[1] or match[2] or repository) + '#' + match[3]))
-    return sorted(found)
+    return dependency_references(body, repository)
 
 
 def blocker(fact):
@@ -38,3 +18,105 @@ def blocker(fact):
         return None if fact['merged'] else 'prerequisite_closed_unmerged'
     return { 'completed': None, 'duplicate': 'prerequisite_duplicate',
              'not_planned': 'prerequisite_not_planned' }.get(fact['state_reason'], 'prerequisite_completion_unknown')
+
+
+_IDENTITY = ('repository_id', 'github_id', 'number', 'kind')
+
+
+def identity_blocker(fact, binding, *, repository_id, number, require_binding=False):
+    """Completion cannot rebind a name or depend on the issue itself after a rename."""
+    if fact.get('error'):
+        return fact['error']
+    if (fact.get('repository_id'), fact.get('number')) == (repository_id, number):
+        return 'prerequisite_cycle'
+    if binding is None and require_binding:
+        return 'prerequisite_identity_unobserved'
+    if binding and any(fact.get(key) != binding[key] for key in _IDENTITY):
+        return 'prerequisite_identity_changed'
+    return None
+
+
+def collect(store, github, *, unit_id, member_id, requirements_revision_id, body,
+            require_bindings=False):
+    """Read one member's complete prerequisite scope, then fetch current evidence.
+
+    This function never changes identities, gates, counters or unit versions. The
+    requirements controller commits its observations; merge admission only reads.
+    """
+    from ..store.delivery_inputs import dependencies_in, current_output_in
+    from ..store.models import TransitionError
+    from ..store.repository_requirements import orders_in
+
+    with store.read_snapshot() as db:
+        unit = dict(db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone())
+        member = db.execute('SELECT m.*,i.github_number,r.full_name,v.requirements_json '
+            'FROM unit_issues m JOIN issues i ON i.id=m.issue_id '
+            'JOIN repositories r ON r.id=i.repository_id '
+            'JOIN issue_revisions v ON v.id=m.requirements_revision_id '
+            'WHERE m.unit_id=? AND m.id=? AND m.left_at IS NULL', (unit_id, member_id)).fetchone()
+        if member is None or member['requirements_revision_id'] != requirements_revision_id:
+            raise TransitionError('Prerequisite scope no longer matches the approved member revision')
+        refs = set(references(body, member['full_name']))
+        refs.update(orders_in(db, member['issue_id'], requirements_revision_id))
+        refs.update(row[0] for row in db.execute(
+            "SELECT lower(r.full_name)||'#'||i.github_number FROM issue_dependencies d "
+            'JOIN issues i ON i.id=d.prerequisite_issue_id JOIN repositories r ON r.id=i.repository_id '
+            'WHERE d.issue_id=? AND d.requirements_revision_id=?',
+            (member['issue_id'], requirements_revision_id)))
+        requirements = json.loads(member['requirements_json'])
+        for gate in db.execute("SELECT id,details_json,resolved_at FROM unit_gates WHERE unit_id=? "
+                "AND member_id=? AND code='dependency'", (unit_id, member_id)):
+            details = json.loads(gate['details_json'])
+            if details.get('requirements') != requirements:
+                continue
+            if gate['resolved_at'] is not None:
+                event = db.execute("SELECT payload_json FROM events WHERE unit_id=? AND kind='gate_resolved' "
+                    "AND json_extract(payload_json,'$.gate_id')=? ORDER BY sequence DESC LIMIT 1",
+                    (unit_id, gate['id'])).fetchone()
+                evidence = json.loads(event[0]).get('evidence', {}) if event else {}
+                # A verified completion stays a dependency if it reopens. An
+                # explicit operator dismissal stops the worker-declared wait.
+                if evidence.get('verified') is not True or evidence.get('requirements_revision_id') != requirements_revision_id:
+                    continue
+            refs.update(member['full_name'].lower()+'#'+str(n) for n in details.get('issues', []))
+        members = [dict(row) for row in db.execute(
+            "SELECT m.id,i.github_number,lower(r.full_name)||'#'||i.github_number AS reference "
+            'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN repositories r ON r.id=i.repository_id '
+            'WHERE m.unit_id=? AND m.left_at IS NULL AND m.id!=?', (unit_id, member_id))]
+        internal = {row['reference']: row['id'] for row in members}
+        internal_identity = {(unit['repository_id'], row['github_number']): row['id'] for row in members}
+        approved = set(dependencies_in(db, unit, member_id))
+        # Point lookups avoid SQL variable-count limits for large collections.
+        bindings = {}
+        for ref in refs:
+            row = db.execute('SELECT * FROM prerequisite_identities WHERE reference=?', (ref,)).fetchone()
+            if row:
+                bindings[ref] = dict(row)
+        needed = {internal[ref] for ref in refs if ref in internal}
+        needed.update(internal_identity[(binding['repository_id'], binding['number'])]
+            for binding in bindings.values() if (binding['repository_id'], binding['number']) in internal_identity)
+        outputs = {key: current_output_in(db, unit, key) for key in needed}
+
+    facts, blocked = [], []
+    for ref in sorted(refs):
+        binding = bindings.get(ref)
+        internal_member = internal.get(ref)
+        if not internal_member and binding:
+            internal_member = internal_identity.get((binding['repository_id'], binding['number']))
+        if internal_member:
+            if internal_member not in approved:
+                raise TransitionError('Requirements declare a member dependency absent from the approved composition')
+            output = outputs[internal_member]
+            fact = dict(reference=ref, kind='internal', member_id=internal_member,
+                        output_id=output['id'] if output else None)
+            reason = blocker(fact)
+        else:
+            fact = github.prerequisite(ref, binding)
+            if fact.get('reference') != ref:
+                raise TransitionError('Prerequisite observation identifies a different reference')
+            reason = identity_blocker(fact, binding, repository_id=unit['repository_id'],
+                number=member['github_number'], require_binding=require_bindings) or blocker(fact)
+        facts.append(fact)
+        if reason:
+            blocked.append({'reference': ref, 'reason': reason})
+    return {'facts': facts, 'blocked': blocked}

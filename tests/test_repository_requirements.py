@@ -60,6 +60,13 @@ class RepositoryRequirementsTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT repository_id FROM prerequisite_identities').fetchone()[0],2)
 
+    def test_evidence_has_a_byte_bound_without_an_issue_count_cap(self):
+        facts=[dict(reference='other/repo#'+str(number),repository_id=2,github_id=1000+number,
+            number=number,kind='issue',state='closed',state_reason='completed',merged=False,
+            updated_at='2026-10-09T12:00:00Z') for number in range(1,102)]
+        self.assertTrue(self.commands.dependencies(self.command(1),requirements_revision_id=self.revisions[1],
+            generation=1,facts=facts)['clear'])
+
     def test_closed_without_completion_does_not_release_order(self):
         self.order(1,['other/repo#4'],'order1')
         fact=dict(reference='other/repo#4',repository_id=2,github_id=44,number=4,kind='pull_request',state='closed',state_reason=None,merged=False,updated_at='2026-10-09T12:00:00Z')
@@ -83,6 +90,16 @@ class RepositoryRequirementsTests(unittest.TestCase):
         row=PipelineViews(self.store,clock=lambda:100).issues(key='i1')['issue']
         self.assertEqual(row['prerequisites'][0]['reason'],'prerequisite_closed_unmerged')
         self.assertEqual(row['prerequisites'][0]['url'],'https://github.com/other/repo/pull/4')
+
+    def test_renamed_self_reference_is_an_immutable_identity_cycle(self):
+        self.order(1,['old/name#1'],'renamed-self')
+        fact=dict(reference='old/name#1',repository_id=1,github_id=44,number=1,kind='issue',
+            state='closed',state_reason='completed',merged=False,updated_at='2026-10-09T12:00:00Z')
+        self.assertFalse(self.commands.dependencies(self.command(1),requirements_revision_id=self.revisions[1],
+            generation=1,facts=[fact])['clear'])
+        with self.store.read_snapshot() as db:
+            gate=db.execute("SELECT details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()
+            self.assertEqual(json.loads(gate[0])['blocked'][0]['reason'],'prerequisite_cycle')
 
     def test_independent_environment_choices_keep_their_issue_identity(self):
         for number,tier,services in [(1,'standard',[]),(2,'full',['postgres'])]:

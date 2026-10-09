@@ -104,9 +104,13 @@ def submission(body):
 
 
 
-def dependencies(body):
-    """Same-repository prerequisites in explicit statements, not downstream links."""
-    numbers = set()
+_DEPENDENCY_REF = (r'(?:https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/'
+                   r'|(?<![\w/#])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#)([1-9][0-9]*)\b')
+
+
+def _dependency_tokens(body):
+    """Parse explicit prerequisite clauses once for both public contracts."""
+    found = set()
     fenced = False
     for line in (body or '').splitlines():
         if line.lstrip().startswith(('```', '~~~')):
@@ -114,12 +118,32 @@ def dependencies(body):
             continue
         if fenced:
             continue
-        for match in [*re.finditer(START, line, re.I), *re.finditer(r'^[\W_]*follows\b', line, re.I)]:
-            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:', line[match.end():],
-                              maxsplit=1, flags=re.I)[0]
-            numbers.update(int(n) for n in re.findall(r'(?<![\w/])#([1-9]\d*)\b', clause))
-        numbers.update(int(n) for n in re.findall(FIRST, line, re.I))
-    return sorted(numbers)
+        matches = list(re.finditer(_DEPENDENCY_REF +
+            r'\s+(?:must|needs to|has to|should)\s+(?:be\s+)?'
+            r'(?:merged|closed|done|finished|completed|landed|shipped|land|ship|merge)\b[^.;]*?\bfirst\b', line, re.I))
+        for start in re.finditer(START + r'|^[\W_]*follows\b', line, re.I):
+            clause = re.split(r'(?<=[.!?])\s+(?=[a-z])|;|\bsee\b|\b(?:blocks|references|see also|effort)\s*:',
+                              line[start.end():], maxsplit=1, flags=re.I)[0]
+            matches.extend(re.finditer(_DEPENDENCY_REF, clause))
+        for match in matches:
+            found.add((match[1] or match[2], int(match[3])))
+    return found
+
+
+def dependency_references(body, repository):
+    """Canonical owner/repository#number strings for every explicit prerequisite."""
+    from ..store.repository_requirements import reference
+    return sorted({reference((name or repository) + '#' + str(number))
+                   for name, number in _dependency_tokens(body)})
+
+
+def dependencies(body):
+    """Legacy local-number projection of the shared prerequisite parser.
+
+    Qualified references require dependency_references(body, repository); they
+    never become ambiguous integers in this contract.
+    """
+    return sorted({number for name, number in _dependency_tokens(body) if name is None})
 
 
 def issue_dependencies(body, item=None, *, content_hash=None):
