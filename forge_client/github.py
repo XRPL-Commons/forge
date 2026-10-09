@@ -95,6 +95,44 @@ class GitHub:
         except (ValueError, UnicodeError):
             raise SetupError('github_invalid_response', 'GitHub returned an unreadable response.') from None
 
+    def identity(self):
+        value = self._request('GET', '/user')
+        require(isinstance(value, dict) and positive(value.get('id'))
+                and isinstance(value.get('login'), str), 'github_identity_required',
+                'Sign in to the local GitHub CLI with the configured Forge operator account.')
+        return {'id': value['id'], 'login': value['login']}
+
+    def registration_owner(self, login):
+        require(isinstance(login, str) and re.fullmatch(r'[A-Za-z0-9-]{1,39}', login))
+        value = self._request('GET', '/users/' + login)
+        require(isinstance(value, dict) and positive(value.get('id'))
+                and value.get('type') in ('User', 'Organization')
+                and value.get('login', '').lower() == login.lower())
+        return {k: value[k] for k in ('id', 'login', 'type')}
+
+    def pilot_issue(self, target, number, *, ready_label=None):
+        require(isinstance(target, dict) and NAME.fullmatch(target.get('name', '')) and positive(number))
+        value = self._request('GET', f"/repos/{target['name']}/issues/{number}")
+        require(isinstance(value, dict) and value.get('number') == number and not value.get('pull_request')
+                and value.get('state') in ('open', 'closed'), 'invalid_pilot', 'Select a repository issue, not a pull request.')
+        if ready_label is not None:
+            require(value['state'] == 'open', 'invalid_pilot', 'Select an open issue for the first merge.')
+            require(isinstance(ready_label, str) and 0 < len(ready_label) <= 100)
+            labels = {label['name'] for label in value.get('labels', [])}
+            if ready_label not in labels:
+                self._request('POST', f"/repos/{target['name']}/issues/{number}/labels", {'labels': [ready_label]})
+        return {'number': number, 'state': value['state']}
+
+    def merged_pull(self, target, number):
+        require(isinstance(target, dict) and NAME.fullmatch(target.get('name', '')) and positive(number))
+        value = self._request('GET', f"/repos/{target['name']}/pulls/{number}")
+        require(isinstance(value, dict) and value.get('number') == number
+                and (value.get('base') or {}).get('repo', {}).get('id') == target['id']
+                and (value.get('head') or {}).get('repo', {}).get('id') == target['id'],
+                'repository_identity_changed', 'The candidate belongs to a different repository.')
+        return {'merged': value.get('merged') is True, 'head_sha': (value.get('head') or {}).get('sha'),
+                'merge_sha': value.get('merge_commit_sha'), 'merged_at': value.get('merged_at')}
+
     def owner(self, login):
         require(isinstance(login, str) and re.fullmatch(r'[A-Za-z0-9-]{1,39}', login))
         value = self._request('GET', '/users/' + login)

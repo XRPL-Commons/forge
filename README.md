@@ -46,12 +46,11 @@ GitHub CLI prerequisites, then [agent connections](docs/agent-connections.md) to
 approve a scoped external agent connection. Connections require an unlocked
 macOS Keychain or Linux Secret Service for local credential storage.
 
-The CLI also supports [fresh-host installation](docs/cli-fresh-host.md), including
-a local installer script, a wizard, and resumable JSON operations. This first
-increment installs and qualifies the host, joins its private network, and
-configures operator sign-in and HTTPS. Completing the remaining onboarding stages and
-validating a first merged issue through this entry point remain in
-[#136](https://github.com/XRPL-Commons/forge/issues/136).
+The CLI also supports [fresh-host installation](docs/cli-fresh-host.md). Run
+`forge setup new` for the guided path from a fresh VM to a first verified merge;
+`forge setup continue --ssh USER@HOST` resumes factory setup after sign-in.
+Each stage has JSON operations for agents. The CLI handles SSH and transfers,
+keeps GitHub administration local, and asks explicitly before Start.
 For repository setup on an existing server:
 
 ```sh

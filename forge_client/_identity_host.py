@@ -26,7 +26,7 @@ def identity_dispatch(request):
          and HOME.stat().st_uid == account.pw_uid, 'existing_installation')
     args = ['runuser', '-u', 'forge', '--', 'env', '-i', 'PATH=/usr/sbin:/usr/bin:/sbin:/bin',
             'HOME=' + str(HOME), 'LANG=C.UTF-8', 'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
-            '/usr/bin/python3', '-m', 'forge.operator_bootstrap', '--root', str(ROOT)]
+            '/usr/bin/python3', '-m', 'forge.launch', 'forge.operator_bootstrap', '--root', str(ROOT)]
     result = subprocess.run(args, input=json.dumps(value).encode(), stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, cwd=SOURCE, env=ENV, timeout=420)
     need(result.returncode in (0, 1) and len(result.stdout) <= 16384, 'bootstrap_failed')

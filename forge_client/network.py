@@ -10,7 +10,7 @@ from .install import Installation, ERRORS
 
 
 def payload(component='_network_host.py'):
-    require(component in ('_network_host.py', '_identity_host.py'))
+    require(component in ('_network_host.py', '_identity_host.py', '_factory_host.py'))
     helpers = files('forge_client').joinpath('_install_host.py').read_text()
     network = files('forge_client').joinpath(component).read_text()
     return ('import sys, types\n_helpers=types.ModuleType("forge_install_helpers")\n'

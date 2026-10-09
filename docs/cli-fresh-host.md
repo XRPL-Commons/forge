@@ -1,16 +1,18 @@
 # Fresh-host installation from your computer
 
-This is the first implementation increment of
-[#136](https://github.com/XRPL-Commons/forge/issues/136). It installs and qualifies
-the host, joins its private network, and configures operator sign-in and HTTPS.
-GitHub role Apps, coding accounts, activation, and first-merge integration are
-still in development.
-`installed` means host installation succeeded; it does not mean a factory is
-ready to process issues. See the [full acceptance specification](superpowers/specs/2026-10-02-fresh-factory-cli.md).
+`forge setup new` guides a fresh Ubuntu host through installation, private HTTPS,
+operator sign-in, four GitHub role Apps, a coding account, repository checks and
+explicit Start. It then follows one issue through Build, Review, Audit and a
+verified merge. Each stage also has a noninteractive command.
+
+`installed` means the host passed qualification. `factory_active` means you
+explicitly started processing. Only `first_merge_complete` confirms the final
+milestone. See the [acceptance specification](superpowers/specs/2026-10-02-fresh-factory-cli.md).
 
 ## Install the client
 
-The client needs Python 3.10+, Git, and OpenSSH on macOS or Linux. Python must
+The client needs Python 3.10+, Git, OpenSSH and authenticated GitHub CLI (`gh`)
+on macOS or Linux. GitHub administration uses that local account. Python must
 include `venv` support. From a clean clone of this version:
 
 ```sh
@@ -46,7 +48,7 @@ installation confirmation. Use a dedicated Ubuntu 24.04 VM with AppArmor enabled
 and systemd. The SSH account must be root or have noninteractive sudo; configure
 the VM to accept your local SSH key through your VM provider. The remote image
 must include `/usr/bin/python3`. No remote terminal or manual file transfer is
-needed for the installation steps this command supports.
+needed: the CLI runs the host operations and transfers the required files.
 
 For a new host, compare the displayed ED25519 fingerprint with the VM provider
 console or another trusted source before accepting it. The client pins that key
@@ -64,16 +66,19 @@ The plan shows the host, source commit, and effects:
   credentials, and older source history are excluded. The VM does not need a
   GitHub administrator token to obtain the private source.
 - Install the matching runner AppArmor policy.
-- Invoke the existing `bin/forge setup install`, which builds the UI and worker
+- Qualify the private SQLite runtime and initialize a selected empty store before
+  starting services. Existing legacy data requires the separate
+  [migration workflow](store-migration.md).
+- Invoke `bin/forge setup install`, which builds the UI and worker
   image, runs runner qualification, and starts loopback services.
 
 The runtime is `/home/forge/.local/share/forge`. Host installation does not start
 issue processing. An existing `forge` account or source without matching installer
 state is a conflict; this command does not adopt it or wipe the VM.
 
-After host installation, the wizard continues into private network access and
-operator sign-in. Closing the wizard preserves progress; run `forge setup new
---ssh USER@HOST` to continue.
+After host installation, the wizard continues through the remaining stages below.
+Closing it preserves progress. Use `forge setup new --ssh USER@HOST` to resume
+from the host stage, or `forge setup continue --ssh USER@HOST` after sign-in setup.
 
 ## Private network and operator sign-in
 
@@ -150,8 +155,97 @@ network --ssh USER@HOST --apply --upgrade-installer`; the source commit and setu
 identity remain pinned.
 
 `sign_in_required` confirms configuration, not a completed browser sign-in or a
-working factory. Role Apps, coding accounts, repository readiness, explicit
-activation, and an issue merged through Forge remain acceptance requirements.
+working factory. Continue with the role Apps and factory checks below.
+
+## Role Apps, coding account and first repository
+
+```sh
+forge setup continue --ssh USER@HOST
+```
+
+The wizard resumes completed stages. Sign in to Forge with the GitHub account
+used by your local `gh`. Choose the organization or user that owns the four Apps.
+For each role, the CLI opens a short-lived Forge page; its button submits the
+role-specific manifest directly to GitHub. Approve registration and install the
+App on the chosen repository. Forge exchanges GitHub's one-use code for that
+App's credentials. It never receives your personal or administrator token.
+
+The handoff is bound to the signed-in operator, immutable GitHub owner ID, role,
+server identity and setup generation, and expires after ten minutes. Resume the
+same command if a handoff expires. Passkey and organization approvals remain
+browser actions performed by the operator.
+
+Next, choose a coding account. For browser login, the CLI opens an interactive
+provider login on the host over pinned SSH and gives you its browser instructions.
+API keys and tokens use a hidden prompt or private stdin. Account credentials stay
+in the server's private credential files, outside the local setup journal.
+
+For the first repository, the CLI prints its preparation plan. Applying it uses
+local GitHub access to grant App access or add the required review baseline;
+Forge independently verifies readiness. Existing protections are preserved.
+The wizard then runs isolation checks and small real model probes. **Start** is a
+separate confirmation that enables processing for the selected repository.
+
+The same stages are available to agents:
+
+```sh
+forge setup inspect --ssh USER@HOST --json
+forge setup apps --ssh USER@HOST --owner OWNER --role build --apply --json
+# Repeat the returned browser handoff for review, audit and controller.
+forge setup apps --ssh USER@HOST --apply --json
+forge setup account --ssh USER@HOST --provider codex --kind api_key --secret-stdin --apply --json
+forge setup repository --ssh USER@HOST --repository OWNER/REPO --json
+forge setup repository --ssh USER@HOST --repository OWNER/REPO --apply --json
+forge setup check --ssh USER@HOST --apply --wait 60 --json
+forge setup start --ssh USER@HOST --apply --wait 60 --json
+```
+
+Feed account credentials from a private secret source; never paste them into
+commands or agent messages. JSON browser-account mode returns a terminal handoff
+instead of attempting an interactive login. `apps` without a role chooses the
+next missing App; after all four exist, `--apply` refreshes their installations.
+
+| Status | Meaning and next action |
+| --- | --- |
+| `setup_required` | Inspect role, account and repository checks; finish the missing stage. |
+| `app_registration_required` | Open the returned operator-bound link and approve the GitHub registration. |
+| `app_registered` | Complete the App installation through its returned GitHub URL. |
+| `account_login_required` | Complete terminal login or supply a credential through private stdin. |
+| `repository_ready` | Repository preparation passed; run verification, then Start. |
+| `write_unconfirmed` | A GitHub write may have succeeded; inspect and verify it before retrying. |
+| `checking` | A durable setup operation is running; inspect again. |
+| `factory_active` | Start completed. Choose the first merge issue. |
+
+An uncertain GitHub write is verified on resume before another write is attempted.
+Setup identity, source, owner and first repository stay bound to the saved run.
+After Start, add further repositories using the normal scoped
+[repository commands](agent-connections.md#repository-operations).
+
+## First merge and measurement
+
+Choose an existing open issue with clear acceptance criteria. The wizard asks
+before adding the configured ready label. It then observes normal processing;
+operator decisions, human verification and retries remain available in Forge.
+
+```sh
+forge setup pilot --ssh USER@HOST --repository OWNER/REPO --issue 123 --apply --wait 60 --json
+forge setup pilot --ssh USER@HOST --wait 60 --json
+```
+
+The first command binds the issue and marks it ready. Subsequent calls reuse it.
+`first_merge_pending` reports current status and attempt counts. Closing the
+terminal, changing workers or retrying the issue does not restart the timer.
+The command does not bypass an approval or automatically reset a failure budget.
+
+`first_merge_complete` requires successful native Build, Review and Audit jobs,
+a confirmed normal merge effect, and an independent local GitHub read matching
+the exact candidate head and merge commit. An issue closed elsewhere or an
+adopted existing pull request does not satisfy this milestone.
+
+The receipt includes `time_to_first_merge_seconds`, measured from the local CLI
+installer's recorded start to GitHub's merge timestamp. If the client was
+installed by another method, that field is `null` and `timing_source` explains why;
+`setup_to_first_merge_seconds` remains available. No remote telemetry is sent.
 
 ## Noninteractive operations
 
@@ -209,7 +303,5 @@ forge setup new --ssh root@HOST --name Anvil --new-run
 is fresh. It never wipes a host or overrides an existing remote installation.
 The existing Forge production server is outside this test workflow.
 
-The current `setup_elapsed_seconds` is a stage measurement. It is not the primary
-time-to-first-merge metric: that requires the CLI-installation start and evidence
-of an issue completed and merged through Forge's normal checks and reviews.
-No remote telemetry is sent.
+`setup_elapsed_seconds` remains a progress measurement; use the verified first-merge
+receipt above for the completed run.

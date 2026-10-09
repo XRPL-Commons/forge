@@ -212,7 +212,7 @@ class Onboarding:
                         'default_permissions': ROLE_PERMISSIONS[role], 'default_events': []}
             return {'action': action + '?state=' + state, 'manifest': manifest}
 
-    def callback(self, state, code, browser):
+    def callback(self, state, code, browser, *, owner_id=None):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', code) or not browser:
             raise ValueError('Invalid GitHub callback; return to setup and reconnect')
         # Consume the one-use challenge durably BEFORE exchanging the code.
@@ -242,6 +242,7 @@ class Onboarding:
             verified = api.request('GET', '/app', api.jwt(connection))
             if (verified.get('id') != app['id'] or verified.get('slug') != app['slug']
                     or verified.get('owner', {}).get('login', '').lower() != intent['owner'].lower()
+                    or owner_id is not None and verified.get('owner', {}).get('id') != owner_id
                     or missing_permissions(role, verified.get('permissions', {}))):
                 raise ValueError('App owner or role permissions differ from setup; reconnect using the chosen owner')
             if any(a['connection']['app_id'] == app['id'] for a in data['apps'].values()):

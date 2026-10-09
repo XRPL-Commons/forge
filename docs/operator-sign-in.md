@@ -57,9 +57,9 @@ and supports retries without revoking sessions.
    open the activity page without signing in.
 
 This is once per Forge server, not per repository. Routine sign-in and sign-out
-happen in the UI. Fresh-server installation automation remains unmerged work in
-#136; the released
-`forge server setup` requires an existing host and does not install a fresh VM.
+happen in the UI. The [fresh-host wizard](cli-fresh-host.md) includes this stage
+and then guides role App registration under the configured operator session.
+`forge server setup` continues to require an existing host.
 
 ## Sessions and recovery
 

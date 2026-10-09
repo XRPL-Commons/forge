@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlencode
 
-from .operator_auth import (AuthError, configuration, cookie, digest, github_identity,
+from .operator_auth import (AuthError, configuration, cookie, digest, github_identity, sign_in_destination,
                             FLOW_COOKIE, FLOW_SECONDS, SESSION_COOKIE, SESSION_SECONDS)
 from .client_connections import (ConnectionError, need, fields, capabilities, scope, active_generation,
                                  verify_owner, target_identity, TOKEN, CODE, CAPABILITIES, CLIENT_ID,
@@ -155,7 +155,7 @@ class SqliteOperatorAuth:
                 audit_in(db, self.clock, 'operator_auth_configured', details={'authorization_epoch': epoch})
 
     def begin(self, return_to='/'):
-        if return_to != '/' and not re.fullmatch(r'/settings/agents(?:\?code=[A-Z2-9]{4}-[A-Z2-9]{4})?', return_to):
+        if not sign_in_destination(return_to):
             raise AuthError('Invalid sign-in destination')
         state, browser, verifier = (secrets.token_urlsafe(32) for _ in range(3))
         with self.sqlite_store.write() as db:

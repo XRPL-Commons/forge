@@ -127,6 +127,11 @@ def github_identity(config, code, verifier):
     return {'id': identity.get('id'), 'login': identity.get('login')}
 
 
+def sign_in_destination(value):
+    return isinstance(value, str) and (value == '/' or re.fullmatch(
+        r'/settings/agents(?:\?code=[A-Z2-9]{4}-[A-Z2-9]{4})?|/onboarding/cli/github/start\?state=[A-Za-z0-9_-]{43}', value))
+
+
 class OperatorAuth:
     def __new__(cls, root, *, store=None, **kwargs):
         if cls is OperatorAuth:
@@ -179,7 +184,7 @@ class OperatorAuth:
             data[field] = {key: value for key, value in data[field].items() if value['expires'] > now}
 
     def begin(self, return_to='/'):
-        if return_to != '/' and not re.fullmatch(r'/settings/agents(?:\?code=[A-Z2-9]{4}-[A-Z2-9]{4})?', return_to):
+        if not sign_in_destination(return_to):
             raise AuthError('Invalid sign-in destination')
         state, browser, verifier = (secrets.token_urlsafe(32) for _ in range(3))
         with self.store.transaction() as data:

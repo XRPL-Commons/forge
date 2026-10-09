@@ -90,6 +90,24 @@ def parser():
             command.add_argument('--revision', help='Full Forge commit SHA; default main is resolved once and saved')
             command.add_argument('--host-key', help='Verified ED25519 SHA256 fingerprint for this fresh VM')
             command.add_argument('--new-run', action='store_true', help='Archive the local run and plan again after rebuilding the VM; never wipes the host')
+    for action in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
+        command = fresh.add_parser(action, help='Continue initial setup through the first verified merge' if action == 'continue' else action.capitalize() + ' initial factory setup')
+        command.add_argument('--ssh', required=True, help='The saved administrative SSH destination')
+        command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+        command.add_argument('--wait', type=int, default=0, help='Watch for at most 0–600 seconds')
+        if action not in ('continue', 'inspect'):
+            command.add_argument('--apply', action='store_true', help='Apply this explicit setup step')
+        if action == 'apps':
+            command.add_argument('--role', choices=('build', 'review', 'audit', 'controller'))
+            command.add_argument('--owner', help='GitHub organization or user that owns all four Apps')
+        if action == 'account':
+            command.add_argument('--provider', required=True, choices=('codex', 'claude', 'grok'))
+            command.add_argument('--kind', choices=('browser', 'api_key', 'token'), default='browser')
+            command.add_argument('--secret-stdin', action='store_true', help='Read only the selected provider credential from stdin')
+        if action in ('repository', 'pilot'):
+            command.add_argument('--repository', help='First GitHub OWNER/REPO; subsequent calls reuse it')
+        if action == 'pilot':
+            command.add_argument('--issue', type=int, help='Existing issue to complete normally; retries preserve this binding')
     connect = sub.add_parser('connect')
     connect.add_argument('server')
     connect.add_argument('--name', default='Local agent')
@@ -147,6 +165,14 @@ def parser():
 
 def execute(args):
     if args.command == 'setup':
+        if args.setup_command in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
+            from .factory_setup import execute as setup_stage, wizard as finish_setup
+            from .install import Installation
+            if args.setup_command == 'continue':
+                if not args.json and sys.stdin.isatty():
+                    return finish_setup(Installation(args.ssh))
+                args.setup_command = 'inspect'
+            return setup_stage(args)
         from .install import execute as install, wizard
         if args.setup_command == 'sign-in':
             args.setup_command = 'identity'
@@ -170,7 +196,7 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(),
                 'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',

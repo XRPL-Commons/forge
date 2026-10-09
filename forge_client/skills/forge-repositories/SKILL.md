@@ -39,8 +39,31 @@ sign-in; it does not confirm that the operator signed in.
 
 `installed` does not certify operator sign-in, role Apps, coding accounts,
 activation, or a first merge. Report each as outstanding until observed.
-The complete #136 workflow is still in development.
-Do not treat host-stage elapsed time as time to first merge.
+Continue with `forge setup inspect --ssh USER@HOST --json`. Register each role
+using `forge setup apps --ssh USER@HOST --owner OWNER --role ROLE --apply --json`.
+Relay the operator-bound browser URL; the operator approves the manifest on
+GitHub and installs the App. Repeat for build, review, audit and controller, then
+refresh with `forge setup apps --ssh USER@HOST --apply --json`.
+
+Connect an account using `forge setup account --ssh USER@HOST --provider PROVIDER
+--kind api_key --secret-stdin --apply --json` with a private credential source.
+Browser-account mode returns a terminal handoff; the operator can run the command
+without JSON for guided login. Never collect a credential in agent messages.
+
+Plan the first repository using `forge setup repository --ssh USER@HOST
+--repository OWNER/REPO --json`, then apply the reviewed plan with `--apply`.
+Run `forge setup check --ssh USER@HOST --apply --wait 60 --json` for real model
+and isolation checks. Start only when authorized, through the separate
+`forge setup start --ssh USER@HOST --apply --wait 60 --json` command.
+
+Choose the authorized first issue using `forge setup pilot --ssh USER@HOST
+--repository OWNER/REPO --issue NUMBER --apply --wait 60 --json`. This adds its
+ready label. Later calls omit repository/issue/apply and preserve the same timer.
+Resolve decisions and retries in Forge; the pilot does not bypass them.
+Only `first_merge_complete` certifies native Build/Review/Audit, the normal merge
+receipt and independent GitHub verification. Do not call external completion or
+an adopted PR the first merge. If CLI installation timing is unknown, report the
+explicit null metric rather than substituting setup elapsed time.
 
 ## Connection and intent
 

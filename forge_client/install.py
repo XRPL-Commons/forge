@@ -15,12 +15,20 @@ from .github import run_bounded
 from .workflow import Journal
 from .ssh_host import discover, environment, pinned_options
 from .source import export as export_source
+from .metrics import client_installation
 
 SOURCE = '/home/forge/forge'
 ROOT = '/home/forge/.local/share/forge'
 REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 STEPS = ['packages', 'account', 'source', 'isolation', 'host']
 ERRORS = {
+    'factory_setup_failed': 'Factory setup could not complete. Inspect setup status and the server checks before resuming.',
+    'storage_required': 'Initialize the selected SQLite runtime before continuing setup.',
+    'setup_changed': 'Setup identity or configuration changed. Inspect it before continuing.',
+    'setup_complete': 'Factory is active; use forge repo commands for further repositories.',
+    'setup_busy': 'A setup check is already running. Check status, then resume.',
+    'repository_changed': 'Repository identity or access changed. Refresh access before continuing.',
+    'invalid_account': 'Provide a valid provider credential privately.',
     'administrator_required': 'Use root or an SSH account with noninteractive sudo for this VM.',
     'unsupported_os': 'Fresh installation currently supports Ubuntu 24.04. Select a supported VM.',
     'apparmor_required': 'Use a VM with AppArmor enabled in its kernel.',
@@ -91,6 +99,8 @@ def schemas():
                                         'secret_stdin': {'type': 'boolean', 'default': False}}, 'required': ['ssh']},
         'result_statuses': ['identity_app_required', 'identity_secret_required', 'planned', 'sign_in_required']}
     commands['sign-in'] = {**commands['identity'], 'usage': 'forge setup sign-in --ssh USER@HOST --json', 'alias_for': 'identity'}
+    from .factory_setup import schemas as factory_schemas
+    commands.update(factory_schemas())
     return commands
 
 
@@ -207,7 +217,8 @@ class Installation:
                         'invalid_host_key', 'Use a verified ED25519 SHA256 fingerprint.')
                 state = {'version': 1, 'ssh': self.ssh, 'started_at': self.clock(), 'host_key': fingerprint,
                          'intent': {'id': uuid.uuid4().hex, 'name': name, 'revision': revision(commit)},
-                         'milestones': {}, 'last_status': None}
+                         'milestones': {}, 'last_status': None,
+                         'cli_installation': client_installation(self.journal.root)}
                 if previous:
                     # Refuse to detach the current local run from an existing host.
                     # A new run is allowed only after read-only confirmation that
@@ -276,7 +287,7 @@ def execute(args):
                                          upgrade_installer=getattr(args, 'upgrade_installer', False))
 
 
-def wizard(args, *, ask=input, tell=print, installation=Installation, network_wizard=None):
+def wizard(args, *, ask=input, tell=print, installation=Installation, network_wizard=None, factory_wizard=None):
     """Presentation only. Every state change is an ordinary Installation operation."""
     tell('Set up a new Forge factory')
     ssh = args.ssh or ask('SSH account and host (for example root@203.0.113.10): ').strip()
@@ -300,7 +311,12 @@ def wizard(args, *, ask=input, tell=print, installation=Installation, network_wi
     if result['status'] == 'installed':
         if network_wizard is None:
             from .network import wizard as network_wizard
-        return network_wizard(workflow, ask=ask, tell=tell)
+        result = network_wizard(workflow, ask=ask, tell=tell)
+        if result.get('status') == 'sign_in_required':
+            if factory_wizard is None:
+                from .factory_setup import wizard as factory_wizard
+            return factory_wizard(workflow, ask=ask, tell=tell)
+        return result
     if result['status'] != 'installing':
         if ask('Install on this VM? [y/N] ').strip().lower() not in ('y', 'yes'):
             return result
@@ -316,5 +332,10 @@ def wizard(args, *, ask=input, tell=print, installation=Installation, network_wi
     if result['status'] == 'installed':
         if network_wizard is None:
             from .network import wizard as network_wizard
-        return network_wizard(workflow, ask=ask, tell=tell)
+        result = network_wizard(workflow, ask=ask, tell=tell)
+        if result.get('status') == 'sign_in_required':
+            if factory_wizard is None:
+                from .factory_setup import wizard as factory_wizard
+            return factory_wizard(workflow, ask=ask, tell=tell)
+        return result
     return result
