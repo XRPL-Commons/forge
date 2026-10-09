@@ -35,41 +35,90 @@ def learn_memory_in(db,unit,job,now):
         db.execute('INSERT INTO memory_profiles(id,repository_id,role,revision,memory_bytes,source_job_id,observed_at,allocation) VALUES(?,?,?,?,?,?,?,?)',
                    (_id(job['id'],'memory-profile'),unit['repository_id'],job['role'],previous['revision']+1 if previous else 1,
                     used,job['id'],now,config['memory']))
-    row=db.execute('SELECT memory_retry_json FROM unit_environment_observations WHERE unit_id=?',(unit['id'],)).fetchone()
-    retry=json.loads(row[0]) if row and row[0] else {}
-    if retry.get('role')==job['role'] and used>=_memory(retry['memory']):
-        db.execute('UPDATE unit_environment_observations SET memory_retry_json=NULL WHERE unit_id=?',(unit['id'],))
+    for member in db.execute('SELECT m.issue_id FROM job_members j JOIN unit_issues m ON m.id=j.member_id WHERE j.job_id=?', (job['id'],)):
+        row=db.execute('SELECT memory_retry_json FROM issue_environment_observations WHERE issue_id=?',(member['issue_id'],)).fetchone()
+        retry=json.loads(row[0]) if row and row[0] else {}
+        if retry.get('role')==job['role'] and used>=_memory(retry['memory']):
+            db.execute('UPDATE issue_environment_observations SET memory_retry_json=NULL WHERE issue_id=?',(member['issue_id'],))
 
 
 class RuntimeRequirements(Executions):
+    @staticmethod
+    def _revision_member(db, unit, revision_id):
+        row = db.execute('SELECT * FROM unit_issues WHERE unit_id=? AND requirements_revision_id=? AND left_at IS NULL',
+                         (unit['id'], revision_id)).fetchone()
+        if row is None:
+            raise TransitionError('Requirements revision is not a current member of this unit')
+        return dict(row)
+
     def dependencies(self,command,*,requirements_revision_id,generation,facts):
         if (type(generation) is not int or generation<1 or not isinstance(facts,list) or len(facts)>100
                 or len(_json(facts).encode())>60000):
             raise TransitionError('dependency observation must be a bounded ordered collection')
-        numbers=[]
+        from .repository_requirements import reference
+        from ..factory.prerequisites import blocker
+        refs=[]
         for fact in facts:
-            if (not isinstance(fact,dict) or type(fact.get('number')) is not int or fact['number']<1
-                    or fact.get('state') not in {'open','closed'} or not isinstance(fact.get('updated_at'),str)):
-                raise TransitionError('dependency needs an exact observed issue identity')
-            self._remote_time(fact['updated_at'])
-            numbers.append(fact['number'])
-        if len(set(numbers))!=len(numbers):
-            raise TransitionError('dependency observations must be unique')
+            if not isinstance(fact,dict):
+                raise TransitionError('Dependency observation must identify a prerequisite')
+            ref=reference(fact.get('reference'))
+            if ref!=fact['reference']:
+                raise TransitionError('Dependency references must be canonical')
+            if fact.get('error'):
+                if fact['error'] not in {'prerequisite_inaccessible','prerequisite_identity_changed'}:
+                    raise TransitionError('Unknown prerequisite observation error')
+            elif fact.get('kind')=='internal':
+                if not isinstance(fact.get('member_id'),str) or fact.get('output_id') is not None and not isinstance(fact['output_id'],str):
+                    raise TransitionError('Internal prerequisite must pin its current member output')
+            else:
+                if (fact.get('kind') not in {'issue','pull_request'} or fact.get('state') not in {'open','closed'}
+                        or any(type(fact.get(key)) is not int or fact[key]<1 for key in ('repository_id','github_id','number'))
+                        or type(fact.get('merged')) is not bool):
+                    raise TransitionError('Dependency needs an exact GitHub identity and completion state')
+                self._remote_time(fact['updated_at'])
+            refs.append(ref)
+        if len(set(refs))!=len(refs):
+            raise TransitionError('Dependency observations must be unique')
         payload=dict(requirements_revision_id=requirements_revision_id,generation=generation,facts=facts)
         def change(db,unit):
             self._live(unit)
-            member=self._singleton(db,unit)
+            member=self._revision_member(db,unit,requirements_revision_id)
             if member['requirements_revision_id']!=requirements_revision_id:
                 raise TransitionError('dependency evidence quotes an obsolete requirements revision')
             previous=db.execute('SELECT generation FROM dependency_checks WHERE member_id=? ORDER BY generation DESC LIMIT 1',(member['id'],)).fetchone()
             if previous and generation<=previous[0]:
                 return {'stale':True}
-            required={row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id '
-                'WHERE d.issue_id=? AND d.requirements_revision_id=?',(member['issue_id'],requirements_revision_id))}
-            if not required<=set(numbers):
-                raise TransitionError('dependency observation omits persisted prerequisites')
-            own=db.execute('SELECT github_number FROM issues WHERE id=?',(member['issue_id'],)).fetchone()[0]
-            clear=all(fact['state']=='closed' and fact['number']!=own for fact in facts)
+            from .repository_requirements import orders_in
+            required=set(orders_in(db,member['issue_id'],requirements_revision_id))
+            required.update(row[0] for row in db.execute('SELECT lower(r.full_name)||\'#\'||i.github_number '
+                'FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id JOIN repositories r ON r.id=i.repository_id '
+                'WHERE d.issue_id=? AND d.requirements_revision_id=?',(member['issue_id'],requirements_revision_id)))
+            if not required<=set(refs):
+                raise TransitionError('Dependency observation omits persisted prerequisites')
+            own=db.execute('SELECT lower(r.full_name)||\'#\'||i.github_number FROM issues i JOIN repositories r ON r.id=i.repository_id WHERE i.id=?',(member['issue_id'],)).fetchone()[0]
+            blocked=[]
+            for fact in facts:
+                # Internal output readiness belongs to the approved delivery graph.
+                reason=None if fact.get('kind')=='internal' else blocker(fact)
+                if fact['reference']==own:
+                    reason='prerequisite_cycle'
+                if not fact.get('error') and fact['kind']=='internal':
+                    from .delivery_inputs import dependencies_in,current_output_in
+                    if fact['member_id'] not in dependencies_in(db,unit,member['id']):
+                        raise TransitionError('Internal prerequisite was not approved in the composition')
+                    output=current_output_in(db,unit,fact['member_id'])
+                    if fact['output_id']!=(output['id'] if output else None):
+                        raise TransitionError('Internal prerequisite output changed before observation')
+                elif not fact.get('error'):
+                    binding=db.execute('SELECT * FROM prerequisite_identities WHERE reference=?',(fact['reference'],)).fetchone()
+                    identity=tuple(fact[key] for key in ('repository_id','github_id','number','kind'))
+                    if binding and tuple(binding[key] for key in ('repository_id','github_id','number','kind'))!=identity:
+                        reason='prerequisite_identity_changed'
+                    elif binding is None:
+                        db.execute('INSERT INTO prerequisite_identities VALUES(?,?,?,?,?,?)',(fact['reference'],*identity,self.clock()))
+                if reason:
+                    blocked.append({'reference':fact['reference'],'reason':reason})
+            clear=not blocked
             db.execute('INSERT INTO dependency_checks VALUES(?,?,?,?,?,?,?,?)',
                        (_id(command.request_id,'dependency-check'),unit['id'],member['id'],requirements_revision_id,generation,int(clear),_json(facts),self.clock()))
             gates=db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='dependency' AND member_id IS ? AND resolved_at IS NULL",
@@ -88,12 +137,14 @@ class RuntimeRequirements(Executions):
                 digest=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(requirements_revision_id,)).fetchone()[0])
                 for gate in gates:
                     details=json.loads(gate['details_json'])
-                    if details.get('requirements')==digest and set(details.get('issues',[]))<=set(numbers):
+                    if details.get('requirements')==digest and {own.rsplit('#',1)[0]+'#'+str(number) for number in details.get('issues',[])}<=set(refs):
                         self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation})
-            elif not owned:
-                self._fence(db,command)
+            elif not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned):
+                for gate in owned:
+                    self._resolve(db,command,gate['id'],{'superseded_by_observation':generation})
+                self.fence_member_in(db,command,member['id'],reason='prerequisite_changed')
                 self._open_gate(db,command,'dependency',{'source':'runtime_dependencies','requirements_revision_id':requirements_revision_id,
-                    'blocked':[f['number'] for f in facts if f['state']!='closed' or f['number']==own]},member['id'])
+                    'blocked':blocked},member['id'])
             self._event(db,command,'lifecycle_changed',{'dependency_generation':generation,'clear':clear})
             return {'clear':clear,'generation':generation}
         return self._apply(command,'observe_dependencies',payload,change)
@@ -108,19 +159,19 @@ class RuntimeRequirements(Executions):
         payload=dict(requirements_revision_id=requirements_revision_id,choice=choice,labels=labels,config_hash=config_hash)
         def change(db,unit):
             self._live(unit)
-            member=self._singleton(db,unit)
+            member=self._revision_member(db,unit,requirements_revision_id)
             if member['requirements_revision_id']!=requirements_revision_id:
                 raise TransitionError('environment selection quotes obsolete requirements')
             current=db.execute('SELECT revision FROM unit_environment WHERE unit_id=? ORDER BY revision DESC LIMIT 1',(unit['id'],)).fetchone()
             revision=current[0]+1 if current else 1
             target='env:'+choice['tier']
-            for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],)).fetchall():
+            for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],member['id'])).fetchall():
                 if json.loads(gate['details_json']).get('source')=='runtime_selection':
                     self._resolve(db,command,gate['id'],{'environment_ready':choice,'requirements_revision_id':requirements_revision_id})
-            db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at) VALUES(?,?,?,?,?,?)',
-                       (unit['id'],revision,_json(choice),requirements_revision_id,config_hash,self.clock()))
-            db.execute('INSERT INTO unit_environment_observations(unit_id,choice_json,label) VALUES(?,?,?) ON CONFLICT(unit_id) DO UPDATE SET choice_json=excluded.choice_json,label=excluded.label',
-                       (unit['id'],_json(choice),target))
+            db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at,member_id) VALUES(?,?,?,?,?,?,?)',
+                       (unit['id'],revision,_json(choice),requirements_revision_id,config_hash,self.clock(),member['id']))
+            db.execute('INSERT INTO issue_environment_observations(issue_id,choice_json,label) VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET choice_json=excluded.choice_json,label=excluded.label',
+                       (member['issue_id'],_json(choice),target))
             effect_id=None
             if set(labels)!={target}:
                 effect_id=_id(command.request_id,'environment-label')
@@ -156,7 +207,7 @@ class RuntimeRequirements(Executions):
                 raise TransitionError('environment effect is not runnable')
             unit=db.execute('SELECT * FROM units WHERE id=?',(row['unit_id'],)).fetchone()
             member=db.execute('SELECT * FROM unit_issues WHERE id=?',(row['member_id'],)).fetchone()
-            latest=db.execute('SELECT MAX(revision) FROM unit_environment WHERE unit_id=?',(unit['id'],)).fetchone()[0]
+            latest=db.execute('SELECT MAX(revision) FROM unit_environment WHERE member_id=?',(member['id'],)).fetchone()[0]
             if (unit['version']!=expected_version or unit['state'] in {'merged','closed','dissolved'}
                     or member['left_at'] is not None or member['requirements_revision_id']!=row['requirements_revision_id']
                     or latest!=row['revision']):
@@ -169,11 +220,11 @@ class RuntimeRequirements(Executions):
             raise TransitionError('environment issue needs a bounded reason')
         def change(db,unit):
             self._live(unit)
-            member=self._singleton(db,unit)
+            member=self._revision_member(db,unit,requirements_revision_id)
             if member['requirements_revision_id']!=requirements_revision_id:
                 raise TransitionError('environment issue quotes obsolete requirements')
-            self._fence(db,command)
-            gate=self._open_gate(db,command,'environment',{'source':'runtime_selection','reason':reason,'requirements_revision_id':requirements_revision_id})
+            self.fence_member_in(db,command,member['id'],reason='environment_changed')
+            gate=self._open_gate(db,command,'environment',{'source':'runtime_selection','reason':reason,'requirements_revision_id':requirements_revision_id},member['id'])
             return {'accepted':True,'gate_id':gate}
         return self._apply(command,'environment_problem',dict(requirements_revision_id=requirements_revision_id,reason=reason),change)
 
@@ -181,13 +232,13 @@ class RuntimeRequirements(Executions):
         from ..factory.environments import override as validate_override
         value=validate_override(value)
         self._live(unit)
-        member=self._singleton(db,unit)
+        member=self._revision_member(db,unit,requirements_revision_id)
         if member['requirements_revision_id']!=requirements_revision_id:
             raise TransitionError('environment override quotes obsolete requirements')
-        self._fence(db,command)
-        db.execute('INSERT INTO unit_environment_observations(unit_id,override_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET override_json=excluded.override_json,retry_json=NULL',
-                   (unit['id'],_json(value) if value['mode']!='automatic' else None))
-        for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],)).fetchall():
+        self.fence_member_in(db,command,member['id'],reason='environment_changed')
+        db.execute('INSERT INTO issue_environment_observations(issue_id,override_json) VALUES(?,?) ON CONFLICT(issue_id) DO UPDATE SET override_json=excluded.override_json,retry_json=NULL',
+                   (member['issue_id'],_json(value) if value['mode']!='automatic' else None))
+        for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],member['id'])).fetchall():
             self._resolve(db,command,gate['id'],{'operator_environment_override':value})
         self._event(db,command,'lifecycle_changed',{'environment_override':value})
         return {'accepted':True}
@@ -202,7 +253,7 @@ class RuntimeRequirements(Executions):
         if not isinstance(evidence,dict) or not evidence:
             raise TransitionError('dependency override requires operator evidence')
         self._live(unit)
-        member=self._singleton(db,unit)
+        member=self._revision_member(db,unit,requirements_revision_id)
         if member['requirements_revision_id']!=requirements_revision_id:
             raise TransitionError('dependency override quotes obsolete requirements')
         digest=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(requirements_revision_id,)).fetchone()[0])
@@ -228,14 +279,15 @@ class RuntimeRequirements(Executions):
             if not current:
                 self._result(db,command,job,evidence,'stale_environment_retry')
                 return {'accepted':False}
-            if job['role'] not in {'build','review','audit'} or not job['cleanup']:
+            if job['role'] not in {'build','integration','review','audit'} or not job['cleanup']:
                 raise TransitionError('environment retry requires a cleaned pipeline assignment')
             for gate in applicable_gates(db,unit,job['member_id'],job['candidate_id']):
                 if gate['code'] not in {'result_pending','cleanup_pending'} or json.loads(gate['details_json']).get('job_id')!=job_id:
                     raise TransitionError('another gate prevents environment retry')
             launch=db.execute('SELECT runner_config_json,branch FROM job_launches WHERE job_id=?',(job_id,)).fetchone()
             config=json.loads(launch['runner_config_json'])
-            state=db.execute('SELECT * FROM unit_environment_observations WHERE unit_id=?',(unit['id'],)).fetchone()
+            members=db.execute('SELECT m.issue_id FROM job_members j JOIN unit_issues m ON m.id=j.member_id WHERE j.job_id=?',(job_id,)).fetchall()
+            states=[db.execute('SELECT * FROM issue_environment_observations WHERE issue_id=?',(m['issue_id'],)).fetchone() for m in members]
             if kind=='memory':
                 used=_memory(config['memory'])
                 tiers=selection.get('tiers',[])
@@ -249,16 +301,16 @@ class RuntimeRequirements(Executions):
                 field='memory_retry_json'
             else:
                 wanted=selection.get('services')
-                choice=json.loads(state['choice_json']) if state and state['choice_json'] else {}
-                if (state and (state['retry_json'] or state['override_json']) or choice.get('automatic') is False
+                if (any(state and (state['retry_json'] or state['override_json'] or json.loads(state['choice_json'] or '{}').get('automatic') is False) for state in states)
                         or not isinstance(wanted,list) or not wanted or set(wanted)-{'mongodb','postgres','redis'}
                         or set(wanted)<=set(config.get('services',[])) or evidence.get('full_environment_available') is not True):
                     raise TransitionError('service retry must be automatic, available, new and bounded to one retry')
                 retry=dict(attempt=job_id,services=sorted(set(wanted)|set(config.get('services',[]))),branch=launch['branch'])
                 field='retry_json'
             self._result(db,command,job,evidence,kind+'_retry')
-            db.execute('INSERT INTO unit_environment_observations(unit_id,'+field+') VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET '+field+'=excluded.'+field,
-                       (unit['id'],_json(retry)))
+            for member in members:
+                db.execute('INSERT INTO issue_environment_observations(issue_id,'+field+') VALUES(?,?) ON CONFLICT(issue_id) DO UPDATE SET '+field+'=excluded.'+field,
+                           (member['issue_id'],_json(retry)))
             db.execute('INSERT INTO environment_job_retries VALUES(?,?,?,?)',(job_id,kind,_json(selection),self.clock()))
             self._event(db,command,'lifecycle_changed',{'environment_retry':kind,'job_id':job_id,'selection':selection})
             return {'accepted':True,'retry':kind,'selection':selection}

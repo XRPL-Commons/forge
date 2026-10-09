@@ -132,7 +132,7 @@ class SQLiteDiscussions:
         from .dispatch_controller import DispatchController
         driver=DispatchController(self.db,None,config=config,prepare=None,admission=lambda _:False,clock=self.clock)
         with self.db.read_snapshot() as db:
-            units=db.execute("SELECT u.id FROM units u JOIN unit_environment_observations e ON e.unit_id=u.id WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('queued','building','reviewing','auditing') LIMIT 100").fetchall()
+            units=db.execute("SELECT DISTINCT u.id FROM units u JOIN unit_issues m ON m.unit_id=u.id AND m.left_at IS NULL JOIN issue_environment_observations e ON e.issue_id=m.issue_id WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('queued','building','reviewing','auditing') LIMIT 100").fetchall()
         return any(not driver.snapshot(row['id'])['reason'] for row in units)
 
     def tick(self,config,github,settings,*,launch=True):

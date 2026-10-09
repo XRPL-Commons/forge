@@ -179,7 +179,7 @@ class PipelineViews:
             legacy = 'investigating'
         elif reason:
             legacy = 'hold'
-        environment = db.execute('SELECT choice_json,override_json,environment_hold_json FROM unit_environment_observations WHERE unit_id=?', (unit_id,)).fetchone() if unit_id else None
+        environment = db.execute('SELECT choice_json,override_json,environment_hold_json FROM issue_environment_observations WHERE issue_id=?', (issue_id,)).fetchone() if unit_id else None
         if environment and environment['environment_hold_json'] and unit['state'] in {'merged','closed','dissolved'}:
             environment_block=json.loads(environment['environment_hold_json'])
         fresh = not issue.get('body_truncated') and issue['observed_at'] is not None and 0 <= self.clock()-issue['observed_at'] < 300

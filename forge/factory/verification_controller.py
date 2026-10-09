@@ -38,12 +38,19 @@ class VerificationController:
                 and ((pr.get('base') or {}).get('repo') or {}).get('id') == item['repo_id'])
 
     def _issue_current(self, item):
-        issue, requirements = self.github.issue(item)
-        labels = {row.get('name') if isinstance(row, dict) else row for row in issue.get('labels', [])}
-        return (issue.get('number') == item['number'] and issue.get('state') == 'open'
-                and requirements == item['requirements'] and not labels.intersection(self.hold_labels)
-                and manifest_hash(requirements) == item['identity']['requirements_hash']
-                and ownership(issue, item, item['repo']) is None)
+        if item['requirements_hash']!=item['identity']['requirements_hash']:
+            return False
+        from .ownership import publication_context
+        item=publication_context(self.store,item['unit']['id'],item)
+        for member in item['members']:
+            scoped={**item,'number':member['number'],'requirements':member['requirements']}
+            issue,requirements=self.github.issue(scoped)
+            labels={row.get('name') if isinstance(row,dict) else row for row in issue.get('labels',[])}
+            if (issue.get('number')!=member['number'] or issue.get('state')!='open'
+                    or requirements!=member['requirements'] or labels.intersection(self.hold_labels)
+                    or ownership(issue,scoped,item['repo']) is not None):
+                return False
+        return True
 
     def _observe(self, item):
         if (item['unit']['current_candidate_id'] != item['identity']['id']

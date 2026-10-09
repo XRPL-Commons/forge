@@ -985,8 +985,9 @@ class Lifecycle:
             if member["left_at"] is None and unit["state"] not in TERMINAL:
                 if requirements_hash != revision["requirements_hash"]:
                     ambiguous = db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone()
-                    if ambiguous or len(self._members(db, unit["id"])) != 1:
-                        self._fence(db, command)
+                    from .delivery_inputs import approved_in
+                    if ambiguous or approved_in(db, unit["id"]):
+                        self.fence_member_in(db, command, member["id"], reason="issue_observation_changed")
                         if not any(g["code"] == "membership_decision" and g["member_id"] == member["id"] for g in _gates(db, unit["id"])):
                             self._open_gate(db, command, "membership_decision", {"reason": "requirements_changed", "revision_id": revision_id}, member["id"])
                     else:
@@ -994,11 +995,11 @@ class Lifecycle:
                         db.execute("UPDATE units SET membership_generation = membership_generation + 1 WHERE id = ?", (unit["id"],))
                         self._invalidate(db, command, unit, "requirements_changed", {"issue_id": issue_id, "revision_id": revision_id})
                 if state == "closed" and old["github_state"] != "closed":
-                    self._fence(db, command)
+                    self.fence_member_in(db, command, member["id"], reason="issue_observation_changed")
                 matching_hold = [g for g in _gates(db, unit["id"]) if g["code"] == "label_hold" and g["member_id"] == member["id"]]
                 held = bool(set(hold_labels).intersection(payload["labels"]))
                 if held and not matching_hold:
-                    self._fence(db, command)
+                    self.fence_member_in(db, command, member["id"], reason="issue_observation_changed")
                     self._open_gate(db, command, "label_hold", {"source": "github_labels", "issue_id": issue_id}, member["id"])
                 elif not held:
                     for gate in matching_hold:
@@ -1012,7 +1013,10 @@ class Lifecycle:
                     existing_gates = [g for g in _gates(db, unit['id'])
                                       if g['code'] == code and g['member_id'] == scope]
                     if blocked and not existing_gates:
-                        self._fence(db, command)
+                        if scope is None:
+                            self._fence(db, command)
+                        else:
+                            self.fence_member_in(db, command, member["id"], reason="issue_observation_changed")
                         self._open_gate(db, command, code, {'source': 'controller_observation', 'issue_id': issue_id}, scope)
                     elif not blocked:
                         for gate in existing_gates:

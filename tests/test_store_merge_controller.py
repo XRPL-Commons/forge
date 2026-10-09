@@ -141,9 +141,9 @@ class MergeControllerTests(unittest.TestCase):
             return dict(db.execute('SELECT * FROM candidates WHERE id=?', (self.view()['current_candidate_id'],)).fetchone())
 
     def prepare_candidate(self, *, human_required=False, audit_required=False):
-        self.config['human_required'] = human_required
+        self.config['repository_merge_policies']={'1':'human' if human_required else 'auto'}
         build_manifest = dict(requirements_revision_id=self.admitted['revision_id'], base_oid=BASE,
-                              policy_hash=manifest_hash(policy(self.config)))
+                              policy_hash=manifest_hash(policy(self.config,1,repository_name='owner/repo')))
         job = self.life.reserve_job(self.command(), 'build', slot='build-1', execution_fence='build-fence',
                                    input_manifest=build_manifest, member_id=self.admitted['member_id'])['job_id']
         candidate = Candidate(10, 'forge/issue-1-test', HEAD, BASE, build_manifest['policy_hash'],
@@ -275,7 +275,7 @@ class MergeControllerTests(unittest.TestCase):
             details={'ci': [{'name': 'Tests', 'app_id': 201}]})['gate_id']
         self.assertIsNone(self.admission(effect))
         verifier = VerificationController(self.store, self.remote, profiles=lambda repo: [{'name': 'Tests', 'app_id': 201}],
-            policy=lambda item: policy(self.config), clock=lambda: self.now)
+            policy=lambda item: policy(self.config,1,repository_name='owner/repo'), clock=lambda: self.now)
         verifier.step(gate)
         self.assertIsNotNone(self.admission(effect))
         self.remote.ci['head'] = 'd' * 40
@@ -291,7 +291,7 @@ class MergeControllerTests(unittest.TestCase):
         self.remote.approve(at=325)
         self.now = 350
         verifier = VerificationController(self.store, self.remote, profiles=lambda repo: [],
-            policy=lambda item: policy(self.config), clock=lambda: self.now)
+            policy=lambda item: policy(self.config,1,repository_name='owner/repo'), clock=lambda: self.now)
         verifier.confirm_human(self.command(), gate, statement='Verified migration on the current revision.')
         self.assertIsNone(self.admission(effect))
         self.now = 400

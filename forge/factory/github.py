@@ -104,6 +104,40 @@ class GitHub:
         except AccessError as error:
             raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
 
+    def prerequisite(self, ref, binding=None):
+        """Read one installed repository target, including PR merge provenance."""
+        from ..store.repository_requirements import reference
+        ref = reference(ref)
+        name, number = ref.rsplit('#', 1)
+        number = int(number)
+        observation = self.settings.observation()['roles'].get('controller', {})
+        repositories = observation.get('repositories', [])
+        matches = [row for row in repositories if (row['id'] == binding['repository_id'] if binding
+                   else row['name'].lower() == name)]
+        if len(matches) != 1:
+            return {'reference': ref, 'error': 'prerequisite_inaccessible'}
+        selected = matches[0]
+        item = {'repo_id': selected['id'], 'repo': selected['name'], 'number': number}
+        try:
+            repository = self.call('controller', item, 'GET', '')
+            if repository['id'] != item['repo_id']:
+                return {'reference': ref, 'error': 'prerequisite_identity_changed'}
+            remote = self.call('controller', item, 'GET', '/issues/' + str(number))
+            kind = 'pull_request' if 'pull_request' in remote else 'issue'
+            merged = False
+            if kind == 'pull_request':
+                pull = self.pr(item, number)
+                if pull['number'] != number or pull['base']['repo']['id'] != repository['id']:
+                    return {'reference': ref, 'error': 'prerequisite_identity_changed'}
+                merged = pull['merged']
+            return dict(reference=ref, repository_id=repository['id'], github_id=remote['id'], number=remote['number'],
+                        kind=kind, state=remote['state'], state_reason=remote.get('state_reason'),
+                        merged=merged, updated_at=remote['updated_at'])
+        except GitHubBudgetExhausted:
+            raise
+        except GitHubUnavailable:
+            return {'reference': ref, 'error': 'prerequisite_inaccessible'}
+
     def pages(self, role, repo, suffix, key=None):
         rows = []
         for page in range(1, 101):

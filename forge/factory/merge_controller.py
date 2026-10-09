@@ -1,4 +1,4 @@
-"""Fresh merge authorization and durable intent for SQLite singleton candidates."""
+"""Fresh merge authorization and durable intent for SQLite delivery candidates."""
 import json
 import time
 import uuid
@@ -25,15 +25,12 @@ def candidate_snapshot(store, unit_id):
         unit = dict(row)
         if unit['current_candidate_id'] is None:
             return None
-        members = db.execute('SELECT i.github_number,r.requirements_json FROM unit_issues m '
-                             'JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=m.requirements_revision_id '
-                             'WHERE m.unit_id=? AND m.left_at IS NULL LIMIT 2', (unit_id,)).fetchall()
-        if len(members) != 1:
-            raise TransitionError('merge authorization currently requires a unit of one')
+        from ..store.candidate_scope import scope_in
+        scope=scope_in(db,unit)
         identity = dict(db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone())
         from ..store.operator_views import reviewer_request_in
         value = dict(reviewers_requested=reviewer_request_in(db,identity['id']),unit_id=unit_id, unit_version=unit['version'], repo=unit['repo'], repo_id=unit['repo_id'],
-            state=unit['state'], number=members[0]['github_number'], requirements=json.loads(members[0]['requirements_json']),
+            state=unit['state'], **scope,
             identity=identity, candidate_id=identity['id'], candidate=dict(key=identity['id'], pr=identity['pull_number'],
                 branch=identity['branch'], head=identity['head_oid'], base=identity['base_oid'], base_ref=unit['base_branch'],
                 accepted_at=identity['accepted_at']), evidence={}, gates=[], verified_checks=[])
@@ -50,7 +47,8 @@ def candidate_snapshot(store, unit_id):
             entry = dict(gate)
             entry['details'] = json.loads(entry.pop('details_json'))
             value['gates'].append(entry)
-        return value
+        from .ownership import publication_context
+        return publication_context(store,unit_id,value)
 
 
 class MergeAdmission:
@@ -71,19 +69,24 @@ class MergeAdmission:
         if not isinstance(config, dict) or any(key not in config for key in ('human_required', 'human_reviewers', 'merge_method')):
             return None
         identity = item['identity']
+        effective_policy=policy(config,item['repo_id'],repository_name=item['repo'])
         if (not config.get('enabled') or not config.get('merge_enabled')
                 or self.repository_ready(item['repo']) is not True
-                or digest(policy(config)) != identity['policy_hash']):
+                or digest(effective_policy) != identity['policy_hash']):
             return None
-        issue, requirements = self.github.issue(item)
-        if (issue.get('state') != 'open' or requirements != item['requirements']
-                or manifest_hash(requirements) != identity['requirements_hash']):
+        if item['requirements_hash']!=identity['requirements_hash']:
             return None
-        labels = {label['name'] if isinstance(label, dict) else label for label in issue.get('labels', [])}
-        if labels.intersection(config.get('hold_labels', ['hold', 'blocked'])):
-            return None
-        if ownership(issue, item, item['repo'], self.github.pulls(item)) is not None:
-            return None
+        pulls=self.github.pulls(item)
+        for member in item['members']:
+            scoped={**item,'number':member['number'],'requirements':member['requirements']}
+            issue,requirements=self.github.issue(scoped)
+            if issue.get('state')!='open' or requirements!=member['requirements']:
+                return None
+            labels={label['name'] if isinstance(label,dict) else label for label in issue.get('labels',[])}
+            if labels.intersection(config.get('hold_labels',['hold','blocked'])):
+                return None
+            if ownership(issue,scoped,item['repo'],pulls) is not None:
+                return None
         pr = self.github.pr(item, identity['pull_number'])
         if (pr.get('number') != identity['pull_number'] or pr.get('state') != 'open'
                 or pr.get('draft') is not False or pr.get('merged') is not False or pr.get('mergeable') is not True
@@ -98,7 +101,7 @@ class MergeAdmission:
         if (audit.get('human_required') not in {'required', 'not_required'}
                 or any(type(item['evidence'].get(role, {}).get('check_id')) is not int for role in ('review', 'audit'))):
             return None
-        required = config.get('human_required', True) or audit['human_required'] == 'required'
+        required = effective_policy['human_required'] or audit['human_required'] == 'required'
         ci = {}
         for gate in item['gates']:
             if gate['code'] in {'verification_ci', 'verification_human'}:

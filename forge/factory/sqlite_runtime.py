@@ -46,16 +46,16 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
 
     requirements = RuntimeRequirementsController(store, github, config=config, runner=runner, clock=clock)
     verification = VerificationController(store, github, profiles=lambda repo: current_config()['repository_verification'].get(repo, []),
-        policy=lambda item: policy(current_config()), clock=clock, hold_labels=config['hold_labels'])
+        policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), clock=clock, hold_labels=config['hold_labels'])
     merge_admission = MergeAdmission(store, github, config=current_config,
                                      repository_ready=lambda repo: admission({'repo': repo}), clock=clock)
     effects = EffectController(store, github, admission=merge_admission, clock=clock)
     parts = dict(store=store, settings=settings, config=config, runner=runner, github=github,
         requirements=requirements, verification=verification, effects=effects, admission=admission,
         execution=ExecutionController(store, runner, github, admission=admission, clock=clock, enabled=lambda: current_config()['enabled']),
-        observations=ObservationController(store, github, admission=admission, policy=lambda item: manifest_hash(policy(current_config())),
+        observations=ObservationController(store, github, admission=admission, policy=lambda item: manifest_hash(policy(current_config(),item['repo_id'],repository_name=item['repo'])),
                                             hold_labels=config['hold_labels'], clock=clock),
-        results=ResultController(store, github, policy=lambda item: policy(current_config()), verdicts=effects,
+        results=ResultController(store, github, policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), verdicts=effects,
             requirements=requirements, clock=clock, hold_labels=config['hold_labels'], availability_retry_seconds=config['availability_retry_seconds']),
         recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock),

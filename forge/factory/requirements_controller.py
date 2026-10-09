@@ -1,4 +1,4 @@
-"""Fresh singleton prerequisites, durable worker choices and bounded retries.
+"""Fresh member prerequisites, durable worker choices and bounded retries.
 
 GitHub reads and label projection run outside transactions. Ordered observations
 and immutable launch records bind every decision to its requirements revision.
@@ -28,17 +28,28 @@ class RuntimeRequirementsController:
         self.config, self.runner = validate(config), runner
         self.commands = RuntimeRequirements(store, clock=clock)
 
-    def _snapshot(self, unit_id):
+    def _snapshot(self, unit_id, member_id=None):
         # Share the bounded row projection, without invoking its dispatcher.
         from .dispatch_controller import DispatchController
-        return DispatchController(self.store, self.runner, config=self.config,
+        snapshot=DispatchController(self.store, self.runner, config=self.config,
             prepare=None, admission=lambda _: False, clock=self.clock).snapshot(unit_id)
+        return self._scoped(snapshot, member_id) if member_id is not None else snapshot
+
+    def _scoped(self, snapshot, member_id):
+        scoped=next(row for row in snapshot['members'] if row['member']['id']==member_id)
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT * FROM issue_environment_observations WHERE issue_id=?',(scoped['issue']['id'],)).fetchone()
+        environment=dict(row) if row else {}
+        for key in ('choice','override','retry','memory_retry'):
+            environment[key]=json.loads(environment.pop(key+'_json') or 'null') if key+'_json' in environment else None
+        return {**snapshot,**scoped,'environment':environment}
 
     @staticmethod
     def _item(snapshot):
-        return dict(repo_id=snapshot['unit']['repository_id'], repo=snapshot['issue']['repository'],
+        item=dict(repo_id=snapshot['unit']['repository_id'], repo=snapshot['issue']['repository'],
                     number=snapshot['issue']['github_number'],unit_state=snapshot['unit']['state'],reviewers_requested=snapshot.get('reviewers_requested'),
                     candidate={'pr':snapshot['candidate']['pull_number'],'key':snapshot['candidate']['id']} if snapshot['candidate'] else None)
+        return item
 
     def _command(self, snapshot):
         return Command(str(uuid.uuid4()), 'supervisor:requirements', snapshot['unit']['id'], snapshot['unit']['version'])
@@ -55,29 +66,37 @@ class RuntimeRequirementsController:
     def _dependencies(self, snapshot, remote):
         unit_id = snapshot['unit']['id']
         revision = snapshot['member']['requirements_revision_id']
-        numbers = set(issue_dependencies(remote.get('body')))
+        from .prerequisites import references
+        from ..store.repository_requirements import orders_in
+        refs=set(references(remote.get('body'),snapshot['issue']['repository']))
         with self.store.read_snapshot() as db:
-            if db.execute('SELECT 1 FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? AND i.repository_id!=?',
-                          (snapshot['member']['issue_id'],revision,snapshot['unit']['repository_id'])).fetchone():
-                raise TransitionError('cross-repository dependencies need the later graph evaluator')
-            numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d '
-                'JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=?',
-                (snapshot['member']['issue_id'], revision)))
-            for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND code='dependency' AND resolved_at IS NULL", (unit_id,)):
-                details = json.loads(gate[0])
-                if details.get('requirements') == snapshot['issue']['requirements']:
-                    numbers.update(details.get('issues', []))
-        if len(numbers) > 100:
-            raise TransitionError('issue prerequisites exceed the bounded observation limit')
-        generation = self._generation(unit_id)
-        facts = []
-        for number in sorted(numbers):
-            item = {**self._item(snapshot), 'number': number}
-            observed, _ = self.github.issue(item)
-            if (observed.get('number') != number or 'pull_request' in observed
-                    or observed.get('state') not in {'open', 'closed'} or not observed.get('updated_at')):
-                raise GitHubUnavailable('Prerequisite issue identity could not be verified')
-            facts.append({key: observed[key] for key in ('number', 'state', 'updated_at')})
+            refs.update(orders_in(db,snapshot['member']['issue_id'],revision))
+            refs.update(row[0] for row in db.execute('SELECT lower(r.full_name)||\'#\'||i.github_number FROM issue_dependencies d '
+                'JOIN issues i ON i.id=d.prerequisite_issue_id JOIN repositories r ON r.id=i.repository_id '
+                'WHERE d.issue_id=? AND d.requirements_revision_id=?',(snapshot['member']['issue_id'],revision)))
+            for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND member_id=? AND code='dependency' AND resolved_at IS NULL", (unit_id,snapshot['member']['id'])):
+                details=json.loads(gate[0])
+                if details.get('requirements')==snapshot['issue']['requirements']:
+                    refs.update(snapshot['issue']['repository'].lower()+'#'+str(n) for n in details.get('issues',[]))
+            internal={row['reference']:row['id'] for row in db.execute('SELECT m.id,lower(r.full_name)||\'#\'||i.github_number AS reference '
+                'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN repositories r ON r.id=i.repository_id '
+                'WHERE m.unit_id=? AND m.left_at IS NULL AND m.id!=?',(unit_id,snapshot['member']['id']))}
+            from ..store.delivery_inputs import dependencies_in,current_output_in
+            approved=set(dependencies_in(db,snapshot['unit'],snapshot['member']['id']))
+            if any(internal[ref] not in approved for ref in refs if ref in internal):
+                raise TransitionError('Requirements declare a member dependency absent from the approved composition')
+            bindings={row['reference']:dict(row) for row in db.execute('SELECT * FROM prerequisite_identities WHERE reference IN ('+','.join('?' for _ in refs)+')',tuple(refs))} if refs else {}
+        if len(refs)>100:
+            raise TransitionError('Issue prerequisites exceed the bounded observation limit')
+        generation=self._generation(unit_id)
+        facts=[]
+        for ref in sorted(refs):
+            if ref in internal:
+                with self.store.read_snapshot() as db:
+                    output=current_output_in(db,snapshot['unit'],internal[ref])
+                facts.append(dict(reference=ref,kind='internal',member_id=internal[ref],output_id=output['id'] if output else None))
+            else:
+                facts.append(self.github.prerequisite(ref,bindings.get(ref)))
         result = self.commands.dependencies(self._command(snapshot), requirements_revision_id=revision,
                                              generation=generation, facts=facts)
         return result.get('clear', False)
@@ -91,9 +110,9 @@ class RuntimeRequirementsController:
         """Recover uncertain label delivery before evaluating explicit operator labels."""
         with self.store.read_snapshot() as db:
             effects = db.execute('SELECT e.id,l.* FROM external_effects e JOIN environment_label_effects l ON l.effect_id=e.id '
-                "WHERE e.unit_id=? AND e.status IN ('pending','running','uncertain') ORDER BY e.created_at,e.id LIMIT 20",
-                (snapshot['unit']['id'],)).fetchall()
-            latest = db.execute('SELECT MAX(revision) FROM unit_environment WHERE unit_id=?', (snapshot['unit']['id'],)).fetchone()[0]
+                "WHERE e.unit_id=? AND l.member_id=? AND e.status IN ('pending','running','uncertain') ORDER BY e.created_at,e.id LIMIT 20",
+                (snapshot['unit']['id'],snapshot['member']['id'])).fetchall()
+            latest = db.execute('SELECT MAX(revision) FROM unit_environment WHERE member_id=?', (snapshot['member']['id'],)).fetchone()[0]
         for effect in effects:
             labels = set(self._labels(remote))
             target = effect['target_label']
@@ -125,54 +144,77 @@ class RuntimeRequirementsController:
             selection = choose(self.config, item, remote)
         except ValueError as error:
             with self.store.read_snapshot() as db:
-                existing = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='environment' AND resolved_at IS NULL AND json_extract(details_json,'$.source')='runtime_selection'", (snapshot['unit']['id'],)).fetchone()
+                existing = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL AND json_extract(details_json,'$.source')='runtime_selection'", (snapshot['unit']['id'],snapshot['member']['id'])).fetchone()
             if not existing:
                 self.commands.environment_problem(self._command(snapshot),requirements_revision_id=snapshot['member']['requirements_revision_id'],reason=str(error))
             raise
         # Include only non-secret environment policy in the durable decision hash.
         config_hash = manifest_hash({key: self.config[key] for key in ('environment_tiers', 'repository_environments', 'memory_tiers')})
         with self.store.read_snapshot() as db:
-            previous = db.execute('SELECT * FROM unit_environment WHERE unit_id=? ORDER BY revision DESC LIMIT 1', (snapshot['unit']['id'],)).fetchone()
-            selection_gate = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='environment' AND resolved_at IS NULL AND json_extract(details_json,'$.source')='runtime_selection'", (snapshot['unit']['id'],)).fetchone()
+            previous = db.execute('SELECT * FROM unit_environment WHERE member_id=? ORDER BY revision DESC LIMIT 1', (snapshot['member']['id'],)).fetchone()
+            selection_gate = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL AND json_extract(details_json,'$.source')='runtime_selection'", (snapshot['unit']['id'],snapshot['member']['id'])).fetchone()
         if (selection_gate or previous is None or previous['requirements_revision_id'] != snapshot['member']['requirements_revision_id']
                 or previous['config_hash'] != config_hash or json.loads(previous['choice']) != selection
                 or self._labels(remote) != ['env:' + selection['tier']]):
             self.commands.select_environment(self._command(snapshot),
                 requirements_revision_id=snapshot['member']['requirements_revision_id'], choice=selection,
                 labels=self._labels(remote), config_hash=config_hash)
-            snapshot = self._snapshot(snapshot['unit']['id'])
+            snapshot = self._snapshot(snapshot['unit']['id'],snapshot['member']['id'])
             self._project(snapshot, remote)
         return selection
 
-    def observe(self, unit_id):
-        with EffectController(self.store, self.github, clock=self.clock)._lock():
-            snapshot = self._snapshot(unit_id)
-            if 'member' not in snapshot or snapshot['unit']['state'] in {'merged','closed','dissolved'}:
-                return {'unit_id': unit_id, 'pending': 'ineligible'}
-            remote, requirements = self.github.issue(self._item(snapshot))
-            if remote.get('number') != snapshot['issue']['github_number'] or 'pull_request' in remote:
-                raise GitHubUnavailable('Current issue identity could not be verified')
-            if remote.get('state') != 'open' or requirements != snapshot['issue']['requirements'] or not isinstance(requirements, str):
-                return {'unit_id': unit_id, 'pending': 'issue_reconciliation'}
-            remote = self._project(snapshot, remote)
-            clear = self._dependencies(snapshot, remote)
-            snapshot = self._snapshot(unit_id)
-            selection = self._environment(snapshot, remote)
-            return {'unit_id': unit_id, 'dependencies_clear': clear, 'choice': selection,
-                    'unit_version': self._snapshot(unit_id)['unit']['version']}
+    def _observe_member(self, snapshot):
+        remote,requirements=self.github.issue(self._item(snapshot))
+        if remote.get('number')!=snapshot['issue']['github_number'] or 'pull_request' in remote:
+            raise GitHubUnavailable('Current issue identity could not be verified')
+        if remote.get('state')!='open' or requirements!=snapshot['issue']['requirements'] or not isinstance(requirements,str):
+            return {'pending':'issue_reconciliation'}
+        remote=self._project(snapshot,remote)
+        clear=self._dependencies(snapshot,remote)
+        snapshot=self._snapshot(snapshot['unit']['id'],snapshot['member']['id'])
+        selection=self._environment(snapshot,remote)
+        return {'dependencies_clear':clear,'choice':selection}
 
-    def prepare(self, snapshot, role, remote):
-        # The callback rereads the issue, then rejects newly observed ownership
-        # or hold labels before the dispatcher's generation check.
-        fresh, requirements = self.github.issue(self._item(snapshot))
-        labels = {row['name'] if isinstance(row,dict) else row for row in fresh.get('labels',[])}
-        item = self._item(snapshot)
-        item['candidate'] = {'pr':snapshot['candidate']['pull_number'],'key':snapshot['candidate']['id']} if snapshot['candidate'] else None
-        if (requirements != snapshot['issue']['requirements'] or labels.intersection(self.config['hold_labels'])
+    def observe(self, unit_id):
+        with EffectController(self.store,self.github,clock=self.clock)._lock():
+            snapshot=self._snapshot(unit_id)
+            if snapshot['unit']['state'] in {'merged','closed','dissolved'}:
+                return {'unit_id':unit_id,'pending':'ineligible'}
+            results={}
+            for scoped in snapshot['members']:
+                member_id=scoped['member']['id']
+                results[member_id]=self._observe_member(self._snapshot(unit_id,member_id))
+            result={'unit_id':unit_id,'members':results,'unit_version':self._snapshot(unit_id)['unit']['version']}
+            if len(results)==1:
+                result.update(next(iter(results.values())))
+            return result
+
+    def _prepare_member(self,snapshot):
+        fresh,requirements=self.github.issue(self._item(snapshot))
+        labels={row['name'] if isinstance(row,dict) else row for row in fresh.get('labels',[])}
+        from .ownership import publication_context
+        item=publication_context(self.store,snapshot['unit']['id'],self._item(snapshot))
+        if (requirements!=snapshot['issue']['requirements'] or labels.intersection(self.config['hold_labels'])
                 or ownership(fresh,item,item['repo'],self.github.pulls(item))):
             return None
-        result = self.observe(snapshot['unit']['id'])
-        return result if result.get('dependencies_clear') else None
+        return self._observe_member(snapshot)
+
+    def prepare(self,snapshot,role,remote):
+        with EffectController(self.store,self.github,clock=self.clock)._lock():
+            result=self._prepare_member(snapshot)
+            if result and result.get('dependencies_clear'):
+                return {**result,'unit_version':self._snapshot(snapshot['unit']['id'])['unit']['version']}
+        return None
+
+    def prepare_group(self,snapshot,role,remotes):
+        choices={}
+        with EffectController(self.store,self.github,clock=self.clock)._lock():
+            for scoped in snapshot['members']:
+                member_id=scoped['member']['id']
+                result=self._prepare_member(self._snapshot(snapshot['unit']['id'],member_id))
+                if result and result.get('dependencies_clear'):
+                    choices[member_id]=result['choice']
+            return {'unit_version':self._snapshot(snapshot['unit']['id'])['unit']['version'],'choices':choices}
 
     def classify(self, job, capture, report):
         selection, kind = None, None
@@ -184,10 +226,12 @@ class RuntimeRequirementsController:
                 kind, selection = 'memory', dict(memory=wanted, tiers=tiers)
                 evidence = dict(confirmed_memory_exhaustion=True, capture_job_id=job['id'])
         elif report and report.get('outcome') == 'blocked_environment' and report.get('required_services'):
-            state = self._snapshot(job['unit_id'])['environment']
+            with self.store.read_snapshot() as db:
+                states=[dict(row) for row in db.execute('SELECT e.* FROM job_members j JOIN unit_issues m ON m.id=j.member_id '
+                    'LEFT JOIN issue_environment_observations e ON e.issue_id=m.issue_id WHERE j.job_id=?',(job['id'],))]
             wanted = report['required_services']
-            if ('full' in self.config['environment_tiers'] and not state.get('override') and not state.get('retry')
-                    and (state.get('choice') or {}).get('automatic') is not False
+            automatic=all(not state['override_json'] and not state['retry_json'] and json.loads(state['choice_json'] or '{}').get('automatic') is not False for state in states)
+            if ('full' in self.config['environment_tiers'] and automatic
                     and not set(wanted) <= set(config.get('services', []))):
                 kind, selection = 'services', dict(services=wanted)
                 evidence = dict(full_environment_available=True, capture_job_id=job['id'], report=report)
