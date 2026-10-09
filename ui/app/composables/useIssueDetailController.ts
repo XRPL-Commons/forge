@@ -1,3 +1,6 @@
+import { persona } from '~/utils/personas'
+import { actionPlan, bubbleFor, liveness, serverAge, stageTimes, workFacts, type OutputView } from '~/utils/liveWork'
+import type { DropdownMenuItem } from '@nuxt/ui'
 import { decisionFeedback, receiptAction, type DecisionReceipt } from '~/utils/decision-feedback'
 import { ForgeApiError } from '~/composables/useForgeApi'
 import { deploymentLine, type FactoryView, type JobView } from '~/utils/factory'
@@ -16,7 +19,6 @@ import {
 
 export function useIssueDetailController(props: { issueKey: string; fill?: 'container' | 'viewport' }) {
   const UNMANAGED = 'This issue is not in a managed repository. Refresh the issue list.'
-  const PRIMARY_ACTIONS: IssueAction[] = ['assign_reviewer', 'retry', 'recheck', 'resume', 'queue']
 
   const api = useForgeApi()
   const route = useRoute()
@@ -123,7 +125,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
 
   const summary = computed(() => summaryBlock(detail.value))
   const pipeline = computed(() => (detail.value ? issuePipeline(detail.value) : null))
-  const look = computed(() => (detail.value ? workbenchLook(detail.value) : null))
+  const look = computed(() => (detail.value ? workbenchLook(detail.value, { stalled: live.value.state === 'stalled' }) : null))
   const badge = computed(() => statusBadge(detail.value?.status ?? 'queued'))
   const blocking = computed(() => (detail.value ? blockingIssues(detail.value) : []))
   function siblingLink(number: number) {
@@ -139,9 +141,10 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const conversation = ref<{ focus: () => boolean } | null>(null)
   const plainOpen = ref(false)
   const PLAIN_CLAMP = 220
-  const plainLong = computed(() => (summary.value?.plain ?? '').length > PLAIN_CLAMP)
+  const plainLong = computed(() => (bubble.value?.plain ?? '').length > PLAIN_CLAMP)
   const holds = computed(() => heldByLines(detail.value?.held_by))
-  const hasFindings = computed(() => !!summary.value?.details || reviewRows(detail.value?.reviews).length > 0)
+  const hasFindings = computed(() => reviewRows(detail.value?.reviews).length > 0
+    || (!!summary.value?.details && ![summary.value.headline, summary.value.plain, bubble.value?.headline ?? ''].some(line => line.trim() === summary.value!.details.trim())))
 
   const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
   function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
@@ -149,13 +152,22 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const canAssign = computed(() => !!detail.value?.actions.includes('assign_reviewer'))
   const decisions = computed(() => (detail.value?.actions ?? []).filter(action => action !== 'assign_reviewer'))
   const setupNeeded = computed(() => !!(detail.value?.setup_needed || detail.value?.merge_blocker))
-  const primary = computed<'approve' | 'setup' | IssueAction | null>(() => {
-    if (approval.value) return 'approve'
-    const action = PRIMARY_ACTIONS.find(item => (detail.value?.actions ?? []).includes(item as never))
-    if (action) return action
-    return setupNeeded.value ? 'setup' : null
+  const plan = computed(() => (detail.value
+    ? actionPlan(detail.value, { setupNeeded: setupNeeded.value, internalJob: !!internalJob.value, agent: activeJob.value?.provider ? persona(activeJob.value.provider).name : null })
+    : null))
+  const primary = computed(() => plan.value?.primary ?? null)
+  const secondary = computed(() => (plan.value?.secondary ?? []).filter(action => action !== 'assign_reviewer'))
+  // The conversation proposes decisions; talking is what it already is.
+  const conversationPrimary = computed(() => (primary.value && !['approve', 'setup', 'discuss'].includes(primary.value) ? primary.value as IssueAction : null))
+  const moreItems = computed<DropdownMenuItem[][]>(() => {
+    const items: DropdownMenuItem[] = []
+    for (const action of plan.value?.destructive ?? []) {
+      if (action === 'stop') items.push({ label: `${ACTION_LABELS.stop}…`, icon: 'i-lucide-square', color: 'error', disabled: busy.value, onSelect: () => ask('stop') })
+      if (action === 'reset') items.push({ label: 'Reset runner…', icon: 'i-lucide-rotate-ccw', color: 'error', disabled: busy.value, onSelect: askReset })
+      if (action === 'close') items.push({ label: `${ACTION_LABELS.close}…`, icon: 'i-lucide-circle-x', color: 'error', disabled: busy.value, onSelect: () => ask('close') })
+    }
+    return items.length ? [items] : []
   })
-  const secondary = computed(() => decisions.value.filter(action => action !== primary.value))
   const closeOpen = computed(() => decision.value === 'close')
   const assigning = ref(false)
   const assignRequest = useSubmission()
@@ -188,9 +200,12 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
 
   const now = ref(0)
   let ticker: ReturnType<typeof setInterval> | undefined
+  const nowMs = ref(0)
+  // Every second while visible: "alive 4s ago" is the worker's pulse.
   onMounted(() => {
-    now.value = Math.floor(Date.now() / 1000)
-    ticker = setInterval(() => { now.value = Math.floor(Date.now() / 1000) }, 5000)
+    const tick = () => { nowMs.value = Date.now(); now.value = Math.floor(nowMs.value / 1000) }
+    tick()
+    ticker = setInterval(() => { if (!document.hidden) tick() }, 1000)
   })
   onBeforeUnmount(() => clearInterval(ticker))
   const reviewRequested = computed(() => reviewRequestText(detail.value?.reviewers_requested, now.value))
@@ -332,8 +347,55 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
     await poll.refresh()
   }
 
+  // The worker's own output. The bubble reads its live activity too, so it is
+  // polled while the issue's running job is selected even with the section
+  // closed; the server caches the container read, so polls stay cheap.
+  const activeJob = computed<JobView | null>(() => jobs.value.find(job => job.id === detail.value?.active) ?? null)
+  const liveSelected = computed(() => !!detail.value?.active && selectedJob.value === detail.value.active && detail.value.status === 'working')
   const outputOpen = ref(false)
+  // A running job's output is what there is to see: open it once per job.
+  watch(() => (liveSelected.value ? selectedJob.value : null), (job) => { if (job) outputOpen.value = true }, { immediate: true })
+  const output = useResource<OutputView>(
+    () => `/api/factory/output?id=${encodeURIComponent(selectedJob.value ?? '')}`,
+    path => api.get(path, { timeout: 15000 }),
+    { allowed: () => (outputOpen.value || liveSelected.value) && !!selectedJob.value, server: false },
+  )
+  onMounted(output.start)
+  const liveOutput = computed(() => (liveSelected.value ? output.data.value : null))
+  const heartbeatAge = computed(() => (nowMs.value ? serverAge(liveOutput.value?.heartbeat_at, liveOutput.value, output.updatedAt.value, nowMs.value) : null))
+  const live = computed(() => liveness(heartbeatAge.value))
+  const bubble = computed(() => (detail.value && look.value ? bubbleFor({
+    detail: detail.value, job: activeJob.value, stage: look.value.stage, output: liveOutput.value,
+    activityAge: nowMs.value ? serverAge(liveOutput.value?.activity?.at, liveOutput.value, output.updatedAt.value, nowMs.value) : null,
+    heartbeatAge: heartbeatAge.value,
+  }) : null))
+  const facts = computed(() => (activeJob.value && detail.value?.status === 'working' ? workFacts(activeJob.value, detail.value.attempts, now.value) : null))
+  const times = computed(() => stageTimes(jobs.value))
+  // The note above the bench only when it says something the badge and the
+  // bubble do not: "Failed" under "Needs attention", never "Building" twice.
+  // While a worker runs, the bubble is the stage.
+  const stageNote = computed(() => {
+    const note = detail.value?.status === 'working' ? '' : (pipeline.value?.note ?? '').trim()
+    const shown = [detail.value ? statusLabel(detail.value) : '', bubble.value?.headline ?? '', bubble.value?.plain ?? '']
+    return note && !shown.some(line => line.trim().toLowerCase() === note.toLowerCase()) ? note : ''
+  })
+  const statusReason = computed(() => {
+    const reason = detail.value?.status === 'working' ? '' : (detail.value?.operator_status?.reason ?? '').trim()
+    const shown = [bubble.value?.headline ?? '', bubble.value?.plain ?? '', stageNote.value, detail.value ? statusLabel(detail.value) : '']
+    return reason && !shown.some(line => line.trim().toLowerCase() === reason.toLowerCase()) ? reason : ''
+  })
   const activityOpen = ref(false)
+  // Sections in the order the state makes them relevant: a running worker's
+  // output first; the findings first when something stopped.
+  const SECTION_ORDER: Record<string, string[]> = {
+    working: ['output', 'findings', 'description', 'environment', 'activity'],
+    attention: ['findings', 'output', 'description', 'environment', 'activity'],
+    other: ['findings', 'description', 'environment', 'output', 'activity'],
+  }
+  function order(section: string): number {
+    const status = detail.value?.status ?? 'other'
+    return (SECTION_ORDER[status] ?? SECTION_ORDER.other!).indexOf(section)
+  }
 
   const decisionReason = ref('')
   function ask(action: IssueAction, reason = '') {
@@ -411,17 +473,18 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const { root, rootClass, filling, fillHeight, tab, TABS, chat, chatAttention } = useIssueDetailTabs(props, detail, conversation)
   return {
     environmentOpen, environmentRequest, verificationRequest, verificationStatement, poll, detail,
-    actions, problem, pending, busy, rendered, html, ready, decisionRequest, decision, message,
-    summary, pipeline, look, badge, blocking, NOTE_TONE, descriptionOpen, environmentSectionOpen,
-    conversation, plainOpen, plainLong, holds, hasFindings, issueUrl, canAssign, decisions,
-    setupNeeded, primary, secondary, closeOpen, assigning, assignRequest, preselected, candidatePull,
-    approvalOpen, sentToGitHub, approval, candidateUrl, now, reviewRequested, approvals, checked,
-    checkingSince, checkNote, checkRequest, deployment, jobs, selectedJob, showOutput, internalJob,
-    RESET, resetting, resetRequest, outputOpen, activityOpen, decisionReason, siblingLink, pullUrl,
-    askReviewer, closeReviewer, checkNow, assignReviewer, localTime, isoTime, askReset, closeReset,
-    confirmReset, ask, confirmVerification, saveEnvironment, closeDecision, submit, root, rootClass,
-    filling, fillHeight, tab, TABS, chat, chatAttention, ACTION_LABELS, attentionNote, statusLabel,
-    eventLabel, pullLabel, issueTab,
+    actions, problem, pending, busy, rendered, html, ready, decisionRequest, decision, message, summary,
+    pipeline, look, badge, blocking, NOTE_TONE, descriptionOpen, environmentSectionOpen, conversation,
+    plainOpen, plainLong, holds, hasFindings, issueUrl, canAssign, decisions, setupNeeded, primary,
+    secondary, closeOpen, assigning, assignRequest, preselected, candidatePull, approvalOpen,
+    sentToGitHub, approval, candidateUrl, now, reviewRequested, approvals, checked, checkingSince,
+    checkNote, checkRequest, deployment, jobs, selectedJob, showOutput, internalJob, RESET, resetting,
+    resetRequest, outputOpen, activityOpen, decisionReason, siblingLink, pullUrl, askReviewer,
+    closeReviewer, checkNow, assignReviewer, localTime, isoTime, askReset, closeReset, confirmReset, ask,
+    confirmVerification, saveEnvironment, closeDecision, submit, root, rootClass, filling, fillHeight,
+    tab, TABS, chat, chatAttention, ACTION_LABELS, attentionNote, statusLabel, eventLabel, pullLabel,
+    issueTab, plan, conversationPrimary, moreItems, output, live, bubble, facts, times, stageNote,
+    statusReason, order,
   }
 }
 

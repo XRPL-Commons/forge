@@ -37,6 +37,15 @@ class RunnerUnavailable(RunnerError):
     pass
 
 
+def observation_timeout(deadline, maximum):
+    if deadline is None:
+        return maximum
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RunnerError('Container observation timed out')
+    return min(maximum, remaining)
+
+
 def process_isolation(config):
     """One launch policy shared by installation canaries and real workers."""
     args = []
@@ -150,17 +159,17 @@ class ContainerRunner:
     def name(job):
         return 'forge-job-' + identifier(job['id'])
 
-    def inspect(self, job):
+    def inspect(self, job, *, deadline=None):
         name = self.name(job)
         # Successful inventory distinguishes absence from a dead/inaccessible engine.
-        p = self.call(['container', 'ls', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{json .}}'])
+        p = self.call(['container', 'ls', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{json .}}'], timeout=observation_timeout(deadline, 30))
         try:
             rows = [json.loads(line) for line in p.stdout.splitlines()]
             if not rows:
                 return None
             if len(rows) != 1 or rows[0]['Names'] != name:
                 raise ValueError()
-            values = json.loads(self.call(['container', 'inspect', rows[0]['ID']]).stdout)
+            values = json.loads(self.call(['container', 'inspect', rows[0]['ID']], timeout=observation_timeout(deadline, 30)).stdout)
             value = values[0]
             if (len(values) != 1 or value['Name'] != '/' + name
                     or value['Config']['Labels'].get('forge.execution') != job['id']
@@ -375,17 +384,18 @@ class ContainerRunner:
         except OSError:
             raise RunnerCapacity({'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}) from None
 
-    def observe(self, job, current=None):
+    def observe(self, job, current=None, lines=100, timeout=None):
         """Bounded running output is an observation, never a completion result."""
-        current = current or self.inspect(job)
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        current = current or (self.inspect(job, deadline=deadline) if deadline is not None else self.inspect(job))
         observation = {'at': time.time(), 'execution': current, 'logs': '', 'missing': []}
         if current is None:
             observation['missing'].append('container')
             return observation
         secrets = self._scrub_values(job)
         try:
-            observation['logs'] = scrub(self.call(['logs', '--tail', '100', current['id']],
-                combine=True, timeout=5, max_output=262144).stdout.decode(errors='replace')[-65536:], secrets)
+            observation['logs'] = scrub(self.call(['logs', '--tail', str(int(lines)), current['id']],
+                combine=True, timeout=observation_timeout(deadline, 5), max_output=262144).stdout.decode(errors='replace')[-65536:], secrets)
         except RunnerError:
             observation['missing'].append('running output')
         return observation

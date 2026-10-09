@@ -2,9 +2,10 @@
 const {
   verificationRequest, verificationStatement, poll, detail, actions, pending, busy, decision,
   message, summary, look, blocking, plainOpen, plainLong, holds, issueUrl, canAssign, decisions,
-  setupNeeded, primary, secondary, approvalOpen, sentToGitHub, approval, now, reviewRequested,
-  approvals, checked, checkingSince, checkNote, checkRequest, deployment, internalJob, siblingLink,
-  askReviewer, checkNow, askReset, ask, confirmVerification, tab, ACTION_LABELS, attentionNote,
+  setupNeeded, primary, secondary, candidatePull, approvalOpen, sentToGitHub, approval, now,
+  reviewRequested, approvals, checked, checkingSince, checkNote, checkRequest, deployment,
+  siblingLink, pullUrl, askReviewer, checkNow, ask, confirmVerification, tab, ACTION_LABELS,
+  attentionNote, pullLabel, plan, moreItems, live, bubble, facts,
 } = useIssueDetailContext()
 </script>
 <template>
@@ -12,13 +13,23 @@ const {
           <section id="issue-next" class="flex flex-col gap-3" aria-labelledby="issue-next-title">
             <h2 id="issue-next-title" class="sr-only">Next step</h2>
             <IssueWorkbench v-if="look" :look="look">
-              <p v-if="summary?.headline" id="issue-headline" class="text-[15px] leading-snug font-semibold text-balance text-white">{{ summary.headline }}</p>
+              <p v-if="bubble?.headline" id="issue-headline" class="text-[15px] leading-snug font-semibold text-balance text-white wrap-anywhere" :data-live="bubble.segments ? 'true' : undefined">
+                <template v-if="bubble.segments">
+                  <template v-for="(part, index) in bubble.segments" :key="index">
+                    <code v-if="part.code" class="rounded bg-black/30 px-1 py-px font-mono text-[13px] font-medium text-mint-100">{{ part.text }}</code>
+                    <template v-else>{{ part.text }}</template>
+                  </template>
+                </template>
+                <template v-else>{{ bubble.headline }}</template>
+                <template v-if="bubble.since">{{ ' ' }}</template>
+                <span v-if="bubble.since" id="issue-activity-since" class="ml-1.5 text-xs font-normal text-muted">{{ bubble.since }}</span>
+              </p>
               <p
-                v-if="summary?.plain"
+                v-if="bubble?.plain"
                 id="issue-plain"
                 class="text-sm text-[#c5cad1] wrap-anywhere"
-                :class="[summary?.headline ? 'mt-1.5' : '', plainLong && !plainOpen ? 'line-clamp-3' : '']"
-              >{{ summary.plain }}</p>
+                :class="[bubble?.headline ? 'mt-1.5' : '', plainLong && !plainOpen ? 'line-clamp-3' : '']"
+              >{{ bubble.plain }}</p>
               <UButton
                 v-if="plainLong"
                 size="xs"
@@ -31,8 +42,35 @@ const {
               <ul v-if="holds.length" id="issue-held-by" class="mt-1.5 text-xs text-muted">
                 <li v-for="line in holds" :key="line">{{ line }}</li>
               </ul>
-              <p v-if="!summary && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
+              <p v-if="live.state !== 'unknown'" id="issue-liveness" class="mt-1.5 inline-flex items-center gap-1.5 text-xs" :class="live.state === 'stalled' ? 'text-amber-200' : 'text-muted'" :data-state="live.state">
+                <span aria-hidden="true" class="size-1.5 rounded-full" :class="live.state === 'stalled' ? 'bg-amber-200' : 'bg-mint-400 motion-safe:animate-pulse'" />
+                {{ live.text }}
+              </p>
+              <p v-if="!bubble?.headline && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
             </IssueWorkbench>
+
+            <!-- Who is on it, for how long and where the work lands. -->
+            <dl v-if="facts" id="issue-work" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 rounded-xl border border-line bg-panel px-3 py-2.5 text-xs">
+              <dt class="text-muted">Worker</dt>
+              <dd id="issue-worker" class="flex min-w-0 items-center gap-1.5 text-white">
+                <AgentAvatar :provider="facts.provider" :mood="live.state === 'stalled' ? 'left' : 'busy'" :size="18" />
+                <span class="font-semibold" data-persona-name>{{ facts.who }}</span>
+                <span class="truncate text-muted">· {{ facts.model }}</span>
+              </dd>
+              <dt class="text-muted">Attempt</dt>
+              <dd id="issue-work-attempt" class="text-white">{{ facts.attempt }}</dd>
+              <template v-if="facts.timing">
+                <dt class="text-muted">Time</dt>
+                <dd id="issue-work-time" :class="facts.overdue ? 'text-amber-200' : 'text-white'">{{ facts.timing }}</dd>
+              </template>
+              <template v-if="facts.branch || candidatePull">
+                <dt class="text-muted">Lands in</dt>
+                <dd class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <code v-if="facts.branch" id="issue-work-branch" class="truncate font-mono text-white">{{ facts.branch }}</code>
+                  <a v-if="candidatePull" :href="pullUrl(candidatePull.number)" target="_blank" rel="noopener noreferrer" class="text-sky-200 underline-offset-4 hover:underline">{{ pullLabel(candidatePull) }} ↗</a>
+                </dd>
+              </template>
+            </dl>
 
             <div id="issue-action-block" class="flex flex-col gap-2.5">
               <section v-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
@@ -44,7 +82,7 @@ const {
                 <p class="text-muted">{{ detail.decision_request.evidence }}</p>
                 <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
               </section>
-              <p v-if="approval && (sentToGitHub || !summary?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
+              <p v-if="approval && (sentToGitHub || !bubble?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
               <ul
                 v-if="approvals.length"
                 id="issue-approvals"
@@ -101,9 +139,11 @@ const {
                 <p v-else class="text-muted">Run these steps on the current PR revision, then approve on GitHub if they pass. If they fail, comment on the PR and retry with the findings.</p>
               </section>
 
-              <!-- One primary way forward (or a calm line when there is none),
-                   smaller secondary decisions, then stopping the attempt. -->
-              <!-- Dropped work asks nothing: the only way back is on GitHub. -->
+              <!-- One primary way forward (or a calm line saying none is
+                   needed), the reversible decisions beside it, and ending
+                   the work (Stop, Reset, Close) behind More, each confirmed
+                   in its own dialog. Dropped work asks nothing: the only way
+                   back is on GitHub. -->
               <div v-if="detail.status === 'dropped'" id="issue-actions" class="flex flex-wrap items-center gap-2">
                 <span id="issue-nothing-needed" data-dropped class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
                   <UIcon name="i-lucide-archive" class="size-4 shrink-0" aria-hidden="true" />
@@ -118,9 +158,14 @@ const {
                 </span>
               </div>
               <div v-else id="issue-actions" class="flex flex-wrap items-center gap-2">
+                <span v-if="detail.status === 'attention' && (primary === 'discuss' || !primary)" id="issue-needs-person" class="inline-flex min-h-8 basis-full items-center gap-2 text-sm text-amber-200">
+                  <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
+                  {{ attentionNote(detail) }}
+                </span>
                 <UButton v-if="primary === 'approve'" color="primary" :disabled="busy || poll.stale.value" @click="approvalOpen = true">Approve…</UButton>
                 <UButton v-else-if="primary === 'assign_reviewer'" color="primary" :disabled="busy" @click="askReviewer">{{ ACTION_LABELS.assign_reviewer }}</UButton>
                 <UButton v-else-if="primary === 'setup'" :to="detail.setup_url" color="primary">Repository setup →</UButton>
+                <UButton v-else-if="primary === 'discuss'" color="primary" icon="i-lucide-messages-square" @click="tab = 'discussion'">{{ plan?.ask }}</UButton>
                 <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ ACTION_LABELS[primary] }}</UButton>
                 <span v-else-if="detail.status === 'blocked'" id="issue-nothing-needed" data-blocked class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-1 gap-y-0.5 text-sm text-muted">
                   <UIcon name="i-lucide-link-2" class="mr-1 size-4 shrink-0" aria-hidden="true" />
@@ -139,11 +184,7 @@ const {
                   </template>
                   <span v-else>Starts by itself when the issues it waits on close.</span>
                 </span>
-                <span v-else-if="detail.status === 'attention'" id="issue-needs-person" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-amber-200">
-                  <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
-                  {{ attentionNote(detail) }}
-                </span>
-                <span v-else id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
+                <span v-else-if="detail.status !== 'attention'" id="issue-nothing-needed" class="mr-1 inline-flex min-h-8 items-center gap-2 text-sm text-muted">
                   <span aria-hidden="true" class="size-2 rounded-full bg-mint-400" />
                   {{ look?.mood === 'happy' ? 'Done. Nothing left to do.' : 'Nothing needed from you right now.' }}
                 </span>
@@ -165,46 +206,31 @@ const {
                   @click="askReviewer"
                 >{{ ACTION_LABELS.assign_reviewer }}</UButton>
                 <UButton
+                  v-if="primary !== 'discuss'"
+                  id="issue-ask"
                   size="sm"
                   color="neutral"
                   variant="outline"
+                  icon="i-lucide-messages-square"
                   @click="tab = 'discussion'"
-                >Discuss blocker</UButton>
+                >{{ plan?.ask }}</UButton>
                 <UButton v-if="setupNeeded && primary !== 'setup'" :to="detail.setup_url" size="sm" color="neutral" variant="outline">Repository setup →</UButton>
-                <span v-if="(detail.active && detail.status === 'working') || internalJob" class="ml-auto flex flex-wrap items-center gap-1">
+                <UDropdownMenu v-if="moreItems.length" :items="moreItems" :content="{ align: 'end' }">
                   <UButton
-                    v-if="detail.active && detail.status === 'working'"
+                    id="issue-more"
                     size="sm"
-                    color="error"
+                    color="neutral"
                     variant="ghost"
+                    icon="i-lucide-ellipsis"
+                    class="ml-auto"
+                    aria-label="More actions"
                     :disabled="busy"
-                    @click="ask('stop')"
-                  >{{ ACTION_LABELS.stop }}</UButton>
-                  <UButton
-                    v-if="internalJob"
-                    size="sm"
-                    color="error"
-                    variant="ghost"
-                    :disabled="busy"
-                    @click="askReset"
-                  >Reset runner</UButton>
-                </span>
+                  >More</UButton>
+                </UDropdownMenu>
               </div>
 
-              <!-- The quiet way out, and how fresh this is. -->
-              <div id="issue-meta" class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-dashed border-line pt-2 text-xs text-muted">
-                <UButton
-                  v-if="detail.closable"
-                  id="issue-close"
-                  size="xs"
-                  color="error"
-                  variant="ghost"
-                  icon="i-lucide-circle-x"
-                  class="-ml-2"
-                  :disabled="busy"
-                  @click="ask('close')"
-                >Close issue…</UButton>
-                <span v-else />
+              <!-- How fresh this is. -->
+              <div id="issue-meta" class="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t border-dashed border-line pt-2 text-xs text-muted">
                 <div id="issue-checked" class="flex flex-wrap items-center gap-1">
                   <span v-if="checkingSince" role="status">Checking GitHub…</span>
                   <span v-else-if="checked">{{ checked }}</span>
@@ -215,7 +241,5 @@ const {
               </div>
             </div>
           </section>
-
-
   </template>
 </template>

@@ -3,10 +3,11 @@ const props = withDefaults(defineProps<{ issueKey: string; fill?: 'container' | 
 const controller = useIssueDetailController(props)
 provideIssueDetail(controller)
 const {
-  detail, actions, problem, pending, busy, rendered, ready, pipeline, look, badge, NOTE_TONE,
-  conversation, decisions, primary, jobs, selectedJob, showOutput, internalJob, RESET, resetting,
+  detail, actions, problem, pending, busy, rendered, pipeline, look, badge, NOTE_TONE, conversation,
+  decisions, primary, now, jobs, selectedJob, showOutput, internalJob, RESET, resetting,
   resetRequest, outputOpen, askReviewer, askReset, closeReset, confirmReset, ask, root, rootClass,
-  filling, fillHeight, tab, TABS, chat, chatAttention, statusLabel, issueTab,
+  filling, fillHeight, tab, TABS, chat, chatAttention, statusLabel, issueTab, conversationPrimary,
+  output, facts, times, stageNote, statusReason, ready,
 } = controller
 await ready
 </script>
@@ -31,7 +32,7 @@ await ready
         >{{ statusLabel(detail) }}</UBadge>
       </div>
 
-      <p v-if="detail.operator_status?.reason" id="issue-status-reason" class="mt-1 text-sm text-muted">{{ detail.operator_status.reason }}</p>
+      <p v-if="statusReason" id="issue-status-reason" class="mt-1 text-sm text-muted">{{ statusReason }}</p>
 
       <UTabs
         :model-value="tab"
@@ -53,23 +54,23 @@ await ready
           </span>
         </template>
         <template #details>
-          <p v-if="pipeline" id="issue-attempt-line" class="mb-3 text-xs" :class="NOTE_TONE[pipeline.state]">
-            <span id="issue-stage-note">{{ pipeline.note }}</span>
-            <template v-if="pipeline.attempts">
-              <span class="text-muted" aria-hidden="true"> · </span>
+          <p v-if="stageNote || (pipeline?.attempts && !facts)" id="issue-attempt-line" class="mb-3 text-xs" :class="pipeline ? NOTE_TONE[pipeline.state] : ''">
+            <span v-if="stageNote" id="issue-stage-note">{{ stageNote }}</span>
+            <template v-if="pipeline?.attempts && !facts">
+              <span v-if="stageNote" class="text-muted" aria-hidden="true"> · </span>
               <span id="issue-attempts" class="text-muted">{{ pipeline.attempts }}</span>
             </template>
           </p>
 
-          <!-- The next step: the cube on its workbench says what is going on;
-               directly under it, how to move the issue on — to completion, or
-               out of Forge with Close issue. -->
+          <!-- The next step: the cube on its workbench says what is going on
+               (while a worker runs, what it is doing right now); directly
+               under it, who is on it and how to move the issue on. -->
           <IssueNextStep />
 
-          <IssueStats v-if="look" :look="look" class="mt-4" />
+          <IssueStats v-if="look" :look="look" :times="times" :now="now" class="mt-4" />
 
           <!-- Everything else, quieter: where the work lives on GitHub, then
-               collapsed sections. -->
+               the sections that have something in them, most relevant first. -->
           <IssueDetailSections />
         </template>
         <template #discussion>
@@ -79,7 +80,7 @@ await ready
             :active="tab === 'discussion'"
             :issue-key="detail.key"
             :actions="decisions"
-            :primary="typeof primary === 'string' && primary !== 'approve' && primary !== 'setup' ? primary : null"
+            :primary="conversationPrimary"
             :disabled="busy"
             @act="(action, reason) => action === 'assign_reviewer' ? askReviewer() : ask(action, reason)"
             @attention="value => chat = value"
@@ -97,7 +98,16 @@ await ready
       <div v-if="internalJob" id="job-actions" class="mt-4 flex flex-wrap items-center gap-2">
         <UButton size="sm" color="error" variant="ghost" :disabled="busy" @click="askReset">Reset runner</UButton>
       </div>
-      <IssueWorkerOutput v-if="showOutput" v-model:open="outputOpen" :jobs="jobs" :selected-job="selectedJob" class="mt-4" />
+      <IssueWorkerOutput
+        v-if="showOutput"
+        v-model:open="outputOpen"
+        :jobs="jobs"
+        :selected-job="selectedJob"
+        :output="output.data.value"
+        :error="output.error.value"
+        :updated-at="output.updatedAt.value"
+        class="mt-4"
+      />
     </template>
 
     <!-- Reset targets the run, not the issue, so it lives outside the block
