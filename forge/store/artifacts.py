@@ -184,4 +184,5 @@ class Artifacts:
             ).fetchall()
             for row in rows:
                 db.execute("UPDATE job_artifacts SET content=NULL,expired_at=? WHERE rowid=?", (now, row[0]))
-            return len(rows)
+            from .auxiliary import prune_logs_in
+            return len(rows) + prune_logs_in(db, now=now, batch=batch-len(rows))

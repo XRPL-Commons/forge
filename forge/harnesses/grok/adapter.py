@@ -15,6 +15,8 @@ import uuid
 import selectors
 import runpy
 
+RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
+
 
 def error_message(text):
     text = text.lower()
@@ -50,7 +52,7 @@ def announcer():
         return None
 
 
-def collect(args, directory, env):
+def collect(args, directory, env, *, max_bytes=2*1024*1024):
     """Drain output with a hard bound; the outer runner owns the deadline."""
     child = subprocess.Popen(args, stdin=subprocess.DEVNULL, cwd=directory, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
@@ -65,7 +67,7 @@ def collect(args, directory, env):
                 if not block:
                     break
                 size += len(block)
-                if size > 2 * 1024 * 1024:
+                if size > max_bytes:
                     raise RuntimeError('Grok output exceeded its size limit')
                 chunks.append(block)
                 if announce:
@@ -110,7 +112,8 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
     if note.get('model'):
         args += ['-m', note['model']]
     try:
-        code, raw = collect(args, directory, env)
+        code, raw = collect(args, directory, env,
+                            max_bytes=max(2*1024*1024, 2*RESULTS['result_limit'](note.get('role'))+65536))
     finally:
         Path(source.name).unlink(missing_ok=True)
     events = []
@@ -143,10 +146,7 @@ def run(note, directory, env, result_schema):
     result, _ = invoke(note, directory, env, result_schema, prompt)
     if result is None:
         return 1
-    encoded = json.dumps(result)
-    if len(encoded.encode()) > 65536:
-        raise RuntimeError('Result exceeded its size limit')
-    temporary = Path('/work/final-result.json'); temporary.write_text(encoded); temporary.replace('/work/result.json')
+    RESULTS['write_result'](note, result)
     print(json.dumps({'type': 'grok.result', 'summary': str(result.get('summary', ''))[:4000]}), flush=True)
     return 0
 

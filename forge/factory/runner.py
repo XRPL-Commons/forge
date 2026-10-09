@@ -418,7 +418,8 @@ class ContainerRunner:
         captured = {'result': None, 'logs': '', 'missing': []}
         # A complete repository proposal is normalized into many rows; ordinary
         # worker reports retain their small result boundary.
-        result_limit = 4 * 1048576 if job.get('role') == 'triage' else 65536
+        from ..harnesses.results import result_limit as limit_for_role
+        result_limit = limit_for_role(job.get('role'))
         archive_limit = result_limit + 65536
         secrets = self._scrub_values(job)
         try:
