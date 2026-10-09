@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 
 from forge.store.db import Store
+from forge.store.delivery import Delivery, DeliveryQueries
 from forge.store.models import Candidate, Command, IdempotencyConflict, TransitionError, VersionConflict
 from forge.store.transitions import Lifecycle, manifest_hash, project_unit
 
@@ -18,6 +19,7 @@ class StoreTransitionTests(unittest.TestCase):
         self.store = Store.create(self.directory.name)
         self.lifecycle = Lifecycle(self.store, clock=lambda: 100.0)
         self.counter = 0
+        self.unit_id = 'unit-1'
         self.admission = self.admit()
         self.member = self.admission['member_id']
         self.manifest = {'requirements_revision_id': self.admission['revision_id'], 'base_oid': 'base', 'policy_hash': 'policy'}
@@ -30,12 +32,13 @@ class StoreTransitionTests(unittest.TestCase):
             requirements={'acceptance': ['works']}, observed_at=90.0,
         )
 
-    def view(self, unit_id='unit-1'):
+    def view(self, unit_id=None):
         with self.store.read_snapshot() as db:
-            return project_unit(db, unit_id)
+            return project_unit(db, unit_id or self.unit_id)
 
-    def command(self, *, unit_id='unit-1'):
+    def command(self, *, unit_id=None):
         self.counter += 1
+        unit_id = unit_id or self.unit_id
         return Command(f'command-{self.counter}', 'operator', unit_id, self.view(unit_id)['version'])
 
     def reserve(self, member=None, manifest=None, slot='slot-1'):
@@ -138,30 +141,52 @@ class StoreTransitionTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM attempts WHERE unit_id = 'unit-2'").fetchone()[0], 0)
 
-    def add_independent_member(self, number):
-        # Fixture only: batch composition commands remain a later delivery phase.
-        admitted = self.admit(number)
-        with self.store.write() as db:
-            db.execute("UPDATE unit_issues SET left_at = 100, exit_reason = 'combined', state = 'removed' WHERE id = ?", (admitted['member_id'],))
-            db.execute("UPDATE units SET state = 'closed', close_code = 'combined' WHERE id = ?", (f'unit-{number}',))
-            member_id = f'independent-member-{number}'
-            db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES(?,'unit-1',?,1,'main',?,'pending',100)", (member_id, f'issue-{number}', admitted['revision_id']))
-        return member_id, {**self.manifest, 'requirements_revision_id': admitted['revision_id']}
+    def plan_independent_members(self, count):
+        self.delivery = Delivery(self.store, clock=lambda: 100.0)
+        self.delivery_queries = DeliveryQueries(self.store)
+        admissions = [self.admission] + [self.admit(number) for number in range(2, count + 1)]
+        pins = [dict(issue_id=f'issue-{number}', issue_version=1, requirements_revision_id=admitted['revision_id'],
+                     unit_id=f'unit-{number}', unit_version=1, member_id=admitted['member_id'])
+                for number, admitted in enumerate(admissions, 1)]
+        proposal = dict(repository_id=1, base_branch='main', members=pins, dependencies=[], existing_prs=[],
+                        rationale='Independent parts delivered by one owning builder', publication_target={'kind': 'new'})
+        self.unit_id = 'batch'
+        composition = self.delivery.compose(Command('compose', 'operator', self.unit_id, 1), **proposal,
+            approval={'approved': True, 'composition_hash': self.delivery.composition_hash(**proposal)})
+        members = [row['member_id'] for row in composition['members']]
+        self.member = members[0]
+        owner_manifest = self.delivery_queries.builder_manifest(self.unit_id, 'planning', base_oid='base', policy_hash='policy')
+        self.owner_job = self.delivery.reserve_builder(self.command(), stage='planning', slot='parent',
+            execution_fence='fence-parent', input_manifest=owner_manifest)
+        children = [dict(key=str(number), member_id=member, scope='Implement the approved issue', dependencies=[])
+                    for number, member in enumerate(members, 1)]
+        self.plan = self.delivery.save_plan(self.command(), self.owner_job['job_id'], execution_fence='fence-parent',
+            input_manifest=owner_manifest, plan={'children': children}, evidence={'verified': True})
+        self.cleanup(self.owner_job, slot='parent')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM unit_builders').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
+        self.child_keys = {row['member_id']: row['key'] for row in children}
+        return [(member, self.delivery_queries.child_manifest(self.plan['plan_id'], self.child_keys[member])) for member in members]
+
+    def delegate(self, member, manifest, slot='slot-1'):
+        return self.delivery.delegate(self.command(), self.plan['plan_id'], self.child_keys[member], slot=slot,
+            execution_fence=f'fence-{slot}', input_manifest=manifest, worktree_key=f'worktree-{slot}')
 
     def test_member_gate_blocks_only_that_part_and_projection_agrees_with_dispatch(self):
-        sibling, manifest = self.add_independent_member(2)
+        (member, first_manifest), (sibling, manifest) = self.plan_independent_members(2)
         self.lifecycle.open_gate(self.command(), 'environment', details={'database': 'missing'}, member_id=self.member)
         self.assertIsNone(self.view()['current_blocker'])
         with self.assertRaises(TransitionError):
-            self.reserve()
-        job = self.reserve(sibling, manifest)
+            self.delegate(member, first_manifest)
+        job = self.delegate(sibling, manifest)
         self.assertIsNotNone(job['job_id'])
         self.assertIsNone(self.view()['current_blocker'])
         self.fail(job, manifest)
         self.assertIsNotNone(self.view()['current_blocker'])
 
     def test_unvalidated_current_dependency_rows_block_only_dependent_members(self):
-        sibling, manifest = self.add_independent_member(2)
+        (member, first_manifest), (sibling, manifest) = self.plan_independent_members(2)
         self.admit(3)
         with self.store.write() as db:
             db.execute("INSERT INTO issue_dependencies(id,issue_id,requirements_revision_id,prerequisite_issue_id,source,evidence,created_at) VALUES('edge','issue-1',?,'issue-3','requirements','Requires prerequisite',100)", (self.admission['revision_id'],))
@@ -170,25 +195,27 @@ class StoreTransitionTests(unittest.TestCase):
         dependent = next(m for m in view['members'] if m['id'] == self.member)
         self.assertEqual(dependent['current_blocker']['code'], 'dependency')
         self.assertEqual(dependent['projected_state'], 'blocked')
-        with self.assertRaisesRegex(TransitionError, 'applicable gate'):
-            self.reserve()
-        self.reserve(sibling, manifest)
+        with self.assertRaisesRegex(TransitionError, 'applicable scoped gate'):
+            self.delegate(member, first_manifest)
+        self.delegate(sibling, manifest)
+        generation = self.view()['membership_generation']
         with self.store.write() as db:
-            db.execute("INSERT INTO member_dependencies(unit_id,member_id,prerequisite_member_id,membership_generation) VALUES('unit-1',?,?,1)", (sibling, self.member))
+            db.execute("INSERT INTO member_dependencies(unit_id,member_id,prerequisite_member_id,membership_generation) VALUES(?,?,?,?)", (self.unit_id, sibling, self.member, generation))
         self.assertEqual(self.view()['current_blocker']['code'], 'dependency')
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_delegations').fetchone()[0], 1)
 
     def test_third_failure_atomically_fences_other_assignments_and_preserves_uncharged_late_failure(self):
-        parts = [(self.member, self.manifest)] + [self.add_independent_member(n) for n in (2, 3, 4)]
-        jobs = [self.reserve(member, manifest, slot=f'slot-{n}') for n, (member, manifest) in enumerate(parts, 1)]
+        parts = self.plan_independent_members(4)
+        jobs = [self.delegate(member, manifest, slot=f'slot-{n}') for n, (member, manifest) in enumerate(parts, 1)]
         for n in range(3):
             result = self.fail(jobs[n], parts[n][1], slot=f'slot-{n+1}')
             self.assertTrue(result['charged'])
         self.assertEqual(self.view()['charged_failures'], 3)
         self.assertEqual(self.view()['current_blocker']['code'], 'budget_exhausted')
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM jobs WHERE fenced = 1').fetchone()[0], 4)
+            self.assertEqual(db.execute('SELECT count(*) FROM jobs WHERE fenced = 1').fetchone()[0], 5)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_delegations').fetchone()[0], 4)
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 4)
         result = self.fail(jobs[3], parts[3][1], slot='slot-4')
         self.assertFalse(result['accepted'])
@@ -201,11 +228,12 @@ class StoreTransitionTests(unittest.TestCase):
         for n, job in enumerate(jobs, 1):
             self.cleanup(job, slot=f'slot-{n}')
         with self.assertRaises(TransitionError):
-            self.reserve()
+            self.delivery.reserve_builder(self.command(), stage='planning', slot='parent', execution_fence='next-parent',
+                input_manifest=self.delivery_queries.builder_manifest(self.unit_id, 'planning', base_oid='base', policy_hash='policy'))
 
     def test_concurrent_third_failures_serialize_and_retry_preserves_fourth_raw_result(self):
-        parts = [(self.member, self.manifest)] + [self.add_independent_member(n) for n in (2, 3, 4)]
-        jobs = [self.reserve(member, manifest, slot=f'slot-{n}') for n, (member, manifest) in enumerate(parts, 1)]
+        parts = self.plan_independent_members(4)
+        jobs = [self.delegate(member, manifest, slot=f'slot-{n}') for n, (member, manifest) in enumerate(parts, 1)]
         for n in range(2):
             self.fail(jobs[n], parts[n][1], slot=f'slot-{n+1}')
         version = self.view()['version']
@@ -213,7 +241,7 @@ class StoreTransitionTests(unittest.TestCase):
         def submit(n):
             barrier.wait()
             try:
-                return self.lifecycle.record_failure(Command(f'race-{n}', 'operator', 'unit-1', version), jobs[n]['job_id'],
+                return self.lifecycle.record_failure(Command(f'race-{n}', 'operator', self.unit_id, version), jobs[n]['job_id'],
                     execution_fence=f'fence-slot-{n+1}', input_manifest=parts[n][1], evidence={'failure': n})
             except VersionConflict:
                 return 'conflict'
@@ -226,7 +254,7 @@ class StoreTransitionTests(unittest.TestCase):
         self.assertFalse(result['charged'])
         self.assertEqual(self.view()['charged_failures'], 3)
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM job_artifacts WHERE kind='result'").fetchone()[0], 4)
+            self.assertEqual(db.execute("SELECT count(*) FROM job_artifacts a JOIN job_delegations d ON d.job_id=a.job_id WHERE a.kind='result'").fetchone()[0], 4)
 
     def test_resuming_paused_worker_keeps_cleanup_blocker_and_atomic_event_history(self):
         job = self.reserve()
