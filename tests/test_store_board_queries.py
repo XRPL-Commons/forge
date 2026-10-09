@@ -1,5 +1,6 @@
 """Board selectors retain lifecycle and completion-event semantics."""
 from copy import deepcopy
+import json
 from unittest import TestCase
 from unittest.mock import Mock
 
@@ -66,6 +67,19 @@ class BoardCompletionTests(TestCase):
 
 
 class BoardDiscoveryTests(RuntimeFixture):
+    def test_heartbeat_keeps_individual_error_codes_for_operator_messages(self):
+        self.prepare()
+        with self.database.write() as db:
+            db.execute('INSERT INTO store_metadata VALUES(?,?)', ('supervisor:heartbeat', json.dumps({
+                'finished_at': self.now,
+                'errors': {'planning': {'count': 2, 'codes': ['triage_result_missing', 'triage_result_invalid']}},
+            })))
+        observation = PipelineViews(self.database, clock=lambda: self.now).factory(section='board')['observation']
+        self.assertEqual(observation, {'at': self.now, 'errors': [
+            {'phase': 'planning', 'reason': 'triage_result_missing'},
+            {'phase': 'planning', 'reason': 'triage_result_invalid'},
+        ]})
+
     def test_only_current_unadmitted_failures_join_the_board(self):
         self.prepare()
         inventory = StoreInventory(self.database, self.settings, Mock(),

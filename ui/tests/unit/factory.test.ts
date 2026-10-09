@@ -276,6 +276,19 @@ describe('warnings', () => {
     expect(destination('other', '/setup-help')).toEqual({ to: '', label: '' })
   })
 
+  it('explains missing and invalid planning evidence as distinct failures', () => {
+    const errors = [
+      { phase: 'planning', reason: 'triage_result_missing' },
+      { phase: 'planning', reason: 'triage_result_invalid' },
+      { phase: 'planning', reason: 'triage_worker_unsuccessful' },
+    ]
+    expect(warnings({ factory: factory(errors) }, now, '/').map(item => item.text)).toEqual([
+      'The planning worker finished without a result.',
+      'The planning worker returned an invalid result.',
+      'The planning worker could not complete its proposal.',
+    ])
+  })
+
   it('dedupes identical reasons and surfaces rejected actions', () => {
     const errors = [
       { phase: 'github', reason: 'GitHub observation or publication is unconfirmed' },

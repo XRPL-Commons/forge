@@ -495,6 +495,16 @@ export function readout(view: FactoryView | null | undefined, now: number): Read
 export type WarningKind = 'github' | 'capacity' | 'runner' | 'reconciliation' | 'other'
 export interface Warning { kind: WarningKind; text: string; to: string; label: string }
 
+const PLANNING_WARNING_TEXT = new Map([
+  ['triage_result_missing', 'The planning worker finished without a result.'],
+  ['triage_result_invalid', 'The planning worker returned an invalid result.'],
+  ['triage_worker_unsuccessful', 'The planning worker could not complete its proposal.'],
+  ['triage_proposal_invalid', 'The planning proposal could not be validated.'],
+  ['triage_capture_invalid', 'The planning worker’s evidence could not be saved.'],
+  ['triage_worker_unavailable', 'The planning worker or its GitHub access is unavailable.'],
+  ['triage_inputs_changed', 'Repository information changed before planning could start.'],
+])
+
 // [primary, fallback-when-primary-is-the-current-route]
 const WARNING_DESTINATIONS: Record<WarningKind, [[string, string], [string, string]]> = {
   github: [['/settings/github', 'Open GitHub access'], ['/setup-help#github-repository-protection', 'Open help']],
@@ -526,7 +536,8 @@ export function warnings(
     seen.add(error.reason)
     const kind: WarningKind = (['github', 'capacity', 'runner', 'reconciliation'] as string[])
       .includes(error.phase) ? (error.phase as WarningKind) : 'other'
-    out.push({ kind, text: error.reason, ...destination(kind, currentPath) })
+    const text = PLANNING_WARNING_TEXT.get(error.reason) ?? error.reason
+    out.push({ kind, text, ...destination(kind, currentPath) })
   }
   for (const action of view.factory?.actions ?? []) {
     if (action.status !== 'rejected' || !action.error) continue

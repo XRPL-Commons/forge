@@ -444,7 +444,8 @@ class PipelineViews:
             repositories=self._repositories(db)
             heartbeat=db.execute("SELECT value FROM store_metadata WHERE key='supervisor:heartbeat'").fetchone()
             receipt=json.loads(heartbeat[0]) if heartbeat else {}
-            observation=dict(at=receipt.get('finished_at'),errors=[{'phase':name,'reason':', '.join(value['codes'])} for name,value in receipt.get('errors',{}).items()])
+            observation=dict(at=receipt.get('finished_at'),errors=[{'phase':name,'reason':code}
+                for name,value in receipt.get('errors',{}).items() for code in value['codes']])
             clauses=['x.unit_id IS NOT NULL'];params=[]
             completed="x.unit_state IN ('merged','closed','dissolved') AND x.issue_state IN ('done','dropped')"
             if issue is not None:clauses.append('x.id=?');params.append(issue)
