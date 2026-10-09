@@ -213,9 +213,32 @@ class ObservationTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertIsNotNone(db.execute('SELECT id FROM candidates WHERE id=?', (selected,)).fetchone())
 
+    def test_verified_closure_fences_worker_when_candidate_read_spends_budget(self):
+        from forge.factory.github import GitHubBudgetExhausted
+        build=self.reserve();self.accept_build(build);self.cleanup(build)
+        selected=self.view()['current_candidate_id']
+        with self.store.read_snapshot() as db:
+            identity=dict(db.execute('SELECT * FROM candidates WHERE id=?',(selected,)).fetchone())
+        manifest={key:identity[key] for key in ('head_oid','base_oid','policy_hash','requirements_hash','input_manifest_hash')}
+        manifest['candidate_id']=selected
+        review=self.lifecycle.reserve_job(self.command(),'review',slot='review',execution_fence='review-fence',
+            candidate_id=selected,input_manifest=manifest)
+        github=GitHub();github.value.update(state='closed',state_reason='completed')
+        github.pr=lambda *args:(_ for _ in ()).throw(GitHubBudgetExhausted('Later'))
+        result=self.controller(github).cycle()
+        self.assertEqual(result['deferred'],'github_budget')
+        self.assertFalse(result['sweep']['complete'])
+        self.assertIsNone(result['next_cursor'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT github_state FROM issues').fetchone()[0],'closed')
+            self.assertEqual(db.execute('SELECT fenced FROM jobs WHERE id=?',(review['job_id'],)).fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+
     def test_import_staging_never_calls_github(self):
         with self.store.write() as db:
             db.execute("INSERT INTO store_metadata VALUES('import_only','true')")
         github = GitHub()
         github.after_issue = lambda: self.fail('staging must not inspect live GitHub')
-        self.assertEqual(self.controller(github).cycle()['items'][0]['error'], 'TransitionError')
+        from forge.store.db import StoreError
+        with self.assertRaises(StoreError):
+            self.controller(github).cycle()

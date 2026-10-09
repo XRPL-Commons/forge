@@ -12,14 +12,16 @@ from ..store.models import Command, TransitionError
 from ..store.queries import Queries
 from ..store.transitions import Lifecycle, TERMINAL
 from .github import GitHubUnavailable
+from ..request_metrics import RequestBudgetExhausted, RequestMetrics, request_scope, deadline
 from .ownership import ownership, active_publication_matches
 
 
 class ObservationController:
     def __init__(self, store, github, *, admission, policy=None,
-                 hold_labels=('hold', 'blocked'), clock=time.time):
+                 hold_labels=('hold', 'blocked'), clock=time.time, monotonic=time.monotonic):
         self.store, self.github, self.admission = store, github, admission
         self.policy, self.hold_labels, self.clock = policy, tuple(hold_labels), clock
+        self.monotonic = monotonic
         self.commands = Lifecycle(store, clock=clock)
         self.queries = Queries(store)
 
@@ -71,19 +73,20 @@ class ObservationController:
         unit=self.queries.unit(unit_id)
         if unit['state'] in TERMINAL:
             return {'unit_id':unit_id,'terminal':True}
-        outcomes={}
-        for member in unit['members']:
-            issue_id=member['issue_id']
-            with self.store.read_snapshot() as db:
-                requested=db.execute('SELECT requested_at FROM operator_observation_requests WHERE issue_id=?',(issue_id,)).fetchone()
-            outcome=self._step_member(unit_id,member['id'])
-            outcomes[member['id']]=outcome
-            if requested and not outcome.get('stale') and not outcome.get('pending'):
-                with self.store.write() as db:
-                    db.execute('DELETE FROM operator_observation_requests WHERE issue_id=? AND requested_at=?',(issue_id,requested[0]))
+        outcomes={member['id']:self.observe_member(unit_id,member['id'],member['issue_id'])
+                  for member in unit['members']}
         if len(outcomes)==1:
             return next(iter(outcomes.values()))
         return {'unit_id':unit_id,'members':outcomes}
+
+    def observe_member(self, unit_id, member_id, issue_id):
+        with self.store.read_snapshot() as db:
+            requested=db.execute('SELECT requested_at FROM operator_observation_requests WHERE issue_id=?',(issue_id,)).fetchone()
+        outcome=self._step_member(unit_id,member_id)
+        if requested and not outcome.get('stale') and not outcome.get('pending'):
+            with self.store.write() as db:
+                db.execute('DELETE FROM operator_observation_requests WHERE issue_id=? AND requested_at=?',(issue_id,requested[0]))
+        return outcome
 
     def _step_member(self, unit_id, member_id):
         snapshot = self._snapshot(unit_id, member_id)
@@ -104,7 +107,7 @@ class ObservationController:
         if candidate:
             try:
                 remote_pr = self.github.pr(item, candidate['pull_number'])
-            except GitHubUnavailable as error:
+            except (GitHubUnavailable, RequestBudgetExhausted) as error:
                 pr_error = error
         terminal = remote['state'] == 'closed' or remote_pr is not None and remote_pr.get('merged') is True
         # A verified closure must fence its worker even when unrelated inventory
@@ -124,6 +127,10 @@ class ObservationController:
             admission=allowed, ownership_conflict=conflict,
             assignee_types={row['login']: row['type'] for row in remote.get('assignees', [])
                             if isinstance(row, dict) and row.get('type')})
+        if isinstance(pr_error, RequestBudgetExhausted):
+            # Persist the already verified issue closure/holds before deferring
+            # the unfinished candidate read. Keep this exact member pending.
+            raise pr_error
         if outcome.get('stale'):
             return {'unit_id': unit_id, 'stale': True}
         current = self._snapshot(unit_id, member_id)
@@ -185,11 +192,64 @@ class ObservationController:
         return {'unit_id': unit_id, 'observed': True}
 
     def cycle(self, *, after=None, limit=50):
-        page = self.queries.units(after=after, limit=limit)
-        results = []
-        for unit in page['items']:
-            try:
-                results.append(self.step(unit['id']))
-            except (GitHubUnavailable, TransitionError, StoreError, OSError) as error:
-                results.append({'unit_id': unit['id'], 'error': getattr(error, 'code', type(error).__name__)})
-        return {'items': results, 'next_cursor': page['next_cursor']}
+        # The durable sweep owns its checkpoint. `after` is the shared page
+        # interface; a separate caller cursor cannot override this receipt.
+        from ..store.queries import _limit
+        from ..store.observation_progress import ObservationProgress
+        limit=_limit(limit)
+        progress=ObservationProgress(self.store)
+        state=progress.start(self.clock())
+        metrics=RequestMetrics();started=self.monotonic();previous=metrics.view()
+        items=[];complete=False
+        errors_before=state['errors'];phase_errors=set()
+        def checkpoint():
+            nonlocal previous,started
+            current=metrics.view()
+            for field in ('attempts','failures','elapsed_ms'):
+                state['requests'][field]+=current[field]-previous[field]
+            if current['quota']:
+                state['requests']['quota']=current['quota']
+            previous=current
+            now=self.monotonic();state['active_ms']+=(now-started)*1000;started=now
+            progress.save()
+        with request_scope(metrics=metrics):
+            while self.monotonic()<deadline():
+                page=progress.page(state['cursor'],limit)
+                if not page:
+                    complete=True
+                    break
+                state['pages']+=1
+                for member in page:
+                    if self.monotonic()>=deadline():break
+                    try:
+                        outcome=self.observe_member(member['unit_id'],member['member_id'],member['issue_id'])
+                    except RequestBudgetExhausted:
+                        break
+                    except (GitHubUnavailable,TransitionError,StoreError,OSError) as error:
+                        outcome={'unit_id':member['unit_id'],'error':getattr(error,'code',type(error).__name__)}
+                    state['visits']+=1
+                    if outcome.get('error'):
+                        state['errors']+=1
+                        phase_errors.add(outcome['error'])
+                        state['error_codes']=sorted(set(state['error_codes']+[outcome['error']]))[:10]
+                    elif outcome.get('pending') or outcome.get('stale'):state['deferred']+=1
+                    elif outcome.get('terminal'):state['retired']+=1
+                    else:state['refreshed']+=1
+                    state['cursor']={key:member[key] for key in ('unit_id','member_id','membership_generation')}
+                    if len(items)<100:items.append({**outcome,'member_id':member['member_id']})
+                    checkpoint()
+                else:
+                    continue
+                break
+        state['in_progress']=False
+        checkpoint()
+        if complete:
+            summary=progress.finish(self.clock())
+        else:
+            state.update(coverage=progress.coverage(state['started_at'],self.clock()),
+                         scope_changed=progress.scope_hash()!=state['scope_hash'],complete=False)
+            progress.save()
+            summary=state
+        return {'items':items,'next_cursor':None if complete else state['cursor'],'checkpointed':True,
+                'sweep':summary,'error_count':state['errors']-errors_before,'error_codes':sorted(phase_errors)[:10],
+                'deferred':None if complete else 'github_budget'}

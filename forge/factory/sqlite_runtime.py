@@ -96,7 +96,7 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
             return {'items': [{'repo': row['repo'], 'error': 'deployment_observation_unavailable'} for row in errors], 'next_cursor': None}
     supervisor = SqliteSupervisor(parts['store'], **{key: parts[key] for key in
         ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'reconciliation', 'planning', 'triage_effects')},
-        requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(), clock=clock)
+        requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(), clock=clock, cycle_budget_seconds=parts['config']['cycle_budget_seconds'])
     return supervisor.cycle()
 
 

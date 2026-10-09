@@ -278,6 +278,51 @@ class SqliteSupervisorCompositionTests(unittest.TestCase):
         self.assertEqual(heartbeat['errors'], {'observations': {'count': 1, 'codes': ['GitHubUnavailable']}})
         self.assertNotIn('private remote details', json.dumps(heartbeat))
 
+    def test_budget_resumes_later_phases_next_cycle_and_keeps_local_work(self):
+        from unittest.mock import patch
+        from forge.request_metrics import request_attempt, RequestBudgetExhausted
+        ticks=[0.0]
+        remote=[]
+        driver=self.driver()
+        driver.monotonic=lambda:ticks[0]
+        driver._put('observations:cursor','pending-member')
+        class RemoteStage(RecordingStage):
+            def cycle(stage,**kwargs):
+                result=super(RemoteStage,stage).cycle(**kwargs)
+                if stage.name=='observations':ticks[0]+=60
+                with request_attempt() as (_,receipt):
+                    remote.append(stage.name)
+                    receipt['status']=200
+                return result
+        for name in ('observations','results','merges','dispatch'):
+            setattr(driver,name,RemoteStage(name,self.calls))
+        driver.operators=RecordingStage('operators',self.calls)
+        with patch('forge.request_metrics.time.monotonic',side_effect=lambda:ticks[0]):
+            first=driver.cycle()
+            self.assertEqual(remote,[])
+            self.assertTrue(first['stages']['retention']['due'])
+            self.assertEqual(first['stages']['observations'],{'deferred':'github_budget'})
+            self.assertEqual(driver._get('observations:cursor'),'pending-member')
+            self.assertEqual(driver._get('heartbeat')['errors'],{})
+            self.calls.clear()
+            ticks[0]+=1
+            second=driver.cycle()
+        self.assertEqual([row[0] for row in self.calls],
+            ['execution','results','merges','effects','dispatch','operators','observations'])
+        self.assertEqual(remote,['results','merges','dispatch'])
+        self.assertEqual(second['requests']['attempts'],3)
+        self.assertEqual(second['requests']['failures'],0)
+        self.assertEqual(driver._get('heartbeat')['errors'],{})
+
+    def test_retention_error_keeps_the_cycle_heartbeat(self):
+        from unittest.mock import patch
+        with patch('forge.factory.sqlite_supervisor.Artifacts.prune_raw_logs',side_effect=OSError('private path')):
+            driver=self.driver()
+            report=driver.cycle()
+        self.assertEqual(report['stages']['retention'],{'error':'OSError'})
+        self.assertEqual(driver._get('heartbeat')['errors'],{'retention':{'count':1,'codes':['OSError']}})
+        self.assertNotIn('private',json.dumps(driver._get('heartbeat')))
+
     def test_optional_verification_and_recovery_are_paged_before_dispatch(self):
         driver = self.driver()
         driver.verification = RecordingStage('verification', self.calls, cursor='next-gate')

@@ -70,17 +70,25 @@ class AppClient:
                                    'Accept': 'application/vnd.github+json',
                                    'X-GitHub-Api-Version': '2022-11-28',
                                    'User-Agent': 'forge-settings', 'Content-Type': 'application/json'})
-        try:
-            with build_opener(NoRedirect()).open(request, timeout=15) as response:
-                raw = response.read(4 * 1024 * 1024 + 1)
-                if len(raw) > 4 * 1024 * 1024:
-                    raise AccessError('GitHub response exceeded the size limit')
-                return json.loads(raw) if raw else None
-        except HTTPError as error:
-            # Never echo response bodies, headers, tokens, or key paths.
-            raise AccessError(f'GitHub returned HTTP {error.code}; check installation access', status=error.code) from None
-        except (URLError, TimeoutError, OSError, ValueError):
-            raise AccessError('GitHub access could not be verified; retry the sync') from None
+        from .request_metrics import request_attempt, deadline, RequestBudgetExhausted
+        with request_attempt() as (timeout, receipt):
+            try:
+                with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+                    receipt.update(status=response.status, headers=response.headers)
+                    raw = response.read(4 * 1024 * 1024 + 1)
+                    if len(raw) > 4 * 1024 * 1024:
+                        raise AccessError('GitHub response exceeded the size limit')
+                    return json.loads(raw) if raw else None
+            except HTTPError as error:
+                receipt.update(status=error.code, headers=error.headers)
+                # Never echo response bodies, headers, tokens, or key paths.
+                raise AccessError(f'GitHub returned HTTP {error.code}; check installation access', status=error.code) from None
+            except (URLError, TimeoutError, OSError):
+                if time.monotonic() >= deadline():
+                    raise RequestBudgetExhausted('GitHub request budget exhausted') from None
+                raise AccessError('GitHub access could not be verified; retry the sync') from None
+            except ValueError:
+                raise AccessError('GitHub access could not be verified; retry the sync') from None
 
     def jwt(self, connection):
         key_path = self.environ.get(connection['private_key_env'], '')

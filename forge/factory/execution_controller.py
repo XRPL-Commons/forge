@@ -12,6 +12,7 @@ import stat
 import time
 import uuid
 
+from ..request_metrics import RequestBudgetExhausted
 from ..store.executions import Executions, ExecutionQueries
 from ..store.db import StoreError
 from ..store.models import Command, TransitionError
@@ -134,11 +135,18 @@ class ExecutionController:
     def cycle(self, *, after='', limit=50):
         page = self.queries.pending(after=after, limit=limit)
         results = []
+        deferred = False
         for job_id in page['items']:
             try:
                 results.append(self.step(job_id))
+            except RequestBudgetExhausted:
+                # Continue local capture/teardown for other owned jobs. Keep the
+                # page until every pending remote cleanup can be retried.
+                deferred = True
+                results.append({'job_id': job_id, 'deferred': 'github_budget'})
             except (RunnerError, GitHubUnavailable, TransitionError, StoreError, OSError) as error:
                 # One unavailable provider must not prevent another execution's
                 # cleanup. Keep output coded; runner errors may contain output.
                 results.append({'job_id': job_id, 'error': getattr(error, 'code', type(error).__name__)})
-        return {'items': results, 'next_cursor': page['next_cursor']}
+        return {'items': results, 'next_cursor': after if deferred else page['next_cursor'],
+                'deferred': 'github_budget' if deferred else None}

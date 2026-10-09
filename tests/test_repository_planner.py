@@ -25,6 +25,22 @@ class RepositoryPlannerTests(unittest.TestCase):
         self.controller=RepositoryPlanner(self.store,self.github,config={'enabled':True},settings=self.settings,observations=Mock(),
             runner=lambda config:self.runner,clock=lambda:self.now)
 
+    def test_budget_defers_preparation_without_fencing_or_failure(self):
+        from forge.factory.github import GitHubBudgetExhausted
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        self.runner.inspect.return_value={'status':'created','running':False}
+        self.github.token.side_effect=GitHubBudgetExhausted('later')
+        with self.assertRaises(GitHubBudgetExhausted):
+            self.controller.drive(self.job)
+        saved=self.plans.job('triage')
+        self.assertFalse(saved['fenced'])
+        self.assertFalse(saved['cleanup'])
+        self.assertIsNone(saved['capture'])
+        self.runner.reset.assert_not_called()
+        self.runner.start.assert_not_called()
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+
     def test_readonly_capture_requires_cleanup_and_then_only_publishes_proposal(self):
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         self.runner.inspect.return_value={'status':'created','running':False}
