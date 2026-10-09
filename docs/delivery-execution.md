@@ -19,7 +19,10 @@ existing publication target. Continuing an existing PR pins its unit, candidate,
 PR number, head and author identity, and requires `ownership_transfer: true`.
 The operator's choice authorizes that target, including a human-authored PR;
 it does not change its author. Every approved source candidate remains an exact
-builder input. Composition never closes or supersedes another GitHub PR.
+builder input, with its original author identity pinned in the applied approval.
+Exact approved non-target PRs permit read admission while they remain at that
+head; this grants no publication rights. Changed heads or authors require a new
+composition decision. Composition never closes or supersedes another GitHub PR.
 
 ## One builder, separate executions
 
@@ -107,6 +110,8 @@ controller verifies that the published head contains every required input and
 that its version-2 submission marker names the exact unit, members and attempt;
 its body must also close every member issue. An existing target is checked again
 inside the runner before the provider starts, including its approved author and
-previous head. A changed target returns an operator decision and preserves the
+previous head. For updates, the builder marks the PR draft, records its exact
+final-head marker before pushing that commit, then marks it ready last. There is
+no null-head exemption from ownership checks. A changed target returns an operator decision and preserves the
 existing work. GitHub publication is an external effect; exact late-publication
 recovery handles a completed push whose original execution did not return.

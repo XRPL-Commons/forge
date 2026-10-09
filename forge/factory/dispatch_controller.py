@@ -1,4 +1,4 @@
-"""Bounded SQLite singleton dispatch. No engine start or credential lookup here.
+"""Bounded SQLite delivery dispatch. No engine start or credential lookup here.
 
 Preparation does remote reads before reservation; lifecycle versions and scoped
 SQL gates are checked again in the reservation transaction. Provider account
@@ -34,8 +34,26 @@ class PreparedDispatch:
     member_choices: dict | None = None
 
 
+def memory_config(config, role, profile, environments):
+    """One allocation authority for a physical execution's exact issue scope."""
+    from .capacity import memory_bytes
+    tiers = config['memory_tiers']
+    retries = [state.get('memory_retry') or {} for state in environments]
+    requested = [memory_bytes(retry['memory']) for retry in retries if retry.get('role') == role] if tiers else []
+    if requested and max(requested) > memory_bytes(tiers[-1]):
+        return None
+    memory = max([profile, *requested])
+    if memory and tiers:
+        memory = memory_bytes(next((tier for tier in tiers if memory_bytes(tier) >= memory), tiers[-1]))
+    if memory > memory_bytes(config['memory']):
+        if memory % (1024 ** 2):
+            raise TransitionError('memory profile must use whole megabytes')
+        config = {**config, 'memory': str(memory // (1024 ** 2)) + 'm'}
+    return config
+
+
 class GitHubPrepare:
-    """Fresh remote admission and exact worker inputs for the singleton adapter."""
+    """Fresh remote admission and exact worker inputs for each assigned scope."""
     def __init__(self, github, config, *, requirements=None):
         self.github, self.config = github, validate(config)
         self.requirements = requirements
@@ -77,22 +95,9 @@ class GitHubPrepare:
                     environment_retry=environment.get('retry'), environment_label=environment.get('label'))
         item['environment_choice'] = refreshed['choice'] if refreshed else choose(self.config, item, remote)
         config = worker_config(self.config, item)
-        memory = snapshot.get('memory_bytes', {}).get(role, 0)
-        retry = environment.get('memory_retry') or {}
-        if retry.get('role') == role and self.config['memory_tiers']:
-            from .capacity import memory_bytes
-            memory = max(memory, memory_bytes(retry['memory']))
-        if memory and self.config['memory_tiers']:
-            from .capacity import memory_bytes
-            if retry.get('role') == role and memory > memory_bytes(self.config['memory_tiers'][-1]):
-                return None
-            memory = memory_bytes(next((tier for tier in self.config['memory_tiers'] if memory_bytes(tier) >= memory), self.config['memory_tiers'][-1]))
-        if memory:
-            from .capacity import memory_bytes
-            if memory > memory_bytes(config['memory']):
-                if memory % (1024 ** 2):
-                    raise TransitionError('memory profile must use whole megabytes')
-                config['memory'] = str(memory // (1024 ** 2)) + 'm'
+        config = memory_config(config, role, snapshot.get('memory_bytes', {}).get(role, 0), [environment])
+        if config is None:
+            return None
         publisher = self.github.publisher(role)
         context = dict(review_policy=policy(config, item['repo_id'], repository_name=item['repo']), verification_checks=config['repository_verification'].get(item['repo'], []))
         ci_item = {**item, 'candidate': dict(head=candidate['head_oid'], base=candidate['base_oid']) if candidate else None}
@@ -112,8 +117,9 @@ class GitHubPrepare:
         unit, candidate = snapshot['unit'], snapshot['candidate']
         # Repository identity is shared; no issue is selected as group authority.
         item = {'repo_id': unit['repository_id'], 'repo': snapshot['members'][0]['issue']['repository']}
-        if snapshot.get('publication_transfer'):
-            item['publication_transfer'] = snapshot['publication_transfer']
+        for key in ('publication_transfer', 'approved_sources', 'owned_publication'):
+            if key in snapshot:
+                item[key] = snapshot[key]
         remotes = {}
         for scoped in snapshot['members']:
             issue, member = scoped['issue'], scoped['member']
@@ -156,13 +162,21 @@ class GitHubPrepare:
                 return None
             context.update(resume_branch=transfer['branch'], resume_pr=transfer['pull_number'],
                            resume_head=transfer['expected_head'], publication_author=transfer['author'])
-        elif candidate and role == 'build':
-            current = self.github.pr(item, candidate['pull_number'])
-            if current.get('head', {}).get('sha') != candidate['head_oid']:
+        elif snapshot.get('resume_candidate') and role == 'build':
+            previous = snapshot['resume_candidate']
+            current = self.github.pr(item, previous['pull_number'])
+            if (current.get('head', {}).get('sha') != previous['head_oid']
+                    or current.get('head', {}).get('ref') != previous['branch']
+                    or current.get('head', {}).get('repo', {}).get('id') != unit['repository_id']
+                    or current.get('base', {}).get('ref') != unit['base_branch']
+                    or current.get('base', {}).get('repo', {}).get('id') != unit['repository_id']
+                    or current.get('state') != 'open' or current.get('merged')
+                    or current.get('user', {}).get('login') != self.github.publisher('build')
+                    or current.get('user', {}).get('type') != 'Bot'):
                 return None
-            context.update(resume_branch=candidate['branch'], resume_pr=candidate['pull_number'],
-                           resume_head=candidate['head_oid'], publication_author={key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')})
-        return PreparedDispatch(base, self.github.publisher(role), config, candidate['branch'] if candidate else None,
+            context.update(resume_branch=previous['branch'], resume_pr=previous['pull_number'],
+                           resume_head=previous['head_oid'], publication_author={key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')})
+        return PreparedDispatch(base, self.github.publisher(role), config, context.get('resume_branch') or (candidate['branch'] if candidate else None),
                                 context, refreshed['unit_version'] if refreshed else None,
                                 refreshed.get('choices', {}) if refreshed else None)
 
@@ -222,9 +236,11 @@ class DispatchController:
             from ..store.operator_views import reviewer_request_in
             from .ownership import publication_context
             ownership_context = publication_context(self.store, unit_id, {})
+            from ..store.delivery_inputs import previous_publication_in
+            resume_candidate = previous_publication_in(db, unit_id) if grouped else None
             return dict(**ownership_context, reviewers_requested=reviewer_request_in(db,unit['current_candidate_id']),unit=unit, member=member, issue=issue, candidate=dict(candidate) if candidate else None,
                         role=role, reason=reason, environment=environment, memory_bytes=memory, members=members, grouped=grouped, repo=members[0]['issue']['repository'],
-                        resume_branch=previous[0] if previous else None)
+                        resume_branch=previous[0] if previous else None, resume_candidate=resume_candidate)
 
     def _provider(self, config):
         pool = config['provider_pool'] or [dict(id=None, **{key: config[key] for key in
@@ -286,7 +302,8 @@ class DispatchController:
         if snapshot['grouped'] and role == 'build':
             from ..store.delivery import DeliveryQueries
             selection = DeliveryQueries(self.store).assignments(unit_id, base_oid=prepared.base_oid,
-                                                               policy_hash=manifest_hash(policy(prepared.runner_config, snapshot['unit']['repository_id'], repository_name=snapshot['repo'])))
+                                                               policy_hash=manifest_hash(policy(prepared.runner_config, snapshot['unit']['repository_id'], repository_name=snapshot['repo'])),
+                                                               allowed_members=set(prepared.member_choices) if prepared.member_choices is not None else None)
             if selection['version'] != snapshot['unit']['version']:
                 return {**result, 'reason': 'observation_changed'}
             choices = prepared.member_choices
@@ -312,6 +329,13 @@ class DispatchController:
             services = sorted({service for choice in choices for service in choice.get('services', [])})
             choice = {'tier': 'full' if any(choice['tier'] == 'full' for choice in choices) else 'standard', 'services': services}
             config = worker_config(config, {'environment_choice': choice})
+        if snapshot['grouped']:
+            scope = [row for row in snapshot['members'] if not assignment or assignment['stage'] != 'child'
+                     or row['member']['id'] == assignment['member_id']]
+            config = memory_config(config, role, snapshot.get('memory_bytes', {}).get(role, 0),
+                                   [row['environment'] for row in scope])
+            if config is None:
+                return {**result, 'reason': 'memory_unavailable'}
         # Runtime files contain credential references only. Reject unknown keys
         # rather than persisting environment values supplied by a caller.
         extras = {key: config.pop(key) for key in ('environment_tier', 'services') if key in config}

@@ -66,3 +66,17 @@ class DeliveryPublicationTests(unittest.TestCase):
             report = json.loads(path.read_text())
             self.assertEqual(report['outcome'], 'unable')
             self.assertIsNone(report['output_commit'])
+
+    def test_existing_publication_marker_precedes_push_without_exempting_other_heads(self):
+        context = {'publication_transfer': {**self.target, 'expected_head': 'c' * 40,
+                   'branch': 'topic', 'base_branch': 'main', 'repository_id': 1, 'delivery_id': 'batch',
+                   'members': [1, 2], 'active_integrations': [self.attempt]}}
+        before = deepcopy(self.pr); before['draft'] = True; before['head']['sha'] = 'c' * 40
+        self.assertTrue(publication_transfer_matches(before, context))
+        pushed = deepcopy(self.pr); pushed['draft'] = True
+        self.assertTrue(publication_transfer_matches(pushed, context))
+        other = deepcopy(pushed); other['head']['sha'] = 'e' * 40
+        self.assertFalse(publication_transfer_matches(other, context))
+        invalid = deepcopy(pushed)
+        invalid['body'] = '<!-- forge-submission ' + json.dumps({**self.marker, 'head': None}) + ' -->'
+        self.assertFalse(publication_transfer_matches(invalid, context))

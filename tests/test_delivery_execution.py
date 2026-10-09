@@ -257,6 +257,20 @@ class DeliveryExecutionTests(unittest.TestCase):
         manifest=self.manifest()
         self.assertEqual(manifest['publication_target'],target)
         self.assertEqual(len(manifest['existing_candidates']),2)
+        self.assertEqual([row['author'] for row in manifest['existing_candidates']], [row['author'] for row in receipts])
+        from forge.factory.ownership import publication_context, approved_source_matches, publication_transfer_matches, ownership
+        context = publication_context(self.store, 'batch', {'number': 2})
+        source = manifest['existing_candidates'][1]
+        pr = {'number': source['pull_number'], 'state': 'open', 'merged': False, 'body': 'Fixes #2',
+              'user': source['author'], 'head': {'sha': source['head_oid'], 'ref': source['branch'], 'repo': {'id': 1}},
+              'base': {'ref': 'main', 'repo': {'id': 1}}}
+        self.assertTrue(approved_source_matches(pr, context))
+        self.assertFalse(publication_transfer_matches(pr, context))
+        self.assertIsNone(ownership({'number': 2}, context, 'example/repo', [pr]))
+        changed = {**pr, 'head': {**pr['head'], 'sha': 'f' * 40}}
+        self.assertIsNotNone(ownership({'number': 2}, context, 'example/repo', [changed]))
+        changed = {**pr, 'user': {**pr['user'], 'id': 99}}
+        self.assertIsNotNone(ownership({'number': 2}, context, 'example/repo', [changed]))
         selected=replace(candidate,pull_number=target['pull_number'],branch='forge/existing-0')
         self.delivery._publication_target_in(manifest,selected)
         with self.assertRaises(TransitionError):self.delivery._publication_target_in(manifest,candidate)

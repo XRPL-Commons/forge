@@ -62,3 +62,24 @@ def requirements_hash_in(db, unit):
                            'requirements_hash': db.execute('SELECT requirements_hash FROM issue_revisions WHERE id=?',
                                (row['requirements_revision_id'],)).fetchone()[0]}
                           for row in members_in(db, unit['id'])])
+
+
+def existing_candidates_in(db, unit_id):
+    """Exact source candidates and author identities from applied approval."""
+    decision = db.execute("SELECT payload_json FROM decisions WHERE unit_id=? AND command='compose' AND status='applied'", (unit_id,)).fetchone()
+    receipts = {row['candidate_id']: row for row in json.loads(decision[0])['existing_prs']} if decision else {}
+    sources = []
+    for row in db.execute('SELECT s.source_unit_id,c.id AS candidate_id,c.pull_number,c.branch,c.head_oid,c.base_oid,c.requirements_hash '
+                          'FROM unit_composition_sources s JOIN candidates c ON c.id=s.source_candidate_id '
+                          'WHERE s.unit_id=? AND s.source_candidate_id IS NOT NULL ORDER BY s.source_unit_id', (unit_id,)):
+        source = dict(row)
+        source['author'] = receipts[source['candidate_id']]['author']
+        sources.append(source)
+    return sources
+
+
+def previous_publication_in(db, unit_id):
+    """Last selected publication survives candidate invalidation for rework."""
+    row = db.execute("SELECT c.* FROM events e JOIN candidates c ON c.id=json_extract(e.payload_json,'$.candidate_id') "
+                     "WHERE e.unit_id=? AND e.kind='candidate_selected' ORDER BY e.sequence DESC LIMIT 1", (unit_id,)).fetchone()
+    return dict(row) if row else None

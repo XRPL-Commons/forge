@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock
 
 from forge.factory.config import validate, policy
-from forge.factory.dispatch_controller import DispatchController, PreparedDispatch
+from forge.factory.dispatch_controller import DispatchController, PreparedDispatch, GitHubPrepare
 from forge.factory.result_controller import ResultController
 from forge.factory.recovery_controller import RecoveryController
 from forge.factory.delegation_artifacts import verify_bundle
@@ -174,3 +174,87 @@ class DeliveryPipelineTests(unittest.TestCase):
         path = self.root / 'dependent.bundle'
         self.git('bundle', 'create', str(path), 'HEAD', '^' + self.base)
         self.assertEqual(verify_bundle(path.read_bytes(), head, [self.base, first, independent])['head_oid'], head)
+
+    def test_child_uses_its_own_environment_and_memory_not_a_siblings(self):
+        self.config = validate({**self.config, 'memory': '4g', 'memory_tiers': ['4g', '8g', '16g'],
+                                'environment_tiers': {'full': {'memory': '8g', 'image': 'sha256:' + 'b' * 64, 'cpus': 2}}})
+        self.dispatch = self.dispatcher()
+        parent = self.dispatch.step('batch')['job_id']; planning = self.jobs.job(parent)
+        members = planning['members']
+        plan = {'children': [dict(key='part-' + str(index), member_id=member['member_id'], scope='Implement member', dependencies=[])
+                             for index, member in enumerate(members)]}
+        self.capture(parent, outcome='delegate', delegation_plan=plan)
+        with self.store.write() as db:
+            for member, memory in zip(members, ['16g', '8g']):
+                db.execute('INSERT INTO issue_environment_observations(issue_id,memory_retry_json) VALUES(?,?)',
+                           (member['issue_key'], json.dumps({'role': 'build', 'memory': memory})))
+        # The first planned child is freshly held; the second remains eligible.
+        eligible = members[1]['member_id']
+        self.dispatch.prepare = lambda snapshot, role: PreparedDispatch(self.base, role + '[bot]', self.config,
+            member_choices={eligible: {'tier': 'full', 'services': ['postgres']}})
+        child = self.jobs.job(self.dispatch.step('batch')['job_id'])
+        self.assertEqual(child['members'][0]['member_id'], eligible)
+        self.assertEqual(child['runner_config']['memory'], '8g')
+        self.assertEqual(child['runner_config']['services'], ['postgres'])
+        self.assertEqual(child['runner_config']['environment_tier'], 'full')
+
+    def test_owner_resumes_with_union_services_and_maximum_scoped_retry(self):
+        self.config = validate({**self.config, 'memory': '4g', 'memory_tiers': ['4g', '8g', '16g'],
+                                'environment_tiers': {'full': {'memory': '8g', 'image': 'sha256:' + 'b' * 64, 'cpus': 2}}})
+        self.dispatch = self.dispatcher()
+        original = self.dispatch.prepare
+        def prepare(snapshot, role):
+            if snapshot['grouped']:
+                choices = {row['member']['id']: {'tier': 'full', 'services': [service]}
+                           for row, service in zip(snapshot['members'], ['postgres', 'redis'])}
+                return PreparedDispatch(self.base, role + '[bot]', self.config, member_choices=choices)
+            return original(snapshot, role)
+        self.dispatch.prepare = prepare
+        # integrate() restarts dispatch; preserve the desired fresh preparation.
+        original_factory = self.dispatcher
+        def factory():
+            dispatcher = original_factory(); dispatcher.prepare = prepare
+            return dispatcher
+        self.dispatcher = factory
+        with self.store.write() as db:
+            db.execute('INSERT INTO issue_environment_observations(issue_id,memory_retry_json) VALUES(?,?)',
+                       ('issue-2', json.dumps({'role': 'build', 'memory': '16g'})))
+        integration = self.integrate()
+        self.assertEqual(integration['runner_config']['memory'], '16384m')
+        self.assertEqual(integration['runner_config']['services'], ['postgres', 'redis'])
+
+    def test_rework_keeps_established_pr_and_exact_active_publication_authority(self):
+        from forge.factory.ownership import active_publication_matches
+        from forge.store.models import Candidate, TransitionError
+        from forge.store.transitions import manifest_hash
+        integration = self.integrate()
+        self.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': self.base}
+        accepted = self.capture(integration['id'])
+        self.life.invalidate_candidate(self.command(), accepted['candidate_id'], reason='candidate_changed', evidence={'verified': True})
+        pr = {'number': 9, 'state': 'open', 'draft': False, 'merged': False, 'body': 'Fixes #1\nFixes #2',
+              'user': {'id': 1, 'login': 'build[bot]', 'type': 'Bot'},
+              'head': {'sha': 'c' * 40, 'ref': integration['branch'], 'repo': {'id': 1}},
+              'base': {'sha': self.base, 'ref': 'main', 'repo': {'id': 1}}}
+        self.github.pr.return_value = pr; self.github.pulls.return_value = [pr]
+        self.github.target.return_value = 'main'; self.github.protections.return_value = True
+        self.github.call.return_value = {'commit': {'sha': self.base}}
+        self.github.ci_evidence.return_value = {}
+        self.dispatch.prepare = GitHubPrepare(self.github, self.config)
+        resumed = self.jobs.job(self.dispatch.step('batch')['job_id'])
+        self.assertEqual(resumed['resume_pr'], 9)
+        self.assertEqual(resumed['resume_head'], 'c' * 40)
+        self.assertEqual(resumed['branch'], integration['branch'])
+        self.assertEqual(resumed['builder_id'], integration['builder_id'])
+        self.assertEqual(resumed['input_manifest']['previous_publication']['id'], accepted['candidate_id'])
+        self.assertTrue(active_publication_matches(self.store, 'batch', {**pr, 'draft': True}))
+        marker = {'version': 2, 'unit': 'batch', 'members': [1, 2], 'attempt': resumed['id'], 'head': 'd' * 40}
+        updated = {**pr, 'head': {**pr['head'], 'sha': 'd' * 40}, 'draft': True,
+                   'body': '<!-- forge-submission ' + json.dumps(marker) + ' -->'}
+        self.assertTrue(active_publication_matches(self.store, 'batch', updated))
+        self.assertFalse(active_publication_matches(self.store, 'batch', {**updated, 'head': {**updated['head'], 'sha': 'e' * 40}}))
+        wrong = Candidate(10, resumed['branch'], 'd' * 40, self.base, resumed['input_manifest']['policy_hash'],
+                          resumed['input_manifest']['requirements_hash'], manifest_hash(resumed['input_manifest']))
+        with self.assertRaises(TransitionError):
+            self.delivery._publication_target_in(resumed['input_manifest'], wrong)
+        self.delivery.cancel_builder(self.command(), evidence={'reason': 'operator'})
+        self.assertFalse(active_publication_matches(self.store, 'batch', updated))

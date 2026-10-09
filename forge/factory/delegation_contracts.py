@@ -37,8 +37,9 @@ def assignment(note, job):
             'merged into this isolated checkout in dependency order. Resolve conflicts, verify every pinned requirement, '
             'run combined checks, and publish one integrated PR. Only this integration assignment has publication credentials. '
             'Reuse the assigned candidate/resume PR when present; never create duplicates. Before editing an existing PR, '
-            'mark it draft and replace its submission block with this attempt and head null. Push the final code to branch, '
-            'set the exact head in the single block, and mark the PR ready last. Target target_branch. '
+            'mark it draft while it still has the approved head. Finish the local commit, then write the single submission '
+            'block with this exact attempt and final commit head BEFORE pushing that commit to the assigned branch. '
+            'Push exactly that head and mark the PR ready last. Do not publish a null-head intermediate marker. Target target_branch. '
             'Include an explicit Fixes #N closing reference for every member. Do not merge or close issues. '
             'Use delegation_plan null and output_commit null. The submission block is <!-- forge-submission '
             + json.dumps(marker) + ' -->.')

@@ -332,6 +332,8 @@ class GitHub:
             if job.get('builder_stage') == 'integration':
                 manifest = job['input_manifest']
                 inputs = [row['commit_oid'] for row in manifest['part_outputs']] + [row['head_oid'] for row in manifest['existing_candidates']]
+                if manifest.get('previous_publication'):
+                    inputs.append(manifest['previous_publication']['head_oid'])
                 if any(not self.contains(job, head, value['head']) for head in inputs):
                     return None
             value['branch'] = pr['head']['ref']

@@ -9,7 +9,7 @@ import re
 
 from .models import Candidate, Command, TransitionError, VersionConflict, InvalidDelegationPlan, complete_requirements
 from .transitions import Lifecycle, _id, _json, _unit, _gates, _charges, applicable_gates, manifest_hash, project_unit
-from .delivery_inputs import approved_in, members_in, member_pins_in, dependencies_in, current_output_in, output_ref, requirements_hash_in
+from .delivery_inputs import approved_in, members_in, member_pins_in, dependencies_in, current_output_in, output_ref, requirements_hash_in, existing_candidates_in, previous_publication_in
 
 
 class Delivery(Lifecycle):
@@ -81,6 +81,11 @@ class Delivery(Lifecycle):
         if len(receipts) != len(existing_prs) or set(receipts) != {key for key, source in sources.items() if source['current_candidate_id']}:
             raise TransitionError('every existing PR needs its own explicit verified composition choice')
         for source_id, receipt in receipts.items():
+            author = receipt.get('author')
+            if (not isinstance(author,dict) or set(author) != {'id','login','type'}
+                    or type(author['id']) is not int or author['id'] <= 0 or author['type'] not in {'User','Bot'}
+                    or not isinstance(author['login'],str) or not author['login'].strip()):
+                raise TransitionError('every approved source PR needs its exact author identity')
             self._prove_not_merged(db, sources[source_id], receipt)
         if publication_target is None:
             if receipts:
@@ -169,10 +174,8 @@ class Delivery(Lifecycle):
                     'requirements_hash':requirements_hash_in(db,unit), 'base_oid':base_oid,'policy_hash':policy_hash,
                     'dependencies':{member['id']:dependencies_in(db,unit,member['id']) for member in members_in(db,unit['id'])}}
         manifest['publication_target'] = json.loads(db.execute('SELECT target_json FROM unit_publication_targets WHERE unit_id=?',(unit['id'],)).fetchone()[0])
-        manifest['existing_candidates'] = [dict(row) for row in db.execute(
-            'SELECT s.source_unit_id,c.id AS candidate_id,c.pull_number,c.branch,c.head_oid,c.base_oid,c.requirements_hash '
-            'FROM unit_composition_sources s JOIN candidates c ON c.id=s.source_candidate_id '
-            'WHERE s.unit_id=? ORDER BY s.source_unit_id',(unit['id'],))]
+        manifest['existing_candidates'] = existing_candidates_in(db, unit['id'])
+        manifest['previous_publication'] = previous_publication_in(db, unit['id'])
         if stage == 'planning':
             current = [(member['member_id'],current_output_in(db,unit,member['member_id'],base_oid=base_oid,policy_hash=policy_hash)) for member in manifest['members']]
             manifest['accepted_outputs'] = [output_ref(output) for _,output in current if output is not None]
@@ -359,7 +362,10 @@ class Delivery(Lifecycle):
     @staticmethod
     def _publication_target_in(manifest, candidate):
         target = manifest['publication_target']
-        if target['kind'] == 'existing':
+        if manifest.get('previous_publication'):
+            previous = manifest['previous_publication']
+            valid = candidate.pull_number == previous['pull_number'] and candidate.branch == previous['branch']
+        elif target['kind'] == 'existing':
             source = next(item for item in manifest['existing_candidates'] if item['candidate_id'] == target['candidate_id'])
             valid = candidate.pull_number == target['pull_number'] and candidate.branch == source['branch']
         else:
