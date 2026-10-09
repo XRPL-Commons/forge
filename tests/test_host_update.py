@@ -117,6 +117,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue((self.host.root / 'ui/current/server/index.mjs').exists())
         for guide in ('onboarding.md', 'issue-state-machine.md', 'factory-runtime.md'):
             self.assertTrue((self.host.root / 'ui/current/docs' / guide).exists())
+        self.assertTrue((self.host.root / 'ui/current/docs/assets/setup-hero.svg').exists())
         self.assertIn('"FORGE_ROOT=/app"', ui)
         self.assertEqual(self.host.restarted(), [['forge-status.service', 'forge-ui.service', 'forge-supervisor.service']])
         self.host.qualify.assert_called_once()

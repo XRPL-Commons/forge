@@ -360,7 +360,8 @@ def ui_release(root):
     """Build the operator UI in a pinned Node container; releases are content-addressed."""
     root = Path(root)
     guides = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs').glob('*.md'))
-    release = tree_digest(('ui', *guides), NODE_IMAGE, skip=UI_SKIP)[:16]
+    assets = sorted(str(path.relative_to(SOURCE)) for path in (SOURCE / 'docs/assets').glob('*.svg'))
+    release = tree_digest(('ui', *guides, *assets), NODE_IMAGE, skip=UI_SKIP)[:16]
     target = root / 'ui/releases' / release
     if (target / 'server/index.mjs').exists():
         return release
@@ -390,6 +391,9 @@ def ui_release(root):
     (staging / 'docs').mkdir()
     for guide in guides:
         shutil.copy2(SOURCE / guide, staging / guide)
+    (staging / 'docs/assets').mkdir()
+    for asset in assets:
+        shutil.copy2(SOURCE / asset, staging / asset)
     os.replace(staging, target)
     return release
 
