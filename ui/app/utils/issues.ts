@@ -52,6 +52,7 @@ export interface IssueRow extends OperatorStatusSource {
   // Whether Forge can drop this issue: close its pull request and close the
   // issue as not planned. Never one of `actions`; older payloads omit it.
   closable?: boolean
+  delivery_approved?: boolean
   setup_needed: boolean; environment_blocker: string | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null

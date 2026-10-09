@@ -211,7 +211,7 @@ class H(BaseHTTPRequestHandler):
         from forge.operator_auth import OperatorAuth
         paths = {'/api/client/device', '/api/client/token', '/api/client/refresh',
                  '/api/client/status', '/api/client/disconnect', '/api/client/requirements',
-                 '/api/client/authorize', '/api/client/read', '/api/client/operation', '/api/client/policy', '/api/client/planning'}
+                 '/api/client/authorize', '/api/client/read', '/api/client/operation', '/api/client/policy', '/api/client/planning', '/api/client/delivery'}
         if self.path not in paths:
             return False
         try:
@@ -250,6 +250,9 @@ class H(BaseHTTPRequestHandler):
                 fields(value, ('repository', 'instance', 'generation', 'capability'))
                 clients.authorize(bearer, value['repository'], value['capability'], value['instance'], value['generation'])
                 result = {'authorized': True}
+            elif self.path == '/api/client/delivery':
+                from forge.delivery_actions import ClientDelivery
+                result = ClientDelivery(WD, clients).request(bearer, value)
             elif self.path == '/api/client/policy':
                 from forge.repository_merge_policy import ClientMergePolicy
                 result = ClientMergePolicy(settings_service(), clients).request(bearer, value)
@@ -309,7 +312,7 @@ class H(BaseHTTPRequestHandler):
             return
         if not self._operator_guard() or not self._signed_in():
             return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -400,6 +403,13 @@ class H(BaseHTTPRequestHandler):
                 if service is None:raise ValueError('Explicit verification requires the SQLite runtime')
                 receipt=service.verify(value['key'],value['revision'],value['gate_id'],value['statement'],request_id=value['request_id'])
                 self._send(json.dumps({'ok':True,'receipt':receipt,'controls_token':self._action_token}));return
+            if self.path == '/api/issues/delivery':
+                from forge.delivery_actions import request as delivery_request
+                from forge.factory.store_operator import selected_service
+                service=selected_service(WD,actor_id=self._operator_actor())
+                if service is None:raise ValueError('Delivery decisions require the SQLite runtime')
+                result=delivery_request(service,value)
+                self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/action':
                 from forge.factory.issue_actions import decide, IMMEDIATE
                 from forge.factory.issues import IssueInventory
@@ -572,6 +582,16 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
             except (ValueError, KeyError, OSError, RuntimeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Conversation unavailable. Refresh the issue and try again.'}))
+        elif u.path == '/api/issues/delivery':
+            try:
+                from forge.factory.store_operator import selected_service
+                query=parse_qs(u.query)
+                if set(query)!={'key'} or len(query['key'])!=1:raise ValueError('Expected one issue key')
+                service=selected_service(WD,actor_id=self._operator_actor())
+                if service is None:raise ValueError('Delivery decisions require the SQLite runtime')
+                self._send(json.dumps({'ok':True,**service.membership(query['key'][0])}))
+            except (ValueError,KeyError,RuntimeError) as error:
+                self._send(json.dumps({'ok':False,'reason':str(error)}),status=409)
         elif u.path == '/api/issues':
             from forge.factory.issues import IssueInventory
             try:

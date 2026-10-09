@@ -1,6 +1,6 @@
 <script setup lang="ts">
 const {
-  environmentOpen, environmentRequest, detail, busy, rendered, html, descriptionOpen,
+  poll, environmentOpen, environmentRequest, detail, busy, rendered, html, descriptionOpen,
   environmentSectionOpen, hasFindings, issueUrl, jobs, selectedJob, outputOpen, activityOpen,
   pullUrl, localTime, isoTime, saveEnvironment, eventLabel, pullLabel, output, order,
 } = useIssueDetailContext()
@@ -21,6 +21,7 @@ const {
           </p>
 
           <LazyIssueDelivery v-if="detail.delivery_id" :issue-key="detail.key" />
+          <LazyIssueDeliveryActions v-if="detail.delivery_approved" :key="detail.key" :detail="detail" @submitted="poll.refresh()" />
 
           <div id="issue-sections" class="mt-3 flex flex-col border-b border-line">
             <IssueReviewFindings v-if="hasFindings" :detail="detail!" :style="{ order: order('findings') }" />

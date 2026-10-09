@@ -1161,28 +1161,33 @@ class Lifecycle:
 
     def dissolve(self, command, *, evidence):
         """Explicitly release a quiescent batch into new singleton deliveries."""
-        if not isinstance(evidence, dict) or evidence.get("approved") is not True:
-            raise TransitionError("dissolve requires explicit operator approval")
-        def change(db, unit):
-            self._live(unit)
-            self._quiescent(db, unit["id"])
-            self._prove_not_merged(db, unit, evidence)
-            members = self._members(db, unit["id"])
-            if len(members) < 2:
-                raise TransitionError("only a batch can be dissolved")
-            issues = [dict(db.execute("SELECT * FROM issues WHERE id = ?", (m["issue_id"],)).fetchone()) for m in members]
-            if any(issue["github_state"] != "open" for issue in issues):
-                raise TransitionError("closed members require an explicit membership decision before dissolve")
-            retained_intent = [gate for gate in _gates(db, unit["id"]) if gate["code"] in {"operator_pause", "operator_backlog"}]
-            self._settle(db, command, unit, "dissolved")
-            released = []
-            for member, issue in zip(members, issues):
-                child_id = _id(command.request_id, f"unit:{member['id']}")
-                child_member = self._create_unit(db, command, child_id, issue, unit["base_branch"], member["requirements_revision_id"])
-                child_command = Command(command.request_id, command.actor_id, child_id, 1)
-                for gate in retained_intent:
-                    self._open_gate(db, child_command, gate["code"], {"source_unit_id": unit["id"], "source_gate_id": gate["id"]})
-                self._event(db, Command(command.request_id, command.actor_id, child_id, 1), "membership_changed", {"source_unit_id": unit["id"], "source_member_id": member["id"], "member_id": child_member}, issue_id=issue["id"])
-                released.append({"unit_id": child_id, "member_id": child_member, "issue_id": issue["id"]})
-            return {"released": released}
-        return self._apply(command, "dissolve", {"evidence": evidence}, change)
+        return self._apply(command,"dissolve",{"evidence":evidence},lambda db,unit:self.dissolve_in(db,command,unit,evidence=evidence))
+
+    def dissolve_in(self,db,command,unit,*,evidence):
+        if not isinstance(evidence,dict) or evidence.get('approved') is not True:
+            raise TransitionError('dissolve requires explicit operator approval')
+        self._live(unit)
+        self._quiescent(db, unit["id"])
+        from .recovery import pending_mandatory
+        if pending_mandatory(db,unit['id']):
+            raise TransitionError('mandatory investigations must finish before dissolve')
+        self._prove_not_merged(db, unit, evidence)
+        members = self._members(db, unit["id"])
+        if len(members) < 2:
+            raise TransitionError("only a batch can be dissolved")
+        issues = [dict(db.execute("SELECT * FROM issues WHERE id = ?", (m["issue_id"],)).fetchone()) for m in members]
+        if any(issue["github_state"] != "open" for issue in issues):
+            raise TransitionError("closed members require an explicit membership decision before dissolve")
+        retained_intent = [gate for gate in _gates(db, unit["id"]) if gate["code"] in {"operator_pause", "operator_backlog"}]
+        self._settle(db, command, unit, "dissolved")
+        released = []
+        for member, issue in zip(members, issues):
+            child_id = _id(command.request_id, f"unit:{member['id']}")
+            child_member = self._create_unit(db, command, child_id, issue, unit["base_branch"], member["requirements_revision_id"])
+            child_command = Command(command.request_id, command.actor_id, child_id, 1)
+            member_intent=[gate for gate in retained_intent if gate['member_id'] in {None,member['id']}]
+            for code in sorted({gate['code'] for gate in member_intent}):
+                self._open_gate(db,child_command,code,{'source_unit_id':unit['id'],'source_gate_ids':[gate['id'] for gate in member_intent if gate['code']==code]})
+            self._event(db, Command(command.request_id, command.actor_id, child_id, 1), "membership_changed", {"source_unit_id": unit["id"], "source_member_id": member["id"], "member_id": child_member}, issue_id=issue["id"])
+            released.append({"unit_id": child_id, "member_id": child_member, "issue_id": issue["id"]})
+        return {"released": released}

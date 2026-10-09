@@ -162,6 +162,8 @@ def parser():
     planning.add_argument('--proposal'); planning.add_argument('--row'); planning.add_argument('--after')
     planning.add_argument('--action-file', help='JSON operation: rules, note, edit or accept; preview with planning first')
     planning.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    from .delivery import add_parser as delivery_parser
+    delivery_parser(sub)
     server = sub.add_parser('server', help='Configure an existing Forge host over SSH').add_subparsers(dest='server_command', required=True)
     setup = server.add_parser('setup', help='Bootstrap operator sign-in on an existing host over SSH')
     setup.add_argument('--ssh', required=True, help='Explicit SSH host alias or user@hostname; known host key required')
@@ -220,9 +222,10 @@ def execute(args):
         from .bootstrap import setup
         return setup(args)
     if args.command == 'commands':
+        from .delivery import commands as delivery_commands
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
-                'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(),
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+                'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': {'triage': {'usage':'forge triage OWNER/REPO --server HTTPS_ORIGIN --request-id STABLE_ID --json','capability':'repositories:triage'}, 'planning': {'usage':'forge planning OWNER/REPO --server HTTPS_ORIGIN [--proposal ID] [--row ID] [--after CURSOR] [--action-file PATH] --json','read_capability':'repositories:read','write_capability':'repositories:triage'}},
                 'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
@@ -268,6 +271,10 @@ def execute(args):
                 return client.request('planning',target,operation='action',payload=payload)
             payload={k:v for k,v in {'proposal_id':args.proposal,'row_id':args.row,'after':args.after}.items() if v is not None}
             return client.request('planning',target,operation='read',payload=payload)
+        if args.command == 'delivery':
+            from .delivery import execute as delivery
+            target={k:v for k,v in GitHub().repository(args.repository).items() if k in ('id','name')}
+            return delivery(client,target,args)
         if args.command == 'repo':
             from .workflow import Workflow
             github = GitHub()

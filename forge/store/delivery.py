@@ -423,73 +423,87 @@ class Delivery(Lifecycle):
             return {'charged':False,'cleanup_required':True}
         return self._apply(command,'cancel_builder',{'evidence':evidence},change)
 
-    def drop_member(self,command,member_id,*,membership_generation,dependent_decisions,evidence):
-        """An explicit drop retains history, shared charges and unaffected outputs."""
+    def drop_member(self,command,member_id,*,membership_generation,dependent_decisions,evidence,disposition='release'):
+        """An explicit membership decision preserves history and shared charges."""
         payload=dict(member_id=member_id,membership_generation=membership_generation,
-                     dependent_decisions=dependent_decisions,evidence=evidence)
-        def change(db,unit):
-            self._live(unit)
-            self._quiescent(db,unit['id'])
-            from .recovery import pending_mandatory
-            if pending_mandatory(db,unit['id']):
-                raise TransitionError('mandatory investigations must complete before dropping a member')
-            if not isinstance(evidence,dict) or evidence.get('approved') is not True:
-                raise TransitionError('dropping a member requires explicit operator approval')
-            if membership_generation != unit['membership_generation']:
-                raise VersionConflict('membership changed before drop')
-            self._prove_not_merged(db,unit,evidence)
-            members=members_in(db,unit['id'])
-            removed=next((member for member in members if member['id']==member_id),None)
-            if removed is None or len(members)<2:
-                raise TransitionError('drop requires a live member of a grouped delivery')
-            direct={member['id'] for member in members if member_id in dependencies_in(db,unit,member['id'])}
-            if dependent_decisions != {member:'wait_external' for member in direct}:
-                raise TransitionError('each dependent must explicitly wait for dropped work as an external prerequisite')
-            affected={member_id}
-            while True:
-                descendants={member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
-                if descendants.issubset(affected): break
-                affected.update(descendants)
-            edges=[(member['id'],predecessor) for member in members for predecessor in dependencies_in(db,unit,member['id'])
-                   if member['id']!=member_id and predecessor!=member_id]
-            old_candidate=unit['current_candidate_id']
-            self._fence(db,command)
-            for gate in _gates(db,unit['id']):
-                if gate['member_id']==member_id or gate['candidate_id'] is not None:
-                    self._resolve(db,command,gate['id'],{'dropped_member_id':member_id},resolution='superseded')
-            for affected_id in affected:
-                db.execute('INSERT OR IGNORE INTO part_output_invalidations(output_id,reason,evidence_json,created_at) '
-                    "SELECT id,'member_dropped',?,? FROM part_outputs WHERE member_id=?",(_json({'member_id':member_id}),self.clock(),affected_id))
-                db.execute("UPDATE unit_issues SET state='pending' WHERE id=?",(affected_id,))
-            for dependent in direct:
-                member=next(member for member in members if member['id']==dependent)
-                db.execute("INSERT OR IGNORE INTO issue_dependencies(id,issue_id,requirements_revision_id,prerequisite_issue_id,source,evidence,created_at) "
-                    "VALUES(?,?,?,?,'operator',?,?)",(_id(command.request_id,'external:'+dependent),member['issue_id'],member['requirements_revision_id'],removed['issue_id'],'Explicit dependency retained after member drop',self.clock()))
-            db.execute("UPDATE unit_issues SET left_at=?,exit_reason='dropped',state='removed' WHERE id=?",(self.clock(),member_id))
-            db.execute("UPDATE units SET membership_generation=membership_generation+1,current_candidate_id=NULL,state='building' WHERE id=?",(unit['id'],))
-            for member,predecessor in edges:
-                db.execute('INSERT INTO member_dependencies VALUES(?,?,?,?)',(unit['id'],member,predecessor,unit['membership_generation']+1))
-            issue=dict(db.execute('SELECT * FROM issues WHERE id=?',(removed['issue_id'],)).fetchone())
-            if issue['github_state'] != 'open':
-                raise TransitionError('closed members need a closure decision before standalone admission')
+                     dependent_decisions=dependent_decisions,evidence=evidence,disposition=disposition)
+        return self._apply(command,'drop_member',payload,lambda db,unit:self.drop_member_in(db,command,unit,**payload))
+
+    def drop_member_in(self,db,command,unit,*,member_id,membership_generation,dependent_decisions,evidence,disposition='release'):
+        if not approved_in(db,unit['id']):
+            raise TransitionError('member removal requires an approved composition')
+        if disposition not in {'release','close'}:
+            raise ValueError('A member must be released or explicitly closed')
+        self._live(unit)
+        self._quiescent(db,unit['id'])
+        from .recovery import pending_mandatory
+        if pending_mandatory(db,unit['id']):
+            raise TransitionError('mandatory investigations must complete before dropping a member')
+        if not isinstance(evidence,dict) or evidence.get('approved') is not True:
+            raise TransitionError('dropping a member requires explicit operator approval')
+        if membership_generation != unit['membership_generation']:
+            raise VersionConflict('membership changed before drop')
+        self._prove_not_merged(db,unit,evidence)
+        members=members_in(db,unit['id'])
+        removed=next((member for member in members if member['id']==member_id),None)
+        if removed is None or (len(members)<2 and disposition!='close'):
+            raise TransitionError('drop requires a live member of a grouped delivery')
+        direct={member['id'] for member in members if member_id in dependencies_in(db,unit,member['id'])}
+        if dependent_decisions != {member:'wait_external' for member in direct}:
+            raise TransitionError('each dependent must explicitly wait for dropped work as an external prerequisite')
+        affected={member_id}
+        while True:
+            descendants={member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
+            if descendants.issubset(affected): break
+            affected.update(descendants)
+        edges=[(member['id'],predecessor) for member in members for predecessor in dependencies_in(db,unit,member['id'])
+               if member['id']!=member_id and predecessor!=member_id]
+        issue=dict(db.execute('SELECT * FROM issues WHERE id=?',(removed['issue_id'],)).fetchone())
+        if disposition=='close':
+            if issue['github_state']!='closed' or issue['state_reason'] not in {'completed','not_planned'}:
+                raise TransitionError('member closure requires a confirmed GitHub closure')
+        elif issue['github_state']!='open':
+            raise TransitionError('closed members require an explicit closure decision')
+        retained_intent=[gate for gate in _gates(db,unit['id']) if gate['code'] in {'operator_pause','operator_backlog'} and gate['member_id'] in {None,member_id}]
+        if len(members)==1:
+            self._settle(db,command,unit,'closed',close_code='operator_closed')
+            return {'released':None,'closed_issue_id':removed['issue_id'],'affected_member_ids':[member_id],'membership_generation':unit['membership_generation']}
+        old_candidate=unit['current_candidate_id']
+        self._fence(db,command)
+        for gate in _gates(db,unit['id']):
+            if gate['member_id']==member_id or gate['candidate_id'] is not None:
+                self._resolve(db,command,gate['id'],{'dropped_member_id':member_id},resolution='superseded')
+        for affected_id in affected:
+            db.execute('INSERT OR IGNORE INTO part_output_invalidations(output_id,reason,evidence_json,created_at) '
+                "SELECT id,'member_dropped',?,? FROM part_outputs WHERE member_id=?",(_json({'member_id':member_id}),self.clock(),affected_id))
+            db.execute("UPDATE unit_issues SET state='pending' WHERE id=?",(affected_id,))
+        for dependent in direct:
+            member=next(member for member in members if member['id']==dependent)
+            db.execute("INSERT OR IGNORE INTO issue_dependencies(id,issue_id,requirements_revision_id,prerequisite_issue_id,source,evidence,created_at) "
+                "VALUES(?,?,?,?,'operator',?,?)",(_id(command.request_id,'external:'+dependent),member['issue_id'],member['requirements_revision_id'],removed['issue_id'],'Explicit dependency retained after member drop',self.clock()))
+        db.execute("UPDATE unit_issues SET left_at=?,exit_reason='dropped',state='removed' WHERE id=?",(self.clock(),member_id))
+        db.execute("UPDATE units SET membership_generation=membership_generation+1,current_candidate_id=NULL,state='building' WHERE id=?",(unit['id'],))
+        for member,predecessor in edges:
+            db.execute('INSERT INTO member_dependencies VALUES(?,?,?,?)',(unit['id'],member,predecessor,unit['membership_generation']+1))
+        released_id=None;released=None
+        if disposition=='release':
             released_id=_id(command.request_id,'released-unit')
             released_member=self._create_unit(db,command,released_id,issue,unit['base_branch'],removed['requirements_revision_id'])
             inherited={row[0] for row in db.execute('SELECT id FROM attempts WHERE unit_id=? AND budget_generation=?',(unit['id'],unit['budget_generation']))}
             inherited.update(row[0] for row in db.execute('SELECT attempt_id FROM unit_budget_lineage WHERE unit_id=? AND budget_generation=?',(unit['id'],unit['budget_generation'])))
             for attempt in inherited: db.execute('INSERT INTO unit_budget_lineage VALUES(?,1,?)',(released_id,attempt))
             released_command=Command(command.request_id,command.actor_id,released_id,1)
-            for gate in _gates(db,unit['id']):
-                if gate['code'] in {'operator_pause','operator_backlog'}:
-                    self._open_gate(db,released_command,gate['code'],{'source_unit_id':unit['id'],'source_gate_id':gate['id']})
+            for code in sorted({gate['code'] for gate in retained_intent}):
+                self._open_gate(db,released_command,code,{'source_unit_id':unit['id'],'source_gate_ids':[gate['id'] for gate in retained_intent if gate['code']==code]})
             # Moving failed work is not permission to reset its original shared budget.
             if _charges(db,_unit(db,released_id))>=3:
                 self._open_gate(db,released_command,'budget_exhausted',{'limit':3,'source':'member_drop'})
-            if old_candidate:
-                self._event(db,command,'candidate_superseded',{'candidate_id':old_candidate,'reason':'member_dropped'})
-            self._event(db,command,'membership_changed',{'member_id':member_id,'released_unit_id':released_id,'affected_member_ids':sorted(affected)},issue_id=removed['issue_id'])
-            return {'released':{'unit_id':released_id,'member_id':released_member,'issue_id':removed['issue_id']},
-                    'affected_member_ids':sorted(affected),'membership_generation':unit['membership_generation']+1}
-        return self._apply(command,'drop_member',payload,change)
+            released={'unit_id':released_id,'member_id':released_member,'issue_id':removed['issue_id']}
+        if old_candidate:
+            self._event(db,command,'candidate_superseded',{'candidate_id':old_candidate,'reason':'member_dropped'})
+        self._event(db,command,'membership_changed',{'member_id':member_id,'released_unit_id':released_id,'affected_member_ids':sorted(affected)},issue_id=removed['issue_id'])
+        return {'released':released,'closed_issue_id':removed['issue_id'] if disposition=='close' else None,
+                'affected_member_ids':sorted(affected),'membership_generation':unit['membership_generation']+1}
 
 
 class DeliveryQueries:
