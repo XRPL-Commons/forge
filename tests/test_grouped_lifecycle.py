@@ -11,6 +11,7 @@ from tests.test_delivery_pipeline import DeliveryPipelineTests
 
 class GroupedLifecycleTests(unittest.TestCase):
     # Reuse the real Git/SQLite pipeline fixture, without rerunning its own tests.
+    dependencies=()
     setUp=DeliveryPipelineTests.setUp
     git=DeliveryPipelineTests.git
     dispatcher=DeliveryPipelineTests.dispatcher

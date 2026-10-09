@@ -17,7 +17,7 @@ class StoreCompletionTests(unittest.TestCase):
     cleanup = helpers.StoreTransitionTests.cleanup
     fail = helpers.StoreTransitionTests.fail
     accept_build = helpers.StoreTransitionTests.accept_build
-    add_independent_member = helpers.StoreTransitionTests.add_independent_member
+    plan_independent_members = helpers.StoreTransitionTests.plan_independent_members
 
     def finish_recovery(self, failed_job):
         recovery = Recovery(self.store, clock=lambda: 100.0)
@@ -223,7 +223,7 @@ class StoreCompletionTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT current_revision_id FROM issues WHERE id='issue-1'").fetchone()[0], result['revision_id'])
 
     def test_dissolved_children_retain_operator_pause_and_observed_label_hold(self):
-        self.add_independent_member(2)
+        self.plan_independent_members(2)
         self.observe(labels=['hold'])
         self.lifecycle.pause(self.command())
         result = self.lifecycle.dissolve(self.command(), evidence={'approved': True})
@@ -235,9 +235,9 @@ class StoreCompletionTests(unittest.TestCase):
         self.assertEqual(self.view(issue_child['unit_id'])['current_blocker']['code'], 'label_hold')
 
     def test_close_and_dissolve_refuse_ambiguous_external_effects_and_preserve_members(self):
-        sibling, _ = self.add_independent_member(2)
+        self.plan_independent_members(2)
         with self.store.write() as db:
-            db.execute("INSERT INTO external_effects(id,request_id,unit_id,kind,status,payload_json,created_at,updated_at) VALUES('effect','merge-effect','unit-1','merge','uncertain','{}',100,100)")
+            db.execute("INSERT INTO external_effects(id,request_id,unit_id,kind,status,payload_json,created_at,updated_at) VALUES('effect','merge-effect',?,'merge','uncertain','{}',100,100)", (self.unit_id,))
         with self.assertRaisesRegex(TransitionError, 'external effects'):
             self.lifecycle.dissolve(self.command(), evidence={'approved': True})
         self.assertEqual(len(self.view()['members']), 2)
