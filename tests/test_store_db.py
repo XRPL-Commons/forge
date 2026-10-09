@@ -67,6 +67,32 @@ class StoreDatabaseTests(unittest.TestCase):
             self.assertEqual(reader.execute("SELECT value FROM store_metadata WHERE key='test'").fetchone()[0], "before")
         self.assertEqual(self.value(), "after")
 
+    def test_read_session_reuses_snapshot_until_outer_projection_finishes(self):
+        self.put("before")
+        writer = Store.open(self.root)
+        with patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect:
+            with self.store.read_session() as first:
+                with writer.write() as db:
+                    db.execute("UPDATE store_metadata SET value='after' WHERE key='test'")
+                with self.store.read_session() as second, self.store.read_snapshot() as third:
+                    self.assertIs(first, second)
+                    self.assertIs(first, third)
+                    self.assertEqual(self.value(), "before")
+                self.assert_code("read_session_write", self.put, "forbidden")
+            self.assertEqual(connect.call_count, 1)
+        self.assertEqual(self.value(), "after")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            first.execute("SELECT 1")
+
+    def test_read_session_exception_closes_connection_and_does_not_leak(self):
+        with self.assertRaisesRegex(ValueError, 'abort'):
+            with self.store.read_session() as reader:
+                raise ValueError('abort')
+        with self.assertRaises(sqlite3.ProgrammingError):
+            reader.execute('SELECT 1')
+        self.put('after')
+        self.assertEqual(self.value(), 'after')
+
     def test_read_only_connection_cannot_be_made_writable(self):
         with self.store.read_snapshot() as reader:
             reader.execute("PRAGMA query_only=OFF")

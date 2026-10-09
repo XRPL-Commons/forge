@@ -3,6 +3,7 @@
 These are HTTP/UI views, never a writable legacy ledger. Bodies, diagnostics and
 worker artifacts are fetched only through detail/output requests.
 """
+from functools import wraps
 import json
 import math
 import time
@@ -59,6 +60,14 @@ def _event(row, fields=('at','kind','reason')):
 # Actual terminal event time, including normalized imported events. Observation
 # timestamps can advance after completion and cannot reorder completed cards.
 COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND (e.kind IN ('merged','closed','dissolved') OR (e.kind='legacy_event' AND json_extract(e.payload_json,'$.legacy_kind') IN ('merged','cancelled'))) ORDER BY e.sequence DESC LIMIT 1),0)"
+
+
+def projection(method):
+    @wraps(method)
+    def read(self, *args, **kwargs):
+        with self.store.read_session():
+            return method(self, *args, **kwargs)
+    return read
 
 
 class PipelineViews:
@@ -219,6 +228,7 @@ class PipelineViews:
     def _public(row):
         return {key:value for key,value in row.items() if not key.startswith('_')}
 
+    @projection
     def issues(self, *, repo_id=None, state='open', query='', page=1, key=None):
         if state not in {'open','all','completed','dropped','backlog','queued','working','attention','waiting','blocked'} or type(page) is not int or not 1<=page<=10000 or not isinstance(query,str) or len(query)>200:
             raise ValueError('Invalid issue view')
@@ -264,6 +274,7 @@ class PipelineViews:
                     'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':issue[0],
                     'started_at':row['started_at'],'observed_at':row['captured_at'],'last_observed':row['captured_at']}
 
+    @projection
     def output(self, job_id):
         self.job(job_id)
         with self.store.read_snapshot() as db:
@@ -278,6 +289,7 @@ class PipelineViews:
             return {'logs':value}
         except ArtifactExpired as error:return {'logs':'','expired_at':error.expired_at}
 
+    @projection
     def factory(self, *, section=None, issue=None, limit=None, before=None):
         """Bounded Activity sections and SQL aggregate counters.
 
