@@ -557,7 +557,7 @@ class Lifecycle:
         if job["member_id"] is not None:
             member = db.execute("SELECT requirements_revision_id, left_at FROM unit_issues WHERE id = ?", (job["member_id"],)).fetchone()
             current = bool(current and member is not None and member["left_at"] is None
-                           and input_manifest.get("requirements_revision_id") == member["requirements_revision_id"])
+                           and (job["role"] == "recovery" or input_manifest.get("requirements_revision_id") == member["requirements_revision_id"]))
         delegation = db.execute('SELECT a.assignment_generation,a.membership_generation FROM job_delegations d '
             'JOIN delegation_plans p ON p.id=d.plan_id JOIN jobs j ON j.id=p.parent_job_id '
             'JOIN attempts a ON a.id=j.attempt_id WHERE d.job_id=?', (job_id,)).fetchone()
