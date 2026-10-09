@@ -52,7 +52,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     effects = EffectController(store, github, admission=merge_admission, clock=clock)
     parts = dict(store=store, settings=settings, config=config, runner=runner, github=github,
         requirements=requirements, verification=verification, effects=effects, admission=admission,
-        execution=ExecutionController(store, runner, github, admission=admission, clock=clock),
+        execution=ExecutionController(store, runner, github, admission=admission, clock=clock, enabled=lambda: current_config()['enabled']),
         observations=ObservationController(store, github, admission=admission, policy=lambda item: manifest_hash(policy(current_config())),
                                             hold_labels=config['hold_labels'], clock=clock),
         results=ResultController(store, github, policy=lambda item: policy(current_config()), verdicts=effects,

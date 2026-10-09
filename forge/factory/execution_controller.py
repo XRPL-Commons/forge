@@ -20,9 +20,9 @@ from .runner import ContainerRunner, RunnerError
 
 
 class ExecutionController:
-    def __init__(self, store, runner, github, *, admission, clock=time.time):
+    def __init__(self, store, runner, github, *, admission, enabled, clock=time.time):
         self.store, self.runner, self.github = store, runner, github
-        self.admission, self.clock = admission, clock
+        self.admission, self.clock, self.enabled = admission, clock, enabled
         self.commands = Executions(store, clock=clock)
         self.queries = ExecutionQueries(store)
 
@@ -56,7 +56,7 @@ class ExecutionController:
         return self.queries.job(job['id'])
 
     def _can_launch(self, job):
-        return (job['launch_allowed'] and not job['fenced'] and not job['cleanup'] and job['outcome'] is None
+        return (self.enabled() and job['launch_allowed'] and not job['fenced'] and not job['cleanup'] and job['outcome'] is None
                 and job['assignment_generation'] == job['fencing_generation']
                 and job['assigned_membership'] == job['membership_generation']
                 and job['assigned_budget'] == job['budget_generation'])
@@ -89,10 +89,15 @@ class ExecutionController:
                     job = self._progress(job, 'starting', current['id'])
                 if current and current['status'] == 'created' and self._can_launch(job):
                     # Token exists only in memory and the runner's private IPC.
-                    token = self.github.token(job['role'], job['repo_id'], worker=True)
+                    restricted = job.get('delegation') is not None or job.get('builder_stage') == 'planning'
+                    token = self.github.token(job['role'], job['repo_id'], worker=True, **({'read_only': True} if restricted else {}))
                     job = self.queries.job(job_id)
                     if self._can_launch(job):
-                        runner.prepare(job, token)
+                        job['bundle_inputs'] = self.queries.input_refs(job)
+                        if job['bundle_inputs']:
+                            runner.prepare(job, token, bundles=self.queries.input_bundles(job['bundle_inputs']))
+                        else:
+                            runner.prepare(job, token)
                         job = self.queries.job(job_id)
                         if self._can_launch(job):
                             runner.start(job)

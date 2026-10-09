@@ -4,10 +4,41 @@ import os
 from pathlib import Path
 import subprocess
 import runpy
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 
 class PreparationError(RuntimeError):
     pass
+
+
+class AssignmentChanged(PreparationError):
+    pass
+
+
+def check_publication_target(note, env):
+    if note.get('builder_stage') != 'integration' or not note.get('resume_pr'):
+        return
+    if not note.get('resume_head') or not note.get('publication_author'):
+        raise AssignmentChanged('The existing pull request needs a fresh publication approval')
+    request = Request('https://api.github.com/repos/' + note['repo'] + '/pulls/' + str(note['resume_pr']),
+                      headers={'Authorization': 'Bearer ' + env['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read(262145)
+        if len(raw) > 262144:
+            raise PreparationError('Existing publication metadata exceeds its bound')
+        pr = json.loads(raw)
+    except (URLError, ValueError) as error:
+        raise PreparationError('Existing publication identity could not be checked') from error
+    if (pr.get('number') != note['resume_pr'] or pr.get('state') != 'open' or pr.get('merged')
+            or {key: pr.get('user', {}).get(key) for key in ('id', 'login', 'type')} != note['publication_author']
+            or pr.get('head', {}).get('sha') != note['resume_head']
+            or pr.get('head', {}).get('ref') != note['resume_branch']
+            or pr.get('head', {}).get('repo', {}).get('id') != note['repo_id']
+            or pr.get('base', {}).get('ref') != note['target_branch']
+            or pr.get('base', {}).get('repo', {}).get('id') != note['repo_id']):
+        raise AssignmentChanged('The approved pull request changed before work started')
 
 
 def prepare_environment(directory, services=()):
@@ -93,6 +124,17 @@ def schema(note):
         props['outcome']['enum'].extend(['needs_decision', 'waiting_on_issues'])
         props['outcome']['description'] = ('Use waiting_on_issues for open prerequisite issues, not needs_decision '
                                           'or blocked_environment. dependency_access is for registry, repository or network access failures.')
+    if note.get('builder_stage') or note.get('delegation'):
+        child = {'type': 'object', 'properties': {
+            'key': {'type': 'string', 'pattern': '^[a-z][a-z0-9_-]{0,63}$'},
+            'member_id': {'type': 'string'}, 'scope': {'type': 'string', 'minLength': 1},
+            'dependencies': {'type': 'array', 'items': {'type': 'string'}}},
+            'required': ['key', 'member_id', 'scope', 'dependencies'], 'additionalProperties': False}
+        props['delegation_plan'] = {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
+            'children': {'type': 'array', 'items': child}}, 'required': ['children'], 'additionalProperties': False}]}
+        props['output_commit'] = {'type': ['string', 'null']}
+        if note.get('builder_stage') == 'planning':
+            props['outcome']['enum'].append('delegate')
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 
@@ -114,6 +156,7 @@ def main():
             print(completed.stderr[-16384:].replace(env['GH_TOKEN'], '[REDACTED]'), flush=True)
             raise PreparationError('Repository preparation failed; check repository access, revision availability and disk space')
         return completed
+    check_publication_target(note, env)
     git('clone', '--no-checkout', 'https://github.com/' + note['repo'] + '.git', str(directory))
     git('-C', str(directory), 'config', 'user.name', note['publisher'])
     git('-C', str(directory), 'config', 'user.email', note['publisher'] + '@users.noreply.github.com')
@@ -124,6 +167,8 @@ def main():
         ref = 'refs/heads/' + note['resume_branch']
         published = git('-C', str(directory), 'ls-remote', '--heads', 'origin', ref).stdout.strip()
         if published:
+            if note.get('resume_head') and published.split()[0] != note['resume_head']:
+                raise AssignmentChanged('The approved branch changed before work started')
             git('-C', str(directory), 'fetch', 'origin', ref)
             git('-C', str(directory), 'checkout', '--detach', 'FETCH_HEAD')
         elif selected:
@@ -134,6 +179,9 @@ def main():
     elif selected:
         git('-C', str(directory), 'fetch', 'origin', selected['head'])
         git('-C', str(directory), 'checkout', '--detach', selected['head'])
+    elif note.get('input_manifest', {}).get('base_oid'):
+        git('-C', str(directory), 'fetch', 'origin', note['input_manifest']['base_oid'])
+        git('-C', str(directory), 'checkout', '--detach', note['input_manifest']['base_oid'])
     elif note['role'] == 'strategist':
         # Read-only assignment: detach at the given head, never create a branch.
         git('-C', str(directory), 'fetch', 'origin', note['head'])
@@ -142,14 +190,81 @@ def main():
         git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
     if note['role'] == 'build':
         git('-C', str(directory), 'checkout', '-B', note['branch'])
+    inputs = note.get('bundle_inputs', [])
+    for index, output in enumerate(inputs):
+        bundle = '/work/input-' + str(index) + '.bundle'
+        git('-C', str(directory), 'bundle', 'verify', bundle)
+        git('-C', str(directory), 'fetch', bundle, 'HEAD')
+        actual = git('-C', str(directory), 'rev-parse', 'FETCH_HEAD').stdout.strip()
+        if actual != output['commit_oid']:
+            raise PreparationError('Child output does not match the assigned revision')
+    existing = note.get('input_manifest', {}).get('existing_candidates', []) if note.get('builder_stage') == 'integration' else []
+    for source in existing:
+        git('-C', str(directory), 'fetch', 'origin', source['head_oid'])
+        if git('-C', str(directory), 'rev-parse', 'FETCH_HEAD').stdout.strip() != source['head_oid']:
+            raise PreparationError('Existing candidate differs from its approved revision')
+    merge_refs = [row['head_oid'] for row in existing] + [row['commit_oid'] for row in inputs]
+    for index, commit in enumerate(merge_refs):
+        # Conflicts belong to the owning builder/child implementation, not a
+        # second integration worker. Keep the merge state for that assignment.
+        merged = subprocess.run(['git', '-C', str(directory), 'merge', '--no-edit', commit],
+                                env=env, capture_output=True, timeout=180)
+        if merged.returncode:
+            note['integration_conflicts'] = {'current': commit, 'remaining': merge_refs[index + 1:]}
+            break
     env.update(prepare_environment(directory, (note.get('environment') or {}).get('services', [])))
     registry = runpy.run_path('/opt/forge/harnesses/registry.py')
-    return registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
+    code = registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
+    if note.get('delegation') and Path('/work/result.json').is_file():
+        # Export belongs to the completed implementation, not environment setup.
+        # A bad claimed commit must charge a failed attempt rather than pause for
+        # infrastructure that was already ready enough to run the provider.
+        if not export_child(note, directory, inputs, git):
+            return 1
+    return code
+
+
+def export_child(note, directory, inputs, git, *, result_path=Path('/work/result.json'), bundle_path='/work/output.bundle'):
+    try:
+        report = json.loads(result_path.read_text())
+    except (ValueError, OSError):
+        return False  # Controller classifies the retained malformed result.
+    if not isinstance(report, dict) or report.get('outcome') != 'pass':
+        return True
+    try:
+        head = git('-C', str(directory), 'rev-parse', 'HEAD').stdout.strip()
+        if report.get('output_commit') != head:
+            raise PreparationError('Child result does not name its checkout head')
+        base = note['input_manifest']['base_oid']
+        git('-C', str(directory), 'merge-base', '--is-ancestor', base, head)
+        for output in inputs:
+            git('-C', str(directory), 'merge-base', '--is-ancestor', output['commit_oid'], head)
+        git('-C', str(directory), 'bundle', 'create', bundle_path, 'HEAD', '^' + base)
+    except PreparationError:
+        report.update(outcome='unable', output_commit=None,
+                      summary='Child output could not be verified and retained as the assigned commit.',
+                      headline='The child output could not be retained',
+                      plain='The implementation did not produce a verifiable commit containing its assigned inputs.')
+        result_path.write_text(json.dumps(report))
+        return False
+    return True
 
 
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
+    except AssignmentChanged as error:
+        note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
+        report = {'version': 1, 'attempt': note['id'], 'role': 'build', 'outcome': 'needs_decision',
+                  'summary': str(error), 'headline': 'The pull request changed before work started',
+                  'plain': 'Forge kept the existing work unchanged. Review the new revision before resuming this delivery.',
+                  'blocker': None, 'required_services': [], 'verification': None, 'issues': [], 'evidence': None,
+                  'delegation_plan': None, 'output_commit': None,
+                  'decision': {'question': 'Continue from the changed pull request?',
+                               'options': ['Review and approve the current revision', 'Keep this delivery paused'],
+                               'recommendation': 'Review the current revision before resuming', 'evidence': str(error)}}
+        output = Path('/work/result.json.tmp'); output.write_text(json.dumps(report)); output.replace('/work/result.json')
+        raise SystemExit(0)
     except (PreparationError, OSError) as error:
         note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
         runpy.run_path('/opt/forge/build_environment.py')['blocked'](note, 'Forge could not prepare the disposable checkout before work started. Check repository access, revision availability and disk space.', 'dependency_access')

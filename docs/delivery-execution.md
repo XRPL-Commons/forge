@@ -80,3 +80,32 @@ The store performs no provider, filesystem or GitHub operations. External
 publication and bundle verification remain controller responsibilities, bound to
 the exact stored assignment. Native provider delegation is usable only when the
 execution adapter can track these same identities and outputs.
+
+## Managed provider execution
+
+Codex, Claude and Grok declare managed child support. Their untracked native
+subagent tools stay disabled: each planned child uses an ordinary tracked job,
+provider lease and disposable checkout. Planning and children receive GitHub
+read credentials only. The integration execution is the sole publisher. Runtime
+disable prevents new launches and fences reserved work; cleanup still releases
+its resources.
+
+The controller retains child Git bundles as immutable chunks with a capture
+digest. It independently validates their claimed head, assigned ancestors and
+bounded commit graph before accepting outputs. Bundles include the complete
+commit history since the assigned base so this independent check proves every
+required prerequisite is an ancestor, without trusting the worker report. A bundle is limited to 16 MiB;
+validation has one 15-second deadline and a 10,000-commit limit. Dependent
+checkouts receive the exact transitive bundle closure in dependency order, one
+bundle at a time, and Git verifies connectivity in the disposable repository.
+No shared writable worktree or live child credentials cross assignments.
+
+Integration fetches all approved existing heads and accepted output commits.
+Merge conflicts remain in its checkout for the owning builder to resolve. The
+controller verifies that the published head contains every required input and
+that its version-2 submission marker names the exact unit, members and attempt;
+its body must also close every member issue. An existing target is checked again
+inside the runner before the provider starts, including its approved author and
+previous head. A changed target returns an operator decision and preserves the
+existing work. GitHub publication is an external effect; exact late-publication
+recovery handles a completed push whose original execution did not return.

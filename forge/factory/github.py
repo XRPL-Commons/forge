@@ -67,20 +67,22 @@ class GitHub:
                     'installation_id': matches[0]['installation_id']}
         return connection
 
-    def token(self, role, repo_id, *, worker=False, extra=None):
+    def token(self, role, repo_id, *, worker=False, extra=None, read_only=False):
         connection = self.connection(role, repo_id)
-        key = (role, repo_id, worker, digest(connection), digest(extra or {}))
+        key = (role, repo_id, worker, read_only, digest(connection), digest(extra or {}))
         cached = self.tokens.get(key)
         if not worker and cached and cached[1] > self.clock():
             return cached[0]
         permissions = ({'metadata': 'read', 'contents': 'read', 'issues': 'read', 'pull_requests': 'read'}
                        if role == 'recovery' else dict(ROLE_PERMISSIONS[role]))
-        if worker and role in ('review', 'audit'):
+        if read_only or worker and role in ('review', 'audit'):
             # Worker findings are published by the supervisor after validation.
             permissions = {'metadata': 'read', 'contents': 'read', 'issues': 'read', 'pull_requests': 'read'}
         if role == 'controller' and not worker:
             permissions['administration'] = 'read'
         # Optional grants widen one call only; a role's baseline stays mintable.
+        if read_only and any(value != 'read' for value in (extra or {}).values()):
+            raise ValueError('Read-only worker credentials cannot be widened')
         permissions.update(extra or {})
         try:
             value = self.client.request('POST', f"/app/installations/{connection['installation_id']}/access_tokens",
@@ -293,6 +295,11 @@ class GitHub:
         try:
             pr = self.pr(job, matches[0]['number'])
             value = candidate(pr, job, requirements, policy)
+            if job.get('builder_stage') == 'integration':
+                manifest = job['input_manifest']
+                inputs = [row['commit_oid'] for row in manifest['part_outputs']] + [row['head_oid'] for row in manifest['existing_candidates']]
+                if any(not self.contains(job, head, value['head']) for head in inputs):
+                    return None
             value['branch'] = pr['head']['ref']
             return value
         except (ValueError, TypeError, KeyError):

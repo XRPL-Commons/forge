@@ -250,7 +250,7 @@ class ContainerRunner:
             value = str(Path(self.environ['FORGE_CREDENTIAL_ROOT']) / 'runner-seccomp.json')
         return Path(value or '')
 
-    def prepare(self, job, token):
+    def prepare(self, job, token, *, bundles=()):
         current = self.inspect(job)
         if not current or current['status'] != 'created' or job['fenced']:
             raise RunnerError('Only an unstarted owned execution can receive an assignment')
@@ -303,6 +303,14 @@ class ContainerRunner:
                 member.size, member.mode, member.uid, member.gid = len(raw), 0o600, 1000, 1000
                 archive.addfile(member, io.BytesIO(raw))
         self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
+        for index, bundle in enumerate(bundles):
+            content = io.BytesIO()
+            with tarfile.open(fileobj=content, mode='w') as archive:
+                raw = bundle['content']
+                member = tarfile.TarInfo('input-' + str(index) + '.bundle')
+                member.size, member.mode, member.uid, member.gid = len(raw), 0o400, 1000, 1000
+                archive.addfile(member, io.BytesIO(raw))
+            self.call(['cp', '-a', '-', current['id'] + ':/work/'], input=content.getvalue())
 
     def refresh_auth(self, current):
         if self.config.get('provider', 'codex') == 'codex' and self.config.get('codex_parallel_auth'):
@@ -411,6 +419,17 @@ class ContainerRunner:
             captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace')[-65536:], secrets)
         except RunnerError:
             captured['missing'].append('runner logs')
+        if job.get('delegation') is not None:
+            from .delegation_artifacts import MAX_BUNDLE_SIZE
+            try:
+                raw = self.call(['cp', current['id'] + ':/work/output.bundle', '-'], max_output=MAX_BUNDLE_SIZE + 65536).stdout
+                with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                    entries = archive.getmembers()
+                    if len(entries) != 1 or not entries[0].isfile() or not 0 < entries[0].size <= MAX_BUNDLE_SIZE:
+                        raise ValueError('Invalid delegated output artifact')
+                    captured['worktree_bundle'] = archive.extractfile(entries[0]).read()
+            except (RunnerError, ValueError, tarfile.TarError):
+                captured['missing'].append('delegated output bundle')
         captured['execution'] = current
         return captured
 

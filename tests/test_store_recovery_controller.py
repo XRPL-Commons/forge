@@ -79,7 +79,7 @@ class RecoveryControllerTests(unittest.TestCase):
             repository_id=1, repository_name='owner/repo', issue_number=1, title='Fix issue', body='Body',
             requirements='github-requirements', observed_at=90)
         self.jobs = ExecutionQueries(self.store)
-        self.execution = ExecutionController(self.store, self.runner, self.github,
+        self.execution = ExecutionController(self.store, self.runner, self.github, enabled=lambda: True,
             admission=lambda job: True, clock=lambda: self.now)
         self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config), clock=lambda: self.now)
         self.dispatch = DispatchController(self.store, self.runner, config=self.config,

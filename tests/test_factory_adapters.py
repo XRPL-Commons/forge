@@ -80,6 +80,15 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(client.request.call_count, 5)
         self.assertNotIn('administration', client.request.call_args.args[-1]['permissions'])
 
+    def test_managed_children_cannot_mint_publication_credentials(self):
+        github, client, _ = self.github()
+        github.token('build', 71, worker=True, read_only=True)
+        self.assertEqual(client.request.call_args.args[-1]['repository_ids'], [71])
+        self.assertEqual(set(client.request.call_args.args[-1]['permissions'].values()), {'read'})
+        with self.assertRaises(ValueError):
+            github.token('build', 71, worker=True, read_only=True, extra={'contents': 'write'})
+        self.assertEqual(client.request.call_count, 1)
+
     def test_controller_asks_for_optional_permissions_only_when_a_caller_needs_them(self):
         github, client, _ = self.github(); github.token('controller', 71)
         permissions = client.request.call_args.args[-1]['permissions']

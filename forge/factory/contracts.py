@@ -81,9 +81,21 @@ def submission(body):
     if len(blocks) != 1 or body.count('forge-submission') != 1:
         raise ValueError('Exactly one submission block is required')
     value = json.loads(blocks[0], object_pairs_hook=unique)
-    if (not isinstance(value, dict) or set(value) != {'version', 'issue', 'attempt', 'head'}
-            or type(value['version']) is not int or value['version'] != 1
-            or type(value['issue']) is not int or value['issue'] <= 0):
+    if not isinstance(value, dict) or type(value.get('version')) is not int:
+        raise ValueError('Invalid submission contract')
+    if value['version'] == 1:
+        valid = (set(value) == {'version', 'issue', 'attempt', 'head'}
+                 and type(value['issue']) is int and value['issue'] > 0)
+    elif value['version'] == 2:
+        members = value.get('members')
+        valid = (set(value) == {'version', 'unit', 'members', 'attempt', 'head'}
+                 and isinstance(value.get('unit'), str) and bool(value['unit'])
+                 and isinstance(members, list) and bool(members)
+                 and all(type(number) is int and number > 0 for number in members)
+                 and members == sorted(set(members)))
+    else:
+        valid = False
+    if not valid:
         raise ValueError('Invalid submission contract')
     identifier(value['attempt'])
     if value['head'] is not None and (not isinstance(value['head'], str) or not SHA.fullmatch(value['head'])):
@@ -132,7 +144,8 @@ def references_issue(body, repo, number):
     """Conservative adoption guard, never proof of publication or ownership."""
     body = body or ''
     try:
-        if submission(body)['issue'] == number:
+        record = submission(body)
+        if record.get('issue') == number or number in record.get('members', []):
             return True
     except (ValueError, TypeError):
         pass
@@ -148,7 +161,8 @@ def claims_issue(body, repo, number):
     work on it."""
     body = body or ''
     try:
-        if submission(body)['issue'] == number:
+        record = submission(body)
+        if record.get('issue') == number or number in record.get('members', []):
             return True
     except (ValueError, TypeError):
         pass
@@ -159,13 +173,24 @@ def claims_issue(body, repo, number):
 def candidate(pr, job, requirements, policy):
     """Verify independently read GitHub facts against a persisted build assignment."""
     meta = submission(pr.get('body') or '')
-    if (meta['issue'] != job['issue_number'] or meta['attempt'] != job['id']
+    grouped = job.get('builder_stage') == 'integration'
+    if grouped:
+        numbers = sorted(member['issue_number'] for member in job['members'])
+        scope = meta.get('unit') == job['unit_id'] and meta.get('members') == numbers
+        scope = scope and all(claims_issue(MARKER.sub('', pr.get('body') or ''), job['repo'], number) for number in numbers)
+    else:
+        scope = meta.get('issue') == job['issue_number']
+    target = job.get('input_manifest', {}).get('publication_target') or {}
+    author = (pr.get('number') == target.get('pull_number')
+              and {key: pr.get('user', {}).get(key) for key in ('id', 'login', 'type')} == target.get('author')
+              if grouped and target.get('kind') == 'existing' and target.get('ownership_transfer') is True
+              else pr.get('user', {}).get('login') == job['publisher'] and pr.get('user', {}).get('type') == 'Bot')
+    if (not scope or meta['attempt'] != job['id']
             or meta['head'] is None or meta['head'] != pr['head']['sha']
             or pr['base']['repo']['id'] != job['repo_id'] or pr['base']['ref'] != job['target_branch']
             or pr['head']['repo']['id'] != job['repo_id']
             or pr['head']['ref'] != job['branch']
-            or pr['user']['login'] != job['publisher']
-            or pr['user'].get('type') != 'Bot' or pr.get('draft') is not False
+            or not author or pr.get('draft') is not False
             or pr['state'] != 'open' or pr.get('merged') is True):
         raise ValueError('Submission does not match the assigned build')
     value = {'repo_id': job['repo_id'], 'issue': job['issue_number'], 'pr': pr['number'],
@@ -186,13 +211,29 @@ def result(value, job):
     common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services', 'verification') if key in value}
     role = job['role']
     if role == 'build':
-        common |= {key for key in ('issues', 'evidence') if key in value}
+        common |= {key for key in ('issues', 'evidence', 'delegation_plan', 'output_commit') if key in value}
     if (set(value) != common | set(ROLE_FIELDS.get(role, ())) or type(value['version']) is not int or value['version'] != 1
             or value['attempt'] != job['id'] or value['role'] != role
-            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision', 'needs_human_verification', 'waiting_on_issues'}
+            or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision', 'needs_human_verification', 'waiting_on_issues', 'delegate'}
             or any(not isinstance(value[k], str) or not value[k].strip()
                    for k in ('summary', 'headline', 'plain') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
+    managed = job.get('builder_stage') is not None or job.get('delegation') is not None
+    if managed:
+        if 'delegation_plan' not in value or 'output_commit' not in value:
+            raise ValueError('Managed build results require delegation fields')
+        if value['outcome'] == 'delegate':
+            if job.get('builder_stage') != 'planning' or not isinstance(value['delegation_plan'], dict) or value['output_commit'] is not None:
+                raise ValueError('Only the owning builder planning run can propose children')
+        elif value['delegation_plan'] is not None:
+            raise ValueError('Only delegation can carry a child plan')
+        if job.get('delegation') is not None and value['outcome'] == 'pass':
+            if not isinstance(value['output_commit'], str) or not SHA.fullmatch(value['output_commit']):
+                raise ValueError('A child must name its exact output commit')
+        elif value['output_commit'] is not None:
+            raise ValueError('Only a successful child can report an output commit')
+    elif value['outcome'] == 'delegate' or value.get('delegation_plan') is not None or value.get('output_commit') is not None:
+        raise ValueError('Delegation is outside this assignment')
     verification = value.get('verification')
     if value['outcome'] == 'needs_human_verification':
         if (role not in ROLES or not isinstance(verification, dict)
@@ -278,11 +319,18 @@ def plain_language():
 def assignment_note(job):
     """Data is context, never permission to change factory state or run another job."""
     base = {k: job[k] for k in ('id', 'role', 'repo', 'repo_id', 'issue_number', 'branch', 'publisher', 'target_branch', 'candidate', 'deadline', 'history')}
+    if job.get('members'):
+        base['members'] = job['members']
+    base['input_manifest'] = job.get('input_manifest', {})
+    base['bundle_inputs'] = job.get('bundle_inputs', [])
     base['result_file'] = '/work/result.json'
     if job.get('resume_branch'):
         base['resume_branch'] = job['resume_branch']
     if job.get('resume_pr'):
         base['resume_pr'] = job['resume_pr']
+    for key in ('resume_head', 'publication_author'):
+        if key in job:
+            base[key] = job[key]
     base['review_policy'] = job.get('review_policy', {})
     base['ci_evidence'] = job.get('ci_evidence')
     base['verification_checks'] = job.get('verification_checks', [])
@@ -335,6 +383,9 @@ def assignment_note(job):
         'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
         'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
         'Never return blocked_environment or reject only because a check needs access outside the worker.')
+    if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation')):
+        from .delegation_contracts import assignment
+        return assignment(base, job)
     if job['role'] == 'build':
         base['instructions'] += (
             ' If an open issue in this repository must finish first, return waiting_on_issues with issues '

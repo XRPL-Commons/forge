@@ -19,5 +19,6 @@
   },
   "login_files": {
     ".codex/config.toml": "cli_auth_credentials_store = \"file\"\n"
-  }
+  },
+  "delegation": "managed_children"
 }
