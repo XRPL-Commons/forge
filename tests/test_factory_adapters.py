@@ -11,7 +11,7 @@ import uuid
 
 from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERMISSIONS
 from forge.factory.config import validate
-from forge.factory.github import GitHub, GitHubUnavailable
+from forge.factory.github import GitHub, GitHubUnavailable, GitHubBudgetExhausted
 from forge.factory.runner import ContainerRunner, RunnerError, process_isolation
 from forge.settings import validate as validate_settings, digest
 from tests.test_settings import configured
@@ -337,11 +337,13 @@ class MergeRefusalTests(unittest.TestCase):
             github.merge(self.item())
         self.assertEqual(caught.exception.status, 405)
 
-    def test_budget_exhaustion_keeps_the_generic_message(self):
+    def test_budget_exhaustion_defers_without_attempting_or_refusing_merge(self):
         github, client = self.github()
         github.deadline = 0
-        with self.assertRaisesRegex(GitHubUnavailable, 'budget reached'):
+        with self.assertRaisesRegex(GitHubBudgetExhausted, 'budget reached') as caught:
             github.merge(self.item())
+        self.assertNotIsInstance(caught.exception, GitHubUnavailable)
+        client.request.assert_not_called()
 
 
 class WorkerContractTests(unittest.TestCase):
