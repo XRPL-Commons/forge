@@ -270,3 +270,18 @@ class DeliveryExecutionTests(unittest.TestCase):
         self.assertEqual(len(first['jobs']),2); self.assertEqual(len(second['jobs']),1)
         self.assertIsNone(second['next_cursor'])
         self.assertEqual(len({job['id'] for job in first['jobs']+second['jobs']}),3)
+
+    def test_drop_to_one_preserves_owning_builder_and_publication_authority(self):
+        self.compose(); parent,plan,children=self.plan()
+        for key in ('0','1'):
+            child,manifest=self.child(plan,key); self.accept(child,manifest,key)
+        self.delivery.drop_member(self.command(),self.members['issue-0'],membership_generation=1,
+            dependent_decisions={},evidence={'approved':True})
+        assignment=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
+        self.assertEqual(assignment['stage'],'integration')
+        owner=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='owner-resumed',
+            input_manifest=assignment['input_manifest'])
+        self.assertEqual(owner['builder_id'],parent['builder_id'])
+        with self.store.read_snapshot() as db:
+            self.assertTrue(project_unit(db,'batch')['delivery_approved'])
+            self.assertEqual(len(project_unit(db,'batch')['members']),1)

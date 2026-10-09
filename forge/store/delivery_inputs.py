@@ -2,6 +2,10 @@
 import json
 
 
+def approved_in(db, unit_id):
+    return db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone() is not None
+
+
 def members_in(db, unit_id):
     return [dict(row) for row in db.execute('SELECT * FROM unit_issues WHERE unit_id=? AND left_at IS NULL ORDER BY id', (unit_id,))]
 

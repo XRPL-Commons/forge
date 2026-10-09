@@ -9,7 +9,7 @@ import re
 
 from .models import Candidate, Command, TransitionError, VersionConflict, InvalidDelegationPlan, complete_requirements
 from .transitions import Lifecycle, _id, _json, _unit, _gates, _charges, applicable_gates, manifest_hash, project_unit
-from .delivery_inputs import members_in, member_pins_in, dependencies_in, current_output_in, output_ref, requirements_hash_in
+from .delivery_inputs import approved_in, members_in, member_pins_in, dependencies_in, current_output_in, output_ref, requirements_hash_in
 
 
 class Delivery(Lifecycle):
@@ -233,7 +233,7 @@ class Delivery(Lifecycle):
                        launch=launch.payload() if launch else None)
         def change(db,unit):
             self._live(unit)
-            if len(members_in(db,unit['id'])) < 2 or unit['state'] not in {'queued','building','integrating'}:
+            if not approved_in(db,unit['id']) or not members_in(db,unit['id']) or unit['state'] not in {'queued','building','integrating'}:
                 raise TransitionError('owning builder reservation requires a grouped delivery in code work')
             self._quiescent(db,unit['id'])
             expected = self._builder_manifest_in(db,unit,stage,input_manifest.get('base_oid'),input_manifest.get('policy_hash'))
@@ -512,8 +512,10 @@ class DeliveryQueries:
             if unit['state'] not in {'queued','building','integrating'}:
                 return pending('not_building')
             members = members_in(db,unit_id)
-            if len(members)<2:
-                return pending('singleton')
+            if not approved_in(db,unit_id):
+                return pending('not_approved_composition')
+            if not members:
+                return pending('no_current_members')
             if _charges(db,unit)>=3:
                 return pending('budget_exhausted')
             if applicable_gates(db,unit,candidate_id=unit['current_candidate_id']):

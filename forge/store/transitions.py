@@ -168,7 +168,8 @@ def project_unit(db, unit_id):
         if blocked and (unit["state"] not in {"queued", "building"} or not runnable):
             blocker = min(blocked, key=lambda g: (GATE_PRIORITY[g["code"]], g["created_at"], g["id"] or g["subject_key"]))
     blocker = None if unit["state"] in TERMINAL else blocker
-    unit.update(stage_code=unit["state"], current_blocker=blocker,
+    from .delivery_inputs import approved_in
+    unit.update(delivery_approved=approved_in(db,unit_id), stage_code=unit["state"], current_blocker=blocker,
                 display_status=status.describe(blocker["code"] if blocker else unit["state"]),
                 reason_code=blocker["code"] if blocker else None,
                 members=members, charged_failures=_charges(db, unit))
@@ -486,7 +487,8 @@ class Lifecycle:
             if not slot or not execution_fence or not isinstance(input_manifest, dict) or not input_manifest:
                 raise TransitionError("reservation requires slot, execution fence and input manifest")
             if role == "build":
-                if len(self._members(db, unit["id"])) > 1:
+                from .delivery_inputs import approved_in
+                if approved_in(db,unit["id"]) or len(self._members(db, unit["id"])) > 1:
                     raise TransitionError("grouped builds require their owning builder and tracked delegation")
                 member = db.execute("SELECT * FROM unit_issues WHERE unit_id = ? AND id = ? AND left_at IS NULL", (unit["id"], member_id)).fetchone()
                 if member is None or member["state"] not in {"pending", "failed", "building"}:
@@ -783,7 +785,8 @@ class Lifecycle:
     def _invalidate(self, db, command, unit, reason, evidence):
         self._live(unit)
         members = self._members(db, unit['id'])
-        grouped = len(members) > 1
+        from .delivery_inputs import approved_in
+        grouped = approved_in(db,unit["id"]) or len(members) > 1
         if db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit['id'],)).fetchone():
             raise TransitionError('merge intent must be reconciled before rework')
         candidate_id = unit['current_candidate_id']

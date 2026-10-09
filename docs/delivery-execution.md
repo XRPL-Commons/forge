@@ -62,7 +62,9 @@ exact predecessor outputs remain current. An explicit member drop invalidates
 that member and its descendants, preserves unrelated outputs and shared charges,
 and requires each direct dependent to explicitly wait on the released issue as
 an external prerequisite. The drop command requires quiescent workers and
-completed mandatory investigations. Closed members require a separate closure
+completed mandatory investigations. A batch reduced to one member retains its
+approved builder and publication authority; `delivery_approved` identifies that
+authority independently of current member count. Closed members require a separate closure
 decision. Failed child retries use a new planning assignment; a plan key never
 silently creates another child execution.
 
