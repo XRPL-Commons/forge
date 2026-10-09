@@ -37,8 +37,8 @@ class Delivery(Lifecycle):
         if command.expected_version != 1 or db.execute('SELECT 1 FROM units WHERE id=?', (command.unit_id,)).fetchone():
             raise VersionConflict('composition requires a new unit identity')
         if (not command.actor_id or not command.request_id or not isinstance(rationale, str) or not rationale.strip()
-                or not isinstance(members, (list, tuple)) or len(members) < 2):
-            raise TransitionError('composition requires explicit rationale and at least two pinned issues')
+                or not isinstance(members, (list, tuple)) or not 2 <= len(members) <= 100):
+            raise TransitionError('composition requires explicit rationale and two to one hundred pinned issues')
         if approval != {'approved': True, 'composition_hash': self.composition_hash(repository_id=repository_id,
                 base_branch=base_branch, members=members, dependencies=dependencies, existing_prs=existing_prs, rationale=rationale, publication_target=publication_target)}:
             raise TransitionError('operator approval must pin the exact composition')
@@ -54,7 +54,7 @@ class Delivery(Lifecycle):
                     or issue['version'] != pin['issue_version'] or issue['current_revision_id'] != pin['requirements_revision_id']):
                 raise VersionConflict('issue identity or requirements changed before composition')
             kinds = json.loads(issue['assignee_types_json'])
-            if any(kinds.get(login) != 'Bot' for login in json.loads(issue['assignees_json'])) or set(json.loads(issue['labels_json'])) & {'hold','blocked'}:
+            if any(kinds.get(login) != 'Bot' for login in json.loads(issue['assignees_json'])) or set(json.loads(issue['labels_json'])) & {'hold','blocked','wip'}:
                 raise TransitionError('held or human-owned issues cannot be composed')
             requirements = json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?', (pin['requirements_revision_id'],)).fetchone()[0])
             if not complete_requirements(requirements):

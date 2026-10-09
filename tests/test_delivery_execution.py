@@ -285,3 +285,8 @@ class DeliveryExecutionTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertTrue(project_unit(db,'batch')['delivery_approved'])
             self.assertEqual(len(project_unit(db,'batch')['members']),1)
+
+    def test_composition_cannot_exceed_bounded_observation_contract(self):
+        with self.assertRaisesRegex(TransitionError,'two to one hundred'):
+            self.delivery.compose(Command('too-large','operator','batch',1),repository_id=1,base_branch='main',
+                members=[{}]*101,rationale='Oversized group',approval={'approved':True})

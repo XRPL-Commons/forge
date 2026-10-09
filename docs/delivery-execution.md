@@ -7,7 +7,8 @@ the same transaction as proposal acceptance.
 
 ## Composition
 
-Approval hashes pin every issue version, requirements revision, source unit
+A composition contains 2–100 issues, matching the bounded observation and
+scheduler contract. Approval hashes pin every issue version, requirements revision, source unit
 version and member identity, the internal dependency graph, the grouping reason,
 and independently verified unmerged observations for every existing PR.
 Composition preserves source histories and carries their current failure charges
