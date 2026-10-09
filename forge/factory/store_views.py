@@ -385,7 +385,6 @@ class PipelineViews:
                 jobs=[self.job(job['id']) for job in tree['jobs']],next_cursor=tree['next_cursor'],
                 charged_failures=tree['charged_failures'],failure_limit=3)
 
-    @projection
     def output(self, job_id):
         with self.store.read_session() as db:
             self.job(job_id)
