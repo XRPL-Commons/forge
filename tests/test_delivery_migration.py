@@ -1,4 +1,4 @@
-"""Schema 22 preserves original launch pins when current requirements changed."""
+"""Delivery upgrades preserve launch pins, leases, and issue environment intent."""
 import json
 import tempfile
 import unittest
@@ -22,6 +22,14 @@ class DeliveryMigrationTests(unittest.TestCase):
                         db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,'i','Issue','','body',?,'{}',1)",(revision,revision))
                     db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES('u',1,'main','building',1,1)")
                     db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES('m','u','i',1,'main','new','building',1)")
+                    choice=json.dumps({'tier':'full','services':['postgres']})
+                    override=json.dumps({'tier':'full','actor':'operator'})
+                    retry=json.dumps({'role':'build','services':['postgres']})
+                    memory=json.dumps({'role':'build','memory':'8g'})
+                    hold=json.dumps({'reason':'service_missing'})
+                    db.execute('INSERT INTO unit_environment_observations VALUES(?,?,?,?,?,?,?)',
+                        ('u',choice,override,retry,memory,'env:full',hold))
+                    db.execute("INSERT INTO unit_environment(unit_id,revision,choice,override,created_at,requirements_revision_id) VALUES('u',1,?,?,3,'new')",(choice,override))
                     for role in ('build','review'):
                         member='m' if role=='build' else None
                         manifest=json.dumps({'requirements_revision_id':'old'}) if member else '{}'
@@ -34,5 +42,9 @@ class DeliveryMigrationTests(unittest.TestCase):
                 self.assertEqual([tuple(row) for row in db.execute('SELECT job_id,member_id,requirements_revision_id FROM job_members ORDER BY job_id')],
                     [('build','m','old'),('review','m','old')])
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM job_leases').fetchone()[0],2)
+                migrated=db.execute("SELECT * FROM issue_environment_observations WHERE issue_id='i'").fetchone()
+                self.assertEqual(tuple(migrated),('i',choice,override,retry,memory,'env:full',hold))
+                self.assertEqual(tuple(db.execute('SELECT member_id,requirements_revision_id,choice FROM unit_environment').fetchone()),('m','new',choice))
+                self.assertEqual(db.execute('SELECT choice_json FROM unit_environment_observations').fetchone()[0],choice)
                 self.assertNotIn('requirements_revision_id',[row[1] for row in db.execute('PRAGMA table_info(job_launches)')])
                 self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())

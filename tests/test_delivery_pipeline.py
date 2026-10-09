@@ -249,8 +249,15 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertTrue(active_publication_matches(self.store, 'batch', {**pr, 'draft': True}))
         marker = {'version': 2, 'unit': 'batch', 'members': [1, 2], 'attempt': resumed['id'], 'head': 'd' * 40}
         updated = {**pr, 'head': {**pr['head'], 'sha': 'd' * 40}, 'draft': True,
-                   'body': '<!-- forge-submission ' + json.dumps(marker) + ' -->'}
+                   'body': 'Fixes #1\nFixes #2\n<!-- forge-submission ' + json.dumps(marker) + ' -->'}
         self.assertTrue(active_publication_matches(self.store, 'batch', updated))
+        from forge.factory.observation_controller import ObservationController
+        self.github.pulls.return_value = [updated]
+        self.github.issue.side_effect = lambda item: (dict(number=item['number'], state='open', title='Issue',
+            body='Scope', updated_at='2026-10-10T00:00:00Z', labels=[], assignees=[]), 'req-' + str(item['number']))
+        observed = ObservationController(self.store, self.github, admission=lambda _: True, clock=lambda: 100).step('batch')
+        self.assertTrue(all(row.get('observed') for row in observed['members'].values()))
+        self.assertFalse(self.jobs.job(resumed['id'])['fenced'])
         self.assertFalse(active_publication_matches(self.store, 'batch', {**updated, 'head': {**updated['head'], 'sha': 'e' * 40}}))
         wrong = Candidate(10, resumed['branch'], 'd' * 40, self.base, resumed['input_manifest']['policy_hash'],
                           resumed['input_manifest']['requirements_hash'], manifest_hash(resumed['input_manifest']))

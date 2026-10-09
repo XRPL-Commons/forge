@@ -12,7 +12,7 @@ from ..store.models import Command, TransitionError
 from ..store.queries import Queries
 from ..store.transitions import Lifecycle, TERMINAL
 from .github import GitHubUnavailable
-from .ownership import ownership
+from .ownership import ownership, active_publication_matches
 
 
 class ObservationController:
@@ -111,7 +111,9 @@ class ObservationController:
         # or candidate reads are unavailable. It cannot clear ownership/readiness.
         conflict = allowed = None
         if not terminal and pr_error is None:
-            conflict = ownership(remote, item, item['repo'], self.github.pulls(item)) is not None
+            pulls = [pr for pr in self.github.pulls(item)
+                     if not active_publication_matches(self.store, unit_id, pr)]
+            conflict = ownership(remote, item, item['repo'], pulls) is not None
             allowed = self.admission(item)
             if type(allowed) is not bool:
                 raise TransitionError('admission adapter must return a verified boolean')
@@ -156,6 +158,8 @@ class ObservationController:
                         'base_oid': selected['base_oid']})}
             if pr.get('merged') is not False:
                 raise GitHubUnavailable('Candidate merge state is unverified')
+            if remote['state'] == 'open' and active_publication_matches(self.store, unit_id, pr):
+                return {'unit_id': unit_id, 'observed': True, 'publishing': True}
             if not exact_head:
                 return self._external_change(unit, 'candidate_head_changed')
             proof.update(verified=True, merged=False, candidate_id=selected['id'],
