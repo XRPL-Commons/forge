@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import type { FactoryTransition } from '~/utils/factoryStore'
 import type { CardModel, ColumnRole, FactoryView, IssueGroups } from '~/utils/factory'
 import {
   LINE_REASONS, LINE_REASON_SHORT, LINE_REASON_TEXT, LINE_SHORT_LABELS,
-  lineAnalyse, lineBlocker, lineDiff, lineFill, lineGroups, lineMix, lineHeadline, lineHeadlineText, lineStation, lineState, lineSummary, lineTooltip,
+  lineAnalyse, lineBlocker, lineDiff, lineTransition, lineFill, lineGroups, lineMix, lineHeadline, lineHeadlineText, lineStation, lineState, lineSummary, lineTooltip,
   type AttentionReason, type HeadlinePart, type LineInfo, type LineItem, type LineStage, type LineState,
 } from '~/utils/factoryLine'
 import { panelQuery, panelTarget } from '~/utils/panel'
@@ -18,7 +19,7 @@ import { BAY_GLYPHS, GLYPH_INK, glyphMotion, type GlyphPart } from '~/utils/bayG
 // a committed change puts its issue somewhere else. Machines animate while a
 // worker is actually running. The drawing is the "Toy factory" prototype,
 // ported onto live state from utils/factoryLine.ts.
-const props = defineProps<{ view: FactoryView | null; now: number; groups?: IssueGroups }>()
+const props = defineProps<{ view: FactoryView | null; now: number; groups?: IssueGroups; transition?: FactoryTransition | null }>()
 // `attention` opens the list of issues that need the operator, filtered to
 // one bay when a bay was clicked.
 const emit = defineEmits<{ open: [card: CardModel]; attention: [filter: NeedsFilter] }>()
@@ -77,6 +78,8 @@ const scene = { W: 0, H: 200, dpr: 1, hits: [] as Hit[], hover: null as Hit | nu
 const toy = { parts: [] as Particle[], plus: [] as { t: number }[], truckLeave: -1e9, smokeAcc: 0 }
 let reduced = false
 let previous: LineState | null = null
+let consumedCursor: string | null = null
+let transitionAt: number | null = null
 let layoutKey = ''
 
 const COL = { text: '#edf1ee', muted: '#acb7b9', dim: '#565d67', green: '#7fcc9d', amber: '#ecc486', coral: '#ef7d64', panel: '#192024', line: '#303b40' }
@@ -96,26 +99,32 @@ function regroup() {
 function apply(next: LineState | null) {
   if (!next) return
   const diff = lineDiff(previous, next)
-  const at = performance.now()
-  if (!previous) scene.snap = true
+  const now = performance.now()
+  const frame = lineTransition(props.transition, props.view?.cursor, consumedCursor, now)
+  if (frame) consumedCursor = frame.cursor
+  const motion = !!(diff.entered.length || diff.moved.length || diff.left.length || diff.merged.length || diff.plus)
+  const animate = !!previous && !!frame?.animate
+  const at = animate ? frame!.at : now
+  if (!previous || (motion && !animate)) scene.snap = true
+  if (motion) transitionAt = animate ? at : null
   const was = new Map(model.items.map(item => [item.id, item]))
   const items: Item[] = next.items.map(item => ({ ...item, order: was.get(item.id)?.order ?? model.seq++ }))
-  for (const id of diff.entered) model.fresh.add(id)
+  if (animate) for (const id of diff.entered) model.fresh.add(id)
   // A cube that left the line fades where it stood; one that merged rides
   // the truck first (only with motion: a still frame just counts it).
   for (const id of diff.left) {
     const v = vis.get(id)
-    if (v && !reduced) ghosts.push({ x: v.x, y: v.y, size: v.size, fill: v.col, t0: at })
+    if (v && animate && !reduced) ghosts.push({ x: v.x, y: v.y, size: v.size, fill: v.col, t0: at })
     vis.delete(id)
   }
   for (const id of diff.merged) {
     const old = was.get(id)
-    if (old && !reduced) items.push({ ...old, stage: 'merged', mergedAt: at })
+    if (old && animate && !reduced) items.push({ ...old, stage: 'merged', mergedAt: at })
     else vis.delete(id)
   }
   // Earlier merges still on their way to the truck stay until they arrive.
-  for (const item of model.items) if (item.stage === 'merged' && !items.some(other => other.id === item.id)) items.push(item)
-  if (diff.plus && !reduced) {
+  for (const item of model.items) if (!scene.snap && item.stage === 'merged' && !items.some(other => other.id === item.id)) items.push(item)
+  if (diff.plus && animate && !reduced) {
     model.lastMerge = at
     for (let i = diff.merged.length; i < Math.min(diff.plus, 3); i++) toy.plus.push({ t: at })
   }
@@ -338,7 +347,7 @@ function frame(now: number, at: number) {
       const fresh = model.fresh.has(is.id) && !scene.snap && !reduced
       const sp = fresh ? spawn(L, is, p) : p
       const fill = lineFill(is)
-      v = { x: sp.x, y: sp.y, fx: sp.x, fy: sp.y, tx: p.x, ty: p.y, t0: now, dur: fresh ? 900 : 0, stage: st, hop: fresh, land: -1e9, k: fresh ? 0 : 1, dist: Math.hypot(p.x - sp.x, p.y - sp.y), size: sizeOf(is, L), col: fill, cf: fill, ct: fill, ct0: now, cdur: 0 }
+      v = { x: sp.x, y: sp.y, fx: sp.x, fy: sp.y, tx: p.x, ty: p.y, t0: transitionAt ?? now, dur: fresh ? 900 : 0, stage: st, hop: fresh, land: -1e9, k: fresh ? 0 : 1, dist: Math.hypot(p.x - sp.x, p.y - sp.y), size: sizeOf(is, L), col: fill, cf: fill, ct: fill, ct0: now, cdur: 0 }
       vis.set(is.id, v)
     }
     model.fresh.delete(is.id)
@@ -347,7 +356,7 @@ function frame(now: number, at: number) {
     if (scene.snap || reduced) { v.x = v.fx = v.tx = p.x; v.y = v.fy = v.ty = p.y; v.dur = 0; v.k = 1; v.stage = st; v.hop = false; v.col = v.cf = v.ct = fill; continue }
     if (Math.abs(p.x - v.tx) > 0.5 || Math.abs(p.y - v.ty) > 0.5 || v.stage !== st) {
       const changed = v.stage !== st
-      v.fx = v.x; v.fy = v.y; v.tx = p.x; v.ty = p.y; v.t0 = now
+      v.fx = v.x; v.fy = v.y; v.tx = p.x; v.ty = p.y; v.t0 = transitionAt ?? now
       v.dist = Math.hypot(v.tx - v.fx, v.ty - v.fy)
       v.dur = changed ? clamp(520 + v.dist * 2, 650, 1500) : 380
       v.hop = changed
@@ -364,6 +373,7 @@ function frame(now: number, at: number) {
     v.k = k
   }
   scene.snap = false
+  transitionAt = null
   for (const id of vis.keys()) if (!model.byId.has(id)) vis.delete(id)
   const dt = Math.max(0, at - scene.lastAt); scene.lastAt = at
   scene.hits.length = 0

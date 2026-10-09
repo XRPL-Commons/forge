@@ -1,11 +1,12 @@
-import { shallowRef } from 'vue'
+import { computed, shallowRef } from 'vue'
 import type { FactoryView, JobView, LedgerIssueView } from './factory'
 import type { IssueDetailResponse, IssueRow } from './issues'
 import type { Resources } from './resources'
 
 export const BOARD_PATH = '/api/factory?section=board'
 export interface FactoryEvent { sequence: number; unit_id: string | null; issue_id: string | null; job_id: string | null; kind: string; at: number }
-export interface FactoryChanges { ok: true; cursor: string; events: FactoryEvent[]; issues: Record<string, IssueRow>; board: FactoryView; resync: boolean }
+export interface FactoryChanges { ok: true; cursor: string; at: number; events: FactoryEvent[]; issues: Record<string, IssueRow>; board: FactoryView; resync: boolean }
+export interface FactoryTransition { cursor: string; at: number; receivedAt: number; events: FactoryEvent[]; resync: boolean }
 export type FactoryPayload = FactoryView | { ok: false; reason: string }
 type Read = <T>(path: string, options?: { timeout?: number; signal?: AbortSignal }) => Promise<T>
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -13,7 +14,8 @@ const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.st
 /** One feed owner per Nuxt app; snapshots and lazy detail share the existing resource cache. */
 export class FactoryStore {
   readonly issues = shallowRef(new Map<string, IssueRow>())
-  readonly events = shallowRef<FactoryEvent[]>([])
+  readonly transition = shallowRef<FactoryTransition | null>(null)
+  readonly events = computed(() => this.transition.value?.events ?? [])
   private boardIssues = new Map<string, LedgerIssueView>()
   private jobs = new Map<string, JobView>()
   private owners = 0
@@ -21,9 +23,10 @@ export class FactoryStore {
   private active: AbortController | null = null
   private timer?: ReturnType<typeof setTimeout>
   private cursor: string | null = null
+  private refreshedDetailsAt: number
   private stopped = true
   private wake = () => { this.active?.abort(); void this.refresh() }
-  constructor(readonly resources: Resources, private read: Read) {}
+  constructor(readonly resources: Resources, private read: Read, private clock = Date.now) { this.refreshedDetailsAt = clock() }
   get entry() { return this.resources.entry<FactoryPayload>(BOARD_PATH) }
   normalizeBoard(board: FactoryView): FactoryView {
     const issues = board.issues?.map(issue => {
@@ -71,17 +74,21 @@ export class FactoryStore {
   }
   apply(batch: FactoryChanges) {
     this.cursor = batch.cursor
-    this.events.value = batch.events
+    this.transition.value = { cursor: batch.cursor, at: batch.at, receivedAt: performance.now(), events: batch.events, resync: batch.resync }
     this.remember(batch.issues)
     const board = this.normalizeBoard({ ...batch.board, cursor: batch.cursor })
     this.resources.replace(BOARD_PATH, board)
     // Details contain bodies, review evidence and actions absent from the feed. Reload only
     // mounted detail resources; unopened bodies/artifacts never become feed traffic.
     const keys = new Set(Object.keys(batch.issues))
+    // Some GitHub observation fields change without lifecycle events. Busy event traffic
+    // must not postpone their refresh indefinitely; the feed owns this one deadline.
+    const refreshAll = batch.resync || this.clock() - this.refreshedDetailsAt >= 25000
+    if (refreshAll) this.refreshedDetailsAt = this.clock()
     this.resources.invalidate(path => {
       if (!path.startsWith('/api/issues?issue=')) return false
       const key = new URLSearchParams(path.split('?')[1]).get('issue')
-      return batch.resync || batch.events.length === 0 || (!!key && keys.has(key))
+      return refreshAll || (!!key && keys.has(key))
     })
     // A resync drops retired projections; active detail bodies remain in the bounded cache.
     if (batch.resync) this.issues.value = new Map(Object.entries(batch.issues))

@@ -4,6 +4,8 @@ A cursor belongs to one SQLite instance. Waiting uses autocommit reads, never a
 long-lived WAL snapshot. Only public event headers leave this module; event
 payloads can contain captured requirements and worker diagnostics.
 """
+import select
+import socket
 import time
 
 from ..store.queries import Queries
@@ -12,6 +14,23 @@ MAX_EVENTS = 100
 MAX_ISSUES = 100
 MAX_WAIT = 25
 EVENT_FIELDS = ('sequence', 'unit_id', 'issue_id', 'job_id', 'kind', 'at')
+
+
+class ChangeFeedCancelled(Exception):
+    """The requesting proxy closed its connection while waiting."""
+
+
+def socket_eof(connection):
+    """Check the internal HTTP peer without consuming a pipelined request."""
+    readable, _, _ = select.select([connection], [], [], 0)
+    if not readable:
+        return False
+    try:
+        return connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b''
+    except BlockingIOError:
+        return False
+    except ConnectionResetError:
+        return True
 
 
 def cursor(store, db):
@@ -36,7 +55,7 @@ class Changes:
         self.views, self.store = views, views.store
         self.monotonic, self.sleep = monotonic, sleep
 
-    def read(self, *, since=None, wait=MAX_WAIT):
+    def read(self, *, since=None, wait=MAX_WAIT, cancelled=None):
         if type(wait) not in (int, float) or not 0 <= wait <= MAX_WAIT:
             raise ValueError('Factory change wait must be between 0 and 25 seconds')
         previous = parse_cursor(since) if since is not None else None
@@ -46,11 +65,17 @@ class Changes:
         if previous and previous[0] == self.store.instance_id and wait:
             with self.store._connection(read_only=True) as db:
                 db.execute('PRAGMA query_only=ON')
-                while db.execute('SELECT COALESCE(MAX(sequence),0) FROM events').fetchone()[0] == previous[1]:
+                while True:
+                    if cancelled and cancelled():
+                        raise ChangeFeedCancelled()
+                    if db.execute('SELECT COALESCE(MAX(sequence),0) FROM events').fetchone()[0] != previous[1]:
+                        break
                     remaining = deadline - self.monotonic()
                     if remaining <= 0:
                         break
                     self.sleep(min(0.25, remaining))
+        if cancelled and cancelled():
+            raise ChangeFeedCancelled()
         with self.store.read_session() as db:
             current = cursor(self.store, db)
             latest = parse_cursor(current)[1]
@@ -73,4 +98,4 @@ class Changes:
             # This also refreshes clock-derived fields and global observations
             # (heartbeat/access health) on an idle connection at most every 25s.
             board = self.views.factory(section='board')
-            return dict(cursor=current, events=events, issues=issues, board=board, resync=resync)
+            return dict(cursor=current, at=self.views.clock(), events=events, issues=issues, board=board, resync=resync)

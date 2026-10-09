@@ -17,6 +17,7 @@ const router = useRouter()
 // A {ok:false, reason} answer is a state, not a failed request: it replaces
 // the payload, so the page shows the fence instead of a stale factory.
 const poll = useFactory()
+const transition = useFactoryStore().transition
 
 const now = useClock()
 onMounted(poll.start)
@@ -244,7 +245,7 @@ watch(() => panel.value.key, (key, before) => {
     </div>
 
     <template v-if="view">
-      <FactoryLine id="factory-line" class="mt-5 scroll-mt-32" :view="view" :now="now" :groups="groups" @open="open" @attention="showAttention" />
+      <FactoryLine id="factory-line" class="mt-5 scroll-mt-32" :view="view" :now="now" :groups="groups" :transition="transition" @open="open" @attention="showAttention" />
 
       <p v-if="counts" id="readout" class="readout mt-3 flex flex-wrap gap-x-5 gap-y-1 border-y border-line py-2 text-xs text-muted tabular-nums sm:justify-end">
         <span data-readout="working">Working <NuxtLink to="/issues?show=working" class="font-semibold text-white hover:underline" :aria-label="`${counts.working} of ${counts.slots} slots working`">{{ counts.working }}</NuxtLink> of {{ counts.slots }}</span>

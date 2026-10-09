@@ -7,6 +7,9 @@ export default defineEventHandler(async (event) => {
   if (!proxyPaths(path)) return
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
+  // A hidden tab or closed client cancels its long poll through both HTTP hops.
+  const disconnect = () => controller.abort()
+  event.node.res.once('close', disconnect)
   try {
     const req = event.node.req
     const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : v]))
@@ -21,7 +24,11 @@ export default defineEventHandler(async (event) => {
     }
     const client = clientPath(path)
     const guard = (client ? guardClient : guardAction)({ method: req.method ?? 'GET', headers, contentLength: headers['content-length'] === undefined ? undefined : Number(headers['content-length']), publicOrigin: process.env.NITRO_FORGE_PUBLIC_ORIGIN })
-    if (!guard.ok) { setResponseStatus(event, guard.status); return { ok: false, reason: guard.reason } }
+    if (!guard.ok) {
+      setResponseStatus(event, guard.status)
+      if (req.method === 'POST') setResponseHeader(event, 'connection', 'close')
+      return { ok: false, reason: guard.reason }
+    }
     const config = useRuntimeConfig()
     const base = config.forgeApi.replace(/\/$/, '')
     const secret = readUpstreamSecret(config.forgeUpstreamSecretFile, path => readFileSync(path, 'utf8'))
@@ -49,5 +56,5 @@ export default defineEventHandler(async (event) => {
     }
     setResponseStatus(event, 502)
     return { ok: false, reason: 'Forge status service is unavailable. Check forge-status on the server.' }
-  } finally { clearTimeout(timer) }
+  } finally { clearTimeout(timer); event.node.res.off('close', disconnect) }
 })

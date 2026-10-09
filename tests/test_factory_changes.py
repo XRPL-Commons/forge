@@ -1,9 +1,10 @@
 """Committed sequence delivery, bounded resync and idle long-poll isolation."""
 import json
+import socket
 import unittest
 from unittest.mock import Mock, patch
 
-from forge.factory.changes import Changes, MAX_EVENTS, parse_cursor
+from forge.factory.changes import Changes, ChangeFeedCancelled, MAX_EVENTS, parse_cursor, socket_eof
 from forge.factory.config import validate
 from forge.factory.store_views import PipelineViews
 from tests import test_store_result_controller as fixtures
@@ -49,6 +50,31 @@ class FactoryChangesTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.25])
         self.assertTrue(result['events'])
         self.assertEqual(result['issues']['i']['status'], 'blocked')
+
+    def test_disconnected_proxy_stops_wait_before_projection(self):
+        views = self.views()
+        start = Changes(views).read(wait=0)['cursor']
+        server, client = socket.socketpair()
+        self.addCleanup(server.close)
+        self.addCleanup(client.close)
+        self.assertFalse(socket_eof(server))
+        sleeps = []
+        def sleep(delay):
+            sleeps.append(delay)
+            client.close()
+        with patch.object(views, 'factory', side_effect=AssertionError('must not project a disconnected response')):
+            with self.assertRaises(ChangeFeedCancelled):
+                Changes(views, sleep=sleep).read(since=start, cancelled=lambda: socket_eof(server))
+        self.assertEqual(sleeps, [0.25])
+        self.assertIsNone(self.store._reader.get())
+
+    def test_socket_peek_does_not_consume_pipelined_request(self):
+        server, client = socket.socketpair()
+        self.addCleanup(server.close)
+        self.addCleanup(client.close)
+        client.sendall(b'GET /next HTTP/1.1\r\n')
+        self.assertFalse(socket_eof(server))
+        self.assertEqual(server.recv(100), b'GET /next HTTP/1.1\r\n')
 
     def test_idle_timeout_refreshes_global_observation_without_events(self):
         start = Changes(self.views()).read(wait=0)['cursor']
@@ -127,6 +153,16 @@ class FactoryChangesHTTPTests(unittest.TestCase):
             allowed.do_GET()
             body = json.loads(allowed._send.call_args.args[0])
             self.assertEqual(body['board'], dict(ok=True, controls_token='operator-token'))
+
+    def test_disconnected_wait_sends_no_response(self):
+        from tests.test_dashboard import dashboard
+        with patch.object(dashboard, 'runtime_control', return_value=False), \
+                patch('forge.factory.control.public_views', return_value=Mock()), \
+                patch('forge.factory.changes.Changes.read', side_effect=ChangeFeedCancelled) as read:
+            handler = self.handler()
+            handler.do_GET()
+            self.assertTrue(callable(read.call_args.kwargs['cancelled']))
+            handler._send.assert_not_called()
 
     def test_invalid_query_and_missing_sqlite_have_explicit_errors(self):
         from tests.test_dashboard import dashboard

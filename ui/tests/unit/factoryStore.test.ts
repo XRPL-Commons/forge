@@ -7,7 +7,7 @@ const board = (title = 'First'): FactoryView => ({ ok: true, cursor: 'instance:1
   operator: null, runtime: { enabled: true, slots: {}, cycle_seconds: 5 }, runtime_revision: '1',
   issues: [{ key: '1:1', title }], jobs: [{ id: 'job', issue_key: '1:1', phase: 'running' }],
 } as FactoryView)
-const batch = (value = board(), extras = {}): FactoryChanges => ({ ok: true, cursor: 'instance:2', events: [{ sequence: 2, issue_id: '1:1', unit_id: null, job_id: 'job', kind: 'stage_completed', at: 100 }], issues: { '1:1': { key: '1:1', title: value.issues![0]!.title } }, board: value, resync: false, ...extras } as FactoryChanges)
+const batch = (value = board(), extras = {}): FactoryChanges => ({ ok: true, cursor: 'instance:2', at: 100, events: [{ sequence: 2, issue_id: '1:1', unit_id: null, job_id: 'job', kind: 'stage_completed', at: 100 }], issues: { '1:1': { key: '1:1', title: value.issues![0]!.title } }, board: value, resync: false, ...extras } as FactoryChanges)
 const tick = async () => { await vi.advanceTimersByTimeAsync(0) }
 afterEach(() => vi.useRealTimers())
 
@@ -31,12 +31,26 @@ describe('shared factory feed', () => {
     expect(resources.entry<FactoryView>(BOARD_PATH).data.value!.issues![0]).not.toBe(first.issues![0])
   })
   it('resync and idle health responses refresh mounted details without eagerly loading unopened bodies', () => {
-    const resources = new Resources(), read = vi.fn(), store = new FactoryStore(resources, read)
+    let now = 1000
+    const resources = new Resources(), read = vi.fn(), store = new FactoryStore(resources, read, () => now)
     const wake = vi.fn(); resources.entry('/api/issues?issue=1%3A9').listeners.add(wake)
     store.apply(batch(board(), { resync: true, issues: {}, events: [] }))
     expect(wake).toHaveBeenCalledOnce(); expect(store.issues.value.size).toBe(0); expect(read).not.toHaveBeenCalled()
+    now += 25000
     store.apply(batch(board(), { events: [] }))
     expect(wake).toHaveBeenCalledTimes(2)
+  })
+  it('refreshes observation-only detail fields on schedule even with continuous unrelated events', () => {
+    let now = 1000
+    const resources = new Resources(), store = new FactoryStore(resources, vi.fn(), () => now)
+    const wake = vi.fn()
+    resources.entry('/api/issues?issue=1%3A9').listeners.add(wake)
+    for (let step = 0; step < 4; step++) { now += 5000; store.apply(batch()) }
+    expect(wake).not.toHaveBeenCalled()
+    now += 5000; store.apply(batch())
+    expect(wake).toHaveBeenCalledOnce()
+    now += 5000; store.apply(batch())
+    expect(wake).toHaveBeenCalledOnce()
   })
   it('a reset fence replaces the visible board instead of leaving stale work running', async () => {
     vi.useFakeTimers()

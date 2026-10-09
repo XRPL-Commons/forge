@@ -544,7 +544,7 @@ class H(BaseHTTPRequestHandler):
         elif u.path == '/api/factory/changes':
             try:
                 from forge.factory.control import public_views
-                from forge.factory.changes import Changes
+                from forge.factory.changes import Changes, ChangeFeedCancelled, socket_eof
                 query = parse_qs(u.query, keep_blank_values=True)
                 if set(query) - {'since', 'wait'} or any(len(v) != 1 or not v[0] for v in query.values()):
                     raise ValueError('Invalid factory change query')
@@ -552,7 +552,8 @@ class H(BaseHTTPRequestHandler):
                 if service is None:
                     self._send(json.dumps({'ok':False,'reason':'Factory changes require SQLite storage'}), status=409)
                     return
-                result = Changes(service).read(since=query.get('since', [None])[0], wait=float(query.get('wait', ['25'])[0]))
+                result = Changes(service).read(since=query.get('since', [None])[0], wait=float(query.get('wait', ['25'])[0]),
+                                               cancelled=lambda: socket_eof(self.connection))
                 # A session revoked while this request waited cannot receive its
                 # response. The same signed-in checks run before every request.
                 if not self._operator_guard() or not self._signed_in():
@@ -562,6 +563,8 @@ class H(BaseHTTPRequestHandler):
                     return
                 result['board'].update(ok=True, controls_token=self._action_token)
                 self._send(json.dumps({'ok':True, **result, 'controls_token':self._action_token}))
+            except ChangeFeedCancelled:
+                return
             except ValueError:
                 self._send(json.dumps({'ok':False,'reason':'Invalid factory change query'}), status=400)
             except (OSError, RuntimeError):

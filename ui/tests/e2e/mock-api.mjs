@@ -401,7 +401,7 @@ const server = http.createServer(async (req, res) => {
       const { body, history, reviews, reviewers, default_reviewers, reviewers_requested, ...summary } = detail.issue
       issues[summary.key] = summary
     }
-    return send(res, 200, withToken({ cursor: `mock:${sequence}`, events: changed ? [{ sequence, issue_id: detail?.issue?.key || null, unit_id: null, job_id: null, kind: 'observed', at: Date.now() / 1000 }] : [],
+    return send(res, 200, withToken({ cursor: `mock:${sequence}`, at: Date.now() / 1000, events: changed ? [{ sequence, issue_id: detail?.issue?.key || null, unit_id: null, job_id: null, kind: 'observed', at: Date.now() / 1000 }] : [],
       issues, board: withToken({ ...board, cursor: `mock:${sequence}` }), resync: false }))
   }
 
