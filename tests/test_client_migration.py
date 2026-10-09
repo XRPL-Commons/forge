@@ -14,6 +14,17 @@ from forge_client.migration import bundle
 
 
 class MigrationCLITests(unittest.TestCase):
+    def test_upgrade_plan_and_pinned_apply_are_machine_readable(self):
+        values=['migrate','upgrade','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
+        with patch('forge_client.migration.call',return_value={'status':'planned'}) as call:
+            execute(parser().parse_args(values))
+            self.assertEqual(call.call_args.kwargs,{'apply':False,'source_revision':None})
+            call.reset_mock()
+            with self.assertRaises(SetupError):execute(parser().parse_args([*values,'--apply']))
+            call.assert_not_called()
+            execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
+            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
+
     def test_runtime_preparation_requires_apply_and_never_invokes_capture(self):
         values=['migrate','prepare','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
         with patch('forge_client.migration.call',return_value={'status':'runtime_ready'}) as call:

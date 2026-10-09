@@ -193,12 +193,12 @@ def failure(error, request):
     """Safe transport diagnostics: never include exception text or source rows."""
     from ..db import StoreError
     stage='before_journal'
-    path=Path(request['root'])/'.migration-cutover.json'
+    path=Path(request['root'])/('.schema-upgrade.json' if request.get('action')=='upgrade' else '.migration-cutover.json')
     if path.exists():
         try:
             value=decode(read_regular(path,limit=1048576))
             candidate=value.get('stage')
-            stage=candidate if candidate in {'draining','stopping','capturing','importing','validated','selected','complete'} else 'journal_unreadable'
+            stage=candidate if candidate in {'draining','stopping','capturing','importing','validated','selected','complete','installing','migrating','reconciling'} else 'journal_unreadable'
         except Exception:
             stage='journal_unreadable'
     name=type(error).__name__
@@ -208,6 +208,9 @@ def failure(error, request):
 
 def run(request):
     host=Host(request['root'],request['source'])
+    if request['action']=='upgrade':
+        from .upgrade import Upgrade
+        return Upgrade(host).run(revision=request.get('source_revision'),apply=request.get('apply') is True)
     if request['action']=='plan':
         if (host.root/'.migration-cutover.json').exists():
             from .cutover import Cutover

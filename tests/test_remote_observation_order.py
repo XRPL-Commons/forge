@@ -28,8 +28,8 @@ class TimestampMigrationTests(unittest.TestCase):
         self.db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/project')")
 
     def issue(self, number, timestamp):
-        self.db.execute('INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,remote_updated_at) '
-                        "VALUES(?,1,?,'open',?,?)", (f'1:{number}', number, f'rev-{number}', timestamp))
+        self.db.execute('INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,remote_updated_at,observed_at) '
+                        "VALUES(?,1,?,'open',?,?,1)", (f'1:{number}', number, f'rev-{number}', timestamp))
         self.db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) '
                         "VALUES(?,?,'Title','','body','requirements','{}',1)", (f'rev-{number}', f'1:{number}'))
 
