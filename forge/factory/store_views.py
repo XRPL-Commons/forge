@@ -32,6 +32,7 @@ def available_actions(issue, unit, *, cleanup=False, pending=False):
         return []
     life = issue['lifecycle']
     if life['unit_id'] is None:
+        if life['reason_code'] in {'requirements_stale', 'remote_timestamp_invalid', 'admission_conflict'}:return []
         return ['queue'] if life['state'] == 'untracked' else []
     reason = life['reason_code']
     if reason in {'operator_pause', 'operator_backlog', 'label_hold'}:
@@ -337,6 +338,24 @@ class PipelineViews:
                     'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
                     'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
                     'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':selected['completed_at'] or None})
+            # Failed pre-admission observations have no unit yet. Show them on
+            # their own issue cards instead of turning them into controller errors.
+            if section in (None, 'board') and len(issues) < size:
+                failed = db.execute("SELECT x.id,d.observed_at FROM public_issue_index x "
+                    'JOIN issue_discovery_observations d ON d.issue_id=x.id '
+                    "WHERE x.unit_id IS NULL AND x.public_status='attention' "
+                    + ('AND x.id=? ' if issue is not None else '')
+                    + 'ORDER BY d.observed_at DESC,x.id LIMIT ?',
+                    ((issue,) if issue is not None else ()) + (size-len(issues),)).fetchall()
+                for selected in failed:
+                    row = self._row(db, selected['id'], config=config)
+                    issues.append({**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code','operator_status')},
+                        'state':'hold', 'reason':row['explanation'], 'failure_count':0, 'candidate':None,
+                        'last_summary':row['summary'], 'history':[], 'created_at':selected['observed_at'],
+                        'last_observed':selected['observed_at'], 'hold_kind':row['reason_code'],
+                        'merge_gate_kind':None, 'attention_kind':'question', 'closed_as':None,
+                        'reviewers_requested':None, 'attempts':[], 'blocked_dependencies':[],
+                        'deployed':None, 'deploy_failed':None, 'completed_at':None})
             cursor=f"{rows[size-1]['completed_at']!r}:{rows[size-1]['id']}" if len(rows)>size else None
             job_clauses=['(j.cleanup=0 OR j.outcome IS NULL)'];job_params=[]
             runner_filter="(j.role='recovery' OR j.fenced=1 OR j.outcome IS NOT NULL OR NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.unit_id=j.unit_id AND m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved')))"

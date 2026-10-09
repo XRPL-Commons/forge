@@ -17,6 +17,8 @@ ATTENTION = {'budget_exhausted', 'approach_required', 'decision_required', 'repo
 
 def public_status(issue, active=False):
     state, reason = issue['lifecycle']['state'], issue['lifecycle']['reason_code']
+    if state == 'untracked' and reason in {'requirements_stale', 'remote_timestamp_invalid', 'admission_conflict'}:
+        return 'attention'
     if state in {'done', 'dropped', 'untracked'}:
         return {'done': 'completed', 'dropped': 'dropped', 'untracked': 'backlog'}[state]
     if reason in {'operator_pause', 'operator_backlog'}:
@@ -36,7 +38,7 @@ def operator_status(issue, active=False):
         reason_code = 'merged' if life['stage_code'] == 'merged' else 'github_completed'
     elif code == 'dropped':
         reason_code = 'github_duplicate' if issue.get('state_reason') == 'duplicate' else 'github_not_planned'
-    elif life['state'] == 'untracked':
+    elif life['state'] == 'untracked' and reason_code is None:
         # Reopened issues must not inherit the old delivery's merge or gates.
         reason_code = None
     elif reason_code is None:

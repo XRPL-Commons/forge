@@ -101,6 +101,8 @@ class AuxiliaryCapacityTests(unittest.TestCase):
         fixture=fixtures.StoreSchemaTests()
         fixture.setUp();self.addCleanup(fixture.doCleanups)
         db=fixture.db
+        from forge.store.remote_time import register
+        register(db)
         for path in sorted(fixtures.SCHEMA.parent.glob('*.sql'))[1:]:db.executescript(path.read_text())
         fixture.insert('auxiliary_executions',id='probe',domain='setup',owner_id='live',position=0,phase='reserved',fenced=0,cleanup=0)
         fixture.insert('auxiliary_leases',slot='shared',execution_id='probe',execution_fence='probe-fence',acquired_at=1)

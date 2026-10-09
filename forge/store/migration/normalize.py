@@ -2,6 +2,7 @@
 import time
 import zlib
 from ..transitions import manifest_hash, project_unit
+from ..remote_time import normalize as remote_time, order as remote_order
 from ...factory.ledger import Ledger
 from .snapshot import MigrationError, encode, digest
 
@@ -86,7 +87,7 @@ def normalize(importer):
         observation=item.get('github_observation') or {}
         fresh=observation.get('issue')
         old=observed.get(key)
-        if fresh and (old is None or (fresh.get('updated_at') or '',observation.get('at') or 0) >= (old[1].get('updated_at') or '',old[2])):
+        if fresh and (old is None or (remote_order(fresh.get('updated_at')),observation.get('at') or 0) >= (remote_order(old[1].get('updated_at')),old[2])):
             observed[key]=(item['repo_id'],fresh,observation.get('at') or 0)
         elif old is None:
             observed[key]=(item['repo_id'],dict(number=item['number'],title=item.get('title',''),body='',state='open'),item['created_at'])
@@ -104,7 +105,7 @@ def normalize(importer):
         labels=[v['name'] if isinstance(v,dict) else v for v in facts.get('labels',[])]
         assignees=[v['login'] if isinstance(v,dict) else v for v in facts.get('assignees',[])]
         insert(db,'issues',id=key,repository_id=repo,github_number=facts['number'],github_state=state,
-               state_reason=reason,current_revision_id=revision,remote_updated_at=facts.get('updated_at'),
+               state_reason=reason,current_revision_id=revision,remote_updated_at=remote_time(facts['updated_at']) if facts.get('updated_at') is not None else None,
                observed_at=at,labels_json=encode(labels).decode(),assignees_json=encode(assignees).decode(),
                assignee_types_json=encode(facts.get('assignee_types',{})).decode())
         insert(db,'issue_revisions',id=revision,issue_id=key,title=facts.get('title',''),body=body,

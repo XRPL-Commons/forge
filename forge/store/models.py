@@ -48,3 +48,13 @@ class VersionConflict(TransitionError):
 
 class IdempotencyConflict(TransitionError):
     pass
+
+
+class RequirementsStale(TransitionError):
+    code = 'requirements_stale'
+
+
+def complete_requirements(requirements):
+    return not (isinstance(requirements, dict) and
+                (requirements.get('body_truncated') or requirements.get('body_unavailable')
+                 or requirements.get('complete') is False or 'legacy_body_hash' in requirements))
