@@ -1179,6 +1179,16 @@ class Lifecycle:
         if any(issue["github_state"] != "open" for issue in issues):
             raise TransitionError("closed members require an explicit membership decision before dissolve")
         retained_intent = [gate for gate in _gates(db, unit["id"]) if gate["code"] in {"operator_pause", "operator_backlog"}]
+        # The approved graph remains a prerequisite after the work is split.
+        # Revision-bound issue dependencies are the existing external authority.
+        from .delivery_inputs import dependencies_in
+        by_id={member['id']:member for member in members}
+        for member in members:
+            for prerequisite_id in dependencies_in(db,unit,member['id']):
+                prerequisite=by_id[prerequisite_id]
+                db.execute("INSERT OR IGNORE INTO issue_dependencies(id,issue_id,requirements_revision_id,prerequisite_issue_id,source,evidence,created_at) "
+                    "VALUES(?,?,?,?,'operator',?,?)",(_id(command.request_id,'external:'+member['id']+':'+prerequisite_id),
+                    member['issue_id'],member['requirements_revision_id'],prerequisite['issue_id'],'Approved dependency retained after dissolve',self.clock()))
         self._settle(db, command, unit, "dissolved")
         released = []
         for member, issue in zip(members, issues):

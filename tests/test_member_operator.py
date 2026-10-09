@@ -244,3 +244,13 @@ class MemberOperatorTests(unittest.TestCase):
                 gate=db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND code='operator_pause' AND resolved_at IS NULL",(item['unit_id'],)).fetchone()
                 import json
                 self.assertEqual(len(json.loads(gate[0])['source_gate_ids']),2 if item['issue_id']=='issue-0' else 1)
+
+    def test_dissolve_preserves_approved_graph_as_external_prerequisites(self):
+        self.setup_actions(3,[{'issue_id':'issue-1','prerequisite_issue_id':'issue-0'},{'issue_id':'issue-2','prerequisite_issue_id':'issue-1'}])
+        result=self.actions.step(self.membership_request('issue-0','dissolve'))
+        self.assertTrue(result['applied'])
+        with self.store.read_snapshot() as db:
+            edges={(row['issue_id'],row['prerequisite_issue_id']) for row in db.execute('SELECT * FROM issue_dependencies')}
+            self.assertEqual(edges,{('issue-1','issue-0'),('issue-2','issue-1')})
+            for item in result['released']:
+                self.assertEqual(db.execute('SELECT budget_generation FROM units WHERE id=?',(item['unit_id'],)).fetchone()[0],1)
