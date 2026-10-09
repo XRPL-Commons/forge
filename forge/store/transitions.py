@@ -18,7 +18,7 @@ from .presentation import record_revision_display
 from .remote_time import normalize as remote_time, order as remote_order
 from .models import (
     Candidate, Command, GateCode, IdempotencyConflict, Role, TransitionError,
-    VersionConflict, RequirementsStale, complete_requirements,
+    VersionConflict, RequirementsStale, InvalidDelegationPlan, complete_requirements,
 )
 
 TERMINAL = codes.TERMINAL_STATES
@@ -72,17 +72,19 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None):
         gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
                       "subject_key": f"member:{row['id']}", "code": "external_change", "created_at": 0.0,
                       "resolved_at": None, "details_json": _json({"reason": "issue_closed", "state_reason": row["state_reason"]})})
-    for row in db.execute(
-        "SELECT m.id FROM unit_issues m WHERE m.unit_id = ? AND m.left_at IS NULL AND ("
-        "EXISTS (SELECT 1 FROM issue_dependencies d WHERE d.issue_id = m.issue_id "
-        "AND d.requirements_revision_id = m.requirements_revision_id) AND NOT COALESCE((SELECT clear FROM dependency_checks c WHERE c.member_id=m.id AND c.requirements_revision_id=m.requirements_revision_id ORDER BY generation DESC LIMIT 1),0) OR "
-        "EXISTS (SELECT 1 FROM member_dependencies d WHERE d.unit_id = m.unit_id "
-        "AND d.member_id = m.id AND d.membership_generation = ?))",
-        (unit["id"], unit["membership_generation"]),
-    ):
-        gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
-                      "subject_key": f"member:{row['id']}", "code": "dependency", "created_at": 0.0,
-                      "resolved_at": None, "details_json": _json({"reason": "dependency_validation_unavailable"})})
+    from .delivery_inputs import member_dependency_problem_in
+    for row in db.execute("SELECT id,issue_id,requirements_revision_id FROM unit_issues WHERE unit_id=? AND left_at IS NULL", (unit['id'],)):
+        external = db.execute("SELECT 1 FROM issue_dependencies d JOIN issues p ON p.id=d.prerequisite_issue_id "
+            "WHERE d.issue_id=? AND d.requirements_revision_id=? "
+            "AND NOT EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=? AND m.issue_id=p.id AND m.left_at IS NULL) "
+            "AND NOT(p.github_state='closed' AND p.state_reason='completed') "
+            "AND NOT COALESCE((SELECT clear FROM dependency_checks c WHERE c.member_id=? AND c.requirements_revision_id=? "
+            "ORDER BY generation DESC LIMIT 1),0)",
+            (row['issue_id'],row['requirements_revision_id'],unit['id'],row['id'],row['requirements_revision_id'])).fetchone()
+        if external or member_dependency_problem_in(db, unit, row['id']):
+            gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
+                          "subject_key": f"member:{row['id']}", "code": "dependency", "created_at": 0.0,
+                          "resolved_at": None, "details_json": _json({"reason": "prerequisite_output_pending" if not external else "external_dependency_pending"})})
     for row in db.execute(
         "SELECT m.id FROM unit_issues m JOIN issues i ON i.id = m.issue_id "
         "JOIN issue_revisions current ON current.id = i.current_revision_id "
@@ -104,8 +106,9 @@ def _charges(db, unit):
     return db.execute(
         "SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END), 0) "
         "FROM budget_entries b JOIN attempts a ON a.id = b.attempt_id "
-        "WHERE a.unit_id = ? AND a.budget_generation = ?",
-        (unit["id"], unit["budget_generation"]),
+        "WHERE (a.unit_id = ? AND a.budget_generation = ?) OR a.id IN "
+        "(SELECT attempt_id FROM unit_budget_lineage WHERE unit_id=? AND budget_generation=?)",
+        (unit["id"], unit["budget_generation"], unit["id"], unit["budget_generation"]),
     ).fetchone()[0]
 
 
@@ -196,7 +199,7 @@ class Lifecycle:
             raise IdempotencyConflict("request identity already belongs to a different command")
         if row["status"] == "rejected":
             errors = {"TransitionError": TransitionError, "VersionConflict": VersionConflict,
-                      "IntegrityError": sqlite3.IntegrityError}
+                      "IntegrityError": sqlite3.IntegrityError, "InvalidDelegationPlan": InvalidDelegationPlan}
             raise errors.get(result["error_type"], TransitionError)(result["message"])
         if row["status"] != "applied":
             raise TransitionError("request is not an applied command")
@@ -434,6 +437,30 @@ class Lifecycle:
             self._ensure_cleanup_gate(db, command, job["id"], job["member_id"])
             self._event(db, command, "attempt_fenced", {}, job_id=job[0])
 
+    def fence_member_in(self, db, command, member_id, *, reason, include_descendants=True):
+        """Fence affected physical assignments without revoking independent parts."""
+        unit = _unit(db,command.unit_id)
+        members = self._members(db,unit['id'])
+        if member_id not in {member['id'] for member in members}:
+            raise TransitionError('scoped fencing requires a current member')
+        affected = {member_id}
+        if include_descendants:
+            from .delivery_inputs import dependencies_in
+            while True:
+                descendants = {member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
+                if descendants.issubset(affected):
+                    break
+                affected.update(descendants)
+        jobs = [dict(job) for job in db.execute('SELECT id,member_id,cleanup,outcome FROM jobs WHERE unit_id=?',(unit['id'],))
+                if (job['member_id'] is None or job['member_id'] in affected) and (not job['cleanup'] or job['outcome'] is None)]
+        for job in jobs:
+            db.execute('UPDATE jobs SET fenced=1 WHERE id=?',(job['id'],))
+            db.execute('UPDATE job_execution_state SET result_revoked=1 WHERE job_id=?',(job['id'],))
+            if not job['cleanup']:
+                self._ensure_cleanup_gate(db,command,job['id'],job['member_id'])
+            self._event(db,command,'attempt_fenced',{'reason':reason,'member_id':member_id},job_id=job['id'])
+        return {'member_ids':sorted(affected),'job_ids':[job['id'] for job in jobs]}
+
     def _ensure_cleanup_gate(self, db, command, job_id, member_id):
         subject = f"member:{member_id}" if member_id else "unit"
         exists = db.execute("SELECT 1 FROM unit_gates WHERE unit_id = ? AND code = 'cleanup_pending' AND subject_key = ? AND resolved_at IS NULL", (command.unit_id, subject)).fetchone()
@@ -459,6 +486,8 @@ class Lifecycle:
             if not slot or not execution_fence or not isinstance(input_manifest, dict) or not input_manifest:
                 raise TransitionError("reservation requires slot, execution fence and input manifest")
             if role == "build":
+                if len(self._members(db, unit["id"])) > 1:
+                    raise TransitionError("grouped builds require their owning builder and tracked delegation")
                 member = db.execute("SELECT * FROM unit_issues WHERE unit_id = ? AND id = ? AND left_at IS NULL", (unit["id"], member_id)).fetchone()
                 if member is None or member["state"] not in {"pending", "failed", "building"}:
                     raise TransitionError("build requires a current pending member")
@@ -527,6 +556,12 @@ class Lifecycle:
             member = db.execute("SELECT requirements_revision_id, left_at FROM unit_issues WHERE id = ?", (job["member_id"],)).fetchone()
             current = bool(current and member is not None and member["left_at"] is None
                            and input_manifest.get("requirements_revision_id") == member["requirements_revision_id"])
+        delegation = db.execute('SELECT a.assignment_generation,a.membership_generation FROM job_delegations d '
+            'JOIN delegation_plans p ON p.id=d.plan_id JOIN jobs j ON j.id=p.parent_job_id '
+            'JOIN attempts a ON a.id=j.attempt_id WHERE d.job_id=?', (job_id,)).fetchone()
+        if delegation:
+            current = bool(current and delegation['assignment_generation'] == unit['fencing_generation']
+                           and delegation['membership_generation'] == unit['membership_generation'])
         return dict(job), current
 
     def _result(self, db, command, job, evidence, outcome):
@@ -747,25 +782,41 @@ class Lifecycle:
 
     def _invalidate(self, db, command, unit, reason, evidence):
         self._live(unit)
-        self._singleton(db, unit)
-        if db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone():
-            raise TransitionError("merge intent must be reconciled before rework")
-        candidate_id = unit["current_candidate_id"]
+        members = self._members(db, unit['id'])
+        grouped = len(members) > 1
+        if db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit['id'],)).fetchone():
+            raise TransitionError('merge intent must be reconciled before rework')
+        candidate_id = unit['current_candidate_id']
         self._fence(db, command)
         if candidate_id:
-            for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id = ? AND candidate_id = ? AND resolved_at IS NULL", (unit["id"], candidate_id)).fetchall():
-                self._resolve(db, command, gate[0], {"reason": reason}, resolution="superseded")
-            self._event(db, command, "candidate_superseded", {"candidate_id": candidate_id, "reason": reason, "evidence": evidence})
-        db.execute("UPDATE units SET current_candidate_id = NULL, primary_gate_id = NULL, state = 'building' WHERE id = ?", (unit["id"],))
-        db.execute("UPDATE unit_issues SET state = 'pending' WHERE unit_id = ? AND left_at IS NULL", (unit["id"],))
-        # Candidate invalidation cannot erase a mandatory diagnostic obligation.
-        # Move a retired candidate's recovery wait onto its singleton member.
-        for failed in db.execute("SELECT j.id FROM jobs j JOIN attempt_failures f ON f.attempt_id=j.attempt_id "
-                "WHERE j.unit_id=? AND f.recovery_required=1 AND f.investigation!='complete'", (unit['id'],)).fetchall():
+            for gate in db.execute('SELECT id FROM unit_gates WHERE unit_id=? AND candidate_id=? AND resolved_at IS NULL', (unit['id'],candidate_id)).fetchall():
+                self._resolve(db,command,gate[0],{'reason':reason},resolution='superseded')
+            self._event(db,command,'candidate_superseded',{'candidate_id':candidate_id,'reason':reason,'evidence':evidence})
+        affected = set(evidence.get('affected_member_ids', ())) if grouped else {member['id'] for member in members}
+        if not affected.issubset({member['id'] for member in members}):
+            raise TransitionError('rework scope includes a member outside this delivery')
+        if reason in {'base_changed','policy_changed','requirements_changed','merge_conflict'}:
+            affected = {member['id'] for member in members}
+        if grouped and affected:
+            from .delivery_inputs import dependencies_in
+            while True:
+                descendants = {member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
+                if descendants.issubset(affected):
+                    break
+                affected.update(descendants)
+            for member_id in affected:
+                db.execute('INSERT OR IGNORE INTO part_output_invalidations(output_id,reason,evidence_json,created_at) '
+                    'SELECT id,?,?,? FROM part_outputs WHERE member_id=?', (reason,_json(evidence),self.clock(),member_id))
+        target = 'integrating' if grouped and not affected else 'building'
+        db.execute('UPDATE units SET current_candidate_id=NULL,primary_gate_id=NULL,state=? WHERE id=?',(target,unit['id']))
+        for member_id in affected:
+            db.execute("UPDATE unit_issues SET state='pending' WHERE id=?",(member_id,))
+        for failed in db.execute("SELECT j.id,j.member_id FROM jobs j JOIN attempt_failures f ON f.attempt_id=j.attempt_id "
+                "WHERE j.unit_id=? AND f.recovery_required=1 AND f.investigation!='complete'",(unit['id'],)).fetchall():
             if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='recovery_pending' AND resolved_at IS NULL "
-                              "AND json_extract(details_json,'$.job_id')=?", (unit['id'], failed['id'])).fetchone():
-                self._open_gate(db, command, 'recovery_pending', {'job_id': failed['id']}, self._singleton(db, unit)['id'])
-        self._event(db, command, "phase_changed", {"before": unit["state"], "after": "building", "reason": reason})
+                              "AND json_extract(details_json,'$.job_id')=?",(unit['id'],failed['id'])).fetchone():
+                self._open_gate(db,command,'recovery_pending',{'job_id':failed['id']},failed['member_id'] if grouped else members[0]['id'])
+        self._event(db,command,'phase_changed',{'before':unit['state'],'after':target,'reason':reason})
 
     def invalidate_candidate(self, command, candidate_id, *, reason, evidence):
         """Invalidate exact candidate facts without removing an operator pause."""
@@ -792,7 +843,6 @@ class Lifecycle:
             if not current:
                 self._result(db, command, job, evidence, "stale_failure")
                 return {"accepted": False, "charged": False}
-            self._singleton(db, unit)
             self._result(db, command, job, evidence, "rejected")
             db.execute("INSERT INTO candidate_evidence(id,unit_id,candidate_id,attempt_id,kind,verdict,actor_id,observed_at,details_json) VALUES(?,?,?,?,?,'fail',?,?,?)",
                        (_id(command.request_id, "evidence"), unit["id"], job["candidate_id"], job["attempt_id"], job["role"], command.actor_id, self.clock(), _json(evidence)))
@@ -805,7 +855,7 @@ class Lifecycle:
             self._open_gate(db, command, 'recovery_pending', {'job_id': job_id})
             if _charges(db, unit) >= 3:
                 self._open_gate(db, command, "budget_exhausted", {"limit": 3})
-            return {"accepted": True, "charged": True, "phase": "building"}
+            return {"accepted": True, "charged": True, "phase": _unit(db,unit["id"])["state"]}
         return self._apply(command, "reject_job", payload, change)
 
     def retry(self, command, *, evidence):
@@ -815,7 +865,6 @@ class Lifecycle:
         def change(db, unit):
             self._live(unit)
             self._quiescent(db, unit["id"])
-            self._singleton(db, unit)
             from .recovery import pending_mandatory
             if pending_mandatory(db, unit['id']):
                 raise TransitionError('mandatory investigations must complete before retry')

@@ -160,6 +160,7 @@ ARTIFACT_KINDS = {
     'launch_input': 'durable',
     'failure_evidence': 'durable',
     'worker_capture': 'durable',
+    'worktree_bundle': 'durable',
     'input_manifest': 'durable',
     'result': 'durable',
     'summary': 'durable',

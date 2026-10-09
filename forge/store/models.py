@@ -42,6 +42,10 @@ class TransitionError(ValueError):
     """A command does not satisfy the lifecycle's current preconditions."""
 
 
+class InvalidDelegationPlan(TransitionError):
+    """A current owning builder returned a malformed or incomplete execution plan."""
+
+
 class VersionConflict(TransitionError):
     pass
 
