@@ -5,22 +5,46 @@ const route = useRoute(), id = computed(() => Number(route.params.id))
 if (!Number.isSafeInteger(id.value) || id.value <= 0) await navigateTo('/settings/repositories', { replace: true })
 const { resource, view, proposal, busy, error, open, members, history, act, decide } = useRepositoryPlanning(id)
 const rules = ref(''), nightly = ref(true), editingRules = ref(false)
-const editing = ref<PlanningRow | null>(null), reason = ref(''), labels = ref(''), prerequisites = ref(''), question = ref(''), target = ref('new')
+const editing = ref<PlanningRow | null>(null), editAction = ref('keep'), reason = ref(''), labels = ref(''), removedLabels = ref(''), prerequisites = ref(''), question = ref(''), target = ref('new')
+const evidenceUrl = ref(''), evidenceIdentity = ref(''), evidenceDescription = ref(''), ruleQuote = ref(''), internalOrder = ref('')
 const note = ref<RepositoryNote | null>(null), noteOpen = ref(false), noteContent = ref(''), noteKind = ref('convention'), sourceUrl = ref(''), sourceIdentity = ref('')
 const undecided = computed(() => proposal.value?.rows.filter(row => row.status === 'proposed') ?? [])
 const complete = computed(() => proposal.value && proposal.value.next === null)
 function editRules() { rules.value = view.value?.planning.rules ?? ''; nightly.value = !!view.value?.planning.proposals_enabled; editingRules.value = true }
 async function saveRules() { await act({ action: 'rules', expected_revision: view.value?.planning.revision, rules: rules.value, proposals_enabled: nightly.value }); if (!error.value) editingRules.value = false }
-function edit(row: PlanningRow) { editing.value = row; reason.value = row.reason; labels.value = (row.parameters.add ?? []).join(', '); prerequisites.value = (row.parameters.prerequisites ?? []).join('\n'); question.value = row.parameters.question ?? ''; target.value = row.parameters.publication_target?.candidate_id ?? 'new' }
+function edit(row: PlanningRow) {
+  editing.value = row; editAction.value = row.action; reason.value = row.reason; ruleQuote.value = row.rule_quote ?? ''
+  internalOrder.value = (row.parameters.dependencies ?? []).map((edge: any) => `#${row.members.find(m => m.issue_id === edge.issue_id)?.github_number} -> #${row.members.find(m => m.issue_id === edge.prerequisite_issue_id)?.github_number}`).join('\n')
+  labels.value = (row.parameters.add ?? []).join(', '); removedLabels.value = (row.parameters.remove ?? []).join(', ')
+  prerequisites.value = (row.parameters.prerequisites ?? []).join('\n'); question.value = row.parameters.question ?? ''
+  target.value = row.parameters.publication_target?.candidate_id ?? 'new'
+  const evidence = row.parameters.evidence?.[0]
+  evidenceUrl.value = evidence?.url ?? ''; evidenceIdentity.value = evidence?.identity ?? ''; evidenceDescription.value = evidence?.description ?? ''
+}
 async function saveRow() {
   if (!editing.value || !proposal.value) return
-  const row = editing.value, parameters = { ...row.parameters }
-  if (row.action === 'park' || row.action === 'relabel') parameters.add = labels.value.split(',').map(v => v.trim()).filter(Boolean)
-  if (row.action === 'order') parameters.prerequisites = prerequisites.value.split('\n').map(v => v.trim()).filter(Boolean)
-  if (row.action === 'question') parameters.question = question.value
-  if (row.action === 'group') parameters.publication_target = target.value === 'new' ? { kind: 'new' } : { kind: 'existing', ...parameters.existing_prs.find((p: any) => p.candidate_id === target.value), author: parameters.existing_prs.find((p: any) => p.candidate_id === target.value)?.author, ownership_transfer: true }
+  const row = editing.value, action = editAction.value
+  const additions = labels.value.split(',').map(v => v.trim()).filter(Boolean)
+  let parameters: Record<string, unknown> = {}
+  if (action === 'park') parameters = { add: additions }
+  if (action === 'relabel') parameters = { add: additions, remove: removedLabels.value.split(',').map(v => v.trim()).filter(Boolean) }
+  if (action === 'order') parameters = { prerequisites: prerequisites.value.split('\n').map(v => v.trim()).filter(Boolean) }
+  if (action === 'question') parameters = { question: question.value }
+  if (action === 'close') parameters = { evidence: [{ url: evidenceUrl.value, identity: evidenceIdentity.value, description: evidenceDescription.value,
+    kind: row.parameters.evidence?.[0]?.kind ?? 'commit' }, ...(row.parameters.evidence?.slice(1) ?? [])] }
+  if (action === 'group') {
+    const dependencies = []
+    for (const line of internalOrder.value.split('\n').filter(v => v.trim())) {
+      const match = line.trim().match(/^#?(\d+)\s*->\s*#?(\d+)$/)
+      const issue = row.members.find(m => m.github_number === Number(match?.[1])), prerequisite = row.members.find(m => m.github_number === Number(match?.[2]))
+      if (!issue || !prerequisite || issue.issue_id === prerequisite.issue_id) { error.value = 'Use two different members in each dependency, for example #12 -> #8.'; return }
+      dependencies.push({ issue_id: issue.issue_id, prerequisite_issue_id: prerequisite.issue_id })
+    }
+    parameters = { ...row.parameters, dependencies, publication_target: target.value === 'new' ? { kind: 'new' } : {
+    kind: 'existing', ...row.parameters.existing_prs.find((p: any) => p.candidate_id === target.value), ownership_transfer: true } }
+  }
   await act({ action: 'edit', proposal_id: proposal.value.id, row_id: row.id, expected_version: proposal.value.version,
-    value: { action: row.action, members: row.members.map(m => m.issue_id), reason: reason.value, rule_quote: row.rule_quote, parameters } })
+    value: { action, members: row.members.map(m => m.issue_id), reason: reason.value, rule_quote: ruleQuote.value.trim() || null, parameters } })
   if (!error.value) editing.value = null
 }
 function editNote(value: RepositoryNote | null) { note.value = value; noteContent.value = value?.content ?? ''; noteKind.value = value?.kind ?? 'convention'; sourceUrl.value = value?.sources[0]?.url ?? ''; sourceIdentity.value = value?.sources[0]?.identity ?? ''; noteOpen.value = true }
@@ -79,17 +103,27 @@ async function saveNote(deleted = false) {
           <p>{{ row.reason }}</p><blockquote v-if="row.rule_quote" class="border-l-2 border-primary pl-3 text-sm">Rule: “{{ row.rule_quote }}”</blockquote>
           <p v-if="row.parameters.question">{{ row.parameters.question }}</p>
           <p v-if="row.parameters.add?.length">Add labels: {{ row.parameters.add.join(', ') }}</p><p v-if="row.parameters.remove?.length">Remove labels: {{ row.parameters.remove.join(', ') }}</p>
+          <ul v-if="row.parameters.dependencies?.length" class="text-sm"><li v-for="(edge, index) in row.parameters.dependencies" :key="index">#{{ row.members.find(member => member.issue_id === edge.issue_id)?.github_number ?? edge.issue_id }} waits for #{{ row.members.find(member => member.issue_id === edge.prerequisite_issue_id)?.github_number ?? edge.prerequisite_issue_id }}</li></ul>
           <p v-if="row.parameters.prerequisites">Prerequisites: {{ row.parameters.prerequisites.join(', ') || 'None' }}</p>
           <p v-if="row.action === 'group'">Publish {{ row.parameters.publication_target.kind === 'new' ? 'a new PR' : `to existing PR #${row.parameters.publication_target.pull_number}` }}. {{ row.parameters.publication_target.kind === 'existing' ? `You approve transferring implementation of this PR from ${row.parameters.publication_target.author.login} to the delivery builder; its author stays unchanged.` : '' }} One builder coordinates the members, followed by one review and audit.</p>
           <a v-for="source in row.parameters.evidence ?? []" :key="source.url" :href="source.url" target="_blank" rel="noopener noreferrer" class="block text-primary">{{ source.description }}</a>
           <p v-for="effect in row.effects" :key="effect.id" class="text-sm text-muted">GitHub change: {{ effect.status }}</p>
           <div v-if="row.status === 'proposed'" class="flex gap-2"><UButton :disabled="busy" @click="decide([row.id], [])">Accept</UButton><UButton color="neutral" variant="outline" :disabled="busy || !!row.members_next" @click="edit(row)">Edit</UButton><UButton color="neutral" variant="ghost" :disabled="busy" @click="decide([], [row.id])">Reject</UButton></div>
           <form v-if="editing?.id === row.id" class="space-y-3" @submit.prevent="saveRow">
+            <label v-if="row.action !== 'group'" class="block">Decision<select v-model="editAction" class="ml-2 rounded border border-default bg-default p-2"><option v-for="action in ['keep','question','order','park','relabel','close']" :key="action" :value="action">{{ action === 'close' ? 'Close as already completed' : action }}</option></select></label>
             <label class="block">Reason<textarea v-model="reason" required rows="3" class="block w-full rounded border border-default bg-default p-2" /></label>
-            <label v-if="['park','relabel'].includes(row.action)" class="block">Labels to add, separated by commas<input v-model="labels" class="block w-full rounded border border-default bg-default p-2"></label>
-            <label v-if="row.action === 'order'" class="block">Prerequisites, one owner/repository#number per line<textarea v-model="prerequisites" rows="3" class="block w-full rounded border border-default bg-default p-2" /></label>
-            <label v-if="row.action === 'question'" class="block">Question<textarea v-model="question" class="block w-full rounded border border-default bg-default p-2" /></label>
-            <label v-if="row.action === 'group'" class="block">Publication target<select v-model="target" class="ml-2 rounded border border-default bg-default p-2"><option value="new">New PR</option><option v-for="pr in row.parameters.existing_prs" :key="pr.candidate_id" :value="pr.candidate_id">Existing PR #{{ pr.pull_number }}</option></select></label>
+            <label v-if="['park','relabel'].includes(editAction)" class="block">Labels to add, separated by commas<input v-model="labels" class="block w-full rounded border border-default bg-default p-2"></label>
+            <label v-if="editAction === 'order'" class="block">Prerequisites, one owner/repository#number per line<textarea v-model="prerequisites" rows="3" class="block w-full rounded border border-default bg-default p-2" /></label>
+            <label v-if="editAction === 'question'" class="block">Question<textarea v-model="question" class="block w-full rounded border border-default bg-default p-2" /></label>
+            <label class="block">Deciding standing rule quote, if any<textarea v-model="ruleQuote" rows="2" class="block w-full rounded border border-default bg-default p-2" /></label>
+            <label v-if="editAction === 'group'" class="block">Internal order, one dependent → prerequisite per line, for example #12 -> #8<textarea v-model="internalOrder" rows="3" class="block w-full rounded border border-default bg-default p-2" /></label>
+            <label v-if="editAction === 'group'" class="block">Publication target<select v-model="target" class="ml-2 rounded border border-default bg-default p-2"><option value="new">New PR</option><option v-for="pr in row.parameters.existing_prs" :key="pr.candidate_id" :value="pr.candidate_id">Existing PR #{{ pr.pull_number }}</option></select></label>
+            <label v-if="editAction === 'relabel'" class="block">Labels to remove, separated by commas<input v-model="removedLabels" class="block w-full rounded border border-default bg-default p-2"></label>
+            <template v-if="editAction === 'close'">
+              <label class="block">Completion evidence link<input v-model="evidenceUrl" required type="url" class="block w-full rounded border border-default bg-default p-2"></label>
+              <label class="block">Immutable evidence identity, such as a commit SHA<input v-model="evidenceIdentity" required class="block w-full rounded border border-default bg-default p-2"></label>
+              <label class="block">What the evidence proves<input v-model="evidenceDescription" required class="block w-full rounded border border-default bg-default p-2"></label>
+            </template>
             <UButton type="submit" :loading="busy">Save edit</UButton>
           </form>
         </article>

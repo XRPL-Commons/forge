@@ -36,4 +36,19 @@ describe('repository planning approval', () => {
     expect(state.current.decide).toHaveBeenCalledWith([], ['row'])
     wrapper.unmount()
   })
+  it('lets an operator change a single issue disposition before accepting it', async () => {
+    setup()
+    Object.assign(state.current.proposal.value.rows[0], { action: 'question', parameters: { question: 'What should change?' } })
+    const wrapper = await mountSuspended(PlanningPage)
+    await wrapper.findAll('button').find(button => button.text() === 'Edit')!.trigger('click')
+    await wrapper.get('select').setValue('park')
+    await wrapper.get('form input').setValue('content')
+    await wrapper.get('form').trigger('submit')
+    expect(state.current.act).toHaveBeenCalledWith(expect.objectContaining({ action: 'edit', expected_version: 2,
+      value: expect.objectContaining({ action: 'park', members: ['1:1'], parameters: { add: ['content'] } }),
+    }))
+    expect(state.current.decide).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
 })
