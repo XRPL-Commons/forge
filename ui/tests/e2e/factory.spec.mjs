@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { chooseMore } from './more-menu.mjs'
 
 const ORPHAN_RECOVERY_JOB = '33333333-3333-4333-8333-333333333333'
 const GITHUB_WARNING = 'GitHub observation or publication is unconfirmed'
@@ -174,7 +175,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   panel = await openPanel(page, internal)
   assert.equal(query(page, 'issue'), '3:900')
   assert.equal(query(page, 'job'), ORPHAN_RECOVERY_JOB, 'an internal card opens at its own run')
-  await panel.getByRole('button', { name: 'Reset runner' }).click()
+  await chooseMore(page, panel, 'Reset runner…')
   const resetDialog = page.locator(CONFIRM)
   await resetDialog.waitFor({ timeout: 10000 })
   const confirmReset = resetDialog.getByRole('button', { name: 'Reset runner' })
@@ -206,7 +207,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   panel = page.locator(PANEL)
   await panel.waitFor({ timeout: 10000 })
   await waitForText(page, DETAIL_TITLE)
-  await panel.getByRole('button', { name: 'Stop attempt' }).click()
+  await chooseMore(page, panel, 'Stop attempt…')
   const stopDialog = page.locator(CONFIRM)
   await stopDialog.waitFor({ timeout: 10000 })
   await waitForText(page, 'Stop attempt?')

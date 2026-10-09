@@ -19,7 +19,7 @@ export function proxyPaths(path: string): boolean {
   // @nuxt/icon serves the bundled Lucide collection under /api/_nuxt_icon/…;
   // that is Nitro's own route, not the Forge status service's.
   if (clean === '/api/_nuxt_icon' || clean.startsWith('/api/_nuxt_icon/')) return false
-  return clean === '/api' || clean.startsWith('/api/') || clean === '/onboarding/github/callback' || clean === '/auth/github/start' || clean === '/auth/github/callback'
+  return clean === '/api' || clean.startsWith('/api/') || clean === '/onboarding/github/callback' || clean === '/onboarding/cli/github/start' || clean === '/onboarding/cli/github/callback' || clean === '/auth/github/start' || clean === '/auth/github/callback'
 }
 
 // DNS-rebinding defence. A page on a name the attacker controls can be made

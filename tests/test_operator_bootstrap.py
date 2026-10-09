@@ -184,10 +184,11 @@ class ClientTests(unittest.TestCase):
         self.github = Mock()
         self.github.owner.return_value = {'id': 123, 'login': 'operator'}
         self.verify, self.prompt = Mock(), Mock(side_effect=AssertionError('Unexpected prompt'))
+        self.tell = Mock()
 
     def run_setup(self, **kwargs):
         return setup(self.args, host_factory=lambda *args: self.host, github_factory=lambda: self.github,
-                     verify=self.verify, prompt=self.prompt, **kwargs)
+                     verify=self.verify, prompt=self.prompt, tell=self.tell, **kwargs)
 
     def test_missing_app_returns_fixed_browser_fields_without_prompt_or_write(self):
         self.args.client_id = self.plan['client_id'] = None
@@ -225,6 +226,11 @@ class ClientTests(unittest.TestCase):
         with patch('sys.stdin.isatty', return_value=True):
             self.run_setup()
         self.prompt.assert_called_once()
+        instructions = '\n'.join(call.args[0] for call in self.tell.call_args_list)
+        self.assertIn('Generate a new client secret', instructions)
+        self.assertIn('Copy token', instructions)
+        self.assertIn('Nothing appears while you paste', instructions)
+        self.assertNotIn(SECRET, instructions)
         self.args.secret_stdin = True
         with self.assertRaises(SetupError) as caught:
             self.run_setup(stdin=io.StringIO('ghp_' + 'a' * 36))
@@ -273,6 +279,27 @@ class ClientTests(unittest.TestCase):
 
 
 class HttpsTests(unittest.TestCase):
+    def test_host_retries_temporary_transport_failure_but_stops_after_three_attempts(self):
+        from urllib.error import URLError
+        response = Mock(status=200)
+        response.read.return_value = b'{"ok":true,"enabled":true,"operator":null}'
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        opener, sleep = Mock(), Mock()
+        opener.open.side_effect = [URLError('starting'), context]
+        with patch('forge.operator_bootstrap.build_opener', return_value=opener):
+            verify(ORIGIN, sleep=sleep)
+        self.assertEqual(opener.open.call_count, 2)
+        sleep.assert_called_once_with(2)
+        opener.open.reset_mock(); sleep.reset_mock()
+        opener.open.side_effect = URLError(SECRET)
+        with patch('forge.operator_bootstrap.build_opener', return_value=opener), self.assertRaises(BootstrapError) as caught:
+            verify(ORIGIN, sleep=sleep)
+        self.assertEqual(opener.open.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertNotIn(SECRET, str(caught.exception))
+
     def test_both_verifiers_use_fixed_endpoint_without_proxies_and_reject_redirects(self):
         for module, function, exception in (('forge.operator_bootstrap', verify, BootstrapError),
                                             ('forge_client.bootstrap', verify_https, SetupError)):

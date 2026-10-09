@@ -36,12 +36,15 @@ function onHold(row: WorkbenchRow): boolean {
   return (row.actions ?? []).includes('resume') || (row.held_by ?? []).length > 0
 }
 
-export function workbenchLook(row: WorkbenchRow): WorkbenchLook {
+// `stalled`: the running worker stopped sending heartbeats (liveWork.ts); the
+// cube nods off at its bench instead of looking busy.
+export function workbenchLook(row: WorkbenchRow, options: { stalled?: boolean } = {}): WorkbenchLook {
   const pipeline = issuePipeline(row)
   // An issue closed on GitHub without merging left the line: grey, at rest.
   const stage: StageId = pipeline.current ?? 'queued'
   const merged = pipeline.current === 'merged' && pipeline.state === 'done'
   const working = row.status === 'working'
+  const stalled = working && !!options.stalled
   // Waiting on other issues never asks anything of the operator.
   const blocked = row.status === 'blocked'
   const dropped = row.status === 'dropped'
@@ -53,6 +56,7 @@ export function workbenchLook(row: WorkbenchRow): WorkbenchLook {
   let mood: CubeMood = 'open'
   let phrase = pipeline.note.toLowerCase()
   if (merged) { mood = 'happy'; phrase = 'merged' }
+  else if (stalled) { mood = 'sleep'; phrase = 'working, but quiet' }
   else if (working) { mood = 'busy'; phrase = 'working' }
   else if (awaitingApproval) { mood = 'hopeful'; phrase = needsYou ? 'waiting for your approval' : 'waiting for approval' }
   else if (failed) { mood = 'worried'; phrase = needsYou ? 'needs attention' : 'failed' }
@@ -70,7 +74,7 @@ export function workbenchLook(row: WorkbenchRow): WorkbenchLook {
     scorches: failures,
     beacon: needsYou,
     zzz: mood === 'sleep',
-    smoke: working && stage === 'build',
+    smoke: working && !stalled && stage === 'build',
     toolbox: stage === 'build',
     // A blocked issue is tethered to the prerequisites still open; any other
     // issue shows every dependency its body names.

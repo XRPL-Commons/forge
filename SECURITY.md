@@ -72,10 +72,12 @@ staging databases cannot accept normal runtime writes. Qualification checks the
 SQLite library linked to Python, not the `sqlite3` shell version; use
 `forge migrate prepare` when the managed launcher reports an unqualified runtime.
 
-The existing-host commands above are released capabilities. The complete
-fresh-VM installation wizard remains unmerged work in #136; these boundaries
-do not claim that `forge setup new` is available. See
-[existing-host prerequisites](docs/cli-server-setup.md#prerequisites).
+Fresh installations use `forge setup new`: the client owns privileged SSH host
+operations and initializes selected SQLite before starting services. Role App
+manifest handoffs require the configured operator and bind owner, role, server,
+generation and expiry. Personal GitHub administration stays local; only the
+server’s own App and provider credentials reach it. See
+[fresh-host setup](docs/cli-fresh-host.md).
 
 Migration is explicit and one-way. The CLI drains workers, stops writers, captures
 private source data, validates relational/source/public-view parity, then publishes

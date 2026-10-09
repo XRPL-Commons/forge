@@ -90,7 +90,8 @@ class SetupTests(unittest.TestCase):
                 resets.append(job['id']); engine.pop(job['id'], None)
         github = Mock()
         github.return_value.call.return_value = {'id':10,'default_branch':'main'}
-        github.return_value.protection_report.return_value = {'branch':'main','available':True,'requirements':[]}
+        github.return_value.protection_report.return_value = {'branch':'main','available':True,
+            'requirements':[{'id':'review','label':'Required review','passed':True}], 'bypass':{'status':'ready'}}
         service = Service(self.root, runner=Runner, github=github)
         service.setup = self.setup
         return service, engine, resets

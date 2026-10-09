@@ -343,6 +343,20 @@ output has not.
   (`{ok:true, request:"close-request-1"}`, no `issue`), so the page shows
   "Decision submitted. Waiting for confirmation."
 
+## live-work/ and live-stalled/
+
+- `issues.issue.json` — the default working issue `1:610`, closable, on its
+  second build attempt (`attempts {failed:1, limit:3}`), whose summary only
+  repeats its status ("Building"), active on job `44444444-…`.
+- `factory.json` — the default factory view with no issues and only that job: Claude
+  (`claude-sonnet-4-6`), branch `forge/610-build`.
+- `factory-output.json` — the live tail `GET /api/factory/output` returns
+  before capture (`live:true`, `at:1790000000`): heartbeat lines, a
+  `forge.activity` Bash call for `pnpm build` and one output line, with the
+  server's `text`, `activity` and `heartbeat_at`. `live-work/` heard a
+  heartbeat 4 s before the read; `live-stalled/` 300 s before, so the
+  worker reads as gone quiet.
+
 ## deployment/
 
 The two halves of deployment tracking, plus what the supervisor observed of a

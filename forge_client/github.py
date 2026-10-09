@@ -12,15 +12,19 @@ from .contracts import NAME, SetupError, baseline, positive, require, validate_b
 LIMIT = 4 * 1024 * 1024
 
 
-def run_bounded(argv, *, payload=None, environ=None, timeout=30, allowed_codes=(0,)):
+def run_bounded(argv, *, payload=None, input_bytes=None, input_limit=65536, output_limit=LIMIT,
+                environ=None, timeout=30, allowed_codes=(0,)):
     """Drain both pipes with a total cap. Never echo a child's diagnostics."""
     env = {k: v for k, v in (os.environ if environ is None else environ).items()
            if k in {'PATH', 'HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'GH_CONFIG_DIR',
                     'GH_TOKEN', 'GITHUB_TOKEN', 'LANG', 'LC_ALL', 'TMPDIR',
                     'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK'}}
     env.update(GH_HOST='github.com', GH_PROMPT_DISABLED='1', GH_PAGER='cat', GH_DEBUG='')
-    data = None if payload is None else json.dumps(payload, allow_nan=False).encode()
-    require(data is None or len(data) <= 65536)
+    require(payload is None or input_bytes is None)
+    require(type(input_limit) is int and 0 < input_limit <= 64 * 1024 * 1024
+            and type(output_limit) is int and 0 < output_limit <= 64 * 1024 * 1024)
+    data = input_bytes if input_bytes is not None else None if payload is None else json.dumps(payload, allow_nan=False).encode()
+    require(data is None or isinstance(data, bytes) and len(data) <= input_limit)
     process = None
     try:
         process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
@@ -51,7 +55,7 @@ def run_bounded(argv, *, payload=None, environ=None, timeout=30, allowed_codes=(
                     if not chunk:
                         selector.unregister(key.fileobj); key.fileobj.close(); continue
                     total += len(chunk)
-                    if total > LIMIT:
+                    if total > output_limit:
                         raise SetupError('github_response_too_large', 'GitHub response exceeded the size limit.')
                     if key.data == 'stdout':
                         output.extend(chunk)
@@ -90,6 +94,44 @@ class GitHub:
             return json.loads(raw) if raw else None
         except (ValueError, UnicodeError):
             raise SetupError('github_invalid_response', 'GitHub returned an unreadable response.') from None
+
+    def identity(self):
+        value = self._request('GET', '/user')
+        require(isinstance(value, dict) and positive(value.get('id'))
+                and isinstance(value.get('login'), str), 'github_identity_required',
+                'Sign in to the local GitHub CLI with the configured Forge operator account.')
+        return {'id': value['id'], 'login': value['login']}
+
+    def registration_owner(self, login):
+        require(isinstance(login, str) and re.fullmatch(r'[A-Za-z0-9-]{1,39}', login))
+        value = self._request('GET', '/users/' + login)
+        require(isinstance(value, dict) and positive(value.get('id'))
+                and value.get('type') in ('User', 'Organization')
+                and value.get('login', '').lower() == login.lower())
+        return {k: value[k] for k in ('id', 'login', 'type')}
+
+    def pilot_issue(self, target, number, *, ready_label=None):
+        require(isinstance(target, dict) and NAME.fullmatch(target.get('name', '')) and positive(number))
+        value = self._request('GET', f"/repos/{target['name']}/issues/{number}")
+        require(isinstance(value, dict) and value.get('number') == number and not value.get('pull_request')
+                and value.get('state') in ('open', 'closed'), 'invalid_pilot', 'Select a repository issue, not a pull request.')
+        if ready_label is not None:
+            require(value['state'] == 'open', 'invalid_pilot', 'Select an open issue for the first merge.')
+            require(isinstance(ready_label, str) and 0 < len(ready_label) <= 100)
+            labels = {label['name'] for label in value.get('labels', [])}
+            if ready_label not in labels:
+                self._request('POST', f"/repos/{target['name']}/issues/{number}/labels", {'labels': [ready_label]})
+        return {'number': number, 'state': value['state']}
+
+    def merged_pull(self, target, number):
+        require(isinstance(target, dict) and NAME.fullmatch(target.get('name', '')) and positive(number))
+        value = self._request('GET', f"/repos/{target['name']}/pulls/{number}")
+        require(isinstance(value, dict) and value.get('number') == number
+                and (value.get('base') or {}).get('repo', {}).get('id') == target['id']
+                and (value.get('head') or {}).get('repo', {}).get('id') == target['id'],
+                'repository_identity_changed', 'The candidate belongs to a different repository.')
+        return {'merged': value.get('merged') is True, 'head_sha': (value.get('head') or {}).get('sha'),
+                'merge_sha': value.get('merge_commit_sha'), 'merged_at': value.get('merged_at')}
 
     def owner(self, login):
         require(isinstance(login, str) and re.fullmatch(r'[A-Za-z0-9-]{1,39}', login))

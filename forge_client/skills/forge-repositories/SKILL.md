@@ -8,7 +8,62 @@ description: Set up repositories on an existing Forge server through the local F
 Use the local `forge` executable on the operator's computer. Install with
 `uv tool install 'git+https://github.com/XRPL-Commons/forge.git'` if needed.
 The package includes only the local client. Existing-host operator sign-in uses
-`forge server setup --help`; fresh server installation is a separate workflow.
+`forge server setup --help`.
+
+## Fresh hosts
+
+For an explicitly requested fresh VM, use `forge setup new --ssh USER@HOST
+--name NAME --json` to plan, `forge setup apply --ssh USER@HOST --json` to install,
+and `forge setup status` / `forge setup resume` with the same destination to observe
+or resume. Discover schemas through `forge --json commands`. Without JSON, `forge
+setup new` offers the human wizard over these operations.
+
+Require a verified SSH host key. `forge setup host-key --ssh USER@HOST --json`
+only discovers a fingerprint; obtain verification before passing `--host-key`.
+The saved plan pins the source commit and destination. Never reset either to
+work around a conflict. `--new-run` is for an explicitly rebuilt disposable VM;
+it archives local measurements and never wipes the host.
+
+After `installed`, run `forge setup network --ssh USER@HOST --json` to inspect,
+then add `--apply` to configure private Tailscale access. Relay its browser approval
+link. After approval, poll the same command until `network_ready`; do not claim
+approval or invent an HTTPS name before that result.
+
+Use `forge setup identity --ssh USER@HOST --operator LOGIN --json` next. It returns
+exact identity OAuth App registration fields. Supply its public `--client-id`,
+review the plan, then use `--apply --secret-stdin --json` with private secret input
+or let the operator use the hidden interactive prompt. Never request secrets in
+agent messages. Resume with `--resume`; source/root/origin are derived from the
+saved installation. `sign_in_required` means verified HTTPS is ready for browser
+sign-in; it does not confirm that the operator signed in.
+
+`installed` does not certify operator sign-in, role Apps, coding accounts,
+activation, or a first merge. Report each as outstanding until observed.
+Continue with `forge setup inspect --ssh USER@HOST --json`. Register each role
+using `forge setup apps --ssh USER@HOST --owner OWNER --role ROLE --apply --json`.
+Relay the operator-bound browser URL; the operator approves the manifest on
+GitHub and installs the App. Repeat for build, review, audit and controller, then
+refresh with `forge setup apps --ssh USER@HOST --apply --json`.
+
+Connect an account using `forge setup account --ssh USER@HOST --provider PROVIDER
+--kind api_key --secret-stdin --apply --json` with a private credential source.
+Browser-account mode returns a terminal handoff; the operator can run the command
+without JSON for guided login. Never collect a credential in agent messages.
+
+Plan the first repository using `forge setup repository --ssh USER@HOST
+--repository OWNER/REPO --json`, then apply the reviewed plan with `--apply`.
+Run `forge setup check --ssh USER@HOST --apply --wait 60 --json` for real model
+and isolation checks. Start only when authorized, through the separate
+`forge setup start --ssh USER@HOST --apply --wait 60 --json` command.
+
+Choose the authorized first issue using `forge setup pilot --ssh USER@HOST
+--repository OWNER/REPO --issue NUMBER --apply --wait 60 --json`. This adds its
+ready label. Later calls omit repository/issue/apply and preserve the same timer.
+Resolve decisions and retries in Forge; the pilot does not bypass them.
+Only `first_merge_complete` certifies native Build/Review/Audit, the normal merge
+receipt and independent GitHub verification. Do not call external completion or
+an adopted PR the first merge. If CLI installation timing is unknown, report the
+explicit null metric rather than substituting setup elapsed time.
 
 ## Connection and intent
 

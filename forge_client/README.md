@@ -4,7 +4,8 @@ This standalone package connects an external agent to Forge, prepares repositori
 using local GitHub credentials, and verifies/enables them through scoped server
 operations. See [agent connections](../docs/agent-connections.md) for installation,
 supported commands and resumption. `forge skill` prints the bundled agent skill.
-Fresh-host installation is tracked in #136.
+Use [fresh-host setup](../docs/cli-fresh-host.md) for the guided installation-to-first-merge
+workflow, or its deterministic JSON commands.
 
 ## Credential boundary
 

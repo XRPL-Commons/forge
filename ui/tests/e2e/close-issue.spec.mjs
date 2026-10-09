@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { assertPhoneStack, assertPrimaryFarRight } from './dialog-footer.mjs'
+import { chooseMore, moreItems } from './more-menu.mjs'
 
 // Closing an issue is the quiet way out of the pipeline: a reason is required,
 // the dialog says what happens on GitHub, and the decision is submitted like
@@ -15,7 +16,8 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/issues/1:610')
   await hydrated(page)
   await page.locator('#issue-actions').waitFor()
-  assert.equal(await page.getByRole('button', { name: 'Close issue…' }).count(), 0, 'hidden when the row is not closable')
+  assert.equal(await page.getByRole('button', { name: 'Close issue…' }).count(), 0, 'never a button of its own')
+  assert.deepEqual(await moreItems(page, page.locator('#issue-actions')), ['Stop attempt…'], 'not offered when the row is not closable')
 
   await scenario('close-issue')
   await page.setViewportSize({ width: 390, height: 900 })
@@ -35,14 +37,15 @@ export default async function (page, { base, scenario, requests }) {
   const stats = await page.locator('#issue-stats').boundingBox()
   assert.ok(stats.x >= 0 && stats.x + stats.width <= 390, 'the stats strip fits the narrow width')
   // One primary button for the way forward, directly under the bench; Close
-  // is a quiet ghost button in the meta row under it.
+  // waits behind More, at the end of the same row.
   const actions = page.locator('#issue-actions')
   assert.equal(await actions.getByRole('button', { name: 'Retry attempt' }).count(), 1)
   const actionsBox = await actions.boundingBox()
   assert.ok(bubble.y + bubble.height <= actionsBox.y, 'the actions sit under the workbench')
   if (SCREENSHOT) await page.screenshot({ path: SCREENSHOT, fullPage: true })
 
-  await page.locator('#issue-meta').getByRole('button', { name: 'Close issue…' }).click()
+  assert.equal(await actions.getByRole('button', { name: 'Close issue…' }).count(), 0, 'destructive actions are not loose buttons')
+  await chooseMore(page, actions, 'Close issue…')
   const dialog = page.getByRole('dialog', { name: 'Close issue #620?' })
   await dialog.waitFor()
   const text = await dialog.innerText()
@@ -73,7 +76,7 @@ export default async function (page, { base, scenario, requests }) {
   await scenario('close-issue')
   await page.goto(base + '/issues/1:620')
   await hydrated(page)
-  await page.locator('#issue-meta').getByRole('button', { name: 'Close issue…' }).click()
+  await chooseMore(page, page.locator('#issue-actions'), 'Close issue…')
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
   await page.getByRole('dialog').waitFor({ state: 'detached' })
   assert.equal((await requests()).filter(entry => entry.method === 'POST').length, 0)

@@ -13,6 +13,7 @@ from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
 from ..store.transitions import manifest_hash
 from .config import validate
+from .live_output import summarize
 from .status_projection import operator_status
 
 
@@ -74,8 +75,9 @@ def projection(method):
 
 
 class PipelineViews:
-    def __init__(self, store, *, repositories=None, runtime=None, clock=time.time):
-        self.store, self.clock = store, clock
+    def __init__(self, store, *, repositories=None, runtime=None, clock=time.time, live=None):
+        # `live(job)` reads a running worker's scrubbed tail (live_output.py).
+        self.store, self.clock, self.live = store, clock, live
         self.repositories = repositories
         self.runtime = runtime or (lambda: validate({}))
 
@@ -302,33 +304,47 @@ class PipelineViews:
 
     def job(self, job_id):
         with self.store.read_snapshot() as db:
-            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name,'
+            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name,'
                 '(SELECT issue_id FROM unit_issues WHERE unit_id=j.unit_id ORDER BY joined_at LIMIT 1) AS issue_key '
                 'FROM jobs j LEFT JOIN job_launches l ON l.job_id=j.id LEFT JOIN job_execution_state e ON e.job_id=j.id '
                 'LEFT JOIN job_public_metadata p ON p.job_id=j.id JOIN units u ON u.id=j.unit_id JOIN repositories r ON r.id=u.repository_id WHERE j.id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
             issue=db.execute('SELECT github_number FROM issues WHERE id=?',(row['issue_key'],)).fetchone()
-            return {**{k:row[k] for k in ('id','role','slot','provider','provider_id','model','phase','outcome','created_at','deadline')},
+            return {**{k:row[k] for k in ('id','role','slot','provider','provider_id','model','phase','outcome','created_at','deadline','branch')},
                     'phase':row['source_phase'] or row['phase'],'execution_phase':row['phase'],
                     'cleanup':bool(row['cleanup']),'fenced':bool(row['source_fenced'] if row['source_fenced'] is not None else row['fenced']),
                     'execution_fenced':bool(row['fenced']),'issue_key':row['issue_key'],
                     'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':issue[0],
                     'started_at':row['started_at'],'observed_at':row['captured_at'],'last_observed':row['captured_at']}
 
-    @projection
     def output(self, job_id):
-        self.job(job_id)
-        with self.store.read_snapshot() as db:
+        with self.store.read_session() as db:
+            self.job(job_id)
             rows=db.execute("SELECT sequence,media_type,raw_size FROM job_artifacts WHERE job_id=? AND kind='logs' ORDER BY sequence LIMIT 17",(job_id,)).fetchall()
-        if not rows:return {'logs':''}
-        if len(rows)>16 or sum(r['raw_size'] for r in rows)>16*1024*1024:
-            raise ValueError('Stored log exceeds the bounded output display limit')
-        try:
-            raw=b''.join(Artifacts(self.store).read(job_id,'logs',row['sequence']).content for row in rows)
-            value=json.loads(raw) if rows[0]['media_type']=='application/json' else raw.decode('utf-8',errors='replace')
-            if not isinstance(value,str):raise ValueError('Stored log has an invalid format')
-            return {'logs':value}
-        except ArtifactExpired as error:return {'logs':'','expired_at':error.expired_at}
+            launch=db.execute('SELECT j.phase,j.outcome,j.cleanup,l.slot,l.runner_config_json,e.container_id,e.captured_at FROM jobs j '
+                              'LEFT JOIN job_launches l ON l.job_id=j.id LEFT JOIN job_execution_state e ON e.job_id=j.id WHERE j.id=?',(job_id,)).fetchone()
+            if rows:
+                if len(rows)>16 or sum(r['raw_size'] for r in rows)>16*1024*1024:
+                    raise ValueError('Stored log exceeds the bounded output display limit')
+                try:
+                    raw=b''.join(Artifacts(self.store).read(job_id,'logs',row['sequence']).content for row in rows)
+                    value=json.loads(raw) if rows[0]['media_type']=='application/json' else raw.decode('utf-8',errors='replace')
+                    if not isinstance(value,str):raise ValueError('Stored log has an invalid format')
+                    return {'logs':value,'live':False,**summarize(value)}
+                except ArtifactExpired as error:return {'logs':'','expired_at':error.expired_at}
+        return self._live(job_id,launch)
+
+    def _live(self, job_id, launch):
+        """Until capture, a running job's output is its container's scrubbed tail."""
+        running=(launch is not None and launch['runner_config_json'] and launch['outcome'] is None
+                 and not launch['cleanup'] and launch['captured_at'] is None)
+        if not running or self.live is None:return {'logs':''}
+        if launch['phase']=='reserved' or launch['phase']=='starting' and not launch['container_id']:
+            return {'logs':'','live':True,'unavailable':'not_started'}
+        observed=self.live({'id':job_id,'slot':launch['slot'],'container_id':launch['container_id'],
+                            'runner_config':json.loads(launch['runner_config_json'])})
+        if 'unavailable' in observed:return {'logs':'','live':True,'unavailable':observed['unavailable']}
+        return {'logs':observed['logs'],'live':True,'at':observed['at'],'running':observed.get('running',True),**summarize(observed['logs'])}
 
     @projection
     def factory(self, *, section=None, issue=None, limit=None, before=None):

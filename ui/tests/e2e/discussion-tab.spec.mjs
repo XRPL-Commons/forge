@@ -93,7 +93,7 @@ export default async function (page, { base }) {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(base + '/?issue=1:610')
   const drawer = page.getByRole('dialog')
-  await drawer.getByRole('button', { name: 'Discuss blocker', exact: true }).click()
+  await drawer.locator('#issue-ask').click()
   await page.waitForFunction(focusedInChat, null, { timeout: 5000 })
   await page.waitForURL(/[?&]tab=discussion/)
   assert.equal(await drawer.getByRole('tab', { name: 'Discussion' }).getAttribute('aria-selected'), 'true')

@@ -30,10 +30,13 @@ describe('guardAction', () => {
 })
 
 describe('proxyPaths', () => {
-  it('matches the API and the GitHub callback only', () => {
+  it('matches the API and explicit GitHub handoff routes', () => {
     expect(proxyPaths('/api/factory')).toBe(true)
     expect(proxyPaths('/api/issues?state=open')).toBe(true)
     expect(proxyPaths('/onboarding/github/callback')).toBe(true)
+    expect(proxyPaths('/onboarding/cli/github/start?state=bound')).toBe(true)
+    expect(proxyPaths('/onboarding/cli/github/callback?state=bound&code=one-use')).toBe(true)
+    expect(proxyPaths('/onboarding/cli/github/arbitrary')).toBe(false)
     expect(proxyPaths('/issues')).toBe(false)
     expect(proxyPaths('/favicon.svg')).toBe(false)
   })

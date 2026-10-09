@@ -11,6 +11,7 @@ import time
 import uuid
 
 from .onboarding import Onboarding
+from .repository_policy import protection_ready
 from .credentials import Credentials
 from .deployments import Deployments
 from .settings import Settings, read_json, write_json
@@ -108,8 +109,7 @@ class Service:
         report = github.protection_report(item, {'base_ref': metadata['default_branch']})
         if data.get('operation'):
             self.update(data['operation'], repository_check=report)
-        missing = [row for row in report['requirements'] if not row['passed']]
-        if not report['available'] or missing:
+        if not protection_ready(report):
             raise ValueError('Repository protection needs attention on ' + metadata['default_branch'] + '. See the specific requirements below.')
         return config
 
