@@ -42,19 +42,23 @@ MODEL = r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}'
 
 
 def validate(value):
+    return _validate(value, manifests())
+
+
+def _validate(value, installed):
     if not isinstance(value, dict) or set(value) - (set(DEFAULT) | {'max_running'}):
         raise ValueError('Unknown runtime settings')
     # Older installations carry a manual total. Memory admission replaces it.
     config = deepcopy({**DEFAULT, **{key: item for key, item in value.items() if key != 'max_running'}})
     if type(config['version']) is not int or config['version'] != 1:
         raise ValueError('Expected runtime version 1')
-    if config['provider'] not in manifests():
+    if config['provider'] not in installed:
         raise ValueError('Provider must name an installed harness')
     if config['model'] is not None and (not isinstance(config['model'], str) or not re.fullmatch(MODEL, config['model'])):
         raise ValueError('Invalid provider model')
     quick = config['discussion_model']
     if quick is not None and (not isinstance(quick, dict) or len(quick) > 20
-            or any(provider not in manifests() for provider in quick)
+            or any(provider not in installed for provider in quick)
             or any(not isinstance(v, str) or not re.fullmatch(MODEL, v) for v in quick.values())):
         raise ValueError('discussion_model maps installed providers to model names')
     pool = config['provider_pool']
@@ -66,7 +70,7 @@ def validate(value):
             raise ValueError('Each pool entry needs id, provider, model and credential references')
         if not isinstance(entry['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', entry['id']) or entry['id'] in ids:
             raise ValueError('Provider pool IDs must be unique')
-        validate({**{k: v for k, v in entry.items() if k != 'id'}, 'provider_pool': []})
+        _validate({**{k: v for k, v in entry.items() if k != 'id'}, 'provider_pool': []}, installed)
         identity = (entry['provider'], entry['model'])
         if identity in models:
             raise ValueError('Provider/model combinations must be unique; entries have equal weight')
@@ -135,7 +139,7 @@ def validate(value):
                 or not isinstance(tier['image'], str) or not tier['image']
                 or not isinstance(tier['memory'], str)):
             raise ValueError('Each environment tier needs a pinned image, memory and cpus')
-        validate({**tier, 'environment_tiers': {}, 'repository_environments': {}})
+        _validate({**tier, 'environment_tiers': {}, 'repository_environments': {}}, installed)
     from .environments import validate_profiles
     validate_profiles(config['repository_environments'])
     policies = config['repository_merge_policies']
