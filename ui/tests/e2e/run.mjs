@@ -123,6 +123,14 @@ async function main() {
         body: JSON.stringify({ name }),
       })
     }
+    async function observeIssue(key, patch = {}, { envelope = {}, list = false } = {}) {
+      const response = await fetch(`${MOCK_BASE}/__issue`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, patch, envelope, list }),
+      })
+      if (!response.ok) throw new Error(`Invalid mock issue observation: ${key}`)
+      return response.json()
+    }
     async function accounts(list) {
       await fetch(`${MOCK_BASE}/__accounts`, {
         method: 'POST',
@@ -143,7 +151,8 @@ async function main() {
     }
 
     const entries = await readdir(__dirname)
-    const specNames = entries.filter((name) => name.endsWith('.spec.mjs') && (!process.env.FORGE_E2E_SPEC || name === process.env.FORGE_E2E_SPEC)).sort()
+    const selected = new Set((process.env.FORGE_E2E_SPEC || '').split(',').filter(Boolean))
+    const specNames = entries.filter((name) => name.endsWith('.spec.mjs') && (!selected.size || selected.has(name))).sort()
     if (specNames.length === 0) log('no *.spec.mjs files found')
 
     for (const specName of specNames) {
@@ -153,7 +162,7 @@ async function main() {
       const name = specName.replace(/\.spec\.mjs$/, '')
       try {
         const mod = await import(pathToFileURL(path.join(__dirname, specName)).href)
-        await mod.default(page, { base: APP_BASE, scenario, requests, accounts, discussionTime })
+        await mod.default(page, { base: APP_BASE, scenario, requests, accounts, discussionTime, observeIssue })
         log(`PASS ${name}`)
       } catch (error) {
         failures += 1
