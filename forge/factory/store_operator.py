@@ -9,6 +9,7 @@ import time
 import uuid
 from urllib.parse import quote
 
+from ..store.delivery_inputs import approved_in, dependencies_in
 from ..store.models import Command, IdempotencyConflict, TransitionError, VersionConflict
 from ..store.queries import Queries
 from ..store.runtime import writable
@@ -40,6 +41,31 @@ class OperatorActions(Lifecycle):
         unit = _unit(db, unit_id)
         members = [dict(row) for row in db.execute('SELECT id,issue_id,requirements_revision_id FROM unit_issues WHERE unit_id=? AND left_at IS NULL ORDER BY id', (unit_id,))]
         return {**{key:unit[key] for key in ('membership_generation','fencing_generation','budget_generation','current_candidate_id','state')}, 'members':members}
+
+    @staticmethod
+    def _affected(db,unit,member_id):
+        if member_id is None:
+            return None
+        affected={member_id}
+        members=Lifecycle._members(db,unit['id'])
+        while True:
+            following={member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
+            if following.issubset(affected):
+                return affected
+            affected.update(following)
+
+    @classmethod
+    def _cleanup_pending(cls,db,unit,member_id=None):
+        affected=cls._affected(db,unit,member_id)
+        return any(affected is None or row['member_id'] is None or row['member_id'] in affected
+                   for row in db.execute('SELECT member_id FROM jobs WHERE unit_id=? AND cleanup=0',(unit['id'],)))
+
+    def _scope_quiet(self,db,unit,member_id):
+        if self._cleanup_pending(db,unit,member_id):
+            raise TransitionError('Affected workers require verified cleanup before this decision')
+        if (db.execute("SELECT 1 FROM merge_requests WHERE unit_id=? AND status IN ('pending','uncertain')",(unit['id'],)).fetchone()
+                or db.execute("SELECT 1 FROM external_effects WHERE unit_id=? AND status IN ('pending','running','uncertain')",(unit['id'],)).fetchone()):
+            raise TransitionError('External effects must be reconciled before this decision')
 
     def request(self, key, action, revision, reason, *, request_id=None, environment=None):
         actor = self.actor_id
@@ -86,12 +112,17 @@ class OperatorActions(Lifecycle):
                 raise TransitionError('This issue already has a pending decision')
             unit_id=issue['lifecycle']['unit_id']
             unit=_unit(db,unit_id) if unit_id else None
-            cleanup=bool(unit and db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0',(unit_id,)).fetchone())
+            grouped=bool(unit and approved_in(db,unit_id))
+            scoped_member=issue['lifecycle']['member_id'] if grouped and action not in {'retry','assign_reviewer','close'} else None
+            cleanup=bool(unit and self._cleanup_pending(db,unit,scoped_member))
             allowed=available_actions(issue,unit,cleanup=cleanup)
-            if unit and not any(g['code']=='operator_pause' for g in _gates(db,unit_id)):allowed.append('pause')
-            if action=='close':allowed.append('close')
+            if unit and not any(g['code']=='operator_pause' and g['member_id']==scoped_member for g in _gates(db,unit_id)):allowed.append('pause')
+            if unit and grouped and action=='backlog':allowed.append('backlog')
+            if action=='close':
+                if grouped:raise TransitionError('Closing a grouped issue requires an explicit member removal decision')
+                allowed.append('close')
             if action=='environment' and unit and not cleanup:allowed.append('environment')
-            if action=='start_anyway' and unit and not cleanup and any(g['code']=='dependency' and json.loads(g['details_json']).get('requirements') for g in _gates(db,unit_id)):
+            if action=='start_anyway' and unit and not cleanup and any(g['code']=='dependency' and g['member_id'] in {None,scoped_member} and json.loads(g['details_json']).get('requirements') for g in _gates(db,unit_id)):
                 allowed.append('start_anyway')
             if action not in allowed:raise TransitionError('Action is not available for the current issue')
             if action=='environment':
@@ -117,7 +148,8 @@ class OperatorActions(Lifecycle):
                 unit=_unit(db,unit_id);created=True
             else:command=Command(identifier+':admit',actor,unit_id,unit['version'])
             self._live(unit)
-            self._singleton(db,unit)
+            member=next((value for value in self._members(db,unit_id) if value['issue_id']==key),None)
+            if member is None:raise TransitionError('Issue has no current delivery membership')
             if db.execute("SELECT 1 FROM merge_requests WHERE unit_id=? AND status IN ('pending','uncertain')",(unit_id,)).fetchone():
                 raise TransitionError('Merge outcome must be reconciled before an operator decision')
             if action=='retry':
@@ -125,16 +157,17 @@ class OperatorActions(Lifecycle):
                 if pending_mandatory(db,unit_id):raise TransitionError('Mandatory investigation must finish before retry')
             before=self._lifecycle_summary(project_unit(db,unit_id))
             if action in {'pause','backlog','close'}:
-                self._fence(db,command)
+                if scoped_member:self.fence_member_in(db,command,scoped_member,reason='operator_'+action)
+                else:self._fence(db,command)
                 code='operator_backlog' if action=='backlog' else 'operator_pause'
-                if not any(g['code']==code for g in _gates(db,unit_id)):
-                    self._open_gate(db,command,code,{'request_id':identifier,'reason':reason.strip()})
-            gate=self._open_gate(db,command,'operator_sync',{'request_id':identifier,'action':action})
+                if not any(g['code']==code and g['member_id']==scoped_member for g in _gates(db,unit_id)):
+                    self._open_gate(db,command,code,{'request_id':identifier,'reason':reason.strip()},scoped_member)
+            gate=self._open_gate(db,command,'operator_sync',{'request_id':identifier,'action':action},scoped_member)
             ready=config['ready_label']
             add=['hold'] if action=='pause' else [ready] if action in {'queue','resume','retry'} else []
             remove=[ready] if action=='backlog' else list(config['hold_labels']) if action=='resume' else []
             if action=='environment':remove=[v for v in issue['labels'] if v.startswith('env:')]
-            plan=dict(baseline=self._baseline(db,unit_id),requirements=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(issue['current_revision_id'],)).fetchone()[0]),
+            plan=dict(member_id=member['id'],scope_member_id=scoped_member,baseline=self._baseline(db,unit_id),requirements=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(issue['current_revision_id'],)).fetchone()[0]),
                 labels=issue['labels'],assignees=issue['assignees'],add=add,remove=remove,reviewers=reviewers)
             if action=='queue' and set(config['hold_labels']).intersection(issue['labels']):
                 raise TransitionError('Remove the hold before queueing this issue')
@@ -253,7 +286,7 @@ class OperatorActions(Lifecycle):
         def change(db,unit):
             if self._baseline(db,unit['id'])!=row['plan']['baseline']:raise TransitionError('Delivery changed while applying the decision')
             action=row['action'];gates=_gates(db,unit['id'])
-            if action in {'resume','queue','retry','close'}:self._quiescent(db,unit['id'])
+            if action in {'resume','queue','retry','close'}:self._scope_quiet(db,unit,row['plan'].get('scope_member_id'))
             if action=='retry':
                 from ..store.recovery import pending_mandatory
                 if pending_mandatory(db,unit['id']):raise TransitionError('Mandatory investigation must finish before retry')
@@ -264,7 +297,8 @@ class OperatorActions(Lifecycle):
                 db.execute('INSERT INTO unit_context(unit_id,retry_plan_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET retry_plan_json=excluded.retry_plan_json',
                     (unit['id'],_json({'reason':row['reason'],'actor_id':row['actor_id'],'request_id':row['id']})))
             requirements=RuntimeRequirements(self.store,clock=self.clock)
-            revision=row['plan']['baseline']['members'][0]['requirements_revision_id']
+            selected=next(member for member in row['plan']['baseline']['members'] if member['issue_id']==row['issue_id'])
+            revision=selected['requirements_revision_id']
             if action=='environment':requirements._set_override_in(db,command,unit,revision,row['environment'])
             if action=='start_anyway':requirements._clear_declared_dependencies_in(db,command,unit,revision,{'reason':row['reason'],'actor_id':row['actor_id']})
             if action=='assign_reviewer':
@@ -273,6 +307,9 @@ class OperatorActions(Lifecycle):
             if action in {'queue','resume'}:resolve|={'operator_pause','operator_backlog','label_hold'}
             if action=='retry':resolve|={'budget_exhausted','approach_required','decision_required'}
             for gate in gates:
+                scope=row['plan'].get('scope_member_id')
+                if scope is not None and gate['member_id']!=scope:continue
+                if scope is None and gate['member_id'] is not None and action not in {'retry','close'}:continue
                 if gate['code'] in resolve:
                     if gate['code']=='operator_sync' and gate['id']!=row['gate_id']:raise TransitionError('Operator intent changed')
                     self._resolve(db,command,gate['id'],{'operator':row['actor_id'],'request_id':row['id'],'verified':True,'observed_at':self.clock()})
@@ -295,9 +332,11 @@ class OperatorActions(Lifecycle):
             if gate:
                 self._resolve(db,command,gate['id'],{'rejected':True})
                 if _unit(db,row['unit_id'])['state'] not in {'merged','closed','dissolved'}:
-                    if not any(g['code']=='external_change' for g in _gates(db,row['unit_id'])):
-                        self._open_gate(db,command,'external_change',{'request_id':row['id'],'reason':message})
-                    self._fence(db,command)
+                    scope=row['plan'].get('scope_member_id')
+                    if not any(g['code']=='external_change' and g['member_id']==scope for g in _gates(db,row['unit_id'])):
+                        self._open_gate(db,command,'external_change',{'request_id':row['id'],'reason':message},scope)
+                    if scope:self.fence_member_in(db,command,scope,reason='operator_decision_changed')
+                    else:self._fence(db,command)
                 self._save(db,command,'reject_operator_action',{'request_id':row['id']},{'rejected':True})
             db.execute("UPDATE issue_action_requests SET status='rejected',message=? WHERE id=?",(message,row['id']))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'rejected':True,'reason':message}),self.clock(),row['id']))
@@ -318,7 +357,7 @@ class OperatorActions(Lifecycle):
                     if row['action']=='retry':
                         from ..store.recovery import pending_mandatory
                         if pending_mandatory(db,row['unit_id']):return {'request_id':identifier,'pending':'recovery'}
-                    if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0',(row['unit_id'],)).fetchone():
+                    if self._cleanup_pending(db,_unit(db,row['unit_id']),row['plan'].get('scope_member_id')):
                         return {'request_id':identifier,'pending':'cleanup'}
             issue=self._labels(row)
             if row['action']=='close':issue=self._close(row)
@@ -370,14 +409,16 @@ class OperatorActions(Lifecycle):
             raise ValueError('A stop or reset decision and authenticated actor are required')
         identifier=str(uuid.uuid4())
         with self.store.read_snapshot() as db:
-            job=db.execute('SELECT unit_id,cleanup FROM jobs WHERE id=?',(job_id,)).fetchone()
+            job=db.execute('SELECT unit_id,member_id,cleanup FROM jobs WHERE id=?',(job_id,)).fetchone()
             if job is None:raise TransitionError('Unknown execution')
             unit=_unit(db,job['unit_id'])
         command=Command(identifier,self.actor_id,unit['id'],unit['version'])
         def change(db,current):
-            if current['state'] not in {'merged','closed','dissolved'} and not any(g['code']=='operator_pause' for g in _gates(db,current['id'])):
-                self._open_gate(db,command,'operator_pause',{'reason':reason.strip(),'job_id':job_id})
-            self._fence(db,command)
+            scope=job['member_id'] if approved_in(db,current['id']) else None
+            if current['state'] not in {'merged','closed','dissolved'} and not any(g['code']=='operator_pause' and g['member_id']==scope for g in _gates(db,current['id'])):
+                self._open_gate(db,command,'operator_pause',{'reason':reason.strip(),'job_id':job_id},scope)
+            if scope:self.fence_member_in(db,command,scope,reason='operator_'+action)
+            else:self._fence(db,command)
             db.execute("INSERT INTO operator_requests(id,action,target,reason,status,result_json) VALUES(?,?,?,?,'applied',?)",
                 (identifier,action,job_id,reason.strip(),_json({'actor_id':self.actor_id,'fenced':True})))
             return {'job_id':job_id,'fenced':True}
