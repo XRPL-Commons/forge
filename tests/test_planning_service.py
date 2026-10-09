@@ -75,6 +75,28 @@ class PlanningServiceTests(unittest.TestCase):
         with patch('forge.factory.planning_service.load',return_value=self.parts['config']):
             self.assertEqual(self.service.action(1,value),receipt)
 
+    def test_partial_acceptance_does_not_read_prs_from_rejected_group_rows(self):
+        for number in (2,3):
+            Lifecycle(self.store,clock=lambda:100).admit_issue(request_id='admit-'+str(number),actor_id='operator',unit_id='unit-'+str(number),issue_id='1:'+str(number),
+                repository_id=1,repository_name='example/project',issue_number=number,title='Work',body='Details',requirements='digest',observed_at=90)
+        with self.store.write() as db:
+            db.execute("INSERT INTO candidates(id,unit_id,pull_number,branch,head_oid,base_oid,policy_hash,requirements_hash,membership_generation,input_manifest_hash,accepted_at) VALUES('candidate','unit',7,'topic','head','base','policy','requirements',1,'input',90)")
+            db.execute("UPDATE units SET current_candidate_id='candidate',state='reviewing' WHERE id='unit'")
+        self.plans.begin(1,proposal_id='proposal',request_id='begin',actor_id='planner',base_branch='main')
+        self.plans.publish('proposal',expected_version=1,request_id='publish',actor_id='planner',rationale='Two independent choices',rows=[
+            {'action':'group','members':['1:1','1:2'],'reason':'Related work','rule_quote':None,'parameters':{
+                'dependencies':[],'existing_prs':[{'unit_id':'unit','candidate_id':'candidate','pull_number':7,'head_oid':'head','author':{'id':7,'type':'Bot','login':'builder'}}],
+                'publication_target':{'kind':'new'}}},
+            {'action':'keep','members':['1:3'],'reason':'Useful standalone work','rule_quote':None,'parameters':{}}])
+        rows=self.plans.proposal('proposal')['rows']
+        self.parts['github'].issue.return_value=({'number':3,'state':'open','labels':[],'assignees':[]},'digest')
+        self.parts['github'].call.side_effect=AssertionError('Rejected group PR must not gate an independent acceptance')
+        receipt=self.service.action(1,{'action':'accept','proposal_id':'proposal','expected_version':2,
+            'request_id':'partial-accept','accept_rows':[rows[1]['id']],'reject_rows':[rows[0]['id']]})
+        self.assertEqual(receipt['status'],'accepted')
+        self.parts['github'].call.assert_not_called()
+        self.assertEqual([row['status'] for row in self.plans.proposal('proposal')['rows']],['rejected','accepted'])
+
     def test_api_rejects_changed_github_requirements_before_any_acceptance(self):
         self.plans.begin(1,proposal_id='proposal',request_id='begin',actor_id='planner',base_branch='main')
         self.plans.publish('proposal',expected_version=1,request_id='publish',actor_id='planner',rationale='Keep work',rows=[{

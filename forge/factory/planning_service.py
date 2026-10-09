@@ -63,7 +63,8 @@ class PlanningService:
             rows=[dict(r) for r in db.execute('SELECT DISTINCT c.id AS candidate_id,c.unit_id,c.pull_number,c.head_oid FROM candidates c '
                 'JOIN triage_proposal_inputs p ON p.candidate_id=c.id JOIN triage_row_members m ON m.issue_id=p.issue_id '
                 'JOIN triage_proposal_rows r ON r.id=m.row_id AND r.proposal_id=p.proposal_id '
-                "WHERE p.proposal_id=? AND r.action='group'",(value['proposal_id'],))]
+                "WHERE p.proposal_id=? AND r.action='group' AND r.id IN (SELECT value FROM json_each(?))",
+                (value['proposal_id'],json.dumps(value['accept_rows'])))]
             issue_rows=[]
             for row_id in value['accept_rows']:
                 issue_rows.extend(dict(row) for row in db.execute('SELECT p.*,i.github_number,i.labels_json,i.assignees_json,r.requirements_json '
