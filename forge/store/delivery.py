@@ -573,6 +573,9 @@ class DeliveryQueries:
                         continue
                     if applicable_gates(db,unit,entry['member_id']):
                         continue
+                    if any(current_output_in(db,unit,predecessor,base_oid=base_oid,policy_hash=policy_hash) is None
+                           for predecessor in dependencies_in(db,unit,entry['member_id'])):
+                        continue
                     if any(job['member_id']==entry['member_id'] for job in active):
                         continue
                     assigned = db.execute('SELECT 1 FROM job_delegations WHERE plan_id=? AND delegation_key=?',(plan['id'],entry['key'])).fetchone()

@@ -307,3 +307,16 @@ class DeliveryExecutionTests(unittest.TestCase):
         last=children[-1]
         assignments=self.query.assignments('batch',base_oid='base',policy_hash='policy',limit=1,allowed_members={last['member_id']})
         self.assertEqual([item['member_id'] for item in assignments['items']],[last['member_id']])
+
+    def test_replan_on_new_base_selects_predecessor_before_stale_output_dependents(self):
+        self.compose(3,[{'issue_id':'issue-1','prerequisite_issue_id':'issue-0'}])
+        _,plan,children=self.plan()
+        first,manifest=self.child(plan,'0');self.accept(first,manifest,'0')
+        fresh=self.query.builder_manifest('batch','planning',base_oid='new-base',policy_hash='policy')
+        parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='new-parent',input_manifest=fresh)
+        self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='new-parent',input_manifest=fresh,
+                                plan={'children':children},evidence={'verified':True})
+        self.clean(parent,'new-parent')
+        choices=self.query.assignments('batch',base_oid='new-base',policy_hash='policy')['items']
+        self.assertEqual({choice['member_id'] for choice in choices},{self.members['issue-0'],self.members['issue-2']})
+        self.assertTrue(all(choice['input_manifest']['base_oid']=='new-base' for choice in choices))
