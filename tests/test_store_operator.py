@@ -223,7 +223,7 @@ class OperatorTests(unittest.TestCase):
             with self.store.read_snapshot() as db:
                 db.execute('SELECT 1').fetchone()
             return validate({})
-        def repositories():
+        def repositories(config):
             with self.store.read_snapshot() as db:
                 return [dict(id=r['id'], name=r['full_name'], enabled=bool(r['enabled']))
                         for r in db.execute('SELECT * FROM repositories')]

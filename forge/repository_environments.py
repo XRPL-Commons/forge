@@ -29,9 +29,9 @@ class RepositoryEnvironments:
         self.root = settings.root.parent if settings.root.name == 'setup' else settings.root
         self.github_class = github_class
 
-    def snapshot(self):
+    def snapshot(self, *, runtime=None):
         # Polling never contacts GitHub or creates state.
-        config = load(self.root)
+        config = load(self.root) if runtime is None else runtime
         return (config, read_optional(self.root / 'state/environment-proposals.json'),
                 read_optional(self.root / 'state/environment-scans.json'))
 

@@ -446,7 +446,7 @@ class IssueInventory:
         store=selected(self.root)
         if store is not None:
             from .store_views import PipelineViews
-            return PipelineViews(store,repositories=lambda:self.settings.view()['repositories'],runtime=lambda:load(self.root),clock=self.clock).issues(repo_id=repo_id,state=state,query=query,page=page,key=key)
+            return PipelineViews(store,repositories=lambda runtime:self.settings.repository_views(runtime=runtime),runtime=lambda:load(self.root),clock=self.clock).issues(repo_id=repo_id,state=state,query=query,page=page,key=key)
         if state not in ('open', 'completed', 'all', 'backlog', 'queued', 'working', 'attention', 'waiting', 'blocked', 'dropped') or type(page) is not int or page < 1:
             raise ValueError('Choose a valid issue view')
         data = self.read()

@@ -18,9 +18,9 @@ class SqliteRepositoryEnvironments(RepositoryEnvironments):
     def database(self):
         return self.settings.database
 
-    def snapshot(self):
+    def snapshot(self, *, runtime=None):
         with self.database.read_snapshot() as db:
-            config = db.execute("SELECT settings_json FROM configuration WHERE domain='runtime.json' AND subject='instance' AND active=1").fetchone()
+            config = db.execute("SELECT settings_json FROM configuration WHERE domain='runtime.json' AND subject='instance' AND active=1").fetchone() if runtime is None else None
             rows = db.execute('SELECT s.* FROM environment_scans s WHERE s.id=(SELECT n.id FROM environment_scans n '
                               'WHERE n.repository_id=s.repository_id ORDER BY n.created_at DESC,n.rowid DESC LIMIT 1)').fetchall()
             proposals, scans = {}, {}
@@ -37,7 +37,7 @@ class SqliteRepositoryEnvironments(RepositoryEnvironments):
                                       (row['repository_id'],)).fetchone()
                 if proposal:
                     proposals[key] = json.loads(proposal[0])
-            return validate(json.loads(config[0]) if config else {}), proposals, scans
+            return (validate(json.loads(config[0]) if config else {}) if runtime is None else runtime), proposals, scans
 
     def start_scan(self, repo, revision, environment_revision, *, background=True):
         identifier = uuid.uuid4().hex

@@ -30,3 +30,16 @@ The single-digit HTTP target remains unqualified. Use the authenticated
 `Server-Timing` evidence described in [the change feed guide](factory-change-feed.md#http-timing-evidence)
 to distinguish projection work, cache behavior and request preparation from
 network and proxy time.
+
+### Repository readiness snapshot
+
+A subsequent paired comparison on schema 28 measured 25.102 ms before and
+22.603 ms after extracting `Settings.repository_views(runtime=...)`. The full
+Settings response and all three Activity sections remained identical. This
+comparison used the same twelve-call alternating procedure; server load varied
+between runs, so separate benchmark medians should not be combined.
+
+The repository reader now uses the projection's already validated runtime for
+merge policy and environment readiness. It shares the Settings readiness
+implementation and omits the unrelated sync/header reads. The full Settings
+endpoint retains those fields and behavior. No state is cached between requests.

@@ -89,14 +89,14 @@ class RepositorySetup:
         path = self.root / 'state/onboarding/setup.json'
         return read_json(path) if path.exists() else {}
 
-    def views(self, rows, config):
+    def views(self, rows, config, *, runtime=None):
         from .repository_environments import RepositoryEnvironments
         environments = RepositoryEnvironments(self.settings)
-        environment_snapshot = environments.snapshot()
+        environment_snapshot = environments.snapshot(runtime=runtime)
         data, now = self.read(), self.settings.clock()
         profiles = {r['id']: r.get('deployment') for r in config['repositories']}
         from .factory.config import load as runtime_config, merge_mode
-        runtime = runtime_config(self.settings.authority.root,scope=self.settings.scope)
+        runtime = runtime_config(self.settings.authority.root,scope=self.settings.scope) if runtime is None else runtime
         entries = self.proposals()
         result = []
         for row in rows:
