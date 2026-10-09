@@ -32,7 +32,7 @@ async function confirm(reason: string) {
 }
 </script>
 <template>
-  <IssueSection id="issue-delivery" v-model:open="open" title="Grouped delivery">
+  <IssueSection id="issue-delivery-actions" v-model:open="open" title="Grouped delivery">
     <p v-if="request.error.value" role="alert" class="text-sm text-amber-200">{{ request.error.value }}</p>
     <p v-if="receipt" role="status" class="text-sm text-muted">{{ receipt }}</p>
     <template v-if="preview?.delivery">

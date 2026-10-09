@@ -123,7 +123,7 @@ def parser():
     connect.add_argument('--owner', action='append', default=[])
     connect.add_argument('--read-only', action='store_true')
     connect.add_argument('--policy', action='store_true', help='Request permission to set repository merge policy; requires explicit browser approval')
-    connect.add_argument('--triage', action='store_true', help='Request explicit approval to plan and accept issue changes and delivery composition')
+    connect.add_argument('--triage', action='store_true', help='Request explicit approval to plan issue changes and compose, change, dissolve or resume deliveries')
     connect.add_argument('--resume', action='store_true')
     connect.add_argument('--wait', type=int, default=0)
     auth = sub.add_parser('auth', help='Check this computer’s connection to a Forge server').add_subparsers(dest='auth_command', required=True)
