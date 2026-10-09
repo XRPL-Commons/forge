@@ -12,12 +12,12 @@ from .migration.snapshot import operation_lock, read_regular
 def initialize(root):
     root = Path(root).absolute()
     _private(root, directory=True)
-    with operation_lock(root, '.fresh-install.lock'):
+    with operation_lock(root, '.migration-host.lock'):
         if os.path.lexists(root/'state/storage'):
             return selected(root)
         # Fresh initialization is not an import or an implicit reset. An old
         # installation must use the explicit migration protocol instead.
-        allowed = {'runtimes', 'state', 'sqlite', '.fresh-install.lock', '.sqlite-runtime.lock'}
+        allowed = {'runtimes', 'state', 'sqlite', '.migration-host.lock', '.sqlite-runtime.lock'}
         if any(path.name not in allowed and not path.name.startswith('.fresh-sqlite-') for path in root.iterdir()):
             raise StoreError('existing_runtime', 'Use the migration CLI for an existing installation')
         state = root/'state'
@@ -53,9 +53,9 @@ def initialize(root):
                 raise StoreError('instance_mismatch', 'Pending selection belongs to another instance')
         else:
             _new_file(pending, content)
-        try:
-            os.link(pending, state/'storage')
-        finally:
-            pending.unlink()
+        # All storage publishers hold the installation maintenance lock. A
+        # rename publishes one private inode atomically, with no hard-link
+        # interval that a process interruption could leave unreadable.
+        os.rename(pending, state/'storage')
         _fsync_directory(state)
         return selected(root)

@@ -48,3 +48,22 @@ class FreshSQLiteTests(unittest.TestCase):
         identity = Store.open(self.root/'sqlite').instance_id
         self.assertFalse((self.root/'state/storage').exists())
         self.assertEqual(initialize(self.root).instance_id, identity)
+
+    def test_interruption_at_marker_publication_keeps_one_resumable_private_inode(self):
+        from forge.store import fresh
+        original = fresh.os.rename
+        def interrupted(source, target):
+            if source.name == 'storage.pending':
+                raise OSError('connection lost')
+            return original(source, target)
+        with patch('forge.store.fresh.os.rename', side_effect=interrupted):
+            with self.assertRaises(OSError):
+                initialize(self.root)
+        pending = self.root/'state/storage.pending'
+        inode = pending.stat().st_ino
+        from forge.store.db import Store
+        identity = Store.open(self.root/'sqlite').instance_id
+        self.assertEqual(initialize(self.root).instance_id, identity)
+        self.assertEqual((self.root/'state/storage').stat().st_ino, inode)
+        self.assertEqual((self.root/'state/storage').stat().st_nlink, 1)
+        self.assertFalse(pending.exists())
