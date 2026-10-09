@@ -20,27 +20,45 @@ about task completion. A completed execution does not establish a merged issue.
 
 ## Issue transitions
 
-| Milestone | Action/actor | Required output | Accepted transition | Failure/remediation |
-| --- | --- | --- | --- | --- |
-| ready | Build agent | Explicitly submitted PR matching its persisted assignment | built | Failed publication/execution → investigate → Build |
-| built | Review agent | Revision-bound verdict, published review and role check | reviewed | Code rejection → investigate → Build; execution failure → investigate → Review |
-| reviewed | Audit agent | Revision-bound technical verdict plus separate human requirement; published review/check | audited | Code rejection → investigate → Build; execution failure → investigate → Audit |
-| audited | Supervisor | Fresh checks, protection and human-policy verification | merge request or approval_needed | Conflict → investigate → Build; unknown/waiting checks → observe |
-| approval_needed | Supervisor observes GitHub | Current authorized human approval and native protection | merge request | Approval revoked, code/base/policy/requirements changed → revalidate |
-| merge request | Supervisor | GitHub confirms the PR merged | merged | Unknown response → reconcile; confirmed conflict → investigate → Build |
-| investigating | Recovery agent | Cause, evidence, uncertainty, recommended alternative | Retry previous verified milestone or hold | Investigation failure records incomplete findings; no recursive investigation |
-| hold / failed / cancelled | Human decision, applied by supervisor | Explicit reason and new budget decision | ready | Relabeling does not reset anything |
+SQLite records the delivery stage separately from scoped waiting gates. Issue
+labels and operator status are projections of that state.
 
-Build → Review → Audit is sequential for one candidate. Different issues run
-concurrently. The supervisor reconciles existing executions, resets finished or
-broken ones, resolves evidence and investigations, then allocates available slots
-in Recovery → Audit → Review → Build order. Triage runs only when a builder slot
-is free, discovering open issues with `ready`, respecting holds, access and existing
-ownership. Eligible issues use stable oldest-discovered/repository/issue ordering.
+| Delivery stage | Actor and evidence | Accepted progress |
+| --- | --- | --- |
+| `queued` / `building` | Singleton Build publication, or owner plan plus exact accepted child outputs | Singleton enters `reviewing`; a group becomes eligible for owner integration |
+| `integrating` | Owning builder publishes one exact combined candidate containing every approved input | `reviewing` |
+| `reviewing` | Independent revision-bound Review verdict and verified App evidence | `auditing` |
+| `auditing` | Independent technical Audit verdict and separate human/verification requirements | `merging`, with any remaining gates |
+| `merging` | Fresh member requirements, prerequisites, ownership, protections, CI, policy and approval evidence | A durable merge request; `merged` only after GitHub confirmation |
+| Any live stage with a scoped gate | Required investigation, observation or explicit operator decision | Resume only the eligible scope; preserve other gates and the shared budget |
+| `closed` / `dissolved` | Explicit lifecycle decision with cleanup and uncertain-effect guards | Retained history; no fabricated merge |
+
+Build → Review → Audit is sequential for one candidate. An approved delivery may
+contain several issues in one repository and base branch. One logical builder
+owns that delivery across planning and integration executions; tracked child jobs
+implement independent parts in separate checkouts. Dependencies pin exact accepted
+outputs. Review and Audit each assess the complete current candidate. Changed
+requirements, membership, head, base or policy require affected evidence again.
+
+The factory coordinator enforces shared capacity, provider leases, cleanup, scoped
+gates and the delivery's three-failure budget. Repository supervisors keep bounded
+planning context and propose work through typed operations. Their notes guide
+planning; current structured state and independent observations establish facts.
+Every composition, including existing PRs, requires operator approval. Existing
+PR choice pins source heads/authors and one publication target; it grants no
+permission to close the other PRs.
+
+Repository planning and ordinary ready-issue admission are separate operations.
+Planning runs on explicit request or its schedule, after pipeline work, and
+publishes a proposal. Accepting rows records local decisions atomically, with
+GitHub edits executed later through durable effect identities. See
+[repository planning](repository-planning.md) and
+[delivery execution](delivery-execution.md) for their execution contracts.
 
 Verify the shared two-review and stale-approval baseline before dispatch.
-Persist the assignment and reserve capacity before launching. One issue cannot
-receive replacement work while its old execution has unverified cleanup. A
+Persist the assignment and reserve capacity before launching. An assigned member cannot receive replacement work while its old execution has
+unverified cleanup. Independent member work may continue when its own gates and
+the shared budget permit it. A
 provider outage pauses dispatch without charging issues. The supervisor's GitHub
 work is bounded and resumes on subsequent cycles; teardown is independent of API
 availability. Closing or merging an issue externally is reconciled even when its
@@ -63,6 +81,13 @@ Use one PR-body block, not an additional submission comment:
 An unfinished build uses `head: null` and a draft PR. Submission pushes the final
 code, records its exact head, and marks the PR ready last. Rework normally reuses
 the PR, first returning it to draft and replacing its attempt/head metadata.
+
+Grouped integration uses a version-2 marker naming the exact delivery and sorted
+member numbers, plus explicit closing references for every member. When updating
+an existing PR, it marks the PR draft, writes the final attempt/head marker before
+pushing that exact commit, then marks it ready last. This avoids a null-head gap
+in the approved ownership check. Only the owning integration can publish a grouped
+candidate; child results are independently verified commit bundles.
 
 The supervisor independently checks repository ID, issue, attempt, assigned branch,
 expected builder publisher, assigned target branch, open/non-draft state and current head. Exactly one
@@ -223,14 +248,18 @@ is explicit and bound to numeric repository identity. Multiple installations per
 role support repositories across accounts. Credentials are referenced, not stored
 in editable source/configuration; workers never inherit App private keys.
 
-`factory.json` and `runtime.json` are the same authoritative files for humans,
-agents and Settings. UI saves validate and reject stale revisions. Defaults/examples
-are portable and disabled; private runtime files are excluded from public source.
+After SQLite selection, configuration is owned by the selected database and its
+typed revision checks. UI, CLI and supervisor adapters use that same authority;
+legacy JSON files cannot switch it back. Repository merge policy is keyed by
+immutable GitHub repository ID, defaults to `human`, and changes through an
+explicitly authorized compare-and-set operation. Settings displays it read-only.
+Defaults/examples remain portable and disabled; private credentials stay outside
+public source.
 
 Do not infer milestones or budgets from ambiguous earlier state. The setup
 supervisor and the factory CLI share one lock and a persistent activation marker.
 A new install must not share repositories with another independent controller root.
 
-After observing the assigned PR as merged, the supervisor closes the GitHub issue
-as completed and reconciles its final pipeline label. Failed or unknown API writes
+After observing the assigned PR as merged, the supervisor closes each current
+member issue as completed and reconciles its final pipeline label. Failed or unknown API writes
 are retried as reconciliation; they do not undo an observed merge or spend a failure.

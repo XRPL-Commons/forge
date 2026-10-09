@@ -18,7 +18,13 @@ flowchart TD
 
 ## Workers and slots
 
-**Build** writes a branch and opens or updates its assigned pull request. **Review** checks correctness, **Audit** checks security, and **Recovery** investigates a failed attempt before the next decision.
+**Build** owns implementation and the assigned pull request. For an approved group,
+one logical builder plans tracked children, releases its planning lease, then
+resumes integration after accepted outputs and verified child cleanup. Children
+use separate checkouts and exact prerequisite commits. Independent children and
+separate deliveries share the same role slots, memory and account limits.
+**Review** checks the complete candidate, **Audit** checks security, and
+**Recovery** investigates a failed attempt before the next decision.
 
 The default role limits are 4 Build, 2 Review, 1 Audit and 1 Recovery worker. Those are ceilings, not a promise that eight workers will run: memory and accounts may admit fewer.
 
@@ -41,7 +47,12 @@ flowchart TD
 
 Repository commands run inside the provider's native sandbox as well as the container boundary. Workers get their own workspace and limited network access; they do not get the host's Docker socket or the Controller credential.
 
-Build receives repository-scoped write access. Review, Audit and Recovery receive read-only repository access; the supervisor publishes accepted role evidence with the appropriate App.
+A singleton builder or grouped integration execution receives repository-scoped
+write access. Group planning, child implementations and repository triage receive
+read-only GitHub tokens; children return local Git bundles. Review, Audit and
+Recovery also receive read-only access. The supervisor independently checks
+evidence and publishes role verdicts with the appropriate App. Untracked native
+provider delegation is disabled; the supported fallback is Forge-managed children.
 
 The current production runner requires Linux, Docker and the installed isolation policies. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
 
@@ -118,6 +129,7 @@ Pausing prevents new work and can fence active assignments. A late worker result
 
 A disappeared or stopped worker is not automatically a code failure. Forge distinguishes infrastructure problems from charged failures and investigates each charged failure, including the third.
 
-After three charged failures, read the findings and record a new approach before choosing an explicit retry. **Discuss blocker** is available for understanding the problem without spending another failure attempt.
+An approved delivery shares three charged failures across its builder and children.
+Changing membership does not silently reset that budget. After exhaustion, read the findings and record a new approach before choosing an explicit retry. **Discuss blocker** is available for understanding the problem without spending another failure attempt.
 
 See [How an issue moves](issue-state-machine.md) for status meanings. Technical settings, deadlines, storage retention and pre-cutover behavior are in the [runtime reference](factory-runtime-reference.md); a selected SQLite installation uses forward updates and has no JSON switch-back.

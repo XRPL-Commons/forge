@@ -128,3 +128,44 @@ continuation target, so rework updates the same PR.
 Agents can use `forge repo delivery OWNER/REPO NUMBER --server HTTPS_ORIGIN --json`, then pass `--after` with `next_cursor` for another page. This uses the
 existing `repositories:read` grant and exposes no worker credentials, prompts or
 raw output.
+
+## Change membership explicitly
+
+Ordinary pause, backlog, environment and runner-reset actions target the selected
+member and affected descendants. A shared owner execution is fenced if its input
+scope changes. Whole-delivery operations have their own preview and approval;
+removing a member does not silently close the group or its PR.
+
+The issue panel's **Grouped delivery** controls preview **Remove from delivery**,
+**Close this issue** (or **Remove closed issue**) and **Dissolve delivery**. The
+preview pins membership generation, the affected members and every direct
+dependent's explicit choice to wait on the removed issue as an external
+prerequisite. The durable request waits for verified cleanup, mandatory
+investigations and confirmation that the current PR has not merged.
+
+External agents use the same preview:
+
+```sh
+forge delivery inspect OWNER/REPO ISSUE_KEY --server https://forge.example --json > decision.json
+forge delivery drop OWNER/REPO ISSUE_KEY --server https://forge.example --decision decision.json --reason "Split this scope into separate work" --apply --json
+```
+
+`ISSUE_KEY` is the exact `key` returned by `forge repo issues`; it identifies both
+the repository and issue. Inspect `decision.json` before applying it. The CLI
+submits that exact revision and does not refresh the approval silently. Use
+`close-member` or `dissolve` in place of `drop` for those decisions, and reuse a
+canonical UUID through `--request-id` when retrying the same request.
+
+Inspection requires `repositories:read`; membership changes require the separate
+`repositories:triage` connection grant. Closing a member closes only that selected
+GitHub issue, never the shared PR. Dropping preserves shared charges and the
+released issue's inherited history. Dissolution is an explicit decision to create
+singleton budgets; it retains the old delivery history and cannot erase an
+uncertain merge or release an uncleaned worker lease.
+
+
+Stopping a shared builder, Review or Audit run creates a whole-delivery pause.
+Use **Resume delivery** or `forge delivery resume-delivery` with the same inspected
+file and explicit approval to clear that pause after cleanup. This preserves each
+member's own pause, backlog, label hold, environment gate, accepted output and
+failure history. Resuming one issue cannot silently resume the whole delivery.

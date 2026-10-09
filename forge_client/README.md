@@ -35,8 +35,9 @@ The engine's `forge` argument supplies:
 
 - `authorize(instance, generation, target, capability)`; verify the current grant,
   operator, reset generation and repository scope. Reject before any requested
-  effect. Capabilities are `repositories:read`, `repositories:prepare`, and
-  `repositories:activate`.
+  effect. Baseline capabilities are `repositories:read`, `repositories:prepare`,
+  and `repositories:activate`. Planning and merge-policy mutations require the
+  separately approved `repositories:triage` and `repositories:policy` grants.
 - `requirements(target)`; return the closed contract produced by
   `forge.repository_requirements.describe` after authorizing the target.
 - `verify(target, revision)`; authorize and schedule independent App access and
@@ -111,3 +112,25 @@ ID with different inputs is rejected. A stale revision requires a fresh read and
 new decision; the CLI does not overwrite a concurrent configuration change.
 Repeatedly setting the already explicit mode does not create another runtime
 configuration revision.
+
+## Repository planning and delivery progress
+
+```sh
+forge connect https://forge.example --repo OWNER/REPO --triage
+forge triage OWNER/REPO --server https://forge.example --request-id triage-pass-1 --json
+forge planning OWNER/REPO --server https://forge.example --json
+forge repo delivery OWNER/REPO ISSUE_NUMBER --server https://forge.example --json
+```
+
+Planning reads, proposal pages and delivery progress use `repositories:read`.
+Triage requests, rule/note edits, proposal acceptance and explicit membership
+changes require `repositories:triage`. A planning worker cannot approve its own
+proposal. Existing connections do not gain new grants automatically.
+
+`forge planning ... --action-file FILE` accepts explicit typed proposal decisions;
+`forge delivery inspect ...` returns the membership-change preview that
+`drop`, `close-member`, `dissolve` or `resume-delivery` can approve with `--decision FILE --apply`.
+The progress read `repo delivery` uses an issue number; membership commands use
+the exact issue key returned by `repo issues`. See [repository planning](../docs/repository-planning.md)
+and [delivery execution](../docs/delivery-execution.md#change-membership-explicitly)
+for paging, identities, preview fields and failure-budget effects.

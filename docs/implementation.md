@@ -13,7 +13,7 @@ See [runtime setup](factory-runtime-reference.md) for the exact configuration an
 
 - Supervisor-owned issue history and assignments, with serialized durable
   reservations before launch and checked ownership invariants on load/save.
-- Sequential Build, Review, Audit and merge routing; one three-failure issue budget,
+- Sequential candidate Review, Audit and merge routing; one shared three-failure delivery budget,
   mandatory bounded investigations, repeat-pattern holds and explicit human retry.
 - Exact PR submission metadata, revision-bound verdicts, role App publication,
   shared repository admission and supervisor-owned gates for Forge merge requests.
@@ -23,6 +23,27 @@ See [runtime setup](factory-runtime-reference.md) for the exact configuration an
   execution tokens, explicit activation, and versioned configuration shared with Settings through the selected storage authority.
 - A factory view with compact actions, confirmation dialogs, current attention
   separated from historical failures, runner cleanup and issue history.
+
+## Repository planning and combined delivery
+
+- Persistent repository rules, revisioned notes and proposal rows. Manual and
+  nightly triage use a read-only worker; acceptance pins fresh requirements,
+  membership, source PRs and operator decisions before durable effects run.
+- Operator-approved compositions with existing-PR choices, one logical builder,
+  tracked parallel child checkouts, exact retained prerequisite outputs, owner
+  integration and one candidate for independent Review and Audit.
+- Exact member-scoped holds, environment choices and execution projections.
+  Shared failure budgets, fencing and verified cleanup survive rework or changed
+  membership; ordinary issue closure cannot silently close a grouped delivery.
+- Lazy delivery progress in Issue Details and repository-scoped CLI reads;
+  explicit membership operations preview their affected scope before approval.
+- Per-repository `human`/`auto` merge policy, with read-only UI presentation and
+  separately authorized CLI changes. External prerequisites distinguish completed
+  issues, merged PRs, other closure reasons and inaccessible identities.
+
+These describe implemented contracts. They do not establish that a real combined
+PR has completed the installation-to-merge qualification. The integrated regression
+matrix and normal two-issue GitHub merge remain the release acceptance gate.
 
 ## Qualification and deployment
 
@@ -81,6 +102,7 @@ cooperative restrictions for those writes, while submission acceptance and
 protected-target merge authority are independently checked. See the
 [live/staged/retired security inventory](../SECURITY.md#isolation-status).
 
-The storage cutover does not by itself establish #209's latency target, a real
-ordinary issue-to-merge qualification, or multi-issue batch delivery. Those remain
-tracked acceptance work.
+Storage cutover and synthetic delivery tests do not by themselves establish
+#209's latency target or real ordinary/combined issue-to-merge qualification.
+Track those acceptance receipts separately; time from CLI installation to first
+normal merge remains the north-star metric.

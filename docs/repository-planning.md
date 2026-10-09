@@ -65,3 +65,27 @@ The client transport limits each request to 16 KiB. Read larger proposals throug
 ## Persistence and recovery
 
 Schema 023 stores normalized proposal inputs, rows, membership, rule/note revisions, acceptance receipts and effect authority. Planning context and captured output use the existing auxiliary artifact storage. The planner reuses the existing container runner, credential admission, execution lease and verified cleanup boundary. It cannot approve its own proposal. Process interruption resumes the same owned execution or its captured result; it does not create another runner or reset a delivery's failure budget.
+
+## Prerequisites
+
+Use an explicit dependency phrase such as `Depends on owner/repository#42` (or
+`Depends on #42` in the same repository). An accepted ordering row can record the
+same references without rewriting issue text. Forge resolves an external target
+with its Controller App, pins its repository and GitHub identity, and refreshes
+its state before work can proceed.
+
+| Target observation | Result |
+| --- | --- |
+| Issue closed as completed | Satisfied |
+| PR confirmed merged | Satisfied |
+| Open issue or PR | `prerequisite_open` |
+| Closed, unmerged PR | `prerequisite_closed_unmerged` |
+| Issue closed as not planned or duplicate | `prerequisite_not_planned` or `prerequisite_duplicate` |
+| Unknown closure provenance | `prerequisite_completion_unknown` |
+| Missing App access or unreadable target | `prerequisite_inaccessible` |
+| Reference now points to another identity | `prerequisite_identity_changed` |
+
+Internal group edges use exact accepted member outputs, so an issue does not need
+to close before its dependent child runs. Their readiness is enforced by the
+same delivery graph that pins the child's inputs. Independent children may run
+while another prerequisite remains blocked.

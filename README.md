@@ -2,7 +2,9 @@
 
 Forge moves GitHub issues through **Build → Review → Security audit → Merge**.
 GitHub holds requirements, code and review evidence. The supervisor owns the durable
-issue ledger, assignments, failure history and resource allocation. Workers receive
+delivery ledger, assignments, failure history and resource allocation. Related issues
+can form one operator-approved delivery with one owning builder, tracked parallel
+children and one integrated pull request for Review and Audit. Workers receive
 one assignment and run inside disposable containers; completion is verified against
 GitHub before the issue advances.
 
@@ -91,6 +93,37 @@ the [issue state machine and blockers](docs/issue-state-machine.md) and the
 and real credential-free runner canaries. The guided setup verifies access, provider
 authentication and disposable runner cleanup before Start; GitHub App approvals
 still happen on GitHub. See [implementation status](docs/implementation.md).
+
+## Plan repository work
+
+Each repository has durable planning rules, notes and proposals. In **Repository
+settings → Plan repository work**, request **Triage now**, inspect the proposal,
+then approve its rows. Nightly proposals are enabled by default. Planning can
+propose closures with evidence, labels, parked issues, prerequisites, questions
+and related groups; GitHub changes require operator acceptance.
+
+Every composition is approved explicitly, including groups with existing PRs.
+Choose a new PR or one exact existing PR to continue. One logical builder owns
+all member requirements, delegates tracked children within shared capacity, then
+integrates their outputs. Review and Audit assess the complete candidate; changed
+inputs require revalidation. Other existing PRs are preserved.
+
+**Issue Details → Combined delivery** loads member and child progress on demand.
+The same read is available to an external agent:
+
+```sh
+forge repo delivery OWNER/REPO ISSUE_NUMBER --server https://forge.example --json
+```
+
+Merge policy defaults to `human` per repository. An explicit `auto` policy removes
+the ordinary counted-approval requirement while keeping CI, Review, Audit,
+verification and any additional human requirement. Settings shows this policy
+read-only; change it through `forge repo policy` after approving its separate
+connection capability.
+
+See [repository planning](docs/repository-planning.md),
+[delivery execution](docs/delivery-execution.md), and
+[merge policy](docs/factory-runtime.md#what-permits-a-merge).
 
 ## Dashboard and history
 

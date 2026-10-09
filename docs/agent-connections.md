@@ -177,6 +177,14 @@ and expose observation freshness. Verification refreshes observations; cached
 issue reads do not launch work. Results omit other repositories and raw worker
 logs. The API does not expose host administration or generic worker controls.
 
+Repository planning and notes use `forge triage` and `forge planning`; membership
+previews use `forge delivery inspect`. Their mutations require the separately
+approved `repositories:triage` grant. Merge-policy reads use the existing read
+grant, while `forge repo policy OWNER/REPO auto|human` requires
+`repositories:policy`. Neither grant supplies GitHub administration credentials.
+See [planning](repository-planning.md), [delivery actions](delivery-execution.md#change-membership-explicitly)
+and [merge policy](factory-runtime.md#what-permits-a-merge).
+
 ## Shared agent skill
 
 The package includes [forge-repositories/SKILL.md](../forge_client/skills/forge-repositories/SKILL.md).
