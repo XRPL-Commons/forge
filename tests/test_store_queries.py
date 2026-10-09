@@ -11,6 +11,8 @@ class MemoryStore:
     def __init__(self):
         self.connection = sqlite3.connect(':memory:')
         self.connection.row_factory = sqlite3.Row
+        from forge.store.remote_time import register
+        register(self.connection)
         directory = Path(__file__).resolve().parents[1] / 'forge/store/schema'
         for schema in sorted(directory.glob('*.sql')):
             self.connection.executescript(schema.read_text())

@@ -12,6 +12,8 @@ class StoreCodesTests(unittest.TestCase):
         self.db = sqlite3.connect(':memory:')
         self.addCleanup(self.db.close)
         self.db.execute('PRAGMA foreign_keys=ON')
+        from forge.store.remote_time import register
+        register(self.db)
         for schema in sorted((Path(__file__).resolve().parents[1] / 'forge/store/schema').glob('[0-9]*.sql')):
             self.db.executescript(schema.read_text())
         self.db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/repo')")
@@ -131,11 +133,11 @@ class StoreCodesTests(unittest.TestCase):
 
     def test_older_issue_observations_cannot_overwrite_newer_facts(self):
         self.unit(); self.issue_and_member()
-        self.db.execute("UPDATE issues SET remote_updated_at='2026-10-06T10:00:00Z',collection_generation=2")
-        for timestamp,generation in [('2026-10-06T09:59:59Z',3),('2026-10-06T10:00:00Z',1),(None,4)]:
+        self.db.execute("UPDATE issues SET remote_updated_at='2026-10-06T10:00:00.000000+00:00',collection_generation=2")
+        for timestamp,generation in [('2026-10-06T09:59:59.000000+00:00',3),('2026-10-06T10:00:00.000000+00:00',1),(None,4)]:
             with self.subTest(timestamp=timestamp,generation=generation), self.assertRaises(sqlite3.IntegrityError):
                 self.db.execute('UPDATE issues SET github_state=\'closed\',remote_updated_at=?,collection_generation=?',(timestamp,generation))
-        self.db.execute("UPDATE issues SET github_state='closed',remote_updated_at='2026-10-06T10:00:00Z',collection_generation=3")
+        self.db.execute("UPDATE issues SET github_state='closed',remote_updated_at='2026-10-06T10:00:00.000000+00:00',collection_generation=3")
         self.assertEqual(self.db.execute('SELECT github_state FROM issues').fetchone()[0], 'closed')
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute('UPDATE issues SET github_number=2')

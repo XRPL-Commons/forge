@@ -6,7 +6,6 @@ its event share one SQLite transaction; external effects belong outside it.
 """
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -16,9 +15,10 @@ import uuid
 
 from . import codes, status
 from .presentation import record_revision_display
+from .remote_time import normalize as remote_time, order as remote_order
 from .models import (
     Candidate, Command, GateCode, IdempotencyConflict, Role, TransitionError,
-    VersionConflict,
+    VersionConflict, RequirementsStale, complete_requirements,
 )
 
 TERMINAL = codes.TERMINAL_STATES
@@ -861,17 +861,7 @@ class Lifecycle:
             return {"recovered_job_id": job_id, "corrected": reverse_charge}
         return self._apply(command, "reconcile_recovery", dict(job_id=job_id, evidence=evidence, reverse_charge=reverse_charge), change)
 
-    @staticmethod
-    def _remote_time(value):
-        if not isinstance(value, str):
-            raise TransitionError("observation needs an ISO 8601 remote timestamp")
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise TransitionError("observation timestamp is invalid") from error
-        if parsed.tzinfo is None:
-            raise TransitionError("observation timestamp must include its timezone")
-        return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+    _remote_time = staticmethod(remote_time)
 
     def observe_issue(self, command, issue_id, *, state, title, body, requirements,
                       remote_updated_at, generation, state_reason=None, labels=(), assignees=(),
@@ -913,8 +903,8 @@ class Lifecycle:
             owner = db.execute("SELECT unit_id FROM unit_issues WHERE issue_id = ? AND left_at IS NULL", (issue_id,)).fetchone()
             if old is None or member is None or (owner and owner[0] != unit["id"]):
                 raise TransitionError("observation must use the issue's current owning unit")
-            old_order = (self._remote_time(old["remote_updated_at"]) if old["remote_updated_at"] else "", old["collection_generation"])
-            new_order = (remote_updated_at, generation)
+            old_order = (remote_order(old["remote_updated_at"]), old["collection_generation"])
+            new_order = (remote_order(remote_updated_at), generation)
             if new_order < old_order:
                 return {"issue_id": issue_id, "stale": True, "revision_id": old["current_revision_id"]}
             content_hash, requirements_hash = manifest_hash([title, body]), manifest_hash(requirements)
@@ -995,9 +985,8 @@ class Lifecycle:
                 raise VersionConflict("issue observation changed before admission")
             revision = db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?', (issue['current_revision_id'],)).fetchone()
             requirements = json.loads(revision[0])
-            if isinstance(requirements, dict) and (requirements.get('body_truncated') or requirements.get('body_unavailable')
-                    or requirements.get('complete') is False or 'legacy_body_hash' in requirements):
-                raise TransitionError('admission requires fresh complete issue requirements')
+            if not complete_requirements(requirements):
+                raise RequirementsStale('admission requires fresh complete issue requirements')
             if db.execute("SELECT 1 FROM unit_issues WHERE issue_id = ? AND left_at IS NULL", (issue_id,)).fetchone():
                 raise TransitionError("issue already belongs to a live unit")
             member_id = self._create_unit(db, command, unit_id, issue, base_branch, issue["current_revision_id"])

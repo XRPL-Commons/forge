@@ -257,3 +257,37 @@ new staging destination after such changes. An interrupted production activation
 must resume with its original source/tool identity. Production activation and a real
 issue reaching its first merge remain release-validation steps; implementing this
 command does not claim that either has already happened. #209 remains open.
+
+## Upgrade an installation that already uses SQLite
+
+Use the local CLI from the release you are installing. This updates the selected
+host and database together; normal API reads never apply migrations.
+
+```sh
+forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
+  --root /home/luc/ops/forge-watchdog --json
+forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
+  --root /home/luc/ops/forge-watchdog --source-revision FULL_RELEASE_COMMIT \
+  --apply --json
+```
+
+The first command reports the current and target schemas and any workers still
+awaiting cleanup. The second verifies that the CLI bundle matches the selected
+release, stops managed writers, advances the checkout, and applies the pending
+migrations in one transaction. It then runs the normal host updater and restarts
+services. It preserves identities, issue history and worker budgets.
+
+If it reports `uncleaned_jobs`, let the current workers finish and repeat the
+command. If the connection drops or the update fails, repeat the **same apply
+command with the same release SHA**. The private maintenance receipt records
+whether the schema committed, so a retry finishes deployment without repeating
+the data change. An invalid timestamp or failed integrity check rolls back the
+migration transaction; services remain stopped until a corrected forward update
+can complete. To install a corrected release, use its CLI and explicitly apply
+its new full commit SHA; the command verifies forward ancestry and retains the
+services stopped by the earlier attempt. There is no JSON switch-back.
+
+The timestamp upgrade normalizes existing issue and pull-request observations to
+UTC with six fractional digits. It fixes unchanged imported issues being treated
+as newer than fresh GitHub reads. The following migration indexes request audit
+lookups so their cost does not grow with unrelated retained history.

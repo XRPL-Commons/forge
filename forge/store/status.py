@@ -9,6 +9,9 @@ from __future__ import annotations
 from . import codes
 
 WORDING: dict[str, tuple[str, str | None]] = {
+    'requirements_stale': ("Couldn't start this issue: its requirements need a fresh read", None),
+    'remote_timestamp_invalid': ("Couldn't refresh this issue: its GitHub observation has an invalid timestamp", None),
+    'admission_conflict': ("Couldn't start this issue: its state changed; Forge will check again", None),
     'result_pending': ('Checking the completed worker result', None),
     # Unit states
     'queued': ('Waiting to start', None),
@@ -72,4 +75,4 @@ def describe(code: str, **params) -> str:
 
 def registered_codes() -> set[str]:
     """Every code that must have wording."""
-    return set(codes.UNIT_STATES) | set(codes.CLOSE_CODES) | set(codes.GATES)
+    return set(codes.UNIT_STATES) | set(codes.CLOSE_CODES) | set(codes.GATES) | set(codes.DISCOVERY_REASONS)

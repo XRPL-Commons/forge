@@ -63,6 +63,9 @@ PART_STATES = ('pending', 'building', 'built', 'failed', 'removed', 'done')
 # Projected issue states (#209). Derived from units and GitHub facts, never stored.
 ISSUE_STATES = ('untracked', 'queued', 'in_unit', 'blocked', 'done', 'dropped')
 
+# Pre-admission observations belong to issues, without creating a delivery unit.
+DISCOVERY_REASONS = ('requirements_stale', 'remote_timestamp_invalid', 'admission_conflict')
+
 # --- Gates -----------------------------------------------------------------
 
 # How a gate may be released. A resolution names its rule; a different rule is

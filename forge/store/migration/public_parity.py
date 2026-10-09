@@ -148,7 +148,12 @@ def verify(snapshot,store):
                     old_detail=old_inventory.view(key=key)['issue']
                     new=views.issues(key=key)['issue']
                     for field in ('key','repo_id','repo','number','title','body','body_truncated','state','state_reason','updated_at','labels','assignees','attempts'):
-                        equal('issue',key,field,bool(old_detail.get(field)) if field=='body_truncated' else old_detail.get(field),new.get(field))
+                        expected = bool(old_detail.get(field)) if field=='body_truncated' else old_detail.get(field)
+                        actual = new.get(field)
+                        if field == 'updated_at':
+                            from ..remote_time import order
+                            expected, actual = order(expected), order(actual)
+                        equal('issue',key,field,expected,actual)
                     equal('issue',key,'history',old_detail.get('history',[]),new.get('history',[]))
                     for field in ('approvals','held_by','environment_blocker','decision_request','approval','last_checked','merge_blocker','active'):
                         equal('issue',key,field,old_detail.get(field),new.get(field))

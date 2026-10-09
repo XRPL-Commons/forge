@@ -207,6 +207,8 @@ class Store:
         connection = sqlite3.connect(path.as_uri() + "?mode=" + mode, uri=True, isolation_level=None,
                                      timeout=self.busy_timeout_ms / 1000)
         connection.row_factory = sqlite3.Row
+        from .remote_time import register
+        register(connection)
         try:
             connection.execute(f"PRAGMA busy_timeout={int(self.busy_timeout_ms)}")
             if connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
