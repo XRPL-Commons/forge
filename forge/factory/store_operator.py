@@ -9,6 +9,7 @@ import time
 import uuid
 from urllib.parse import quote
 
+from ..request_metrics import RequestBudgetExhausted
 from ..store.delivery_inputs import approved_in, dependencies_in
 from ..store.models import Command, IdempotencyConflict, TransitionError, VersionConflict
 from ..store.queries import Queries
@@ -445,7 +446,14 @@ class OperatorActions(Lifecycle):
         if not 1<=limit<=100:raise ValueError('Invalid action page size')
         with self.store.read_snapshot() as db:
             ids=[r[0] for r in db.execute("SELECT q.id FROM issue_action_requests q LEFT JOIN operator_action_authority a ON a.request_id=q.id LEFT JOIN imported_operator_requests p ON p.request_id=q.id WHERE q.status='pending' AND (a.request_id IS NOT NULL OR p.request_id IS NOT NULL) AND q.id>? ORDER BY q.id LIMIT ?",(after,limit+1))]
-        return {'items':[self.step(identifier) for identifier in ids[:limit]],'next_cursor':ids[limit-1] if len(ids)>limit else None}
+        items=[]
+        for identifier in ids[:limit]:
+            try:items.append(self.step(identifier))
+            except RequestBudgetExhausted:
+                items.append({'request_id':identifier,'deferred':'github_budget'})
+        deferred=any(row.get('deferred')=='github_budget' for row in items)
+        return {'items':items,'next_cursor':after if deferred else ids[limit-1] if len(ids)>limit else None,
+                'deferred':'github_budget' if deferred else None}
 
     def verify(self,key,revision,gate_id,statement,*,request_id=None):
         if self.verification is None or not self.actor_id:raise TransitionError('Operator verification is unavailable')

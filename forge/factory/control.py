@@ -338,7 +338,7 @@ def public_views(root):
     if store is None:return None
     from .store_views import PipelineViews
     from .live_output import runner_tail
-    return PipelineViews(store,repositories=lambda:Settings(root).view()['repositories'],runtime=lambda:load(root),live=runner_tail(root))
+    return PipelineViews(store,repositories=lambda runtime:Settings(root).repository_views(runtime=runtime),runtime=lambda:load(root),live=runner_tail(root))
 
 
 def factory_view(root, **arguments):

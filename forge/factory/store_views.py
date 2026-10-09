@@ -92,9 +92,9 @@ class PipelineViews:
     def _config(self):
         return self.runtime() if callable(self.runtime) else self.runtime
 
-    def _repositories(self, db):
+    def _repositories(self, db, config):
         if self.repositories is not None:
-            return self.repositories() if callable(self.repositories) else self.repositories
+            return self.repositories(config) if callable(self.repositories) else self.repositories
         return [dict(id=row['id'], name=row['full_name'], enabled=bool(row['enabled']),
                      setup_url=f"/settings/repositories/{row['id']}?setup=1") for row in db.execute('SELECT * FROM repositories ORDER BY id')]
 
@@ -310,7 +310,7 @@ class PipelineViews:
             raise ValueError('Invalid issue view')
         config=self._config()
         with self.store.read_snapshot() as db:
-            repositories=self._repositories(db)
+            repositories=self._repositories(db, config)
             scopes=[]
             for repo in repositories:
                 observed=db.execute("SELECT fetched_at,complete,error_code FROM repository_observations WHERE repository_id=? AND kind='inventory' ORDER BY collection_generation DESC LIMIT 1",(repo['id'],)).fetchone()
@@ -442,7 +442,7 @@ class PipelineViews:
         deployments={key:dict(name=value['name'],**{field:(value.get('observed') or {}).get(field) for field in ('live','deploy','error')})
                      for key,value in deployment_views(self.store).items()}
         with self.store.read_snapshot() as db:
-            repositories=self._repositories(db)
+            repositories=self._repositories(db, config)
             heartbeat=db.execute("SELECT value FROM store_metadata WHERE key='supervisor:heartbeat'").fetchone()
             receipt=json.loads(heartbeat[0]) if heartbeat else {}
             observation=dict(at=receipt.get('finished_at'),errors=[{'phase':name,'reason':code}

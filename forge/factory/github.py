@@ -9,6 +9,7 @@ from urllib.parse import quote
 from ..app_access import AppClient, AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
 from .contracts import SHA, candidate, digest, submission
 from ..repository_policy import protection_ready
+from ..request_metrics import RequestBudgetExhausted, deadline as request_deadline
 
 # Ancestry between two recorded commits never changes; one process asks once.
 COMPARISONS = {}
@@ -43,7 +44,7 @@ class GitHubUnavailable(RuntimeError):
         self.status = status
 
 
-class GitHubBudgetExhausted(GitHubUnavailable):
+class GitHubBudgetExhausted(RequestBudgetExhausted):
     """The cycle's observation budget is spent; the next cycle resumes. Not an error to report."""
 
 
@@ -90,17 +91,21 @@ class GitHub:
             token = value['token']
             if not isinstance(token, str) or not token:
                 raise ValueError()
+        except RequestBudgetExhausted:
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
         except (AccessError, KeyError, ValueError):
             raise GitHubUnavailable('Role credential could not be issued for this repository') from None
         self.tokens[key] = (token, self.clock() + 3000)
         return token
 
     def call(self, role, repo, method, suffix, payload=None, *, extra=None):
-        if time.monotonic() >= getattr(self, 'deadline', float('inf')):
+        if time.monotonic() >= min(getattr(self, 'deadline', float('inf')), request_deadline()):
             raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
         try:
             return self.client.request(method, f"/repos/{repo['repo']}" + suffix,
                                        self.token(role, repo['repo_id'], extra=extra), payload)
+        except RequestBudgetExhausted:
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
         except AccessError as error:
             raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
 

@@ -12,6 +12,7 @@ import os
 import stat
 import time
 
+from ..request_metrics import RequestBudgetExhausted, RequestMetrics, request_scope
 from ..store.artifacts import Artifacts
 from ..store.db import StoreError
 from ..store.models import TransitionError
@@ -23,9 +24,12 @@ from .runner import RunnerError
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
                  dispatch, recovery=None, verification=None, waits=None, requirements=None, operators=None,
-                 discovery=None, deployments=None, reconciliation=None, planning=None, triage_effects=None, clock=time.time, retention_interval=3600):
+                 discovery=None, deployments=None, reconciliation=None, planning=None, triage_effects=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
+        if type(cycle_budget_seconds) not in (int, float) or not math.isfinite(cycle_budget_seconds) or cycle_budget_seconds <= 0:
+            raise ValueError('cycle budget must be finite and positive')
+        self.cycle_budget_seconds, self.monotonic = cycle_budget_seconds, monotonic
         self.store, self.clock, self.retention_interval = store, clock, retention_interval
         self.execution, self.observations, self.results = execution, observations, results
         self.merges, self.effects, self.dispatch = merges, effects, dispatch
@@ -67,7 +71,8 @@ class SqliteSupervisor:
     def _page(self, name, controller, limit, empty=None):
         cursor = self._get(name + ':cursor', empty)
         result = controller.cycle(after=cursor, limit=limit)
-        self._put(name + ':cursor', result['next_cursor'] or empty)
+        if not result.get('checkpointed'):
+            self._put(name + ':cursor', result['next_cursor'] or empty)
         return result
 
     def _retention(self):
@@ -89,6 +94,10 @@ class SqliteSupervisor:
             codes = [row['error'] for row in rows if isinstance(row, dict) and row.get('error')]
             if isinstance(result, dict) and result.get('error'):
                 codes.append(result['error'])
+            if isinstance(result, dict) and result.get('error_count') is not None:
+                if result['error_count']:
+                    errors[name] = {'count': result['error_count'], 'codes': result['error_codes']}
+                continue
             if codes:
                 errors[name] = {'count': len(codes), 'codes': sorted(set(codes))[:10]}
         return errors
@@ -128,14 +137,52 @@ class SqliteSupervisor:
             ])
             if self.planning is not None:
                 stages.append(('planning', lambda: self._page('planning', self.planning, limit)))
-            stages.append(('retention', self._retention))
-            for name, run in stages:
-                try:
-                    report['stages'][name] = run()
-                except (GitHubUnavailable, RunnerError, TransitionError, StoreError, OSError) as error:
-                    report['stages'][name] = {'error': getattr(error, 'code', type(error).__name__)}
+            # Execution always gets the first chance to verify cleanup. Remote
+            # phases resume after the phase that spent the previous allowance;
+            # no workload-dependent budget fraction can starve later admission.
+            execution, phases = stages[0], stages[1:]
+            resume = self._get('next_phase')
+            names = [name for name, _ in phases]
+            if resume in names:
+                index = names.index(resume)
+                phases = phases[index:] + phases[:index]
+            next_phase = None
+            timings = {}
+            metrics = RequestMetrics()
+            until = self.monotonic() + self.cycle_budget_seconds
+            with request_scope(until=until, metrics=metrics):
+                for name, run in [execution] + phases:
+                    started = self.monotonic()
+                    try:
+                        result = run()
+                    except RequestBudgetExhausted:
+                        # No page checkpoint follows an unattempted request.
+                        result = {'deferred': 'github_budget'}
+                    except (GitHubUnavailable, RunnerError, TransitionError, StoreError, OSError) as error:
+                        result = {'error': getattr(error, 'code', type(error).__name__)}
+                    report['stages'][name] = result
+                    timings[name] = round((self.monotonic() - started) * 1000, 3)
+                    exhausted = self.monotonic() >= until or isinstance(result, dict) and result.get('deferred') == 'github_budget'
+                    if name != 'execution' and exhausted and next_phase is None:
+                        index = names.index(name)
+                        next_phase = names[(index + 1) % len(names)]
+                        self._put('next_phase', next_phase)
+                    # Local work in later phases still runs. Their first remote
+                    # request defers at the same transport boundary.
+            started = self.monotonic()
+            try:
+                report['stages']['retention'] = self._retention()
+            except (TransitionError, StoreError, OSError) as error:
+                report['stages']['retention'] = {'error': getattr(error, 'code', type(error).__name__)}
+            timings['retention'] = round((self.monotonic() - started) * 1000, 3)
+            if next_phase is None:
+                self._put('next_phase', None)
             report['finished_at'] = self.clock()
-            # Store a bounded receipt, never raw worker reports or credentials.
+            report['requests'] = metrics.view()
+            report['stage_ms'] = timings
+            report['next_phase'] = next_phase
+            # Store bounded numeric evidence, never raw reports or credentials.
             self._put('heartbeat', {'started_at': report['started_at'], 'finished_at': report['finished_at'],
-                'errors': self._errors(report['stages'])})
+                'errors': self._errors(report['stages']), 'requests': report['requests'],
+                'stage_ms': timings, 'next_phase': next_phase})
             return report

@@ -318,6 +318,26 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(self.queries.job(job)['cleanup'])
         self.assertTrue(self.accept(job)['accepted'])
 
+    def test_budget_during_cleanup_retains_lease_and_retries_without_charging_failure(self):
+        from forge.request_metrics import RequestBudgetExhausted
+        job=self.reserve()
+        self.controller.step(job)
+        self.engine.container.update(status='exited',running=False)
+        self.engine.after_reset=lambda:(_ for _ in ()).throw(RequestBudgetExhausted('revocation deferred'))
+        report=self.controller.cycle()
+        self.assertEqual(report['deferred'],'github_budget')
+        self.assertEqual(report['next_cursor'],'')
+        self.assertIsNone(self.engine.container)
+        self.assertFalse(self.queries.job(job)['cleanup'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT job_id FROM job_leases').fetchone()[0],job)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+        self.engine.after_reset=None
+        self.driver().cycle()
+        self.assertTrue(self.queries.job(job)['cleanup'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM job_leases').fetchone()[0],0)
+
     def test_pause_during_create_never_prepares_or_starts_worker(self):
         job = self.reserve()
         self.engine.after_create = lambda: self.life.pause(self.command())

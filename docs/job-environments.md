@@ -116,4 +116,15 @@ The read-only probe against `XRPL-Commons/glow` at
 `ceaba9628caf8c421958e1732713c375d317f49e` proposed `services: [mongodb]`, citing
 `package.json`, two module manifests, `docker-compose.yml`, the end-to-end Compose
 file and `tests/e2e/fixtures/global-setup.ts`. No profile was applied to a live
-factory. Running glow's remediation PR remains a separate live qualification step.
+factory during that initial probe.
+
+Live qualification was subsequently verified from retained execution evidence:
+[Glow PR #341](https://github.com/XRPL-Commons/glow/pull/341), merged on 2026-10-02,
+used a full/MongoDB issue override for its build, Review and Audit. Their pinned
+head `96c5a942ec0ef58a122cbd4cd7816f3f8b6998e6` passed 446 API tests across 48 files;
+its `npm test` command selects `vitest.config.api.ts` and `tests/api/**`.
+The records also cover isolated MongoDB, eight migrations and authentication/reset
+browser checks. The 2026-10-09 supported update qualified the currently installed
+full image. [Issue #97](https://github.com/XRPL-Commons/forge/issues/97) records the
+exact build/image identities and acceptance evidence. No optional repository
+default or duplicate remediation run was required.

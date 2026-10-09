@@ -710,6 +710,10 @@ not the recovery backup. New installs use the database directly.
 
 ## Observation and performance
 
+The implemented [observation sweep contract](../observation-sweeps.md) describes
+member continuation, phase fairness and durable measurements. Repository batching
+and the live latency targets below still require separate qualification.
+
 Removing serialization alone does not make GitHub fast. The current supervisor
 has a wall-clock budget and rotates issues; moving the same network loop behind
 SQL would retain this limit. The cutover must change both local persistence and

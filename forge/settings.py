@@ -264,8 +264,7 @@ class Settings:
         except BlockingIOError:
             return False
 
-    def view(self, *, config=None):
-        config = self.load() if config is None else validate(config)
+    def _repository_views(self, config, *, runtime=None):
         observation, now = self.observation(), self.clock()
         role_views, inventories = {}, {}
         candidates = {r['id']: dict(r) for r in config['repositories']}
@@ -309,9 +308,18 @@ class Settings:
                                  'configured': identifier in configured, 'access': access,
                                  'access_ready': ready, 'dispatch_allowed': repo['enabled'] and ready})
         from .repository_setup import RepositorySetup
-        repositories = RepositorySetup(self).views(repositories, config)
+        repositories = RepositorySetup(self).views(repositories, config, runtime=runtime)
         for row in repositories:
             row['dispatch_allowed'] = row['enabled'] and row['access_ready'] and row['protection_ready']
+        return role_views, sorted(repositories, key=lambda r: r['name'].lower())
+
+    def repository_views(self, *, runtime):
+        """Read repository readiness with the projection's validated runtime."""
+        return self._repository_views(self.load(), runtime=runtime)[1]
+
+    def view(self, *, config=None):
+        config = self.load() if config is None else validate(config)
+        role_views, repositories = self._repository_views(config)
         sync = self.sync()
         # A server crash must not leave the UI permanently showing "refreshing".
         try:
@@ -321,7 +329,7 @@ class Settings:
         except BlockingIOError:
             pass
         return {'config': config, 'revision': digest(config), 'configured': self.configured(),
-                'roles': role_views, 'repositories': sorted(repositories, key=lambda r: r['name'].lower()),
+                'roles': role_views, 'repositories': repositories,
                 'sync': sync, 'config_file': 'factory.json'}
 
     def admission(self, repo):

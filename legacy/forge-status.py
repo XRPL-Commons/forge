@@ -8,6 +8,7 @@ only the locked supervisor acts on it.
 import hashlib
 import json, re, subprocess, os, secrets, hmac, threading, ipaddress
 from pathlib import Path
+from time import perf_counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -64,7 +65,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
-    def _send(self, body, ctype="application/json", headers=None, status=200, etag=None):
+    def _send(self, body, ctype="application/json", headers=None, status=200, etag=None, timings=None):
         audit = getattr(self, '_mutation_audit', None)
         if audit is not None:
             try:
@@ -77,13 +78,26 @@ class H(BaseHTTPRequestHandler):
         # browser/proxy cache. Include the action token in the digest so a
         # service restart always sends the new capability with a fresh body.
         etag = etag or ('W/"' + hashlib.sha256(data).hexdigest() + '"' if status == 200 and self.command == 'GET' and ctype == 'application/json' else None)
-        if etag and self.headers.get('If-None-Match') == etag:
+        conditional_started = perf_counter() if timings is not None else None
+        unchanged = bool(etag and self.headers.get('If-None-Match') == etag)
+        timing_header = None
+        if timings is not None:
+            values = dict(timings)
+            if unchanged:
+                values['conditional'] = (perf_counter() - conditional_started) * 1000
+            # Ends at response preparation: socket transfer and the UI proxy are
+            # outside this process and cannot be measured in this response header.
+            values['request'] = (perf_counter() - self._request_started) * 1000
+            timing_header = ', '.join(f'{name};dur={duration:.3f}' for name, duration in values.items())
+        if unchanged:
             self.send_response(304)
+            if timing_header is not None: self.send_header('Server-Timing', timing_header)
             self.send_header('ETag', etag)
             self.send_header('Cache-Control', 'private, no-store')
             self.end_headers()
             return
         self.send_response(status)
+        if timing_header is not None: self.send_header('Server-Timing', timing_header)
         if audit is not None: self.send_header('X-Forge-Request-ID', audit.caller_id)
         if etag: self.send_header('ETag', etag)
         self.send_header("Content-Type", ctype)
@@ -104,8 +118,23 @@ class H(BaseHTTPRequestHandler):
         return super().send_error(code, message, explain)
 
     def _cached(self, key, build):
-        etag, body = VIEWS.response(WD, key, build, self._action_token, self.headers.get('If-None-Match'))
-        self._send(body or b'', etag=etag)
+        projection_ms = None
+        def project():
+            nonlocal projection_ms
+            started = perf_counter()
+            try:
+                return build()
+            finally:
+                projection_ms = (perf_counter() - started) * 1000
+        started = perf_counter()
+        etag, body = VIEWS.response(WD, key, project, self._action_token, self.headers.get('If-None-Match'))
+        cache_ms = (perf_counter() - started) * 1000
+        # Validator short-circuiting need not consult a cached body: it also
+        # works after eviction. Do not call that a serialized-response cache hit.
+        outcome = 'cache_miss' if projection_ms is not None else 'cache_validated' if body is None else 'cache_hit'
+        timings = {outcome: cache_ms}
+        if projection_ms is not None: timings['projection'] = projection_ms
+        self._send(body or b'', etag=etag, timings=timings)
 
     def _browser(self):
         from http.cookies import SimpleCookie, CookieError
@@ -501,6 +530,7 @@ class H(BaseHTTPRequestHandler):
             self._send(json.dumps({'ok':False,'reason':'Operation unavailable; check server configuration'}))
 
     def do_GET(self):
+        self._request_started = perf_counter()
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         u = urlparse(self.path)

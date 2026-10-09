@@ -11,6 +11,10 @@ class SqliteSettings(Settings):
         with self.database.read_session():
             return super().view(config=config)
 
+    def repository_views(self, *, runtime):
+        with self.database.read_session():
+            return super().repository_views(runtime=runtime)
+
     @property
     def domain(self):
         return self.authority.domain('factory.json')
