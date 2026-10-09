@@ -257,3 +257,47 @@ new staging destination after such changes. An interrupted production activation
 must resume with its original source/tool identity. Production activation and a real
 issue reaching its first merge remain release-validation steps; implementing this
 command does not claim that either has already happened. #209 remains open.
+
+## Upgrade an installation that already uses SQLite
+
+Use the local CLI from the release you are installing. This updates the selected
+host and database together; normal API reads never apply migrations.
+
+```sh
+forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
+  --root /home/luc/ops/forge-watchdog --json
+forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
+  --root /home/luc/ops/forge-watchdog --source-revision FULL_RELEASE_COMMIT \
+  --apply --json
+```
+
+The first command reports the current and target schemas and any workers still
+awaiting cleanup. The second verifies that the CLI bundle matches the selected
+release, then temporarily disables new agent work through the versioned runtime
+configuration. Existing workers continue to finish and clean up; new merge sends
+wait too, while already-sent merge outcomes can still be reconciled. If workers
+remain, it returns `status: draining` and a complete `next_command` promptly.
+Run that command again when they have finished. The supervisor cannot refill
+capacity while the drain setting remains in place.
+
+Once cleanup is complete, the CLI stops managed writers, advances the checkout,
+and applies pending migrations in one transaction. It restores the original
+`enabled` value before the normal updater restarts services. Restoration changes
+only that field and preserves other settings edited during the drain. If an
+operator re-enables agents before draining completes, the CLI reports
+`drain_configuration_changed` and keeps the newer choice; switch agents off
+explicitly before resuming. Identities, issue history and worker budgets remain.
+
+If the connection drops or the update fails, repeat the **same apply
+command with the same release SHA**. The private maintenance receipt records
+whether the schema committed, so a retry finishes deployment without repeating
+the data change. An invalid timestamp or failed integrity check rolls back the
+migration transaction; services remain stopped until a corrected forward update
+can complete. To install a corrected release, use its CLI and explicitly apply
+its new full commit SHA; the command verifies forward ancestry and retains the
+services stopped by the earlier attempt. There is no JSON switch-back.
+
+The timestamp upgrade normalizes existing issue and pull-request observations to
+UTC with six fractional digits. It fixes unchanged imported issues being treated
+as newer than fresh GitHub reads. The following migration indexes request audit
+lookups so their cost does not grow with unrelated retained history.

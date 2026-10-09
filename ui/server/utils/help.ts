@@ -1,10 +1,12 @@
 // Render installation-owned guides with the same Markdown parser and HTML
-// allowlist as issue descriptions. Diagrams remain plain source data until the
+// text allowlist as issue descriptions, plus catalogued Help images only.
+// Diagrams remain plain source data until the
 // browser renders them with Mermaid's strict mode; raw document HTML is disabled.
 import path from 'node:path'
 import MarkdownIt from 'markdown-it'
 import sanitizeHtml from 'sanitize-html'
 import { MARKDOWN_ALLOWLIST } from './markdown'
+import { helpImage } from '../../shared/help-assets'
 import { HELP_TOPICS, helpTopic, helpTopicHref } from '../../shared/help-topics'
 
 export type TocEntry = { id: string; text: string; level: 1 | 2 }
@@ -16,6 +18,7 @@ const ALLOWED_ATTRIBUTES = {
   ...Object.fromEntries(Object.entries(MARKDOWN_ALLOWLIST.attributes).filter(([tag]) => tag !== 'input')),
   h1: ['id'], h2: ['id'], h3: ['id'], h4: ['id'], h5: ['id'], h6: ['id'],
   div: ['class'],
+  img: ['src', 'alt', 'width', 'height', 'loading', 'decoding'],
 }
 
 function resolveHref(href: string): string | null {
@@ -38,11 +41,20 @@ function resolveHref(href: string): string | null {
 
 function sanitize(html: string): string {
   return sanitizeHtml(html, {
-    allowedTags: [...MARKDOWN_ALLOWLIST.tags.filter(tag => tag !== 'input'), 'div'],
+    allowedTags: [...MARKDOWN_ALLOWLIST.tags.filter(tag => tag !== 'input'), 'div', 'img'],
     allowedAttributes: ALLOWED_ATTRIBUTES,
     allowedSchemes: ['http', 'https'],
     disallowedTagsMode: 'discard',
     transformTags: {
+      img: (_tagName, attribs): sanitizeHtml.Tag => {
+        const asset = helpImage(attribs.src ?? '')
+        const alt = (attribs.alt ?? '').trim()
+        if (!asset || !alt) return { tagName: 'span', attribs: {} }
+        return { tagName: 'img', attribs: {
+          src: `/_ui/help-assets/${asset.name}`, alt,
+          width: String(asset.width), height: String(asset.height), loading: 'lazy', decoding: 'async',
+        } }
+      },
       a: (tagName, attribs): sanitizeHtml.Tag => {
         const href = resolveHref(attribs.href ?? '')
         if (!href) return { tagName: 'span', attribs: {} }

@@ -82,6 +82,13 @@ class Queries:
                              display_status=status.describe('observation_unavailable'))
         else:
             lifecycle['display_status'] = status.describe(blocker['code'] if blocker else unit['state'])
+        if projected == 'untracked' and issue['github_state'] == 'open':
+            failed = connection.execute('SELECT reason_code,observed_at,retry_after FROM issue_discovery_observations '
+                                        'WHERE issue_id=? AND revision_id=?',
+                                        (issue_id, issue['current_revision_id'])).fetchone()
+            if failed:
+                lifecycle.update(reason_code=failed['reason_code'], display_status=status.describe(failed['reason_code']))
+                issue['discovery_observation'] = dict(failed)
         issue['lifecycle'] = lifecycle
         return issue
 
@@ -157,7 +164,7 @@ class Queries:
                 'next_cursor': page[-1]['id'] if len(rows) > limit else None,
             }
 
-    def events(self, *, after=0, limit=50, unit_id=None):
+    def events(self, *, after=0, limit=50, unit_id=None, include_payload=True):
         limit = _limit(limit)
         if type(after) is not int or after < 0:
             raise ValueError('after must be a nonnegative event sequence')
@@ -168,14 +175,15 @@ class Queries:
         with self.store.read_snapshot() as connection:
             rows = connection.execute(
                 'SELECT sequence, transaction_id, unit_id, issue_id, job_id, '
-                'kind, at, actor_id, payload_json FROM events WHERE '
+                'kind, at, actor_id' + (', payload_json' if include_payload else '') + ' FROM events WHERE '
                 + ' AND '.join(clauses) + ' ORDER BY sequence LIMIT ?',
                 (*parameters, limit + 1),
             ).fetchall()
             items = []
             for row in rows[:limit]:
                 item = dict(row)
-                item['payload'] = json.loads(item.pop('payload_json'))
+                if include_payload:
+                    item['payload'] = json.loads(item.pop('payload_json'))
                 items.append(item)
             return {
                 'items': items,

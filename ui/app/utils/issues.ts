@@ -103,6 +103,9 @@ export interface IssueListResponse {
   repositories: IssueScope[]; complete: boolean; actions: IssueActionStatus[]
 }
 export interface IssueDetailResponse {
+  cursor?: string; jobs?: import('./factory').JobView[]
+  factory_issue?: import('./factory').LedgerIssueView | null
+  deployments?: import('./factory').FactoryView['deployments']
   ok: true; controls_token: string; issue: IssueDetail; repositories: IssueScope[]; actions: IssueActionStatus[]
 }
 

@@ -63,12 +63,14 @@ def ssh(host, command):
 def call(args,action,**fields):
     # Reuse validation of explicit host/source/root intent.
     Host(args.ssh,args.source,args.root)
-    resume = shlex.join(['forge', 'migrate', 'resume', '--ssh', args.ssh,
+    resume = shlex.join(['forge', 'migrate', 'upgrade' if action=='upgrade' else 'resume', '--ssh', args.ssh,
                          '--source', args.source, '--root', args.root, '--json'])
+    if action=='upgrade' and getattr(args,'source_revision',None):
+        resume += ' --apply --source-revision '+shlex.quote(args.source_revision)
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume'} else 300)
+    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
             'The host operation failed. Resume maintenance with: ' + resume)
     value=json.loads(result.stdout)
@@ -76,11 +78,16 @@ def call(args,action,**fields):
         import re
         token=lambda key,default: value[key] if isinstance(value.get(key),str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',value[key]) else default
         code,kind,stage=token('error','failed'),token('exception_type','Exception'),token('stage','unknown')
+        if action=='upgrade' and code=='drain_configuration_changed':
+            raise SetupError('migration_'+code,'Runtime settings changed while maintenance was draining. The CLI kept the newer settings. '
+                'Switch off agents explicitly before continuing, then resume with: '+resume)
+        if action=='upgrade':
+            raise SetupError('migration_'+code,'Schema upgrade could not proceed: '+code+' ('+kind+' at '+stage+'). Resume with: '+resume)
         repair=resume+' --accept-tool-update --source-revision '+(getattr(args,'source_revision',None) or '<full-commit-sha>')
         raise SetupError('migration_'+code,'Migration could not proceed: '+code+' ('+kind+' at '+stage+'). '
             +'Resume maintenance with: '+resume+'. For corrected tools before selection: '+repair)
 
-    if value.get('next_command') == 'forge migrate resume':
+    if value.get('next_command') in {'forge migrate resume', 'forge migrate upgrade'}:
         value['next_command'] = resume
     return value
 
@@ -128,6 +135,12 @@ def execute(args):
     try:
         repair=getattr(args,'accept_tool_update',False)
         revision=getattr(args,'source_revision',None)
+        if args.migration_command=='upgrade':
+            require(args.ssh and args.source and args.root,'migration_host_required','Select --ssh, --source and --root for this host.')
+            require(not repair,'upgrade_options_invalid','Schema upgrades do not use --accept-tool-update.')
+            import re
+            require(not args.apply or isinstance(revision,str) and re.fullmatch(r'[0-9a-f]{40}',revision),'upgrade_revision_required','Supply the full release SHA with --source-revision when using --apply.')
+            return call(args,'upgrade',apply=args.apply,source_revision=revision)
         require(not (repair or revision) or args.migration_command=='resume','migration_repair_resume_required','Tool updates are only accepted by migrate resume before SQLite selection.')
         require(not repair or revision is not None,'migration_repair_revision_required','Select the exact corrected source with --source-revision and --accept-tool-update.')
         require(not revision or repair,'migration_repair_authorization_required','Supply --accept-tool-update to authorize this source revision.')

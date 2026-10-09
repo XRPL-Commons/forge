@@ -31,9 +31,9 @@ class Reconciliation(Lifecycle):
                     or proof.get('issue_version')!=issue['version'] or observed.get('number')!=issue['github_number']
                     or observed.get('state')!='closed' or observed.get('state_reason') not in {'completed','not_planned','duplicate'}):
                 raise TransitionError('migration closure requires fresh exact issue provenance')
-            self._remote_time(observed['updated_at']); self._prove_not_merged(db,unit,proof)
+            updated = self._remote_time(observed['updated_at']); self._prove_not_merged(db,unit,proof)
             db.execute("UPDATE issues SET github_state='closed',state_reason=?,remote_updated_at=?,observed_at=?,version=version+1 WHERE id=?",
-                (observed['state_reason'],observed['updated_at'],self.clock(),issue['id']))
+                (observed['state_reason'],updated,self.clock(),issue['id']))
             self._event(db,command,'issue_observed',proof,issue_id=issue['id'])
             self._settle(db,command,unit,'closed',close_code='github_'+observed['state_reason'])
             return {'reconciled':True,'closed':True,'close_code':'github_'+observed['state_reason']}
@@ -73,7 +73,7 @@ class Reconciliation(Lifecycle):
             observed=proof['issue']
             if observed.get('number')!=issue['github_number'] or observed.get('state')!='open' or 'pull_request' in observed:
                 raise TransitionError('migration observation must identify the open issue')
-            self._remote_time(observed['updated_at'])
+            updated = self._remote_time(observed['updated_at'])
             revision=_id(command.request_id,'reconciled-revision')
             requirements=proof['requirements']; requirements_hash=manifest_hash(requirements)
             db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -81,7 +81,7 @@ class Reconciliation(Lifecycle):
             from .presentation import record_revision_display
             record_revision_display(db,revision,observed.get('body') or '',requirements)
             db.execute('UPDATE issues SET current_revision_id=?,remote_updated_at=?,observed_at=?,labels_json=?,assignees_json=?,assignee_types_json=?,version=version+1 WHERE id=?',
-                (revision,observed['updated_at'],self.clock(),_json(observed.get('labels',[])),_json(observed.get('assignees',[])),_json(observed.get('assignee_types',{})),issue['id']))
+                (revision,updated,self.clock(),_json(observed.get('labels',[])),_json(observed.get('assignees',[])),_json(observed.get('assignee_types',{})),issue['id']))
             db.execute('UPDATE unit_issues SET requirements_revision_id=? WHERE id=?',(revision,member['id']))
             candidate_id=unit['current_candidate_id']
             phase=phase_in(db,unit,investigations)

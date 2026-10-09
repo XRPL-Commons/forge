@@ -4,7 +4,8 @@ import time
 import uuid
 
 from ..settings import digest
-from ..store.models import Command, TransitionError
+from ..store.models import Command, TransitionError, RequirementsStale, complete_requirements
+from ..store.remote_time import order as remote_order
 from ..store.queries import Queries, _limit
 from ..store.runtime import writable
 from ..store.transitions import Lifecycle, manifest_hash
@@ -16,6 +17,35 @@ class StoreInventory:
     def __init__(self, store, settings, github, *, config, clock=time.time):
         self.store, self.settings, self.github = store, settings, github
         self.config, self.clock = config, clock
+
+    def _observed(self, db, key, **payload):
+        db.execute('INSERT INTO events(transaction_id,issue_id,kind,at,actor_id,payload_json) VALUES(?,?,?,?,?,?)',
+                   (str(uuid.uuid4()), key, 'issue_observed', self.clock(), 'supervisor:inventory',
+                    json.dumps({'source': 'inventory', **payload})))
+
+    def failure(self, key, reason):
+        """Persist one bounded observation, with a retry delay, for this issue."""
+        if reason not in {'requirements_stale', 'remote_timestamp_invalid', 'admission_conflict'}:
+            reason = 'admission_conflict'
+        now = self.clock()
+        with self.store.write() as db:
+            writable(db)
+            row = db.execute('SELECT current_revision_id FROM issues WHERE id=?', (key,)).fetchone()
+            if row:
+                previous = db.execute('SELECT revision_id,reason_code FROM issue_discovery_observations WHERE issue_id=?', (key,)).fetchone()
+                db.execute('INSERT INTO issue_discovery_observations VALUES(?,?,?,?,?) '
+                           'ON CONFLICT(issue_id) DO UPDATE SET revision_id=excluded.revision_id,'
+                           'reason_code=excluded.reason_code,observed_at=excluded.observed_at,retry_after=excluded.retry_after',
+                           (key, row[0], reason, now, now + self.config['availability_retry_seconds']))
+                if previous is None or tuple(previous) != (row[0], reason):
+                    self._observed(db, key, reason_code=reason)
+        return reason
+
+    def clear_failure(self, key):
+        with self.store.write() as db:
+            writable(db)
+            if db.execute('DELETE FROM issue_discovery_observations WHERE issue_id=?', (key,)).rowcount:
+                self._observed(db, key, reason_code=None)
 
     def _label_display(self, repo, key, labels):
         labels_hash=digest(sorted(labels))
@@ -38,6 +68,7 @@ class StoreInventory:
             if current and sorted(json.loads(current[0]))==sorted(labels):
                 from ..store.presentation import record_label_display
                 record_label_display(db,key,labels,events)
+                self._observed(db, key, labels_hash=labels_hash)
 
     def record(self, repo, remote, requirements=None):
         """Inventory facts cannot overwrite a live unit's ordered observations.
@@ -72,12 +103,13 @@ class StoreInventory:
             if member['state'] not in ('merged', 'closed', 'dissolved'):
                 return key
             # Historical units stay terminal, while reopened GitHub facts change.
-            if previous and (previous['remote_updated_at'] or '') > updated:
+            if previous and remote_order(previous['remote_updated_at']) > remote_order(updated):
                 return key
             Lifecycle(self.store, clock=self.clock).observe_issue(
                 Command(str(uuid.uuid4()), 'supervisor:inventory', member['id'], member['version']), key,
                 **facts, requirements=requirements, generation=(previous['collection_generation'] if previous else 0) + 1,
                 hold_labels=self.config['hold_labels'])
+            if complete_requirements(requirements):self.clear_failure(key)
             return key
         with self.store.write() as db:
             writable(db)
@@ -85,7 +117,7 @@ class StoreInventory:
             if db.execute('SELECT 1 FROM unit_issues WHERE issue_id=? LIMIT 1', (key,)).fetchone():
                 return key
             previous = db.execute('SELECT * FROM issues WHERE id=?', (key,)).fetchone()
-            if previous and (previous['remote_updated_at'] or '') > updated:
+            if previous and remote_order(previous['remote_updated_at']) > remote_order(updated):
                 return key
             db.execute('INSERT INTO repositories(id,full_name,enabled) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',
                        (repo['id'], repo['name'], int(repo.get('enabled', False))))
@@ -107,7 +139,15 @@ class StoreInventory:
             db.execute('UPDATE issues SET github_state=?,state_reason=?,current_revision_id=?,remote_updated_at=?,collection_generation=collection_generation+1,'
                        'labels_json=?,assignees_json=?,assignee_types_json=?,observed_at=?,reopened_version=?,version=version+1 WHERE id=?',
                        (state, facts['state_reason'], revision, updated, json.dumps(labels), json.dumps(people), json.dumps(types), self.clock(), reopened, key))
+            observed = (state, facts['state_reason'], revision, updated, sorted(labels), sorted(people), types)
+            before = ((previous['github_state'], previous['state_reason'], previous['current_revision_id'],
+                       previous['remote_updated_at'], sorted(json.loads(previous['labels_json'])),
+                       sorted(json.loads(previous['assignees_json'])), json.loads(previous['assignee_types_json']))
+                      if previous else None)
+            if before != observed:
+                self._observed(db, key, revision_id=revision)
         self._label_display(repo,key,labels)
+        if complete_requirements(requirements):self.clear_failure(key)
         return key
 
     def refresh(self, force=False):
@@ -131,6 +171,7 @@ class StoreInventory:
                     # Captured scan facts belong to their original observation.
                     details.pop('scan', None)
                     details.pop('scan_issues_present', None)
+                    details.pop('issue_errors', None)
                     people, authors, pulls = None, None, None
                     try:
                         if cursor['page'] > 100:
@@ -138,8 +179,17 @@ class StoreInventory:
                         rows = self.github.call('controller', item, 'GET', f"/issues?state={cursor['state']}&sort=created&direction=asc&per_page=100&page={cursor['page']}")
                         if not isinstance(rows, list) or len(rows) > 100:
                             raise GitHubUnavailable('Issue inventory is unavailable')
+                        issue_errors = []
                         for row in rows:
-                            self.record(repo, row)
+                            try:
+                                self.record(repo, row)
+                            except TransitionError as failure:
+                                number = row.get('number')
+                                reason = self.failure(f"{repo['id']}:{number}", getattr(failure, 'code', 'admission_conflict'))
+                                issue_errors.append({'number': number, 'reason_code': reason})
+                        if issue_errors:
+                            details['issue_errors'] = issue_errors
+                            error = 'issue_observation_failed'
                         if len(rows) == 100:
                             cursor['page'] += 1
                         elif cursor['state'] == 'open':
@@ -215,8 +265,10 @@ class DiscoveryController:
             rows = db.execute("SELECT i.id,i.github_number,r.id AS repo_id,r.full_name FROM issues i JOIN repositories r ON r.id=i.repository_id "
                 "WHERE i.id>? AND r.enabled=1 AND i.github_state='open' AND EXISTS(SELECT 1 FROM json_each(i.labels_json) l WHERE l.value=?) "
                 'AND NOT EXISTS(SELECT 1 FROM unit_issues m WHERE m.issue_id=i.id) '
+                'AND NOT EXISTS(SELECT 1 FROM issue_discovery_observations d WHERE d.issue_id=i.id '
+                'AND d.revision_id=i.current_revision_id AND d.retry_after>?) '
                 'AND NOT EXISTS(SELECT 1 FROM imported_operator_requests p JOIN issue_action_requests q ON q.id=p.request_id '
-                'WHERE q.issue_id=i.id AND p.interrupted_at IS NOT NULL) ORDER BY i.id LIMIT ?', (after, self.config['ready_label'], limit + 1)).fetchall()
+                'WHERE q.issue_id=i.id AND p.interrupted_at IS NOT NULL) ORDER BY i.id LIMIT ?', (after, self.config['ready_label'], self.clock(), limit + 1)).fetchall()
         results = []
         for row in rows[:limit]:
             item = dict(repo=row['full_name'], repo_id=row['repo_id'], number=row['github_number'])
@@ -234,9 +286,15 @@ class DiscoveryController:
                 if not self.github.protections(item, {'base_ref': target}):
                     continue
                 issue = Queries(self.store).issue(row['id'])
+                if not complete_requirements(issue['requirements']):
+                    raise RequirementsStale('admission requires fresh complete issue requirements')
                 result = Lifecycle(self.store, clock=self.clock).admit_known_issue(request_id=str(uuid.uuid4()), actor_id='supervisor:discovery',
                     unit_id=str(uuid.uuid4()), issue_id=row['id'], expected_issue_version=issue['version'], base_branch=target)
+                self.inventory.clear_failure(row['id'])
                 results.append({'issue_id': row['id'], **result})
-            except (GitHubUnavailable, TransitionError, OSError) as error:
+            except TransitionError as error:
+                reason = self.inventory.failure(row['id'], getattr(error, 'code', 'admission_conflict'))
+                results.append({'issue_id': row['id'], 'reason_code': reason})
+            except (GitHubUnavailable, OSError) as error:
                 results.append({'issue_id': row['id'], 'error': getattr(error, 'code', type(error).__name__)})
         return {'items': results, 'next_cursor': rows[limit - 1]['id'] if len(rows) > limit else None}

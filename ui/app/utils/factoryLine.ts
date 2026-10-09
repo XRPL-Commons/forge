@@ -2,11 +2,23 @@
 // (components/FactoryLine.vue). The strip draws the same issues the board
 // groups, one cube per issue, so everything here is derived from
 // groupIssues() and the raw ledger fields it does not carry. Motion is never
-// simulated: a cube moves only when a poll puts its issue somewhere else.
+// simulated: committed event frames authorize movement between projected positions.
 import {
   COLUMN_ROLES, NEXT_ROLE, groupIssues, mergedToday,
   type CardModel, type ColumnRole, type FactoryView, type IssueGroups, type LedgerIssueView,
 } from './factory'
+
+import type { FactoryTransition } from './factoryStore'
+
+/** Align motion to the committed event, using server age to avoid client clock skew. */
+export function lineTransition(frame: FactoryTransition | null | undefined, cursor: string | undefined, consumed: string | null, now: number) {
+  if (!frame || frame.cursor !== cursor || frame.cursor === consumed) return null
+  const latest = frame.events.at(-1)
+  const delay = Math.max(0, now - frame.receivedAt)
+  const age = latest ? Math.max(0, (frame.at - latest.at) * 1000) + delay : Infinity
+  const oldestAge = latest ? Math.max(0, (frame.at - Math.min(...frame.events.map(event => event.at))) * 1000) + delay : Infinity
+  return { cursor: frame.cursor, animate: !frame.resync && oldestAge < 1500, at: now - age }
+}
 
 export type LineStage = 'queued' | ColumnRole | 'approval' | 'merged' | 'attention' | 'waiting' | 'hold'
 // Why an issue waits for the operator: the server's `attention_kind` code.

@@ -117,6 +117,15 @@ class RepositoryRuleTests(unittest.TestCase):
                 reader = self.reader(None, [rule()], bypass=unknown)
                 self.assertEqual(reader.protection_report(self.item, {'base_ref': 'main'})['bypass']['status'], 'operator_review')
 
+    def test_rule_fix_command_visibility_requires_the_complete_actor_list(self):
+        github = self.reader(None, [rule()], bypass='never')
+        hidden = github.protection_report(self.item, {'base_ref': 'main'})['bypass']['sources'][0]
+        self.assertIs(hidden['bypass_actors_visible'], False)
+        original = github.call.side_effect
+        github.call.side_effect = lambda *args: {'current_user_can_bypass': 'never', 'bypass_actors': []} if '/rulesets/' in args[3] else original(*args)
+        visible = github.protection_report(self.item, {'base_ref': 'main'})['bypass']['sources'][0]
+        self.assertIs(visible['bypass_actors_visible'], True)
+
     def test_each_effective_review_rule_needs_controller_bypass(self):
         protection = classic()
         protection['required_pull_request_reviews']['bypass_pull_request_allowances']['apps'] = [{'id': 999}]

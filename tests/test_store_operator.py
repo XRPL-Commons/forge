@@ -213,3 +213,23 @@ class OperatorTests(unittest.TestCase):
         views=PipelineViews(self.store,runtime=runtime,clock=lambda:100)
         for call in (lambda:views.issues(),lambda:views.factory(section='board'),lambda:views.issues(key='i')):
             runtime.reset_mock();call();runtime.assert_called_once_with()
+
+    def test_public_projection_uses_one_connection_for_config_repositories_and_jobs(self):
+        from unittest.mock import patch
+        self.reserve()
+        def runtime():
+            with self.store.read_snapshot() as db:
+                db.execute('SELECT 1').fetchone()
+            return validate({})
+        def repositories():
+            with self.store.read_snapshot() as db:
+                return [dict(id=r['id'], name=r['full_name'], enabled=bool(r['enabled']))
+                        for r in db.execute('SELECT * FROM repositories')]
+        views = PipelineViews(self.store, runtime=runtime, repositories=repositories, clock=lambda:100)
+        for call in (lambda:views.factory(section='board'), lambda:views.issues(key='i'), lambda:views.issues()):
+            from forge.store.queries import Queries
+            with patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect, \
+                    patch.object(Queries, '_issue', wraps=Queries._issue) as issue_read:
+                call()
+                self.assertEqual(connect.call_count, 1)
+                self.assertEqual(issue_read.call_count, 1)

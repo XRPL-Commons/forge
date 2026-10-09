@@ -2,7 +2,7 @@
 
 `forge/factory` implements the [durable factory contract](software-factory-spec.md).
 It is Forge's only operating mode; the earlier tmux fleet supervisor has been removed.
-See [runtime setup](factory-runtime.md) for the exact configuration and host policy.
+See [runtime setup](factory-runtime-reference.md) for the exact configuration and host policy.
 
 ## Implemented
 

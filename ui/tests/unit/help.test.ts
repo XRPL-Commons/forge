@@ -2,6 +2,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { HELP_ASSETS, helpAsset, helpImage } from '../../shared/help-assets'
+import { renderMarkdown } from '../../server/utils/markdown'
 import { HELP_TOPICS, helpTopic } from '../../shared/help-topics'
 import { REPO_DEFAULT_HELP_DOC, helpCandidates, renderHelp, resolveHelpDocPath } from '../../server/utils/help'
 
@@ -75,9 +77,10 @@ describe('renderHelp', () => {
     expect(html).not.toContain('window.injected=1</script>')
   })
 
-  it('the real docs/onboarding.md still produces the two anchors the UI deep-links', () => {
+  it('preserves every heading linked from the current UI', () => {
     const source = readFileSync(ONBOARDING_MD, 'utf8')
     const { html, toc } = renderHelp(source)
+    expect(html).toContain('id="configuration-and-recovery"')
     expect(html).toContain('id="host-installation"')
     expect(html).toContain('id="github-repository-protection"')
     expect(toc.map((entry) => entry.id)).toContain('github-repository-protection')
@@ -192,8 +195,8 @@ describe('operator help guides', () => {
   })
 
   it('keeps guide links and fragments in Forge, with source links on GitHub', () => {
-    const { html } = renderHelp('[states](issue-state-machine.md#dispatch-eligibility) [source](../forge/factory/contracts.py) [here](#main-path) [bad](//evil.example)')
-    expect(html).toContain('href="/setup-help?topic=workflow#dispatch-eligibility"')
+    const { html } = renderHelp('[states](issue-state-machine.md#when-progress-stops) [source](../forge/factory/contracts.py) [here](#main-path) [bad](//evil.example)')
+    expect(html).toContain('href="/setup-help?topic=workflow#when-progress-stops"')
     expect(html).toContain('href="https://github.com/XRPL-Commons/forge/blob/main/forge/factory/contracts.py"')
     expect(html).toContain('href="#main-path"')
     expect(html).not.toContain('href="//')
@@ -209,13 +212,66 @@ describe('operator help guides', () => {
     expect(doc.blocks[2]).toHaveProperty('html', expect.stringContaining('After'))
   })
 
-  it('renders every shipped guide and all three state-machine diagrams', () => {
+  it('ships concise illustrated guides with at least eight strict-mode diagrams', () => {
+    let diagrams = 0
+    const used = new Set<string>()
     for (const topic of HELP_TOPICS) {
       const source = readFileSync(fileURLToPath(new URL(`../../../docs/${topic.file}`, import.meta.url)), 'utf8')
       const doc = renderHelp(source)
       expect(doc.toc.length).toBeGreaterThan(1)
       expect(doc.html).not.toContain('<script')
-      if (topic.id === 'workflow') expect(doc.blocks.filter(b => 'diagram' in b)).toHaveLength(3)
+      const count = doc.blocks.filter(b => 'diagram' in b).length
+      diagrams += count
+      expect(count).toBeGreaterThanOrEqual(2)
+      expect(source.split(/\s+/).length).toBeLessThan(topic.id === 'setup' || topic.id === 'runtime' ? 1600 : 900)
+      for (const match of doc.html.matchAll(/src="\/_ui\/help-assets\/([a-z-]+\.svg)"/g)) used.add(match[1]!)
+      expect(doc.html).toContain('<img')
+    }
+    expect(diagrams).toBeGreaterThanOrEqual(8)
+    expect(used.size).toBeGreaterThanOrEqual(6)
+    expect([...used].sort()).toEqual(Object.keys(HELP_ASSETS).sort())
+  })
+})
+
+
+describe('Help image boundary', () => {
+  it('renders a bundled relative image with meaningful alt, fixed dimensions and lazy loading', () => {
+    const { html } = renderHelp('![Four role cubes](assets/setup-hero.svg)')
+    expect(html).toContain('<img src="/_ui/help-assets/setup-hero.svg" alt="Four role cubes" width="600" height="340" loading="lazy" decoding="async"')
+    expect(renderHelp('![Roles](/_ui/help-assets/setup-hero.svg)').html).toContain('<img')
+    expect(renderHelp('![](assets/setup-hero.svg)').html).not.toContain('<img')
+  })
+
+  it('discards external, data, protocol-relative and non-catalog image sources', () => {
+    for (const src of ['https://tracker.example/pixel.svg', 'http://example.test/a.png',
+      '//tracker.example/a.svg', 'data:image/svg+xml;base64,PHN2Zz4=',
+      'assets/unknown.svg', 'assets/../setup-hero.svg', 'assets/%2e%2e/setup-hero.svg',
+      '/_ui/help-assets/setup-hero.svg?tracking=yes', 'assets/setup-hero.svg#tracking',
+      'assets/constructor', 'assets/__proto__', '../docs/assets/setup-hero.svg']) {
+      expect(helpImage(src), src).toBeNull()
+      expect(renderHelp(`![Tracking](${src})`).html, src).not.toContain('<img')
+    }
+  })
+
+  it('does not extend image permissions to issue Markdown', () => {
+    for (const src of ['assets/setup-hero.svg', '/_ui/help-assets/setup-hero.svg', 'https://tracker.example/pixel.svg']) {
+      expect(renderMarkdown(`![No image](${src})`, 'XRPL-Commons/forge')).not.toContain('<img')
+    }
+  })
+
+  it('uses a finite catalog with self-contained, accessible light/dark SVGs', () => {
+    for (const name of ['../setup-hero.svg', '/etc/passwd', 'constructor', '__proto__', '', ['setup-hero.svg']]) {
+      expect(helpAsset(name)).toBeNull()
+    }
+    for (const [name, size] of Object.entries(HELP_ASSETS)) {
+      const source = readFileSync(fileURLToPath(new URL(`../../../docs/assets/${name}`, import.meta.url)), 'utf8')
+      expect(source).toContain(`viewBox="0 0 ${size.width} ${size.height}"`)
+      expect(source).toContain('<title id="title">')
+      expect(source).toContain('<desc id="desc">')
+      expect(source).toContain('prefers-color-scheme:dark')
+      expect(source).not.toMatch(/<script|<foreignObject|(?:href|src)=|url\(|\son[a-z]+=/i)
+      expect(size.width).toBeLessThanOrEqual(1200)
+      expect(size.height).toBeLessThanOrEqual(1200)
     }
   })
 })

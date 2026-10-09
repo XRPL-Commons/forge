@@ -22,6 +22,7 @@ const ORIGIN = `http://${HOST}:${PORT}`
 const CALLBACK_COOKIE = 'synthetic-cookie-Kf3n0pQ7rLxW9sVbZt2yHdE'
 
 let scenario = 'default'
+let sequence = 1
 let requests = []
 // Like the real server, a saved runtime is what later factory reads return.
 let savedSettings = null
@@ -248,6 +249,7 @@ const server = http.createServer(async (req, res) => {
 
   const rawBody = req.method === 'POST' ? await readBody(req) : ''
   const body = parseBody(rawBody, req.headers['content-type'])
+  if (req.method === 'POST') sequence++
 
   if (req.method === 'GET' && pathname === '/__requests') {
     return send(res, 200, requests)
@@ -382,6 +384,27 @@ const server = http.createServer(async (req, res) => {
   const segments = pathname.slice('/api/'.length).split('/').filter(Boolean)
   const base = segments.join('-')
 
+  if (req.method === 'GET' && base === 'factory-changes') {
+    record(req, pathname, query, body)
+    const before = Number((query.since || '').split(':')[1])
+    // Short idle waits keep deterministic UI tests quick; mutations still wake the
+    // feed by their sequence, and the response shape matches the production endpoint.
+    for (let left = 20; before === sequence && left && !res.destroyed; left--) await new Promise(resolve => setTimeout(resolve, 50))
+    if (res.destroyed) return
+    const board = withAttentionKinds(savedFactory || resolveGetFixture('factory', { section: 'board' }))
+    if (board.ok === false) return send(res, 200, board)
+    if (codingAccounts) board.coding_accounts = codingAccounts
+    const changed = before !== sequence
+    const detail = savedIssue || resolveGetFixture('issues', { issue: '1:610' })
+    const issues = {}
+    if (changed && detail?.issue) {
+      const { body, history, reviews, reviewers, default_reviewers, reviewers_requested, ...summary } = detail.issue
+      issues[summary.key] = summary
+    }
+    return send(res, 200, withToken({ cursor: `mock:${sequence}`, at: Date.now() / 1000, events: changed ? [{ sequence, issue_id: detail?.issue?.key || null, unit_id: null, job_id: null, kind: 'observed', at: Date.now() / 1000 }] : [],
+      issues, board: withToken({ ...board, cursor: `mock:${sequence}` }), resync: false }))
+  }
+
   if (req.method === 'GET') {
     record(req, pathname, query, body)
     let fixture = base === 'settings' && savedSettings ? savedSettings
@@ -390,7 +413,13 @@ const server = http.createServer(async (req, res) => {
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
-    if (base === 'factory') fixture = withAttentionKinds(fixture)
+    if (base === 'factory') fixture = { ...withAttentionKinds(fixture), cursor: `mock:${sequence}` }
+    if (base === 'issues' && query.issue && fixture.issue) {
+      const scoped = savedFactory || resolveGetFixture('factory', { issue: query.issue })
+      fixture = { ...fixture, cursor: `mock:${sequence}`, jobs: (scoped?.jobs || []).filter(job => job.issue_key === fixture.issue.key),
+        factory_issue: (scoped?.issues || []).find(issue => issue.key === fixture.issue.key) || null,
+        deployments: scoped?.deployments || {} }
+    }
     if (base === 'factory' && codingAccounts && fixture.ok !== false) fixture = { ...fixture, coding_accounts: codingAccounts }
     if (base === 'factory' && query.section === 'completed' && query.limit && fixture.ok !== false) {
       return send(res, 200, withToken(completedPage(fixture, query)))

@@ -43,7 +43,7 @@ Docker daemon or host kernel is outside the worker isolation boundary.
 Implementation: [proxy guards](ui/server/utils/proxy.ts),
 [API admission](legacy/forge-status.py), [client connections](docs/agent-connections.md),
 [host sign-in setup](docs/cli-server-setup.md), [runner](forge/factory/runner.py),
-and [runtime configuration and GitHub gates](docs/factory-runtime.md).
+and [runtime configuration and GitHub gates](docs/factory-runtime-reference.md).
 
 ## Isolation status
 

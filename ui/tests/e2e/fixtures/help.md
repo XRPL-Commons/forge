@@ -4,6 +4,10 @@ This is a fixed help document served by the e2e mock in place of the live
 `docs/onboarding.md`, so help-related specs never depend on that file's
 real content changing.
 
+![Four role cubes](assets/setup-hero.svg)
+
+![External tracking image](https://help-image.invalid/tracker.svg)
+
 ## Host installation
 
 Install the Forge worker host, register the systemd unit and confirm the

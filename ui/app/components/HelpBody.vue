@@ -39,6 +39,7 @@ function followGuide(event: MouseEvent) {
 .forge-help :deep(h2) { font-size: 1.25rem; margin: 1.7em 0 0.5em; }
 .forge-help :deep(h3) { font-size: 1.05rem; margin: 1.3em 0 0.4em; }
 .forge-help { overflow-wrap: anywhere; }
+.forge-help :deep(img) { display: block; max-width: 100%; height: auto; margin: 1.2em auto; border-radius: 16px; }
 .forge-help :deep(.help-table) { max-width: 100%; overflow-x: auto; margin: 1em 0; }
 .forge-help :deep(table) { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
 .forge-help :deep(th), .forge-help :deep(td) { min-width: 9rem; padding: 0.65em; border: 1px solid var(--color-line); text-align: left; vertical-align: top; }
