@@ -1,7 +1,9 @@
 """One investigation per failed assignment; findings never authorize publication.
 
-Recovery leases bypass only their own recovery wait and the failure budget. Any
-operator, ownership, setup or other applicable gate still blocks the worker.
+Recovery leases bypass their own recovery wait and the failure budget. Operator,
+ownership and setup gates still block the worker. Closure, changed requirements
+and invalidated current outputs stop implementation but cannot erase the
+diagnostic obligation against preserved inputs.
 Publication recovery is a separate controller-verified command, bound to the
 original build assignment, which corrects its original charge exactly once.
 """
@@ -46,11 +48,20 @@ def pending_mandatory(db, unit_id):
     return db.execute("SELECT 1 FROM attempt_failures WHERE unit_id=? AND recovery_required=1 AND investigation!='complete' LIMIT 1", (unit_id,)).fetchone() is not None
 
 
-def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recovery_job_id=None):
+def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recovery_job_id=None, *, diagnostic=True):
     gates = applicable_gates(db, unit, member_id, candidate_id)
     blocked = []
     for gate in gates:
         details = json.loads(gate['details_json'])
+        if diagnostic and (
+                gate['code'] == 'external_change' and gate['id'] is None and details.get('reason') == 'issue_closed'
+                or gate['code'] == 'membership_decision' and details.get('reason') in {
+                    'member_closed', 'requirements_changed', 'requirements_revision_changed'}
+                or gate['code'] == 'dependency' and gate['id'] is None
+                   and details.get('reason') == 'prerequisite_output_pending'):
+            # These gates retain the approved implementation scope. A recovery
+            # reads its original failure and cannot change that scope.
+            continue
         if gate['code'] == 'budget_exhausted':
             continue
         if gate['code'] == 'recovery_pending' and details.get('job_id') == failed_job_id:
@@ -189,7 +200,8 @@ class Recovery(Executions):
             if json.loads(gate['details_json']).get('job_id') == failed['id']:
                 self._resolve(db, command, gate['id'], {'investigation_job_id': job['id'], 'incomplete': findings['incomplete']})
         approach = False
-        if current and not publication:
+        implementation = not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job['id'], diagnostic=False)
+        if current and not publication and implementation:
             related = db.execute('SELECT f.findings_json FROM attempt_failures f JOIN attempts a ON a.id=f.attempt_id '
                 'WHERE f.unit_id=? AND a.budget_generation=? AND EXISTS(SELECT 1 FROM budget_entries b WHERE b.attempt_id=a.id AND b.kind=\'charge\') '
                 'AND NOT EXISTS(SELECT 1 FROM budget_entries b WHERE b.attempt_id=a.id AND b.kind=\'correction\') ORDER BY f.position',
@@ -225,7 +237,7 @@ class Recovery(Executions):
         def change(db, unit):
             job, failed, current = self._owned_recovery(db, unit, job_id, execution_fence, input_manifest)
             answer = self._finish(db, command, unit, job, failed, current, findings)
-            if current and gates:
+            if current and gates and not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
                 if unit['current_candidate_id'] is None:
                     raise TransitionError('verification requires an exact current candidate')
                 for gate in gates:
@@ -244,6 +256,8 @@ class Recovery(Executions):
             job, failed, current = self._owned_recovery(db, unit, job_id, execution_fence, input_manifest)
             if not current:
                 return {**self._finish(db, command, unit, job, failed, False, findings), 'corrected': False}
+            if recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
+                return {**self._finish(db, command, unit, job, failed, True, findings), 'corrected': False}
             owner = db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(failed['id'],)).fetchone()
             child = db.execute('SELECT 1 FROM job_delegations WHERE job_id=?',(failed['id'],)).fetchone()
             expected_phase = 'integrating' if owner else 'building'

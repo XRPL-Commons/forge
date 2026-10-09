@@ -1,5 +1,6 @@
 """Codex adapter for the role-agnostic runner image. No terminal scraping."""
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -176,6 +177,16 @@ def schema(note):
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 
+def checkout_recovery(note, directory, git):
+    """Investigate the failed checkout, never the repository's current default."""
+    original = note['failure']['input_manifest']
+    revision = original.get('head_oid') or original.get('base_oid')
+    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}(?:[0-9a-f]{24})?', revision):
+        raise PreparationError('The failed assignment has no verified checkout revision')
+    git('-C', str(directory), 'fetch', 'origin', revision)
+    git('-C', str(directory), 'checkout', '--detach', revision)
+
+
 def main():
     note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
     directory = Path('/work/repository')
@@ -199,7 +210,9 @@ def main():
     git('-C', str(directory), 'config', 'user.name', note['publisher'])
     git('-C', str(directory), 'config', 'user.email', note['publisher'] + '@users.noreply.github.com')
     selected = note.get('candidate')
-    if note['role'] == 'build' and note.get('resume_branch'):
+    if note['role'] == 'recovery':
+        checkout_recovery(note, directory, git)
+    elif note['role'] == 'build' and note.get('resume_branch'):
         # A memory retry may have pushed newer work than the last accepted
         # candidate. Resume that branch, preserving the PR and published commits.
         ref = 'refs/heads/' + note['resume_branch']
@@ -236,7 +249,10 @@ def main():
         actual = git('-C', str(directory), 'rev-parse', 'FETCH_HEAD').stdout.strip()
         if actual != output['commit_oid']:
             raise PreparationError('Child output does not match the assigned revision')
-    existing = note.get('input_manifest', {}).get('existing_candidates', []) if note.get('builder_stage') == 'integration' else []
+    if note['role'] == 'recovery':
+        existing = note['failure']['input_manifest'].get('existing_candidates', [])
+    else:
+        existing = note.get('input_manifest', {}).get('existing_candidates', []) if note.get('builder_stage') == 'integration' else []
     for source in existing:
         git('-C', str(directory), 'fetch', 'origin', source['head_oid'])
         if git('-C', str(directory), 'rev-parse', 'FETCH_HEAD').stdout.strip() != source['head_oid']:

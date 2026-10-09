@@ -71,7 +71,7 @@ class RecoveryController:
             return {'failed_job_id': failed_job_id, 'pending': 'cleanup'}
         if self.admission(original) is not True:
             return {'failed_job_id': failed_job_id, 'pending': 'repository_setup'}
-        if not self._fresh_members(original, current=True):
+        if not self._fresh_members(original, current=True, diagnostic=True):
             return {'failed_job_id': failed_job_id, 'pending': 'issue_reconciliation'}
         with self.store.read_snapshot() as db:
             occupied = {row[0] for row in db.execute('SELECT slot FROM job_leases UNION SELECT slot FROM discussion_leases')}
@@ -97,7 +97,7 @@ class RecoveryController:
                                        execution_fence=str(uuid.uuid4()), launch=launch)
         return {'failed_job_id': failed_job_id, 'reserved': True, **answer}
 
-    def _fresh_members(self, job, *, current=False):
+    def _fresh_members(self, job, *, current=False, diagnostic=False):
         members = job.get('members') or [{'issue_number': job['issue_number'], 'issue_key': job['issue_key'], 'requirements': job['requirements']}]
         pulls = self.github.pulls(job)
         for member in members:
@@ -106,7 +106,9 @@ class RecoveryController:
                         unit_state=job['unit_state'], reviewers_requested=job.get('reviewers_requested'), candidate=job['candidate'])
             item = publication_context(self.store, job['unit_id'], item)
             remote, requirements = self.github.issue(item)
-            if remote.get('state') != 'open' or requirements != wanted or not self._remote_admitted(remote, item, pulls):
+            states = {'open', 'closed'} if diagnostic else {'open'}
+            if (remote.get('state') not in states or requirements != wanted
+                    or not self._remote_admitted(remote, item, pulls)):
                 return False
         return True
 

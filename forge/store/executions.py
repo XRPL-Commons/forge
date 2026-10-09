@@ -365,7 +365,8 @@ class ExecutionQueries:
 
     def input_refs(self, job):
         """Topological closure of immutable output refs, never current outputs."""
-        wanted = job['input_manifest'].get('prerequisite_outputs', job['input_manifest'].get('part_outputs', []))
+        manifest = job['failure']['input_manifest'] if job['role'] == 'recovery' else job['input_manifest']
+        wanted = manifest.get('prerequisite_outputs', manifest.get('part_outputs', []))
         ordered, seen, visiting = [], set(), set()
         def visit(output):
             identity = output['output_id']

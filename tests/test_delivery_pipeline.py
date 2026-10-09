@@ -20,6 +20,7 @@ from forge.store.transitions import Lifecycle
 
 
 class DeliveryPipelineTests(unittest.TestCase):
+    dependencies=()
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(); self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -42,7 +43,7 @@ class DeliveryPipelineTests(unittest.TestCase):
                 title='Issue', body='Scope', requirements='req-' + str(number), observed_at=90)
             pins.append(dict(issue_id='issue-' + str(number), issue_version=1, requirements_revision_id=row['revision_id'],
                              unit_id='source-' + str(number), unit_version=1, member_id=row['member_id']))
-        proposal = dict(repository_id=1, base_branch='main', members=pins, dependencies=[], existing_prs=[], rationale='One change')
+        proposal = dict(repository_id=1, base_branch='main', members=pins, dependencies=list(self.dependencies), existing_prs=[], rationale='One change')
         self.delivery.compose(Command('compose', 'operator', 'batch', 1), **proposal,
             approval={'approved': True, 'composition_hash': self.delivery.composition_hash(**proposal)})
         self.config = validate({'enabled': True, 'repository_merge_policies': {'1': 'auto'}, 'image': 'sha256:' + 'a' * 64, 'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}})
