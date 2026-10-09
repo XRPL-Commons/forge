@@ -174,8 +174,8 @@ class SqliteSupervisorIntegrationTests(unittest.TestCase):
         return SqliteSupervisor(self.store,
             execution=ExecutionController(self.store, self.runner, self.github, enabled=lambda: True, admission=lambda job: True, clock=clock),
             observations=ObservationController(self.store, self.github, admission=lambda item: True,
-                policy=lambda item: digest(policy(self.config)), clock=clock),
-            results=ResultController(self.store, self.github, policy=lambda job: policy(self.config), verdicts=effects, clock=clock),
+                policy=lambda item: digest(policy(self.config,1,repository_name='owner/repo')), clock=clock),
+            results=ResultController(self.store, self.github, policy=lambda job: policy(self.config,1,repository_name='owner/repo'), verdicts=effects, clock=clock),
             merges=MergeController(self.store, admission=merge_admission, clock=clock), effects=effects,
             dispatch=DispatchController(self.store, self.runner, config=self.config,
                 prepare=GitHubPrepare(self.github, self.config), admission=lambda snapshot: True, clock=clock), clock=clock)
