@@ -100,4 +100,5 @@ def client_request(root,clients,token,value):
         result=service.read(value['repository']['id'],**payload)
         clients.authorize(token,value['repository'],capability,value['instance'],value['generation'])
         return result
-    return service.action(value['repository']['id'],payload)
+    with clients.effect_guard(token,value['instance'],value['generation']):
+        return service.action(value['repository']['id'],payload)

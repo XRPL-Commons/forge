@@ -1,3 +1,6 @@
+from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import json
 import tempfile
 import unittest
@@ -32,6 +35,7 @@ class PlanningServiceTests(unittest.TestCase):
 
     def test_client_reads_and_mutations_have_separate_explicit_capabilities(self):
         clients=Mock();clients.authorize.return_value={'id':'agent','operator':{'id':7}}
+        clients.effect_guard.side_effect=lambda *args:nullcontext()
         value={'repository':{'id':1,'name':'example/project'},'instance':'instance','generation':1,'operation':'read','payload':{}}
         with patch('forge.factory.planning_service.PlanningService') as service:
             service.return_value.read.return_value={'planning':{}}
@@ -80,3 +84,64 @@ class PlanningServiceTests(unittest.TestCase):
         with self.assertRaises(VersionConflict):self.service.action(1,{'action':'accept','proposal_id':'proposal','expected_version':2,
             'request_id':'operator-accept','accept_rows':[row['id']],'reject_rows':[]})
         self.assertEqual(self.plans.proposal('proposal')['rows'][0]['status'],'proposed')
+
+
+from tests import test_client_connections as connections
+from tests import test_sqlite_identity as identity
+from forge.client_connections import ConnectionError
+
+
+class PlanningClientAuthorityTests(connections.Fixture):
+    def setUp(self):
+        identity.SqliteConnectionTests.setUp(self)
+        Lifecycle(self.database,clock=lambda:self.now).admit_issue(request_id='admit',actor_id='operator',unit_id='unit',issue_id='321:1',
+            repository_id=321,repository_name='example/project',issue_number=1,title='Work',body='Details',requirements='digest',observed_at=self.now)
+        self.credentials=self.token()
+        self.parts={'store':self.database,'github':Mock(),'config':{'hold_labels':['hold'],'ready_label':'ready'}}
+        self.planning=PlanningService(self.root,actor_id='client:'+self.credentials['connection']['id'],clock=lambda:self.now,parts=self.parts)
+        self.planning.plans.begin(321,proposal_id='proposal',request_id='begin',actor_id='planner',base_branch='main')
+        self.planning.plans.publish('proposal',expected_version=1,request_id='publish',actor_id='planner',rationale='Work in order',rows=[{
+            'action':'order','members':['321:1'],'reason':'Needs library','rule_quote':None,'parameters':{'prerequisites':['example/library#7']}}])
+        row=self.planning.plans.proposal('proposal')['rows'][0]
+        self.value={'repository':self.target,'instance':self.credentials['connection']['instance'],'generation':self.generation,
+            'operation':'action','payload':{'action':'accept','proposal_id':'proposal','expected_version':2,'request_id':'approve',
+                                          'accept_rows':[row['id']],'reject_rows':[]}}
+
+    def test_revocation_serializes_with_observation_and_acceptance(self):
+        observing,release,revoking,revoked=threading.Event(),threading.Event(),threading.Event(),threading.Event()
+        def issue(item):
+            observing.set()
+            if not release.wait(3):raise AssertionError('Observation was not released')
+            return {'number':1,'state':'open','labels':[],'assignees':[]},'digest'
+        self.parts['github'].issue.side_effect=issue
+        def revoke():
+            revoking.set()
+            self.service.revoke(self.session,self.credentials['connection']['id'])
+            revoked.set()
+        with patch('forge.factory.planning_service.PlanningService',return_value=self.planning),ThreadPoolExecutor(max_workers=2) as pool:
+            accepted=pool.submit(client_request,self.root,self.service,self.credentials['access_token'],self.value)
+            try:
+                self.assertTrue(observing.wait(3))
+                revocation=pool.submit(revoke)
+                self.assertTrue(revoking.wait(3))
+                self.assertFalse(revoked.wait(.05),'revocation must not complete while an authorized acceptance is in progress')
+            finally:release.set()
+            self.assertEqual(accepted.result(3)['status'],'accepted')
+            revocation.result(3)
+            with self.assertRaises(ConnectionError):
+                client_request(self.root,self.service,self.credentials['access_token'],self.value)
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM prerequisite_orders').fetchone()[0],1)
+
+    def test_revoked_before_effect_guard_cannot_accept_after_initial_authorization(self):
+        authorize=self.service.authorize
+        def revoke_after_authorize(*args):
+            grant=authorize(*args)
+            self.service.revoke(self.session,self.credentials['connection']['id'])
+            return grant
+        with patch.object(self.service,'authorize',side_effect=revoke_after_authorize),patch('forge.factory.planning_service.PlanningService',return_value=self.planning):
+            with self.assertRaises(ConnectionError):
+                client_request(self.root,self.service,self.credentials['access_token'],self.value)
+        self.parts['github'].issue.assert_not_called()
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM prerequisite_orders').fetchone()[0],0)
