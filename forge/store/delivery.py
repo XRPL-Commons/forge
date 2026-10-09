@@ -37,8 +37,8 @@ class Delivery(Lifecycle):
         if command.expected_version != 1 or db.execute('SELECT 1 FROM units WHERE id=?', (command.unit_id,)).fetchone():
             raise VersionConflict('composition requires a new unit identity')
         if (not command.actor_id or not command.request_id or not isinstance(rationale, str) or not rationale.strip()
-                or not isinstance(members, (list, tuple)) or not 2 <= len(members) <= 100):
-            raise TransitionError('composition requires explicit rationale and two to one hundred pinned issues')
+                or not isinstance(members, (list, tuple)) or len(members) < 2):
+            raise TransitionError('composition requires explicit rationale and at least two pinned issues')
         if approval != {'approved': True, 'composition_hash': self.composition_hash(repository_id=repository_id,
                 base_branch=base_branch, members=members, dependencies=dependencies, existing_prs=existing_prs, rationale=rationale, publication_target=publication_target)}:
             raise TransitionError('operator approval must pin the exact composition')
@@ -502,9 +502,13 @@ class DeliveryQueries:
             unit = _unit(db,row[0])
             return Delivery._child_manifest_in(db,unit,Delivery._plan_in(db,unit,plan_id),key)
 
-    def assignments(self,unit_id,*,base_oid,policy_hash,limit=100):
+    def assignments(self,unit_id,*,base_oid,policy_hash,limit=100,allowed_members=None):
         from .queries import _limit
         limit = _limit(limit)
+        if allowed_members is not None:
+            if not isinstance(allowed_members,(set,frozenset,list,tuple)) or any(not isinstance(value,str) for value in allowed_members):
+                raise ValueError('Allowed members must be explicit member IDs')
+            allowed_members = set(allowed_members)
         with self.store.read_snapshot() as db:
             unit = _unit(db,unit_id)
             def pending(reason):
@@ -543,6 +547,8 @@ class DeliveryQueries:
             items,needs_plan = [],not valid_plan
             if valid_plan:
                 for entry in json.loads(plan['plan_json'])['children']:
+                    if allowed_members is not None and entry['member_id'] not in allowed_members:
+                        continue
                     if current_output_in(db,unit,entry['member_id'],base_oid=base_oid,policy_hash=policy_hash):
                         continue
                     if applicable_gates(db,unit,entry['member_id']):
@@ -562,8 +568,8 @@ class DeliveryQueries:
                 return {'unit_id':unit_id,'version':unit['version'],'items':[{'stage':'planning','input_manifest':expected}],'pending_reason':None}
             return pending('children_running' if active else 'member_blocked')
 
-    def next_assignment(self,unit_id,*,base_oid,policy_hash):
-        result = self.assignments(unit_id,base_oid=base_oid,policy_hash=policy_hash,limit=1)
+    def next_assignment(self,unit_id,*,base_oid,policy_hash,allowed_members=None):
+        result = self.assignments(unit_id,base_oid=base_oid,policy_hash=policy_hash,limit=1,allowed_members=allowed_members)
         return {key:value for key,value in result.items() if key!='items'} | {'assignment':result['items'][0] if result['items'] else None}
 
     def tree(self,unit_id,*,after='',limit=100):

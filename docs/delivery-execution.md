@@ -7,8 +7,8 @@ the same transaction as proposal acceptance.
 
 ## Composition
 
-A composition contains 2–100 issues, matching the bounded observation and
-scheduler contract. Approval hashes pin every issue version, requirements revision, source unit
+There is no issue-count limit on a composition. Stored approval and worker plan
+byte limits still apply. Approval hashes pin every issue version, requirements revision, source unit
 version and member identity, the internal dependency graph, the grouping reason,
 and independently verified unmerged observations for every existing PR.
 Composition preserves source histories and carries their current failure charges
@@ -51,7 +51,8 @@ ordinary jobs, attempts and leases:
    only from an integration assignment whose full input is still current.
 
 `DeliveryQueries.assignments` is the scheduler's shared source for planning,
-ready children, integration or a pending reason. `tree` supplies bounded job
+ready children, integration or a pending reason. Its `allowed_members` input
+filters freshly eligible child IDs before the bounded result page is selected. `tree` supplies bounded job
 history using a job-ID cursor. `job_members` is the uniform immutable scope for
 all jobs, including Review, Audit and Recovery; migration 22 preserves original
 launch requirement pins and retires the scalar launch column.
