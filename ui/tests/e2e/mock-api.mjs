@@ -29,6 +29,7 @@ let savedSettings = null
 let savedFactory = null
 let savedRepositoryView = null
 let savedIssue = null
+let savedIssueList = null
 let connectedAgents = []
 // Coding-account health served on every /api/factory read (POST /__accounts),
 // so a spec can take an account down on any scenario's board.
@@ -255,6 +256,17 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, requests)
   }
 
+  // Observations belong to the mock server, so SSR, ordinary reads and the
+  // committed change feed see the same state. Browser routing cannot do this.
+  if (req.method === 'POST' && pathname === '/__issue') {
+    const current = savedIssue?.issue.key === body?.key ? savedIssue : resolveGetFixture('issues', { issue: body?.key })
+    if (!current?.issue || current.issue.key !== body?.key) return send(res, 400, { ok: false, reason: 'Unknown fixture issue' })
+    savedIssue = { ...current, ...(body.envelope || {}), issue: { ...current.issue, ...(body.patch || {}) } }
+    if (body.list) savedIssueList = { ...resolveGetFixture('issues', {}), issues: [savedIssue.issue], total: 1 }
+    else if (savedIssueList) savedIssueList = { ...savedIssueList, issues: savedIssueList.issues.map(row => row.key === body.key ? savedIssue.issue : row) }
+    return send(res, 200, savedIssue)
+  }
+
   if (req.method === 'POST' && pathname === '/__accounts') {
     codingAccounts = body && typeof body === 'object' && Array.isArray(body.accounts) ? body.accounts : null
     return send(res, 200, { ok: true })
@@ -278,6 +290,7 @@ const server = http.createServer(async (req, res) => {
     savedFactory = null
     savedRepositoryView = null
     savedIssue = null
+    savedIssueList = null
     codingAccounts = null
     connectedAgents = []
     conversation = { messages: [], status: 'idle', reason: null, before: null, partial: '', origin: null }
@@ -410,6 +423,7 @@ const server = http.createServer(async (req, res) => {
     let fixture = base === 'settings' && savedSettings ? savedSettings
       : base === 'factory' && savedFactory ? savedFactory
       : base === 'issues' && query.issue && savedIssue?.issue.key === query.issue ? savedIssue
+      : base === 'issues' && !query.issue && savedIssueList ? savedIssueList
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })

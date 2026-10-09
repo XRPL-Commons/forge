@@ -16,21 +16,14 @@ async function waitForRequest(requests, predicate, count = 1) {
 
 // The reviews Forge found on GitHub, when it last looked, "Check now", and the
 // approver list in Settings · General.
-export default async function (page, { base, scenario, requests }) {
+export default async function (page, { base, scenario, requests, observeIssue }) {
   await scenario('approval')
   const now = () => Math.floor(Date.now() / 1000)
-  let approvals = [
+  const approvals = [
     { login: 'lucbocahut', state: 'APPROVED', at: now() - 60, counted: true, why: null },
     { login: 'x', state: 'APPROVED', at: null, counted: false, why: 'No write access to the repository' },
   ]
-  let lastChecked = now() - 20
-  await page.route('**/api/issues?issue=*', async route => {
-    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
-    const body = await response.json()
-    body.issue.approvals = approvals
-    body.issue.last_checked = lastChecked
-    await route.fulfill({ response, json: body })
-  })
+  await observeIssue('1:614', { approvals, last_checked: now() - 20 })
   await page.goto(base + '/issues/1%3A614')
   await waitForText(page, '@x approved · not counted: No write access to the repository')
   // The cube waits hopefully at Approval, wearing the rosette it earned.
@@ -54,12 +47,10 @@ export default async function (page, { base, scenario, requests }) {
   const asked = await waitForRequest(requests, (entry) => entry.method === 'POST' && entry.path === '/api/issues/refresh')
   assert.deepEqual(asked[0].body, { key: '1:614' })
   await waitForText(page, 'Checking GitHub…')
-  approvals = []
-  lastChecked = now() + 1
+  await observeIssue('1:614', { approvals: [], last_checked: now() + 1 })
   await page.waitForFunction(() => !document.body.innerText.includes('Checking GitHub…'), null, { timeout: 15000 })
   await waitForText(page, 'No approval found on the pull request yet.')
   assert.equal(await page.locator('#issue-approvals').count(), 0)
-  await page.unroute('**/api/issues?issue=*')
 
   // Settings: the default runtime has an allowlist; switching to "anyone"
   // sends the whole runtime with only human_reviewers emptied.

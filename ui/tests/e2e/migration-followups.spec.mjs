@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 const waitText = (page, text) => page.waitForFunction(text => document.body.innerText.includes(text), text)
 const noOverflow = page => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)
 
-export default async function (page, { base, scenario }) {
+export default async function (page, { base, scenario, observeIssue }) {
   await page.goto(base + '/')
   await page.locator('#factory-line').waitFor()
 
@@ -31,33 +31,27 @@ export default async function (page, { base, scenario }) {
   // The API is allowed to return an applied/rejected action with no message.
   // A previous decision must not hide the receipt for a new request.
   await scenario('decision-queue')
-  let actions = [{id:'old',key:'1:609',status:'applied',message:null}]
-  await page.route('**/api/issues?issue=*', async route => {
-    const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } })
-    const body = await response.json()
-    body.actions = actions
-    await route.fulfill({response, json:body})
-  })
+  const observeActions = actions => observeIssue('1:609', {}, { envelope: { actions } })
+  await observeActions([{id:'old',key:'1:609',status:'applied',message:null}])
   await page.route('**/api/issues/action', route => route.fulfill({json:{ok:true,request:'new'}}))
   await page.goto(base + '/issues/1%3A609')
   await waitText(page, 'Decision applied.')
   await page.getByRole('button', {name:'Queue for Forge',exact:true}).click()
   await page.getByRole('dialog').getByRole('button', {name:'Queue for Forge',exact:true}).click()
   await waitText(page, 'Decision submitted. Waiting for confirmation.')
-  actions = [...actions, {id:'new',key:'1:609',status:'pending',message:null}]
+  await observeActions([{id:'old',key:'1:609',status:'applied',message:null}, {id:'new',key:'1:609',status:'pending',message:null}])
   await waitText(page, 'Applying your decision…')
-  actions = [{id:'new',key:'1:609',status:'applied',message:null}]
+  await observeActions([{id:'new',key:'1:609',status:'applied',message:null}])
   await waitText(page, 'Decision applied.')
-  actions = []
+  await observeActions([])
   await page.waitForFunction(() => !document.querySelector('#detail-message')?.textContent.trim())
   assert.ok(!(await page.locator('body').innerText()).includes('Waiting for confirmation'), 'the acknowledged receipt must not return')
-  actions = [{id:'rejected',key:'1:609',status:'rejected',message:null}]
+  await observeActions([{id:'rejected',key:'1:609',status:'rejected',message:null}])
   await waitText(page, 'Decision rejected. Refresh the issue before trying again.')
   for (const width of [320,390,1440]) {
     await page.setViewportSize({width,height:900})
     assert.ok(await noOverflow(page), `decision receipt overflow at ${width}`)
   }
-  await page.unroute('**/api/issues?issue=*')
   await page.unroute('**/api/issues/action')
 
   await scenario('default')
