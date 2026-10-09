@@ -76,6 +76,40 @@ class RepositoryPlanning(Lifecycle):
             return dict(repository_id=repository_id,revision=0,rules_revision=0,rules='',proposals_enabled=1,next_triage_at=0)
         return dict(row)
 
+    def due(self, *, limit=50):
+        """Coalesce relevant repository events; a launch owns its captured watermark.
+
+        The cursor is scheduling state, not a second copy of repository facts. It
+        advances only with an immutable planning context. Events arriving after
+        capture remain pending even if that worker completes much later.
+        """
+        with self.store.read_snapshot() as db:
+            result=[]
+            for row in db.execute('SELECT r.id AS repository_id,r.full_name,coalesce(p.next_triage_at,0) AS next_at '
+                    'FROM repositories r LEFT JOIN repository_planning p ON p.repository_id=r.id '
+                    'WHERE p.proposals_enabled=1 OR p.repository_id IS NULL ORDER BY next_at,r.id'):
+                cursor=db.execute('SELECT value FROM store_metadata WHERE key=?',
+                    ('repository_planning_cursor:'+str(row['repository_id']),)).fetchone()
+                captured=json.loads(cursor[0]) if cursor else {'sequence':0,'at':0}
+                event=db.execute("SELECT e.sequence,e.at FROM events e LEFT JOIN issues i ON i.id=e.issue_id "
+                    "LEFT JOIN units u ON u.id=e.unit_id WHERE e.sequence>? AND "
+                    "coalesce(i.repository_id,u.repository_id,json_extract(e.payload_json,'$.repository_id'))=? AND ("
+                    "e.kind IN ('issue_admitted','membership_changed','candidate_selected','candidate_superseded','merged','closed','dissolved') OR "
+                    "(e.kind='issue_observed' AND json_extract(e.payload_json,'$.planning_changed')=1) OR "
+                    "(e.kind='decision_applied' AND json_extract(e.payload_json,'$.command') IN ('repository_rules','repository_note') "
+                    "AND e.actor_id!='supervisor:triage')) ORDER BY e.sequence LIMIT 1",
+                    (captured['sequence'],row['repository_id'])).fetchone()
+                reason='nightly' if row['next_at']<=self.clock() else 'repository_event' if event and max(event['at']+30,captured['at']+300)<=self.clock() else None
+                if reason:result.append({**dict(row),'reason':reason})
+                if len(result)>=limit:break
+            return result
+
+    @staticmethod
+    def _capture_cursor_in(db,proposal_id):
+        sequence=db.execute('SELECT coalesce(max(sequence),0) FROM events').fetchone()[0]
+        db.execute('INSERT INTO store_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+            ('repository_planning_inputs:'+proposal_id,str(sequence)))
+
     def configure(self,repository_id,*,request_id,actor_id,expected_revision,rules,proposals_enabled=True):
         rules=text(rules,16384,empty=True)
         if type(proposals_enabled) is not bool:raise TransitionError('Proposal scheduling requires a boolean')
@@ -134,6 +168,7 @@ class RepositoryPlanning(Lifecycle):
                 pin=pin_in(db,row['id'])
                 db.execute('INSERT INTO triage_proposal_inputs VALUES(?,?,?,?,?,?,?,?)',(proposal_id,*pin.values()))
                 count+=1
+            self._capture_cursor_in(db,proposal_id)
             db.execute('UPDATE repository_planning SET next_triage_at=? WHERE repository_id=?',((int(self.clock())//86400+1)*86400,repository_id))
             return {'proposal_id':proposal_id,'repository_id':repository_id,'version':1,'issues':count}
         return self._apply_repository(request_id,actor_id,'triage_begin',dict(repository_id=repository_id,proposal_id=proposal_id,base_branch=base_branch,queued=queued),change)
@@ -194,9 +229,10 @@ class RepositoryPlanning(Lifecycle):
         if action=='question':text(params['question'],4000)
         return dict(action=action,members=sorted(members),reason=reason,rule_quote=quote,parameters=params)
 
-    def publish(self,proposal_id,*,expected_version,rows,rationale,request_id,actor_id):
+    def publish(self,proposal_id,*,expected_version,rows,rationale,request_id,actor_id,execution_id=None):
         rationale=text(rationale,8192)
         payload=dict(proposal_id=proposal_id,expected_version=expected_version,rows=rows,rationale=rationale)
+        if execution_id is not None:payload['execution_id']=execution_id
         def change(db):
             proposal=self._proposal(db,proposal_id,expected_version)
             if proposal['status']!='draft':raise TransitionError('Only a draft can publish its initial proposal')
@@ -215,8 +251,68 @@ class RepositoryPlanning(Lifecycle):
                 db.executemany('INSERT INTO triage_row_members VALUES(?,?)',[(identifier,key) for key in row['members']])
             if covered!=inputs:raise TransitionError('Every open issue in the captured backlog needs a disposition')
             db.execute("UPDATE triage_proposals SET status='proposed',rationale=?,version=version+1 WHERE id=?",(rationale,proposal_id))
-            return {'proposal_id':proposal_id,'version':expected_version+1,'rows':len(rows)}
+            result={'proposal_id':proposal_id,'version':expected_version+1,'rows':len(rows)}
+            if execution_id is not None:
+                result['notes']=self._captured_notes_in(db,proposal,execution_id,actor_id)
+            return result
         return self._apply_repository(request_id,actor_id,'triage_publish',payload,change)
+
+    def _captured_notes_in(self,db,proposal,execution_id,actor_id):
+        from .auxiliary import job_in, _artifact
+        job=job_in(db,execution_id)
+        run=db.execute('SELECT execution_id FROM repository_triage_runs WHERE id=?',(proposal['id'],)).fetchone()
+        if not run or run[0]!=execution_id or not job['cleanup'] or actor_id!='supervisor:triage':
+            raise TransitionError('Planner notes require the cleaned, captured repository worker')
+        context=json.loads(_artifact(db,execution_id,'planning_context'))
+        result=(job.get('capture') or {}).get('result') or {}
+        notes=result.get('notes',[]);handoff=result.get('handoff')
+        if not isinstance(notes,list) or len(notes)>5 or len(_json([notes,handoff]).encode())>32768:
+            raise TransitionError('Planner context output exceeds its five-note / 32 KiB bound')
+        updates=[]
+        for index,note in enumerate(notes):
+            if not isinstance(note,dict) or set(note)!={'note_id','kind','content','sources'}:
+                raise TransitionError('Planner notes need identity, kind, content and sources')
+            if note['note_id'] is not None and note['note_id'] not in context['note_revisions']:
+                raise TransitionError('A planner can revise only a note in its captured context')
+            updates.append({**note,'note_id':note['note_id'] or _id(execution_id,'note:'+str(index))})
+        if handoff is not None:
+            if not isinstance(handoff,dict) or set(handoff)!={'content','sources'}:
+                raise TransitionError('A planner handoff needs content and sources')
+            updates.append({**handoff,'note_id':_id(str(proposal['repository_id']),'planner-handoff'),'kind':'next_action'})
+        if len({n['note_id'] for n in updates})!=len(updates):raise TransitionError('A planner note may be revised only once per result')
+        repository=db.execute('SELECT full_name FROM repositories WHERE id=?',(proposal['repository_id'],)).fetchone()[0]
+        issues={n['requirements_revision_id']:n for n in context['issues']}
+        candidates={n['candidate_id']:n for n in context['issues'] if n['candidate_id']}
+        receipts=[]
+        for note in updates:
+            content=text(note['content'],8192);sources=references(note['sources'])
+            if note['kind'] not in NOTE_KINDS:raise TransitionError('Unknown planner note kind')
+            for source in sources:
+                # Sources bind to the exact evidence this worker received. Notes
+                # remain interpretations; source validity never grants work authority.
+                prefix='https://github.com/'+repository+'/'
+                identity=source['identity'];kind=source['kind'];url=source['url']
+                valid=(kind=='issue_revision' and identity in issues and url==prefix+'issues/'+str(issues[identity]['github_number'])
+                    or kind=='candidate' and identity in candidates and url==prefix+'pull/'+str(candidates[identity]['pull_number'])
+                    or kind=='commit' and identity==job['head'] and url==prefix+'commit/'+identity
+                    or kind=='document' and identity==job['head'] and url.startswith(prefix+'blob/'+identity+'/'))
+                if not valid:raise TransitionError('Planner note source must identify its captured issue, candidate or repository commit')
+            prior=db.execute('SELECT * FROM repository_note_revisions WHERE note_id=? ORDER BY revision DESC LIMIT 1',(note['note_id'],)).fetchone()
+            expected=context['note_revisions'].get(note['note_id'],0)
+            reason=None
+            if prior and (prior['repository_id']!=proposal['repository_id'] or prior['revision']!=expected or prior['actor_id']!='supervisor:triage' or prior['deleted']):
+                reason='note_changed'
+            elif not prior and expected:reason='note_changed'
+            elif not prior:
+                count=db.execute('SELECT count(*) FROM repository_note_revisions n WHERE repository_id=? AND deleted=0 '
+                    'AND revision=(SELECT max(revision) FROM repository_note_revisions x WHERE x.note_id=n.note_id)',(proposal['repository_id'],)).fetchone()[0]
+                if count>=50:reason='context_full'
+            if reason:
+                receipts.append({'note_id':note['note_id'],'status':reason});continue
+            db.execute('INSERT INTO repository_note_revisions VALUES(?,?,?,?,?,?,0,?,?)',
+                (note['note_id'],expected+1,proposal['repository_id'],note['kind'],content,_json(sources),self.clock(),actor_id))
+            receipts.append({'note_id':note['note_id'],'status':'saved','revision':expected+1})
+        return receipts
 
     def _history(self,db,row_id,revision,row,actor):
         db.execute('INSERT INTO triage_row_history VALUES(?,?,?,?,?,?,?,?)',
@@ -434,6 +530,7 @@ class RepositoryPlanning(Lifecycle):
             for row in db.execute("SELECT id FROM issues WHERE repository_id=? AND github_state='open' ORDER BY id",(proposal['repository_id'],)):
                 pin=pin_in(db,row[0])
                 db.execute('INSERT INTO triage_proposal_inputs VALUES(?,?,?,?,?,?,?,?)',(proposal_id,*pin.values()))
+            self._capture_cursor_in(db,proposal_id)
 
     def context(self,proposal_id):
         with self.store.read_snapshot() as db:
@@ -453,7 +550,11 @@ class RepositoryPlanning(Lifecycle):
                 issue['gates']=[{'code':g['code'],'member_id':g['member_id']} for g in _gates(db,issue['unit_id'])] if issue['unit_id'] else []
                 issues.append(issue)
             notes=self.repository(proposal['repository_id'])['notes']
-            result={'proposal_id':proposal_id,'rules':rules,'notes':[n for n in notes if not n['needs_refresh']],'issues':issues}
+            result={'proposal_id':proposal_id,'rules':rules,'notes':[n for n in notes if not n['needs_refresh']],'issues':issues,
+                'note_revisions':{n['note_id']:n['revision'] for n in notes},
+                'handoff_note_id':_id(str(proposal['repository_id']),'planner-handoff'),
+                'event_cursor':int(db.execute('SELECT value FROM store_metadata WHERE key=?',
+                    ('repository_planning_inputs:'+proposal_id,)).fetchone()[0])}
             if len(_json(result).encode())>512*1024:
                 raise TransitionError('Repository context exceeds the 512 KiB planning input limit; reduce note or issue text before requesting triage')
             return result
@@ -497,6 +598,8 @@ class RepositoryPlanning(Lifecycle):
                 if issue.get('candidate_id') and issue.get('candidate_author'):
                     db.execute('INSERT INTO triage_candidate_context VALUES(?,?,?) ON CONFLICT DO NOTHING',(proposal_id,issue['candidate_id'],_json(issue['candidate_author'])))
             save_in(db,'triage',proposal_id,job,self.clock())
+            db.execute('INSERT INTO store_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                ('repository_planning_cursor:'+str(proposal['repository_id']),_json({'sequence':context['event_cursor'],'at':self.clock()})))
             db.execute('INSERT INTO auxiliary_artifacts VALUES(?,?,?,?,?)',(job['id'],'planning_context',0,hashlib.sha256(payload).hexdigest(),payload))
             db.execute("UPDATE repository_triage_runs SET status='running',execution_id=? WHERE id=?",(job['id'],proposal_id))
 

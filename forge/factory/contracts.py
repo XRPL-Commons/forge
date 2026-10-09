@@ -494,4 +494,12 @@ def triage_note(job):
                 'continue one existing PR with its observed author identity and ownership_transfer true; acceptance transfers that PR '
                 'to the builder without changing its author. Other PRs remain open. Internal dependencies use issue IDs; '
                 'external prerequisites use explicit owner/repo#N strings. Notes do not establish completion or reset failure budgets. '
-                'Return the proposal only; the operator may edit, reject or accept its rows. State the grouping rationale in summary.')}
+                'Return proposal rows for the operator to edit, reject or accept. State the grouping rationale in summary. '
+                'Also return notes (at most five) and an optional handoff, together at most 32 KiB. Notes capture durable conventions, '
+                'lessons, decisions, questions or next actions; the handoff summarizes unfinished planning and what to examine next. '
+                'Use an existing planner-authored note_id to consolidate it, null for a new note. Never revise operator-authored notes. '
+                'The context handoff_note_id identifies the previous handoff; update it only through the handoff result field. '
+                'Each note/handoff needs HTTPS sources: a captured requirements_revision_id linked to its GitHub issue, a captured '
+                'candidate_id linked to its pull request, or this assigned head commit linked to its GitHub commit or immutable blob URL. '
+                'Do not infer issue completion, approval, current holds or budget from notes. A source revision change invalidates '
+                'its note for future context. Empty notes and null handoff are appropriate when there is nothing useful to retain.')}

@@ -26,8 +26,9 @@ See [runtime setup](factory-runtime-reference.md) for the exact configuration an
 
 ## Repository planning and combined delivery
 
-- Persistent repository rules, revisioned notes and proposal rows. Manual and
-  nightly triage use a read-only worker; acceptance pins fresh requirements,
+- Persistent repository rules, revisioned notes and proposal rows. Manual, nightly and
+  relevant-event triage use a read-only worker, with sourced notes and a bounded
+  handoff retained after cleanup. Acceptance pins fresh requirements,
   membership, source PRs and operator decisions before durable effects run.
 - Operator-approved compositions with existing-PR choices, one logical builder,
   tracked parallel child checkouts, exact retained prerequisite outputs, owner

@@ -145,7 +145,8 @@ class StoreInventory:
                        sorted(json.loads(previous['assignees_json'])), json.loads(previous['assignee_types_json']))
                       if previous else None)
             if before != observed:
-                self._observed(db, key, revision_id=revision)
+                self._observed(db, key, revision_id=revision,
+                    planning_changed=before is None or before[:3]+before[4:] != observed[:3]+observed[4:])
         self._label_display(repo,key,labels)
         if complete_requirements(requirements):self.clear_failure(key)
         return key

@@ -103,3 +103,141 @@ class RepositoryPlannerTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM units').fetchone()[0],1)  # discovery did not enqueue #2
             self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+
+    def _observe(self, *, body='Details'):
+        from forge.store.models import Command
+        with self.store.read_snapshot() as db:
+            version=db.execute("SELECT version FROM units WHERE id='unit'").fetchone()[0]
+            generation=db.execute("SELECT collection_generation+1 FROM issues WHERE id='1:1'").fetchone()[0]
+        Lifecycle(self.store,clock=lambda:self.now).observe_issue(Command('observe-'+str(self.now),'observer','unit',version),'1:1',
+            state='open',title='Work',body=body,requirements='digest',remote_updated_at='2026-10-10T00:00:00Z',generation=generation)
+
+    def _capture(self, *, notes=None, handoff=None):
+        result={'attempt':'triage','role':'triage','outcome':'pass','summary':'Keep work','rows':[{
+            'action':'keep','members':['1:1'],'reason':'Still useful','rule_quote':None,'parameters':{}}],
+            'notes':notes or [],'handoff':handoff}
+        self.plans.progress('triage',capture={'result':result},fenced=True,cleanup=True)
+        return self.plans.job('triage')
+
+    def _source(self):
+        return {'kind':'issue_revision','identity':self.context['issues'][0]['requirements_revision_id'],
+            'description':'Captured requirement','url':'https://github.com/example/project/issues/1'}
+
+    def test_relevant_event_wake_survives_restart_without_poll_or_self_event_loop(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        self.controller._finish(self._capture())
+        self.now=400
+        self._observe()
+        self.assertEqual(self.plans.due(),[])  # a newer observation of identical facts is not work
+        self.now=450
+        self._observe(body='Changed scope')
+        self.assertEqual(self.plans.due(),[])  # coalesce bursts for thirty seconds
+        self.now=481
+        restarted=RepositoryPlanning(self.store,clock=lambda:self.now)
+        self.assertEqual([(r['repository_id'],r['reason']) for r in restarted.due()],[(1,'repository_event')])
+        request=restarted.queue(1,request_id='second',actor_id='supervisor:repository_event-triage',base_branch='main')
+        context=restarted.context(request['proposal_id'])
+        job={**self.job,'id':'second-worker','proposal_id':request['proposal_id'],'deadline':1000,'context_hash':manifest_hash(context)}
+        restarted.reserve(request['proposal_id'],job,context)
+        self.now=800
+        self.assertEqual(restarted.due(),[])
+
+    def test_event_after_context_capture_is_not_consumed_by_later_reservation(self):
+        # An operator context edit does not alter issue launch pins. Its event
+        # must remain pending when the earlier immutable context is reserved.
+        self.now=110
+        self.plans.note(1,note_id='operator-note',expected_revision=0,kind='convention',content='New convention',
+            sources=[self._source()],request_id='operator-note',actor_id='github:7')
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        self.now=411
+        self.assertEqual(self.plans.due()[0]['reason'],'repository_event')
+        self.plans.configure(1,request_id='disable',actor_id='operator',expected_revision=1,rules='',proposals_enabled=False)
+        self.assertEqual(self.plans.due(),[])
+        self.controller.config['enabled']=False
+        self.runner.inspect.return_value={'status':'running','running':True}
+        self.controller.cycle(launch=False)  # already owned work is still observed
+        self.runner.create.assert_not_called()
+
+    def test_new_issue_between_input_snapshot_and_context_still_wakes_next_pass(self):
+        self.now=110
+        Lifecycle(self.store,clock=lambda:self.now).admit_issue(request_id='discovered',actor_id='operator',unit_id='new',issue_id='1:2',
+            repository_id=1,repository_name='example/project',issue_number=2,title='New work',body='',requirements='new',observed_at=110)
+        context=self.plans.context(self.request['proposal_id'])
+        self.assertEqual([i['issue_id'] for i in context['issues']],['1:1'])
+        self.job['context_hash']=manifest_hash(context)
+        self.plans.reserve(self.request['proposal_id'],self.job,context)
+        self.now=411
+        self.assertEqual(self.plans.due()[0]['reason'],'repository_event')
+
+    def test_worker_consolidates_its_own_note_and_updates_same_handoff(self):
+        from forge.store.transitions import _id
+        handoff_id=_id('1','planner-handoff')
+        for key in ('lesson',handoff_id):
+            self.plans.note(1,note_id=key,expected_revision=0,kind='lesson' if key=='lesson' else 'next_action',content='Before',
+                sources=[self._source()],request_id=key,actor_id='supervisor:triage')
+        self.context=self.plans.context(self.request['proposal_id']);self.job['context_hash']=manifest_hash(self.context)
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        job=self._capture(notes=[{'note_id':'lesson','kind':'lesson','content':'Consolidated','sources':[self._source()]}],
+            handoff={'content':'Next investigation','sources':[self._source()]})
+        self.assertEqual(self.controller._finish(job)['phase'],'complete')
+        notes=self.plans.repository(1)['notes']
+        self.assertEqual({n['note_id'] for n in notes},{'lesson',handoff_id})
+        self.assertTrue(all(n['revision']==2 for n in notes))
+
+    def test_event_wakes_only_its_repository_and_disabled_runtime_queues_nothing(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        self.controller._finish(self._capture())
+        self.now=400
+        Lifecycle(self.store,clock=lambda:self.now).admit_issue(request_id='other-repo',actor_id='operator',unit_id='other',issue_id='2:1',
+            repository_id=2,repository_name='example/other',issue_number=1,title='Other',body='',requirements='other',observed_at=400)
+        self.assertEqual([r['repository_id'] for r in self.plans.due()],[2])
+        self.controller.config['enabled']=False
+        self.assertEqual(self.controller.cycle()['items'],[])
+        self.github.target.assert_not_called()
+        self.controller.config['enabled']=True;self.settings.paused.return_value=True
+        self.assertEqual(self.controller.cycle()['items'],[])
+        self.github.target.assert_not_called()
+
+    def test_captured_notes_and_handoff_are_sourced_atomic_and_replayable(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        note={'note_id':None,'kind':'lesson','content':'Preserve the existing requirement','sources':[self._source()]}
+        job=self._capture(notes=[note],handoff={'content':'Check the remaining integration question','sources':[self._source()]})
+        self.controller.plans=self.plans
+        with patch.object(self.plans,'settle_run',side_effect=OSError('lost reply')):
+            with self.assertRaises(OSError):self.controller._finish(job)
+        self.assertEqual(self.controller._finish(job)['phase'],'complete')
+        notes=self.plans.repository(1)['notes']
+        self.assertEqual({n['kind'] for n in notes},{'lesson','next_action'})
+        self.assertTrue(all(n['actor_id']=='supervisor:triage' and n['revision']==1 for n in notes))
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM repository_note_revisions').fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+        self.now=500
+        self.assertEqual(self.plans.due(),[])  # generated context never schedules itself
+        self._observe(body='Changed requirement')
+        self.assertTrue(all(n['needs_refresh'] for n in self.plans.repository(1)['notes']))
+        self.assertEqual(self.plans.context(self.request['proposal_id'])['notes'],[])
+
+    def test_operator_correction_wins_without_discarding_proposal(self):
+        self.plans.note(1,note_id='lesson',expected_revision=0,kind='lesson',content='Initial',sources=[self._source()],
+            request_id='initial',actor_id='supervisor:triage')
+        self.context=self.plans.context(self.request['proposal_id']);self.job['context_hash']=manifest_hash(self.context)
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        self.plans.note(1,note_id='lesson',expected_revision=1,kind='lesson',content='Operator correction',sources=[self._source()],
+            request_id='correct',actor_id='github:7')
+        job=self._capture(notes=[{'note_id':'lesson','kind':'lesson','content':'Stale model update','sources':[self._source()]}])
+        self.assertEqual(self.controller._finish(job)['phase'],'complete')
+        self.assertEqual(self.plans.repository(1)['notes'][0]['content'],'Operator correction')
+        with self.store.read_snapshot() as db:
+            import json
+            receipt=json.loads(db.execute("SELECT result_json FROM repository_planning_requests WHERE request_id='triage:publish'").fetchone()[0])
+        self.assertEqual(receipt['notes'],[{'note_id':'lesson','status':'note_changed'}])
+
+    def test_uncaptured_note_source_rejects_whole_proposal_without_partial_notes(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        source={**self._source(),'identity':'invented-revision'}
+        job=self._capture(notes=[{'note_id':None,'kind':'lesson','content':'Unproven','sources':[source]}])
+        self.assertEqual(self.controller._finish(job)['error'],'triage_proposal_invalid')
+        self.assertEqual(self.plans.repository(1)['notes'],[])
+        self.assertEqual(self.plans.proposal(self.request['proposal_id'])['status'],'draft')
+        self.assertEqual(self.plans.proposal(self.request['proposal_id'])['rows'],[])

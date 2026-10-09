@@ -129,7 +129,7 @@ class RepositoryPlanner:
         else:
             try:
                 self.plans.publish(job['proposal_id'],expected_version=1,rows=result['rows'],rationale=result.get('summary',''),
-                    request_id=job['id']+':publish',actor_id='supervisor:triage')
+                    request_id=job['id']+':publish',actor_id='supervisor:triage',execution_id=job['id'])
             except (TransitionError,ValueError,TypeError,KeyError):error='triage_proposal_invalid'
         self.plans.settle_run(job['proposal_id'],error=error)
         return {'phase':'failed' if error else 'complete','error':error}
@@ -143,11 +143,9 @@ class RepositoryPlanner:
         if not launch or not self.config.get('enabled') or self.settings.paused():return {'items':[],'next_cursor':None}
         queued=self.plans.runs()
         if not queued:
-            with self.store.read_snapshot() as db:
-                due_rows=db.execute('SELECT r.id AS repository_id,r.full_name FROM repositories r LEFT JOIN repository_planning p ON p.repository_id=r.id WHERE (p.proposals_enabled=1 OR p.repository_id IS NULL) AND coalesce(p.next_triage_at,0)<=? ORDER BY coalesce(p.next_triage_at,0),r.id LIMIT 50',(self.clock(),)).fetchall()
-            due=next((row for row in due_rows if self.settings.admission(row['full_name'])['allowed']),None)
+            due=next((row for row in self.plans.due() if self.settings.admission(row['full_name'])['allowed']),None)
             if due:
-                self.request(due[0],request_id=str(uuid.uuid4()),actor_id='supervisor:nightly-triage')
+                self.request(due['repository_id'],request_id=str(uuid.uuid4()),actor_id='supervisor:'+due['reason']+'-triage')
                 queued=self.plans.runs()
         if not queued:return {'items':[],'next_cursor':None}
         results=[]

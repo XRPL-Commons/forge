@@ -112,7 +112,14 @@ def triage_properties():
         'reason':{'type':'string','minLength':1,'maxLength':8192},'rule_quote':{'type':['string','null']},
         'parameters':{'anyOf':[{'type':'object','properties':fields,'required':list(fields),'additionalProperties':False} for fields in parameters]}},
         'required':['action','members','reason','rule_quote','parameters'],'additionalProperties':False}
-    return {'rows':{'type':'array','items':row}}
+    memory={'type':'object','properties':{'content':{'type':'string','minLength':1,'maxLength':8192},
+        'sources':{'type':'array','minItems':1,'maxItems':20,'items':ref}},
+        'required':['content','sources'],'additionalProperties':False}
+    note={'type':'object','properties':{**memory['properties'],'note_id':{'type':['string','null']},
+        'kind':{'type':'string','enum':['convention','decision','lesson','question','next_action']}},
+        'required':['note_id','kind','content','sources'],'additionalProperties':False}
+    return {'rows':{'type':'array','items':row},'notes':{'type':'array','maxItems':5,'items':note},
+        'handoff':{'anyOf':[{'type':'null'},memory]}}
 
 
 def strategist_properties():

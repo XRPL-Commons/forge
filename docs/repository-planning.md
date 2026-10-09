@@ -1,6 +1,6 @@
 # Repository planning
 
-Open **Repository settings → Plan repository work**. **Triage now** requests a read-only pass over the repository's open issues. Nightly proposals use the same path, becoming due at midnight UTC. Forge keeps one planning worker at a time and launches it after ordinary pipeline work.
+Open **Repository settings → Plan repository work**. **Triage now** requests a read-only pass over the repository's open issues. Nightly proposals use the same path, becoming due at midnight UTC. Relevant repository changes also request a pass: issue requirements, state, labels or assignees; delivery membership, candidate or completion changes; and operator edits to rules or notes. Events coalesce for thirty seconds, with at least five minutes between event-driven launches. Unchanged polls and the planner's own proposals or notes do not trigger another run. Forge keeps one planning worker at a time and launches it after ordinary pipeline work. Disabling proposals disables nightly and event scheduling; an explicit request remains available.
 
 The planner proposes a disposition for every captured issue: keep, close as already completed, relabel, park, group, order prerequisites, or ask a question. Nothing changes on GitHub while the proposal is being written. A failed or incomplete run leaves its diagnostic record and cannot publish a partial proposal.
 
@@ -19,6 +19,8 @@ A group becomes one delivery with one owning builder, tracked child assignments,
 Standing triage rules are plain text, versioned per repository. The planner must quote the deciding rule in each affected row. Editing rules invalidates pending acceptance against the old revision.
 
 Repository notes record conventions, decisions, lessons, questions and intended next actions. Each note has source links, an immutable source identity, an author and revision history. Correct a note or archive it in the planning page. Issue-revision and candidate references become stale when that source stops being current; stale notes are excluded from the next planning context. Commit, document and decision references describe recorded evidence, not current execution authority. Update their note revision when the interpretation changes.
+
+A completed planner may retain up to five sourced notes and one next-action handoff, together at most 32 KiB. These are written with the proposal after worker cleanup, using the exact captured issue/candidate identities or assigned repository commit. The handoff carries unfinished planning into the next pass. The planner may consolidate its own notes, but cannot overwrite an operator correction or a note edited after its context was captured. Conflicts and a full note store leave a receipt with the captured result; the proposal remains available. Invalid source identities reject the complete publication.
 
 Context has explicit storage limits: fifty active notes, 8 KiB per note, 16 KiB of standing rules, and 512 KiB for a planning assignment and 4 MiB for its structured result. Issue excerpts are marked; the worker can read full issue text using its read-only repository credential. Exceeding the assignment limit fails the run visibly rather than omitting issues. There is no issue-count cap on approved delivery composition.
 
@@ -64,7 +66,7 @@ The client transport limits each request to 16 KiB. Read larger proposals throug
 
 ## Persistence and recovery
 
-Schema 023 stores normalized proposal inputs, rows, membership, rule/note revisions, acceptance receipts and effect authority. Planning context and captured output use the existing auxiliary artifact storage. The planner reuses the existing container runner, credential admission, execution lease and verified cleanup boundary. It cannot approve its own proposal. Process interruption resumes the same owned execution or its captured result; it does not create another runner or reset a delivery's failure budget.
+Schema 023 stores normalized proposal inputs, rows, membership, rule/note revisions, acceptance receipts and effect authority. Planning context and captured output use the existing auxiliary artifact storage. Each repository's scheduling watermark is persisted with the immutable worker context. Events arriving after capture stay pending across restarts and worker completion. The planner reuses the existing container runner, credential admission, execution lease and verified cleanup boundary. It cannot approve its own proposal. Process interruption resumes the same owned execution or its captured result; it does not create another runner or reset a delivery's failure budget.
 
 ## Prerequisites
 
