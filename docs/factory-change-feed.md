@@ -67,3 +67,14 @@ The outer session closes before returning the response. It neither caches data
 between requests nor allows a mutation through that store during the projection.
 A long-poll wait uses autocommit reads and opens the response snapshot only after
 the wait ends, so it does not prevent WAL checkpoint progress.
+
+## Shared UI state
+
+`useFactoryStore` keeps issue and job entities for the current Nuxt app and reuses
+unchanged entity objects across responses. The board, header activity pill, drawer,
+issue detail and factory strip share those records. Active consumers share one
+cancellable long poll; hidden pages pause it and the last consumer releases it.
+
+Mounted detail views refresh for their affected events, resyncs and idle responses.
+Bodies and output stay lazy. A second scoped factory request is reserved for an
+explicit orphan-run link whose issue is no longer available in managed inventory.
