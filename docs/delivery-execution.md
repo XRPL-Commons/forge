@@ -115,3 +115,16 @@ final-head marker before pushing that commit, then marks it ready last. There is
 no null-head exemption from ownership checks. A changed target returns an operator decision and preserves the
 existing work. GitHub publication is an external effect; exact late-publication
 recovery handles a completed push whose original execution did not return.
+
+## Operator progress
+
+Issue Details offers a lazy **Combined delivery** section. It shows the shared
+failure budget, every current member, accepted outputs and parent/child runs.
+Output remains a separate authenticated read. A shared run lists its immutable
+members explicitly; a child is shown only on its assigned issue. Invalidating a
+review candidate preserves the last selected publication as the builder's
+continuation target, so rework updates the same PR.
+
+Agents can use `forge repo delivery OWNER/REPO NUMBER --server HTTPS_ORIGIN --json`, then pass `--after` with `next_cursor` for another page. This uses the
+existing `repositories:read` grant and exposes no worker credentials, prompts or
+raw output.

@@ -11,7 +11,7 @@ from .github import GitHub
 
 def repository_commands():
     commands = {}
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules', 'policy'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
         properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
                       'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
         required = ['repository', 'server']
@@ -22,13 +22,15 @@ def repository_commands():
             properties.update(apply={'type': 'boolean', 'default': False}, enable={'type': 'boolean', 'default': False})
         if action == 'policy':
             properties.update(mode={'enum':['auto','human']},revision={'type':'string','pattern':'^[a-f0-9]{64}$'},request_id={'type':'string','pattern':'^[a-f0-9]{32}$'})
+        if action == 'delivery':
+            properties['after'] = {'type': 'string', 'default': '', 'description': 'Continue from next_cursor'}
         if action == 'issues':
             properties['page'] = {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 1}
-        if action == 'issue':
+        if action in ('issue', 'delivery'):
             properties['number'] = {'type': 'integer', 'minimum': 1}
             required.append('number')
         commands[action] = {
-            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action == 'issue' else ' [auto|human]' if action == 'policy' else '') + ' --server HTTPS_ORIGIN --json',
+            'usage': 'forge repo ' + action + ' OWNER/REPO' + (' NUMBER' if action in ('issue', 'delivery') else ' [auto|human]' if action == 'policy' else '') + ' --server HTTPS_ORIGIN --json',
             'capability': 'repositories:policy' if action == 'policy' else 'repositories:activate' if action in ('enable', 'disable') else 'repositories:prepare' if action in ('setup', 'verify') else 'repositories:read',
             'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
         }
@@ -87,7 +89,7 @@ def parser():
     requirements = sub.add_parser('requirements', help='Show what a repository needs before Forge can work on it')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'fix-rules', 'policy'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
         command = repo.add_parser(action)
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
@@ -96,8 +98,10 @@ def parser():
             command.add_argument('mode',nargs='?',choices=('auto','human'),help='Omit to inspect the effective policy')
             command.add_argument('--revision',help='Exact runtime revision to compare before writing')
             command.add_argument('--request-id',help='Stable 32-character hexadecimal ID for replaying an exact policy decision')
-        if action == 'issue':
+        if action in ('issue', 'delivery'):
             command.add_argument('number', type=int)
+        if action == 'delivery':
+            command.add_argument('--after', default='', help='Continue execution history from its next_cursor')
         if action == 'issues':
             command.add_argument('--page', type=int, default=1)
         if action in ('setup', 'verify', 'enable', 'disable'):
@@ -209,6 +213,8 @@ def execute(args):
             if args.repo_command == 'fix-rules':
                 from .rule_fixes import fixes
                 return fixes(client.read(target, 'repository'))
+            if args.repo_command == 'delivery':
+                return client.read(target, 'delivery', args.number, after=args.after)
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
                 return client.read(target, 'repository' if args.repo_command == 'inspect' else args.repo_command,
                                    getattr(args, 'number', None), getattr(args, 'page', 1))

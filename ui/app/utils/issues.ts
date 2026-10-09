@@ -94,6 +94,7 @@ export interface IssueAttempts { failed: number; limit: number }
 // A GitHub label that paused the issue, who applied it and when (ISO time).
 export interface IssueLabelHold { label: string; login: string | null; at: string }
 export interface IssueDetail extends IssueRow {
+  delivery_id?: string | null
   body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
   // Detail only: the list view carries neither the collaborators nor the request.
   reviewers: Reviewer[]; default_reviewers: string[]; reviewers_requested: ReviewRequest | null

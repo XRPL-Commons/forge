@@ -52,7 +52,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.publication.return_value = None
         self.github.pulls.return_value = []
         self.github.publisher.side_effect = lambda role: role + '[bot]'
-        self.verdicts = Mock(); self.verdicts.ensure.return_value = {'id': 7}
+        self.verdicts = Mock(); self.verdicts.ensure.return_value = {'check_id': 7}
         self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config, job['repo_id'], repository_name=job['repo']), verdicts=self.verdicts, clock=lambda: 100)
         self.dispatch = self.dispatcher()
 
@@ -258,3 +258,35 @@ class DeliveryPipelineTests(unittest.TestCase):
             self.delivery._publication_target_in(resumed['input_manifest'], wrong)
         self.delivery.cancel_builder(self.command(), evidence={'reason': 'operator'})
         self.assertFalse(active_publication_matches(self.store, 'batch', updated))
+
+    def test_public_jobs_and_issue_detail_keep_exact_assignment_scope(self):
+        from forge.factory.store_views import PipelineViews
+        views = PipelineViews(self.store, runtime=self.config, clock=lambda: 100)
+        parent = self.dispatch.step('batch')['job_id']; planning = self.jobs.job(parent)
+        shared = views.job(parent)
+        self.assertIsNone(shared['issue_key']); self.assertIsNone(shared['issue_number'])
+        self.assertEqual({member['issue_key'] for member in shared['members']}, {'issue-1','issue-2'})
+        for key in ('issue-1','issue-2'):
+            self.assertEqual(views.issues(key=key)['issue']['active'], parent)
+        plan = {'children': [dict(key=str(index),member_id=member['member_id'],scope='Implement',dependencies=[])
+                             for index,member in enumerate(planning['members'])]}
+        self.capture(parent,outcome='delegate',delegation_plan=plan)
+        first = self.dispatch.step('batch')['job_id']; second = self.dispatch.step('batch')['job_id']
+        for identifier in (first,second):
+            child = views.job(identifier)
+            self.assertEqual(child['parent_job_id'],parent)
+            self.assertEqual(child['builder_stage'],'child')
+            detail = views.issues(key=child['issue_key'])
+            self.assertEqual(detail['issue']['active'],identifier)
+            self.assertEqual([job['id'] for job in detail['jobs']],[identifier])
+            other = second if identifier==first else first
+            self.assertNotIn(other,[job['id'] for job in detail['factory_issue']['attempts']])
+        scoped = self.jobs.job(first)['members'][0]
+        self.life.open_gate(self.command(),'decision_required',member_id=scoped['member_id'],details={'question':'Scoped choice'})
+        other_key = 'issue-2' if scoped['issue_key']=='issue-1' else 'issue-1'
+        self.assertEqual(views.issues(key=scoped['issue_key'])['issue']['decision_request']['question'],'Scoped choice')
+        self.assertIsNone(views.issues(key=other_key)['issue']['decision_request'])
+        tree = views.delivery('issue-1')
+        self.assertEqual(len(tree['members']),2)
+        self.assertEqual({job['id'] for job in tree['jobs']},{parent,first,second})
+        self.assertNotIn('body',tree['members'][0])

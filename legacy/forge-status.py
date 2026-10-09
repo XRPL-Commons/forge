@@ -562,6 +562,18 @@ class H(BaseHTTPRequestHandler):
                 self._cached(('issues',)+tuple(sorted(args.items())), lambda: service.view(**args))
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
+        elif u.path == '/api/delivery':
+            try:
+                from forge.factory.control import public_views
+                query = parse_qs(u.query, keep_blank_values=True)
+                if set(query)-{'issue','after'} or 'issue' not in query or any(len(v)!=1 for v in query.values()):
+                    raise ValueError('Expected an issue and optional delivery history cursor')
+                service = public_views(WD)
+                if service is None: raise ValueError('Delivery history requires the active SQLite runtime')
+                self._cached(('delivery',query['issue'][0],query.get('after',[''])[0]),
+                             lambda: service.delivery(query['issue'][0],after=query.get('after',[''])[0]))
+            except (OSError,ValueError,KeyError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Delivery history is unavailable. Refresh to try again.'}))
         elif u.path == '/api/factory/changes':
             try:
                 from forge.factory.control import public_views

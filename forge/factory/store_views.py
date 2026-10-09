@@ -127,10 +127,11 @@ class PipelineViews:
         life = issue['lifecycle']
         unit_id = life['unit_id'] or life['historical_unit_id']
         unit = dict(db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()) if unit_id else None
-        jobs = db.execute("SELECT id,role,phase,outcome,cleanup,fenced,created_at FROM jobs WHERE unit_id=? "
-                          'ORDER BY created_at DESC,id DESC LIMIT 6', (unit_id,)).fetchall() if unit_id else []
+        scope = 'EXISTS(SELECT 1 FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=j.id AND m.issue_id=?)'
+        jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + scope +
+                          ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id,issue_id)).fetchall() if unit_id else []
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
-        cleanup = bool(unit_id and db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0 LIMIT 1', (unit_id,)).fetchone())
+        cleanup = bool(unit_id and db.execute('SELECT 1 FROM jobs j WHERE j.unit_id=? AND j.cleanup=0 AND ' + scope + ' LIMIT 1', (unit_id,issue_id)).fetchone())
         pending = db.execute("SELECT 1 FROM issue_action_requests WHERE issue_id=? AND status='pending' LIMIT 1", (issue_id,)).fetchone() is not None
         display_candidate_id=life['candidate_id'] or (unit['current_candidate_id'] if unit else None)
         candidate = db.execute('SELECT * FROM candidates WHERE id=?', (display_candidate_id,)).fetchone() if display_candidate_id else None
@@ -142,7 +143,7 @@ class PipelineViews:
         context=db.execute('SELECT * FROM unit_context WHERE unit_id=?',(unit_id,)).fetchone() if unit_id else None
         gates={}
         if unit_id:
-            for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'])):
+            for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'],life['member_id'])):
                 value=json.loads(gate['details_json']);gates[gate['code']]=(dict(gate),value.get('value',value))
         decision=gates.get('decision_required',(None,None))[1]
         verification=gates.get('verification_human') or gates.get('verification_ci')
@@ -207,6 +208,7 @@ class PipelineViews:
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
             pull_requests=pull_requests,
             dependencies=dependency_numbers, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
+            delivery_id=unit_id if unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone() else None,
             active=active['id'] if active else None, attempts={'failed':charges,'limit':3} if charges else None, held_by=held_by)
         if detail:
             row['body'] = issue['body']
@@ -276,7 +278,7 @@ class PipelineViews:
             if key is not None:
                 row=self._row(db,key,detail=True,config=config)
                 job_ids = [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) '
-                    'AND EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=?) '
+                    'AND EXISTS(SELECT 1 FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=j.id AND m.issue_id=?) '
                     'ORDER BY j.created_at DESC,j.id DESC LIMIT 100', (key,))]
                 from .changes import cursor
                 from ..store.operations import deployment_views
@@ -302,18 +304,52 @@ class PipelineViews:
 
     def job(self, job_id):
         with self.store.read_snapshot() as db:
-            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name,'
-                '(SELECT issue_id FROM unit_issues WHERE unit_id=j.unit_id ORDER BY joined_at LIMIT 1) AS issue_key '
+            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name '
                 'FROM jobs j LEFT JOIN job_launches l ON l.job_id=j.id LEFT JOIN job_execution_state e ON e.job_id=j.id '
                 'LEFT JOIN job_public_metadata p ON p.job_id=j.id JOIN units u ON u.id=j.unit_id JOIN repositories r ON r.id=u.repository_id WHERE j.id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
-            issue=db.execute('SELECT github_number FROM issues WHERE id=?',(row['issue_key'],)).fetchone()
+            members=[dict(member) for member in db.execute('SELECT m.id AS member_id,m.issue_id AS issue_key,i.github_number AS issue_number '
+                'FROM job_members p JOIN unit_issues m ON m.id=p.member_id JOIN issues i ON i.id=m.issue_id WHERE p.job_id=? ORDER BY m.id',(job_id,))]
+            assignment=db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?',(job_id,)).fetchone()
+            child=db.execute('SELECT d.delegation_key,p.builder_id,p.parent_job_id FROM job_delegations d JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?',(job_id,)).fetchone()
+            singular=members[0] if len(members)==1 else None
             return {**{k:row[k] for k in ('id','role','slot','provider','provider_id','model','phase','outcome','created_at','deadline')},
                     'phase':row['source_phase'] or row['phase'],'execution_phase':row['phase'],
                     'cleanup':bool(row['cleanup']),'fenced':bool(row['source_fenced'] if row['source_fenced'] is not None else row['fenced']),
-                    'execution_fenced':bool(row['fenced']),'issue_key':row['issue_key'],
-                    'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':issue[0],
+                    'execution_fenced':bool(row['fenced']),'issue_key':singular['issue_key'] if singular else None,
+                    'unit_id':row['unit_id'],'members':members,
+                    'builder_id':assignment['builder_id'] if assignment else child['builder_id'] if child else None,
+                    'builder_stage':assignment['stage'] if assignment else 'child' if child else None,
+                    'parent_job_id':child['parent_job_id'] if child else None,
+                    'delegation_key':child['delegation_key'] if child else None,
+                    'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':singular['issue_number'] if singular else None,
                     'started_at':row['started_at'],'observed_at':row['captured_at'],'last_observed':row['captured_at']}
+
+    @projection
+    def delivery(self, issue_key, *, after=''):
+        """Lazy, bounded execution tree without logs, notes or request payloads."""
+        from ..store.delivery import DeliveryQueries
+        if not isinstance(after,str) or len(after)>200:
+            raise ValueError('Invalid delivery history cursor')
+        with self.store.read_snapshot() as db:
+            issue = Queries._issue(db, issue_key)
+            unit_id = issue['lifecycle']['unit_id'] or issue['lifecycle']['historical_unit_id']
+            if not unit_id or not db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone():
+                raise ValueError('This issue has no approved delivery')
+            tree = DeliveryQueries(self.store).tree(unit_id,after=after,limit=50)
+            members = [dict(row) for row in db.execute('SELECT m.id,m.issue_id AS issue_key,m.state,i.github_number AS number,r.title '
+                'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=m.requirements_revision_id '
+                'WHERE m.unit_id=? AND m.left_at IS NULL ORDER BY i.github_number',(unit_id,))]
+            unit = db.execute('SELECT state,current_candidate_id FROM units WHERE id=?',(unit_id,)).fetchone()
+            candidate = db.execute('SELECT pull_number FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone()
+            outputs = {row['member_id']:row for row in tree['outputs']}
+            for member in members:
+                member['output_commit'] = outputs.get(member['id'],{}).get('commit_oid')
+            return dict(unit_id=unit_id,version=tree['version'],state=unit['state'],repo_id=issue['repository_id'],
+                repo=issue['repository'],builder_id=tree['builder']['id'] if tree['builder'] else None,
+                candidate_pr=candidate[0] if candidate else None,members=members,
+                jobs=[self.job(job['id']) for job in tree['jobs']],next_cursor=tree['next_cursor'],
+                charged_failures=tree['charged_failures'],failure_limit=3)
 
     @projection
     def output(self, job_id):
@@ -393,7 +429,7 @@ class PipelineViews:
             runner_filter="(j.role='recovery' OR j.fenced=1 OR j.outcome IS NOT NULL OR NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.unit_id=j.unit_id AND m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved')))"
             if section=='runners':job_clauses.append(runner_filter)
             if issue is not None:
-                job_clauses.append('EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=?)');job_params.append(issue)
+                job_clauses.append('EXISTS(SELECT 1 FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=j.id AND m.issue_id=?)');job_params.append(issue)
             job_ids=[] if section=='completed' else [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE '+' AND '.join(job_clauses)+' ORDER BY j.created_at DESC,j.id DESC LIMIT 100',job_params)]
             slots={r['slot']:r['job_id'] for r in db.execute('SELECT slot,job_id FROM job_launches l JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 ORDER BY slot LIMIT 256')}
             counts=db.execute("SELECT COUNT(*) AS total,SUM("+COMPLETION_SQL+">=?) AS day,SUM("+COMPLETION_SQL+">=?) AS week FROM units u WHERE state='merged'",(self.clock()-86400,self.clock()-604800)).fetchone()

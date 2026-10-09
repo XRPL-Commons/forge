@@ -44,6 +44,7 @@ const {
             </IssueSection>
           </div>
 
+          <LazyIssueDelivery v-if="detail.delivery_id" :issue-key="detail.key" />
           <IssueWorkerOutput v-model:open="outputOpen" :jobs="jobs" :selected-job="selectedJob" />
           <IssueSection id="issue-activity" v-model:open="activityOpen" title="Recent activity" class="border-b">
             <ul v-if="detail.history.length" class="flex flex-col gap-2 text-xs">

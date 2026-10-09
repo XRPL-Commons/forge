@@ -170,6 +170,7 @@ Other scoped commands:
 | `repo activity` | Factory health timing and this repository's issue/job state |
 | `repo issues --page N` | Paginated observed issues |
 | `repo issue OWNER/REPO NUMBER` | Observed issue detail and decisions |
+| `repo delivery OWNER/REPO NUMBER [--after JOB_ID]` | Approved delivery members, builder and bounded child execution history |
 
 All take `OWNER/REPO`, `--server HTTPS_ORIGIN` and `--json`. Reads reuse UI services
 and expose observation freshness. Verification refreshes observations; cached
