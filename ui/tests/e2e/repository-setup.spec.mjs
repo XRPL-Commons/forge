@@ -137,9 +137,15 @@ export default async function (page, { base, scenario, requests }) {
     await page.setViewportSize({ width, height: 1000 })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
   }
-  await scenario('bypass-ready')
+  // Publish the repaired observation as the requested check completes. If it
+  // arrives before the click, normal polling correctly turns this into Continue.
+  await page.route('**/api/repositories/check', async route => {
+    await scenario('bypass-ready')
+    await route.continue()
+  })
   await dialog.getByRole('button', { name: 'Check again', exact: true }).click()
   await until(() => rulesetFix.innerText(), text => text.includes('Fixed'))
+  await page.unroute('**/api/repositories/check')
   assert.match(await rulesetFix.innerText(), /Fixed/)
   assert.equal(await dialog.locator('[data-rule-fix]').count(), 1)
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()

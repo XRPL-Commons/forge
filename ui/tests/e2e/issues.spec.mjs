@@ -39,7 +39,7 @@ function waitForRequest(requests, predicate, what) {
 // End-to-end behaviour of the Issues list and the issue detail route: the
 // filters the operator actually uses, one URL per issue, the worker output of
 // any job the issue has had, and the decision round-trip.
-export default async function (page, { base, scenario, requests }) {
+export default async function (page, { base, scenario, requests, observeIssue }) {
   // Server-rendered text appears before Vue attaches; typing into an input
   // then is lost and its button stays disabled. Every load waits for hydration.
   const load = page.goto.bind(page)
@@ -185,8 +185,8 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(outputs[0].query.id, 'attempt', 'the issue’s active job is the default selection')
 
   // An open panel stays open while its cached output is conditionally refreshed.
-  const before = issueRequests(await requests()).length
-  await waitUntil(async () => issueRequests(await requests()).length > before + 1, 'two more polls')
+  const before = (await requests()).filter(entry => entry.path === '/api/factory/output').length
+  await waitUntil(async () => (await requests()).filter(entry => entry.path === '/api/factory/output').length > before + 1, 'two more output reads')
   assert.equal(await pre.isVisible(), true, 'a poll must never collapse an open panel')
   const outputPolls = (await requests()).filter(entry => entry.path === '/api/factory/output')
   assert.ok(outputPolls.length > 1)
@@ -203,6 +203,8 @@ export default async function (page, { base, scenario, requests }) {
   // leave the page before clearing the request log.
   await load('about:blank')
   await scenario('default')
+  // The scoped detail and its job must describe the same issue identity.
+  await observeIssue('1:610', { key: '1:604', number: 604, url: 'https://github.com/XRPL-Commons/academy/issues/604' })
   await page.goto(`${base}/issues/1%3A604?job=${RECOVERY_JOB}`)
   await waitForText(page, DETAIL_TITLE)
   const jobs = page.locator('#issue-jobs li')
