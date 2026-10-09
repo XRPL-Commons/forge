@@ -148,7 +148,7 @@ describe('lineTooltip and lineBlocker', () => {
     const state = lineState(busy(), now)!
     expect(lineTooltip(stageOf(state, '1:10')!, false)).toBe('#10 · Needs attention · An attempt failed')
     expect(lineTooltip(stageOf(state, '1:3')!, true)).toBe('#3 · Queued · Waiting for a worker · XRPL-Commons/academy')
-    expect(lineTooltip(stageOf(state, '1:15')!, false)).toBe('#15 · Waiting on other issues · Waiting on #7')
+    expect(lineTooltip(stageOf(state, '1:15')!, false)).toBe('#15 · Waiting on other issues · Blocked')
   })
 
   it('ties a waiting issue to its blocker in the same repository', () => {

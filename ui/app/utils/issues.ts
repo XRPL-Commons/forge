@@ -1,9 +1,10 @@
 // Pure view logic and copy for the Issues list and the issue detail route.
-// Every string the operator reads about an issue comes from one of the maps
-// below, so the list, the detail and the decision dialog can never disagree.
+// Status labels come from the shared server projection; the remaining maps
+// name actions and supporting facts.
 // Rules follow the operator API contracts §2 (GET /api/issues) and §3.2–3.3.
 
 import { elapsed } from './factory'
+import { operatorLabel, type OperatorStatusSource } from './operatorStatus'
 import { ago, clampTitle, reviewerMentions } from './format'
 
 // `blocked`: waiting on other issues (its prerequisites) to close. It starts
@@ -35,13 +36,14 @@ export interface IssueEnvironment {
   editable: boolean
 }
 
-export interface IssueRow {
+export interface IssueRow extends OperatorStatusSource {
   key: string; repo: string; repo_id: number; number: number; title: string
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
   updated_at: string | null; labels: string[]; assignees: string[]
   status: IssueStatus; summary: IssueSummary | null; explanation: string
   ledger_state?: import('./factory').IssueState | null
-  reason_code?: string
+  reason_code?: string | null
+  stage_code?: string | null
   // The server sends the decisions this issue accepts; 'stop' is never one of
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop' | 'close'>[]
@@ -104,17 +106,6 @@ export interface IssueDetailResponse {
   ok: true; controls_token: string; issue: IssueDetail; repositories: IssueScope[]; actions: IssueActionStatus[]
 }
 
-export const STATUS_NAMES: Record<IssueStatus, string> = {
-  backlog: 'Backlog',
-  queued: 'Queued',
-  working: 'Working',
-  attention: 'Needs attention',
-  completed: 'Completed',
-  waiting: 'Waiting',
-  blocked: 'Waiting on other issues',
-  dropped: 'No longer needed',
-}
-
 // The order the server sorts the list in (forge/factory/issues.py view()):
 // what needs the operator first, finished work last.
 export const STATUS_ORDER: IssueStatus[] = ['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped']
@@ -129,11 +120,9 @@ export function blockingIssues(row: Pick<IssueRow, 'status' | 'explanation' | 'd
   return [...new Set(numbers.filter(number => Number.isSafeInteger(number) && number > 0))]
 }
 
-// The status chip's words: a blocked issue names what it waits on.
-export function statusLabel(row: Pick<IssueRow, 'status' | 'explanation' | 'dependencies'>): string {
-  const numbers = blockingIssues(row)
-  if (numbers.length) return `Waiting on ${numbers.map(number => `#${number}`).join(', ')}`
-  return STATUS_NAMES[row.status] ?? row.status
+// The main label is shared with Activity; dependency details stay in the reason.
+export function statusLabel(row: Pick<IssueRow, 'status' | 'explanation' | 'dependencies' | 'operator_status'>): string {
+  return operatorLabel(row)
 }
 
 export const ACTION_LABELS: Record<IssueAction, string> = {

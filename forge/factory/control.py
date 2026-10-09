@@ -224,7 +224,8 @@ def view(root):
     from .operator_status import overview
     repositories = Settings(root).view()['repositories']
     runtime = load(root)
-    active = (Path(root) / 'state' / 'factory-v2.enabled').exists()
+    from ..configuration_authority import ConfigurationAuthority
+    active = ConfigurationAuthority(root).active()
     now = time.time()
     operator = overview(data, repositories, runtime, observation, active, now)
     from ..harnesses.registry import manifests

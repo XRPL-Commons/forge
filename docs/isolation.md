@@ -1,3 +1,20 @@
+# Isolation status
+
+The supported factory uses disposable Docker workers with native tool sandboxing,
+a runner-specific seccomp/AppArmor policy, and an internal egress network. These
+are the **live** mechanisms described in [the runtime guide](factory-runtime.md)
+and the [security boundary table](../SECURITY.md#runtime-trust-boundaries).
+`safe-build` and memory admission are live resource controls, not credential
+isolation. The tmux fleet supervisor is retired. The independent observer remains
+deferred until core qualification is complete (#111).
+
+## Staged native-account alternative
+
+Everything below describes a **staged, inactive alternative**. Its accounts,
+executable profiles and canaries are not the factory's live execution path.
+Provisioning them does not change the container runner. The live SQLite execution
+adapters are controller code, not this proposed host executor.
+
 Forge's native CLI isolation is a separate rollout gate. `deploy/provision_isolation.py` prepares identities and executable provenance; it does **not** establish that repository commands cannot access client credentials.
 
 The provisioner defaults to a dry run. It creates neither accounts nor files outside the workspace until `--apply` is explicitly supplied. It never copies authentication, starts workers, changes the operator's groups or Codex configuration, disables AppArmor, or changes global user-namespace sysctls.

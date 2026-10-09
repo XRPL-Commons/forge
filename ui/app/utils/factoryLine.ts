@@ -139,6 +139,7 @@ export function lineState(view: FactoryView | null | undefined, now: number, gro
     items.push({
       id: card.key, number: card.number, repo: card.repo, repoId: issue?.repo_id ?? null,
       stage, running: card.running, status: card.phaseLabel, card, ...extra,
+      ...(card.operator_status ? { status: card.operator_status.label } : {}),
     })
   }
   for (const role of COLUMN_ROLES) {

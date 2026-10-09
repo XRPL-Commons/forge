@@ -32,7 +32,7 @@ class Configuration:
             raise ValueError('configuration exceeds its size limit')
         if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
             raise ConfigurationConflict('staging imports cannot accept configuration changes')
-        row = db.execute('SELECT revision FROM configuration WHERE domain=? AND subject=? AND active=1', (domain,subject)).fetchone()
+        row = db.execute('SELECT revision,settings_json FROM configuration WHERE domain=? AND subject=? AND active=1', (domain,subject)).fetchone()
         current = row[0] if row else 0
         if current != expected_revision:
             raise ConfigurationConflict('configuration changed; reload before saving')
@@ -40,4 +40,8 @@ class Configuration:
         db.execute('UPDATE configuration SET active=0 WHERE domain=? AND subject=? AND active=1',(domain,subject))
         db.execute('INSERT INTO configuration VALUES(?,?,?,?,?,?,?)',
                    (domain,subject,following,1,payload,credential_ref,self.clock()))
+        from ..mutation_audit import config_change_in
+        config_change_in(db, domain=domain, subject=subject,
+                         before=json.loads(row['settings_json']) if row else None,
+                         after=settings, revision=following, clock=self.clock)
         return following

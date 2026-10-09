@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, STATUS_NAMES, attentionNote,
+  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
@@ -21,13 +21,6 @@ const row = (over: Partial<IssueRow> = {}): IssueRow => ({
 })
 
 describe('copy maps', () => {
-  it('names every status the list and detail can render', () => {
-    expect(STATUS_NAMES).toEqual({
-      backlog: 'Backlog', queued: 'Queued', working: 'Working',
-      attention: 'Needs attention', completed: 'Completed', waiting: 'Waiting',
-      blocked: 'Waiting on other issues', dropped: 'No longer needed',
-    })
-  })
   it('labels every decision, including stop', () => {
     expect(ACTION_LABELS.queue).toBe('Queue for Forge')
     expect(ACTION_LABELS.backlog).toBe('Return to backlog')
@@ -416,15 +409,13 @@ describe('waiting on other issues', () => {
     expect(blockingIssues({ ...blocked, explanation: '' })).toEqual([85, 90, 101])
     expect(blockingIssues({ ...blocked, status: 'queued' })).toEqual([])
   })
-  it('says what it waits on in the status chip, else waits on other issues', () => {
-    expect(statusLabel(blocked)).toBe('Waiting on #90, #101')
-    expect(statusLabel({ ...blocked, explanation: '', dependencies: [] })).toBe('Waiting on other issues')
-    expect(STATUS_NAMES.blocked).toBe('Waiting on other issues')
+  it('keeps the main blocked label separate from dependency details', () => {
+    expect(statusLabel(blocked)).toBe('Blocked')
+    expect(statusLabel({ ...blocked, explanation: '', dependencies: [] })).toBe('Blocked')
     expect(statusLabel({ status: 'waiting', explanation: 'Waiting for #9.', dependencies: [9] })).toBe('Waiting')
   })
   it('sorts after other waits and before queued work, as the server does', () => {
     expect(STATUS_ORDER).toEqual(['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped'])
-    expect([...STATUS_ORDER].sort()).toEqual(Object.keys(STATUS_NAMES).sort())
   })
   it('is only opened, never asked to decide anything', () => {
     expect(rowAction({ status: 'blocked', actions: [], approval: null } as any, null)).toBe('Open')

@@ -28,7 +28,7 @@ class RepositorySetup:
         self.github_class = github_class
         self.path = settings.state / 'repositories.json'
         # Deployment state belongs to the live factory, never to the setup copy.
-        self.root = settings.root.parent if settings.root.name == 'setup' else settings.root
+        self.root = settings.authority.root
         self.database = getattr(settings, 'database', None)
 
     def deployments(self):
@@ -141,11 +141,11 @@ class RepositorySetup:
                 raise ValueError('Refresh GitHub access to find this repository')
         return {'revision': settings['revision'], 'repositories': rows,
                 'connections': connections, 'sync': settings['sync'],
-                'activation_available': self.settings.root.name != 'setup',
-                'continue_url': '/onboarding' if self.settings.root.name == 'setup' else '/factory'}
+                'activation_available': self.settings.scope != 'setup',
+                'continue_url': '/onboarding' if self.settings.scope == 'setup' else '/factory'}
 
     def enable(self, repo_id, revision):
-        if self.settings.root.name == 'setup':
+        if self.settings.scope == 'setup':
             raise ValueError('Finish initial Forge setup before enabling automation')
         config = self.settings.load()
         if revision != digest(config):
@@ -160,7 +160,7 @@ class RepositorySetup:
         return self.view(repo_id)
 
     def disable(self, repo_id, revision):
-        if self.settings.root.name == 'setup':
+        if self.settings.scope == 'setup':
             raise ValueError('Finish initial Forge setup before changing automation')
         config = self.settings.load()
         if revision != digest(config):
@@ -179,7 +179,7 @@ class RepositorySetup:
 
     def deployment(self, repo_id, revision, action, domain=None, reason=None):
         """Confirming is the only moment settings change or an issue is filed."""
-        if self.settings.root.name == 'setup':
+        if self.settings.scope == 'setup':
             raise ValueError('Finish initial Forge setup before confirming a deployment profile')
         config = self.settings.load()
         if revision != digest(config):

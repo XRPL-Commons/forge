@@ -8,8 +8,8 @@ See [runtime setup](factory-runtime.md) for the exact configuration and host pol
 
 - Guided three-screen onboarding with GitHub App manifests, staged configuration,
   server-owned readiness checks, and supervisor-applied Start and full reset.
-- Reset archives lifecycle history only after verified teardown. Its journal
-  survives restarts, and old reset intents cannot affect a newer installation.
+- Reset retains selected SQLite lifecycle and audit history after verified teardown.
+  Its journal survives restarts, and old reset intents cannot affect a newer installation.
 
 - Supervisor-owned issue history and assignments, with serialized durable
   reservations before launch and checked ownership invariants on load/save.
@@ -20,7 +20,7 @@ See [runtime setup](factory-runtime.md) for the exact configuration and host pol
 - Disposable container runners with native Codex policy, external reset, verified
   teardown, stale-execution fencing and bounded evidence capture.
 - GitHub App discovery and multiple installations per role, repository-scoped
-  execution tokens, explicit activation, and configuration files shared with Settings.
+  execution tokens, explicit activation, and versioned configuration shared with Settings through the selected storage authority.
 - A factory view with compact actions, confirmation dialogs, current attention
   separated from historical failures, runner cleanup and issue history.
 
@@ -44,9 +44,30 @@ and baseline checks; the factory does not claim those are deployed. A setup stat
 left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
 or stops tmux sessions.
 
-The factory ledger is local JSON with atomic fsync/replace and invariants, not a
-distributed claim service. Do not operate separate controller roots against the same
-repositories. GitHub grants are coarser than individual builder actions; role prompts
-are cooperative restrictions for those writes, while submission acceptance and
-protected-target merge authority are independently checked. History/evidence remains
-private runtime data and has no automatic retention deletion in this version.
+## Selected SQLite runtime
+
+The one-way migration selects one private SQLite database for lifecycle,
+configuration, identity and supporting state. The database uses WAL and FULL
+durability; transactions, revisions and constraints protect local state. Managed
+launchers qualify the SQLite runtime and reject missing or incompatible selected
+state. JSON readers and writers are fenced after selection; the original capture
+is diagnostic only. See [migration and recovery](store-migration.md).
+
+This is not a distributed claim service. Do not operate separate controller roots
+against the same repositories. Credentials remain private referenced files outside
+the database. Back up the selected database coherently with its instance metadata
+and credential references; a live copy of only the main database file omits WAL
+state. Do not use the old JSON directory as a current backup.
+
+The supervisor expires eligible raw logs after 30 days in bounded batches, while
+retaining active/pinned evidence, events and structured results. Reset retains SQL
+history. Logs remain private diagnostic data even after redaction.
+
+GitHub grants are coarser than individual builder actions; role prompts are
+cooperative restrictions for those writes, while submission acceptance and
+protected-target merge authority are independently checked. See the
+[live/staged/retired security inventory](../SECURITY.md#isolation-status).
+
+The storage cutover does not by itself establish #209's latency target, a real
+ordinary issue-to-merge qualification, or multi-issue batch delivery. Those remain
+tracked acceptance work.

@@ -1,6 +1,7 @@
 // What one IssueCard shows, from either shape a page holds: an Issues page
 // row (/api/issues) or an Activity card (/api/factory). The card itself only
 // renders this view, so both pages read the same way.
+import { operatorReason } from './operatorStatus'
 import { elapsed, type CardModel } from './factory'
 import { ago } from './format'
 import { rowFacts, rowStory, statusLabel, type IssueRow } from './issues'
@@ -28,6 +29,7 @@ export interface IssueCardView {
   headline: string
   plain: string
   facts: CardFact[]
+  statusReason?: string
   // `icon` and `dim`: the calm chip of an issue waiting on other issues.
   status: { label: string; color: BadgeColor; icon?: string | null; dim?: boolean } | null
   look: PortraitLook
@@ -57,6 +59,7 @@ export function rowCardView(row: IssueRow, now: number): IssueCardView {
     headline: story.headline,
     plain: story.plain,
     facts,
+    statusReason: operatorReason(row),
     status: { label: statusLabel(row), ...statusBadge(row.status) },
     look: portraitFromScene(workbenchLook(row).scene),
     running: row.status === 'working',
@@ -105,7 +108,9 @@ export function modelCardView(card: CardModel, now: number): IssueCardView {
     headline,
     plain: card.summary && card.reason && card.reason !== card.summary ? card.reason : '',
     facts,
-    status: !card.phaseLabel ? null
+    statusReason: operatorReason(card),
+    status: card.operator_status ? { label: card.operator_status.label, ...statusBadge(card.operator_status.code) }
+      : !card.phaseLabel ? null
       : card.look.mood === 'patient' ? { label: card.phaseLabel, ...statusBadge('blocked') }
         : card.look.mood === 'rest' ? { label: card.phaseLabel, ...statusBadge('dropped') }
         : { label: card.phaseLabel, color: cardColor(card) },

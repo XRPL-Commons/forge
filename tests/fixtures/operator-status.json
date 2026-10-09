@@ -1,0 +1,18 @@
+[
+  {"name":"queued","expected":{"code":"queued","label":"Queued","reason_code":"queued","reason":"Waiting to start"}},
+  {"name":"working","expected":{"code":"working","label":"Working","reason_code":"building","reason":"Building"}},
+  {"name":"operator_pause","expected":{"code":"backlog","label":"Backlog","reason_code":"operator_pause","reason":"Paused by the operator"}},
+  {"name":"label_hold","expected":{"code":"blocked","label":"Blocked","reason_code":"label_hold","reason":"On hold by a GitHub label; removing it clears this hold"}},
+  {"name":"dependency","expected":{"code":"blocked","label":"Blocked","reason_code":"dependency","reason":"Waiting for other issues to close"}},
+  {"name":"approval_required","expected":{"code":"attention","label":"Needs attention","reason_code":"approval_required","reason":"Waiting for approval to merge"}},
+  {"name":"verification_ci","expected":{"code":"waiting","label":"Waiting","reason_code":"verification_ci","reason":"Waiting for CI to verify the change"}},
+  {"name":"verification_human","expected":{"code":"attention","label":"Needs attention","reason_code":"verification_human","reason":"Waiting for a person to verify the change"}},
+  {"name":"provider_unavailable","expected":{"code":"waiting","label":"Waiting","reason_code":"provider_unavailable","reason":"Waiting for an available agent account"}},
+  {"name":"cleanup_pending","expected":{"code":"waiting","label":"Waiting","reason_code":"cleanup_pending","reason":"Cleaning up a finished attempt"}},
+  {"name":"result_pending","expected":{"code":"waiting","label":"Waiting","reason_code":"result_pending","reason":"Checking the completed worker result"}},
+  {"name":"completed_elsewhere","expected":{"code":"completed","label":"Completed","reason_code":"github_completed","reason":"Closed on GitHub as completed"}},
+  {"name":"merged","expected":{"code":"completed","label":"Completed","reason_code":"merged","reason":"Merged"}},
+  {"name":"dropped","expected":{"code":"dropped","label":"No longer needed","reason_code":"github_not_planned","reason":"Closed on GitHub as not planned"}},
+  {"name":"reopened","expected":{"code":"backlog","label":"Backlog","reason_code":null,"reason":"Not queued for Forge"}},
+  {"name":"independent_hold","expected":{"code":"attention","label":"Needs attention","reason_code":"environment","reason":"Waiting for the build environment to be repaired"}}
+]

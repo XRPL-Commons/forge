@@ -196,7 +196,7 @@ class RepositorySetupTests(unittest.TestCase):
 
     def test_disable_is_fenced_during_setup_and_factory_reset(self):
         config = self.settings.load()
-        with patch.object(self.settings, 'root', self.settings.root / 'setup'):
+        with patch.object(self.settings, 'scope', 'setup'):
             with self.assertRaisesRegex(ValueError, 'Finish initial Forge setup'):
                 self.service.disable(10, digest(config))
         write_json(self.settings.root / 'state/factory-paused.json', {})

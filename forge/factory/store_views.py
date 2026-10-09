@@ -12,11 +12,9 @@ from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
 from ..store.transitions import manifest_hash
 from .config import validate
+from .status_projection import operator_status
 
 
-AUTOMATIC = {'recovery_pending', 'cleanup_pending', 'result_pending', 'provider_unavailable', 'capacity', 'retry_delay', 'verification_ci', 'merge_checks'}
-ATTENTION = {'budget_exhausted', 'approach_required', 'decision_required', 'repository_setup', 'environment', 'legacy_reconciliation',
-             'membership_decision', 'external_change', 'verification_human', 'approval_required', 'observation_unavailable'}
 LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 'reviewing': 'built',
                 'auditing': 'reviewed', 'merging': 'audited', 'merged': 'merged', 'closed': 'cancelled', 'dissolved': 'cancelled'}
 
@@ -27,21 +25,6 @@ def action_revision(db, issue_id):
     return manifest_hash({'issue': issue_id, 'issue_version': issue['version'],
                           'unit': lifecycle['unit_id'], 'unit_version': lifecycle['unit_version'],
                           'candidate': lifecycle['candidate_id'], 'reason': lifecycle['reason_code']})
-
-
-def public_status(issue, active=False):
-    state, reason = issue['lifecycle']['state'], issue['lifecycle']['reason_code']
-    if state in {'done', 'dropped', 'untracked'}:
-        return {'done': 'completed', 'dropped': 'dropped', 'untracked': 'backlog'}[state]
-    if reason in {'operator_pause', 'operator_backlog'}:
-        return 'backlog'
-    if reason in {'dependency', 'label_hold', 'ownership_conflict'}:
-        return 'blocked'
-    if reason in ATTENTION:
-        return 'attention'
-    if reason:
-        return 'waiting'
-    return 'working' if active else 'queued'
 
 
 def available_actions(issue, unit, *, cleanup=False, pending=False):
@@ -139,7 +122,8 @@ class PipelineViews:
         display_candidate_id=life['candidate_id'] or (unit['current_candidate_id'] if unit else None)
         candidate = db.execute('SELECT * FROM candidates WHERE id=?', (display_candidate_id,)).fetchone() if display_candidate_id else None
         dependency_numbers,pull_requests,reviewers=self._collections(db,issue,unit_id,candidate,detail=detail,config=config)
-        reason, status = life['reason_code'], public_status(issue, bool(active))
+        operator = operator_status(issue, bool(active))
+        reason, status = life['reason_code'], operator['code']
         blocker = life['current_blocker']
         details = json.loads(blocker['details_json']) if blocker else {}
         context=db.execute('SELECT * FROM unit_context WHERE unit_id=?',(unit_id,)).fetchone() if unit_id else None
@@ -196,7 +180,7 @@ class PipelineViews:
         row = dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
             title=issue['title'], content_hash=display[0] if display else issue['content_hash'], body_truncated=bool(issue.get('body_truncated')),
             state=issue['github_state'], state_reason=issue['state_reason'], updated_at=issue['remote_updated_at'],
-            labels=issue['labels'], assignees=issue['assignees'], assignee_types=issue['assignee_types'], status=status, reason_code=reason,
+            labels=issue['labels'], assignees=issue['assignees'], assignee_types=issue['assignee_types'], status=status, reason_code=reason, operator_status=operator,
             stage_code=life['stage_code'], lifecycle=life, ledger_state=legacy, explanation=wording,
             summary=summary,
             actions=actions, closable=fresh and issue['github_state']=='open' and not pending,
@@ -344,7 +328,7 @@ class PipelineViews:
                     history.insert(0,{'kind':'merged' if unit['state']=='merged' else 'cancelled','at':selected['completed_at']})
                 attention={'approval_required':'approve','verification_human':'verify','budget_exhausted':'failed',
                     'approach_required':'approach','decision_required':'question','environment':'env','repository_setup':'env'}.get(reason)
-                issues.append({**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code')},
+                issues.append({**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code','operator_status')},
                     'state':row['ledger_state'] or ('cancelled' if unit['state'] in {'closed','dissolved'} else 'merged' if unit['state']=='merged' else 'hold'),
                     'reason':row['explanation'] if reason else None,'failure_count':(row['attempts'] or {}).get('failed',0),
                     'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,

@@ -5,7 +5,8 @@ component (runner image, isolation policies, egress, operator UI, services) is
 compared with what this source wants; only what changed is rebuilt, qualified,
 replaced and restarted. Every new artifact is built and the runner canary passes
 before anything in use is touched, so a failed update leaves the host as it was.
-Rolling back is the same operation on an older checkout.
+An interrupted update is resumed by rerunning. Selected SQLite installations
+require a compatible forward update; older JSON-only source is not a rollback.
 """
 import difflib
 import hashlib
@@ -27,6 +28,7 @@ import urllib.request
 from .onboarding import Onboarding
 from .settings import read_json, write_json
 from .factory.control import controller_lock, ControllerBusy
+from .configuration_authority import RUNTIME_DOMAINS
 
 SOURCE = Path(__file__).resolve().parent.parent
 NODE_IMAGE = 'node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6'
@@ -140,12 +142,16 @@ class Record:
     def __init__(self, root):
         self.root = Path(root)
         self.path = Path(root) / RECORD
-        self.data = runtime_document(root, RECORD) or {}
+        snapshot = runtime_snapshot(root, RECORD)
+        self.revision = snapshot['revision'] if snapshot else 0
+        self.credential_ref = snapshot['credential_ref'] if snapshot else None
+        self.data = snapshot['settings'] if snapshot else {}
         self.data.setdefault('managed', {})
 
     def save(self, **values):
         self.data.update(values)
-        save_runtime_document(self.root, RECORD, self.data)
+        self.revision = save_runtime_document(self.root, RECORD, self.data,
+                                             expected_revision=self.revision, credential_ref=self.credential_ref)
 
     def managed(self, path, content):
         self.data['managed'][str(path)] = digest_bytes(content)
@@ -181,27 +187,21 @@ def ensure_upstream_secret(root):
     return path
 
 
+def runtime_snapshot(root, name):
+    """Read settings and their revision together; keep that revision until saving."""
+    from .configuration_authority import ConfigurationAuthority
+    return ConfigurationAuthority(root).snapshot(name)
+
+
 def runtime_document(root, name):
-    from .store.runtime import selected
-    from .store.configuration import Configuration
-    store = selected(root)
-    if store is not None:
-        row = Configuration(store).get(name)
-        return row['settings'] if row else None
-    path = Path(root) / name
-    return read_json(path) if path.exists() else None
+    row = runtime_snapshot(root, name)
+    return row['settings'] if row else None
 
 
-def save_runtime_document(root, name, value):
-    from .store.runtime import selected
-    from .store.configuration import Configuration
-    store = selected(root)
-    if store is not None:
-        config = Configuration(store)
-        previous = config.get(name)
-        config.replace(name, value, expected_revision=previous['revision'] if previous else 0)
-    else:
-        write_json(Path(root) / name, value)
+def save_runtime_document(root, name, value, *, expected_revision, credential_ref=None):
+    from .configuration_authority import ConfigurationAuthority
+    return ConfigurationAuthority(root).replace(name, value, expected_revision=expected_revision,
+                                                 credential_ref=credential_ref)
 
 
 def ui_container(root):
@@ -413,24 +413,28 @@ def switch_runtime(root, image, profile):
     """Point every runtime configuration at the qualified image, between supervisor cycles."""
     try:
         with controller_lock(root, timeout=120):
-            for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
-                config = runtime_document(root, name)
-                if config is not None:
+            for name in RUNTIME_DOMAINS:
+                snapshot = runtime_snapshot(root, name)
+                if snapshot is not None:
+                    config = snapshot['settings']
                     if config.get('image') != image or config.get('apparmor_profile') != profile:
                         config.update(image=image, apparmor_profile=profile)
-                        save_runtime_document(root, name, config)
+                        save_runtime_document(root, name, config, expected_revision=snapshot['revision'],
+                                              credential_ref=snapshot['credential_ref'])
     except ControllerBusy:
         raise ValueError('The supervisor stayed busy for two minutes; nothing was switched. Rerun bin/forge update.') from None
 
 
 def switch_full_environment(root, image):
     with controller_lock(root, timeout=120):
-        for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
-            config = runtime_document(root, name)
-            if config is not None:
+        for name in RUNTIME_DOMAINS:
+            snapshot = runtime_snapshot(root, name)
+            if snapshot is not None:
+                config = snapshot['settings']
                 tiers = config.setdefault('environment_tiers', {})
                 tiers['full'] = {**{'memory': '4g', 'cpus': 2}, **tiers.get('full', {}), 'image': image}
-                save_runtime_document(root, name, config)
+                save_runtime_document(root, name, config, expected_revision=snapshot['revision'],
+                                      credential_ref=snapshot['credential_ref'])
 
 
 def install_full_environment(root):
@@ -633,7 +637,7 @@ def reconcile(root, bind=None, assume_yes=False):
         # Written last: a failed installation can be repeated without a false success marker.
         config = Onboarding(root).runtime()
         config.update(image=image, apparmor_profile=APPARMOR_PROFILE)
-        save_runtime_document(root, 'host-runtime.json', config)
+        save_runtime_document(root, 'host-runtime.json', config, expected_revision=0)
     elif record.data['previous'].get('source') not in (None, source):
         from .store.runtime import selected
         if selected(root) is not None:

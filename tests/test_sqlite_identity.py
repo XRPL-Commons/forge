@@ -226,6 +226,22 @@ class SqliteRepositoryOperationTests(connection_tests.Fixture):
         self.assertNotIn(self.credential['access_token'], rows[0]['payload_json'])
         self.assertFalse((self.root / 'state/client-operations').exists())
 
+    def test_request_receipt_is_separate_from_asynchronous_effect_and_redacted(self):
+        self.operations.operation(self.credential['access_token'], self.value)
+        self.operations.operation(self.credential['access_token'], self.value)
+        self.queued[0]()
+        with self.database.read_snapshot() as db:
+            requests = [dict(row) for row in db.execute("SELECT * FROM operator_audit WHERE json_extract(details_json,'$.kind')='request_outcome'")]
+            effects = [dict(row) for row in db.execute("SELECT * FROM operator_audit WHERE json_extract(details_json,'$.kind')='operation_effect'")]
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]['outcome'], 'accepted')
+        self.assertEqual(requests[0]['connection_id'], self.credential['connection']['id'])
+        self.assertEqual(json.loads(requests[0]['details_json'])['command_request_id'], self.value['id'])
+        self.assertEqual(len(effects), 1)
+        self.assertEqual(effects[0]['request_id'], self.value['id'])
+        for secret in (self.credential['access_token'], self.credential['refresh_token'], 's' * 40):
+            self.assertNotIn(secret, json.dumps(requests + effects))
+
     def test_revocation_before_effect_prevents_configuration_write(self):
         self.operations.operation(self.credential['access_token'], self.value)
         self.service.revoke(self.session, self.credential['connection']['id'])

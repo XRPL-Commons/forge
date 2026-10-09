@@ -71,10 +71,10 @@ class Bootstrap:
         info = self.root.stat()
         need(info.st_uid == os.getuid() and not info.st_mode & 0o077,
              'invalid_root', 'The runtime must be private and owned by the SSH service account.')
-        from .store.runtime import selected
-        from .store.configuration import Configuration
-        self.database = selected(self.root)
-        installed = Configuration(self.database).get('host-runtime.json') is not None if self.database else (self.root / 'host-runtime.json').is_file()
+        from .configuration_authority import ConfigurationAuthority
+        authority = ConfigurationAuthority(self.root)
+        self.database = authority.database
+        installed = authority.snapshot('host-runtime.json') is not None
         need(installed, 'installation_required', 'Install this host with bin/forge setup before configuring sign-in.')
         self.auth = OperatorAuth(self.root)
 

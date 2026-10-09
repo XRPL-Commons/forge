@@ -1,4 +1,5 @@
 import unittest
+import json
 from forge.store.migration.importer import Importer
 from forge.store.migration.identity import AUTH, CREDENTIAL
 from forge.store.migration.snapshot import MigrationError
@@ -50,6 +51,26 @@ class IdentityImportTests(unittest.TestCase):
         credential=importer.store.root/CREDENTIAL
         self.assertEqual(credential.stat().st_mode&0o777,0o600)
         self.assertNotIn('x'*40,str(report))
+
+    def test_import_preserves_legacy_admissions_without_identity_credentials(self):
+        from forge.store.migration.identity import AUDIT
+        self.auth()
+        event = dict(time=123, event='operator_request', operator={'id': 7, 'login': 'operator'},
+                     route='/api/settings/sync')
+        path = self.root / AUDIT
+        path.write_text(json.dumps(event) + '\n')
+        path.chmod(0o600)
+        importer = Importer(self.snapshot(), self.base / 'staging')
+        report = importer.run()
+        importer.run()
+        with importer.store.read_snapshot() as db:
+            rows = [dict(row) for row in db.execute('SELECT * FROM operator_audit')]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['outcome'], 'admitted')
+        self.assertEqual(rows[0]['operator_id'], '7')
+        self.assertEqual(report['supporting_checks']['operator_audit'], 1)
+        for secret in ('x' * 40, 'csrf', 'verifier', 'access-active', 'refresh-active'):
+            self.assertNotIn(secret, json.dumps(rows))
 
     def test_identity_replay_preserves_credential_and_detects_corruption(self):
         self.auth();source=self.snapshot()

@@ -66,21 +66,22 @@ describe('phaseLabel', () => {
     expect(phaseLabel(v.issues[0], running, v, now)).toBe('Working')
   })
 
-  it('reports a stale running job as Last seen working', () => {
+  it('keeps the main working state separate from observation freshness', () => {
     const stale = job({ observed_at: now - 500, last_observed: now - 500 })
     const v = view({ issues: [issue({ active: stale.id })], jobs: [stale] })
-    expect(phaseLabel(v.issues[0], stale, v, now)).toBe('Last seen working')
+    expect(phaseLabel(v.issues[0], stale, v, now)).toBe('Working')
   })
 
-  it('reports a capacity wait as Waiting for memory', () => {
+  it('keeps capacity details in the reason rather than the main state', () => {
     const waiting = job({ capacity_wait_since: now - 30 })
     const v = view({ issues: [issue({ active: waiting.id })], jobs: [waiting] })
-    expect(phaseLabel(v.issues[0], waiting, v, now)).toBe('Waiting for memory')
+    expect(phaseLabel(v.issues[0], waiting, v, now)).toBe('Working')
+    expect(reasonText(v.issues[0], waiting)).toContain('Waiting for memory')
   })
 
   it('falls back to the issue state when there is no job', () => {
     const v = view()
-    expect(phaseLabel(issue({ state: 'approval_needed' }), null, v, now)).toBe('Approval needed')
+    expect(phaseLabel(issue({ state: 'approval_needed' }), null, v, now)).toBe('Needs attention')
     expect(phaseLabel(issue({ state: 'ready' }), null, v, now)).toBe('Queued')
   })
 })
@@ -194,7 +195,7 @@ describe('groupIssues', () => {
     ] }), now)
     expect(split.attention.map(c => c.key)).toEqual(['1:622', '1:623'])
     expect(split.held.map(c => c.key)).toEqual(['1:620', '1:621'])
-    expect(split.held[0]!.phaseLabel).toBe('On hold')
+    expect(split.held[0]!.phaseLabel).toBe('Blocked')
   })
 
   it('leaves the held group empty when nothing is on hold', () => {
@@ -388,7 +389,7 @@ describe('issues waiting on dependencies', () => {
     const groups = groupIssues(v, now)
     expect(groups.columns.build.map(c => c.key)).toEqual(['1:613'])
     expect(groups.waiting.map(c => c.key)).toEqual(['1:612'])
-    expect(groups.waiting[0]).toMatchObject({ phaseLabel: 'Waiting on #658', reason: 'Waiting for #658.' })
+    expect(groups.waiting[0]).toMatchObject({ phaseLabel: 'Blocked', reason: 'Waiting for #658.' })
   })
 
   it('are not counted as queued for a worker', () => {
@@ -409,7 +410,7 @@ describe('issues owned by someone else', () => {
 
   it('shows the owner before dependencies and excludes it from the worker queue', () => {
     const groups = groupIssues(v, now)
-    expect(groups.owned[0]).toMatchObject({ phaseLabel: owner.headline, reason: owner.plain })
+    expect(groups.owned[0]).toMatchObject({ phaseLabel: 'Blocked', reason: owner.plain })
     expect(groups.waiting).toEqual([])
     expect(groups.columns.build).toEqual([])
     expect(readout(v, now)!.queued).toBe(0)
@@ -421,11 +422,18 @@ describe('issues owned by someone else', () => {
     expect(groups.waiting).toHaveLength(1)
   })
 
-  it('keeps a running worker visible until it finishes', () => {
+  it('keeps ownership blocked while a running worker remains visible', () => {
     const live = job()
-    const groups = groupIssues(view({ issues: [{ ...owned, active: live.id }], jobs: [live] }), now)
-    expect(groups.owned).toEqual([])
-    expect(groups.columns.build[0]?.phaseLabel).toBe('Working')
+    for (const operator_status of [undefined, {
+      code: 'blocked', label: 'Blocked', reason_code: 'ownership_conflict', reason: owner.plain,
+    }]) {
+      const groups = groupIssues(view({ issues: [{ ...owned, active: live.id, operator_status }], jobs: [live] }), now)
+      expect(groups.owned).toEqual([])
+      // A visible worker does not override the issue's current ownership gate.
+      expect(groups.columns.build[0]).toMatchObject({
+        phaseLabel: 'Blocked', running: true, jobId: live.id, stoppable: true,
+      })
+    }
   })
 })
 
