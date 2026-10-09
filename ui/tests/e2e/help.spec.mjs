@@ -82,16 +82,21 @@ export default async function (page, { base }) {
   // header rather than hidden underneath it.
   await page.goto(base + '/setup-help#host-installation')
   await waitForText(page, 'Forge setup help')
-  await page.waitForFunction(() => {
+  // Native fragment scrolling and the router's pending navigation can settle
+  // on adjacent frames. Assert the settled position, not a transient first hit.
+  await page.waitForFunction(async () => {
     const el = document.getElementById('host-installation')
-    return !!el && el.getBoundingClientRect().top < 200
+    if (!el) return false
+    const before = el.getBoundingClientRect().top
+    await new Promise(requestAnimationFrame)
+    await new Promise(requestAnimationFrame)
+    const after = el.getBoundingClientRect().top
+    return after >= 0 && after < 200 && Math.abs(after - before) < 1
   }, null, { timeout: 10000 })
-  const rect = await page.locator('#host-installation').evaluate((el) => el.getBoundingClientRect().top)
-  assert.ok(rect >= 0 && rect < 200, `#host-installation should be scrolled near the top, got ${rect}`)
 
   // Guide navigation is client-side; the diagrams are actual SVGs and tables
   // remain structured HTML. Reload and Back preserve the selected guide.
-  await page.getByRole('link', { name: 'How an issue moves', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'How an issue moves', exact: true }).click()
   await page.waitForURL(base + '/setup-help?topic=workflow')
   await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
   assert.equal(await page.locator('.help-diagram svg').count(), 3)
@@ -99,7 +104,7 @@ export default async function (page, { base }) {
   await page.getByRole('button', { name: 'Fit diagram', exact: true }).first().click()
   assert.equal(await page.getByRole('button', { name: 'Actual size', exact: true }).getAttribute('aria-pressed'), 'true')
   await page.getByRole('button', { name: 'Actual size', exact: true }).click()
-  assert.equal(await page.getByRole('link', { name: 'How an issue moves', exact: true }).getAttribute('aria-current'), 'page')
+  assert.equal(await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'How an issue moves', exact: true }).getAttribute('aria-current'), 'page')
   await page.reload()
   await page.locator('.help-diagram svg').nth(2).waitFor({ timeout: 30000 })
   for (const width of [320, 390, 1440]) {
@@ -107,7 +112,7 @@ export default async function (page, { base }) {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `workflow overflow at ${width}`)
     await page.screenshot({ path: `/tmp/forge-help-${width}.png`, fullPage: true })
   }
-  await page.getByRole('link', { name: 'Talking to a worker', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'Talking to a worker', exact: true }).click()
   await page.waitForURL(base + '/setup-help?topic=discussions')
   await page.locator('.forge-help h1').waitFor()
   await page.locator('.help-diagram svg').nth(1).waitFor({ timeout: 30000 })
@@ -120,12 +125,12 @@ export default async function (page, { base }) {
   assert.equal(invalid.status(), 404)
   await page.goto(base + '/setup-help?topic=unknown')
   await waitForText(page, 'Help topic not found')
-  await page.getByRole('link', { name: 'Getting set up', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'Getting set up', exact: true }).click()
   await waitForText(page, 'Forge setup help')
 
   // A guide fetch failure offers retry without losing the guide menu.
   await page.route('**/_ui/help?topic=runtime', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"statusMessage":"Unavailable"}' }))
-  await page.getByRole('link', { name: 'Workers, accounts and merging', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Help guides' }).getByRole('link', { name: 'Workers, accounts and merging', exact: true }).click()
   await waitForText(page, 'Guide unavailable')
   await page.unroute('**/_ui/help?topic=runtime')
   await page.getByRole('button', { name: 'Try again' }).click()
