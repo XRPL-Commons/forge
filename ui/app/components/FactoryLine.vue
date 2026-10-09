@@ -69,6 +69,7 @@ interface Particle { x: number; y: number; vx: number; vy: number; r: number; g:
 
 const model = {
   items: [] as Item[], byId: new Map<string, Item>(), groups: lineGroups([]) as Groups,
+  usage: { roles: { build: { occupied: 0 }, review: { occupied: 0 }, audit: { occupied: 0 } } },
   info: null as LineInfo | null, slots: { build: 0, review: 0, audit: 0 } as Record<ColumnRole, number>,
   merged: 0, lastMerge: -1e9, fresh: new Set<string>(), seq: 0,
 }
@@ -130,6 +131,7 @@ function apply(next: LineState | null) {
   }
   model.items = items
   model.slots = next.slots
+  model.usage = next.usage
   model.merged = next.merged
   model.info = lineAnalyse(next)
   previous = next
@@ -555,7 +557,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, L: Layout, no
     ctx.font = FONT(500, small ? 10 : 11, 'mono'); ctx.fillStyle = col; ctx.fillText(' ' + n, x + w, ly)
   }
   label(cols[0]!.x, small ? 'Q' : 'Queue', g.queued.length, neckSet.size ? COL.coral : COL.text)
-  for (const [i, st] of STAGES.entries()) label(small ? cols[i + 1]!.x + 2 : machines[st].mx, small ? LINE_SHORT_LABELS[st].slice(0, 3) : LINE_SHORT_LABELS[st], g[st].length + '/' + model.slots[st], neckSet.has(st) ? COL.coral : g[st].length ? COL.text : COL.dim)
+  for (const [i, st] of STAGES.entries()) label(small ? cols[i + 1]!.x + 2 : machines[st].mx, small ? LINE_SHORT_LABELS[st].slice(0, 3) : LINE_SHORT_LABELS[st], model.usage.roles[st].occupied + '/' + model.slots[st], neckSet.has(st) ? COL.coral : g[st].length ? COL.text : COL.dim)
   label(cols[4]!.x + 4, small ? 'Appr' : 'Approval', g.approval.length, g.approval.length ? COL.text : COL.dim)
   label(tx, small ? 'Out' : 'Merged', model.merged, COL.green)
 

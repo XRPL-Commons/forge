@@ -346,7 +346,7 @@ class PipelineViews:
 
     def job(self, job_id):
         with self.store.read_snapshot() as db:
-            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,COALESCE(e.captured_at,p.observed_at) AS captured_at,p.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name '
+            row=db.execute('SELECT j.*,COALESCE(l.slot,p.slot) AS slot,COALESCE(l.provider,p.provider) AS provider,COALESCE(l.provider_id,p.provider_id) AS provider_id,COALESCE(l.model,p.model) AS model,COALESCE(l.deadline,p.deadline) AS deadline,l.branch,e.observed_at,e.observed_status,e.started_at,p.source_phase,p.source_fenced,u.repository_id,r.full_name '
                 'FROM jobs j LEFT JOIN job_launches l ON l.job_id=j.id LEFT JOIN job_execution_state e ON e.job_id=j.id '
                 'LEFT JOIN job_public_metadata p ON p.job_id=j.id JOIN units u ON u.id=j.unit_id JOIN repositories r ON r.id=u.repository_id WHERE j.id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
@@ -366,7 +366,8 @@ class PipelineViews:
                     'parent_job_id':child['parent_job_id'] if child else None,
                     'delegation_key':child['delegation_key'] if child else None,
                     'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':singular['issue_number'] if singular else None,
-                    'started_at':row['started_at'],'observed_at':row['captured_at'],'last_observed':row['captured_at']}
+                    'started_at':row['started_at'],'observed_at':row['observed_at'],'last_observed':row['observed_at'],
+                    'observed_status':row['observed_status']}
 
     @projection
     def delivery(self, issue_key, *, after=''):
@@ -491,7 +492,9 @@ class PipelineViews:
             if issue is not None:
                 job_clauses.append(ISSUE_JOB_SCOPE);job_params.append(issue)
             job_ids=[] if section=='completed' else [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE '+' AND '.join(job_clauses)+' ORDER BY j.created_at DESC,j.id DESC LIMIT 100',job_params)]
-            slots={r['slot']:r['job_id'] for r in db.execute('SELECT slot,job_id FROM job_launches l JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 ORDER BY slot LIMIT 256')}
+            slots={r['slot']:r['job_id'] for r in db.execute('SELECT slot,job_id FROM job_leases ORDER BY slot')}
+            workers=[{**dict(r),'cleanup':bool(r['cleanup']),'fenced':bool(r['fenced'])} for r in db.execute('SELECT j.id,l.slot,j.role,j.phase,j.cleanup,j.fenced,j.outcome,e.observed_at,e.observed_status '
+                'FROM job_leases l JOIN jobs j ON j.id=l.job_id LEFT JOIN job_execution_state e ON e.job_id=j.id ORDER BY l.slot')]
             # Both windows consume the same terminal event. Materialize that
             # timestamp once instead of scanning retained unit history twice.
             counts=db.execute("WITH completed AS MATERIALIZED (SELECT "+COMPLETION_SQL+
@@ -528,7 +531,7 @@ class PipelineViews:
             operator=dict(title='Waiting for a ready issue',detail='Queue an issue to start work.',action_url='/issues',action_label='Choose an issue',empty=True)
         else:operator=None
         summary=dict(completed_count=completed_count,runner_count=runner_count,runners_running=running,
-            workers=[{key:j.get(key) for key in ('role','phase','cleanup','fenced','outcome','observed_at','last_observed')} for j in jobs],
+            workers=workers,
             merged_day=counts['day'] or 0,merged_week=counts['week'] or 0,merged_total=counts['total'],deployed_day=deployed_day,waiting=waiting_count,deploy_failed=failed_count)
         from .changes import cursor as change_cursor
         with self.store.read_snapshot() as db:

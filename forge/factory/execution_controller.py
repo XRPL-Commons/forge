@@ -108,6 +108,7 @@ class ExecutionController:
                     job = self._progress(job, 'running', current['id'])
 
         current = runner.inspect(job)
+        self.commands.observe(job_id, execution_fence=job['execution_fence'], observation=current)
         finished = current is None or current['status'] in {'exited', 'dead'}
         deadline = self.clock() >= job['deadline']
         if job['captured_at'] is None and job['outcome'] is None and (job['fenced'] or finished or deadline):

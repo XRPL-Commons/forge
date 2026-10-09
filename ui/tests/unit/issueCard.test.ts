@@ -174,7 +174,7 @@ describe('modelCardView', () => {
   })
 
   it('keeps an internal run plain, with its link to the run', () => {
-    const job = { id: 'j1', issue_key: '3:900', repo_id: 3, repo: 'x/y', issue_number: 900, role: 'recovery', slot: 'r', provider: 'claude', provider_id: null, model: null, phase: 'running', outcome: null, cleanup: false, fenced: false, created_at: now - 60, deadline: now + 60, started_at: now - 50, observed_at: now - 5 }
+    const job = { id: 'j1', issue_key: '3:900', repo_id: 3, repo: 'x/y', issue_number: 900, role: 'recovery', slot: 'r', provider: 'claude', provider_id: null, model: null, phase: 'running', outcome: null, cleanup: false, fenced: false, created_at: now - 60, deadline: now + 60, started_at: now - 50, observed_status: 'running', observed_at: now - 5 }
     const shown = modelCardView(toCard(job as any, view([], [job]), now), now)
     expect(shown.to).toBe('/issues/3%3A900?job=j1')
     expect(shown.look).toMatchObject({ stage: 'queued', accessory: null, beacon: false })

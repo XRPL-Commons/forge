@@ -104,6 +104,56 @@ class ExecutionTests(unittest.TestCase):
         return self.life.finish_job(self.command(), job, execution_fence=fence, input_manifest=self.manifest,
             evidence={'head_oid': 'head', 'base_oid': 'base', 'pull_number': 1}, candidate=candidate)
 
+    def test_live_observation_records_engine_time_and_refreshes_without_changing_assignment(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        views = PipelineViews(self.store, clock=lambda: self.now)
+        self.assertIsNone(views.job(job)['observed_at'])
+        self.assertIsNone(views.job(job)['started_at'])
+        self.engine.after_start = lambda: self.engine.container.update(started_at=97.0)
+        self.controller.step(job)
+        self.assertEqual((views.job(job)['observed_at'], views.job(job)['observed_status'], views.job(job)['started_at']),
+                         (100.0, 'running', 97.0))
+        version = self.view()['version']
+        self.now = 110.0
+        self.controller.step(job)
+        self.assertEqual(views.job(job)['observed_at'], 110.0)
+        self.assertEqual(self.view()['version'], version)
+        self.now = 150.0
+        self.engine.inspect = lambda job: (_ for _ in ()).throw(OSError('engine unavailable'))
+        with self.assertRaises(OSError): self.controller.step(job)
+        self.assertEqual(views.job(job)['observed_at'], 110.0, 'unavailable observations must age normally')
+
+    def test_observation_is_lease_and_container_fenced_and_retains_actual_paused_state(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        self.controller.step(job)
+        self.engine.container.update(status='paused', running=False)
+        self.now = 105.0
+        self.controller.step(job)
+        self.assertEqual(PipelineViews(self.store).job(job)['observed_status'], 'paused')
+        with self.assertRaises(TransitionError):
+            self.life.observe(job, execution_fence='wrong', observation=self.engine.container)
+        with self.assertRaises(TransitionError):
+            self.life.observe(job, execution_fence='fence', observation={**self.engine.container, 'id':'other'})
+        self.collect(job)
+        self.cleanup(job)
+        with self.assertRaises(TransitionError):
+            self.life.observe(job, execution_fence='fence', observation=self.engine.container)
+
+    def test_worker_summary_counts_leases_even_outside_the_requested_issue_page(self):
+        from forge.factory.store_views import PipelineViews
+        job = self.reserve()
+        self.controller.step(job)
+        views = PipelineViews(self.store)
+        full = views.factory()
+        scoped = views.factory(issue='absent')
+        self.assertEqual(scoped['jobs'], [])
+        self.assertEqual(scoped['summary']['workers'], full['summary']['workers'])
+        self.assertEqual([(row['id'],row['slot'],row['observed_status']) for row in scoped['summary']['workers']],
+                         [(job, 'slot', 'running')])
+        self.assertEqual(scoped['slots'], {'slot': job})
+
     def test_disabled_runtime_fences_reserved_job_without_starting_it(self):
         job = self.reserve()
         self.controller.enabled = lambda: False

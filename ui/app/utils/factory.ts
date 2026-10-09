@@ -25,7 +25,7 @@ export interface JobView {
   phase: 'reserved' | 'created' | 'launching' | 'running' | 'stopping' | 'cleaned' | 'external'
   outcome: string | null; cleanup: boolean; fenced: boolean
   capacity_wait_since?: number | null; created_at: number; deadline: number
-  started_at: number | null; observed_at: number | null; last_observed?: number
+  started_at: number | null; observed_status?: string | null; observed_at: number | null; last_observed?: number
   // The branch the worker pushes to; older payloads omit it.
   branch?: string | null
 }
@@ -73,7 +73,7 @@ export interface OperatorRequest { id: string; action: string; target: string; r
 
 export interface FactorySummary {
   completed_count: number; runner_count: number; runners_running: boolean
-  workers: Pick<JobView, 'role' | 'phase' | 'cleanup' | 'fenced' | 'outcome' | 'observed_at' | 'last_observed'>[]
+  workers: Pick<JobView, 'id' | 'slot' | 'role' | 'phase' | 'cleanup' | 'fenced' | 'outcome' | 'observed_at' | 'observed_status' | 'last_observed'>[]
   merged_day: number; merged_week: number; merged_total: number
   deployed_day: number; waiting: number; deploy_failed: number
 }
@@ -167,8 +167,8 @@ export function jobFor(view: FactoryView | null | undefined, issue: LedgerIssueV
 export function isRunning(view: FactoryView | null | undefined, job: FactorySummary['workers'][number] | null, now: number): boolean {
   if (!job) return false
   const seen = job.observed_at ?? job.last_observed ?? null
-  return job.phase === 'running' && !job.cleanup && !job.fenced && !job.outcome
-    && isFresh(view, now) && !!seen && now - seen < maxAge(view?.runtime)
+  return job.phase === 'running' && job.observed_status === 'running' && !job.cleanup && !job.fenced && !job.outcome
+    && isFresh(view, now) && !!seen && now - seen >= -5 && now - seen < maxAge(view?.runtime)
 }
 
 // Waiting for another issue is not queued work: no worker can take it until
@@ -453,8 +453,25 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
   return groups
 }
 
-function runningJobs(view: FactoryView, now: number) {
-  return (view.summary?.workers ?? view.jobs ?? []).filter(job => isRunning(view, job, now))
+export interface WorkerUsage {
+  occupied: number; running: number
+  roles: Record<ColumnRole, { occupied: number; running: number }>
+}
+
+// A delivery may put several issue cards at one machine. Capacity belongs to
+// distinct leased jobs, including starting/finishing work, never to those cards.
+export function workerUsage(view: FactoryView, now: number): WorkerUsage {
+  const roles = { build: { occupied: 0, running: 0 }, review: { occupied: 0, running: 0 }, audit: { occupied: 0, running: 0 } }
+  const seen = new Set<string>()
+  for (const job of view.summary?.workers ?? view.jobs ?? []) {
+    if (job.cleanup || !COLUMN_ROLES.includes(job.role as ColumnRole) || seen.has(job.id)) continue
+    seen.add(job.id)
+    const role = roles[job.role as ColumnRole]
+    role.occupied++
+    if (isRunning(view, job, now)) role.running++
+  }
+  return { roles, occupied: Object.values(roles).reduce((n, value) => n + value.occupied, 0),
+    running: Object.values(roles).reduce((n, value) => n + value.running, 0) }
 }
 
 // A merge count only means something over a time frame. Whether the merge
@@ -476,15 +493,16 @@ export function mergedToday(view: FactoryView | null | undefined, now: number): 
 // of the slots there are, what is queued, what waits to merge and what merged
 // today. "Needs you" is not counted here: it is the strip's crate, so the two
 // always agree (factoryLine.ts lineAnalyse().attention).
-export interface Readout { working: number; slots: number; queued: number; merging: number; merged: number }
+export interface Readout { occupied: number; working: number; slots: number; queued: number; merging: number; merged: number }
 
 export function readout(view: FactoryView | null | undefined, now: number): Readout | null {
   if (!view) return null
   const slots = view.runtime?.slots ?? {}
   const roles: JobRole[] = ['build', 'review', 'audit']
   const issues = view.issues ?? []
+  const usage = workerUsage(view, now)
   return {
-    working: runningJobs(view, now).filter(job => roles.includes(job.role)).length,
+    occupied: usage.occupied, working: usage.running,
     slots: roles.reduce((total, role) => total + (Number(slots[role]) || 0), 0),
     queued: issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length,
     merging: issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length,

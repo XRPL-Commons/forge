@@ -843,7 +843,8 @@
       "review_policy": null,
       "teardown": null,
       "observed_at": 1790000000,
-      "started_at": 1789999820
+      "started_at": 1789999820,
+      "observed_status": "running"
     }
   ],
   "slots": {

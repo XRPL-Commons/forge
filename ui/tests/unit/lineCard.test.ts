@@ -16,7 +16,7 @@ function job(number: number, role: string, over: Record<string, unknown> = {}): 
   return {
     id: `job-${number}`, issue_key: `1:${number}`, repo_id: 1, repo: 'XRPL-Commons/thegame', issue_number: number,
     role, slot: `${role}-1`, provider: 'claude', provider_id: null, model: null, phase: 'running', outcome: null,
-    cleanup: false, fenced: false, created_at: now - 300, deadline: now + 1600, observed_at: now - 10, started_at: now - 240, ...over,
+    cleanup: false, fenced: false, created_at: now - 300, deadline: now + 1600, observed_status: 'running', observed_at: now - 10, started_at: now - 240, ...over,
   }
 }
 
