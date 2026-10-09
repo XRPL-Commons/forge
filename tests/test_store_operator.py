@@ -227,6 +227,9 @@ class OperatorTests(unittest.TestCase):
                         for r in db.execute('SELECT * FROM repositories')]
         views = PipelineViews(self.store, runtime=runtime, repositories=repositories, clock=lambda:100)
         for call in (lambda:views.factory(section='board'), lambda:views.issues(key='i'), lambda:views.issues()):
-            with patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect:
+            from forge.store.queries import Queries
+            with patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect, \
+                    patch.object(Queries, '_issue', wraps=Queries._issue) as issue_read:
                 call()
                 self.assertEqual(connect.call_count, 1)
+                self.assertEqual(issue_read.call_count, 1)

@@ -21,9 +21,12 @@ LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 
 
 
 def action_revision(db, issue_id):
-    issue = Queries._issue(db, issue_id)
+    return _issue_revision(Queries._issue(db, issue_id))
+
+
+def _issue_revision(issue):
     lifecycle = issue['lifecycle']
-    return manifest_hash({'issue': issue_id, 'issue_version': issue['version'],
+    return manifest_hash({'issue': issue['id'], 'issue_version': issue['version'],
                           'unit': lifecycle['unit_id'], 'unit_version': lifecycle['unit_version'],
                           'candidate': lifecycle['candidate_id'], 'reason': lifecycle['reason_code']})
 
@@ -203,7 +206,7 @@ class PipelineViews:
                          'override':json.loads(environment['override_json'] or 'null') if environment else None,
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
             pull_requests=pull_requests,
-            dependencies=dependency_numbers, fresh=fresh, revision=action_revision(db,issue_id), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
+            dependencies=dependency_numbers, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
             active=active['id'] if active else None, attempts={'failed':charges,'limit':3} if charges else None, held_by=held_by)
         if detail:
             row['body'] = issue['body']
