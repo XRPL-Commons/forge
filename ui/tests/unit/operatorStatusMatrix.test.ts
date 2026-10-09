@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { groupIssues, phaseLabel, reasonText } from '../../app/utils/factory'
-import { lineState } from '../../app/utils/factoryLine'
+import { lineState, lineTooltip } from '../../app/utils/factoryLine'
 import { modelCardView, rowCardView } from '../../app/utils/issueCard'
 import { statusLabel, type IssueRow } from '../../app/utils/issues'
 import { issuePipeline } from '../../app/utils/pipeline'
@@ -46,7 +46,9 @@ describe('canonical projection/API/UI status matrix', () => {
       expect(list.statusReason).toBe(expected.reason)
       expect(reasonText(issue, null)).toBe(expected.reason)
       // The factory diagram also used its own attention/queue wording.
-      expect(lineState(view, now)?.items[0]?.status).toBe(expected.label)
+      const lineItem = lineState(view, now)!.items[0]!
+      expect(lineItem.status).toBe(expected.label)
+      expect(lineTooltip(lineItem, false)).toBe(`#1 · ${expected.label} · ${expected.reason}`)
       // A stale job cannot replace a current gate's main label with "Working".
       expect(phaseLabel(issue, { phase: 'running' } as any, view, now)).toBe(expected.label)
       expect(issuePipeline(row).note).toBe(expected.reason)
