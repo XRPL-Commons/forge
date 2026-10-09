@@ -24,7 +24,7 @@ ROOT = HOME / '.local/share/forge'
 REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 STEPS = ('packages', 'account', 'source', 'isolation', 'host')
 PACKAGES = ('ca-certificates', 'git', 'sudo', 'apparmor', 'apparmor-utils',
-            'docker.io', 'docker-buildx', 'docker-compose-v2', 'python3')
+            'docker.io', 'docker-buildx', 'docker-compose-v2', 'python3', 'build-essential')
 PACKAGE_REVISION = hashlib.sha256(json.dumps(PACKAGES).encode()).hexdigest()
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8',
        'DEBIAN_FRONTEND': 'noninteractive', 'GIT_TERMINAL_PROMPT': '0'}
@@ -293,6 +293,7 @@ def install_step(step, data):
     elif step == 'host':
         need(service(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], capture=True) == data['intent']['revision'], 'source_conflict')
         need(not service(['git', '-C', str(SOURCE), 'status', '--porcelain', '--untracked-files=no'], capture=True), 'source_conflict')
+        service([str(SOURCE / 'bin/forge'), 'setup', 'initialize', '--root', str(ROOT)])
         service([str(SOURCE / 'bin/forge'), 'setup', 'install', '--root', str(ROOT), '--bind', '127.0.0.1'])
         for name in ('forge-status', 'forge-ui', 'forge-supervisor'):
             need(service(['systemctl', '--user', 'is-active', name], capture=True) == 'active', 'services_unavailable')
