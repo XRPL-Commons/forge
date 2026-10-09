@@ -64,9 +64,20 @@ SELECT c.id||':normalized24',c.unit_id,c.member_id,c.requirements_revision_id,c.
 FROM dependency_checks c JOIN units u ON u.id=c.unit_id JOIN repositories r ON r.id=u.repository_id
 WHERE c.generation=(SELECT MAX(previous.generation) FROM dependency_checks previous WHERE previous.member_id=c.member_id)
   AND json_array_length(c.facts_json)>0 AND json_extract(c.facts_json,'$[0].reference') IS NULL;
-UPDATE unit_gates SET details_json=json_set(details_json,'$.blocked',json(
+-- Gates are immutable evidence. Supersede only live legacy gates and retain
+-- their original numeric payload beside the new reference-based gate.
+CREATE TEMP TABLE prerequisite_gates_24 AS
+SELECT g.*,json_set(g.details_json,'$.blocked',json(
     (SELECT json_group_array(json_object('reference',lower(r.full_name)||'#'||f.value,'reason','prerequisite_unobserved'))
-     FROM units u JOIN repositories r ON r.id=u.repository_id,json_each(unit_gates.details_json,'$.blocked') f
-     WHERE u.id=unit_gates.unit_id)))
-WHERE code='dependency' AND json_extract(details_json,'$.source')='runtime_dependencies'
-  AND json_type(details_json,'$.blocked[0]')='integer';
+     FROM json_each(g.details_json,'$.blocked') f))) AS normalized_details
+FROM unit_gates g JOIN units u ON u.id=g.unit_id JOIN repositories r ON r.id=u.repository_id
+WHERE g.code='dependency' AND g.resolved_at IS NULL
+  AND u.state NOT IN ('merged','closed','dissolved')
+  AND json_extract(g.details_json,'$.source')='runtime_dependencies'
+  AND json_type(g.details_json,'$.blocked[0]')='integer';
+UPDATE unit_gates SET resolved_at=unixepoch(),resolution='superseded'
+WHERE id IN (SELECT id FROM prerequisite_gates_24);
+INSERT INTO unit_gates(id,unit_id,candidate_id,member_id,subject_key,code,details_json,created_at)
+SELECT id||':normalized24',unit_id,candidate_id,member_id,subject_key,code,normalized_details,unixepoch()
+FROM prerequisite_gates_24;
+DROP TABLE prerequisite_gates_24;
