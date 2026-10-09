@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { STATUS_NAMES, type IssueStatus } from '../../app/utils/issues'
+import type { IssueStatus } from '../../app/utils/issues'
+import matrix from '../../../tests/fixtures/operator-status.json'
 import { TONE_BADGE, TONE_TEXT, statusBadge, statusTone } from '../../app/utils/tones'
 
 describe('statusTone', () => {
   it('gives every issue status one badge colour', () => {
-    const tones = Object.fromEntries((Object.keys(STATUS_NAMES) as IssueStatus[]).map(status => [status, statusTone(status)]))
+    const statuses = [...new Set(matrix.map(row => row.expected.code))] as IssueStatus[]
+    const tones = Object.fromEntries(statuses.map(status => [status, statusTone(status)]))
     expect(tones).toEqual({
       backlog: 'neutral', queued: 'info', working: 'primary', attention: 'warning', completed: 'primary', waiting: 'neutral',
       blocked: 'neutral', dropped: 'neutral',
