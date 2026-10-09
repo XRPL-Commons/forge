@@ -35,7 +35,7 @@ forge planning owner/repository --server https://forge.example --json
 forge planning owner/repository --server https://forge.example --proposal PROPOSAL_ID --json
 ```
 
-Read the returned `next` cursor to fetch another row page with `--after`. Group members have their own `members_next` cursor; use `--row ROW_ID --after CURSOR`. Repository notes and proposal lists are also available through this surface. `forge commands` describes the command entry points.
+Read the returned `next` cursor to fetch another row page with `--after`. Group members have their own `members_next` cursor; use `--row ROW_ID --after CURSOR`. Repository notes and proposal lists are also available through this surface. `forge --json commands` includes `planning_commands`: CLI input schemas, the complete `planning.action_file_schema`, and an operation index for `triage`, `rules`, `note`, `edit`, and `accept`. The edit schema describes every row type, including exact existing-PR publication approval. Schema descriptions identify revision pins, pagination cursors, UTF-8 byte limits and replay rules.
 
 Mutation commands take an explicit JSON operation file:
 

@@ -223,10 +223,11 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         from .delivery import commands as delivery_commands
+        from .planning import commands as planning_commands
         from .install import schemas
         return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
-                'planning_commands': {'triage': {'usage':'forge triage OWNER/REPO --server HTTPS_ORIGIN --request-id STABLE_ID --json','capability':'repositories:triage'}, 'planning': {'usage':'forge planning OWNER/REPO --server HTTPS_ORIGIN [--proposal ID] [--row ID] [--after CURSOR] [--action-file PATH] --json','read_capability':'repositories:read','write_capability':'repositories:triage'}},
+                'planning_commands': planning_commands(),
                 'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],
