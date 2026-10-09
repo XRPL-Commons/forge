@@ -32,6 +32,8 @@ class DeliveryMigrationTests(unittest.TestCase):
                     db.execute("INSERT INTO unit_environment(unit_id,revision,choice,override,created_at,requirements_revision_id) VALUES('u',1,?,?,3,'new')",(choice,override))
                     db.execute("INSERT INTO dependency_checks VALUES('check','u','m','new',1,1,?,3)",
                         (json.dumps([{'number':7,'state':'closed','updated_at':'2026-10-09T00:00:00Z'}]),))
+                    db.execute("INSERT INTO unit_gates(id,unit_id,member_id,subject_key,code,details_json,created_at) VALUES('gate','u','m','member:m','dependency',?,3)",
+                        (json.dumps({'source':'runtime_dependencies','blocked':[7]}),))
                     for role in ('build','review'):
                         member='m' if role=='build' else None
                         manifest=json.dumps({'requirements_revision_id':'old'}) if member else '{}'
@@ -54,4 +56,6 @@ class DeliveryMigrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(checks[0]['facts_json'])[0]['state'],'closed')
                 self.assertEqual((checks[1]['generation'],checks[1]['clear']),(2,0))
                 self.assertEqual(json.loads(checks[1]['facts_json']),[{'reference':'example/repo#7','error':'prerequisite_unobserved'}])
+                gate=json.loads(db.execute("SELECT details_json FROM unit_gates WHERE id='gate'").fetchone()[0])
+                self.assertEqual(gate['blocked'],[{'reference':'example/repo#7','reason':'prerequisite_unobserved'}])
                 self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
