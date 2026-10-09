@@ -191,13 +191,15 @@ class PipelineViews:
         if isinstance(written,dict) and written.get('headline'):
             from .contracts import clamp,plain_text,HEADLINE_LIMIT
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
+        delivery_approved = bool(unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone())
         row = dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
             title=issue['title'], content_hash=display[0] if display else issue['content_hash'], body_truncated=bool(issue.get('body_truncated')),
             state=issue['github_state'], state_reason=issue['state_reason'], updated_at=issue['remote_updated_at'],
             labels=issue['labels'], assignees=issue['assignees'], assignee_types=issue['assignee_types'], status=status, reason_code=reason, operator_status=operator,
             stage_code=life['stage_code'], lifecycle=life, ledger_state=legacy, explanation=wording,
             summary=summary,
-            actions=actions, closable=fresh and issue['github_state']=='open' and not pending,
+            actions=actions, closable=fresh and issue['github_state']=='open' and not pending and not delivery_approved,
+            delivery_approved=delivery_approved,
             setup_needed=reason=='repository_setup', environment_blocker=environment_block.get('detail') or environment_block.get('summary'),
             decision_request=decision,
             approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
@@ -208,7 +210,7 @@ class PipelineViews:
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
             pull_requests=pull_requests,
             dependencies=dependency_numbers, fresh=fresh, revision=_issue_revision(issue), setup_url=f"/settings/repositories/{issue['repository_id']}?setup=1",
-            delivery_id=unit_id if unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone() else None,
+            delivery_id=unit_id if delivery_approved else None,
             active=active['id'] if active else None, attempts={'failed':charges,'limit':3} if charges else None, held_by=held_by)
         if detail:
             row['body'] = issue['body']

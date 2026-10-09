@@ -267,7 +267,10 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertIsNone(shared['issue_key']); self.assertIsNone(shared['issue_number'])
         self.assertEqual({member['issue_key'] for member in shared['members']}, {'issue-1','issue-2'})
         for key in ('issue-1','issue-2'):
-            self.assertEqual(views.issues(key=key)['issue']['active'], parent)
+            detail = views.issues(key=key)['issue']
+            self.assertEqual(detail['active'], parent)
+            self.assertTrue(detail['delivery_approved'])
+            self.assertFalse(detail['closable'])
         plan = {'children': [dict(key=str(index),member_id=member['member_id'],scope='Implement',dependencies=[])
                              for index,member in enumerate(planning['members'])]}
         self.capture(parent,outcome='delegate',delegation_plan=plan)
