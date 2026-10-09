@@ -62,3 +62,34 @@ class DeliveryMigrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(old['details_json'])['blocked'],[7])
                 self.assertEqual(old['resolution'],'superseded')
                 self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
+
+    def test_imported_job_keeps_recorded_issue_identity_without_inventing_revision_pins(self):
+        from forge.factory.store_views import PipelineViews
+        with tempfile.TemporaryDirectory() as temporary:
+            migrations=storage._migrations()
+            with patch('forge.store.db._migrations',return_value=migrations[:21]):
+                store=storage.Store.create(Path(temporary)/'store')
+                with store.write() as db:
+                    db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/repo')")
+                    db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES('u',1,'main','building',100,100)")
+                    for member,issue,number in [('a-unrelated','other',1),('z-recorded','recorded',2)]:
+                        db.execute("INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,observed_at) VALUES(?,1,?,'open',?,100)",(issue,number,issue))
+                        db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,'Issue','','body',?,'{}',100)",(issue,issue,issue))
+                        db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES(?,'u',?,1,'main',?,'pending',100)",(member,issue,issue))
+                    manifest=json.dumps({'legacy_job_id':'legacy-job','source_manifest':'import','assignment_digest':'digest'})
+                    db.execute("INSERT INTO attempts(id,unit_id,member_id,membership_generation,assignment_generation,input_manifest_json,budget_generation,created_at) VALUES('legacy-job','u','z-recorded',1,1,?,1,2)",(manifest,))
+                    db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,role,phase,outcome,fenced,cleanup,created_at) VALUES('legacy-job','u','legacy-job','z-recorded','build','cleaned','failed',1,1,2)")
+            upgrade.apply(store)
+            views=PipelineViews(store,clock=lambda:100)
+            job=views.job('legacy-job')
+            self.assertEqual(job['issue_key'],'recorded')
+            self.assertEqual(job['issue_number'],2)
+            self.assertEqual(job['members'],[{'member_id':'z-recorded','issue_key':'recorded','issue_number':2}])
+            self.assertEqual([row['id'] for row in views.issues(key='recorded')['factory_issue']['attempts']],['legacy-job'])
+            self.assertEqual(views.issues(key='other')['factory_issue']['attempts'],[])
+            self.assertEqual([row['id'] for row in views.factory(issue='recorded')['issues'][0]['attempts']],['legacy-job'])
+            self.assertEqual(views.factory(issue='other')['issues'][0]['attempts'],[])
+            with store.read_snapshot() as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM job_members').fetchone()[0],0)
+                self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],0)
+                self.assertEqual(json.loads(db.execute("SELECT input_manifest_json FROM attempts WHERE id='legacy-job'").fetchone()[0]),json.loads(manifest))

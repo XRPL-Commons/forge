@@ -21,6 +21,14 @@ LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 
                 'auditing': 'reviewed', 'merging': 'audited', 'merged': 'merged', 'closed': 'cancelled', 'dissolved': 'cancelled'}
 
 
+# Public history can use an imported job's explicit member identity even when
+# its original requirements revision was never recorded. This does not create
+# an execution pin or select a member from the unit's current membership.
+JOB_MEMBER_SCOPE = "(m.id IN (SELECT p.member_id FROM job_members p WHERE p.job_id=j.id) OR " \
+    "(m.id=j.member_id AND NOT EXISTS(SELECT 1 FROM job_members p WHERE p.job_id=j.id)))"
+ISSUE_JOB_SCOPE = 'EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=? AND '+JOB_MEMBER_SCOPE+')'
+
+
 def action_revision(db, issue_id):
     return _issue_revision(Queries._issue(db, issue_id))
 
@@ -161,7 +169,7 @@ class PipelineViews:
         life = issue['lifecycle']
         unit_id = life['unit_id'] or life['historical_unit_id']
         unit = dict(db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()) if unit_id else None
-        scope = 'EXISTS(SELECT 1 FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=j.id AND m.issue_id=?)'
+        scope = ISSUE_JOB_SCOPE
         jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + scope +
                           ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id,issue_id)).fetchall() if unit_id else []
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
@@ -312,7 +320,7 @@ class PipelineViews:
             if key is not None:
                 row=self._row(db,key,detail=True,config=config)
                 job_ids = [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) '
-                    'AND EXISTS(SELECT 1 FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=j.id AND m.issue_id=?) '
+                    'AND '+ISSUE_JOB_SCOPE+' '
                     'ORDER BY j.created_at DESC,j.id DESC LIMIT 100', (key,))]
                 from .changes import cursor
                 from ..store.operations import deployment_views
@@ -343,7 +351,8 @@ class PipelineViews:
                 'LEFT JOIN job_public_metadata p ON p.job_id=j.id JOIN units u ON u.id=j.unit_id JOIN repositories r ON r.id=u.repository_id WHERE j.id=?',(job_id,)).fetchone()
             if row is None:raise KeyError(job_id)
             members=[dict(member) for member in db.execute('SELECT m.id AS member_id,m.issue_id AS issue_key,i.github_number AS issue_number '
-                'FROM job_members p JOIN unit_issues m ON m.id=p.member_id JOIN issues i ON i.id=m.issue_id WHERE p.job_id=? ORDER BY m.id',(job_id,))]
+                'FROM jobs j JOIN unit_issues m ON m.unit_id=j.unit_id AND '+JOB_MEMBER_SCOPE+' '
+                'JOIN issues i ON i.id=m.issue_id WHERE j.id=? ORDER BY m.id',(job_id,))]
             assignment=db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?',(job_id,)).fetchone()
             child=db.execute('SELECT d.delegation_key,p.builder_id,p.parent_job_id FROM job_delegations d JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?',(job_id,)).fetchone()
             singular=members[0] if len(members)==1 else None
@@ -477,7 +486,7 @@ class PipelineViews:
             runner_filter="(j.role='recovery' OR j.fenced=1 OR j.outcome IS NOT NULL OR NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.unit_id=j.unit_id AND m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved')))"
             if section=='runners':job_clauses.append(runner_filter)
             if issue is not None:
-                job_clauses.append('EXISTS(SELECT 1 FROM job_members p JOIN unit_issues m ON m.id=p.member_id WHERE p.job_id=j.id AND m.issue_id=?)');job_params.append(issue)
+                job_clauses.append(ISSUE_JOB_SCOPE);job_params.append(issue)
             job_ids=[] if section=='completed' else [r[0] for r in db.execute('SELECT j.id FROM jobs j WHERE '+' AND '.join(job_clauses)+' ORDER BY j.created_at DESC,j.id DESC LIMIT 100',job_params)]
             slots={r['slot']:r['job_id'] for r in db.execute('SELECT slot,job_id FROM job_launches l JOIN jobs j ON j.id=l.job_id WHERE j.cleanup=0 ORDER BY slot LIMIT 256')}
             counts=db.execute("SELECT COUNT(*) AS total,SUM("+COMPLETION_SQL+">=?) AS day,SUM("+COMPLETION_SQL+">=?) AS week FROM units u WHERE state='merged'",(self.clock()-86400,self.clock()-604800)).fetchone()
