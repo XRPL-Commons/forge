@@ -31,6 +31,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     config = validate(config if config is not None else load(root))
     if not dispatch or settings.paused():
         config = {**config, 'enabled': False, 'merge_enabled': False}
+    supplied_runner = runner
     runner = runner or ContainerRunner(config, environ=Credentials(root).environment())
     github = github or GitHub(settings, config, clock=clock)
 
@@ -62,6 +63,11 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements),
                                       admission=admission, clock=clock))
 
+    from .repository_planner import RepositoryPlanner
+    from .triage_effects import TriageEffects
+    parts['planning'] = RepositoryPlanner(store, github, config=config, settings=settings,
+        observations=parts['observations'], runner=lambda worker: supplied_runner if supplied_runner is not None else ContainerRunner(worker, environ=Credentials(root).environment()), clock=clock)
+    parts['triage_effects'] = TriageEffects(store, github, config=config, clock=clock)
     from .reconciliation_controller import ReconciliationController
     parts['reconciliation'] = ReconciliationController(store, github, config=config, admission=admission,
         observations=parts['observations'], requirements=requirements, clock=clock)
@@ -89,7 +95,7 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
             errors = adapter.observe(parts['github'], None, read_commit)
             return {'items': [{'repo': row['repo'], 'error': 'deployment_observation_unavailable'} for row in errors], 'next_cursor': None}
     supervisor = SqliteSupervisor(parts['store'], **{key: parts[key] for key in
-        ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'reconciliation')},
+        ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'reconciliation', 'planning', 'triage_effects')},
         requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(), clock=clock)
     return supervisor.cycle()
 
@@ -108,5 +114,6 @@ def cleanup(root, *, runner=None, github=None, clock=time.time):
         parts['execution'].step(identifier)
     # Reconcile existing effects; no new merge intents or merge authorization.
     parts['effects'].cycle(limit=50)
+    triage_pending = parts['planning'].cleanup()
     with store.read_snapshot() as db:
-        return {'pending': db.execute('SELECT COUNT(*) FROM jobs WHERE cleanup=0').fetchone()[0]}
+        return {'pending': db.execute('SELECT COUNT(*) FROM jobs WHERE cleanup=0').fetchone()[0] + triage_pending}

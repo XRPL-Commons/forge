@@ -288,7 +288,10 @@ class ContainerRunner:
                 json.dump({'github_token': token, 'values': secret_values(credentials.get('FORGE_HARNESS_AUTH'))}, stream)
         # A job built by a caller that predates roles still gets an assignment.
         role = job.get('role')
-        if role == 'discussion':
+        if role == 'triage':
+            from .contracts import triage_note
+            note = triage_note(job)
+        elif role == 'discussion':
             from .discussions import note as discussion_note
             note = discussion_note(job)
         else:
@@ -403,14 +406,18 @@ class ContainerRunner:
         if current is None:
             return {'result': None, 'logs': '', 'missing': ['container and worker-local evidence']}
         captured = {'result': None, 'logs': '', 'missing': []}
+        # A complete repository proposal is normalized into many rows; ordinary
+        # worker reports retain their small result boundary.
+        result_limit = 4 * 1048576 if job.get('role') == 'triage' else 65536
+        archive_limit = result_limit + 65536
         secrets = self._scrub_values(job)
         try:
-            raw = self.call(['cp', current['id'] + ':/work/result.json', '-'], max_output=131072).stdout
-            if len(raw) > 131072:
+            raw = self.call(['cp', current['id'] + ':/work/result.json', '-'], max_output=archive_limit).stdout
+            if len(raw) > archive_limit:
                 raise ValueError('Oversized result')
             with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
                 entries = archive.getmembers()
-                if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 65536:
+                if len(entries) != 1 or not entries[0].isfile() or entries[0].size > result_limit:
                     raise ValueError('Invalid result artifact')
                 captured['result'] = json.loads(scrub(archive.extractfile(entries[0]).read().decode(), secrets), object_pairs_hook=unique)
         except (RunnerError, ValueError, tarfile.TarError, UnicodeError):

@@ -16,6 +16,7 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
     <UAlert v-if="error" id="repo-error" class="mt-3" role="alert" color="error" variant="subtle" :description="error" />
     <template v-if="row">
       <div class="mt-4 flex flex-wrap items-center gap-3">
+        <UButton color="neutral" variant="outline" :to="`/planning/${repoId}`">Plan repository work</UButton>
         <UButton @click="wizard = true">{{ row.enabled && ready ? 'Review setup' : 'Continue setup' }}</UButton>
         <UButton color="neutral" variant="outline" :disabled="busy || !row.access_ready" :loading="checking" @click="check">Refresh repository</UButton>
         <span id="repo-checked-at" class="text-xs text-muted">{{ checkedAtText(report, localTime) }}</span>

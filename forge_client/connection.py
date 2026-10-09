@@ -13,8 +13,8 @@ from urllib.error import HTTPError
 
 from .contracts import SetupError, require, repository, positive
 
-PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements', 'authorize', 'read', 'operation', 'policy'}
-CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy')
+PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements', 'authorize', 'read', 'operation', 'policy', 'planning'}
+CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy', 'repositories:triage')
 TOKEN = re.compile(r'[A-Za-z0-9_-]{43}')
 
 

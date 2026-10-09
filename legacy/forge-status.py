@@ -211,7 +211,7 @@ class H(BaseHTTPRequestHandler):
         from forge.operator_auth import OperatorAuth
         paths = {'/api/client/device', '/api/client/token', '/api/client/refresh',
                  '/api/client/status', '/api/client/disconnect', '/api/client/requirements',
-                 '/api/client/authorize', '/api/client/read', '/api/client/operation', '/api/client/policy'}
+                 '/api/client/authorize', '/api/client/read', '/api/client/operation', '/api/client/policy', '/api/client/planning'}
         if self.path not in paths:
             return False
         try:
@@ -253,6 +253,9 @@ class H(BaseHTTPRequestHandler):
             elif self.path == '/api/client/policy':
                 from forge.repository_merge_policy import ClientMergePolicy
                 result = ClientMergePolicy(settings_service(), clients).request(bearer, value)
+            elif self.path == '/api/client/planning':
+                from forge.factory.planning_service import client_request
+                result = client_request(WD, clients, bearer, value)
             elif self.path in ('/api/client/read', '/api/client/operation'):
                 from forge.client_repositories import ClientRepositories, OPERATIONS
                 # Fence before opening repository state, including malformed or
@@ -306,7 +309,7 @@ class H(BaseHTTPRequestHandler):
             return
         if not self._operator_guard() or not self._signed_in():
             return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -372,6 +375,11 @@ class H(BaseHTTPRequestHandler):
             phase=setup_phase() if self.path=='/api/runtime' else None
             if self.path == '/api/runtime' and phase is not None and phase!='active':
                 raise ValueError('Use guided setup until the factory has started')
+            if self.path == '/api/repositories/planning':
+                from forge.factory.planning_service import PlanningService
+                if not isinstance(value,dict) or set(value)!={'repository_id','operation'}:raise ValueError('Expected a repository planning operation')
+                result=PlanningService(WD,actor_id=self._operator_actor()).action(value['repository_id'],value['operation'])
+                self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/discussion':
                 from forge.factory.discussions import Discussions
                 service = Discussions(WD)
@@ -520,6 +528,16 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':True,**Onboarding(WD).view(),'controls_token':self._action_token}))
             except (ValueError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Setup state is unavailable; inspect the supervisor service'}))
+        elif u.path == '/api/repositories/planning':
+            from forge.factory.planning_service import PlanningService
+            try:
+                query=parse_qs(u.query)
+                if set(query)-{'repository_id','proposal_id','row_id','after'} or 'repository_id' not in query or any(len(v)!=1 for v in query.values()):raise ValueError('Invalid planning view')
+                args={k:v[0] for k,v in query.items()};args['repository_id']=int(args['repository_id'])
+                result=PlanningService(WD,actor_id=self._operator_actor()).read(**args)
+                self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}))
+            except (ValueError,KeyError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Repository planning is unavailable. Refresh to try again.'}))
         elif u.path == '/api/issues/discussion':
             from forge.factory.discussions import Discussions
             try:

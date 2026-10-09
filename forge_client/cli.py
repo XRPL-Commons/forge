@@ -78,6 +78,7 @@ def parser():
     connect.add_argument('--owner', action='append', default=[])
     connect.add_argument('--read-only', action='store_true')
     connect.add_argument('--policy', action='store_true', help='Request permission to set repository merge policy; requires explicit browser approval')
+    connect.add_argument('--triage', action='store_true', help='Request explicit approval to plan and accept issue changes and delivery composition')
     connect.add_argument('--resume', action='store_true')
     connect.add_argument('--wait', type=int, default=0)
     auth = sub.add_parser('auth', help='Check this computer’s connection to a Forge server').add_subparsers(dest='auth_command', required=True)
@@ -105,6 +106,15 @@ def parser():
         if action == 'setup':
             command.add_argument('--apply', action='store_true', help='Apply the local preparation plan')
             command.add_argument('--enable', action='store_true', help='Enable automation after verification')
+    triage = sub.add_parser('triage', help='Request a read-only proposal for every open issue in a repository')
+    triage.add_argument('repository'); triage.add_argument('--server', required=True)
+    triage.add_argument('--request-id', required=True, help='Stable request identity for safe replay')
+    triage.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    planning = sub.add_parser('planning', help='Inspect repository notes, edit proposals and explicitly approve changes')
+    planning.add_argument('repository'); planning.add_argument('--server', required=True)
+    planning.add_argument('--proposal'); planning.add_argument('--row'); planning.add_argument('--after')
+    planning.add_argument('--action-file', help='JSON operation: rules, note, edit or accept; preview with planning first')
+    planning.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     server = sub.add_parser('server', help='Configure an existing Forge host over SSH').add_subparsers(dest='server_command', required=True)
     setup = server.add_parser('setup', help='Bootstrap operator sign-in on an existing host over SSH')
     setup.add_argument('--ssh', required=True, help='Explicit SSH host alias or user@hostname; known host key required')
@@ -144,6 +154,7 @@ def execute(args):
     if args.command == 'commands':
         return {'commands': ['connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(),
+                'planning_commands': {'triage': {'usage':'forge triage OWNER/REPO --server HTTPS_ORIGIN --request-id STABLE_ID --json','capability':'repositories:triage'}, 'planning': {'usage':'forge planning OWNER/REPO --server HTTPS_ORIGIN [--proposal ID] [--row ID] [--after CURSOR] [--action-file PATH] --json','read_capability':'repositories:read','write_capability':'repositories:triage'}},
                 'migration_commands': migration_commands(),
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],
@@ -163,9 +174,10 @@ def execute(args):
                 scope['repositories'].append({k: repo[k] for k in ('id', 'name')})
             for login in args.owner:
                 scope['owners'].append(github.owner(login))
-            require(not (args.read_only and args.policy),'invalid_scope','Choose read-only access or request policy writes.')
+            require(not (args.read_only and (args.policy or args.triage)), 'invalid_scope', 'Choose read-only access or request policy or triage writes.')
             requested = list(CAPABILITIES[:1] if args.read_only else CAPABILITIES[:3])
             if args.policy: requested.append('repositories:policy')
+            if args.triage: requested.append('repositories:triage')
             value = client.begin(args.name, requested, scope)
             if not args.json:
                 print('Approve code ' + value['user_code'] + ' at ' + value['verification_uri_complete'])
@@ -176,6 +188,17 @@ def execute(args):
             return client.status()
         if args.command == 'disconnect':
             return client.disconnect()
+        if args.command in ('triage','planning'):
+            from pathlib import Path
+            target = {k:v for k,v in GitHub().repository(args.repository).items() if k in ('id','name')}
+            if args.command == 'triage':
+                return client.request('planning',target,operation='action',payload={'action':'triage','request_id':args.request_id})
+            if args.action_file:
+                payload=json.loads(Path(args.action_file).read_text())
+                require(isinstance(payload,dict),'invalid_planning_operation','Provide a JSON planning operation.')
+                return client.request('planning',target,operation='action',payload=payload)
+            payload={k:v for k,v in {'proposal_id':args.proposal,'row_id':args.row,'after':args.after}.items() if v is not None}
+            return client.request('planning',target,operation='read',payload=payload)
         if args.command == 'repo':
             from .workflow import Workflow
             github = GitHub()

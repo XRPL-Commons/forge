@@ -9,7 +9,7 @@ from .operator_auth import OperatorAuth, digest
 from .state import StateError
 from forge_client.contracts import positive, repository
 
-CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy')
+CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy', 'repositories:triage')
 CLIENT_ID = 'forge-cli'
 ACCESS_SECONDS = 900
 IDLE_SECONDS = 30 * 86400
