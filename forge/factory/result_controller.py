@@ -83,20 +83,19 @@ class ResultController:
     @staticmethod
     def _verification(job, report):
         inherited = job.get('input_manifest', {}).get('verification_requests', [])
-        requests = [row['verification'] for row in inherited]
+        requests = [row['verification'] for row in job['verification_requests']] if inherited else []
         if report and report.get('outcome') == 'needs_human_verification':
             requests.append(report['verification'])
         if not requests:
             return None
-        requested = {'what': '\n\n'.join(row['what'] for row in requests),
-                     'why': '\n\n'.join(row['why'] for row in requests),
-                     'checks': sorted({name for row in requests for name in row.get('checks', [])})}
+        wanted = sorted({name for row in requests for name in row.get('checks', [])})
         allowed = {row['name']: row for row in job.get('verification_checks', [])}
-        wanted = requested.get('checks', [])
         checks = [allowed[name] for name in wanted] if all(row.get('checks') for row in requests) and all(name in allowed for name in wanted) else []
+        if inherited:
+            return {'code': 'verification_ci' if checks else 'verification_human',
+                    'details': {'verification_job_id': job['id'], 'job_id': job['id'], 'ci': checks}}
         return {'code': 'verification_ci' if checks else 'verification_human',
-                'details': {**requested, 'ci': checks, 'job_id': job['id'],
-                            **({'task_outputs': [row['output_id'] for row in inherited]} if inherited else {})}}
+                'details': {**requests[0], 'checks': wanted, 'ci': checks, 'job_id': job['id']}}
 
     def step(self, job_id):
         with self.store.read_snapshot() as db:

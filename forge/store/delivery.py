@@ -420,7 +420,9 @@ class Delivery(TaskCommands, Lifecycle):
                     or not isinstance(evidence,dict) or evidence.get('verified') is not True
                     or any(evidence.get(key) != getattr(candidate,key) for key in ('pull_number','head_oid','base_oid'))):
                 raise TransitionError('publication must independently verify the exact integrated candidate')
-            if expected.get('verification_requests') and not any(gate['code'] in {'verification_human','verification_ci'} for gate in gates):
+            if expected.get('verification_requests') and not any(
+                    gate['code'] in {'verification_human','verification_ci'}
+                    and gate['details'].get('verification_job_id') == job_id for gate in gates):
                 raise TransitionError('integrated candidate must retain task verification requirements')
             self._publication_target_in(expected,candidate)
             candidate_id = _id(command.request_id,'candidate')

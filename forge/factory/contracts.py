@@ -414,6 +414,8 @@ def assignment_note(job):
     if job.get('members'):
         base['members'] = job['members']
     base['input_manifest'] = job.get('input_manifest', {})
+    if job.get('verification_requests'):
+        base['verification_requests'] = job['verification_requests']
     base['bundle_inputs'] = job.get('bundle_inputs', [])
     base['result_file'] = '/work/result.json'
     if job.get('resume_branch'):

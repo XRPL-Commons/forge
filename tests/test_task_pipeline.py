@@ -237,8 +237,9 @@ class TaskPipelineTests(unittest.TestCase):
         f.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': f.base}
         self.assertTrue(f.capture(integration['id'])['accepted'])
         with f.store.read_snapshot() as db:
-            gate = db.execute("SELECT details_json FROM unit_gates WHERE unit_id='batch' AND code='verification_human' AND resolved_at IS NULL").fetchone()
-            self.assertIn(request['what'], json.loads(gate[0])['what'])
+            gate = db.execute("SELECT * FROM unit_gates WHERE unit_id='batch' AND code='verification_human' AND resolved_at IS NULL").fetchone()
+            from forge.store.verification_requests import gate_details_in
+            self.assertIn(request['what'], gate_details_in(db, gate)['what'])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
 
     def test_recovery_preserves_all_failed_task_pins_beside_independent_active_task(self):

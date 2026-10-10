@@ -57,6 +57,11 @@ ordinary jobs, attempts, isolated worktrees and leases:
 6. Existing Review and Audit each assess that exact candidate. A task's request
    for human verification remains attached to its output and must reach the
    final candidate's verification gates.
+   The integration assignment pins each request by accepted output and durable
+   result digest. Workers and issue detail receive the complete retained steps,
+   reasons and checks; the manifest and candidate gate store references rather
+   than repeating that prose. Any human-only request keeps human verification
+   required. Confirmation preserves the same requests for later review and audit.
 
 The plan can have no tasks if final owner work covers the whole delivery. Work
 needed by a child must be an earlier owner or child task; it cannot be postponed

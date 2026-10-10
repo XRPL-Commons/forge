@@ -206,13 +206,17 @@ class PipelineViews:
                 value=details_in(db,gate);gates[gate['code']]=(dict(gate),value.get('value',value))
         decision=gates.get('decision_required',(None,None))[1]
         verification=gates.get('verification_human') or gates.get('verification_ci')
+        if verification and verification[1].get('verification_job_id') and detail:
+            from ..store.verification_requests import gate_details_in
+            verification=(verification[0],gate_details_in(db,verification[0]))
         environment_block=gates.get('environment',(None,{}))[1] or {}
         merge_block=gates.get('merge_checks',(None,{}))[1] or {}
         approval_gate=gates.get('approval_required',(None,{}))[1] or {}
         approval=None
         if candidate and (approval_gate or verification and not verification[1].get('ci')):
             approval={'pr':candidate['pull_number'],'reason':approval_gate.get('reason') or (context['reason'] if context else None) or 'Review the pull request changes.'}
-        verification_view={**verification[1],'gate_id':verification[0]['id'],'created_at':verification[0]['created_at']} if verification else None
+        verification_view=({**verification[1],'gate_id':verification[0]['id'],'created_at':verification[0]['created_at']}
+                           if verification and (detail or not verification[1].get('verification_job_id')) else None)
         approvals=[]
         if candidate and unit['state']=='merging':
             approval_rows=db.execute("SELECT details_json FROM candidate_observations WHERE candidate_id=? AND kind='approval' AND complete=1 ORDER BY collection_generation DESC LIMIT 1",(candidate['id'],)).fetchone()

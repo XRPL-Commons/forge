@@ -414,6 +414,9 @@ class ExecutionQueries:
                 job.update(builder_id=task['builder_id'],builder_stage='task',task_id=task['id'],task_key=task['task_key'],task_executor=task['executor'])
                 if job['input_manifest'].get('manifest_version')!=2:
                     job['delegation']={key:task[key] for key in ('plan_id','builder_id','parent_job_id','worktree_key','scope')}|{'delegation_key':task['task_key']}
+            if job['input_manifest'].get('verification_requests'):
+                from .verification_requests import expand_in
+                job['verification_requests'] = expand_in(db, job['input_manifest'], unit_id=job['unit_id'])
             job['history'] = {'failures': [], 'retry_plan': None, 'verified_checks': []}
             context = db.execute('SELECT retry_plan_json FROM unit_context WHERE unit_id=?', (job['unit_id'],)).fetchone()
             if context and context[0]:

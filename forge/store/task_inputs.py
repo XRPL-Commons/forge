@@ -304,22 +304,5 @@ def environment_conflicts_in(db,unit,*,plan_id=None):
 
 
 def verification_requests_in(db,outputs):
-    requests=[]
-    for output in outputs:
-        row=db.execute("SELECT a.content,a.codec,a.digest,COALESCE(a.raw_size,a.size) AS raw_size FROM job_artifacts a JOIN jobs j ON j.id=a.job_id WHERE j.attempt_id=? AND a.kind='result' AND a.sequence=0",(output['attempt_id'],)).fetchone()
-        if row is None: raise TransitionError('accepted task output has no retained result evidence')
-        import hashlib
-        # Lifecycle._result writes immutable identity-coded structured evidence.
-        if row['codec']!='identity' or len(row['content'])!=row['raw_size'] or hashlib.sha256(row['content']).hexdigest()!=row['digest']:
-            raise TransitionError('accepted task result evidence is corrupt')
-        evidence=json.loads(row['content'])
-        report=evidence.get('report')
-        if isinstance(report,dict) and report.get('outcome')=='needs_human_verification':
-            verification=report['verification']
-            if (not isinstance(verification,dict) or set(verification) not in ({'what','why'},{'what','why','checks'})
-                    or not all(isinstance(verification[key],str) and verification[key].strip() for key in ('what','why'))
-                    or not isinstance(verification.get('checks',[]),list)
-                    or any(not isinstance(value,str) or not value.strip() for value in verification.get('checks',[]))):
-                raise TransitionError('accepted task verification evidence is malformed')
-            requests.append({'output_id':output['id'],'verification':{'checks':[],**verification}})
-    return sorted(requests,key=lambda row:row['output_id'])
+    from .verification_requests import references_in
+    return references_in(db, outputs)

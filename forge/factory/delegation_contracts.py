@@ -72,7 +72,7 @@ def assignment(note, job):
             ' You are the same owning builder resuming integration. Exact accepted task outputs have been verified and '
             'merged into this isolated checkout in dependency order. Resolve conflicts, verify every pinned requirement, '
             'perform the accepted plan owner_final work, retain every assigned output in the final ancestry, '
-            'and include every inherited verification_requests check in your validation plan; those requests remain '
+            'and include every expanded verification_requests check in your validation plan (the input_manifest pins their exact retained result references); those requests remain '
             'required at the final candidate even when you return pass. '
             'Run combined checks and publish one integrated PR. Only this integration assignment has publication credentials. '
             'Reuse the assigned candidate/resume PR when present; never create duplicates. Before editing an existing PR, '

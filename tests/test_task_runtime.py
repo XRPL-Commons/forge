@@ -85,13 +85,16 @@ class TaskContractTests(unittest.TestCase):
         job = {'id': 'integration', 'input_manifest': {'verification_requests': [
             {'output_id': 'owner-output', 'verification': human}, {'output_id': 'child-output', 'verification': ci}]},
             'verification_checks': [{'name': 'image-check', 'app_id': 7}]}
+        job['verification_requests'] = job['input_manifest']['verification_requests']
+        job['input_manifest']['verification_requests'] = [
+            {'output_id': row['output_id'], 'result_digest': 'digest'} for row in job['verification_requests']]
         gate = ResultController._verification(job, {'outcome': 'pass'})
         self.assertEqual(gate['code'], 'verification_human')
-        self.assertIn(human['what'], gate['details']['what'])
-        self.assertIn(ci['what'], gate['details']['what'])
-        self.assertEqual(gate['details']['task_outputs'], ['owner-output', 'child-output'])
+        self.assertEqual(gate['details']['verification_job_id'], 'integration')
+        self.assertNotIn('what', gate['details'])
         self.assertEqual(gate['details']['ci'], [])
-        job['input_manifest']['verification_requests'] = [{'output_id': 'child-output', 'verification': ci}]
+        job['input_manifest']['verification_requests'] = [{'output_id': 'child-output', 'result_digest': 'digest'}]
+        job['verification_requests'] = [{'output_id': 'child-output', 'verification': ci}]
         self.assertEqual(ResultController._verification(job, None)['code'], 'verification_ci')
 
     def test_task_prompt_and_owner_only_planning_have_distinct_authority(self):
