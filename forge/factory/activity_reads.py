@@ -6,6 +6,25 @@ unit/revision, candidate and immutable job scope still belong to their readers.
 import json
 
 
+# The -> operator returns JSON text: absent keys are SQL NULL, while explicit
+# JSON null is the text "null". Keep this distinction and JSON value types.
+EVENT_METADATA_SQL = """e.kind,e.at,
+ CASE WHEN e.kind='legacy_event' THEN e.payload_json -> '$.legacy.at' END AS at_json,
+ CASE WHEN e.kind='legacy_event' THEN e.payload_json -> '$.legacy.kind' END AS kind_json,
+ e.payload_json -> (CASE WHEN e.kind='legacy_event' THEN '$.legacy.provider' ELSE '$.provider' END) AS provider_json,
+ e.payload_json -> (CASE WHEN e.kind='legacy_event' THEN '$.legacy.model' ELSE '$.model' END) AS model_json"""
+
+
+def event_metadata(row):
+    legacy = row['kind'] == 'legacy_event'
+    result = {} if legacy else {'at': row['at'], 'kind': row['kind']}
+    for field in (('at', 'kind', 'provider', 'model') if legacy else ('provider', 'model')):
+        value = row[field + '_json']
+        if value is not None:
+            result[field] = json.loads(value)
+    return result
+
+
 class ActivityReads:
     def __init__(self, db, contexts):
         pairs = [[issue['id'], unit['id'] if unit else None, issue['current_revision_id']]
@@ -55,7 +74,7 @@ class ActivityReads:
             "SELECT d.* FROM json_each(?) p JOIN deployment_observations d ON d.rowid=("
             "SELECT rowid FROM deployment_observations WHERE candidate_id=p.value ORDER BY (status='success') DESC,observed_at DESC LIMIT 1)", (candidate_ids,))}
         self.events = {}
-        for row in db.execute('SELECT e.unit_id,e.kind,e.at,e.payload_json FROM json_each(?) p JOIN events e '
+        for row in db.execute('SELECT e.unit_id,' + EVENT_METADATA_SQL + ' FROM json_each(?) p JOIN events e '
                 'ON e.sequence IN (SELECT sequence FROM events WHERE unit_id=p.value ORDER BY sequence DESC LIMIT 3) '
                 'ORDER BY e.unit_id,e.sequence DESC', (unit_ids,)):
-            self.events.setdefault(row['unit_id'], []).append(row)
+            self.events.setdefault(row['unit_id'], []).append(event_metadata(row))

@@ -86,10 +86,41 @@ class RepositoryReadinessTests(unittest.TestCase):
             self.assertTrue(row['setup_needed'], row)
             self.assertEqual(row['setup_url'], '/settings/repositories/1?setup=1')
             self.assertEqual(row['reason_code'], 'repository_setup')
+            self.assertEqual(row['summary']['plain'], 'GitHub repository rules need attention. Open Repository setup to see which requirements need changes.')
+            self.assertEqual(row['status'], 'attention')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT enabled FROM repositories WHERE id=1').fetchone()[0], 1)
+
+    def test_public_setup_explanation_describes_evidence_without_leaking_codes(self):
+        views = PipelineViews(self.store, runtime=self.config, clock=lambda: self.now)
+        reasons = {
+            'protection_unchecked': 'current setup',
+            'protection_stale': 'out of date',
+            'protection_branch_changed': 'target branch',
+            'protection_identity_changed': 'different repository',
+            'protection_unavailable': 'could not verify',
+            'github_access_unverified': 'GitHub Apps’ access',
+            'repository_not_enabled': 'not enabled',
+            'repository_disabled': 'not enabled',
+            'future_readiness_reason': 'access and rules',
+            None: 'access and rules',
+        }
+        for reason, text in reasons.items():
+            with self.subTest(reason=reason):
+                gate = self.life.open_gate(self.command(), 'repository_setup', details={'reason': reason})
+                row = views.issues(key='i1')['issue']
+                self.assertIn(text, row['summary']['plain'])
+                self.assertNotIn(reason or 'None', row['summary']['plain'])
+                self.assertEqual(row['summary']['headline'], row['explanation'])
+                self.assertEqual(row['reason_code'], 'repository_setup')
+                self.assertEqual(row['setup_url'], '/settings/repositories/1?setup=1')
+                self.life.resolve_gate(self.command(), gate['gate_id'], release='observation',
+                                       evidence={'verified': True, 'observed_at': self.now})
+        self.life.open_gate(self.command(), 'repository_setup', details={
+            'reason': 'github_access_unverified', 'operator_summary': 'Reconnect the Review App in Repository setup.'})
+        self.assertEqual(views.issues(key='i1')['issue']['summary']['plain'], 'Reconnect the Review App in Repository setup.')
 
     def test_live_dispatch_failure_persists_report_then_fresh_observation_resumes(self):
         # Saved readiness is positive; the actual final remote read finds a repair needed.

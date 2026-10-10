@@ -81,6 +81,21 @@ def registered_codes() -> set[str]:
     return set(codes.UNIT_STATES) | set(codes.CLOSE_CODES) | set(codes.GATES) | set(codes.DISCOVERY_REASONS)
 
 
+def repository_setup_reason(reason):
+    """Explain typed readiness evidence without exposing its internal code."""
+    return {
+        'protection_needs_setup': 'GitHub repository rules need attention. Open Repository setup to see which requirements need changes.',
+        'protection_unchecked': 'Repository rules need to be checked for the current setup.',
+        'protection_stale': 'The last repository rules check is out of date. Forge needs a fresh check before starting work.',
+        'protection_branch_changed': 'Repository rules need to be checked for this delivery’s target branch.',
+        'protection_identity_changed': 'The saved rules check belongs to a different repository. Check this repository’s setup again.',
+        'protection_unavailable': 'Forge could not verify the repository rules on GitHub. Open Repository setup to check the connection and try again.',
+        'github_access_unverified': 'Forge has not verified its GitHub Apps’ access to this repository. Open Repository setup to check their access.',
+        'repository_not_enabled': 'This repository is not enabled for Forge. Open Repository setup to enable it.',
+        'repository_disabled': 'This repository is not enabled for Forge. Open Repository setup to enable it.',
+    }.get(reason, 'Open Repository setup to check the repository’s access and rules.')
+
+
 def github_rule(details):
     """A push GitHub refused by repository rule, worded for the operator, or None.
 

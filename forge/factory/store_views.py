@@ -16,7 +16,7 @@ from ..store.transitions import manifest_hash
 from .config import validate, merge_mode
 from .live_output import summarize
 from .status_projection import operator_status
-from ..store.status import github_rule
+from ..store.status import github_rule, repository_setup_reason
 from ..store.job_scope import JOB_MEMBER_SCOPE, ISSUE_JOB_SCOPE, issue_jobs_in
 from .issue_selection import IssueSelection
 
@@ -249,8 +249,9 @@ class PipelineViews:
         # The bubble speaks to the operator; the worker's technical report stays
         # in environment_blocker, behind the panel's Technical details toggle.
         technical=details.get('summary')
+        detail_reason=repository_setup_reason(details.get('reason')) if reason=='repository_setup' else details.get('reason')
         summary={'headline':wording,'plain':details.get('operator_summary') or (operator_text(technical) if isinstance(technical,str) else technical)
-                 or details.get('reason') or wording}
+                 or detail_reason or wording}
         written=environment_block.get('summary') or (json.loads(context['summary_json']) if context and context['summary_json'] and (decision or reason=='budget_exhausted') else None)
         if isinstance(written,dict) and written.get('headline'):
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
@@ -357,7 +358,7 @@ class PipelineViews:
             if delivery['status']=='success':deployed={'commit':delivery['commit_oid'],'at':delivery['observed_at'],'via':context.get('via','github')}
             elif delivery['status']=='failure':failed={'sha':delivery['commit_oid'],'at':delivery['observed_at'],'run_url':context.get('run_url')}
         events=reads.events.get(unit['id'], []) if reads is not None else db.execute('SELECT kind,at,payload_json FROM events WHERE unit_id=? ORDER BY sequence DESC LIMIT 3',(unit['id'],)).fetchall()
-        history=[_event(e,('at','kind','provider','model')) for e in reversed(events)]
+        history=list(reversed(events)) if reads is not None else [_event(e,('at','kind','provider','model')) for e in reversed(events)]
         if unit['state'] in {'merged','closed','dissolved'} and completed_at and not any(e['kind'] in {'merged','cancelled','closed','dissolved'} for e in history):
             history.insert(0,{'kind':'merged' if unit['state']=='merged' else 'cancelled','at':completed_at})
         attention={'approval_required':'approve','verification_human':'verify','budget_exhausted':'failed',

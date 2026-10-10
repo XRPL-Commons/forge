@@ -556,7 +556,7 @@ class H(BaseHTTPRequestHandler):
         # Keep authorization and projection transactions separate, while the
         # cached GET owns the physical read connection until its response ends.
         # Long polls and mutation routes never acquire this lease.
-        with store.read_connection_lease() if store is not None else nullcontext():
+        with store.read_connection_lease(getattr(getattr(self, 'server', None), 'read_handles', None)) if store is not None else nullcontext():
             self._get(u)
 
     def _get(self, u):
@@ -763,6 +763,17 @@ class H(BaseHTTPRequestHandler):
             self.send_error(404)
 
 
+class StatusServer(ThreadingHTTPServer):
+    def __init__(self, *args, **kwargs):
+        from forge.store.read_handles import IdleReadHandle
+        self.read_handles = IdleReadHandle()
+        super().__init__(*args, **kwargs)
+
+    def server_close(self):
+        self.read_handles.close()
+        super().server_close()
+
+
 if __name__ == "__main__":
     # The operator UI is the network front door; this API listens on loopback.
     ip = os.environ.get('FORGE_BIND_ADDRESS', '')
@@ -778,4 +789,5 @@ if __name__ == "__main__":
     UPSTREAM_SECRET = upstream_secret(os.environ.get('FORGE_UPSTREAM_SECRET_FILE') or Path(WD) / 'state/ui-upstream.secret')
     print(f"forge-status on http://{ip}:{port}")
     threading.Thread(target=settings_service().watch,daemon=True).start()
-    ThreadingHTTPServer((ip, port), H).serve_forever()
+    with StatusServer((ip, port), H) as server:
+        server.serve_forever()
