@@ -69,15 +69,21 @@ on that read. Captured logs take precedence once the worker has been collected.
 
 `Store.read_session()` shares one validated read-only connection and one snapshot
 across nested configuration, repository and worker reads in a public projection.
-The outer session closes before returning the response. It neither caches data
+The outer transaction ends before returning the response. It neither caches data
 between requests nor allows a mutation through that store during the projection.
 Cached status GETs (`/api/factory`, `/api/issues`, `/api/delivery`) own one physical
 read connection for the request. Authorization rolls back its snapshot before
 cache fingerprinting; projection starts a separate snapshot on that connection.
 Every checkout revalidates the live schema and instance and restores the required
 SQLite settings. Writes and independent nested reads use separate connections.
-The request closes its connection on success or failure; it is never pooled
-between requests. Long polls and authentication callbacks do not use this lease.
+The HTTP server retains at most one idle read handle between successful requests.
+Each request exclusively owns its borrowed handle; concurrent requests use separate
+connections without waiting for that slot. Every snapshot closes its cursors and
+rolls back before the handle can become idle. Failures close the handle. Selection
+changes and server shutdown retire it; a changed database inode is reopened and
+fully validated. Transfer between handler threads requires serialized SQLite.
+This retains no authorization result or open transaction between requests. Long
+polls and authentication callbacks do not use this lease.
 The board starts from current memberships of nonterminal units, then applies
 the canonical issue selector and ordering. Paused and gated members remain
 candidates. An empty discovery-failure set skips its classification query in

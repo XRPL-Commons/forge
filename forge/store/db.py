@@ -212,11 +212,17 @@ class Store:
             raise StoreError("store_invalid", "The instance anchor is invalid")
         return data["instance_id"]
 
-    def _connect_path(self, path, read_only=False):
+    def _connect_path(self, path, read_only=False, *, transferable=False):
         _private(path)
         mode = "ro" if read_only else "rw"
+        options = {}
+        if transferable:
+            if not read_only:
+                raise ValueError('Only read handles can transfer between requests')
+            from .read_handles import ReadConnection
+            options = dict(factory=ReadConnection, check_same_thread=False)
         connection = sqlite3.connect(path.as_uri() + "?mode=" + mode, uri=True, isolation_level=None,
-                                     timeout=self.busy_timeout_ms / 1000)
+                                     timeout=self.busy_timeout_ms / 1000, **options)
         connection.row_factory = sqlite3.Row
         from .remote_time import register
         register(connection)
@@ -273,19 +279,19 @@ class Store:
 
     @contextmanager
     def _connection(self, read_only=False):
-        _qualify()
-        self._paths()
         connection = None
         lease = self._read_lease.get() if read_only else None
         borrowed = bool(lease is not None and lease['thread'] == threading.get_ident() and not lease['busy'])
         if borrowed:
             lease['busy'] = True
         try:
+            _qualify()
+            self._paths()
             if borrowed:
                 identity = self.path.stat()
                 identity = (identity.st_dev, identity.st_ino)
                 if lease['connection'] is None:
-                    lease['connection'] = self._connect_path(self.path, read_only=True)
+                    lease['connection'] = self._connect_path(self.path, read_only=True, **({'transferable': True} if lease.get('transferable') else {}))
                     lease['identity'] = identity
                 elif lease['identity'] != identity:
                     raise StoreError('store_changed', 'The database file changed during this read request')
@@ -297,36 +303,53 @@ class Store:
             self._validate(connection)
             yield connection
         except sqlite3.OperationalError as error:
+            if borrowed:
+                lease['failed'] = True
             raise _database_error(error) from error
         except sqlite3.DatabaseError as error:
+            if borrowed:
+                lease['failed'] = True
             if getattr(error, "sqlite_errorcode", 0) & 0xff in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
                 raise _database_error(error) from error
+            raise
+        except BaseException:
+            if borrowed:
+                lease['failed'] = True
             raise
         finally:
             if borrowed:
                 try:
                     if connection is not None:
                         connection.rollback()
+                except BaseException:
+                    lease['failed'] = True
+                    raise
                 finally:
                     lease['busy'] = False
             elif connection is not None:
                 connection.close()
 
     @contextmanager
-    def read_connection_lease(self):
+    def read_connection_lease(self, idle_handles=None):
         """Reuse a physical read connection across separate request snapshots.
 
         Transactions still belong to read_snapshot/read_session. Each checkout
         validates the live database and anchor; writes and concurrent/reentrant
         checkouts use their own connections. This scope owns no cached data.
         """
-        lease = dict(connection=None, identity=None, busy=False, thread=threading.get_ident())
+        lease = idle_handles.take(self) if idle_handles is not None else dict(
+            connection=None, identity=None, busy=False, thread=threading.get_ident())
         token = self._read_lease.set(lease)
         try:
             yield
+        except BaseException:
+            lease['failed'] = True
+            raise
         finally:
             self._read_lease.reset(token)
-            if lease['connection'] is not None:
+            if idle_handles is not None:
+                idle_handles.release(self, lease)
+            elif lease['connection'] is not None:
                 lease['connection'].close()
 
     @contextmanager
