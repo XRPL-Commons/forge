@@ -114,6 +114,22 @@ Initial views, resyncs, idle responses and batches containing any event older th
 window snap to current positions; the UI does not invent intermediate stages or
 replay omitted history.
 
+## Projection read ownership
+
+Activity loads evidence for its bounded card page inside the existing SQLite
+snapshot. Latest prerequisite checks use the recorded member and exact revision
+index, including former memberships; unrelated retained checks are not scanned
+for each card. Context, budget charges, candidate metadata, deployment evidence
+and the last three events are collected for the selected page. The shared
+lifecycle evaluator and immutable job scopes still determine status and worker
+visibility. Detail bodies and artifacts remain separate reads.
+
+Repository environment views select the latest scan and latest eligible completed
+proposal in batches. A running or failed scan still retains its previous eligible
+proposal. Saved repository views do not initialize GitHub credentials; an explicit
+access refresh creates its client before parallel discovery. These read owners
+last only for the current projection, without changing cache validity or readiness.
+
 ## HTTP timing evidence
 
 Authenticated cached GETs (`/api/factory`, including `section=board` and

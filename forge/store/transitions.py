@@ -964,6 +964,52 @@ class Lifecycle:
 
     _remote_time = staticmethod(remote_time)
 
+    def observe_repository_readiness(self, command, *, repository_id, base_branch, allowed,
+                                     access_allowed, reason, source_revision, read_authority, valid_until):
+        """Apply a current setup observation without changing configuration or budgets."""
+        if (type(allowed) is not bool or type(access_allowed) is not bool
+                or allowed and not access_allowed or not isinstance(reason, str)
+                or not isinstance(source_revision, str) or access_allowed and not source_revision):
+            raise TransitionError('repository readiness requires explicit access and implementation evidence')
+        if (not isinstance(read_authority, dict) or set(read_authority) != {'domain', 'scope', 'revision'}
+                or any(not isinstance(value, str) or not value for value in read_authority.values())
+                or access_allowed and (type(valid_until) not in {float, int} or not math.isfinite(valid_until))):
+            raise TransitionError('repository readiness requires its exact persisted read authority')
+        details = dict(source='repository_readiness', repository_id=repository_id,
+                       base_branch=base_branch, access_allowed=access_allowed,
+                       reason=reason, source_revision=source_revision)
+        changed = False
+        def change(db, unit):
+            nonlocal changed
+            from .repository_readiness import read_revision
+            if (read_revision(db, domain=read_authority['domain'], scope=read_authority['scope'], repository_id=repository_id)
+                    != read_authority['revision'] or access_allowed and self.clock() >= valid_until):
+                raise VersionConflict('Repository readiness changed before the lifecycle observation')
+            if unit['repository_id'] != repository_id or unit['base_branch'] != base_branch:
+                raise TransitionError('repository readiness does not match delivery identity')
+            self._live(unit)
+            gates = [gate for gate in _gates(db, unit['id']) if gate['code'] == 'repository_setup']
+            owned = [gate for gate in gates if json.loads(gate['details_json']).get('source')
+                     in {'repository_readiness', 'controller_observation'}]
+            if allowed:
+                for gate in owned:
+                    self._resolve(db, command, gate['id'], {**details, 'verified': True, 'observed_at': self.clock()})
+                    changed = True
+            elif not gates or owned and any(json.loads(gate['details_json']) != details for gate in owned):
+                for gate in owned:
+                    self._resolve(db, command, gate['id'], {'superseded_by': details})
+                self._open_gate(db, command, 'repository_setup', details)
+                if not access_allowed:
+                    self._fence(db, command)
+                # Protection readiness gates new work. Expired/unavailable
+                # observations do not revoke an already admitted execution.
+                # Publication and merge still independently verify live policy.
+                changed = True
+            return {'allowed': allowed, 'unchanged': not changed}
+        return self._apply(command, 'observe_repository_readiness', {**details, 'allowed': allowed,
+                           'read_authority': read_authority, 'valid_until': valid_until}, change,
+                           version_changed=lambda: changed)
+
     def observe_issue(self, command, issue_id, *, state, title, body, requirements,
                       remote_updated_at, generation, state_reason=None, labels=(), assignees=(),
                       hold_labels=("hold", "blocked"), admission=None, ownership_conflict=None, assignee_types=None):

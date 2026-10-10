@@ -38,6 +38,12 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         repo = item.get('repo') or (item.get('issue') or {}).get('repository')
         return bool(repo and settings.admission(repo)['allowed'])
 
+    from .repository_readiness import RepositoryReadiness
+    readiness = RepositoryReadiness(store, settings, clock=clock)
+
+    def execution_admission(item):
+        return admission(item) if item['role'] == 'recovery' else readiness.allowed(item)
+
     def current_config():
         current = load(root)
         if not dispatch or settings.paused():
@@ -48,19 +54,19 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     verification = VerificationController(store, github, profiles=lambda repo: current_config()['repository_verification'].get(repo, []),
         policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), clock=clock, hold_labels=config['hold_labels'])
     merge_admission = MergeAdmission(store, github, config=current_config,
-                                     repository_ready=lambda repo: admission({'repo': repo}), clock=clock)
+                                     repository_ready=lambda repo: readiness.allowed({'repo': repo}), clock=clock)
     effects = EffectController(store, github, admission=merge_admission, clock=clock)
     parts = dict(store=store, settings=settings, config=config, runner=runner, github=github,
         requirements=requirements, verification=verification, effects=effects, admission=admission,
-        execution=ExecutionController(store, runner, github, admission=admission, clock=clock, enabled=lambda: current_config()['enabled']),
-        observations=ObservationController(store, github, admission=admission, policy=lambda item: manifest_hash(policy(current_config(),item['repo_id'],repository_name=item['repo'])),
+        execution=ExecutionController(store, runner, github, admission=execution_admission, clock=clock, enabled=lambda: current_config()['enabled']),
+        observations=ObservationController(store, github, admission=admission, readiness=readiness, policy=lambda item: manifest_hash(policy(current_config(),item['repo_id'],repository_name=item['repo'])),
                                             hold_labels=config['hold_labels'], clock=clock),
         results=ResultController(store, github, policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), verdicts=effects,
             requirements=requirements, clock=clock, hold_labels=config['hold_labels'], availability_retry_seconds=config['availability_retry_seconds']),
         recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock),
-        dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements),
-                                      admission=admission, clock=clock))
+        dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
+                                      admission=readiness.allowed, readiness=readiness, clock=clock))
 
     from .repository_planner import RepositoryPlanner
     from .triage_effects import TriageEffects

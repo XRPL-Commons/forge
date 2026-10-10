@@ -70,6 +70,15 @@ def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recove
             # These gates retain the approved implementation scope. A recovery
             # reads its original failure and cannot change that scope.
             continue
+        if (diagnostic and gate['code'] == 'repository_setup'
+                and details.get('source') == 'repository_readiness'
+                and details.get('access_allowed') is True
+                and details.get('repository_id') == unit['repository_id']
+                and details.get('base_branch') == unit['base_branch']
+                and isinstance(details.get('source_revision'), str) and details['source_revision']):
+            # Explicit current access still admits diagnostics; implementation
+            # and publication correction continue to require the setup gate.
+            continue
         if gate['code'] == 'budget_exhausted':
             continue
         if gate['code'] == 'recovery_pending' and details.get('job_id') == failed_job_id:

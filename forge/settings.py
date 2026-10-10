@@ -7,6 +7,7 @@ import argparse
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
+from functools import cached_property
 import hashlib
 import json
 import os
@@ -146,9 +147,16 @@ class Settings:
         self.scope = self.authority.scope
         self.path = self.root / 'factory.json'
         self.state = self.root / 'state' / 'github-access'
-        from .credentials import Credentials
-        self.client = client or AppClient(environ=Credentials(self.authority.root).environment())
+        if client is not None:
+            self.client = client
         self.clock = clock
+
+    @cached_property
+    def client(self):
+        # Saved evidence can be projected without opening credentials. Explicit
+        # discovery initializes its client once, before parallel role requests.
+        from .credentials import Credentials
+        return AppClient(environ=Credentials(self.authority.root).environment())
 
     def load(self):
         return self.config_snapshot()[0]
@@ -236,6 +244,7 @@ class Settings:
                     return False
                 config, previous = self.load(), self.observation()
                 generation = self.generation()
+                client = self.client if config['connections'] else None
                 start = self.clock()
                 self.save_sync({'status': 'running', 'started_at': start})
                 def collect(role):
@@ -244,7 +253,7 @@ class Settings:
                         return role, {'status': 'not_configured', 'observed_at': self.clock()}
                     row = {'connection': digest(connection), 'observed_at': self.clock()}
                     try:
-                        row.update(self.client.discover(connection), status='ok')
+                        row.update(client.discover(connection), status='ok')
                     except Exception as error:
                         reason = str(error) if isinstance(error, AccessError) else 'Access sync failed; retry or inspect server configuration'
                         old = previous['roles'].get(role, {})

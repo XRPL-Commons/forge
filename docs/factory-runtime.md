@@ -93,6 +93,21 @@ flowchart TD
   D -->|No| Wait
 ```
 
+Repository setup is also a delivery blocker. Implementation admission uses the
+same repository identity, App connection revision and fresh protection report
+shown in Settings. A missing controller bypass, an unavailable check or an
+expired report shows **Repository setup** on the affected issues, with a link to
+repair or recheck the repository. The ordinary setup refresh and issue
+observation clear this blocker after verified readiness; independent holds stay
+in place. Dispatch saves its final protection read through that same report
+boundary, so a newly discovered failure is visible immediately.
+
+This readiness check does not change repository permissions or enablement.
+Protection report expiry does not revoke a running worker or its output. New
+work waits, and publication/merge retain their live policy checks. Auxiliary
+repository planning and failure diagnosis require access, without requiring
+publication readiness; loss of access still blocks them.
+
 A green worker result alone is not merge permission. Forge checks its App-bound Review and Audit evidence, required CI, verification, repository protections and current ownership; unresolved changes requested also prevent merging.
 
 Merge policy is set per repository and defaults to `human`, which requires one counted approval. Explicit `auto` permits a merge after CI, Review and Audit pass; Audit or verification can still require human approval. Settings shows the effective policy read-only. A counted review must come from an eligible person with repository write access (and the configured reviewer list, if any); bots and the pull request author do not count.

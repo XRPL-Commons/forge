@@ -63,9 +63,9 @@ def combined_environment(choices):
 
 class GitHubPrepare:
     """Fresh remote admission and exact worker inputs for each assigned scope."""
-    def __init__(self, github, config, *, requirements=None):
+    def __init__(self, github, config, *, requirements=None, readiness=None):
         self.github, self.config = github, validate(config)
-        self.requirements = requirements
+        self.requirements, self.readiness = requirements, readiness
 
     def __call__(self, snapshot, role):
         if snapshot.get('grouped'):
@@ -91,7 +91,9 @@ class GitHubPrepare:
         if not self.requirements and issue_dependencies(remote.get('body'), item):
             return None
         target = self.github.target(item)
-        if target != unit['base_branch'] or not self.github.protections(item, {'base_ref': target}):
+        protected = (self.readiness.protections(snapshot, item, target, self.github)
+                     if self.readiness else self.github.protections(item, {'base_ref': target}))
+        if target != unit['base_branch'] or not protected:
             return None
         base = (self.github.call('controller', item, 'GET', '/branches/' + quote(target, safe='')).get('commit') or {}).get('sha')
         if not isinstance(base, str) or not SHA.fullmatch(base):
@@ -157,7 +159,9 @@ class GitHubPrepare:
                 choices[scoped['member']['id']] = choose(self.config, member_item, remote)
             refreshed = {'unit_version': unit['version'], 'choices': choices}
         target = self.github.target(item)
-        if target != unit['base_branch'] or not self.github.protections(item, {'base_ref': target}):
+        protected = (self.readiness.protections(snapshot, item, target, self.github)
+                     if self.readiness else self.github.protections(item, {'base_ref': target}))
+        if target != unit['base_branch'] or not protected:
             return None
         base = (self.github.call('controller', item, 'GET', '/branches/' + quote(target, safe='')).get('commit') or {}).get('sha')
         if not isinstance(base, str) or not SHA.fullmatch(base):
@@ -196,10 +200,11 @@ class GitHubPrepare:
 
 
 class DispatchController:
-    def __init__(self, store, runner, *, config, prepare, admission, clock=time.time):
+    def __init__(self, store, runner, *, config, prepare, admission, readiness=None, clock=time.time):
         self.store, self.runner = store, runner
         self.config = validate(config)
         self.prepare, self.admission, self.clock = prepare, admission, clock
+        self.readiness = readiness
         self.commands = Lifecycle(store, clock=clock)
 
     def snapshot(self, unit_id):
@@ -277,6 +282,8 @@ class DispatchController:
         result = {'unit_id': unit_id, 'reserved': False}
         if not self.config['enabled']:
             return {**result, 'reason': 'runtime_disabled'}
+        if self.readiness:
+            self.readiness.observe(unit_id)
         snapshot = self.snapshot(unit_id)
         if snapshot['reason']:
             return {**result, 'reason': snapshot['reason']}
@@ -303,7 +310,8 @@ class DispatchController:
             return {**result, 'reason': 'role_capacity'}
         prepared = self.prepare(deepcopy(snapshot), role)
         if prepared is None:
-            return {**result, 'reason': 'observation_changed'}
+            reason = self.snapshot(unit_id)['reason'] if self.readiness else None
+            return {**result, 'reason': reason or 'observation_changed'}
         if not isinstance(prepared, PreparedDispatch) or not isinstance(prepared.base_oid, str) or not SHA.fullmatch(prepared.base_oid):
             raise TransitionError('dispatch requires verified target head and launch inputs')
         if prepared.unit_version is not None:
