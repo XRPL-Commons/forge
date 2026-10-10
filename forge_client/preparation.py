@@ -46,17 +46,27 @@ class Preparation:
                 blockers.append({'code': 'app_access_unverified', 'role': role})
         readiness = value['readiness']
         if readiness['access_ready'] and not readiness['protection_ready']:
-            if readiness['protection_status'] == 'needs_setup':
-                require(value['baseline']['branch'] == target['branch'], 'default_branch_changed',
-                        'Forge and GitHub observed different default branches; verify again.')
-                collisions = [r for r in self.github.rulesets(target['name'])
-                              if r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']]
-                if collisions:
-                    blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
-                else:
-                    steps.append({'kind': 'github.ruleset.ensure_baseline'})
+            try:
+                inventory = self.github.rulesets(target['name'])
+            except SetupError as error:
+                if error.code != 'github_plan_required':
+                    raise
+                blockers.append({'code': 'github_plan_required', 'reason':
+                    'GitHub does not support rulesets on this repository with its current plan. '
+                    'Enable a GitHub plan that supports private-repository rulesets, then rerun setup, '
+                    'or defer this repository. Its visibility will not be changed by Forge.'})
             else:
-                blockers.append({'code': 'protection_unverified'})
+                if readiness['protection_status'] == 'needs_setup':
+                    require(value['baseline']['branch'] == target['branch'], 'default_branch_changed',
+                            'Forge and GitHub observed different default branches; verify again.')
+                    collisions = [r for r in inventory
+                                  if r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']]
+                    if collisions:
+                        blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
+                    else:
+                        steps.append({'kind': 'github.ruleset.ensure_baseline'})
+                else:
+                    blockers.append({'code': 'protection_unverified'})
         if steps and not target['admin']:
             blockers.append({'code': 'github_admin_required'})
         created_at = self.clock()

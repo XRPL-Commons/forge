@@ -196,6 +196,12 @@ in the server's private credential files, outside the local setup journal.
 For the first repository, the CLI prints its preparation plan. Applying it uses
 local GitHub access to grant App access or add the required review baseline;
 Forge independently verifies readiness. Existing protections are preserved.
+The repository must support GitHub rulesets. If GitHub explicitly reports that
+the current plan does not support them, setup returns `github_plan_required`
+before making changes. For a private repository, enable a GitHub plan that
+supports private-repository rulesets and rerun the repository command, or defer
+setup. Forge does not change repository visibility or billing. Other permission
+errors are not treated as evidence of a plan restriction.
 The wizard then runs isolation checks and small real model probes. **Start** is a
 separate confirmation that enables processing for the selected repository.
 

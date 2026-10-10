@@ -121,6 +121,42 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(self.writes, [])
         self.assertFalse(any(r[0] in ('enable', 'verify') for r in self.requests))
 
+    def test_unknown_protection_surfaces_local_plan_prerequisite_without_writes(self):
+        self.granted = {1, 2, 3, 4}
+        self.settings.refresh()
+        readiness = describe(self.settings, self.target)['readiness']
+        self.assertTrue(readiness['access_ready'])
+        self.assertFalse(readiness['protection_ready'])
+        self.assertNotEqual(readiness['protection_status'], 'needs_setup')
+        reads = []
+        def run(argv, *, payload=None):
+            if '/rulesets?' in argv[10]:
+                reads.append(argv[10])
+                response = {'message': 'Upgrade to GitHub Pro or make this repository public to enable this feature.',
+                            'status': '403', 'private_diagnostic': SECRET}
+                return run_bounded([sys.executable, '-c',
+                    'import sys;print(' + repr(json.dumps(response)) + ');sys.exit(1)'])
+            return self.run_gh(argv, payload=payload)
+        self.broker.run = run
+        result = self.preparation.setup('example/project', apply=True)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['completed'], [])
+        self.assertEqual([b['code'] for b in result['blockers']], ['github_plan_required'])
+        self.assertIn('defer this repository', result['blockers'][0]['reason'])
+        self.assertNotIn(SECRET, json.dumps(result))
+        self.assertTrue(reads)
+        self.assertEqual(self.writes, [])
+        self.assertFalse(any(r[0] in ('enable', 'verify') for r in self.requests))
+
+    def test_successful_local_inventory_does_not_replace_remote_protection_verification(self):
+        self.granted = {1, 2, 3, 4}
+        self.settings.refresh()
+        self.github_rules = [{'id':75, 'name':'Existing rules', 'source_type':'Repository'}]
+        plan = self.preparation.plan('example/project')
+        self.assertEqual(plan['blockers'], [{'code':'protection_unverified'}])
+        self.assertEqual(plan['steps'], [])
+        self.assertEqual(self.writes, [])
+
     def test_stronger_existing_rules_are_preserved(self):
         self.granted = {1, 2, 3, 4}
         self.github_rules = [{'id': 65, 'name': 'Organization reviews', 'source_type': 'Organization'}]
@@ -326,6 +362,22 @@ class ContractTests(unittest.TestCase):
 
 
 class BrokerTests(unittest.TestCase):
+    def test_only_exact_known_plan_response_is_classified_without_exposing_diagnostics(self):
+        message = 'Upgrade to GitHub Pro or make this repository public to enable this feature.'
+        for response, expected in (
+                ({'message':message, 'status':'403', 'diagnostic':SECRET}, 'github_plan_required'),
+                ({'message':message, 'status':403}, 'github_plan_required'),
+                ({'message':'Resource not accessible by integration', 'status':'403'}, 'github_request_failed'),
+                ({'message':message + SECRET, 'status':'403'}, 'github_request_failed'),
+                ({'message':message, 'status':'401'}, 'github_request_failed'),
+                ({'message':message}, 'github_request_failed')):
+            with self.subTest(response=response), self.assertRaises(SetupError) as error:
+                run_bounded([sys.executable, '-c', 'import sys;print('
+                    + repr(json.dumps(response)) + ');sys.stderr.write(' + repr(SECRET) + ');sys.exit(1)'])
+            self.assertEqual(error.exception.code, expected)
+            self.assertNotIn(SECRET, str(error.exception))
+            self.assertNotIn('make this repository public', str(error.exception))
+
     def test_diagnostics_are_sanitized_and_output_is_bounded(self):
         for script in (f'import sys;sys.stderr.write({SECRET!r});sys.exit(1)',
                        f'import sys;sys.stdout.write({SECRET!r});sys.exit(1)'):
