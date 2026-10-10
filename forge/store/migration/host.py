@@ -96,10 +96,12 @@ class Host:
             if (str(self.root).encode() in command or str(self.source).encode() in command) and b'git\x00' not in command:
                 raise MigrationError('unmanaged_process')
 
-    def prepare_source_update(self, previous, target, tool_version, *, source_pack=None):
-        """Read/fetch and qualify a pinned fast-forward without running host setup."""
+    def prepare_source_update(self, previous, target, tool_version, *, source_pack=None, replace_initial_source=False):
+        """Qualify pinned source; draft replacement requires a never-started setup."""
         import io
         import tarfile
+        if replace_initial_source and (os.path.lexists(self.root/'state/storage') or not initial_setup(sources(self.root))):
+            raise MigrationError('initial_source_requires_never_started_setup')
         if not re.fullmatch(r'[0-9a-f]{40}', target):
             raise MigrationError('repair_revision_required')
         current=self.identity()
@@ -122,9 +124,10 @@ class Host:
                 raise MigrationError('source_pack_invalid')
         if self.command('git','-C',str(self.source),'rev-parse',target+'^{commit}')!=target:
             raise MigrationError('repair_revision_mismatch')
-        ancestry=self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,target],capture_output=True,timeout=30)
-        if ancestry.returncode:
-            raise MigrationError('repair_requires_forward_revision')
+        if not replace_initial_source:
+            ancestry=self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,target],capture_output=True,timeout=30)
+            if ancestry.returncode:
+                raise MigrationError('repair_requires_forward_revision')
         archive=self.run(['git','-C',str(self.source),'archive','--format=tar',target,'forge'],capture_output=True,timeout=60)
         if archive.returncode or len(archive.stdout)>32*1024*1024:
             raise MigrationError('repair_source_unavailable')
@@ -144,8 +147,17 @@ class Host:
         if not records or fingerprint!=tool_version:
             raise MigrationError('repair_bundle_source_mismatch')
 
-    def install_source_update(self, previous, target):
-        """Only advance the checkout; service/runtime reconciliation is forbidden."""
+    def install_source_update(self, previous, target, *, replace_initial_source=False):
+        """Only change the checkout; service/runtime reconciliation is forbidden."""
+        if replace_initial_source:
+            if os.path.lexists(self.root/'state/storage') or not initial_setup(sources(self.root)):
+                raise MigrationError('initial_source_requires_never_started_setup')
+            journal=decode(read_regular(self.root/'.migration-cutover.json',limit=1048576))
+            bridge=journal.get('initial_source',{})
+            if (journal.get('stage')!='source_preparing' or journal.get('authorized') is not True
+                    or bridge.get('mode')!='replace' or bridge.get('from_revision')!=previous
+                    or bridge.get('to_revision')!=target or not journal.get('manifest')):
+                raise MigrationError('initial_source_authority_mismatch')
         current=self.identity()
         if current not in {previous,target}:
             raise MigrationError('repair_source_changed')
@@ -153,8 +165,9 @@ class Host:
             raise MigrationError('repair_source_not_clean')
         if current!=target:
             # Source qualification owns all writes; detached maintenance cannot outlive it.
+            operation=['checkout','--detach','--no-overwrite-ignore',target] if replace_initial_source else ['merge','--ff-only',target]
             self.command('git','-c','core.hooksPath=/dev/null','-c','maintenance.auto=false',
-                         '-C',str(self.source),'merge','--ff-only',target)
+                         '-C',str(self.source),*operation)
         if self.identity()!=target:
             raise MigrationError('repair_revision_mismatch')
 
@@ -247,6 +260,8 @@ def failure(error, request):
 
 
 def run(request):
+    if request.get('replace_initial_source') is not None and (request['action']!='activate' or type(request['replace_initial_source']) is not bool):
+        raise MigrationError('initial_source_replacement_activate_required')
     host=Host(request['root'],request['source'])
     if request['action']=='upgrade':
         from .upgrade import Upgrade
@@ -265,7 +280,7 @@ def run(request):
     if request['action']=='activate':
         if request.get('apply') is not True: raise MigrationError('activation_not_authorized')
         from .cutover import Cutover
-        return Cutover(host).activate(expected_plan=request.get('plan'),source_revision=request.get('source_revision'),previous_revision=request.get('previous_revision'),source_pack=request.get('source_pack'))
+        return Cutover(host).activate(expected_plan=request.get('plan'),source_revision=request.get('source_revision'),previous_revision=request.get('previous_revision'),source_pack=request.get('source_pack'),replace_initial_source=request.get('replace_initial_source',False))
     if request['action']=='capture':
         return host.capture(request['destination'],request['plan'])
     raise MigrationError('unknown_migration_action')

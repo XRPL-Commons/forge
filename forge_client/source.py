@@ -12,10 +12,12 @@ REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 PACK_LIMIT = 32 * 1024 * 1024
 
 
-def export(revision, *, previous=None, run=run_bounded):
+def export(revision, *, previous=None, replace_initial_source=False, run=run_bounded):
     require(isinstance(revision, str) and re.fullmatch('[a-f0-9]{40}', revision), 'invalid_revision', 'Select a full Forge commit SHA.')
     require(previous is None or isinstance(previous, str) and re.fullmatch('[a-f0-9]{40}', previous),
             'invalid_revision', 'Use a full previous Forge commit SHA.')
+    require(type(replace_initial_source) is bool and (not replace_initial_source or previous is not None),
+            'invalid_source_replacement', 'Initial source replacement requires the exact installed revision.')
     executable = shutil.which('git')
     require(executable, 'git_missing', 'Install Git locally before setting up Forge.')
     try:
@@ -31,9 +33,14 @@ def export(revision, *, previous=None, run=run_bounded):
             run(git + ['fetch', '--quiet', *depth, 'origin', revision], timeout=180)
             head = run(git + ['rev-parse', 'FETCH_HEAD']).decode().strip()
             require(head == revision, 'source_changed', 'Fetched source differs from the requested commit.')
-            if previous is not None:
-                run(git + ['merge-base', '--is-ancestor', previous, revision])
-            scope = ['--no-walk', revision] if previous is None else [revision, '^' + previous]
+            if previous is not None and not replace_initial_source:
+                try:
+                    run(git + ['merge-base', '--is-ancestor', previous, revision])
+                except SetupError as error:
+                    if error.code == 'github_request_failed':
+                        raise SetupError('source_not_forward', 'The installed revision is not a verified ancestor of this release. A never-started setup may use explicit --replace-initial-source; running factories require a forward release.') from None
+                    raise
+            scope = [revision] if replace_initial_source else ['--no-walk', revision] if previous is None else [revision, '^' + previous]
             objects = run(git + ['rev-list', '--objects', *scope])
             identifiers = [line.split(b' ', 1)[0] for line in objects.splitlines()]
             require(identifiers and all(re.fullmatch(b'[a-f0-9]{40}', item) for item in identifiers), 'invalid_source', 'Git returned an invalid source inventory.')
@@ -41,5 +48,7 @@ def export(revision, *, previous=None, run=run_bounded):
                        input_limit=4 * 1024 * 1024, output_limit=PACK_LIMIT, timeout=180)
             require(pack.startswith(b'PACK'), 'invalid_source', 'Git did not produce a valid source pack.')
             return {'sha256': hashlib.sha256(pack).hexdigest(), 'data': base64.b64encode(pack).decode()}
-    except SetupError:
+    except SetupError as error:
+        if error.code == 'source_not_forward':
+            raise
         raise SetupError('source_unavailable', 'Could not export the pinned Forge source locally. Check local GitHub access to XRPL-Commons/forge, then resume; no GitHub credential was sent to the VM.') from None

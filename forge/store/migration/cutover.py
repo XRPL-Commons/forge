@@ -62,6 +62,10 @@ class Cutover:
         import re
         if any(not isinstance(unit,str) or not re.fullmatch(r'forge[-a-z0-9]*\.(service|timer)',unit) for unit in value['services']):
             raise MigrationError('invalid_cutover_journal')
+        bridge=value.get('initial_source')
+        if bridge is not None and (not isinstance(bridge,dict) or bridge.get('mode','forward') not in {'forward','replace'}
+                or any(not isinstance(bridge.get(key),str) or not re.fullmatch(r'[0-9a-f]{40}',bridge[key]) for key in ('from_revision','to_revision'))):
+            raise MigrationError('invalid_cutover_journal')
         return value
 
     def _save(self,value,stage=None,**fields):
@@ -99,10 +103,18 @@ class Cutover:
         return dict(pipeline=sum(not j['cleanup'] for j in ledger['jobs'].values()),
                     slots=len(ledger['slots']),auxiliary=uncleaned_auxiliary(data))
 
-    def activate(self,*,expected_plan=None,source_revision=None,previous_revision=None,source_pack=None):
+    def activate(self,*,expected_plan=None,source_revision=None,previous_revision=None,source_pack=None,replace_initial_source=False):
         with operation_lock(self.root,'.migration-host.lock'):
+            if type(replace_initial_source) is not bool:
+                raise MigrationError('initial_source_replacement_invalid')
             if self.path.exists():
-                return self._resume(self._read())
+                value=self._read()
+                bridge=value.get('initial_source')
+                if (source_revision is not None and (not bridge or source_revision!=bridge['to_revision'])
+                        or previous_revision is not None and (not bridge or previous_revision!=bridge['from_revision'])
+                        or replace_initial_source != bool(bridge and bridge.get('mode','forward')=='replace')):
+                    raise MigrationError('initial_source_authority_mismatch')
+                return self._resume(value)
             if os.path.lexists(self.marker):
                 raise MigrationError('runtime_already_selected')
             if self.host.journal.exists():
@@ -114,6 +126,10 @@ class Cutover:
                 raise MigrationError('initial_source_changed')
             data=sources(self.root)
             initial=initial_setup(data)
+            if replace_initial_source and not initial:
+                raise MigrationError('initial_source_requires_never_started_setup')
+            if replace_initial_source and (source_revision is None or previous_revision is None):
+                raise MigrationError('initial_source_replacement_requires_pins')
             if source_revision is not None and not initial:
                 raise MigrationError('initial_source_requires_never_started_setup')
             if initial and source_revision is None:
@@ -133,7 +149,8 @@ class Cutover:
                 if source_revision!=plan['source_revision']:
                     if source_pack is None:
                         raise MigrationError('initial_source_pack_required')
-                    self.host.prepare_source_update(plan['source_revision'],source_revision,tool_version,source_pack=source_pack)
+                    self.host.prepare_source_update(plan['source_revision'],source_revision,tool_version,source_pack=source_pack,
+                                                    **({'replace_initial_source':True} if replace_initial_source else {}))
                 elif package_version(self.host.source)!=tool_version:
                     raise MigrationError('cutover_code_mismatch')
             elif package_version(self.host.source)!=tool_version:
@@ -154,7 +171,7 @@ class Cutover:
                 # The journal is durable before admission changes. Resume can
                 # complete this write if the process dies in the following gap.
                 if initial:
-                    value.update(stage='stopping',initial_source=dict(from_revision=plan['source_revision'],to_revision=source_revision,prepared=None),
+                    value.update(stage='stopping',initial_source=dict(from_revision=plan['source_revision'],to_revision=source_revision,mode='replace' if replace_initial_source else 'forward',prepared=None),
                                  initial_runtime_digest=None,initial_runtime_frozen=False)
                 self._save(value)
                 if not initial:
@@ -264,6 +281,10 @@ class Cutover:
         result=dict(status=value['stage'],activation=os.path.lexists(self.marker),source_revision=value['source_revision'],
                     diagnostic_copy=value['snapshot'],database_root=value['destination'],
                     tool_update_pending=bool(value.get('tool_update')),source_updates=value.get('source_updates',[]))
+        if value.get('initial_source'):
+            bridge=value['initial_source']
+            result['initial_source']={key:bridge[key] for key in ('from_revision','to_revision')}
+            result['initial_source']['mode']=bridge.get('mode','forward')
         if result['activation']:
             from ..runtime import selected
             store=selected(self.root)
@@ -407,7 +428,8 @@ class Cutover:
             self._same_snapshot(snapshot)
             if value['stage']=='source_preparing':
                 bridge=value['initial_source']
-                self.host.install_source_update(bridge['from_revision'],bridge['to_revision'])
+                self.host.install_source_update(bridge['from_revision'],bridge['to_revision'],
+                                                **({'replace_initial_source':True} if bridge.get('mode','forward')=='replace' else {}))
                 if package_version(self.host.source)!=value['tool_version']:
                     raise MigrationError('repair_bundle_source_mismatch')
                 self._save(value,source_revision=bridge['to_revision'])
