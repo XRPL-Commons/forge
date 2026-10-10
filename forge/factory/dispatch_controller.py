@@ -52,6 +52,15 @@ def memory_config(config, role, profile, environments):
     return config
 
 
+def combined_environment(choices):
+    """One worker must satisfy every scoped member's explicit environment."""
+    full = any(choice['tier'] == 'full' for choice in choices.values())
+    if full and any(choice['tier'] == 'standard' and choice.get('automatic') is False for choice in choices.values()):
+        return None
+    return {'tier': 'full' if full else 'standard',
+            'services': sorted({service for choice in choices.values() for service in choice.get('services', [])})}
+
+
 class GitHubPrepare:
     """Fresh remote admission and exact worker inputs for each assigned scope."""
     def __init__(self, github, config, *, requirements=None):
@@ -124,25 +133,29 @@ class GitHubPrepare:
         for scoped in snapshot['members']:
             issue, member = scoped['issue'], scoped['member']
             remote, requirements = self.github.issue({**item, 'number': issue['github_number']})
-            if remote.get('state') != 'open' or requirements != issue['requirements']:
-                return None
-            remotes[member['id']] = remote
+            remotes[member['id']] = (remote, requirements)
         if self.requirements:
-            refreshed = self.requirements.prepare_group(snapshot, role, remotes)
+            refreshed = self.requirements.prepare_group(snapshot, role, {key: value[0] for key, value in remotes.items()})
             if refreshed is None:
                 return None
         else:
-            refreshed = None
-            numbers = {scope['issue']['github_number'] for scope in snapshot['members']}
+            from .environments import choose
+            choices = {}
             for scoped in snapshot['members']:
-                remote = remotes[scoped['member']['id']]
+                remote, requirements = remotes[scoped['member']['id']]
+                if remote.get('state') != 'open' or requirements != scoped['issue']['requirements']:
+                    continue
                 labels = {row['name'] if isinstance(row, dict) else row for row in remote.get('labels', [])}
-                if labels.intersection(self.config['hold_labels']) or set(issue_dependencies(remote.get('body'))) - numbers:
-                    return None
                 member_item = {**item, 'number': scoped['issue']['github_number'], 'unit_state': unit['state'],
                                'candidate': {'pr': candidate['pull_number'], 'key': candidate['id']} if candidate else None}
-                if ownership(remote, member_item, item['repo'], self.github.pulls(item)):
-                    return None
+                if (labels.intersection(self.config['hold_labels']) or issue_dependencies(remote.get('body'), member_item)
+                        or ownership(remote, member_item, item['repo'], self.github.pulls(item))):
+                    continue  # Without the adapter there is no verified prerequisite evidence.
+                environment = scoped['environment']
+                member_item.update(environment_choice=environment.get('choice'), environment_override=environment.get('override'),
+                                   environment_retry=environment.get('retry'), environment_label=environment.get('label'))
+                choices[scoped['member']['id']] = choose(self.config, member_item, remote)
+            refreshed = {'unit_version': unit['version'], 'choices': choices}
         target = self.github.target(item)
         if target != unit['base_branch'] or not self.github.protections(item, {'base_ref': target}):
             return None
@@ -222,7 +235,9 @@ class DispatchController:
             role = {'queued': 'build', 'building': 'build', 'integrating': 'build', 'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
             gates = applicable_gates(db, unit, member['id'] if member and role == 'build' else None, unit['current_candidate_id'])
             if grouped and role == 'build':
-                gates = [gate for gate in gates if gate['member_id'] is None and gate['code'] not in {'cleanup_pending', 'result_pending'}]
+                # Exact job waits belong to the task selector; a failed sibling
+                # cannot prevent an independent task from reaching that authority.
+                gates = [gate for gate in gates if gate['member_id'] is None and gate.get('job_id') is None]
             reason = gates[0]['code'] if gates else None
             if not grouped and db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0', (unit_id,)).fetchone():
                 reason = 'cleanup_pending'
@@ -311,8 +326,8 @@ class DispatchController:
             def ready(assignment):
                 if choices is None:
                     return True
-                if assignment['stage'] == 'child':
-                    return assignment['member_id'] in choices
+                if assignment['stage'] == 'task':
+                    return all(member_id in choices for member_id in assignment['member_ids'])
                 if assignment['stage'] == 'planning':
                     return bool(choices)
                 return all(row['member']['id'] in choices for row in snapshot['members'])
@@ -325,14 +340,22 @@ class DispatchController:
         config = deepcopy(prepared.runner_config)
         if snapshot['grouped'] and prepared.member_choices:
             from .environments import worker_config
-            choices = ([prepared.member_choices[assignment['member_id']]] if assignment and assignment.get('member_id')
-                       else list(prepared.member_choices.values()))
-            services = sorted({service for choice in choices for service in choice.get('services', [])})
-            choice = {'tier': 'full' if any(choice['tier'] == 'full' for choice in choices) else 'standard', 'services': services}
+            ids = assignment['member_ids'] if assignment and assignment['stage'] == 'task' else [row['member']['id'] for row in snapshot['members']]
+            choices = {member_id: prepared.member_choices[member_id] for member_id in ids if member_id in prepared.member_choices}
+            # Planning only reads the approved scope; implementation environment
+            # conflicts must be visible to its owner rather than block planning.
+            choice = {'tier': 'standard', 'services': []} if assignment and assignment['stage'] == 'planning' else combined_environment(choices)
+            if choice is None:
+                if assignment is not None:
+                    from ..store.delivery import Delivery
+                    Delivery(self.store, clock=self.clock).environment_conflict(
+                        Command(str(uuid.uuid4()), 'supervisor:dispatch', unit_id, snapshot['unit']['version']),
+                        plan_id=assignment['input_manifest']['plan_id'], task_id=assignment.get('task_id'), choices=choices)
+                return {**result, 'reason': 'environment_conflict', 'member_choices': choices}
             config = worker_config(config, {'environment_choice': choice})
         if snapshot['grouped']:
-            scope = [row for row in snapshot['members'] if not assignment or assignment['stage'] != 'child'
-                     or row['member']['id'] == assignment['member_id']]
+            scope = [row for row in snapshot['members'] if not assignment or assignment['stage'] != 'task'
+                     or row['member']['id'] in assignment['member_ids']]
             config = memory_config(config, role, snapshot.get('memory_bytes', {}).get(role, 0),
                                    [row['environment'] for row in scope])
             if config is None:
@@ -390,6 +413,12 @@ class DispatchController:
         unit = snapshot['unit']
         branch = prepared.branch or ('forge/unit-' + unit['id'] + '-' + request[:8])
         context = dict(prepared.context)
+        if assignment['stage'] in {'planning', 'task'}:
+            # Implementation tasks never inherit the eventual publication branch
+            # or draft-PR continuation authority from the owning delivery.
+            branch = 'forge/task-' + request
+            for key in ('resume_branch', 'resume_pr', 'resume_head', 'publication_author'):
+                context.pop(key, None)
         target = assignment['input_manifest'].get('publication_target')
         if assignment['stage'] == 'integration' and target and target['kind'] == 'existing':
             source = next(row for row in assignment['input_manifest']['existing_candidates'] if row['candidate_id'] == target['candidate_id'])
@@ -400,13 +429,13 @@ class DispatchController:
         command = Command(request, 'supervisor:dispatch', unit['id'], unit['version'])
         options = dict(slot=slot, execution_fence=str(uuid.uuid4()), input_manifest=assignment['input_manifest'], launch=launch)
         delivery = Delivery(self.store, clock=self.clock)
-        if assignment.get('plan_id'):
-            reservation = delivery.delegate(command, assignment['plan_id'], assignment['key'],
+        if assignment['stage'] == 'task':
+            reservation = delivery.reserve_task(command, assignment['plan_id'], assignment['task_id'],
                                            worktree_key=assignment['worktree_key'], **options)
         else:
             reservation = delivery.reserve_builder(command, stage=assignment['stage'], **options)
         return {**result, 'reserved': True, 'job_id': reservation['job_id'], 'role': 'build',
-                'builder_stage': assignment.get('stage'), 'delegation_key': assignment.get('key')}
+                'builder_stage': assignment.get('stage'), 'task_id': assignment.get('task_id'), 'task_key': assignment.get('key')}
 
     def cycle(self, *, after=None, limit=50):
         # Default scans remember their page across turns and controller restarts.

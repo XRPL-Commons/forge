@@ -49,7 +49,15 @@ def pending_mandatory(db, unit_id):
 
 
 def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recovery_job_id=None, *, diagnostic=True):
-    gates = applicable_gates(db, unit, member_id, candidate_id)
+    pins = db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (failed_job_id,)).fetchall()
+    if not pins:
+        raise TransitionError('recovery requires the complete original assignment scope')
+    gates, seen = [], set()
+    for pin in pins:
+        for gate in applicable_gates(db, unit, pin['member_id'], candidate_id, job_id=recovery_job_id or failed_job_id):
+            identity = (gate['id'], gate['code'], gate.get('member_id'), gate.get('job_id'), gate['details_json'])
+            if identity not in seen:
+                seen.add(identity); gates.append(gate)
     blocked = []
     for gate in gates:
         details = json.loads(gate['details_json'])
@@ -75,12 +83,13 @@ def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recove
 def execution_gates(db, unit, job):
     """The runner and reservation share the exact recovery gate exception."""
     if job['role'] != 'recovery':
-        return applicable_gates(db, unit, job['member_id'], job['candidate_id'])
+        from .task_inputs import task_execution_gates_in
+        return task_execution_gates_in(db, unit, job)
     assignment = db.execute('SELECT failed_job_id FROM recovery_assignments WHERE job_id=?', (job['id'],)).fetchone()
     if assignment is None:
         # An imported recovery without the typed authority cannot run.
         return [{'code': 'legacy_reconciliation'}]
-    return recovery_gates(db, unit, assignment[0], job['member_id'], job['candidate_id'])
+    return recovery_gates(db, unit, assignment[0], job['member_id'], job['candidate_id'], job['id'])
 
 
 def _findings(value, incomplete):
@@ -153,8 +162,9 @@ class Recovery(Executions):
                 raise TransitionError('recovery requires an uninvestigated cleaned confirmed failure')
             if db.execute('SELECT 1 FROM recovery_assignments WHERE failed_job_id=?', (failed_job_id,)).fetchone():
                 raise TransitionError('failed assignment already has its investigation')
-            if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0 AND (member_id IS NULL OR member_id IS ? OR ? IS NULL)', (unit['id'],failed['member_id'],failed['member_id'])).fetchone():
-                raise TransitionError('prior workers require verified cleanup')
+            # The failed physical execution is already cleaned above. Its
+            # diagnostic reader does not wait for unrelated task processes,
+            # including independent contributions to the same issue.
             gates = db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND code='recovery_pending' AND resolved_at IS NULL", (unit['id'],)).fetchall()
             if not any(json.loads(row[0]).get('job_id') == failed_job_id for row in gates):
                 raise TransitionError('failed assignment no longer awaits recovery')
@@ -167,6 +177,11 @@ class Recovery(Executions):
                                            _json(manifest), unit['budget_generation'], self.clock()))
             db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,candidate_id,role,phase,created_at) VALUES(?,?,?,?,?,'recovery','reserved',?)",
                        (job_id, unit['id'], attempt_id, failed['member_id'], unit['current_candidate_id'], self.clock()))
+            pins = db.execute('SELECT member_id,requirements_revision_id FROM job_members WHERE job_id=?', (failed_job_id,)).fetchall()
+            if not pins:
+                raise TransitionError('recovery requires the complete original assignment scope')
+            db.executemany('INSERT INTO job_members(job_id,member_id,requirements_revision_id) VALUES(?,?,?)',
+                           [(job_id, pin['member_id'], pin['requirements_revision_id']) for pin in pins])
             db.execute('INSERT INTO job_leases(slot,job_id,execution_fence,acquired_at) VALUES(?,?,?,?)', (slot, job_id, execution_fence, self.clock()))
             db.execute('INSERT INTO recovery_assignments VALUES(?,?,?,?)', (job_id, failed_job_id, failed['attempt_id'], self.clock()))
             insert_launch(db, job_id, slot, execution_fence, payload['launch'], self.clock())
@@ -218,14 +233,21 @@ class Recovery(Executions):
             concrete = bool(alternative and findings['evidence'] and change not in prior and not cosmetic
                             and not findings['incomplete'] and not findings['uncertainty'].strip())
             if (repeated or uncertain) and not concrete:
-                if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='approach_required' AND resolved_at IS NULL", (unit['id'],)).fetchone():
-                    self._open_gate(db, command, 'approach_required', {'failed_job_id': failed['id'], 'reason': 'different_approach_required'}, job['member_id'])
+                task = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?', (failed['id'],)).fetchone()
+                scopes = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (failed['id'],))]
+                          if task else [failed['member_id']])
+                if not scopes:
+                    raise TransitionError('a task investigation requires its complete failed scope')
+                for scope in scopes:
+                    if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='approach_required' AND member_id IS ? AND resolved_at IS NULL", (unit['id'], scope)).fetchone():
+                        self._open_gate(db, command, 'approach_required', {'failed_job_id': failed['id'], 'reason': 'different_approach_required'}, scope)
                 approach = True
             if not approach and alternative and not findings['incomplete']:
                 db.execute('INSERT INTO unit_context(unit_id,retry_plan_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET retry_plan_json=excluded.retry_plan_json',
                            (unit['id'], _json(alternative)))
-            if failed['member_id']:
-                db.execute("UPDATE unit_issues SET state='pending' WHERE id=? AND state='failed'", (failed['member_id'],))
+            db.execute("UPDATE unit_issues SET state='pending' WHERE state='failed' AND EXISTS("
+                'SELECT 1 FROM job_members p WHERE p.job_id=? AND p.member_id=unit_issues.id '
+                'AND p.requirements_revision_id=unit_issues.requirements_revision_id)', (failed['id'],))
         from .migration_recovery import advance_in
         advance_in(self,db,command,unit)
         return {'accepted': current, 'investigated_job_id': failed['id'], 'approach_required': approach}
@@ -259,7 +281,7 @@ class Recovery(Executions):
             if recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
                 return {**self._finish(db, command, unit, job, failed, True, findings), 'corrected': False}
             owner = db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(failed['id'],)).fetchone()
-            child = db.execute('SELECT 1 FROM job_delegations WHERE job_id=?',(failed['id'],)).fetchone()
+            child = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?',(failed['id'],)).fetchone()
             expected_phase = 'integrating' if owner else 'building'
             if (failed['role'] != 'build' or child or (owner and owner['stage'] != 'integration')
                     or unit['current_candidate_id'] is not None or unit['state'] != expected_phase):

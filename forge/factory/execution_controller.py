@@ -90,7 +90,8 @@ class ExecutionController:
                     job = self._progress(job, 'starting', current['id'])
                 if current and current['status'] == 'created' and self._can_launch(job):
                     # Token exists only in memory and the runner's private IPC.
-                    restricted = job.get('delegation') is not None or job.get('builder_stage') == 'planning'
+                    from .delegation_contracts import read_only_build
+                    restricted = read_only_build(job)
                     token = self.github.token(job['role'], job['repo_id'], worker=True, **({'read_only': True} if restricted else {}))
                     job = self.queries.job(job_id)
                     if self._can_launch(job):
@@ -108,7 +109,7 @@ class ExecutionController:
                 if self._can_launch(job) and current and current['status'] != 'created':
                     job = self._progress(job, 'running', current['id'])
 
-        current = runner.inspect(job)
+        current = runner.inspect(job, resources=True)
         self.commands.observe(job_id, execution_fence=job['execution_fence'], observation=current)
         finished = current is None or current['status'] in {'exited', 'dead'}
         deadline = self.clock() >= job['deadline']

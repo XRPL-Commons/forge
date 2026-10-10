@@ -24,41 +24,66 @@ Exact approved non-target PRs permit read admission while they remain at that
 head; this grants no publication rights. Changed heads or authors require a new
 composition decision. Composition never closes or supersedes another GitHub PR.
 
-## One builder, separate executions
+## One builder, separate execution tasks
 
-`unit_builders` records stable logical ownership. Actual processes still use
-ordinary jobs, attempts and leases:
+An approved delivery defines which issues one PR must resolve. Its builder
+chooses how to do that work. A task may cover several issues, several tasks may
+contribute to one issue, and the builder may implement work itself. Task choices
+stay within the approved members, policy, failure budget and publication target;
+they require no new human approval.
 
-1. `reserve_builder(stage='planning')` reserves one unit-wide execution. Its
-   input includes exact member pins, dependency graph, approved existing heads,
-   publication target, accepted outputs and remaining members.
-2. `save_plan` validates a bounded plan containing exactly one child for every
-   remaining member. Each child has a stable plan key, scope and the exact
-   approved direct prerequisite members. A malformed worker plan raises
-   `InvalidDelegationPlan`; its controller records one genuine failed attempt.
-3. Cleanup releases the planning process's provider and capacity leases. The
-   logical builder remains the owner while children run.
-4. `delegate` reserves an ordinary member-scoped job in a unique isolated
-   worktree. Independent members can run concurrently. Each child pins the
-   exact accepted prerequisite outputs, including commit and manifest hashes.
-5. `accept_part` requires verified commit/base evidence and a retained captured
-   worktree bundle. Bundle chunk continuity, total size and capture digest are
-   checked in the transaction; the controller verifies Git objects and ancestry
-   before invoking the command. Children cannot publish candidates.
-6. Once every current output is accepted and every child is cleaned,
-   `reserve_builder(stage='integration')` starts another execution under the
-   same builder identity. Its manifest pins all accepted outputs. Only this
-   execution can publish the combined candidate to the approved target.
-7. Existing unit-wide Review and Audit each assess that exact candidate once.
-   Late-publication recovery may adopt an independently verified publication
-   only from an integration assignment whose full input is still current.
+`unit_builders` records stable logical ownership. Every physical execution uses
+ordinary jobs, attempts, isolated worktrees and leases:
 
-`DeliveryQueries.assignments` is the scheduler's shared source for planning,
-ready children, integration or a pending reason. Its `allowed_members` input
-filters freshly eligible child IDs before the bounded result page is selected. `tree` supplies bounded job
-history using a job-ID cursor. `job_members` is the uniform immutable scope for
-all jobs, including Review, Audit and Recovery; migration 22 preserves original
-launch requirement pins and retires the scalar launch column.
+1. A planning execution receives every exact member requirement, approved issue
+   dependency, existing PR head, publication target and reusable task output.
+   It returns a bounded version-2 plan with tasks, task dependencies and final
+   owner work. It cannot publish code.
+2. Each task records its own ID, scope, `owner` or `child` executor, member
+   requirement pins and prerequisite tasks. Member scope is many-to-many;
+   `job_members` records the exact scope of every physical assignment.
+3. Planning releases its process and capacity. Ready tasks run within existing
+   provider, environment and capacity policies. Independent tasks can run
+   together even when they contribute to the same issue. An owner task can
+   produce work needed by a later child without holding a coordinator process
+   idle.
+4. Each task receives the exact current prerequisite outputs. Its accepted
+   output requires independently verified Git ancestry and a retained captured
+   bundle. Owner and child tasks have read-only publication credentials.
+5. Final integration waits for every planned output and verified execution
+   cleanup. The same logical builder receives each unique output, performs any
+   remaining owner work, resolves conflicts, and verifies every issue's
+   acceptance criteria. Only integration publishes the one approved PR.
+6. Existing Review and Audit each assess that exact candidate. A task's request
+   for human verification remains attached to its output and must reach the
+   final candidate's verification gates.
+   The integration assignment pins each request by accepted output and durable
+   result digest. Workers and issue detail receive the complete retained steps,
+   reasons and checks; the manifest and candidate gate store references rather
+   than repeating that prose. Any human-only request keeps human verification
+   required. Confirmation preserves the same requests for later review and audit.
+
+The plan can have no tasks if final owner work covers the whole delivery. Work
+needed by a child must be an earlier owner or child task; it cannot be postponed
+until integration. Replanning requires quiescent executions and explicitly
+retains still-current task definitions and output closure. Reusing a task label
+alone never reuses its authority or result.
+
+### Issue dependencies and task dependencies
+
+Approved issue dependencies remain authoritative. For a prerequisite issue with
+two planned contributions, a dependent task consumes both exact outputs. The
+builder may add task dependencies. A task spanning both ends of an approved
+issue dependency must explicitly internalize that ordering in its scope.
+Forge compiles the two graphs and rejects cycles or ambiguous internalization.
+External prerequisites, holds, ownership and environment requirements still
+apply to every issue in the task.
+
+An issue's contribution set is ready only when all its planned contributions are
+current. Accepted integration evidence establishes any remaining owner work.
+This is progress toward the candidate; issue completion still follows Review,
+Audit, required approvals and normal merge. A single successful task never
+stands in for the whole issue.
 
 ## Sharing factory capacity
 
@@ -81,16 +106,18 @@ are still checked before a reservation succeeds.
 
 ## Invalidation, retries and cancellation
 
-An accepted output is current only while its requirements, base, policy and
-exact predecessor outputs remain current. An explicit member drop invalidates
+A task output is current only while all its pinned member requirements, base,
+policy and exact predecessor outputs remain current. Changing one member of a
+shared task invalidates that entire output and its dependent task outputs.
+Disjoint unaffected tasks retain their own authority and output. An explicit member drop invalidates
 that member and its descendants, preserves unrelated outputs and shared charges,
 and requires each direct dependent to explicitly wait on the released issue as
 an external prerequisite. The drop command requires quiescent workers and
 completed mandatory investigations. A batch reduced to one member retains its
 approved builder and publication authority; `delivery_approved` identifies that
 authority independently of current member count. Closed members require a separate closure
-decision. Failed child retries use a new planning assignment; a plan key never
-silently creates another child execution.
+decision. Failed task retries return to owner planning after the existing investigation
+and cleanup requirements. A task key never silently creates another attempt.
 
 Scoped fencing revokes the affected member, its descendants and any unit-wide
 execution while preserving independent child authority. Fencing never releases
@@ -137,28 +164,42 @@ recovery handles a completed push whose original execution did not return.
 
 ## Operator progress
 
-Issue Details offers a lazy **Combined delivery** section. It shows the shared
-failure budget, every current member, accepted outputs and parent/child runs.
-Output remains a separate authenticated read. A shared run lists its immutable
-members explicitly; a child is shown only on its assigned issue. Invalidating a
-review candidate preserves the last selected publication as the builder's
-continuation target, so rework updates the same PR.
+Issue Details offers a lazy **Combined delivery** section. It shows approved
+members and canonical blockers separately from the builder's task plan. Tasks
+show scope, executor, dependencies and current output; runs show the exact
+member scope, attempt result and measured resource evidence. Shared jobs count
+once toward factory capacity, even when they appear on several issue pages.
+Logs remain a separate authenticated read.
 
-Agents can use `forge repo delivery OWNER/REPO NUMBER --server HTTPS_ORIGIN --json`, then pass `--after` with `next_cursor` for another page. This uses the
-existing `repositories:read` grant and exposes no worker credentials, prompts or
-raw output.
+Agents use:
 
-Each member has the same `operator_status` as its issue page, its selected
-`blocker`, and every applicable `gates` entry with code and scope. Accepted output
-is separate progress: it does not hide a hold or another independent blocker.
-`active_job_ids` uses immutable assignment membership and is independent of the
-execution-history page.
+```sh
+forge repo delivery OWNER/REPO NUMBER --server HTTPS_ORIGIN --json
+```
 
-`requirements_revision_id` pins the approved member scope. `output` is the current
-accepted receipt (`output_id`, `member_id`, `commit_oid`, `input_manifest_hash`), or
-null. Each internal `dependencies` entry identifies the prerequisite member and
-issue, with its exact current output receipt or null while pending. The UI links
-those prerequisites and uses the same projection as `forge repo delivery`.
+The version-2 response contains:
+
+- `members[].contributions`: the complete task ID and exact output set for that
+  member, `ready`, `owner_final_pending`, and plan/candidate identity.
+- `members[].dependencies[].contributions`: the same complete prerequisite set;
+  no arbitrary representative output.
+- `plan` and `tasks`: current task definitions and status. `task_next_cursor`
+  continues task paging through `--task-after`. The cursor pins its plan;
+  `delivery_plan_changed` means restart from the first task page.
+- `jobs` and `next_cursor`: physical execution history, paged independently
+  through `--after`. Task runs identify `task_id`, `task_key`, `task_executor`
+  and every assigned member.
+
+Member contribution sets do not change with either history page. A task's
+prerequisite IDs can refer to another task page. `tasks_complete` describes
+whether the current page reaches the end; it does not mean the work is complete.
+The UI returns to the first task page when the builder replaces its plan.
+
+The existing `repositories:read` grant covers these reads. They expose no
+worker credentials, prompts or raw output. Accepted output is separate progress:
+it never hides a hold or another independent blocker. See
+[measured execution resources](execution-resources.md) for sample timing and
+availability limits.
 
 ## Change membership explicitly
 
@@ -195,7 +236,9 @@ singleton budgets; it retains the old delivery history and cannot erase an
 uncertain merge or release an uncleaned worker lease.
 
 
-Stopping a shared builder, Review or Audit run creates a whole-delivery pause.
+Stopping a task pauses its explicitly assigned issue members and fences affected
+tasks and their dependents. Independent tasks keep running. Stopping a planning,
+final integration, Review or Audit run creates a whole-delivery pause.
 Use **Resume delivery** or `forge delivery resume-delivery` with the same inspected
 file and explicit approval to clear that pause after cleanup. This preserves each
 member's own pause, backlog, label hold, environment gate, accepted output and

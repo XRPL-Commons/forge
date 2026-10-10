@@ -10,7 +10,7 @@ import uuid
 from urllib.parse import quote
 
 from ..request_metrics import RequestBudgetExhausted
-from ..store.delivery_inputs import approved_in, dependencies_in
+from ..store.delivery_inputs import approved_in
 from ..store.models import Command, IdempotencyConflict, TransitionError, VersionConflict
 from ..store.queries import Queries
 from ..store.runtime import writable
@@ -65,22 +65,11 @@ class OperatorActions(Lifecycle):
         return {**{key:unit[key] for key in ('membership_generation','fencing_generation','budget_generation','current_candidate_id','state')}, 'members':members}
 
     @staticmethod
-    def _affected(db,unit,member_id):
+    def _cleanup_pending(db,unit,member_id=None):
         if member_id is None:
-            return None
-        affected={member_id}
-        members=Lifecycle._members(db,unit['id'])
-        while True:
-            following={member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
-            if following.issubset(affected):
-                return affected
-            affected.update(following)
-
-    @classmethod
-    def _cleanup_pending(cls,db,unit,member_id=None):
-        affected=cls._affected(db,unit,member_id)
-        return any(affected is None or row['member_id'] is None or row['member_id'] in affected
-                   for row in db.execute('SELECT member_id FROM jobs WHERE unit_id=? AND cleanup=0',(unit['id'],)))
+            return db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0 LIMIT 1', (unit['id'],)).fetchone() is not None
+        from ..store.job_scope import affected_jobs_in
+        return any(not job['cleanup'] for job in affected_jobs_in(db, unit, {member_id})['jobs'])
 
     def _scope_quiet(self,db,unit,member_id):
         if self._cleanup_pending(db,unit,member_id):
@@ -694,16 +683,27 @@ class OperatorActions(Lifecycle):
             raise ValueError('A stop or reset decision and authenticated actor are required')
         identifier=str(uuid.uuid4())
         with self.store.read_snapshot() as db:
-            job=db.execute('SELECT unit_id,member_id,cleanup FROM jobs WHERE id=?',(job_id,)).fetchone()
+            job=db.execute('SELECT unit_id,member_id,cleanup,role FROM jobs WHERE id=?',(job_id,)).fetchone()
             if job is None:raise TransitionError('Unknown execution')
             unit=_unit(db,job['unit_id'])
         command=Command(identifier,self.actor_id,unit['id'],unit['version'])
         def change(db,current):
-            scope=job['member_id'] if approved_in(db,current['id']) else None
-            if current['state'] not in {'merged','closed','dissolved'} and not any(g['code']=='operator_pause' and g['member_id']==scope for g in _gates(db,current['id'])):
-                self._open_gate(db,command,'operator_pause',{'reason':reason.strip(),'job_id':job_id},scope)
-            if scope:self.fence_member_in(db,command,scope,reason='operator_'+action)
-            else:self._fence(db,command)
+            task = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?', (job_id,)).fetchone()
+            if approved_in(db,current['id']) and (task or job['role']=='recovery'):
+                scopes = [row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (job_id,))]
+                if not scopes:
+                    raise TransitionError('Execution has no recorded member scope')
+            elif approved_in(db,current['id']) and job['member_id'] is not None and job['role']=='build':
+                scopes = [job['member_id']]
+            else:
+                scopes = [None]  # Planning, integration, Review and Audit own the full delivery.
+            for scope in scopes:
+                if current['state'] not in {'merged','closed','dissolved'} and not any(g['code']=='operator_pause' and g['member_id']==scope for g in _gates(db,current['id'])):
+                    self._open_gate(db,command,'operator_pause',{'reason':reason.strip(),'job_id':job_id},scope)
+                if scope is not None:
+                    self.fence_member_in(db,command,scope,reason='operator_'+action)
+                else:
+                    self._fence(db,command)
             db.execute("INSERT INTO operator_requests(id,action,target,reason,status,result_json) VALUES(?,?,?,?,'applied',?)",
                 (identifier,action,job_id,reason.strip(),_json({'actor_id':self.actor_id,'fenced':True})))
             return {'job_id':job_id,'fenced':True}

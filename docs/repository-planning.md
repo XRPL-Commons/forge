@@ -91,10 +91,13 @@ its state before work can proceed.
 | Missing App access or unreadable target | `prerequisite_inaccessible` |
 | Reference now points to another identity | `prerequisite_identity_changed` |
 
-Internal group edges use exact accepted member outputs, so an issue does not need
-to close before its dependent child runs. Their readiness is enforced by the
-same delivery graph that pins the child's inputs. Independent children may run
-while another prerequisite remains blocked.
+Internal group edges use the complete set of accepted task contributions for
+each prerequisite issue, so the issue need not close before dependent work runs.
+The builder's task graph pins those exact outputs. A task spanning both sides of
+an approved dependency must explicitly handle that dependency internally;
+cycles are rejected before execution. Independent tasks may run while another
+prerequisite remains blocked. Issue grouping remains an operator decision; task
+allocation does not change the approved membership or publication target.
 
 ### Planning diagnostics
 

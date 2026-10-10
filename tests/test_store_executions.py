@@ -21,7 +21,7 @@ class Engine:
         self.after_create = self.after_start = self.after_reset = None
         self.receipt = {'container_absent': True, 'capacity_ready': True}
 
-    def inspect(self, job):
+    def inspect(self, job, *, resources=False):
         return self.container
 
     def create(self, job):
@@ -120,7 +120,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(views.job(job)['observed_at'], 110.0)
         self.assertEqual(self.view()['version'], version)
         self.now = 150.0
-        self.engine.inspect = lambda job: (_ for _ in ()).throw(OSError('engine unavailable'))
+        self.engine.inspect = lambda job, **kwargs: (_ for _ in ()).throw(OSError('engine unavailable'))
         with self.assertRaises(OSError): self.controller.step(job)
         self.assertEqual(views.job(job)['observed_at'], 110.0, 'unavailable observations must age normally')
 

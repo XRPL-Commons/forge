@@ -45,9 +45,15 @@ def current_output_in(db, unit, member_id, *, base_oid=None, policy_hash=None, v
     return None
 
 
-def member_dependency_problem_in(db, unit, member_id):
-    return any(current_output_in(db, unit, prerequisite) is None
-               for prerequisite in dependencies_in(db, unit, member_id))
+def member_dependency_problem_in(db, unit, member_id, *, contribution_cache=None):
+    from .task_inputs import current_plan_in,member_contributions_in
+    plan=current_plan_in(db,unit['id'])
+    if plan and json.loads(plan['plan_json']).get('version')==2:
+        from .task_inputs import contribution_collection_in
+        cache={} if contribution_cache is None else contribution_cache
+        if unit['id'] not in cache: cache[unit['id']]=contribution_collection_in(db,unit)
+        return any(not cache[unit['id']][prerequisite]['ready'] for prerequisite in dependencies_in(db,unit,member_id))
+    return any(current_output_in(db, unit, prerequisite) is None for prerequisite in dependencies_in(db, unit, member_id))
 
 
 def member_pins_in(db, unit):
@@ -91,3 +97,6 @@ def previous_publication_in(db, unit_id):
     if event['kind'] == 'candidate_selected':
         return dict(db.execute('SELECT * FROM candidates WHERE id=?', (payload['candidate_id'],)).fetchone())
     return {**payload['publication'], 'source_job_id': event['job_id']}
+
+
+from .task_inputs import member_contributions_in

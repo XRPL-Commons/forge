@@ -31,8 +31,10 @@ See [runtime setup](factory-runtime-reference.md) for the exact configuration an
   handoff retained after cleanup. Acceptance pins fresh requirements,
   membership, source PRs and operator decisions before durable effects run.
 - Operator-approved compositions with existing-PR choices, one logical builder,
-  tracked parallel child checkouts, exact retained prerequisite outputs, owner
-  integration and one candidate for independent Review and Audit.
+  tracked owner and child tasks with isolated checkouts, exact retained prerequisite
+  outputs, owner integration and one candidate for independent Review and Audit.
+  Task scope may span issues or split one issue across several tasks; approved
+  delivery membership remains separate from that execution plan.
 - Exact member-scoped holds, environment choices and execution projections.
   Shared failure budgets, fencing and verified cleanup survive rework or changed
   membership; ordinary issue closure cannot silently close a grouped delivery.

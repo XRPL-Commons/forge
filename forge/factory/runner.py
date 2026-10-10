@@ -15,7 +15,6 @@ import time
 import subprocess
 import tarfile
 import hashlib
-from datetime import datetime
 
 from .capacity import observe as observe_capacity, memory_bytes, launch_lock
 from .contracts import assignment_note, identifier, strategist_note, unique
@@ -163,7 +162,7 @@ class ContainerRunner:
     def name(job):
         return 'forge-job-' + identifier(job['id'])
 
-    def inspect(self, job, *, deadline=None):
+    def inspect(self, job, *, deadline=None, resources=False):
         name = self.name(job)
         # Successful inventory distinguishes absence from a dead/inaccessible engine.
         p = self.call(['container', 'ls', '-a', '--no-trunc', '--filter', 'name=^/' + name + '$', '--format', '{{json .}}'], timeout=observation_timeout(deadline, 30))
@@ -180,17 +179,17 @@ class ContainerRunner:
                     or value['Config']['Labels'].get('forge.slot') != job['slot']
                     or (job.get('container_id') and value['Id'] != job['container_id'])):
                 raise ValueError()
-            started = value['State'].get('StartedAt')
-            started_at = None
-            if started and not started.startswith('0001-'):
-                try:
-                    started_at = datetime.fromisoformat(started.replace('Z', '+00:00')).timestamp()
-                except (ValueError, TypeError):
-                    pass
-            return {'id': value['Id'], 'status': value['State']['Status'],
+            from .resource_usage import engine_time, stats
+            current = {'id': value['Id'], 'status': value['State']['Status'],
                     'exit_code': value['State']['ExitCode'], 'running': value['State']['Running'],
                     'oom_killed': value['State'].get('OOMKilled', False),
-                    'started_at': started_at}
+                    'started_at': engine_time(value['State'].get('StartedAt')),
+                    'finished_at': engine_time(value['State'].get('FinishedAt'))}
+            if resources:
+                current['resources'] = (stats(self.config['engine_socket'], current['id'], deadline=deadline)
+                    if current['running'] else dict(checked_at=time.time(), status='unavailable',
+                                                   reason='container_not_running', sample=None))
+            return current
         except (ValueError, KeyError, TypeError, IndexError):
             raise RunnerError('Container ownership or observation is unverified') from None
 
@@ -441,7 +440,7 @@ class ContainerRunner:
             captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace'), secrets)[-65536:]
         except RunnerError:
             captured['missing'].append('runner logs')
-        if job.get('delegation') is not None:
+        if job.get('task') is not None or job.get('delegation') is not None:
             from .delegation_artifacts import MAX_BUNDLE_SIZE
             try:
                 raw = self.call(['cp', current['id'] + ':/work/output.bundle', '-'], max_output=MAX_BUNDLE_SIZE + 65536).stdout

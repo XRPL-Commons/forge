@@ -9,8 +9,14 @@ import unittest
 
 from forge.store.db import Store
 from forge.store.delivery import Delivery, DeliveryQueries
+from forge.store.executions import Executions, Launch
 from forge.store.models import Command, Candidate, TransitionError, VersionConflict, InvalidDelegationPlan
 from forge.store.transitions import Lifecycle, manifest_hash, project_unit
+
+
+def task_plan(tasks, retained=()):
+    return {'version': 2, 'retained_task_ids': list(retained), 'tasks': tasks,
+            'owner_final': {'member_ids': [], 'scope': '', 'internalizes': []}}
 
 
 class DeliveryExecutionTests(unittest.TestCase):
@@ -56,29 +62,30 @@ class DeliveryExecutionTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             from forge.store.delivery_inputs import dependencies_in
             unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
-            children=[dict(key=str(i),member_id=member,scope='Implement member',dependencies=dependencies_in(db,unit,member))
-                      for i,member in enumerate(self.members.values())]
+            keys={member:str(i) for i,member in enumerate(self.members.values())}
+            children=[dict(key=keys[member],executor='child',member_ids=[member],scope='Implement member',
+                depends_on=[keys[predecessor] for predecessor in dependencies_in(db,unit,member)],internalizes=[])
+                      for member in self.members.values()]
         saved=self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='parent-fence',input_manifest=manifest,
-                                      plan={'children':children},evidence={'verified':True})
+                                      plan=task_plan(children),evidence={'verified':True})
         self.clean(parent,'parent-fence')
         return parent,saved,children
 
     def child(self,plan,key):
-        manifest=self.query.child_manifest(plan['plan_id'],key)
-        child=self.delivery.delegate(self.command(),plan['plan_id'],key,slot='child-'+key,execution_fence='fence-'+key,
-            input_manifest=manifest,worktree_key='worktree-'+key)
+        manifest=self.query.task_manifest(plan['plan_id'],plan['task_ids'][key])
+        child=self.delivery.reserve_task(self.command(),plan['plan_id'],plan['task_ids'][key],slot='child-'+key,execution_fence='fence-'+key,
+            input_manifest=manifest,worktree_key='worktree-'+key,launch=Launch('forge/task-'+key,'builder[bot]','codex',1000,{},{}))
         return child,manifest
 
     def accept(self,child,manifest,key):
         commit=('a' if key=='0' else 'b')*40
-        from forge.store.artifacts import Artifacts
         bundle=b'synthetic retained bundle'
         digest=hashlib.sha256(bundle).hexdigest()
-        Artifacts(self.store).put(child['job_id'],'worktree_bundle',bundle)
-        Artifacts(self.store).put(child['job_id'],'worker_capture',json.dumps({'bundle':{'digest':digest,'size':len(bundle),'chunks':1}}).encode())
-        accepted=self.delivery.accept_part(self.command(),child['job_id'],execution_fence='fence-'+key,input_manifest=manifest,
-            commit_oid=commit,evidence={'verified':True,'commit_oid':commit,'base_oid':'base','input_manifest_hash':manifest_hash(manifest),'bundle_digest':digest})
+        Executions(self.store,clock=lambda:100).collect(self.command(),child['job_id'],execution_fence='fence-'+key,
+            capture={'logs':'','worktree_bundle':bundle})
         self.clean(child,'fence-'+key)
+        accepted=self.delivery.accept_task_output(self.command(),child['job_id'],execution_fence='fence-'+key,input_manifest=manifest,
+            commit_oid=commit,evidence={'verified':True,'commit_oid':commit,'base_oid':'base','input_manifest_hash':manifest_hash(manifest),'bundle_digest':digest})
         return accepted
 
     def test_parallel_parts_resume_same_builder_then_one_exact_review_and_audit(self):
@@ -110,15 +117,15 @@ class DeliveryExecutionTests(unittest.TestCase):
 
     def test_dependent_part_pins_exact_predecessor_and_unrelated_part_can_run(self):
         self.compose(3,[{'issue_id':'issue-1','prerequisite_issue_id':'issue-0'}]); parent,plan,children=self.plan()
-        with self.assertRaises(TransitionError): self.query.child_manifest(plan['plan_id'],'1')
+        with self.assertRaises(TransitionError): self.query.task_manifest(plan['plan_id'],plan['task_ids']['1'])
         runnable=self.query.assignments('batch',base_oid='base',policy_hash='policy')['items']
         self.assertEqual({item['key'] for item in runnable},{'0','2'})
         first,manifest=self.child(plan,'0'); accepted=self.accept(first,manifest,'0')
-        next_manifest=self.query.child_manifest(plan['plan_id'],'1')
+        next_manifest=self.query.task_manifest(plan['plan_id'],plan['task_ids']['1'])
         self.assertEqual(next_manifest['prerequisite_outputs'][0]['output_id'],accepted['output_id'])
         wrong={**next_manifest,'prerequisite_outputs':[]}
         with self.assertRaises(TransitionError):
-            self.delivery.delegate(self.command(),plan['plan_id'],'1',slot='wrong',execution_fence='wrong',input_manifest=wrong,worktree_key='wrong')
+            self.delivery.reserve_task(self.command(),plan['plan_id'],plan['task_ids']['1'],slot='wrong',execution_fence='wrong',input_manifest=wrong,worktree_key='wrong')
 
     def test_third_failure_fences_tree_without_fourth_or_parent_propagation_charge(self):
         self.compose(4); parent,plan,children=self.plan()
@@ -138,10 +145,10 @@ class DeliveryExecutionTests(unittest.TestCase):
         current=self.command(); barrier=Barrier(2)
         def reserve(index):
             command=replace(current,request_id='race-'+str(index))
-            manifest=self.query.child_manifest(plan['plan_id'],str(index))
+            manifest=self.query.task_manifest(plan['plan_id'],plan['task_ids'][str(index)])
             barrier.wait()
             try:
-                return self.delivery.delegate(command,plan['plan_id'],str(index),slot='same-slot',execution_fence='race-fence-'+str(index),
+                return self.delivery.reserve_task(command,plan['plan_id'],plan['task_ids'][str(index)],slot='same-slot',execution_fence='race-fence-'+str(index),
                     input_manifest=manifest,worktree_key='race-'+str(index))
             except VersionConflict:
                 return None
@@ -152,7 +159,7 @@ class DeliveryExecutionTests(unittest.TestCase):
     def test_cancelled_child_result_cannot_advance_or_release_its_lease(self):
         self.compose(); parent,plan,children=self.plan(); child,manifest=self.child(plan,'0')
         self.delivery.cancel_builder(self.command(),evidence={'reason':'operator_cancelled'})
-        result=self.delivery.accept_part(self.command(),child['job_id'],execution_fence='fence-0',input_manifest=manifest,
+        result=self.delivery.accept_task_output(self.command(),child['job_id'],execution_fence='fence-0',input_manifest=manifest,
             commit_oid='a'*40,evidence={'verified':True,'commit_oid':'a'*40,'base_oid':'base','input_manifest_hash':manifest_hash(manifest)})
         self.assertFalse(result['accepted'])
         with self.store.read_snapshot() as db:
@@ -163,29 +170,29 @@ class DeliveryExecutionTests(unittest.TestCase):
     def test_plan_commit_replay_and_restart_do_not_duplicate_children(self):
         self.compose(); parent,plan,children=self.plan()
         restarted=Delivery(self.store,clock=lambda:101.0)
-        manifest=self.query.child_manifest(plan['plan_id'],'0')
+        manifest=self.query.task_manifest(plan['plan_id'],plan['task_ids']['0'])
         command=self.command()
         args=dict(slot='child-0',execution_fence='fence-0',input_manifest=manifest,worktree_key='worktree-0')
-        first=restarted.delegate(command,plan['plan_id'],'0',**args)
-        self.assertEqual(restarted.delegate(command,plan['plan_id'],'0',**args),first)
+        first=restarted.reserve_task(command,plan['plan_id'],plan['task_ids']['0'],**args)
+        self.assertEqual(restarted.reserve_task(command,plan['plan_id'],plan['task_ids']['0'],**args),first)
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM job_delegations').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM job_tasks').fetchone()[0],1)
         with self.assertRaises(TransitionError):
-            restarted.delegate(self.command(),plan['plan_id'],'0',**{**args,'slot':'other','execution_fence':'other','worktree_key':'other'})
+            restarted.reserve_task(self.command(),plan['plan_id'],plan['task_ids']['0'],**{**args,'slot':'other','execution_fence':'other','worktree_key':'other'})
 
     def test_failed_transaction_leaves_no_plan_or_result_and_can_retry(self):
         self.compose(); manifest=self.manifest()
         parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='parent',input_manifest=manifest)
         command=self.command()
-        children=[dict(key=str(i),member_id=member,scope='Implement',dependencies=[]) for i,member in enumerate(self.members.values())]
+        children=[dict(key=str(i),executor='child',member_ids=[member],scope='Implement',depends_on=[],internalizes=[]) for i,member in enumerate(self.members.values())]
         from unittest.mock import patch
         with patch.object(self.delivery,'_save',side_effect=RuntimeError('simulated commit interruption')):
             with self.assertRaises(RuntimeError):
-                self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan={'children':children},evidence={'verified':True})
+                self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan=task_plan(children),evidence={'verified':True})
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM delegation_plans').fetchone()[0],0)
             self.assertIsNone(db.execute('SELECT outcome FROM jobs WHERE id=?',(parent['job_id'],)).fetchone()[0])
-        self.assertTrue(self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan={'children':children},evidence={'verified':True})['accepted'])
+        self.assertTrue(self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan=task_plan(children),evidence={'verified':True})['accepted'])
 
     def test_drop_prerequisite_invalidates_descendants_and_preserves_unrelated_outputs(self):
         self.compose(3,[{'issue_id':'issue-1','prerequisite_issue_id':'issue-0'}]); parent,plan,children=self.plan()
@@ -197,7 +204,9 @@ class DeliveryExecutionTests(unittest.TestCase):
         result=self.delivery.drop_member(self.command(),removed,membership_generation=1,
             dependent_decisions={dependent:'wait_external'},evidence={'approved':True})
         tree=self.query.tree('batch')
-        self.assertEqual([output['member_id'] for output in tree['outputs']],[independent])
+        self.assertEqual(tree['outputs'],[])
+        reusable=self.manifest()['available_tasks']
+        self.assertEqual([pin['member_id'] for task in reusable if task['output'] for pin in task['members']],[independent])
         self.assertIsNotNone(result['released']['unit_id'])
         self.assertEqual(next(member for member in tree['members'] if member['id']==dependent)['current_blocker']['code'],'dependency')
 
@@ -292,6 +301,14 @@ class DeliveryExecutionTests(unittest.TestCase):
         self.delivery.drop_member(self.command(),self.members['issue-0'],membership_generation=1,
             dependent_decisions={},evidence={'approved':True})
         assignment=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
+        self.assertEqual(assignment['stage'],'planning')
+        retained=[task['id'] for task in assignment['input_manifest']['available_tasks']]
+        self.assertEqual(retained,[plan['task_ids']['1']])
+        replanning=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='owner-replan',input_manifest=assignment['input_manifest'])
+        self.delivery.save_plan(self.command(),replanning['job_id'],execution_fence='owner-replan',input_manifest=assignment['input_manifest'],
+            plan=task_plan([],retained),evidence={'verified':True})
+        self.clean(replanning,'owner-replan')
+        assignment=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
         self.assertEqual(assignment['stage'],'integration')
         owner=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='owner-resumed',
             input_manifest=assignment['input_manifest'])
@@ -305,8 +322,8 @@ class DeliveryExecutionTests(unittest.TestCase):
         self.assertEqual(len(result['members']),101)
         parent,plan,children=self.plan()
         last=children[-1]
-        assignments=self.query.assignments('batch',base_oid='base',policy_hash='policy',limit=1,allowed_members={last['member_id']})
-        self.assertEqual([item['member_id'] for item in assignments['items']],[last['member_id']])
+        assignments=self.query.assignments('batch',base_oid='base',policy_hash='policy',limit=1,allowed_members=set(last['member_ids']))
+        self.assertEqual([item['member_ids'] for item in assignments['items']],[last['member_ids']])
 
     def test_replan_on_new_base_selects_predecessor_before_stale_output_dependents(self):
         self.compose(3,[{'issue_id':'issue-1','prerequisite_issue_id':'issue-0'}])
@@ -315,8 +332,8 @@ class DeliveryExecutionTests(unittest.TestCase):
         fresh=self.query.builder_manifest('batch','planning',base_oid='new-base',policy_hash='policy')
         parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='new-parent',input_manifest=fresh)
         self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='new-parent',input_manifest=fresh,
-                                plan={'children':children},evidence={'verified':True})
+                                plan=task_plan(children),evidence={'verified':True})
         self.clean(parent,'new-parent')
         choices=self.query.assignments('batch',base_oid='new-base',policy_hash='policy')['items']
-        self.assertEqual({choice['member_id'] for choice in choices},{self.members['issue-0'],self.members['issue-2']})
+        self.assertEqual({member for choice in choices for member in choice['member_ids']},{self.members['issue-0'],self.members['issue-2']})
         self.assertTrue(all(choice['input_manifest']['base_oid']=='new-base' for choice in choices))

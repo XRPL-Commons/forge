@@ -254,3 +254,81 @@ class MemberOperatorTests(unittest.TestCase):
             self.assertEqual(edges,{('issue-1','issue-0'),('issue-2','issue-1')})
             for item in result['released']:
                 self.assertEqual(db.execute('SELECT budget_generation FROM units WHERE id=?',(item['unit_id'],)).fetchone()[0],1)
+
+    def task_plan(self, tasks):
+        from tests.test_task_topology import TaskTopologyTests
+        self.fixture=self
+        return TaskTopologyTests.plan(self,tasks)
+
+    def task(self, plan, key):
+        from tests.test_task_topology import TaskTopologyTests
+        return TaskTopologyTests.reserve(self,plan,key)
+
+    def task_output(self, job, manifest, key):
+        from tests.test_task_topology import TaskTopologyTests
+        return TaskTopologyTests.accept(self,job,manifest,key)
+
+    def test_stop_joint_task_pauses_exact_members_and_preserves_independent_task(self):
+        self.setup_actions(3)
+        a,b,c=self.members.values()
+        plan=self.task_plan([('joint','owner',[a,b],[],[]),('independent','child',[c],[],[])])
+        joint,_=self.task(plan,'joint'); independent,_=self.task(plan,'independent')
+        self.actions.stop_job(joint['job_id'],'Pause joint task')
+        jobs=self.jobs()
+        self.assertEqual(jobs[joint['job_id']]['fenced'],1)
+        self.assertEqual(jobs[independent['job_id']]['fenced'],0)
+        with self.store.read_snapshot() as db:
+            self.assertEqual({row[0] for row in db.execute("SELECT member_id FROM unit_gates WHERE code='operator_pause' AND resolved_at IS NULL")},{a,b})
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+
+    def test_resume_waits_for_task_only_descendant_cleanup_not_independent_worker(self):
+        self.setup_actions(3)
+        a,b,c=self.members.values()
+        plan=self.task_plan([('source','child',[a],[],[]),('dependent','child',[b],['source'],[]),('independent','child',[c],[],[])])
+        source,inputs=self.task(plan,'source'); self.task_output(source,inputs,'source')
+        dependent,_=self.task(plan,'dependent'); independent,_=self.task(plan,'independent')
+        self.actions.step(self.request('issue-0','pause'))
+        with self.assertRaisesRegex(TransitionError,'not available'):
+            self.request('issue-0','resume')
+        self.assertEqual(self.jobs()[dependent['job_id']]['fenced'],1)
+        self.assertEqual(self.jobs()[independent['job_id']]['fenced'],0)
+        self.clean(dependent,'dependent')
+        resume=self.request('issue-0','resume')
+        self.assertTrue(self.actions.step(resume)['applied'])
+        self.assertEqual(self.jobs()[independent['job_id']]['cleanup'],0)
+
+    def test_stop_planning_run_retains_whole_delivery_pause(self):
+        self.compose(2)
+        self.remote=Remote(2)
+        self.actions=OperatorActions(self.store,self.remote,actor_id='github:42',config=validate({}),clock=lambda:100)
+        parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='owner',input_manifest=self.manifest())
+        self.actions.stop_job(parent['job_id'],'Pause delivery planning')
+        with self.store.read_snapshot() as db:
+            self.assertEqual([row[0] for row in db.execute("SELECT member_id FROM unit_gates WHERE code='operator_pause' AND resolved_at IS NULL")],[None])
+            self.assertEqual(db.execute('SELECT fenced FROM jobs WHERE id=?',(parent['job_id'],)).fetchone()[0],1)
+
+    def test_triage_effect_waits_exact_task_descendants_then_ignores_independent_cleanup(self):
+        from forge.store.repository_planning import RepositoryPlanning
+        from forge.factory.triage_effects import TriageEffects
+        self.setup_actions(3)
+        a,b,c=self.members.values()
+        plan=self.task_plan([('source','child',[a],[],[]),('dependent','child',[b],['source'],[]),('independent','child',[c],[],[])])
+        source,inputs=self.task(plan,'source'); self.task_output(source,inputs,'source')
+        dependent,_=self.task(plan,'dependent'); independent,_=self.task(plan,'independent')
+        planning=RepositoryPlanning(self.store,clock=lambda:100)
+        planning.begin(1,proposal_id='triage',base_branch='main',request_id='begin-triage',actor_id='planner')
+        rows=[dict(action='park' if n==0 else 'keep',members=['issue-'+str(n)],reason='Operator should pause this scope' if n==0 else 'Continue independently',rule_quote=None,parameters={'add':[]} if n==0 else {}) for n in range(3)]
+        planning.publish('triage',expected_version=1,rows=rows,rationale='Review pause request',request_id='publish-triage',actor_id='planner')
+        rows=planning.proposal('triage')['rows']
+        accepted=planning.accept('triage',expected_version=2,accept_rows=[row['id'] for row in rows],reject_rows=[],request_id='accept-triage',actor_id='operator',config=validate({}))
+        effect=accepted['effects'][0]
+        effects=TriageEffects(self.store,self.remote,config=validate({}),clock=lambda:100)
+        self.assertEqual(effects.step(effect)['reason'],'cleanup')
+        self.assertEqual(self.remote.calls,[])
+        self.assertEqual(self.jobs()[dependent['job_id']]['fenced'],1)
+        self.assertEqual(self.jobs()[independent['job_id']]['fenced'],0)
+        self.clean(dependent,'dependent')
+        self.assertEqual(effects.step(effect)['status'],'confirmed')
+        self.assertTrue(self.remote.calls)
+        self.assertEqual(self.jobs()[independent['job_id']]['cleanup'],0)

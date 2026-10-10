@@ -136,6 +136,26 @@ def strategist_properties():
     }
 
 
+def plan_schema(version):
+    def object_schema(properties):
+        return {'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}
+    strings = {'type': 'array', 'items': {'type': 'string'}}
+    key = {'type': 'string', 'pattern': '^[a-z][a-z0-9_-]{0,63}$'}
+    scope = {'type': 'string', 'minLength': 1}
+    if version == 1:
+        return object_schema({'children': {'type': 'array', 'items': object_schema({
+            'key': key, 'member_id': {'type': 'string'}, 'scope': scope, 'dependencies': strings})}})
+    if version != 2:
+        raise ValueError('Unsupported managed assignment manifest version')
+    edges = {'type': 'array', 'items': object_schema({
+        'prerequisite_member_id': {'type': 'string'}, 'member_id': {'type': 'string'}})}
+    task = object_schema({'key': key, 'executor': {'type': 'string', 'enum': ['owner', 'child']},
+        'member_ids': strings, 'scope': scope, 'depends_on': strings, 'internalizes': edges})
+    return object_schema({'version': {'type': 'integer', 'enum': [2]}, 'retained_task_ids': strings,
+        'tasks': {'type': 'array', 'items': task}, 'owner_final': object_schema({
+            'member_ids': strings, 'scope': {'type': 'string'}, 'internalizes': edges})})
+
+
 def schema(note):
     props = {'version': {'type': 'integer', 'enum': [1]},
              'attempt': {'type': 'string', 'enum': [note['id']]},
@@ -162,17 +182,13 @@ def schema(note):
         props['outcome']['enum'].extend(['needs_decision', 'waiting_on_issues'])
         props['outcome']['description'] = ('Use waiting_on_issues for open prerequisite issues, not needs_decision '
                                           'or blocked_environment. dependency_access is for registry, repository or network access failures.')
-    if note.get('builder_stage') or note.get('delegation'):
-        child = {'type': 'object', 'properties': {
-            'key': {'type': 'string', 'pattern': '^[a-z][a-z0-9_-]{0,63}$'},
-            'member_id': {'type': 'string'}, 'scope': {'type': 'string', 'minLength': 1},
-            'dependencies': {'type': 'array', 'items': {'type': 'string'}}},
-            'required': ['key', 'member_id', 'scope', 'dependencies'], 'additionalProperties': False}
-        props['delegation_plan'] = {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
-            'children': {'type': 'array', 'items': child}}, 'required': ['children'], 'additionalProperties': False}]}
+    if note.get('builder_stage') or note.get('delegation') or note.get('task'):
+        props['delegation_plan'] = {'anyOf': [{'type': 'null'},
+            plan_schema(note.get('input_manifest', {}).get('manifest_version', 1))]}
         props['output_commit'] = {'type': ['string', 'null']}
         if note.get('builder_stage') == 'planning':
-            props['outcome']['enum'].append('delegate')
+            from .delegation_contracts import PLANNING_OUTCOMES
+            props['outcome']['enum'] = list(PLANNING_OUTCOMES)
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 
@@ -247,7 +263,7 @@ def main():
         git('-C', str(directory), 'fetch', bundle, 'HEAD')
         actual = git('-C', str(directory), 'rev-parse', 'FETCH_HEAD').stdout.strip()
         if actual != output['commit_oid']:
-            raise PreparationError('Child output does not match the assigned revision')
+            raise PreparationError('Task output does not match the assigned revision')
     if note['role'] == 'recovery':
         existing = note['failure']['input_manifest'].get('existing_candidates', [])
     else:
@@ -268,7 +284,7 @@ def main():
     env.update(prepare_environment(directory, (note.get('environment') or {}).get('services', [])))
     registry = runpy.run_path('/opt/forge/harnesses/registry.py')
     code = registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
-    if note.get('delegation') and Path('/work/result.json').is_file():
+    if (note.get('task') or note.get('delegation')) and Path('/work/result.json').is_file():
         # Export belongs to the completed implementation, not environment setup.
         # A bad claimed commit must charge a failed attempt rather than pause for
         # infrastructure that was already ready enough to run the provider.
@@ -282,12 +298,12 @@ def export_child(note, directory, inputs, git, *, result_path=Path('/work/result
         report = json.loads(result_path.read_text())
     except (ValueError, OSError):
         return False  # Controller classifies the retained malformed result.
-    if not isinstance(report, dict) or report.get('outcome') != 'pass':
+    if not isinstance(report, dict) or report.get('outcome') not in {'pass', 'needs_human_verification'}:
         return True
     try:
         head = git('-C', str(directory), 'rev-parse', 'HEAD').stdout.strip()
         if report.get('output_commit') != head:
-            raise PreparationError('Child result does not name its checkout head')
+            raise PreparationError('Task result does not name its checkout head')
         base = note['input_manifest']['base_oid']
         git('-C', str(directory), 'merge-base', '--is-ancestor', base, head)
         for output in inputs:
@@ -295,8 +311,8 @@ def export_child(note, directory, inputs, git, *, result_path=Path('/work/result
         git('-C', str(directory), 'bundle', 'create', bundle_path, 'HEAD', '^' + base)
     except PreparationError:
         report.update(outcome='unable', output_commit=None,
-                      summary='Child output could not be verified and retained as the assigned commit.',
-                      headline='The child output could not be retained',
+                      summary='Task output could not be verified and retained as the assigned commit.',
+                      headline='The task output could not be retained',
                       plain='The implementation did not produce a verifiable commit containing its assigned inputs.')
         result_path.write_text(json.dumps(report))
         return False

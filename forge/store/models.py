@@ -62,3 +62,7 @@ def complete_requirements(requirements):
     return not (isinstance(requirements, dict) and
                 (requirements.get('body_truncated') or requirements.get('body_unavailable')
                  or requirements.get('complete') is False or 'legacy_body_hash' in requirements))
+
+
+class DeliveryPlanChanged(ValueError):
+    """A task history cursor belongs to a different accepted owner plan."""

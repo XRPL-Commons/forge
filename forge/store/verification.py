@@ -7,6 +7,7 @@ import json
 import math
 
 from .models import TransitionError
+from .verification_requests import gate_details_in
 from .queries import _limit
 from .transitions import Lifecycle, _id, _json, applicable_gates, manifest_hash
 
@@ -26,11 +27,12 @@ def trusted_checks(checks):
 
 
 def worker_receipts_in(db, candidate_id, *, limit=20):
-    """Bounded verified-check context for the assigned candidate, without logs."""
+    """Bounded receipt selection; referenced task requests expand without truncation."""
     if type(limit) is not int or not 1 <= limit <= 20:
         raise ValueError('worker verification history supports one to twenty receipts')
     rows = db.execute(
-        "SELECT e.id,e.kind,e.actor_id,e.observed_at,g.created_at,g.resolved_at,"
+        "SELECT e.id,e.kind,e.actor_id,e.observed_at,g.created_at,g.resolved_at,g.id AS gate_id,"
+        "json_extract(g.details_json,'$.verification_job_id') AS verification_job_id,"
         "substr(json_extract(g.details_json,'$.what'),1,1000) AS what,"
         "substr(json_extract(g.details_json,'$.why'),1,1000) AS why,"
         "substr(json_extract(e.details_json,'$.statement'),1,1000) AS statement,"
@@ -41,7 +43,7 @@ def worker_receipts_in(db, candidate_id, *, limit=20):
         "AND g.candidate_id=e.candidate_id AND g.resolved_at IS NOT NULL AND g.resolution='evidence' "
         "WHERE e.candidate_id=? AND e.kind IN ('verification_ci','verification_human') AND e.verdict='pass' "
         'ORDER BY e.observed_at DESC,e.id DESC LIMIT ?', (candidate_id, limit)).fetchall()
-    receipts = []
+    receipts, bounded_receipts = [], []
     for row in rows:
         checks = json.loads(row['checks_json'] or '[]')[:20]
         ci = [{key: check[key] for key in ('name', 'app_id')} for check in checks]
@@ -55,8 +57,18 @@ def worker_receipts_in(db, candidate_id, *, limit=20):
         receipt = dict(candidate=candidate_id, what=row['what'] or 'Requested candidate verification',
                        why=row['why'] or '', checks=[check['name'] for check in checks], ci=ci,
                        created_at=row['created_at'], verified_at=row['resolved_at'], proof=proof)
-        if len(_json(receipts + [receipt]).encode()) > 60000:
+        if row['verification_job_id'] is not None:
+            receipt['verification_job_id'] = row['verification_job_id']
+        if len(_json(bounded_receipts + [receipt]).encode()) > 60000:
             break
+        bounded_receipts.append(receipt)
+        # The history budget bounds receipts, not the immutable requests they prove.
+        if row['verification_job_id'] is not None:
+            gate = db.execute('SELECT * FROM unit_gates WHERE id=?', (row['gate_id'],)).fetchone()
+            details = gate_details_in(db, gate)
+            receipt = {**receipt, **{key: details[key] for key in ('what', 'why', 'requests')},
+                       'requested_checks': details['checks'],
+                       **({'final_verification': details['final_verification']} if 'final_verification' in details else {})}
         receipts.append(receipt)
     return list(reversed(receipts))
 
@@ -167,6 +179,6 @@ class VerificationQueries:
             from .operator_views import reviewer_request_in
             return dict(gate=dict(gate), unit=unit, unit_state=unit['state'],reviewers_requested=reviewer_request_in(db,candidate['id']),identity=candidate, repo=repository['full_name'], repo_id=repository['id'],
                         **scope,
-                        target_branch=unit['base_branch'], details=json.loads(gate['details_json']),
+                        target_branch=unit['base_branch'], details=gate_details_in(db,gate),
                         candidate=dict(key=candidate['id'], pr=candidate['pull_number'], head=candidate['head_oid'],
                                        base=candidate['base_oid'], branch=candidate['branch']))

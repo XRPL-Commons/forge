@@ -41,8 +41,9 @@ class TriageEffects(Lifecycle):
                 or member['unit_id']!=unit['id'] or member['requirements_revision_id']!=row['requirements_revision_id']
                 or unit['state'] in {'merged','closed','dissolved'}):
             raise TransitionError('Accepted triage authority changed; review a fresh proposal')
-        if db.execute('SELECT 1 FROM jobs j WHERE j.unit_id=? AND j.cleanup=0 AND (j.member_id IS NULL OR EXISTS '
-            '(SELECT 1 FROM triage_effect_members m WHERE m.effect_id=? AND m.member_id=j.member_id)) LIMIT 1',(unit['id'],row['id'])).fetchone():
+        from ..store.job_scope import affected_jobs_in
+        members = {item[0] for item in db.execute('SELECT member_id FROM triage_effect_members WHERE effect_id=?', (row['id'],))}
+        if any(not job['cleanup'] for job in affected_jobs_in(db, unit, members)['jobs']):
             return False
         return True
 

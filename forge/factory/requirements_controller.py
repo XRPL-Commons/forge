@@ -21,6 +21,10 @@ from .memory import confirmed
 from .ownership import ownership
 
 
+class EnvironmentSelectionError(ValueError):
+    """One member's durable environment decision has no runnable choice."""
+
+
 class RuntimeRequirementsController:
     def __init__(self, store, github, *, config, runner=None, clock=time.time):
         self.store, self.github, self.clock = store, github, clock
@@ -71,7 +75,8 @@ class RuntimeRequirementsController:
         result = self.commands.dependencies(self._command(snapshot),
             requirements_revision_id=snapshot['member']['requirements_revision_id'],
             generation=generation, facts=observation['facts'])
-        return result.get('clear', False)
+        return {'dependencies_clear': result.get('clear', False),
+                'external_dependencies_clear': not observation['external_blocked']}
 
     @staticmethod
     def _labels(remote):
@@ -119,7 +124,7 @@ class RuntimeRequirementsController:
                 existing = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL AND json_extract(details_json,'$.source')='runtime_selection'", (snapshot['unit']['id'],snapshot['member']['id'])).fetchone()
             if not existing:
                 self.commands.environment_problem(self._command(snapshot),requirements_revision_id=snapshot['member']['requirements_revision_id'],reason=str(error))
-            raise
+            raise EnvironmentSelectionError(str(error)) from error
         # Include only non-secret environment policy in the durable decision hash.
         config_hash = manifest_hash({key: self.config[key] for key in ('environment_tiers', 'repository_environments', 'memory_tiers')})
         with self.store.read_snapshot() as db:
@@ -142,10 +147,10 @@ class RuntimeRequirementsController:
         if remote.get('state')!='open' or requirements!=snapshot['issue']['requirements'] or not isinstance(requirements,str):
             return {'pending':'issue_reconciliation'}
         remote=self._project(snapshot,remote)
-        clear=self._dependencies(snapshot,remote)
+        readiness=self._dependencies(snapshot,remote)
         snapshot=self._snapshot(snapshot['unit']['id'],snapshot['member']['id'])
         selection=self._environment(snapshot,remote)
-        return {'dependencies_clear':clear,'choice':selection}
+        return {**readiness,'choice':selection}
 
     def observe(self, unit_id):
         with EffectController(self.store,self.github,clock=self.clock)._lock():
@@ -185,8 +190,11 @@ class RuntimeRequirementsController:
         with EffectController(self.store,self.github,clock=self.clock)._lock():
             for scoped in snapshot['members']:
                 member_id=scoped['member']['id']
-                result=self._prepare_member(self._snapshot(snapshot['unit']['id'],member_id))
-                if result and result.get('dependencies_clear'):
+                try:
+                    result=self._prepare_member(self._snapshot(snapshot['unit']['id'],member_id))
+                except EnvironmentSelectionError:
+                    continue  # Its durable member gate does not block independent task scopes.
+                if result and result.get('external_dependencies_clear' if role == 'build' else 'dependencies_clear'):
                     choices[member_id]=result['choice']
             return {'unit_version':self._snapshot(snapshot['unit']['id'])['unit']['version'],'choices':choices}
 

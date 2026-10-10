@@ -463,3 +463,9 @@ the configuration revision, attributed audit record and idempotent operation
 receipt together. Grant revocation is serialized against that effect. Read-only
 connections can inspect policy. Browser Settings and issue details display it;
 neither exposes a policy editor.
+
+### Measured worker resources
+
+The lazy delivery tree exposes timestamped CPU/current-memory samples and verified
+terminal wall duration per physical execution. See [measurement meanings and
+availability](execution-resources.md); configured limits are not measured usage.

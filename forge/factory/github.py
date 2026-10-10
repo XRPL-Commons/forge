@@ -320,6 +320,9 @@ class GitHub:
 
     def publication(self, job, requirements, policy):
         """Search the full bounded inventory and accept one exact contract, not links."""
+        from .delegation_contracts import read_only_build
+        if read_only_build(job):
+            return None
         matches = []
         for pr in self.pulls(job):
             body = pr.get('body') or ''

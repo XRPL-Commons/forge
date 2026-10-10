@@ -294,5 +294,6 @@ class Client:
                 'connection_changed', 'Connect to the current Forge instance again.')
         require(self.request('authorize', target, capability=capability) == {'authorized': True})
 
-    def read(self, target, section='repository', number=None, page=1, *, after=''):
-        return self.request('read', target, section=section, number=number, page=page, **({'after': after} if section == 'delivery' else {}))
+    def read(self, target, section='repository', number=None, page=1, *, after='', task_after=''):
+        return self.request('read', target, section=section, number=number, page=page,
+                            **({'after': after, 'task_after': task_after} if section == 'delivery' else {}))

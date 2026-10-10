@@ -71,6 +71,13 @@ on that read. Captured logs take precedence once the worker has been collected.
 across nested configuration, repository and worker reads in a public projection.
 The outer session closes before returning the response. It neither caches data
 between requests nor allows a mutation through that store during the projection.
+Cached status GETs (`/api/factory`, `/api/issues`, `/api/delivery`) own one physical
+read connection for the request. Authorization rolls back its snapshot before
+cache fingerprinting; projection starts a separate snapshot on that connection.
+Every checkout revalidates the live schema and instance and restores the required
+SQLite settings. Writes and independent nested reads use separate connections.
+The request closes its connection on success or failure; it is never pooled
+between requests. Long polls and authentication callbacks do not use this lease.
 The output projection closes its metadata snapshot before reading a live engine
 tail. A long-poll wait uses autocommit reads and opens the response snapshot only after
 the wait ends, so it does not prevent WAL checkpoint progress.
@@ -120,7 +127,8 @@ in milliseconds; the header contains no repository, issue, user, or token data.
   is returned. It does not replace or hide any projection/cache measurements.
 - `request` runs from GET handler entry through response preparation, including
   authorization. It excludes request parsing, socket transfer, network latency,
-  and UI proxy work, including compression. Nested durations must not be added.
+  UI proxy work (including compression), and final physical connection release
+  after sending the response. Nested durations must not be added.
 
 A cache miss does not establish a cold process: expiration, eviction, changed
 state, and a different query can also cause one. Record cold-process evidence

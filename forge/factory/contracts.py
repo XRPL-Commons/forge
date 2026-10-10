@@ -291,8 +291,13 @@ def result(value, job):
             or any(not isinstance(value[k], str) or not value[k].strip()
                    for k in ('summary', 'headline', 'plain', 'operator_summary') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
-    managed = job.get('builder_stage') is not None or job.get('delegation') is not None
+    from .delegation_contracts import task_assignment
+    managed = job.get('builder_stage') is not None or task_assignment(job)
     if managed:
+        if job.get('builder_stage') == 'planning':
+            from .delegation_contracts import PLANNING_OUTCOMES
+            if value['outcome'] not in PLANNING_OUTCOMES:
+                raise ValueError('Planning can propose work or report a blocker, not complete implementation')
         if 'delegation_plan' not in value or 'output_commit' not in value:
             raise ValueError('Managed build results require delegation fields')
         if value['outcome'] == 'delegate':
@@ -300,11 +305,11 @@ def result(value, job):
                 raise ValueError('Only the owning builder planning run can propose children')
         elif value['delegation_plan'] is not None:
             raise ValueError('Only delegation can carry a child plan')
-        if job.get('delegation') is not None and value['outcome'] == 'pass':
+        if task_assignment(job) and value['outcome'] in {'pass', 'needs_human_verification'}:
             if not isinstance(value['output_commit'], str) or not SHA.fullmatch(value['output_commit']):
-                raise ValueError('A child must name its exact output commit')
+                raise ValueError('A task must name its exact output commit')
         elif value['output_commit'] is not None:
-            raise ValueError('Only a successful child can report an output commit')
+            raise ValueError('Only a successful task can report an output commit')
     elif value['outcome'] == 'delegate' or value.get('delegation_plan') is not None or value.get('output_commit') is not None:
         raise ValueError('Delegation is outside this assignment')
     verification = value.get('verification')
@@ -323,8 +328,10 @@ def result(value, job):
         raise ValueError('Only needs_human_verification can request verification')
     if value['outcome'] == 'waiting_on_issues':
         numbers, evidence = value.get('issues'), value.get('evidence')
+        assigned_numbers = {member['issue_number'] for member in job.get('members', [])}
+        assigned_numbers.add(job.get('issue_number'))
         if (role != 'build' or not isinstance(numbers, list) or not 1 <= len(numbers) <= 20
-                or any(type(n) is not int or n <= 0 or n == job.get('issue_number') for n in numbers)
+                or any(type(n) is not int or n <= 0 or n in assigned_numbers for n in numbers)
                 or len(set(numbers)) != len(numbers)
                 or not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 2000):
             raise ValueError('A dependency wait needs same-repository issue numbers and a requirements quote')
@@ -407,6 +414,8 @@ def assignment_note(job):
     if job.get('members'):
         base['members'] = job['members']
     base['input_manifest'] = job.get('input_manifest', {})
+    if job.get('verification_requests'):
+        base['verification_requests'] = job['verification_requests']
     base['bundle_inputs'] = job.get('bundle_inputs', [])
     base['result_file'] = '/work/result.json'
     if job.get('resume_branch'):
@@ -460,18 +469,19 @@ def assignment_note(job):
         'the command and stops the servers. Run servers and tests in the same tool invocation. '
         'Use MONGODB_URI, DATABASE_URL, REDIS_URL and MONGOMS_SYSTEM_BINARY supplied for those services. '
         'Do not download servers, use Docker, or connect to another job or production database.')
-    base['instructions'] += (
-        ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
-        'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
-        'Do everything else you can verify, then return needs_human_verification with verification containing '
-        'what (exact commands, synthetic inputs and expected result), why (why workers cannot run it), and checks []. '
-        'Builders must publish the candidate using the normal submission procedure before requesting verification. '
-        'If configured verification_checks perform that exact check, name them in checks; Forge verifies their '
-        'publisher and result at this candidate revision. Otherwise leave checks empty for a human check. '
-        'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
-        'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
-        'Never return blocked_environment or reject only because a check needs access outside the worker.')
-    if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation')):
+    if job.get('builder_stage') != 'planning':
+        base['instructions'] += (
+            ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
+            'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
+            'Do everything else you can verify, then return needs_human_verification with verification containing '
+            'what (exact commands, synthetic inputs and expected result), why (why workers cannot run it), and checks []. '
+            'Builders must publish the candidate using the normal submission procedure before requesting verification. '
+            'If configured verification_checks perform that exact check, name them in checks; Forge verifies their '
+            'publisher and result at this candidate revision. Otherwise leave checks empty for a human check. '
+            'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
+            'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
+            'Never return blocked_environment or reject only because a check needs access outside the worker.')
+    if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation') or job.get('task')):
         from .delegation_contracts import assignment
         return assignment(base, job)
     if job['role'] == 'build':

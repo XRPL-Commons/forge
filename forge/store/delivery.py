@@ -12,7 +12,10 @@ from .transitions import Lifecycle, _id, _json, _unit, _gates, _charges, applica
 from .delivery_inputs import approved_in, members_in, member_pins_in, dependencies_in, current_output_in, output_ref, requirements_hash_in, existing_candidates_in, previous_publication_in
 
 
-class Delivery(Lifecycle):
+from .task_commands import TaskCommands
+
+
+class Delivery(TaskCommands, Lifecycle):
     @staticmethod
     def composition_hash(*, repository_id, base_branch, members, dependencies=(), existing_prs=(), rationale, publication_target=None):
         return manifest_hash(dict(repository_id=repository_id, base_branch=base_branch,
@@ -168,6 +171,11 @@ class Delivery(Lifecycle):
 
     @staticmethod
     def _builder_manifest_in(db, unit, stage, base_oid, policy_hash):
+        from .task_inputs import builder_manifest_in
+        return builder_manifest_in(db,unit,stage,base_oid,policy_hash)
+
+    @staticmethod
+    def _builder_manifest_v1_in(db, unit, stage, base_oid, policy_hash):
         if stage not in {'planning','integration'} or not all(isinstance(value,str) and value for value in (base_oid,policy_hash)):
             raise TransitionError('builder input requires a stage and exact base/policy identities')
         manifest = {'membership_generation':unit['membership_generation'], 'members':member_pins_in(db,unit),
@@ -218,7 +226,7 @@ class Delivery(Lifecycle):
                 'policy_hash':parent['policy_hash'],'prerequisite_outputs':prerequisites,
                 'delegation_plan_id':plan['id'],'delegation_key':key,'scope':entry['scope']}
 
-    def _reserve_in(self, db, command, unit, *, slot, execution_fence, input_manifest, member_id=None, launch=None):
+    def _reserve_in(self, db, command, unit, *, slot, execution_fence, input_manifest, member_id=None, launch=None, execution_kind="legacy"):
         if not isinstance(slot,str) or not slot or not isinstance(execution_fence,str) or not execution_fence:
             raise TransitionError('assignment requires a capacity slot and execution fence')
         if _charges(db,unit) >= 3:
@@ -226,7 +234,7 @@ class Delivery(Lifecycle):
         attempt_id,job_id = _id(command.request_id,'attempt'),_id(command.request_id,'job')
         db.execute('INSERT INTO attempts(id,unit_id,member_id,membership_generation,assignment_generation,input_manifest_json,budget_generation,created_at) VALUES(?,?,?,?,?,?,?,?)',
             (attempt_id,unit['id'],member_id,unit['membership_generation'],unit['fencing_generation'],_json(input_manifest),unit['budget_generation'],self.clock()))
-        db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,role,phase,created_at) VALUES(?,?,?,?,'build','reserved',?)", (job_id,unit['id'],attempt_id,member_id,self.clock()))
+        db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,role,phase,created_at,execution_kind) VALUES(?,?,?,?,'build','reserved',?,?)", (job_id,unit['id'],attempt_id,member_id,self.clock(),execution_kind))
         db.execute('INSERT INTO job_leases(slot,job_id,execution_fence,acquired_at) VALUES(?,?,?,?)', (slot,job_id,execution_fence,self.clock()))
         self._event(db,command,'attempt_reserved',{'input_manifest':input_manifest,'member_id':member_id},job_id=job_id)
         return {'job_id':job_id,'attempt_id':attempt_id}
@@ -239,12 +247,14 @@ class Delivery(Lifecycle):
             if not approved_in(db,unit['id']) or not members_in(db,unit['id']) or unit['state'] not in {'queued','building','integrating'}:
                 raise TransitionError('owning builder reservation requires a grouped delivery in code work')
             self._quiescent(db,unit['id'])
-            expected = self._builder_manifest_in(db,unit,stage,input_manifest.get('base_oid'),input_manifest.get('policy_hash'))
+            manifest_reader=self._builder_manifest_in if input_manifest.get('manifest_version')==2 else self._builder_manifest_v1_in
+            expected = manifest_reader(db,unit,stage,input_manifest.get('base_oid'),input_manifest.get('policy_hash'))
             if input_manifest != expected:
                 raise TransitionError('builder manifest differs from current approved membership or outputs')
-            if applicable_gates(db,unit,candidate_id=unit['current_candidate_id']):
+            if any(gate['member_id'] is None for gate in applicable_gates(db,unit,candidate_id=unit['current_candidate_id'])):
                 raise TransitionError('an applicable unit gate blocks the owning builder')
-            if stage == 'integration' and any(applicable_gates(db,unit,member['id'],unit['current_candidate_id']) for member in members_in(db,unit['id'])):
+            from .task_inputs import scoped_task_gates_in
+            if stage == 'integration' and scoped_task_gates_in(db,unit,[member['id'] for member in members_in(db,unit['id'])],candidate_id=unit['current_candidate_id']):
                 raise TransitionError('a member gate blocks combined integration')
             builder = db.execute('SELECT id FROM unit_builders WHERE unit_id=?',(unit['id'],)).fetchone()
             builder_id = builder[0] if builder else _id(command.request_id,'builder')
@@ -262,6 +272,11 @@ class Delivery(Lifecycle):
         return self._apply(command,'reserve_builder',payload,change)
 
     def save_plan(self,command,job_id,*,execution_fence,input_manifest,plan,evidence):
+        if input_manifest.get('manifest_version',1)==2:
+            return self.save_task_plan(command,job_id,execution_fence=execution_fence,input_manifest=input_manifest,plan=plan,evidence=evidence)
+        return self._save_legacy_plan(command,job_id,execution_fence=execution_fence,input_manifest=input_manifest,plan=plan,evidence=evidence)
+
+    def _save_legacy_plan(self,command,job_id,*,execution_fence,input_manifest,plan,evidence):
         payload = dict(job_id=job_id,execution_fence=execution_fence,input_manifest=input_manifest,plan=plan,evidence=evidence)
         def change(db,unit):
             job,current = self._job(db,unit,job_id,execution_fence,input_manifest)
@@ -289,6 +304,8 @@ class Delivery(Lifecycle):
                 raise InvalidDelegationPlan('plan must cover every remaining member exactly once')
             plan_id = _id(command.request_id,'plan')
             db.execute('INSERT INTO delegation_plans VALUES(?,?,?,?,?,?)',(plan_id,owner['builder_id'],job_id,manifest_hash(input_manifest),_json(plan),self.clock()))
+            from .task_legacy import save_legacy_tasks_in
+            save_legacy_tasks_in(db,unit,plan_id,owner['builder_id'],input_manifest,plan,self.clock())
             self._result(db,command,job,{'plan_id':plan_id,'plan':plan,'evidence':evidence},'planned')
             return {'accepted':True,'plan_id':plan_id,'builder_id':owner['builder_id']}
         return self._apply(command,'save_plan',payload,change)
@@ -310,7 +327,8 @@ class Delivery(Lifecycle):
             if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0 AND (member_id IS NULL OR member_id=?)',(unit['id'],entry['member_id'])).fetchone():
                 raise TransitionError('member or owning execution still requires cleanup')
             job = self._reserve_in(db,command,unit,slot=slot,execution_fence=execution_fence,input_manifest=input_manifest,member_id=entry['member_id'],launch=launch)
-            db.execute('INSERT INTO job_delegations VALUES(?,?,?,?)',(job['job_id'],plan_id,delegation_key,worktree_key))
+            task_id=db.execute('SELECT id FROM delivery_tasks WHERE origin_plan_id=? AND task_key=?',(plan_id,delegation_key)).fetchone()[0]
+            db.execute('INSERT INTO job_tasks VALUES(?,?,?,?)',(job['job_id'],plan_id,task_id,worktree_key))
             if launch is not None:
                 from .executions import insert_launch
                 insert_launch(db,job['job_id'],slot,execution_fence,launch.payload(),self.clock())
@@ -351,8 +369,8 @@ class Delivery(Lifecycle):
                     or sum(chunk['raw_size'] for chunk in chunks) != bundle.get('size')):
                 raise TransitionError('accepted output must retain its exact captured worktree bundle')
             output_id = _id(command.request_id,'output')
-            db.execute('INSERT INTO part_outputs VALUES(?,?,?,?,?,?,?,?,?,?)',
-                (output_id,unit['id'],job['member_id'],job['attempt_id'],input_manifest['requirements_revision_id'],unit['membership_generation'],commit_oid,input_manifest['base_oid'],manifest_hash(input_manifest),self.clock()))
+            db.execute('INSERT INTO part_outputs VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (output_id,unit['id'],job['member_id'],job['attempt_id'],input_manifest['requirements_revision_id'],unit['membership_generation'],commit_oid,input_manifest['base_oid'],manifest_hash(input_manifest),self.clock(),db.execute('SELECT task_id FROM job_tasks WHERE job_id=?',(job_id,)).fetchone()[0]))
             self._result(db,command,job,evidence,'success')
             db.execute("UPDATE unit_issues SET state='built' WHERE id=?",(job['member_id'],))
             self._event(db,command,'part_accepted',{'output_id':output_id,'member_id':job['member_id'],'commit_oid':commit_oid},job_id=job_id)
@@ -388,19 +406,24 @@ class Delivery(Lifecycle):
             if not current:
                 self._result(db,command,job,evidence,'stale_success')
                 return {'accepted':False}
-            expected = self._builder_manifest_in(db,unit,'integration',input_manifest['base_oid'],input_manifest['policy_hash'])
+            manifest_reader=self._builder_manifest_in if input_manifest.get('manifest_version')==2 else self._builder_manifest_v1_in
+            expected = manifest_reader(db,unit,'integration',input_manifest['base_oid'],input_manifest['policy_hash'])
             if input_manifest != expected or unit['state'] != 'integrating':
                 raise TransitionError('combined candidate inputs are no longer current')
             if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND id!=? AND cleanup=0',(unit['id'],job_id)).fetchone():
                 raise TransitionError('all children must be cleaned before combined publication')
             if any(g['code'] not in {'result_pending','cleanup_pending'} or json.loads(g['details_json']).get('job_id') != job_id
-                   for g in applicable_gates(db,unit,candidate_id=unit['current_candidate_id'])):
+                   for g in self._integration_gates(db,unit,job_id)):
                 raise TransitionError('a gate blocks combined publication')
             if (candidate.requirements_hash != expected['requirements_hash'] or candidate.input_manifest_hash != manifest_hash(expected)
                     or candidate.base_oid != expected['base_oid'] or candidate.policy_hash != expected['policy_hash']
                     or not isinstance(evidence,dict) or evidence.get('verified') is not True
                     or any(evidence.get(key) != getattr(candidate,key) for key in ('pull_number','head_oid','base_oid'))):
                 raise TransitionError('publication must independently verify the exact integrated candidate')
+            if expected.get('verification_requests') and not any(
+                    gate['code'] in {'verification_human','verification_ci'}
+                    and gate['details'].get('verification_job_id') == job_id for gate in gates):
+                raise TransitionError('integrated candidate must retain task verification requirements')
             self._publication_target_in(expected,candidate)
             candidate_id = _id(command.request_id,'candidate')
             db.execute('INSERT INTO candidates(id,unit_id,pull_number,branch,head_oid,base_oid,policy_hash,requirements_hash,membership_generation,input_manifest_hash,accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
@@ -413,6 +436,11 @@ class Delivery(Lifecycle):
             self._event(db,command,'candidate_selected',{'candidate_id':candidate_id,'builder_id':owner['builder_id']},job_id=job_id)
             return {'accepted':True,'candidate_id':candidate_id,'phase':'reviewing'}
         return self._apply(command,'publish_candidate',payload,change)
+
+    @staticmethod
+    def _integration_gates(db,unit,job_id):
+        from .task_inputs import scoped_task_gates_in
+        return scoped_task_gates_in(db,unit,[m['id'] for m in members_in(db,unit['id'])],job_id=job_id,candidate_id=unit['current_candidate_id'])
 
     def cancel_builder(self,command,*,evidence):
         if not isinstance(evidence,dict) or not evidence:
@@ -473,9 +501,11 @@ class Delivery(Lifecycle):
         for gate in _gates(db,unit['id']):
             if gate['member_id']==member_id or gate['candidate_id'] is not None:
                 self._resolve(db,command,gate['id'],{'dropped_member_id':member_id},resolution='superseded')
-        for affected_id in affected:
+        from .task_inputs import affected_tasks_in
+        for task_id in affected_tasks_in(db,unit['id'],affected):
             db.execute('INSERT OR IGNORE INTO part_output_invalidations(output_id,reason,evidence_json,created_at) '
-                "SELECT id,'member_dropped',?,? FROM part_outputs WHERE member_id=?",(_json({'member_id':member_id}),self.clock(),affected_id))
+                "SELECT id,'member_dropped',?,? FROM part_outputs WHERE task_id=?",(_json({'member_id':member_id}),self.clock(),task_id))
+        for affected_id in affected:
             db.execute("UPDATE unit_issues SET state='pending' WHERE id=?",(affected_id,))
         for dependent in direct:
             member=next(member for member in members if member['id']==dependent)
@@ -522,84 +552,36 @@ class DeliveryQueries:
             unit = _unit(db,row[0])
             return Delivery._child_manifest_in(db,unit,Delivery._plan_in(db,unit,plan_id),key)
 
+    def task_manifest(self,plan_id,task_id):
+        from .task_inputs import task_manifest_in,current_plan_in
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT b.unit_id FROM delegation_plans p JOIN unit_builders b ON b.id=p.builder_id WHERE p.id=?',(plan_id,)).fetchone()
+            if row is None: raise KeyError(plan_id)
+            unit=_unit(db,row[0]); plan=current_plan_in(db,unit['id'])
+            if not plan or plan['id']!=plan_id: raise TransitionError('task plan has changed')
+            return task_manifest_in(db,unit,plan,task_id)
+
     def assignments(self,unit_id,*,base_oid,policy_hash,limit=100,allowed_members=None):
         from .queries import _limit
-        limit = _limit(limit)
+        from .task_queries import assignments_in
+        limit=_limit(limit)
         if allowed_members is not None:
-            if not isinstance(allowed_members,(set,frozenset,list,tuple)) or any(not isinstance(value,str) for value in allowed_members):
+            if not isinstance(allowed_members,(set,frozenset,list,tuple)) or any(not isinstance(x,str) for x in allowed_members):
                 raise ValueError('Allowed members must be explicit member IDs')
-            allowed_members = set(allowed_members)
+            allowed_members=set(allowed_members)
         with self.store.read_snapshot() as db:
-            unit = _unit(db,unit_id)
-            def pending(reason):
-                return {'unit_id':unit_id,'version':unit['version'],'items':[],'pending_reason':reason}
-            if unit['state'] not in {'queued','building','integrating'}:
-                return pending('not_building')
-            members = members_in(db,unit_id)
-            if not approved_in(db,unit_id):
-                return pending('not_approved_composition')
-            if not members:
-                return pending('no_current_members')
-            if _charges(db,unit)>=3:
-                return pending('budget_exhausted')
-            if applicable_gates(db,unit,candidate_id=unit['current_candidate_id']):
-                return pending('unit_blocked')
-            active = [dict(row) for row in db.execute('SELECT id,member_id FROM jobs WHERE unit_id=? AND cleanup=0',(unit_id,))]
-            if any(job['member_id'] is None for job in active):
-                return pending('builder_cleanup_pending')
-            expected = Delivery._builder_manifest_in(db,unit,'planning',base_oid,policy_hash)
-            complete = all(current_output_in(db,unit,m['id'],base_oid=base_oid,policy_hash=policy_hash) for m in members)
-            if complete:
-                if active:
-                    return pending('child_cleanup_pending')
-                if any(applicable_gates(db,unit,m['id']) for m in members):
-                    return pending('member_blocked')
-                return {'unit_id':unit_id,'version':unit['version'],'pending_reason':None,'items':[{
-                    'stage':'integration','input_manifest':Delivery._builder_manifest_in(db,unit,'integration',base_oid,policy_hash)}]}
-            plan = db.execute('SELECT p.*,a.input_manifest_json,a.assignment_generation,a.membership_generation,a.budget_generation,j.cleanup,j.outcome '
-                'FROM delegation_plans p JOIN unit_builders b ON b.id=p.builder_id JOIN jobs j ON j.id=p.parent_job_id '
-                'JOIN attempts a ON a.id=j.attempt_id WHERE b.unit_id=? ORDER BY p.created_at DESC,p.id DESC LIMIT 1',(unit_id,)).fetchone()
-            valid_plan = bool(plan and plan['cleanup'] and plan['outcome']=='planned'
-                and plan['assignment_generation']==unit['fencing_generation'] and plan['membership_generation']==unit['membership_generation']
-                and plan['budget_generation']==unit['budget_generation']
-                and {key:value for key,value in json.loads(plan['input_manifest_json']).items() if key not in {'accepted_outputs','remaining_members'}}
-                    == {key:value for key,value in expected.items() if key not in {'accepted_outputs','remaining_members'}})
-            items,needs_plan = [],not valid_plan
-            if valid_plan:
-                for entry in json.loads(plan['plan_json'])['children']:
-                    if allowed_members is not None and entry['member_id'] not in allowed_members:
-                        continue
-                    if current_output_in(db,unit,entry['member_id'],base_oid=base_oid,policy_hash=policy_hash):
-                        continue
-                    if applicable_gates(db,unit,entry['member_id']):
-                        continue
-                    if any(current_output_in(db,unit,predecessor,base_oid=base_oid,policy_hash=policy_hash) is None
-                           for predecessor in dependencies_in(db,unit,entry['member_id'])):
-                        continue
-                    if any(job['member_id']==entry['member_id'] for job in active):
-                        continue
-                    assigned = db.execute('SELECT 1 FROM job_delegations WHERE plan_id=? AND delegation_key=?',(plan['id'],entry['key'])).fetchone()
-                    if assigned:
-                        needs_plan=True
-                        continue
-                    items.append({'stage':'child','plan_id':plan['id'],'key':entry['key'],'member_id':entry['member_id'],
-                        'worktree_key':_id(plan['id'],'worktree:'+entry['key']),
-                        'input_manifest':Delivery._child_manifest_in(db,unit,dict(plan),entry['key'])})
-            if items:
-                return {'unit_id':unit_id,'version':unit['version'],'items':items[:limit],'pending_reason':None}
-            if not active and needs_plan and any(not applicable_gates(db,unit,m['id']) for m in members):
-                return {'unit_id':unit_id,'version':unit['version'],'items':[{'stage':'planning','input_manifest':expected}],'pending_reason':None}
-            return pending('children_running' if active else 'member_blocked')
+            return assignments_in(db,_unit(db,unit_id),base_oid=base_oid,policy_hash=policy_hash,limit=limit,allowed_members=allowed_members)
 
     def next_assignment(self,unit_id,*,base_oid,policy_hash,allowed_members=None):
         result = self.assignments(unit_id,base_oid=base_oid,policy_hash=policy_hash,limit=1,allowed_members=allowed_members)
         return {key:value for key,value in result.items() if key!='items'} | {'assignment':result['items'][0] if result['items'] else None}
 
-    def tree(self,unit_id,*,after='',limit=100):
+    def tree(self,unit_id,*,after='',limit=100,task_after='',task_limit=50):
         from .queries import _limit
         limit = _limit(limit)
         if not isinstance(after,str):
             raise ValueError('execution tree cursor must be a job ID')
+        task_limit=_limit(task_limit)
         with self.store.read_snapshot() as db:
             unit = project_unit(db,unit_id)
             builder = db.execute('SELECT * FROM unit_builders WHERE unit_id=?',(unit_id,)).fetchone()
@@ -608,7 +590,8 @@ class DeliveryQueries:
                 'FROM jobs j LEFT JOIN builder_assignments a ON a.job_id=j.id '
                 'LEFT JOIN job_delegations d ON d.job_id=j.id LEFT JOIN delegation_plans p ON p.id=d.plan_id '
                 'LEFT JOIN job_leases l ON l.job_id=j.id WHERE j.unit_id=? AND j.id>? ORDER BY j.id LIMIT ?',(unit_id,after,limit+1))]
-            outputs = [output_ref(output) for member in members_in(db,unit_id)
-                       if (output:=current_output_in(db,unit,member['id'])) is not None]
-            return {'unit_id':unit_id,'version':unit['version'],'builder':dict(builder) if builder else None,
+            from .task_queries import task_page_in
+            page=task_page_in(db,unit,task_after=task_after,task_limit=task_limit)
+            outputs=list({ref['output_id']:ref for contribution in page['contributions'].values() for ref in contribution['outputs']}.values())
+            return {**page,'unit_id':unit_id,'version':unit['version'],'builder':dict(builder) if builder else None,
                     'jobs':jobs[:limit],'next_cursor':jobs[limit-1]['id'] if len(jobs)>limit else None,'outputs':outputs,'charged_failures':unit['charged_failures'],'members':unit['members']}

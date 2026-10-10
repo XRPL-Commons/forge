@@ -546,6 +546,20 @@ class H(BaseHTTPRequestHandler):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         u = urlparse(self.path)
+        store = None
+        if u.path in {'/api/factory', '/api/issues', '/api/delivery'}:
+            from forge.store.runtime import selected
+            try:
+                store = selected(WD)
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+                self.send_error(503);return
+        # Keep authorization and projection transactions separate, while the
+        # cached GET owns the physical read connection until its response ends.
+        # Long polls and mutation routes never acquire this lease.
+        with store.read_connection_lease() if store is not None else nullcontext():
+            self._get(u)
+
+    def _get(self, u):
         if not self._operator_guard(read_snapshot=True):
             return
         if self._auth_get(u):
@@ -649,15 +663,18 @@ class H(BaseHTTPRequestHandler):
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Issue inventory is unavailable. Refresh to try again.'}))
         elif u.path == '/api/delivery':
+            from forge.store.models import DeliveryPlanChanged
             try:
                 from forge.factory.control import public_views
                 query = parse_qs(u.query, keep_blank_values=True)
-                if set(query)-{'issue','after'} or 'issue' not in query or any(len(v)!=1 for v in query.values()):
+                if set(query)-{'issue','after','task_after'} or 'issue' not in query or any(len(v)!=1 for v in query.values()):
                     raise ValueError('Expected an issue and optional delivery history cursor')
                 service = public_views(WD)
                 if service is None: raise ValueError('Delivery history requires the active SQLite runtime')
-                self._cached(('delivery',query['issue'][0],query.get('after',[''])[0]),
-                             lambda: service.delivery(query['issue'][0],after=query.get('after',[''])[0]))
+                self._cached(('delivery',query['issue'][0],query.get('after',[''])[0],query.get('task_after',[''])[0]),
+                             lambda: service.delivery(query['issue'][0],after=query.get('after',[''])[0],task_after=query.get('task_after',[''])[0]))
+            except DeliveryPlanChanged:
+                self._send(json.dumps({'ok':False,'reason':'The delivery plan changed. Reload its tasks.'}),status=409)
             except (OSError,ValueError,KeyError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Delivery history is unavailable. Refresh to try again.'}))
         elif u.path == '/api/factory/changes':

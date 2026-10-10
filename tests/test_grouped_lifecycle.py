@@ -18,13 +18,14 @@ class GroupedLifecycleTests(unittest.TestCase):
     command=DeliveryPipelineTests.command
     capture=DeliveryPipelineTests.capture
     child_bundle=DeliveryPipelineTests.child_bundle
+    plan_value=staticmethod(DeliveryPipelineTests.plan_value)
     integrate=DeliveryPipelineTests.integrate
 
     def test_hold_fences_only_affected_child_and_resumes_from_observation(self):
         parent=self.dispatch.step('batch')['job_id']
         planning=self.jobs.job(parent)
-        children=[dict(key='part-'+str(n),member_id=m['member_id'],scope='Implement',dependencies=[]) for n,m in enumerate(planning['members'])]
-        self.capture(parent,outcome='delegate',delegation_plan={'children':children})
+        children=[dict(key='part-'+str(n),executor='child',member_ids=[m['member_id']],scope='Implement',depends_on=[],internalizes=[]) for n,m in enumerate(planning['members'])]
+        self.capture(parent,outcome='delegate',delegation_plan=self.plan_value(children))
         jobs=[self.dispatch.step('batch')['job_id'],self.dispatch.step('batch')['job_id']]
         held_number=self.jobs.job(jobs[0])['issue_number']
         held=[True]

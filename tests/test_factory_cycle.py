@@ -20,7 +20,7 @@ class Engine:
     def create(self, job):
         self.jobs[job['id']] = {'status': 'created', 'running': False, 'result': None}
         return job['id']
-    def inspect(self, job): return self.jobs.get(job['id'])
+    def inspect(self, job, *, resources=False): return self.jobs.get(job['id'])
     def prepare(self, job, token): pass
     def start(self, job): self.jobs[job['id']].update(status='running', running=True)
     def observe(self, job, current=None): return {'logs': 'running output', 'at': 1}

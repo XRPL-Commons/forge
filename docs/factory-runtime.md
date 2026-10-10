@@ -19,10 +19,13 @@ flowchart TD
 ## Workers and slots
 
 **Build** owns implementation and the assigned pull request. For an approved group,
-one logical builder plans tracked children, releases its planning lease, then
-resumes integration after accepted outputs and verified child cleanup. Children
-use separate checkouts and exact prerequisite commits. Independent children and
-separate deliveries share the same role slots, memory and account limits.
+one logical builder plans tracked tasks, releases its planning lease, then
+resumes integration after accepted outputs and verified task cleanup. A task may
+cover several issues, and several tasks may contribute to one issue. The builder
+can execute a prerequisite task itself, delegate it to a child, or keep work for
+final integration. Every task uses an isolated checkout and exact prerequisite
+outputs. Independent tasks and separate deliveries share the same role slots,
+memory and account limits.
 **Review** checks the complete candidate, **Audit** checks security, and
 **Recovery** investigates a failed attempt before the next decision.
 
@@ -48,8 +51,9 @@ flowchart TD
 Repository commands run inside the provider's native sandbox as well as the container boundary. Workers get their own workspace and limited network access; they do not get the host's Docker socket or the Controller credential.
 
 A singleton builder or grouped integration execution receives repository-scoped
-write access. Group planning, child implementations and repository triage receive
-read-only GitHub tokens; children return local Git bundles. Review, Audit and
+write access. Group planning, owner and child tasks, and repository triage receive
+read-only GitHub tokens; tasks return local Git bundles. Only final integration
+can publish the grouped candidate. Review, Audit and
 Recovery also receive read-only access. The supervisor independently checks
 evidence and publishes role verdicts with the appropriate App. Untracked native
 provider delegation is disabled; the supported fallback is Forge-managed children.

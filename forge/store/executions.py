@@ -193,6 +193,9 @@ class Executions(Lifecycle):
                 raise TransitionError('observation does not own the exact leased container')
             db.execute('UPDATE job_execution_state SET container_id=COALESCE(container_id,?),observed_at=?,observed_status=?,started_at=COALESCE(?,started_at) WHERE job_id=?',
                        (container, self.clock(), status, started, job_id))
+            if observation is not None:
+                from .resource_usage import observe_in
+                observe_in(db, job_id, container, observation.get('resources'))
 
     def collect(self, command, job_id, *, execution_fence, capture):
         """Commit capture and fence launch before reset; never accept worker claims."""
@@ -217,6 +220,8 @@ class Executions(Lifecycle):
                 raise TransitionError('execution already has a capture or result')
             now = self.clock()
             _artifact(db, job_id, 'worker_capture', content, now)
+            from .resource_usage import capture_in
+            capture_in(db, job_id, structured, now)
             _artifact(db, job_id, 'logs', logs, now)
             if bundle is not None:
                 if not db.execute('SELECT 1 FROM job_delegations WHERE job_id=?', (job_id,)).fetchone():
@@ -402,13 +407,16 @@ class ExecutionQueries:
             assignment = db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?', (job_id,)).fetchone()
             if assignment:
                 job.update(builder_id=assignment['builder_id'], builder_stage=assignment['stage'])
-            delegation = db.execute('SELECT d.*,p.builder_id,p.parent_job_id,p.plan_json FROM job_delegations d '
-                                    'JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?', (job_id,)).fetchone()
-            if delegation:
-                job['delegation'] = {key: delegation[key] for key in
-                                     ('plan_id', 'builder_id', 'parent_job_id', 'delegation_key', 'worktree_key')}
-                job['delegation']['scope'] = next(child['scope'] for child in json.loads(delegation['plan_json'])['children']
-                                                  if child['key'] == delegation['delegation_key'])
+            task=db.execute('SELECT t.id,t.task_key,t.executor,t.scope,t.builder_id,x.plan_id,x.worktree_key,p.parent_job_id '
+                'FROM job_tasks x JOIN delivery_tasks t ON t.id=x.task_id JOIN delegation_plans p ON p.id=x.plan_id WHERE x.job_id=?',(job_id,)).fetchone()
+            if task:
+                job['task']={**dict(task),'key':task['task_key']}
+                job.update(builder_id=task['builder_id'],builder_stage='task',task_id=task['id'],task_key=task['task_key'],task_executor=task['executor'])
+                if job['input_manifest'].get('manifest_version')!=2:
+                    job['delegation']={key:task[key] for key in ('plan_id','builder_id','parent_job_id','worktree_key','scope')}|{'delegation_key':task['task_key']}
+            if job['input_manifest'].get('verification_requests'):
+                from .verification_requests import expand_in
+                job['verification_requests'] = expand_in(db, job['input_manifest'], unit_id=job['unit_id'])
             job['history'] = {'failures': [], 'retry_plan': None, 'verified_checks': []}
             context = db.execute('SELECT retry_plan_json FROM unit_context WHERE unit_id=?', (job['unit_id'],)).fetchone()
             if context and context[0]:
@@ -447,25 +455,36 @@ class ExecutionQueries:
         manifest = job['failure']['input_manifest'] if job['role'] == 'recovery' else job['input_manifest']
         wanted = manifest.get('prerequisite_outputs', manifest.get('part_outputs', []))
         ordered, seen, visiting = [], set(), set()
-        def visit(output):
-            identity = output['output_id']
-            if identity in seen:
-                return
-            if identity in visiting:
-                raise TransitionError('assigned output dependency cycle')
-            visiting.add(identity)
-            with self.store.read_snapshot() as db:
+        pending = [(output, manifest.get('manifest_version', 1), False) for output in reversed(wanted)]
+        with self.store.read_snapshot() as db:
+            while pending:
+                output, version, expanded = pending.pop()
+                identity = output['output_id']
+                if expanded:
+                    ordered.append(output)
+                    visiting.remove(identity); seen.add(identity)
+                    continue
                 row = db.execute('SELECT o.*,j.id AS job_id,a.input_manifest_json FROM part_outputs o '
                                  'JOIN jobs j ON j.attempt_id=o.attempt_id JOIN attempts a ON a.id=o.attempt_id '
                                  'WHERE o.id=?', (identity,)).fetchone()
-            if row is None or any(row[key] != output[key] for key in ('member_id', 'commit_oid', 'input_manifest_hash')):
-                raise TransitionError('assigned child output is unavailable')
-            for prerequisite in json.loads(row['input_manifest_json'])['prerequisite_outputs']:
-                visit(prerequisite)
-            ordered.append({**output, 'job_id': row['job_id']})
-            visiting.remove(identity); seen.add(identity)
-        for output in wanted:
-            visit(output)
+                keys = ('task_id', 'attempt_id', 'commit_oid', 'input_manifest_hash') if version == 2 else ('commit_oid', 'input_manifest_hash')
+                if version not in (1, 2) or row is None or any(row[key] != output[key] for key in keys):
+                    raise TransitionError('assigned task output is unavailable')
+                if version == 1:
+                    pins = db.execute('SELECT member_id FROM job_members WHERE job_id=?', (row['job_id'],)).fetchall()
+                    if len(pins) != 1 or pins[0][0] != output['member_id']:
+                        raise TransitionError('legacy output does not match its original member scope')
+                # Check every occurrence before deduplicating: one output ID
+                # cannot hide conflicting task, attempt or commit identities.
+                if identity in seen:
+                    continue
+                if identity in visiting:
+                    raise TransitionError('assigned output dependency cycle')
+                visiting.add(identity)
+                original = json.loads(row['input_manifest_json'])
+                pending.append(({**output, 'job_id': row['job_id']}, version, True))
+                pending.extend((prerequisite, original.get('manifest_version', 1), False)
+                               for prerequisite in reversed(original['prerequisite_outputs']))
         return ordered
 
     def input_bundles(self, references):

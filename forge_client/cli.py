@@ -24,6 +24,7 @@ def repository_commands():
             properties.update(mode={'enum':['auto','human']},revision={'type':'string','pattern':'^[a-f0-9]{64}$'},request_id={'type':'string','pattern':'^[a-f0-9]{32}$'})
         if action == 'delivery':
             properties['after'] = {'type': 'string', 'default': '', 'description': 'Continue from next_cursor'}
+            properties['task_after'] = {'type': 'string', 'default': '', 'description': 'Continue from task_next_cursor; restart when the plan changes'}
         if action == 'issues':
             properties['page'] = {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 1}
         if action in ('issue', 'delivery'):
@@ -36,6 +37,12 @@ def repository_commands():
         }
         if action == 'policy':
             commands[action]['read_capability'] = 'repositories:read'
+        if action == 'delivery':
+            commands[action]['response_version'] = 2
+            commands[action]['response_description'] = ('Approved issue membership is separate from builder tasks. '
+                'Each member has its complete contribution set. Tasks can span issues and use separate paging; '
+                'task_next_cursor pins the current plan. Job history uses next_cursor. '
+                'A ready contribution set does not mean the issue has merged.')
     return commands
 
 
@@ -156,6 +163,7 @@ def parser():
             command.add_argument('number', type=int)
         if action == 'delivery':
             command.add_argument('--after', default='', help='Continue execution history from its next_cursor')
+            command.add_argument('--task-after', default='', help='Continue from task_next_cursor; restart when the plan changes')
         if action == 'issues':
             command.add_argument('--page', type=int, default=1)
         if action in ('setup', 'verify', 'enable', 'disable'):
@@ -300,7 +308,7 @@ def execute(args):
                 from .rule_fixes import fixes
                 return fixes(client.read(target, 'repository'))
             if args.repo_command == 'delivery':
-                return client.read(target, 'delivery', args.number, after=args.after)
+                return client.read(target, 'delivery', args.number, after=args.after, task_after=args.task_after)
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
                 return client.read(target, 'repository' if args.repo_command == 'inspect' else args.repo_command,
                                    getattr(args, 'number', None), getattr(args, 'page', 1))

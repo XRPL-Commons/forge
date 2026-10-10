@@ -74,8 +74,14 @@ class RuntimeRequirements(Executions):
                 if fact['error'] not in {'prerequisite_inaccessible','prerequisite_identity_changed','prerequisite_unobserved'}:
                     raise TransitionError('Unknown prerequisite observation error')
             elif fact.get('kind')=='internal':
-                if not isinstance(fact.get('member_id'),str) or fact.get('output_id') is not None and not isinstance(fact['output_id'],str):
-                    raise TransitionError('Internal prerequisite must pin its current member output')
+                if (set(fact) != {'reference','kind','member_id','plan_id','candidate_id','output_ids','ready','owner_final_pending'}
+                        or not isinstance(fact['member_id'],str)
+                        or any(fact[key] is not None and not isinstance(fact[key],str) for key in ('plan_id','candidate_id'))
+                        or not isinstance(fact['output_ids'],list)
+                        or any(not isinstance(identifier,str) for identifier in fact['output_ids'])
+                        or fact['output_ids'] != sorted(set(fact['output_ids']))
+                        or type(fact['ready']) is not bool or type(fact['owner_final_pending']) is not bool):
+                    raise TransitionError('Internal prerequisite must pin its complete current contribution set')
             else:
                 if (fact.get('kind') not in {'issue','pull_request'} or fact.get('state') not in {'open','closed'}
                         or any(type(fact.get(key)) is not int or fact[key]<1 for key in ('repository_id','github_id','number'))
@@ -112,12 +118,14 @@ class RuntimeRequirements(Executions):
                 if fact['reference']==own or (fact.get('repository_id'),fact.get('number'))==tuple(own_identity):
                     reason='prerequisite_cycle'
                 if not fact.get('error') and fact['kind']=='internal':
-                    from .delivery_inputs import dependencies_in,current_output_in
+                    from .delivery_inputs import dependencies_in,member_contributions_in
                     if fact['member_id'] not in dependencies_in(db,unit,member['id']):
                         raise TransitionError('Internal prerequisite was not approved in the composition')
-                    output=current_output_in(db,unit,fact['member_id'])
-                    if fact['output_id']!=(output['id'] if output else None):
-                        raise TransitionError('Internal prerequisite output changed before observation')
+                    contribution=member_contributions_in(db,unit,fact['member_id'])
+                    expected={key:contribution[key] for key in ('plan_id','candidate_id','ready','owner_final_pending')}
+                    expected['output_ids']=sorted(output['output_id'] for output in contribution['outputs'])
+                    if any(fact[key]!=value for key,value in expected.items()):
+                        raise TransitionError('Internal prerequisite contributions changed before observation')
                 elif not fact.get('error'):
                     binding=db.execute('SELECT * FROM prerequisite_identities WHERE reference=?',(fact['reference'],)).fetchone()
                     identity=tuple(fact[key] for key in ('repository_id','github_id','number','kind'))
@@ -143,6 +151,8 @@ class RuntimeRequirements(Executions):
                 if details.get('requirements') is not None and details['requirements']!=current_digest:
                     authority_changed = True
                     self._resolve(db,command,gate['id'],{'superseded_by_requirements':requirements_revision_id})
+            worker_wait=any(json.loads(gate['details_json']).get('requirements')==current_digest
+                            and json.loads(gate['details_json']).get('issues') for gate in gates)
             if clear:
                 for gate in owned:
                     authority_changed = True
@@ -155,13 +165,14 @@ class RuntimeRequirements(Executions):
                     if details.get('requirements')==digest and {own.rsplit('#',1)[0]+'#'+str(number) for number in details.get('issues',[])}<=set(refs):
                         authority_changed = True
                         self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation})
-            elif not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned):
+            elif (not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned)) and (authority_changed or not worker_wait):
                 authority_changed = True
                 for gate in owned:
                     self._resolve(db,command,gate['id'],{'superseded_by_observation':generation})
                 self.fence_member_in(db,command,member['id'],reason='prerequisite_changed')
-                self._open_gate(db,command,'dependency',{'source':'runtime_dependencies','requirements_revision_id':requirements_revision_id,
-                    'blocked':blocked},member['id'])
+                if not worker_wait:
+                    self._open_gate(db,command,'dependency',{'source':'runtime_dependencies','requirements_revision_id':requirements_revision_id,
+                        'blocked':blocked},member['id'])
             self._event(db,command,'lifecycle_changed',{'dependency_generation':generation,'clear':clear})
             return {'clear':clear,'generation':generation}
         return self._apply(command,'observe_dependencies',payload,change,version_changed=lambda: authority_changed)
@@ -298,7 +309,8 @@ class RuntimeRequirements(Executions):
                 return {'accepted':False}
             if job['role'] not in {'build','integration','review','audit'} or not job['cleanup']:
                 raise TransitionError('environment retry requires a cleaned pipeline assignment')
-            for gate in applicable_gates(db,unit,job['member_id'],job['candidate_id']):
+            from .task_inputs import task_execution_gates_in
+            for gate in task_execution_gates_in(db,unit,job):
                 if gate['code'] not in {'result_pending','cleanup_pending'} or json.loads(gate['details_json']).get('job_id')!=job_id:
                     raise TransitionError('another gate prevents environment retry')
             launch=db.execute('SELECT runner_config_json,branch FROM job_launches WHERE job_id=?',(job_id,)).fetchone()
