@@ -1,6 +1,7 @@
 """Historical bundle closure uses immutable output identities and manifest versions."""
 from contextlib import contextmanager
 import json
+import hashlib
 import sqlite3
 import unittest
 
@@ -32,7 +33,7 @@ class TaskInputRefsTests(unittest.TestCase):
 
     def output(self, key, *, prerequisites=(), members=('a',), version=2):
         reference = {'output_id': key, 'task_id': 'task-' + key, 'attempt_id': 'attempt-' + key,
-                     'commit_oid': key * 40, 'input_manifest_hash': 'hash-' + key}
+                     'commit_oid': hashlib.sha1(key.encode()).hexdigest(), 'input_manifest_hash': 'hash-' + key}
         manifest = {'prerequisite_outputs': list(prerequisites)}
         if version == 2: manifest['manifest_version'] = 2
         self.store.db.execute('INSERT INTO part_outputs VALUES(?,?,?,?,?)', tuple(reference.values()))
@@ -66,3 +67,12 @@ class TaskInputRefsTests(unittest.TestCase):
         self.store.db.execute('INSERT INTO job_members VALUES(?,?)', ('job-a', 'b'))
         with self.assertRaises(TransitionError):
             self.queries.input_refs(recovery)
+
+    def test_retained_history_does_not_depend_on_python_recursion_limit(self):
+        previous = None
+        for index in range(1100):
+            previous = self.output(str(index), prerequisites=[previous] if previous else [])
+        refs = self.queries.input_refs({'role': 'build', 'input_manifest': {'manifest_version': 2,
+            'prerequisite_outputs': [previous]}})
+        self.assertEqual(len(refs), 1100)
+        self.assertEqual((refs[0]['output_id'], refs[-1]['output_id']), ('0', '1099'))

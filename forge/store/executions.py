@@ -452,33 +452,36 @@ class ExecutionQueries:
         manifest = job['failure']['input_manifest'] if job['role'] == 'recovery' else job['input_manifest']
         wanted = manifest.get('prerequisite_outputs', manifest.get('part_outputs', []))
         ordered, seen, visiting = [], set(), set()
-        def visit(db, output, version):
-            identity = output['output_id']
-            row = db.execute('SELECT o.*,j.id AS job_id,a.input_manifest_json FROM part_outputs o '
-                             'JOIN jobs j ON j.attempt_id=o.attempt_id JOIN attempts a ON a.id=o.attempt_id '
-                             'WHERE o.id=?', (identity,)).fetchone()
-            keys = ('task_id', 'attempt_id', 'commit_oid', 'input_manifest_hash') if version == 2 else ('commit_oid', 'input_manifest_hash')
-            if version not in (1, 2) or row is None or any(row[key] != output[key] for key in keys):
-                raise TransitionError('assigned task output is unavailable')
-            if version == 1:
-                pins = db.execute('SELECT member_id FROM job_members WHERE job_id=?', (row['job_id'],)).fetchall()
-                if len(pins) != 1 or pins[0][0] != output['member_id']:
-                    raise TransitionError('legacy output does not match its original member scope')
-            # Validate each occurrence before deduplicating: two refs cannot
-            # disguise conflicting identity fields under one shared output ID.
-            if identity in seen:
-                return
-            if identity in visiting:
-                raise TransitionError('assigned output dependency cycle')
-            visiting.add(identity)
-            original = json.loads(row['input_manifest_json'])
-            for prerequisite in original['prerequisite_outputs']:
-                visit(db, prerequisite, original.get('manifest_version', 1))
-            ordered.append({**output, 'job_id': row['job_id']})
-            visiting.remove(identity); seen.add(identity)
+        pending = [(output, manifest.get('manifest_version', 1), False) for output in reversed(wanted)]
         with self.store.read_snapshot() as db:
-            for output in wanted:
-                visit(db, output, manifest.get('manifest_version', 1))
+            while pending:
+                output, version, expanded = pending.pop()
+                identity = output['output_id']
+                if expanded:
+                    ordered.append(output)
+                    visiting.remove(identity); seen.add(identity)
+                    continue
+                row = db.execute('SELECT o.*,j.id AS job_id,a.input_manifest_json FROM part_outputs o '
+                                 'JOIN jobs j ON j.attempt_id=o.attempt_id JOIN attempts a ON a.id=o.attempt_id '
+                                 'WHERE o.id=?', (identity,)).fetchone()
+                keys = ('task_id', 'attempt_id', 'commit_oid', 'input_manifest_hash') if version == 2 else ('commit_oid', 'input_manifest_hash')
+                if version not in (1, 2) or row is None or any(row[key] != output[key] for key in keys):
+                    raise TransitionError('assigned task output is unavailable')
+                if version == 1:
+                    pins = db.execute('SELECT member_id FROM job_members WHERE job_id=?', (row['job_id'],)).fetchall()
+                    if len(pins) != 1 or pins[0][0] != output['member_id']:
+                        raise TransitionError('legacy output does not match its original member scope')
+                # Check every occurrence before deduplicating: one output ID
+                # cannot hide conflicting task, attempt or commit identities.
+                if identity in seen:
+                    continue
+                if identity in visiting:
+                    raise TransitionError('assigned output dependency cycle')
+                visiting.add(identity)
+                original = json.loads(row['input_manifest_json'])
+                pending.append(({**output, 'job_id': row['job_id']}, version, True))
+                pending.extend((prerequisite, original.get('manifest_version', 1), False)
+                               for prerequisite in reversed(original['prerequisite_outputs']))
         return ordered
 
     def input_bundles(self, references):
