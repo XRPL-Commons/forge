@@ -116,6 +116,9 @@ class PlanningTests(unittest.TestCase):
             title='Issue 1',body='Complete requirement',requirements={'acceptance':['complete']},remote_updated_at='2026-10-10T00:00:00Z',generation=1)
         replay=effects.step(result['effects'][0]);self.assertEqual(replay['status'],'confirmed')
         self.assertEqual(sum(method=='PATCH' for method,_,_ in calls),1)
+        closed=self.planning.members(rows[0]['id'])['items'][0]
+        self.assertEqual((closed['github_state'],closed['observed_at']),('closed',self.now))
+        self.assertEqual(self.planning.proposal('proposal')['rows'][0]['effects'][0]['status'],'confirmed')
         self.assertEqual(effects.step(result['effects'][1])['status'],'confirmed')
         self.assertEqual(remote['issue-2']['labels'],['content','hold'])
         with self.store.read_snapshot() as db:

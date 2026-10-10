@@ -94,13 +94,19 @@ def triage_properties(note):
     ref = note['context'].get('note_sources_schema')
     if not isinstance(ref,dict) or not isinstance(ref.get('anyOf'),list) or not ref['anyOf']:
         raise PreparationError('Triage assignment requires its captured note source schema')
-    memory={'type':'object','properties':{'content':{'type':'string','minLength':1,'maxLength':8192},
+    guidance=('Planning recommendations awaiting operator approval. Separate observed facts from proposed actions; '
+              'never claim this planning run closed, approved, grouped or relabeled issues. Fixed work does not imply a closed GitHub issue.')
+    memory={'type':'object','properties':{'content':{'type':'string','minLength':1,'maxLength':8192,'description':guidance},
         'sources':{'type':'array','minItems':1,'maxItems':20,'items':ref}},
         'required':['content','sources'],'additionalProperties':False}
     note={'type':'object','properties':{**memory['properties'],'note_id':{'type':['string','null']},
-        'kind':{'type':'string','enum':['convention','decision','lesson','question','next_action']}},
+        'kind':{'type':'string','enum':['convention','decision','lesson','question','next_action'],
+                'description':'Decision means a planning recommendation, not operator approval or an applied change.'}},
         'required':['note_id','kind','content','sources'],'additionalProperties':False}
-    return {'rows':{'type':'array','items':row},'notes':{'type':'array','maxItems':5,'items':note},
+    return {'summary':{'type':'string','description':guidance},
+        'headline':{'type':'string','maxLength':HEADLINE_LIMIT,'description':guidance},
+        'plain':{'type':'string','maxLength':PLAIN_LIMIT,'description':guidance},
+        'rows':{'type':'array','items':row},'notes':{'type':'array','maxItems':5,'items':note},
         'handoff':{'anyOf':[{'type':'null'},memory]}}
 
 

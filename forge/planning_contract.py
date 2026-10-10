@@ -45,7 +45,7 @@ def action_schemas():
         params['x-max-json-utf8-bytes']=65536
         members={'type':'array','items':text_schema(),'uniqueItems':True,'minItems':2 if action=='group' else 1}
         if action!='group':members['maxItems']=1
-        rows.append(object_schema({'action':{'const':action},'members':members,'reason':text_schema(8192),
+        rows.append(object_schema({'action':{'const':action},'members':members,'reason':text_schema(8192,description='Explain the proposed action and its evidence. Approval and application are separate; do not report this proposal as an executed change.'),
             'rule_quote':{'oneOf':[{'type':'null'},text_schema(16384)],'description':'Exact quote from the proposal’s pinned rules, or null.'},
             'parameters':params}))
     common={'request_id':request}

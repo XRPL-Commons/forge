@@ -1,8 +1,8 @@
 import type { Ref } from 'vue'
-export interface PlanningMember { issue_id: string; github_number: number; title: string; candidate_id: string | null; pull_number: number | null; head_oid: string | null; candidate_author: { id: number; type: string; login: string } | null }
-export interface PlanningRow { id: string; revision: number; action: string; reason: string; rule_quote: string | null; parameters: Record<string, any>; status: string; members: PlanningMember[]; members_next: string | null; member_count: number; effects: { id: string; status: string }[] }
+export interface PlanningMember { issue_id: string; github_number: number; github_state: 'open' | 'closed'; observed_at: number; title: string; candidate_id: string | null; pull_number: number | null; head_oid: string | null; candidate_author: { id: number; type: string; login: string } | null }
+export interface PlanningRow { id: string; revision: number; action: string; reason: string; rule_quote: string | null; parameters: Record<string, any>; status: 'proposed' | 'accepted' | 'rejected'; members: PlanningMember[]; members_next: string | null; member_count: number; effects: { id: string; status: 'pending' | 'running' | 'uncertain' | 'confirmed' | 'failed' | 'superseded' }[] }
 export interface Proposal { id: string; version: number; status: string; rationale: string; rows: PlanningRow[]; next: number | null; total: number; run: { status: string; error: string | null } | null }
-export interface RepositoryNote { note_id: string; revision: number; kind: string; content: string; sources: { url: string; kind: string; identity: string; description: string }[]; needs_refresh: boolean }
+export interface RepositoryNote { note_id: string; revision: number; kind: string; content: string; actor_id: string; sources: { url: string; kind: string; identity: string; description: string }[]; needs_refresh: boolean }
 export interface PlanningView { repository: { id: number; name: string }; planning: { revision: number; rules: string; proposals_enabled: boolean; runs: { id: string; status: string; error: string | null }[]; notes: RepositoryNote[] }; proposals: { items: { id: string; status: string; created_at: number }[]; next: string | null } }
 export function useRepositoryPlanning(repositoryId: Ref<number>) {
   const api = useForgeApi()
