@@ -6,7 +6,7 @@ from .artifacts import (
     Artifact, ArtifactCorrupt, ArtifactExpired, ArtifactTooLarge, Artifacts,
     MAX_ARTIFACT_SIZE,
 )
-from .transitions import project_unit, issue_state, applicable_gates, TERMINAL
+from .transitions import project_unit, issue_state, _collect_gates, _scope_gates, TERMINAL
 from . import status
 
 
@@ -17,6 +17,23 @@ def _limit(value):
     if type(value) is not int or not 1 <= value <= MAX_PAGE_SIZE:
         raise ValueError(f'limit must be an integer between 1 and {MAX_PAGE_SIZE}')
     return value
+
+
+class IssueGateFacts:
+    """Read-only unit facts owned by one projection in a held SQL snapshot.
+
+    This owner never belongs to Store or a lifecycle writer. Discard it before
+    leaving the snapshot; member/candidate scoping stays in the shared evaluator.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+        self._units = {}
+
+    def for_assignment(self, unit, member_id, candidate_id):
+        if unit['id'] not in self._units:
+            self._units[unit['id']] = _collect_gates(self.connection, unit)
+        return _scope_gates(self._units[unit['id']], unit, member_id, candidate_id)
 
 
 class Queries:
@@ -50,7 +67,7 @@ class Queries:
                                        include_gates=include_gates)[issue_id]
 
     @staticmethod
-    def _issue_contexts(connection, issue_ids, *, include_body=False, include_gates=False):
+    def _issue_contexts(connection, issue_ids, *, include_body=False, include_gates=False, gate_facts=None):
         """Hydrate one bounded page; lifecycle decisions still share one projector."""
         identifiers = tuple(dict.fromkeys(issue_ids))
         if not identifiers:
@@ -76,12 +93,13 @@ class Queries:
         unit_ids = tuple({member['unit_id'] for member in members.values()})
         units = {row['id']: dict(row) for row in connection.execute(
             'SELECT * FROM units WHERE id IN (' + ','.join('?' for _ in unit_ids) + ')', unit_ids)} if unit_ids else {}
+        gate_facts = gate_facts if gate_facts is not None else IssueGateFacts(connection)
         return {identifier: Queries._project_issue(connection, issues[identifier], members.get(identifier),
                     units[members[identifier]['unit_id']] if identifier in members else None,
-                    include_body=include_body, include_gates=include_gates) for identifier in identifiers}
+                    include_body=include_body, include_gates=include_gates, gate_facts=gate_facts) for identifier in identifiers}
 
     @staticmethod
-    def _project_issue(connection, issue, member, historical_unit, *, include_body=False, include_gates=False):
+    def _project_issue(connection, issue, member, historical_unit, *, include_body=False, include_gates=False, gate_facts):
         issue_id = issue['id']
         for field in ('labels', 'assignees', 'assignee_types'):
             issue[field] = json.loads(issue.pop(field + '_json'))
@@ -92,7 +110,7 @@ class Queries:
         gates = []
         if member:
             if member['left_at'] is None and unit['state'] not in TERMINAL:
-                gates = applicable_gates(connection, unit, member['id'], unit['current_candidate_id'])
+                gates = gate_facts.for_assignment(unit, member['id'], unit['current_candidate_id'])
                 blocker = gates[0] if gates else None
             elif unit['state'] not in TERMINAL:
                 # A removed member does not inherit the still-running batch's phase.

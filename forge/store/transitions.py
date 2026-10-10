@@ -59,6 +59,11 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None):
     validates their exact candidate inputs.
     Derived blockers have no gate ID and are not stored as a second authority.
     """
+    return _scope_gates(_collect_gates(db, unit), unit, member_id, candidate_id)
+
+
+def _collect_gates(db, unit):
+    """Collect canonical unit facts; mutation callers always collect afresh."""
     gates = _gates(db, unit["id"])
     repository = db.execute("SELECT enabled FROM repositories WHERE id = ?", (unit["repository_id"],)).fetchone()
     if repository is None or not repository["enabled"]:
@@ -95,6 +100,11 @@ def applicable_gates(db, unit, member_id=None, candidate_id=None):
         gates.append({"id": None, "unit_id": unit["id"], "member_id": row["id"], "candidate_id": None,
                       "subject_key": f"member:{row['id']}", "code": "membership_decision", "created_at": 0.0,
                       "resolved_at": None, "details_json": _json({"reason": "requirements_revision_changed"})})
+    return gates
+
+
+def _scope_gates(gates, unit, member_id=None, candidate_id=None):
+    """Apply the same assignment scope and priority to fresh or snapshot facts."""
     return sorted((gate for gate in gates
                    if (gate["candidate_id"] is None or gate["candidate_id"] == candidate_id)
                    and (gate["member_id"] is None or gate["member_id"] == member_id
