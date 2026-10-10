@@ -89,6 +89,11 @@ COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND (e.
 COMPLETED_MEMBERS_SQL = ("WITH terminal_members AS MATERIALIZED (SELECT DISTINCT m.issue_id FROM units terminal "
     "JOIN unit_issues m ON m.unit_id=terminal.id WHERE terminal.state IN ('merged','closed','dissolved')) ")
 COMPLETED_SOURCE_SQL = 'terminal_members t CROSS JOIN public_issue_index x ON x.id=t.issue_id'
+CURRENT_MEMBERS_SQL = ("WITH current_members AS MATERIALIZED (SELECT DISTINCT m.issue_id FROM units live "
+    "JOIN unit_issues m ON m.unit_id=live.id WHERE live.state NOT IN ('merged','closed','dissolved') AND m.left_at IS NULL) ")
+# Candidate bounds only: the canonical index still decides currentness,
+# applicable blockers, status and final inclusion below.
+CURRENT_SOURCE_SQL = 'current_members a CROSS JOIN public_issue_index x ON x.id=a.issue_id'
 
 
 def projection(method):
@@ -550,8 +555,11 @@ class PipelineViews:
                 except ValueError:raise ValueError('Invalid completed cursor') from None
                 if not sep or not key or not math.isfinite(at):raise ValueError('Invalid completed cursor')
                 clauses.append('('+COMPLETION_SQL+',x.id)<(?,?)');params.extend((at,key))
-            prefix = COMPLETED_MEMBERS_SQL if section == 'completed' else ''
-            source = COMPLETED_SOURCE_SQL if section == 'completed' else 'public_issue_index x'
+            prefix, source = '', 'public_issue_index x'
+            if section == 'completed':
+                prefix, source = COMPLETED_MEMBERS_SQL, COMPLETED_SOURCE_SQL
+            elif issue is None and section in (None, 'board'):
+                prefix, source = CURRENT_MEMBERS_SQL, CURRENT_SOURCE_SQL
             selection=IssueSelection(db, issue_id=issue, terminal_only=section=='completed')
             rows=selection.execute(prefix+'SELECT x.id,u.updated_at,'+COMPLETION_SQL+' AS completed_at FROM '+source+' JOIN units u ON u.id=x.unit_id WHERE '+
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
@@ -562,9 +570,10 @@ class PipelineViews:
                 issues.append(self._factory_issue(db, row, completed_at=selected['completed_at']))
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
-            if section in (None, 'board') and len(issues) < size:
-                # Discovery is sparse. Keep it as the outer input so an empty
-                # observation set does not classify the whole issue backlog.
+            if (section in (None, 'board') and len(issues) < size
+                    and db.execute('SELECT 1 FROM issue_discovery_observations LIMIT 1').fetchone()):
+                # Empty input needs no classification query. The check and
+                # canonical selection share this projection's read snapshot.
                 failed = selection.execute("SELECT x.id,d.observed_at FROM issue_discovery_observations d "
                     'CROSS JOIN public_issue_index x ON x.id=d.issue_id '
                     "WHERE x.unit_id IS NULL AND x.public_status='attention' "
