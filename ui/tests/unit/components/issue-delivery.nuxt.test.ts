@@ -51,4 +51,35 @@ describe('combined delivery', () => {
     expect(get.mock.calls.every(call => !String(call[0]).includes('output'))).toBe(true)
     wrapper.unmount()
   })
+  it('keeps a derived dependency blocker when its persisted counterpart resolves', async () => {
+    const derived = { id: null, code: 'dependency', reason: 'Waiting for other issues to close', member_id: 'dependent', candidate_id: null, subject_key: 'member:dependent' }
+    const persisted = { ...derived, id: 'dependency-check' }
+    const detail = {
+      unit_id: 'dropped-prerequisite', version: 3, state: 'building', builder_id: 'owner', repo: 'example/repo',
+      candidate_pr: null, charged_failures: 0, failure_limit: 3, next_cursor: null, jobs: [],
+      members: [{ ...member('dependent', 21, 'Dependent scope', 'blocked', 'Blocked', derived.reason), gates: [persisted, derived] }],
+    }
+    get.mockResolvedValue(detail)
+    const wrapper = await mountSuspended(IssueDelivery, { props: { issueKey: '1:21' } })
+    try {
+      await wrapper.findAll('button').find(button => button.text().includes('Combined delivery'))!.trigger('click')
+      await flushPromises()
+      const blockers = () => wrapper.get('[aria-label="Blockers for issue 21"]').findAll('li')
+      expect(blockers().map(row => row.text())).toEqual([persisted.reason, derived.reason])
+      const derivedElement = blockers()[1]!.element
+      get.mockResolvedValue({ ...detail, version: 4, members: [{ ...detail.members[0], gates: [derived] }] })
+      // A visibility wake refreshes the existing resource after its 100 ms
+      // coalescing window, without remounting the member or its gate list.
+      await new Promise(resolve => setTimeout(resolve, 150))
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flushPromises()
+      expect(get).toHaveBeenCalledTimes(2)
+      expect(blockers().map(row => row.text())).toEqual([derived.reason])
+      expect(blockers()[0]!.element).toBe(derivedElement)
+      expect(wrapper.get('[aria-label="Delivery members"]').text()).toContain('Blocked')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
 })

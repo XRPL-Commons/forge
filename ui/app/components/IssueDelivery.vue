@@ -45,7 +45,7 @@ function label(job: JobView) {
           <NuxtLink :to="`/issues/${encodeURIComponent(member.issue_key)}`" class="text-sky-200 hover:underline">#{{ member.number }} {{ member.title }}</NuxtLink>
           <span class="ml-2 text-xs text-muted">{{ member.operator_status.label }}</span>
           <ul v-if="member.gates.length" :aria-label="`Blockers for issue ${member.number}`" class="ml-4 list-disc text-xs text-muted">
-            <li v-for="gate in member.gates" :key="`${gate.code}:${gate.subject_key}:${gate.candidate_id}`">{{ gate.reason }}</li>
+            <li v-for="gate in member.gates" :key="gate.id === null ? `derived:${gate.code}:${gate.subject_key}:${gate.candidate_id}` : `persisted:${gate.id}`">{{ gate.reason }}</li>
           </ul>
           <p v-else class="text-xs text-muted">{{ member.operator_status.reason }}</p>
           <p v-if="member.output" class="text-xs text-muted">Output accepted ·
