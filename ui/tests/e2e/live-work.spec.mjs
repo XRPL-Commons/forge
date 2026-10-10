@@ -33,7 +33,7 @@ export default async function (page, { base, scenario, requests }) {
   // Who is working, on which attempt, and where it lands.
   const work = page.locator('#issue-work')
   assert.match((await work.locator('#issue-worker').innerText()).replace(/\s+/g, ' ').trim(), /^Ember · Claude Sonnet 4\.6$/)
-  assert.equal((await work.locator('#issue-work-attempt').innerText()).trim(), 'Build · attempt 2 of 3')
+  assert.equal((await work.locator('#issue-work-attempt').innerText()).trim(), 'Build, attempt 2 of 3')
   assert.equal((await work.locator('#issue-work-branch').innerText()).trim(), 'forge/610-build')
   assert.ok(await work.locator('#issue-work-time').count())
   // The current stage says how long it has run so far.

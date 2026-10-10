@@ -159,6 +159,12 @@ def why_for(case, item):
 
 
 def summary_for(case, item, held):
+    hold = item.get('environment_hold') or {}
+    if case == 'environment_hold':
+        from ..store.status import github_rule
+        rule = github_rule({'reason': hold.get('blocker'), 'detail': hold.get('detail')})
+        if rule:
+            return {'headline': rule['headline'], 'plain': rule['plain']}
     written = ((item.get('environment_hold') or {}).get('summary') if case == 'environment_hold'
                else item.get('last_summary') if case in WORKER_LED else None)
     if written and written.get('headline'):

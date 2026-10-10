@@ -106,3 +106,30 @@ class OperatorStatusMatrixTests(unittest.TestCase):
                 if case['name']=='independent_hold':
                     with self.store.read_snapshot() as db:
                         self.assertEqual(db.execute("SELECT code FROM unit_gates WHERE resolved_at IS NULL").fetchone()[0],'environment')
+
+    def test_a_github_rule_rejection_has_its_own_reason_and_plain_words(self):
+        report = ("Read issue comments; installed locked dependencies. Prepared the CI workflow in local commit 0539aaf9…. "
+                  "GitHub rejected publication with GH013: 'refusing to allow a GitHub App to create or update workflow "
+                  "`.github/workflows/quality.yml` without `workflows` permission'.")
+        cases = [({'reason':'ci_evidence','summary':report}, 'github_permission'),  # an older gate, classified by its text
+                 ({'reason':'github_permission','summary':report}, 'github_permission'),
+                 ({'reason':'toolchain','summary':'Node 18 is missing; `pnpm` failed.','operator_summary':'Forge could not find the right version of Node. Ask an administrator to update the worker image.'}, 'environment')]
+        for details, code in cases:
+            with self.subTest(details=details['reason']), tempfile.TemporaryDirectory() as root:
+                self.prepare(root,'queued')
+                self.life.open_gate(self.command(),'environment',details=details)
+                issue = PipelineViews(self.store,runtime=validate({}),clock=lambda:100).issues(key='1:1')['issue']
+                self.assertEqual(issue['operator_status']['reason_code'],code)
+                self.assertEqual(issue['status'],'attention')
+                # The technical report stays available for the details toggle.
+                self.assertEqual(issue['environment_blocker'],details['summary'])
+                if code == 'github_permission':
+                    self.assertEqual(issue['summary']['headline'],"GitHub won't let Forge change workflow files in this repository")
+                    self.assertEqual(issue['operator_status']['reason'],"GitHub won't let Forge change workflow files in this repository")
+                    self.assertIn('Workflows permission',issue['summary']['plain'])
+                    self.assertIn('close the issue',issue['summary']['plain'])
+                else:
+                    self.assertEqual(issue['summary']['plain'],details['operator_summary'])
+                for residue in ('GH013','0539aaf9','`','CI '):
+                    self.assertNotIn(residue,issue['summary']['plain'])
+

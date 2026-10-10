@@ -12,10 +12,10 @@ export default async function (page, { base, scenario, requests, observeIssue })
   await observeIssue('1:614', { merge_policy: 'auto' })
   await page.goto(base + '/issues/1%3A614')
   await page.locator('#issue-merge-policy').waitFor()
-  assert.match(await page.locator('#issue-merge-policy').innerText(), /Automatic after checks pass/)
-  assert.match(await page.locator('#issue-merge-policy').innerText(), /audit or verification may require human approval/)
+  assert.equal((await page.locator('#issue-merge-policy').innerText()).trim(),
+    'Forge merges this automatically once checks pass. A security audit or a verification may still need your approval.')
   await page.getByRole('button', { name: 'Approve…', exact: true }).waitFor()
 
   await observeIssue('1:614', { merge_policy: 'human' })
-  await page.waitForFunction(() => document.querySelector('#issue-merge-policy')?.textContent.includes('Human approval required'))
+  await page.waitForFunction(() => document.querySelector('#issue-merge-policy')?.textContent.includes('Forge merges this only after a person approves it.'))
 }

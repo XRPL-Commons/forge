@@ -252,7 +252,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   const links = page.locator('#issue-links')
   assert.equal(await links.getByRole('link', { name: 'GitHub issue ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/issues/610')
-  assert.equal(await links.getByRole('link', { name: 'PR #30 ↗' }).getAttribute('href'),
+  assert.equal(await links.getByRole('link', { name: 'Pull request #30 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/30')
   assert.equal(await actionBar.getByRole('link').count(), 0, 'GitHub links are not action buttons')
   // Stopping ends work: it waits behind More, not as a loose red button.
@@ -316,7 +316,7 @@ export default async function (page, { base, scenario, requests, observeIssue })
   assert.ok(summaryBox.y + summaryBox.height <= actionsBox.y, 'the summary must sit above the action bar')
   // The way forward is one primary button; the technical text stays collapsed.
   assert.equal(await actionBar.getByRole('button', { name: 'Retry attempt' }).count(), 1)
-  assert.equal(await page.locator('#issue-explanation').count(), 0, 'the worker’s full text starts collapsed')
+  assert.equal(await page.locator('#issue-technical-text').isVisible(), false, 'the worker’s full text starts collapsed')
   // The security review that could not finish is where the cube stopped: it
   // worries at Security, lit amber, with every life spent.
   assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #620, Security stage, needs attention')
@@ -325,15 +325,19 @@ export default async function (page, { base, scenario, requests, observeIssue })
   assert.equal(await page.locator('#issue-stages [aria-current="step"]').getAttribute('data-stage'), 'audit')
   assert.deepEqual(await page.locator('#issue-stages li').evaluateAll(items => items.map(item => item.dataset.state)),
     ['done', 'done', 'current', 'future', 'future'])
-  assert.equal((await page.locator('#issue-lives-text').innerText()).trim(), '0 of 3 left')
+  assert.equal((await page.locator('#issue-lives-text').innerText()).trim(), '0 of 3 attempts left')
   assert.equal(await page.locator('#issue-lives svg[data-lost]').count(), 3)
-  assert.equal((await page.locator('#issue-stage-note').innerText()).trim(), 'Failed')
+  assert.equal((await page.locator('#issue-stage-note').innerText()).trim(), 'Failed.')
 
-  await page.getByRole('button', { name: 'Review findings' }).click()
+  // The worker's technical report is one toggle under the bubble, not in it.
+  assert.equal((await page.locator('#issue-bubble').innerText()).includes('pipeline.ts'), false)
+  await page.getByRole('button', { name: 'Technical details' }).click()
   await waitForText(page, 'ENEEDAUTH')
-  assert.match(await page.locator('#issue-explanation').innerText(), /pipeline\.ts/)
-  const detailsBox = await page.locator('#issue-details').boundingBox()
-  assert.ok(actionsBox.y + actionsBox.height <= detailsBox.y, 'the worker’s full text sits below the action bar')
+  assert.match(await page.locator('#issue-technical-text').innerText(), /pipeline\.ts/)
+  const technicalBox = await page.locator('#issue-technical').boundingBox()
+  const bubbleBox = await page.locator('#issue-bubble').boundingBox()
+  assert.ok(bubbleBox.y + bubbleBox.height <= technicalBox.y, 'the technical details sit below the bubble')
+  await page.getByRole('button', { name: 'Review findings' }).click()
 
   // A pass that still needs a person is a warning, and says why instead of "PASS.".
   const verdicts = page.locator('#issue-reviews > div')
@@ -343,16 +347,16 @@ export default async function (page, { base, scenario, requests, observeIssue })
   assert.match(await verdicts.nth(1).innerText(), /^Could not review\s+Security review/)
 
   // Three failed attempts out of three, in the header's attempt line.
-  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), 'attempt 3 of 3 failed')
+  assert.equal((await page.locator('#issue-attempts').innerText()).trim(), 'Attempt 3 of 3 failed.')
   // …and the label that paused it, with who applied it and when.
   assert.equal((await page.locator('#issue-held-by').innerText()).trim(), 'Labelled forge:hold by @maintainer on Sep 21')
 
   // Each pull request is named for what it is to the issue.
   const pulls = page.locator('#issue-links')
-  assert.equal(await pulls.getByRole('link', { name: 'PR #30 ↗' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Pull request #30 ↗' }).count(), 1)
   assert.equal(await pulls.getByRole('link', { name: 'Earlier Forge draft #26 ↗' }).getAttribute('href'),
     'https://github.com/XRPL-Commons/academy/pull/26')
-  assert.equal(await pulls.getByRole('link', { name: 'Other PR #25 ↗' }).count(), 1)
+  assert.equal(await pulls.getByRole('link', { name: 'Other pull request #25 ↗' }).count(), 1)
 
   // A queue decision needs no typing, and records who asked for it.
   await scenario('decision-queue')

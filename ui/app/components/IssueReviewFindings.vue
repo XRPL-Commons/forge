@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { reviewRows, summaryBlock, type IssueDetail } from '~/utils/issues'
+import { reviewRows, type IssueDetail } from '~/utils/issues'
 const props = defineProps<{ detail: IssueDetail }>()
 const detailsOpen = useState(`issue-details-${props.detail.key}`, () => false)
-const summary = computed(() => summaryBlock(props.detail))
 const reviews = computed(() => reviewRows(props.detail.reviews))
 const expanded = ref(new Set<string>())
 function toggleReview(role: string) {
@@ -13,8 +12,7 @@ function toggleReview(role: string) {
 </script>
 <template>
             <IssueSection id="issue-details" v-model:open="detailsOpen" title="Review findings">
-              <p v-if="summary?.details" id="issue-explanation" class="whitespace-pre-line text-sm text-muted wrap-anywhere">{{ summary.details }}</p>
-              <div v-if="reviews.length" id="issue-reviews" class="mt-3 flex flex-col gap-2">
+              <div v-if="reviews.length" id="issue-reviews" class="flex flex-col gap-2">
                 <div v-for="row in reviews" :key="row.role" class="rounded-xl border border-line bg-panel px-3 py-2">
                   <div class="flex flex-wrap items-center gap-2">
                     <UBadge :color="row.tone" variant="subtle" size="sm">{{ row.outcomeLabel }}</UBadge>

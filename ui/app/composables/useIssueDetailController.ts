@@ -11,7 +11,7 @@ import { workbenchLook } from '~/utils/workbench'
 import { panelQuery } from '~/utils/panel'
 import {
   ACTION_LABELS, approvalLines, attentionNote, blockingIssues, statusLabel, checkedText, eventLabel, heldByLines, issuePath, lastAction, pendingAction, preselectedReviewers,
-  pullLabel, reviewPull, reviewRequestText, reviewerReason, summaryBlock,
+  pullName, reviewPull, reviewRequestText, reviewerReason, sentence, summaryBlock, technicalDetails,
   type IssueAction, type IssueDetail as IssueDetailView, type IssueDetailResponse,
   type IssueEnvironmentSelection,
 } from '~/utils/issues'
@@ -143,8 +143,10 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const PLAIN_CLAMP = 220
   const plainLong = computed(() => (bubble.value?.plain ?? '').length > PLAIN_CLAMP)
   const holds = computed(() => heldByLines(detail.value?.held_by))
-  const hasFindings = computed(() => reviewRows(detail.value?.reviews).length > 0
-    || (!!summary.value?.details && ![summary.value.headline, summary.value.plain, bubble.value?.headline ?? ''].some(line => line.trim() === summary.value!.details.trim())))
+  const hasFindings = computed(() => reviewRows(detail.value?.reviews).length > 0)
+  // The worker's own report sits behind a toggle under the bubble, never in it.
+  const technical = computed(() => technicalDetails(detail.value, [bubble.value?.headline ?? '', bubble.value?.plain ?? '']))
+  const technicalOpen = ref(false)
 
   const issueUrl = computed(() => (detail.value ? `https://github.com/${detail.value.repo}/issues/${detail.value.number}` : ''))
   function pullUrl(number: number) { return `https://github.com/${detail.value?.repo}/pull/${number}` }
@@ -483,9 +485,9 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
     resetRequest, outputOpen, activityOpen, decisionReason, siblingLink, pullUrl, askReviewer,
     closeReviewer, checkNow, assignReviewer, localTime, isoTime, askReset, closeReset, confirmReset, ask,
     confirmVerification, saveEnvironment, closeDecision, submit, root, rootClass, filling, fillHeight,
-    tab, TABS, chat, chatAttention, ACTION_LABELS, attentionNote, statusLabel, eventLabel, pullLabel,
+    tab, TABS, chat, chatAttention, ACTION_LABELS, attentionNote, statusLabel, eventLabel, pullLabel: pullName,
     issueTab, plan, conversationPrimary, moreItems, output, live, bubble, facts, times, stageNote,
-    statusReason, order,
+    statusReason, order, technical, technicalOpen, sentence,
   }
 }
 

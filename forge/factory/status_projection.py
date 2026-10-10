@@ -3,8 +3,10 @@
 Lifecycle gates remain independent. This read projection names the selected
 blocker separately from the broad state; it never changes scheduling authority.
 """
+import json
+
 from ..store.codes import transitional
-from ..store.status import describe, describe_gate
+from ..store.status import describe, describe_gate, github_rule
 
 LABELS = {
     'backlog': 'Backlog', 'queued': 'Queued', 'working': 'Working',
@@ -50,6 +52,10 @@ def operator_status(issue, active=False):
     blocker = life.get('current_blocker')
     if blocker and blocker['code'] == reason_code:
         reason = describe_gate(blocker)
+        if reason_code == 'environment':
+            details = json.loads(blocker['details_json'])
+            # Its own reason: a GitHub rule, not a build environment to repair.
+            if github_rule(details.get('value', details)): reason_code = 'github_permission'
     else:
         reason = describe(reason_code) if reason_code else 'Not queued for Forge'
     return {'code':code, 'label':LABELS[code], 'reason_code':reason_code, 'reason':reason}

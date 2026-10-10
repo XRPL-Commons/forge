@@ -54,7 +54,9 @@ def prepare_environment(directory, services=()):
 
 # Kept in step with contracts.HEADLINE_LIMIT / PLAIN_LIMIT, which truncate what
 # arrives. The image loads no sibling module, so the numbers live on both sides.
-HEADLINE_LIMIT, PLAIN_LIMIT = 90, 360
+HEADLINE_LIMIT, PLAIN_LIMIT, OPERATOR_SUMMARY_LIMIT = 90, 360, 300
+ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services', 'github_permission')
+OPERATOR_ROLES = ('build', 'review', 'audit', 'recovery')
 
 
 def role_properties(note):
@@ -139,12 +141,14 @@ def schema(note):
              'attempt': {'type': 'string', 'enum': [note['id']]},
              'role': {'type': 'string', 'enum': [note['role']]},
              'outcome': {'type': 'string', 'enum': ['pass', 'reject', 'unable', 'wait', 'blocked_environment']},
-             'blocker': {'type': ['string', 'null'], 'enum': [None, 'toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services']},
+             'blocker': {'type': ['string', 'null'], 'enum': [None, *ENVIRONMENT_BLOCKERS]},
              'summary': {'type': 'string'},
              # Plain language for a reader who does not read code, in every role.
              'headline': {'type': 'string', 'maxLength': HEADLINE_LIMIT},
              'plain': {'type': 'string', 'maxLength': PLAIN_LIMIT}}
     props.update(role_properties(note))
+    if note['role'] in OPERATOR_ROLES:
+        props['operator_summary'] = {'type': 'string', 'minLength': 1, 'maxLength': OPERATOR_SUMMARY_LIMIT}
     if note['role'] in ('build', 'review', 'audit', 'recovery'):
         props['outcome']['enum'].append('needs_human_verification')
         props['verification'] = {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {

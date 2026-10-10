@@ -147,7 +147,7 @@ class ResultController:
                 {'reason': 'resources', 'job_id': job_id, 'oom_killed': True})}
         if report and report['outcome'] == 'blocked_environment':
             return {'job_id': job_id, **self._defer(job, evidence, 'environment',
-                {'reason': report['blocker'], 'summary': report['summary'],
+                {'reason': report['blocker'], 'summary': report['summary'], 'operator_summary': report['operator_summary'],
                  'required_services': report.get('required_services', []), 'job_id': job_id})}
         if job['role'] == 'build':
             if report and report['outcome'] == 'delegate' and job.get('builder_stage') == 'planning':
