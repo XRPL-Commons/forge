@@ -36,6 +36,24 @@ class SettingsTests(unittest.TestCase):
                     'installation_url': 'https://github.com/settings/installations/101'}
         self.client.discover.side_effect = discover
 
+    def test_saved_repository_projection_does_not_open_credentials(self):
+        from forge.factory.config import validate as runtime_config
+        with patch('forge.credentials.Credentials.environment', side_effect=AssertionError('read-only view opened credentials')), \
+                patch('forge.settings.AppClient', side_effect=AssertionError('read-only view created client')):
+            settings = Settings(self.root, clock=lambda: self.now)
+            settings.repository_views(runtime=runtime_config({}))
+
+    def test_explicit_refresh_initializes_one_client_before_parallel_discovery(self):
+        with patch('forge.credentials.Credentials.environment', return_value={'QUALIFIED': 'local'}) as environment, \
+                patch('forge.settings.AppClient', return_value=self.client) as client:
+            settings = Settings(self.root, clock=lambda: self.now)
+            environment.assert_not_called(); client.assert_not_called()
+            self.assertTrue(settings.refresh())
+            self.assertTrue(settings.refresh())
+            environment.assert_called_once_with()
+            client.assert_called_once_with(environ={'QUALIFIED': 'local'})
+            self.assertEqual(self.client.discover.call_count, 8)
+
     def prepare(self, identifier=10, name='example/project'):
         from forge.repository_setup import observation_key
         row={'id':identifier,'name':name}

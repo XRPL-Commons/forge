@@ -21,22 +21,24 @@ class SqliteRepositoryEnvironments(RepositoryEnvironments):
     def snapshot(self, *, runtime=None):
         with self.database.read_snapshot() as db:
             config = db.execute("SELECT settings_json FROM configuration WHERE domain='runtime.json' AND subject='instance' AND active=1").fetchone() if runtime is None else None
-            rows = db.execute('SELECT s.* FROM environment_scans s WHERE s.id=(SELECT n.id FROM environment_scans n '
-                              'WHERE n.repository_id=s.repository_id ORDER BY n.created_at DESC,n.rowid DESC LIMIT 1)').fetchall()
-            proposals, scans = {}, {}
+            rows = db.execute('SELECT * FROM (SELECT s.*,row_number() OVER (PARTITION BY repository_id '
+                              'ORDER BY created_at DESC,rowid DESC) AS position FROM environment_scans s) '
+                              'WHERE position=1').fetchall()
+            # The selected scan still owns status. Fetch its repository's last
+            # completed proposal once per snapshot, including an older success
+            # while the newest scan is running or unavailable.
+            repositories = json.dumps([row['repository_id'] for row in rows])
+            proposals = {str(row['repository_id']): json.loads(row['proposal_json']) for row in db.execute(
+                "SELECT repository_id,proposal_json FROM (SELECT s.repository_id,p.proposal_json,"
+                "row_number() OVER (PARTITION BY s.repository_id ORDER BY s.created_at DESC,s.rowid DESC,p.revision DESC) AS position "
+                "FROM environment_scans s JOIN environment_proposals p ON p.scan_id=s.id "
+                "WHERE s.repository_id IN (SELECT value FROM json_each(?)) AND s.status='completed' "
+                "AND p.status IN ('proposed','approved','applied')) WHERE position=1", (repositories,))}
+            scans = {}
             for row in rows:
                 key = str(row['repository_id'])
                 scans[key] = dict(id=row['source_id'] or row['id'], started_at=row['created_at'],
                                   status='complete' if row['status'] == 'completed' else row['status'], error=row['error'])
-                # A refresh can be running or unavailable while the last
-                # successful evidence remains useful to automatic selection.
-                # Reset supersedes these proposals without deleting history.
-                proposal = db.execute('SELECT p.proposal_json FROM environment_proposals p JOIN environment_scans s ON s.id=p.scan_id '
-                                      "WHERE s.repository_id=? AND s.status='completed' AND p.status IN ('proposed','approved','applied') "
-                                      'ORDER BY s.created_at DESC,s.rowid DESC,p.revision DESC LIMIT 1',
-                                      (row['repository_id'],)).fetchone()
-                if proposal:
-                    proposals[key] = json.loads(proposal[0])
             return (validate(json.loads(config[0]) if config else {}) if runtime is None else runtime), proposals, scans
 
     def start_scan(self, repo, revision, environment_revision, *, background=True):

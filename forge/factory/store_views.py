@@ -156,20 +156,21 @@ class PipelineViews:
         return sorted(numbers),pulls,reviewers
 
     @staticmethod
-    def _prerequisites(db, issue, unit_id):
+    def _prerequisites(db, issue, unit_id, *, reads=None):
         from .prerequisites import blocker, references
         from ..store.repository_requirements import orders_in
-        check=db.execute('SELECT facts_json FROM dependency_checks WHERE unit_id=? AND requirements_revision_id=? ORDER BY generation DESC LIMIT 1',
-                         (unit_id,issue['current_revision_id'])).fetchone() if unit_id else None
-        facts={fact['reference']:fact for fact in json.loads(check[0])} if check else {}
-        refs=set(facts) | set(orders_in(db,issue['id'],issue['current_revision_id']))
+        check=(reads.checks.get(issue['id']) if reads is not None else db.execute(
+            'SELECT facts_json FROM dependency_checks WHERE unit_id=? AND requirements_revision_id=? ORDER BY generation DESC LIMIT 1',
+            (unit_id,issue['current_revision_id'])).fetchone() if unit_id else None)
+        facts={fact['reference']:fact for fact in json.loads(check['facts_json'])} if check else {}
+        refs=set(facts) | set(reads.orders.get(issue['id'], []) if reads is not None else orders_in(db,issue['id'],issue['current_revision_id']))
         if 'body' in issue:
             refs.update(references(issue['body'],issue['repository']))
         reasons={}
         if unit_id and check is None:
             # Imported observations remain explicit evidence until the first
             # current prerequisite check replaces them.
-            for row in db.execute("SELECT kind,value_json FROM dependency_observation_members WHERE unit_id=?",(unit_id,)):
+            for row in (reads.imported.get(unit_id, []) if reads is not None else db.execute("SELECT kind,value_json FROM dependency_observation_members WHERE unit_id=?",(unit_id,))):
                 ref=issue['repository'].lower()+'#'+str(json.loads(row['value_json']))
                 refs.add(ref)
                 if row['kind']=='blocked':reasons[ref]='prerequisite_open'
@@ -299,7 +300,7 @@ class PipelineViews:
     def _public(row):
         return {key:value for key,value in row.items() if not key.startswith('_')}
 
-    def _activity_row(self, db, issue_id, *, issue_context=None):
+    def _activity_row(self, db, issue_id, *, issue_context=None, reads=None):
         """Only the inputs consumed by Activity's card serializer.
 
         Canonical lifecycle and worker visibility are shared with issue views;
@@ -311,7 +312,7 @@ class PipelineViews:
         jobs = issue_jobs_in(db, unit_id, issue_id)
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
         operator = operator_status(issue, bool(active))
-        context = db.execute('SELECT summary_json,last_observed_at FROM unit_context WHERE unit_id=?', (unit_id,)).fetchone() if unit else None
+        context = (reads.unit_contexts.get(unit_id) if reads is not None else db.execute('SELECT summary_json,last_observed_at FROM unit_context WHERE unit_id=?', (unit_id,)).fetchone()) if unit else None
         historical = bool(unit and unit['state'] in {'merged', 'closed', 'dissolved'})
         if context and not historical:
             # Match the same bounded applicable gate collection as issue views.
@@ -320,10 +321,10 @@ class PipelineViews:
                 'AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',
                 (unit_id, life['candidate_id'], life['member_id'])))
         checked = context['last_observed_at'] if context and historical else issue['observed_at'] if unit else None
-        prerequisites = self._prerequisites(db, issue, unit_id)
+        prerequisites = self._prerequisites(db, issue, unit_id, reads=reads)
         blocked = [row['number'] for row in prerequisites if not row['complete'] and
                    row['reason'] != 'prerequisite_unobserved' and row['repository'] == issue['repository'].lower()]
-        charges = db.execute("SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries b "
+        charges = reads.charges.get(unit_id, 0) if reads is not None else db.execute("SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries b "
                              'JOIN attempts a ON a.id=b.attempt_id WHERE a.unit_id=? AND a.budget_generation=?',
                              (unit_id, unit['budget_generation'])).fetchone()[0] if unit else 0
         return dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
@@ -334,7 +335,7 @@ class PipelineViews:
                     _unit=unit, _jobs=[dict(job) for job in jobs], _blocked_dependencies=blocked,
                     _last_summary=json.loads(context['summary_json']) if context and context['summary_json'] else None)
 
-    def _factory_issue(self, db, row, *, completed_at=None):
+    def _factory_issue(self, db, row, *, completed_at=None, reads=None):
         unit, reason = row['_unit'], row['reason_code']
         if unit is None:
             return None
@@ -348,14 +349,14 @@ class PipelineViews:
             transition = dict(code=reason, job_id=details.get('job_id') if settled else None, role=role or None)
         if completed_at is None:
             completed_at = db.execute('SELECT '+COMPLETION_SQL+' FROM units u WHERE u.id=?', (unit['id'],)).fetchone()[0]
-        candidate=db.execute('SELECT pull_number,head_oid FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone() if unit['current_candidate_id'] else None
+        candidate=(reads.candidates.get(unit['current_candidate_id']) if reads is not None else db.execute('SELECT pull_number,head_oid FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone()) if unit['current_candidate_id'] else None
         deployed=failed=None
-        delivery=db.execute("SELECT * FROM deployment_observations WHERE candidate_id=? ORDER BY (status='success') DESC,observed_at DESC LIMIT 1",(unit['current_candidate_id'],)).fetchone()
+        delivery=reads.deployments.get(unit['current_candidate_id']) if reads is not None else db.execute("SELECT * FROM deployment_observations WHERE candidate_id=? ORDER BY (status='success') DESC,observed_at DESC LIMIT 1",(unit['current_candidate_id'],)).fetchone()
         if delivery:
             context=json.loads(delivery['details_json'])
             if delivery['status']=='success':deployed={'commit':delivery['commit_oid'],'at':delivery['observed_at'],'via':context.get('via','github')}
             elif delivery['status']=='failure':failed={'sha':delivery['commit_oid'],'at':delivery['observed_at'],'run_url':context.get('run_url')}
-        events=db.execute('SELECT kind,at,payload_json FROM events WHERE unit_id=? ORDER BY sequence DESC LIMIT 3',(unit['id'],)).fetchall()
+        events=reads.events.get(unit['id'], []) if reads is not None else db.execute('SELECT kind,at,payload_json FROM events WHERE unit_id=? ORDER BY sequence DESC LIMIT 3',(unit['id'],)).fetchall()
         history=[_event(e,('at','kind','provider','model')) for e in reversed(events)]
         if unit['state'] in {'merged','closed','dissolved'} and completed_at and not any(e['kind'] in {'merged','cancelled','closed','dissolved'} for e in history):
             history.insert(0,{'kind':'merged' if unit['state']=='merged' else 'cancelled','at':completed_at})
@@ -565,9 +566,11 @@ class PipelineViews:
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
             issues=[]
             contexts=selection.contexts([row['id'] for row in rows[:size]])
+            from .activity_reads import ActivityReads
+            reads=ActivityReads(db, contexts) if contexts else None
             for selected in rows[:size]:
-                row=self._activity_row(db,selected['id'],issue_context=contexts[selected['id']])
-                issues.append(self._factory_issue(db, row, completed_at=selected['completed_at']))
+                row=self._activity_row(db,selected['id'],issue_context=contexts[selected['id']],reads=reads)
+                issues.append(self._factory_issue(db, row, completed_at=selected['completed_at'],reads=reads))
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
             if (section in (None, 'board') and len(issues) < size
