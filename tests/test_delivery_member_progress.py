@@ -44,10 +44,7 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         return self.plan()
 
     def running_child(self, plan, key):
-        manifest = self.query.child_manifest(plan['plan_id'], key)
-        child = self.delivery.delegate(self.command(), plan['plan_id'], key, slot=f'child-{key}',
-            execution_fence=f'fence-{key}', input_manifest=manifest, worktree_key=f'worktree-{key}',
-            launch=Launch(f'forge/child-{key}', 'builder[bot]', 'codex', 200, {}, {}))
+        child, manifest = self.child(plan, key)
         Executions(self.store, clock=lambda: 100).progress(self.command(), child['job_id'],
             execution_fence=f'fence-{key}', phase='running', container_id=f'container-{key}')
         return child, manifest
@@ -81,7 +78,7 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         self.assertEqual(dependent['operator_status']['reason'], 'Waiting for accepted prerequisite outputs')
         self.assertEqual(dependent['gates'][0]['reason'], dependent['operator_status']['reason'])
         self.assertEqual(Queries(self.store).issue('1:2')['lifecycle']['display_status'], dependent['operator_status']['reason'])
-        self.assertEqual(dependent['dependencies'], [{'member_id': held['id'], 'issue_key': '1:1', 'number': 1, 'output': None}])
+        self.assertEqual(dependent['dependencies'], [{'member_id': held['id'], 'issue_key': '1:1', 'number': 1, 'contributions': held['contributions']}])
         self.assertEqual(running['operator_status']['code'], 'working')
         self.assertEqual(running['gates'], [])
         self.assertEqual(running['active_job_ids'], [child['job_id']])
@@ -101,10 +98,15 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         self.hold()
         tree = self.views.delivery('1:1')
         first, second, _ = tree['members']
-        output = next(row for row in self.query.tree('batch')['outputs'] if row['member_id'] == first['id'])
-        self.assertEqual(first['output'], output)
-        self.assertEqual(first['output_commit'], output['commit_oid'])
-        self.assertEqual(second['dependencies'][0]['output'], output)
+        contribution = first['contributions']
+        output = contribution['outputs'][0]
+        self.assertEqual(output['commit_oid'], 'a' * 40)
+        self.assertEqual(output['task_id'], plan['task_ids']['0'])
+        self.assertEqual(contribution['task_ids'], [output['task_id']])
+        self.assertTrue(contribution['ready'])
+        self.assertEqual(second['dependencies'][0]['contributions'], contribution)
+        self.assertNotIn('output', first)
+        self.assertNotIn('output_commit', first)
         self.assertEqual(first['operator_status']['code'], 'blocked')
         self.assertEqual({gate['code'] for gate in first['gates']}, {'label_hold', 'environment'})
         self.assertEqual(second['operator_status']['code'], 'queued')
@@ -147,5 +149,5 @@ class DeliveryMemberProgressTests(unittest.TestCase):
             github.return_value.repository.return_value = target
             client.return_value.read.return_value = response
             self.assertEqual(cli.main(['repo', 'delivery', 'example/repo', '1', '--server', 'https://forge.example']), 0)
-            client.return_value.read.assert_called_once_with(target, 'delivery', 1, after='')
+            client.return_value.read.assert_called_once_with(target, 'delivery', 1, after='', task_after='')
         self.assertEqual(json.loads(output.getvalue()), {'ok': True, **response})
