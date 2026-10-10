@@ -15,6 +15,7 @@ class HTTPServerTimingTests(unittest.TestCase):
         handler.path, handler.command = path, 'GET'
         handler.headers = {'If-None-Match': tag} if tag else {}
         handler._action_token = 'private-session-token'
+        handler._factory_paused = False
         for method in ('_trusted_host', '_upstream', '_operator_guard', '_signed_in'):
             setattr(handler, method, Mock(return_value=True))
         handler._auth_get = Mock(return_value=False)

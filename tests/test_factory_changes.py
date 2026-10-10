@@ -128,6 +128,7 @@ class FactoryChangesHTTPTests(unittest.TestCase):
         handler = object.__new__(dashboard.H)
         handler.path = path
         handler._action_token = 'operator-token'
+        handler._factory_paused = False
         for name in ('_trusted_host', '_upstream', '_operator_guard', '_signed_in'):
             setattr(handler, name, Mock(return_value=True))
         handler._auth_get = Mock(return_value=False)

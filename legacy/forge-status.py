@@ -7,6 +7,7 @@ only the locked supervisor acts on it.
 """
 import hashlib
 import json, re, subprocess, os, secrets, hmac, threading, ipaddress
+from contextlib import nullcontext
 from pathlib import Path
 from time import perf_counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -191,9 +192,19 @@ class H(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _operator_guard(self):
+    def _operator_guard(self, *, read_snapshot=False):
         try:
-            return self._operator()
+            if not read_snapshot:
+                return self._operator()
+            from forge.store.runtime import selected
+            store = selected(WD)
+            # Authentication and pause state describe the same committed state.
+            # Close before cache fingerprinting, projection, callbacks or waits.
+            with store.read_session() if store is not None else nullcontext():
+                if not self._operator():
+                    return False
+                self._factory_paused = runtime_control('factory_paused', 'state/factory-paused.json')
+                return True
         except (ValueError, OSError, RuntimeError, KeyError, TypeError):
             self.send_error(503)
             return False
@@ -534,7 +545,7 @@ class H(BaseHTTPRequestHandler):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         u = urlparse(self.path)
-        if not self._operator_guard():
+        if not self._operator_guard(read_snapshot=True):
             return
         if self._auth_get(u):
             return
@@ -556,7 +567,7 @@ class H(BaseHTTPRequestHandler):
             except (ValueError, OSError, RuntimeError, KeyError, TypeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Connections are unavailable until setup or reset has completed.'}))
             return
-        if u.path.startswith('/api/') and u.path!='/api/onboarding' and runtime_control('factory_paused','state/factory-paused.json'):
+        if u.path.startswith('/api/') and u.path!='/api/onboarding' and self._factory_paused:
             self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}));return
         if u.path in {'/onboarding/cli/github/start', '/onboarding/cli/github/callback'}:
             from forge.installation_apps import RoleAppHandoff
@@ -663,9 +674,9 @@ class H(BaseHTTPRequestHandler):
                                                cancelled=lambda: socket_eof(self.connection))
                 # A session revoked while this request waited cannot receive its
                 # response. The same signed-in checks run before every request.
-                if not self._operator_guard() or not self._signed_in():
+                if not self._operator_guard(read_snapshot=True) or not self._signed_in():
                     return
-                if runtime_control('factory_paused','state/factory-paused.json'):
+                if self._factory_paused:
                     self._send(json.dumps({'ok':False,'reason':'Factory reset is in progress'}))
                     return
                 result['board'].update(ok=True, controls_token=self._action_token)
@@ -678,7 +689,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':False,'reason':'Factory changes are unavailable'}), status=503)
         elif u.path == '/api/factory':
             try:
-                if runtime_control('factory_paused','state/factory-paused.json'):raise ValueError('Resetting')
                 from forge.factory.control import factory_view
                 query=parse_qs(u.query, keep_blank_values=True)
                 if set(query)-{'section','issue','limit','before'} or any(len(v)!=1 or not v[0] for v in query.values()):
@@ -690,7 +700,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
         elif u.path == '/api/factory/output':
             try:
-                if runtime_control('factory_paused','state/factory-paused.json'):raise ValueError('Resetting')
                 from forge.factory.ledger import Ledger
                 from forge.factory.contracts import identifier
                 query=parse_qs(u.query)
@@ -722,7 +731,6 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok':False,'reason':'Repository setup changed or is unavailable. Check again.'}))
         elif u.path == '/api/settings':
             try:
-                if runtime_control('factory_paused','state/factory-paused.json'):raise ValueError('Resetting')
                 query=parse_qs(u.query)
                 if query and query != {'summary':['1']}: raise ValueError('Invalid settings view')
                 result=settings_service().view()

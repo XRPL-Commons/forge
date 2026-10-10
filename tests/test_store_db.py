@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from forge.store.db import Store, StoreError, qualified_sqlite
 
@@ -48,6 +48,21 @@ class StoreDatabaseTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA query_only").fetchone()[0], 1)
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
+
+    def test_validation_reads_only_schema_and_instance_metadata(self):
+        with self.store.write() as connection:
+            connection.executemany("INSERT INTO store_metadata VALUES (?, ?)",
+                                   [(f'sweep-receipt-{index}', 'x' * 4096) for index in range(100)])
+        with self.store.read_snapshot() as connection:
+            metadata = []
+            def execute(query):
+                rows = connection.execute(query)
+                if 'FROM store_metadata' in query:
+                    rows = list(rows)
+                    metadata.extend(rows)
+                return rows
+            self.store._validate(Mock(execute=execute))
+            self.assertEqual({row['key'] for row in metadata}, {'schema_version', 'instance_id'})
 
     def test_commit_and_exception_rollback(self):
         self.put("before")

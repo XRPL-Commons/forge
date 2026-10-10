@@ -240,7 +240,7 @@ class Store:
             raise StoreError("schema_incomplete", "The store requires an explicit schema migration or recovery")
         if [(row[0], row[1]) for row in rows] != [(version, checksum) for version, checksum, _ in migrations]:
             raise StoreError("schema_checksum", "Applied schema migration checksums do not match this binary")
-        metadata = dict(connection.execute("SELECT key, value FROM store_metadata"))
+        metadata = dict(connection.execute("SELECT key, value FROM store_metadata WHERE key IN ('schema_version', 'instance_id')"))
         if metadata.get("schema_version") != str(migrations[-1][0]):
             raise StoreError("schema_incomplete", "Schema metadata does not match applied migrations")
         expected = self._anchor()
