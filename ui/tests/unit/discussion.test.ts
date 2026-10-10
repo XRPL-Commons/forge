@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { COLLAPSED_LINES, SLOW_SECONDS, SUGGESTED_PROMPTS, clockTime, collapsible, modeLine, slowNote, elapsedLabel, findingDetail, issueTab, joinedLine, leftLine, nearBottom, presenceMood, replyState, tabQuery, threadEntries, unansweredQuestion, unreadReply, type ThreadMessage } from '../../app/utils/discussion'
+import { COLLAPSED_LINES, SLOW_SECONDS, SUGGESTED_PROMPTS, clockTime, collapsible, slowNote, elapsedLabel, findingDetail, issueTab, joinedLine, leftLine, liveLine, proposalState, nearBottom, presenceMood, replyState, tabQuery, threadEntries, unansweredQuestion, unreadReply, type ThreadMessage } from '../../app/utils/discussion'
 import { panelQuery } from '../../app/utils/panel'
 import { issuePath } from '../../app/utils/issues'
 
@@ -126,28 +126,44 @@ describe('presence', () => {
     expect(elapsedLabel(-3)).toBe('0 s')
   })
 
-  it('puts a joined line before each answer and offers Try again only on the latest left line', () => {
-    const entries = threadEntries([user('a'), left('l1'), answer('b', { instead_of: bolt }), user('c'), left('l2')], false)
-    expect(entries.map(e => e.kind)).toEqual(['user', 'left', 'joined', 'answer', 'user', 'left'])
+  it('lets the answer replace the status before it, and offers Try again only on the latest left line', () => {
+    const entries = threadEntries([user('a'), left('l1'), answer('b', { instead_of: bolt }), user('c'), left('l2'), user('d'), left('l3')], false)
+    // l1 was answered after all: gone. l2's question never was: it stays.
+    expect(entries.map(e => e.id)).toEqual(['a', 'b', 'c', 'l2', 'd', 'l3'])
     expect(entries.filter(e => e.kind === 'left').map(e => (e as { actionable: boolean }).actionable)).toEqual([false, true])
-    expect(entries[2]).toMatchObject({ kind: 'joined', instead: bolt })
     // Not while a reply is on its way, nor when Forge is already finding someone else.
     expect((threadEntries([user('a'), left('l')], true).at(-1) as { actionable: boolean }).actionable).toBe(false)
     expect((threadEntries([user('a'), left('l', { retrying: true })], false).at(-1) as { actionable: boolean }).actionable).toBe(false)
   })
 })
 
-describe('answer mode and time', () => {
-  it('says whether the agent answers from the saved evidence or checks the code', () => {
-    expect(modeLine('evidence')).toBe('Answering from saved evidence')
-    expect(modeLine(undefined)).toBe('Answering from saved evidence')
-    expect(modeLine('code')).toBe('Checking the code')
+describe('the one live line', () => {
+  const ember = { provider: 'claude', model: 'claude-sonnet-4-6' }
+  it('shows only what the agent is doing now, never the log', () => {
+    expect(liveLine(ember, [])).toBe('Ember joined · Claude Sonnet 4.6')
+    expect(liveLine(ember, [], { provider: 'codex' })).toBe('Ember joined instead · Claude Sonnet 4.6')
+    expect(liveLine(ember, [{ at: 1, text: 'Getting started' }, { at: 2, text: 'Thinking it through' }])).toBe('Ember is thinking it through')
   })
   it('adds a gentle note only past about 90 s', () => {
     expect(SLOW_SECONDS).toBe(90)
-    expect(slowNote('Ember', 'code', 89)).toBeNull()
-    expect(slowNote('Ember', 'code', 90)).toBe('Taking longer than usual: Ember is reading the code')
-    expect(slowNote('Bolt', 'evidence', 200)).toBe('Taking longer than usual: Bolt is still working on it')
+    expect(slowNote('code', 89)).toBeNull()
+    expect(slowNote('code', 90)).toBe('reading the code, longer than usual')
+    expect(slowNote('evidence', 200)).toBe('longer than usual')
+  })
+})
+
+describe('proposal card', () => {
+  const proposal = { action: 'close', reason: 'Blocked by workflow permissions.' }
+  it('offers the button until the decision is submitted', () => {
+    expect(proposalState({})).toBe('none')
+    expect(proposalState({ proposal })).toBe('offer')
+    expect(proposalState({ proposal, receipt: 'r' })).toBe('submitted')
+  })
+  it('says a close the operator asked for is done, with Undo, then undone', () => {
+    // Asked in words but not applied (e.g. the issue changed): still the button.
+    expect(proposalState({ proposal, requested: 'close this issue' })).toBe('offer')
+    expect(proposalState({ proposal, requested: 'close this issue', receipt: 'r' })).toBe('closed')
+    expect(proposalState({ proposal, requested: 'close this issue', receipt: 'r', undone: { at: 2 } })).toBe('reopened')
   })
 })
 

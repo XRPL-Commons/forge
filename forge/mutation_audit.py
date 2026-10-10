@@ -92,7 +92,7 @@ class MutationAudit:
         elif self.route == '/api/runtime':
             self.details['target'] = 'runtime'
         action = value.get('action')
-        if isinstance(action, str) and action in {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway', 'environment', 'close', 'assign_reviewer', 'send', 'cancel', 'apply', 'enable', 'disable', 'verify', 'check', 'start', 'reset'}:
+        if isinstance(action, str) and action in {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway', 'environment', 'close', 'assign_reviewer', 'send', 'cancel', 'apply', 'undo', 'enable', 'disable', 'verify', 'check', 'start', 'reset'}:
             self.details['action'] = action
         revision = value.get('revision')
         if isinstance(revision, str) and _REVISION.fullmatch(revision):

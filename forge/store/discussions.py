@@ -289,7 +289,7 @@ class DiscussionStore:
                 self._touch(db,thread['id'])
             self._event(db,thread,'cleaned',execution_id=job_id)
 
-    def receipt(self,key,message_id,receipt,*,actor):
+    def receipt(self,key,message_id,receipt,*,actor,**details):
         with self.store.write() as db:
             writable(db)
             thread=self._thread(db,key)
@@ -300,7 +300,26 @@ class DiscussionStore:
                 raise IdempotencyConflict('proposal already has another receipt')
             metadata['receipt']=receipt
             db.execute('UPDATE messages SET metadata_json=? WHERE id=?',(_json(metadata),message_id))
-            self._event(db,thread,'proposal_applied',actor,message_id=message_id,receipt=receipt)
+            self._event(db,thread,'proposal_applied',actor,message_id=message_id,receipt=receipt,**details)
+
+    def mark(self,key,message_id,*,actor,reason=None,**fields):
+        """Record what became of an answer's proposal: a failed close or its undo."""
+        with self.store.write() as db:
+            writable(db)
+            thread=self._thread(db,key)
+            row=db.execute("SELECT * FROM messages WHERE discussion_id=? AND id=? AND role='assistant'",(thread['id'],message_id)).fetchone()
+            if row is None: raise KeyError(message_id)
+            metadata=json.loads(row['metadata_json'])|fields
+            db.execute('UPDATE messages SET metadata_json=? WHERE id=?',(_json(metadata),message_id))
+            self._touch(db,thread['id'])
+            self._event(db,thread,'proposal_'+next(iter(fields)),actor,message_id=message_id,**({'reason':reason} if reason else {}))
+
+    def asker(self,key):
+        """(author, words) of the operator's latest message."""
+        with self.store.read_snapshot() as db:
+            thread=self._thread(db,key)
+            row=db.execute("SELECT author_id,content FROM messages WHERE discussion_id=? AND role='operator' ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
+            return (row['author_id'],row['content']) if row else None
 
     def prune_logs(self):
         with self.store.write() as db:

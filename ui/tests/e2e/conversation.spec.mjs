@@ -55,11 +55,12 @@ export default async function (page, { base, requests, discussionTime }) {
   assert.match(await finding.innerText(), /Looking for someone available/)
   assert.match(await finding.locator('[data-finding-reason]').innerText(), /one runs at a time · waiting \d+ s/)
   await page.screenshot({ path: '/tmp/forge-conversation-finding.png' })
-  // Then someone joins, with a face and a name, and says what it is doing.
+  // Then someone joins, with a face and a name, and one live line says what
+  // it is doing now.
   await discussionTime(1300)
   const joined = page.locator('[data-presence][data-phase="joined"]')
   await joined.waitFor()
-  assert.match(await joined.locator('[data-presence-title]').innerText(), /^Ember joined · Claude Sonnet 4\.6 · \d+ s$/)
+  assert.match(await joined.locator('[data-presence-title]').innerText(), /^Ember is getting started · \d+ s$/)
   assert.equal(await joined.locator('canvas[data-persona="Ember"]').getAttribute('data-mood'), 'busy')
   // Agents are workers on two feet, not the issues' cube heads.
   const worker = joined.locator('canvas[data-persona="Ember"]')
@@ -71,14 +72,15 @@ export default async function (page, { base, requests, discussionTime }) {
     const data = el.getContext('2d').getImageData(0, Math.floor(el.height * 0.9), el.width, Math.ceil(el.height * 0.05)).data
     return data.some((v, i) => i % 4 === 3 && v > 0)
   }), 'the worker has feet')
-  // Which kind of answer is coming: from the saved evidence until it opens the code.
-  await joined.locator('[data-mode][data-answer-mode="evidence"]').getByText('Answering from saved evidence').waitFor()
+  // The line updates in place: only the latest status, never a log.
   await discussionTime(2000)
-  await joined.locator('[data-activity]').getByText('Ember is reading issue #610').waitFor()
+  await joined.locator('[data-current]').getByText('Ember is reading issue #610').waitFor()
   await discussionTime(2700)
   await joined.locator('[data-current]').getByText('Ember is searching the repository for `producer`').waitFor()
-  await joined.locator('[data-mode][data-answer-mode="code"]').getByText('Checking the code').waitFor()
-  assert.equal(await joined.locator('[data-slow]').count(), 0)
+  assert.equal(await joined.locator('[data-presence-title][data-answer-mode="code"]').count(), 1)
+  assert.equal(await joined.getByText('Ember is reading issue #610').count(), 0, 'the earlier line is replaced, not kept')
+  assert.equal(await joined.locator('[data-current]').count(), 1)
+  assert.doesNotMatch(await joined.innerText(), /longer than usual/)
   // The box stays editable so the next question can be drafted meanwhile.
   assert.equal(await prompt.isDisabled(), false)
   assert.equal(await prompt.inputValue(), '')
@@ -96,8 +98,10 @@ export default async function (page, { base, requests, discussionTime }) {
   await prompt.press('Enter')
   await page.locator('[data-proposal-action]').waitFor()
   assert.equal((await page.locator('[data-proposal-action]').innerText()).trim(), 'Retry attempt')
-  // The answer is Ember's: who joined, its face and name, and what it did, folded away.
-  assert.equal((await page.locator('[data-joined]').last().innerText()).trim(), 'Ember joined · Claude Sonnet 4.6')
+  // The answer replaced the live line: Ember's face and name, no join line
+  // and no log of what it did.
+  assert.equal(await page.locator('[data-joined]').count(), 0)
+  assert.equal(await page.locator('[data-presence]').count(), 0)
   const reply = page.locator('[data-role="assistant"]').last()
   assert.equal((await reply.locator('[data-persona-name]').innerText()).trim(), 'Ember')
   assert.match(await reply.innerText(), /Ember via Claude/)
@@ -115,14 +119,11 @@ export default async function (page, { base, requests, discussionTime }) {
   assert.equal(await card.locator('[data-proposal-action]').count(), 1)
   const cardBox = await card.boundingBox()
   assert.ok(cardBox.height <= 64, `compact proposal card ${cardBox.height}px`)
-  const did = reply.locator('[data-agent-did]')
-  assert.equal((await did.locator('summary').innerText()).trim(), 'What Ember did')
-  assert.equal(await did.getAttribute('open'), null)
-  await did.locator('summary').click()
-  await did.getByText('Reading issue #610').waitFor()
+  assert.equal(await reply.locator('[data-agent-did]').count(), 0)
+  assert.doesNotMatch(await reply.innerText(), /What Ember did|Reading issue #610/)
   assert.match(await page.locator('[data-speaker]').innerText(), /Ember answers here, via Claude/)
-  // Join and leave lines are system lines, never user or assistant bubbles.
-  assert.equal(await page.locator('[data-role="system"] [data-joined]').count(), await page.locator('[data-joined]').count())
+  // A leave line is a system line, never a user or assistant bubble; the
+  // stopped question was never answered, so its line stays.
   assert.equal(await page.locator('[data-role="system"] [data-left]').count(), 1)
   assert.equal(await prompt.inputValue(), '')
   assert.match(await page.locator('body').innerText(), /new conversation using saved issue evidence/i)
@@ -156,14 +157,12 @@ export default async function (page, { base, requests, discussionTime }) {
     await page.screenshot({ path: `/tmp/forge-conversation-${width}.png`, fullPage: true })
   }
 
-  // Over about 90 s, a gentle note says why it is taking a while.
+  // Over about 90 s, a gentle note on the same line says why it is taking a while.
   await prompt.fill('Check the code properly (slow)')
   await prompt.press('Enter')
-  const slow = page.locator('[data-presence][data-phase="joined"] [data-slow]')
-  await slow.waitFor()
-  assert.equal((await slow.innerText()).trim(), 'Taking longer than usual: Ember is reading the code')
-  assert.match(await page.locator('[data-presence-title]').innerText(), /· 1 min$/)
-  assert.equal((await page.locator('[data-presence] [data-mode]').innerText()).trim(), 'Checking the code')
+  const slow = page.locator('[data-presence][data-phase="joined"] [data-elapsed]')
+  await page.waitForFunction(() => /longer than usual/.test(document.querySelector('[data-presence] [data-elapsed]')?.textContent ?? ''))
+  assert.equal((await slow.innerText()).trim(), '· 1 min, reading the code, longer than usual')
   await page.screenshot({ path: '/tmp/forge-conversation-slow.png' })
   await page.getByRole('button', { name: 'Stop reply', exact: true }).click()
   await page.locator('[data-left][data-reason="cancelled"]').nth(1).waitFor()

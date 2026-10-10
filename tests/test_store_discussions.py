@@ -31,11 +31,11 @@ class DiscussionTests(unittest.TestCase):
         self.github=Mock(); self.github.token.return_value='read-only-token'
         self.config=validate({'enabled':True,'image':'sha256:'+'1'*64})
 
-    def send(self):
-        identifier=str(uuid.uuid4()); self.service.send('1:2','Why did this fail?',identifier); return identifier
+    def send(self,text='Why did this fail?'):
+        identifier=str(uuid.uuid4()); self.service.send('1:2',text,identifier); return identifier
 
-    def start(self):
-        self.send(); self.service.tick(self.config,self.github,self.settings)
+    def start(self,text='Why did this fail?'):
+        self.send(text); self.service.tick(self.config,self.github,self.settings)
         return self.service.read()['1:2']['job']
 
     def finish(self,job,**fields):
@@ -117,12 +117,61 @@ class DiscussionTests(unittest.TestCase):
             self.assertEqual(self.service.apply('1:2',job['id']),'receipt')
             self.assertEqual(request.call_count,1)
 
-    def test_invalid_proposal_becomes_classified_exit(self):
+    def test_unavailable_proposal_keeps_the_answer_without_its_button(self):
         job=self.start(); self.finish(job,proposal={'action':'merge','reason':'skip checks'})
-        self.assertFalse(any(m['role']=='assistant' for m in self.service.view('1:2')['messages']))
-        self.assertEqual(self.service.view('1:2')['status'],'unavailable')
-        self.service.drive(job,self.github)
+        reply=self.service.view('1:2')['messages'][-1]
+        self.assertEqual((reply['role'],reply['text'],reply['proposal'],reply['unavailable']),('assistant','Fix the producer type first.',None,True))
+        self.assertEqual(self.service.view('1:2')['status'],'idle')
         self.assertFalse(self.service.active_jobs())
+
+    def closing(self,text,close_now=True,closable=True):
+        self.row.update(closable=closable)
+        job=self.start(text)
+        with patch('forge.factory.issue_actions.request',return_value='close-receipt') as request:
+            self.finish(job,summary='Closed. You can undo it.',proposal={'action':'close','reason':'Blocked by workflow permissions.'},close_now=close_now)
+        return job,request,self.service.view('1:2')['messages'][-1]
+
+    def test_explicit_operator_instruction_closes_as_that_operator_and_undo_reopens(self):
+        job,request,reply=self.closing('I dont want to edit workflow, close this issue')
+        self.assertEqual(request.call_args.kwargs,dict(key='1:2',revision='revision-a',action='close',
+            reason='Blocked by workflow permissions.',request_id=job['id'],actor_id='github:123'))
+        self.assertEqual((reply['receipt'],reply['requested']),('close-receipt','I dont want to edit workflow, close this issue'))
+        with self.store.read_snapshot() as db:
+            history=[json.loads(r[0]) for r in db.execute('SELECT payload_json FROM events ORDER BY sequence')]
+        applied=next(e for e in history if e.get('discussion_event')=='proposal_applied')
+        self.assertEqual(applied['reason'],'Closed from the discussion at the operator\'s request: \u201cI dont want to edit workflow, close this issue\u201d')
+        operator=Mock(); operator.reopen.return_value={'reopened':True}
+        with patch('forge.factory.store_operator.selected_service',return_value=operator) as selected:
+            undone=self.service.undo('1:2',job['id'],actor_id='github:456')
+            self.assertEqual(self.service.undo('1:2',job['id']),undone)
+        operator.reopen.assert_called_once_with('1:2','close-receipt')
+        self.assertEqual(selected.call_args.kwargs['actor_id'],'github:456')
+        self.assertEqual(self.service.view('1:2')['messages'][-1]['undone'],undone)
+
+    def test_persona_suggestion_alone_is_only_a_proposal(self):
+        for text,close_now in (('Why did this fail?',True),('Close this issue',False),("Please don't close this issue",True)):
+            with self.subTest(text=text):
+                self.setUp()
+                _,request,reply=self.closing(text,close_now)
+                request.assert_not_called()
+                self.assertEqual(reply['proposal']['action'],'close')
+                self.assertNotIn('receipt',reply); self.assertNotIn('requested',reply)
+        with self.assertRaises(ValueError): self.service.undo('1:2',reply['id'])
+
+    def test_non_closable_issue_offers_no_close(self):
+        job,request,reply=self.closing('Close this issue',closable=False)
+        self.assertNotIn('close',job['context']['actions'])
+        request.assert_not_called()
+        self.assertEqual((reply['proposal'],reply['unavailable']),(None,True))
+
+    def test_failed_close_keeps_the_card_with_why(self):
+        self.row.update(closable=True)
+        job=self.start('close this issue')
+        with patch('forge.factory.issue_actions.request',side_effect=TransitionError('A fresh open issue observation is required')):
+            self.finish(job,proposal={'action':'close','reason':'No longer needed.'},close_now=True)
+        reply=self.service.view('1:2')['messages'][-1]
+        self.assertEqual((reply['proposal']['action'],reply['close_error']),('close','A fresh open issue observation is required'))
+        self.assertNotIn('receipt',reply)
 
     def test_worker_result_identity_must_match_assignment(self):
         job=self.start(); self.finish(job,attempt='someone-else')

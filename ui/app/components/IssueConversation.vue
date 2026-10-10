@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { requestId } from '~/utils/requestId'
 import { ACTION_LABELS, type IssueAction } from '~/utils/issues'
-import { SUGGESTED_PROMPTS, clockTime, collapsible, elapsedLabel, modeLine, slowNote, findingDetail, joinedLine, leftLine, nearBottom, presenceMood, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
-import { persona, personaSays } from '~/utils/personas'
-interface Message extends ThreadMessage { proposal?: { action: IssueAction; reason: string } | null; receipt?: string }
+import { SUGGESTED_PROMPTS, collapsible, elapsedLabel, slowNote, findingDetail, leftLine, liveLine, nearBottom, presenceMood, proposalState, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
+import { persona } from '~/utils/personas'
+interface Message extends ThreadMessage { proposal?: { action: IssueAction; reason: string } | null }
 interface Conversation { messages: Message[]; before: number | null; status: string; provider?: string; reason: string | null; partial: string; origin: { role: string; provider: string; link: string } | null; presence?: Presence | null }
 interface ChatEntry { id: string; role: ChatRole; parts: { type: 'text'; text: string }[]; ui?: Record<string, string> }
 // The issue panel's Discussion tab: a full-height chat about this issue. The
@@ -44,8 +44,8 @@ const waitedFor = computed(() => {
 })
 // How long the agent has worked on this answer, and a gentle note past ~90 s.
 const slow = computed(() => {
-  if (live.value?.phase !== 'joined' || !liveAgent.value || !live.value.joined_at) return null
-  return slowNote(liveAgent.value.name, live.value.mode, now.value - live.value.joined_at)
+  if (live.value?.phase !== 'joined' || !live.value.joined_at) return null
+  return slowNote(live.value.mode, now.value - live.value.joined_at)
 })
 // Long answers start folded; the operator unfolds the ones they want.
 const unfolded = ref(new Set<string>())
@@ -59,16 +59,13 @@ function toggle(id: string) {
 const statusLine = computed(() => {
   if (sending.value) return 'Sending…'
   if (state.value === 'stopping') return `Stopping ${liveAgent.value?.name ?? 'the reply'}…`
-  if (liveAgent.value) {
-    const current = activity.value[activity.value.length - 1]
-    return current ? personaSays(liveAgent.value.name, current.text) : `${liveAgent.value.name} joined`
-  }
+  if (liveAgent.value) return liveLine(live.value?.agent, activity.value, live.value?.instead_of)
   if (live.value?.phase === 'finding') return 'Looking for someone available…'
   return poll.data.value?.reason || 'Thinking…'
 })
-// The thread in Nuxt UI's chat message shape. Who joined and who left are
-// system lines, not bubbles; while a reply is on its way, a trailing system
-// entry shows the live presence.
+// The thread in Nuxt UI's chat message shape. Who left without answering is
+// a system line, not a bubble; while a reply is on its way, a trailing system
+// entry shows the one live status line, which the answer then replaces.
 const PENDING_ID = 'forge-pending-reply'
 const pending = computed(() => busy.value || sending.value)
 const entries = computed(() => threadEntries(messages.value, pending.value))
@@ -78,7 +75,7 @@ const chatMessages = computed<ChatEntry[]>(() => {
   const thread: ChatEntry[] = entries.value.map((entry) => {
     if (entry.kind === 'user') return { id: entry.id, role: 'user', parts: [{ type: 'text', text: entry.message.text }], ui: { leading: 'hidden' } }
     if (entry.kind === 'answer') return { id: entry.id, role: 'assistant', parts: [{ type: 'text', text: entry.message.text }] }
-    return { id: entry.id, role: 'system', parts: [{ type: 'text', text: entry.kind === 'left' ? entry.message.text : joinedLine(entry.agent, entry.instead) }], ui: SYSTEM_UI }
+    return { id: entry.id, role: 'system', parts: [{ type: 'text', text: entry.message.text }], ui: SYSTEM_UI }
   })
   if (pending.value) thread.push({ id: PENDING_ID, role: 'system', parts: [{ type: 'text', text: statusLine.value }], ui: SYSTEM_UI })
   return thread
@@ -211,6 +208,16 @@ async function cancel() {
   try { await api.act('/api/issues/discussion', { action: 'cancel', key: props.issueKey }); await poll.refresh() }
   catch (e) { error.value = e instanceof Error ? e.message : 'Could not cancel the discussion' }
 }
+// Reopen an issue the agent closed at the operator's request. Not
+// destructive, so one click; the board shows it again after Forge's next look.
+const undoing = ref<string | null>(null)
+async function undo(id: string) {
+  if (undoing.value) return
+  undoing.value = id; error.value = ''
+  try { await api.act('/api/issues/discussion', { action: 'undo', key: props.issueKey, message_id: id }); await poll.refresh() }
+  catch (e) { error.value = e instanceof Error ? e.message : 'Could not reopen the issue' }
+  finally { undoing.value = null }
+}
 async function loadOlder() {
   if (!before.value) return
   const box = scrollBox.value
@@ -285,21 +292,12 @@ async function loadOlder() {
               <div v-if="message.id === PENDING_ID" data-streaming data-presence :data-phase="live?.phase ?? 'sending'" class="mx-auto flex w-full max-w-xl items-start gap-3 rounded-lg border border-line/70 px-3 py-2.5">
                 <AgentAvatar :provider="liveAgent?.provider ?? null" :mood="live ? presenceMood(live.phase) : 'looking'" :size="40" />
                 <div class="min-w-0 flex-1">
-                  <template v-if="liveAgent && live">
-                    <p class="text-sm text-white" data-presence-title>{{ joinedLine(live.agent, live.instead_of) }}<span v-if="waitedFor" class="text-muted"> · {{ waitedFor }}</span></p>
-                    <!-- Which kind of answer is on its way: quick from the saved evidence, or minutes reading the code. -->
-                    <p class="mt-0.5 flex items-center gap-1.5 text-xs text-muted" data-mode :data-answer-mode="live.mode ?? 'evidence'">
-                      <UIcon :name="live.mode === 'code' ? 'i-lucide-file-search' : 'i-lucide-notebook-text'" class="size-3.5 shrink-0" aria-hidden="true" />{{ modeLine(live.mode) }}
-                    </p>
-                    <p v-if="slow" class="mt-1 text-xs text-muted italic" data-slow>{{ slow }}</p>
-                    <ol class="mt-1.5 space-y-0.5" data-activity aria-label="What the agent is doing">
-                      <li v-for="(line, index) in activity" :key="`${line.at}-${index}`" class="text-sm wrap-anywhere">
-                        <UChatShimmer v-if="index === activity.length - 1 && state !== 'stopping'" :text="personaSays(liveAgent.name, line.text)" data-current />
-                        <span v-else class="text-muted">{{ personaSays(liveAgent.name, line.text) }}</span>
-                      </li>
-                    </ol>
-                    <p v-if="state === 'stopping'" class="mt-1 text-sm text-muted">{{ statusLine }}</p>
-                  </template>
+                  <!-- One live line, updated in place: what the agent is doing now. -->
+                  <p v-if="liveAgent && live" class="text-sm wrap-anywhere" data-presence-title :data-answer-mode="live.mode ?? 'evidence'">
+                    <UChatShimmer v-if="state !== 'stopping'" :text="statusLine" data-current />
+                    <span v-else class="text-muted">{{ statusLine }}</span>
+                    <span v-if="waitedFor" class="text-muted" data-elapsed> · {{ waitedFor }}<template v-if="slow">, {{ slow }}</template></span>
+                  </p>
                   <template v-else>
                     <UChatShimmer :text="live?.phase === 'finding' ? 'Looking for someone available…' : statusLine" class="text-sm" data-presence-title />
                     <p v-if="live?.phase === 'finding'" class="mt-1 text-xs text-muted wrap-anywhere" data-finding-reason>
@@ -310,8 +308,6 @@ async function loadOlder() {
                   <p v-if="partial" class="mt-1 whitespace-pre-wrap break-words text-sm text-muted">{{ partial }}</p>
                 </div>
               </div>
-              <!-- Who joined to answer: a system line, not a bubble. -->
-              <p v-else-if="entryById.get(message.id)?.kind === 'joined'" class="text-center text-xs text-muted" data-joined>{{ message.parts[0]?.text }}</p>
               <!-- Who left without answering, and why. -->
               <div v-else-if="entryById.get(message.id)?.kind === 'left'" data-left :data-reason="byId.get(message.id)?.reason" class="mx-auto flex max-w-xl flex-wrap items-center justify-center gap-2 text-center text-sm text-muted">
                 <AgentAvatar v-if="byId.get(message.id)?.agent" :provider="byId.get(message.id)!.agent!.provider" mood="left" :size="28" />
@@ -341,21 +337,29 @@ async function loadOlder() {
                   data-show-more
                   @click="toggle(message.id)"
                 >{{ folded(message.id) ? 'Show more' : 'Show less' }}</UButton>
-                <!-- The proposal: one compact card, the button and its short reason. -->
-                <div v-if="byId.get(message.id)!.proposal" class="mt-2 flex w-fit max-w-full flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-line px-3 py-2" data-proposal aria-label="Suggested decision" role="group">
-                  <p v-if="byId.get(message.id)!.receipt" role="status" class="text-sm text-mint-200">Decision submitted. The issue status in Details shows whether Forge accepted it.</p>
+                <!-- The proposal: one compact card, the button and its short reason.
+                     A close the operator asked for in words is already done, with Undo. -->
+                <div v-if="byId.get(message.id)!.proposal" class="mt-2 flex w-fit max-w-full flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-line px-3 py-2" data-proposal :data-state="proposalState(byId.get(message.id)!)" aria-label="Suggested decision" role="group">
+                  <template v-if="proposalState(byId.get(message.id)!) === 'closed'">
+                    <p role="status" class="text-sm text-mint-200">Closed as no longer needed, as you asked.</p>
+                    <UButton class="shrink-0" size="xs" color="neutral" variant="outline" icon="i-lucide-undo-2" :loading="undoing === message.id" :disabled="!!undoing" data-undo @click="undo(message.id)">Undo</UButton>
+                  </template>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'reopened'" role="status" class="text-sm text-muted">Reopened. Forge checks the issue on GitHub again and returns it to the board.</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'submitted'" role="status" class="text-sm text-mint-200">Decision submitted. The issue status in Details shows whether Forge accepted it.</p>
                   <UButton
                     v-else
                     class="shrink-0"
                     size="sm"
-                    :color="byId.get(message.id)!.proposal!.action === primary ? 'primary' : 'neutral'"
+                    :color="byId.get(message.id)!.proposal!.action === 'close' ? 'error' : byId.get(message.id)!.proposal!.action === primary ? 'primary' : 'neutral'"
                     :variant="byId.get(message.id)!.proposal!.action === primary ? 'solid' : 'outline'"
                     :disabled="disabled || busy"
                     data-proposal-action
                     @click="emit('act', byId.get(message.id)!.proposal!.action, byId.get(message.id)!.proposal!.reason)"
-                  >{{ ACTION_LABELS[byId.get(message.id)!.proposal!.action] }}</UButton>
+                  >{{ byId.get(message.id)!.proposal!.action === 'close' ? `${ACTION_LABELS.close}…` : ACTION_LABELS[byId.get(message.id)!.proposal!.action] }}</UButton>
                   <p class="line-clamp-2 min-w-0 flex-1 basis-48 text-xs text-muted wrap-anywhere" data-proposal-reason :title="byId.get(message.id)!.proposal!.reason">{{ byId.get(message.id)!.proposal!.reason }}</p>
+                  <p v-if="byId.get(message.id)!.close_error && proposalState(byId.get(message.id)!) === 'offer'" class="basis-full text-xs text-amber-200 wrap-anywhere" data-close-error>Forge could not close it for you: {{ byId.get(message.id)!.close_error }}</p>
                 </div>
+                <p v-else-if="byId.get(message.id)!.unavailable" class="mt-1 text-xs text-muted" data-unavailable>That action isn't available here.</p>
                 <div v-if="message.role === 'assistant' && actions.length" class="mt-2 flex flex-wrap items-center gap-1.5" data-reply-actions>
                   <span class="text-xs text-muted">You can:</span>
                   <UButton
@@ -369,13 +373,6 @@ async function loadOlder() {
                     @click="emit('act', action, '')"
                   >{{ ACTION_LABELS[action] }}</UButton>
                 </div>
-                <!-- What the agent did on the way to this answer, folded away. -->
-                <details v-if="message.role === 'assistant' && byId.get(message.id)!.activity?.length" class="mt-2 text-xs text-muted" data-agent-did>
-                  <summary class="cursor-pointer select-none">What {{ persona(byId.get(message.id)!.agent?.provider).name }} did</summary>
-                  <ol class="mt-1 space-y-0.5 pl-1">
-                    <li v-for="(line, index) in byId.get(message.id)!.activity" :key="index" class="wrap-anywhere"><span class="tabular-nums">{{ clockTime(line.at) }}</span> · {{ line.text }}</li>
-                  </ol>
-                </details>
               </template>
             </template>
           </UChatMessages>

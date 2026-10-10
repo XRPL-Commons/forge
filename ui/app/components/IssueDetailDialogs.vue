@@ -36,6 +36,7 @@ const {
         :issue-key="detail.key"
         :number="detail.number"
         :pull="candidatePull?.number ?? null"
+        :reason="decisionReason"
         :error="decisionRequest.error.value"
         :pending="decisionRequest.pending.value"
         @submit="submit"

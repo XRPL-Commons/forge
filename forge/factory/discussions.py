@@ -30,8 +30,12 @@ BUTTONS = {
     "retry": ("Retry attempt", "Grants a new three-attempt budget and returns the issue to Build, with the reason as guidance."),
     "recheck": ("Recheck readiness", "Rechecks the reported blocker and resumes the held stage, keeping the pull request and budget."),
     "assign_reviewer": ("Assign reviewer", "Requests a GitHub review from the named people; the reason must be only their GitHub logins."),
-    "close": ("Close issue", "Stops any work, closes Forge's pull request and closes the issue as not planned, with the reason as a comment."),
+    "close": ("Close issue", "Stops any work, closes Forge's pull request and closes the issue as no longer needed (not planned), with the reason as a comment. The operator can reopen it."),
 }
+# Closing is the operator's call. Only their own words in the latest message
+# let a persona close for them; its own suggestion stays a card to click.
+CLOSE_ASKED = re.compile(r"\b(close|closing|drop)\b", re.I)
+CLOSE_REFUSED = re.compile(r"\b(don'?t|do not|never|not|no need to)\s+(close|drop)\b", re.I)
 # Answers took 100-150 s, and container start plus reading the repository can
 # take longer; 300 s timed out with nothing streamed (tokenlab #7).
 DISCUSSION_SECONDS = 600
@@ -79,11 +83,44 @@ def note(job):
                 "You may propose ONE of the currently available actions listed in context. Its reason is a 1-2 sentence note for the "
                 "next attempt (the changed approach), not a repeat of your answer; at most 300 characters. Set proposal to null if more "
                 "evidence, a scope edit, or a different external action is needed. The operator must explicitly Apply any proposal. "
+                "When close is available and the work is no longer needed or cannot be done here, you may propose close; its reason is "
+                "one sentence for the closing comment on GitHub. Set close_now true only when the operator's latest message explicitly "
+                "asks you to close this issue and your proposal is close: Forge then closes it for them, so say in your reply that it is "
+                "closed and that they can undo it. Otherwise close_now is false; never close on your own initiative. "
                 "Keep headline to a few words and plain to one sentence. "
                 "Return outcome pass for a completed discussion, even if the underlying issue remains blocked; blocker null. "
                 "Return the final structured response. The trusted harness writes /work/result.json; do not write it yourself. "
                 "Never include credentials.")}
 
+
+
+def offered(row):
+    """What a persona may propose: the panel's own decisions, plus Close issue whenever the issue is closable."""
+    return [a for a in row["actions"] if a in ACTIONS and a != "close"] + (["close"] if row.get("closable") else [])
+
+
+def asked_to_close(text):
+    return isinstance(text, str) and bool(CLOSE_ASKED.search(text)) and not CLOSE_REFUSED.search(text)
+
+
+def proposal_in(result, job):
+    """(proposal, unavailable, close_now). A decision Forge does not offer is
+    dropped, never a dead end: the answer still reaches the operator."""
+    proposal = result.get("proposal")
+    if proposal is None: return None, False, False
+    if (not isinstance(proposal, dict) or set(proposal) != {"action", "reason"} or proposal["action"] not in job["context"]["actions"]
+            or not isinstance(proposal["reason"], str) or not proposal["reason"].strip()):
+        return None, True, False
+    proposal = {"action": proposal["action"], "reason": trim(proposal["reason"], REASON_CAP)}
+    latest = (job.get("messages") or [{}])[-1]
+    close_now = (result.get("close_now") is True and proposal["action"] == "close"
+                 and latest.get("role") == "user" and asked_to_close(latest.get("text")))
+    return proposal, False, close_now
+
+
+def closed_for(text):
+    """The history line for a close the operator asked for in the discussion."""
+    return "Closed from the discussion at the operator's request: \u201c" + trim(scrub(text), 300) + "\u201d"
 
 
 def operator_only(row):
@@ -256,6 +293,18 @@ class Discussions:
             else:
                 self.leave(thread, None, "cancelled")
 
+    def close_for(self, key, message_id, actor_id):
+        """The operator asked in so many words: apply the persona's Close through the operator's own path."""
+        try: self.apply(key, message_id, actor_id=actor_id)
+        except (ValueError, GitHubUnavailable) as error:
+            # Not closed: the card stays, with why, for the operator to click.
+            with self.store.transaction() as data:
+                message = next(m for m in data[key]["messages"] if m["id"] == message_id)
+                message["close_error"] = scrub(str(error))[:200] or "Forge could not close it"
+
+    def undo(self, key, message_id, *, actor_id=None):
+        raise ValueError("Reopen the issue on GitHub; undo needs Forge's SQLite runtime")
+
     def apply(self, key, message_id, *, actor_id=None):
         row = self.issue(key)
         from .issue_actions import request
@@ -267,7 +316,7 @@ class Discussions:
             proposal = message["proposal"]
             # A stable request identity survives a crash between the action write and receipt.
             receipt = request(self.root, key=key, revision=message["revision"], action=proposal["action"],
-                              reason=proposal["reason"], request_id=message["id"])
+                              reason=proposal["reason"], request_id=message["id"], actor_id=actor_id)
             message["receipt"] = receipt
             return receipt
 
@@ -365,7 +414,7 @@ class Discussions:
                 "summary": scrub(str(result.get("summary", "")))[:10000],
                 "link": "/issues/" + key + "?job=" + job["id"]})
         row = {**row, "body": str(row.get("body", ""))[:24000]}
-        actions = [a for a in row["actions"] if a in ACTIONS] + (["close"] if row.get("closable") else [])
+        actions = offered(row)
         return {"issue": {k: row.get(k) for k in ("key", "repo", "number", "title", "body", "status", "reason", "dependencies", "pull_requests")},
                 "issue_url": "https://github.com/" + row["repo"] + "/issues/" + str(row["number"]),
                 "actions": actions, "available_actions": [{"action": a, "button": BUTTONS[a][0], "effect": BUTTONS[a][1]} for a in actions],
@@ -506,13 +555,7 @@ class Discussions:
                 raise RunnerError("its answer was empty")
             # Too long for a chat reply: keep the lead, never lose the answer.
             answer = trim(answer, ANSWER_CAP)
-            proposal = result.get("proposal")
-            if proposal is not None:
-                if (not isinstance(proposal, dict) or set(proposal) != {"action", "reason"}
-                    or proposal["action"] not in job["context"]["actions"] or not isinstance(proposal["reason"], str)
-                    or not proposal["reason"].strip()):
-                    raise RunnerError("it proposed a decision that is not available; ask it to reconsider")
-                proposal = {"action": proposal["action"], "reason": trim(proposal["reason"], REASON_CAP)}
+            proposal, unavailable_action, close_now = proposal_in(result, job)
             # Persist reply before cleanup. Restart never duplicates a completed message.
             with self.store.transaction() as data:
                 thread = data[key]
@@ -523,10 +566,12 @@ class Discussions:
                         "role": "assistant", "text": scrub(answer), "proposal": proposal,
                         "revision": job["context"]["revision"], "at": self.clock(),
                         "agent": agent(job), "joined_at": job.get("joined_at"), "instead_of": here.get("instead_of"),
-                        "activity": public(activity)})
+                        "activity": public(activity), **({"unavailable": True} if unavailable_action else {}),
+                        **({"requested": job["messages"][-1]["text"][:4000]} if close_now else {})})
                 job.update(fenced=True, completed=True)
                 thread.update(job=job, partial="", status="running", reason="Finishing the discussion",
                               presence={"phase": "answered", "agent": agent(job), "at": self.clock()})
+            if close_now: self.close_for(key, job["id"], None)
             runner.reset(job)
             job["cleanup"] = True
             self.save(key, job=job, status="idle", reason=None)
