@@ -158,19 +158,21 @@ class StoreTransitionTests(unittest.TestCase):
         owner_manifest = self.delivery_queries.builder_manifest(self.unit_id, 'planning', base_oid='base', policy_hash='policy')
         self.owner_job = self.delivery.reserve_builder(self.command(), stage='planning', slot='parent',
             execution_fence='fence-parent', input_manifest=owner_manifest)
-        children = [dict(key=str(number), member_id=member, scope='Implement the approved issue', dependencies=[])
-                    for number, member in enumerate(members, 1)]
+        tasks = [dict(key=str(number), executor='child', member_ids=[member],
+                      scope='Implement the approved issue', depends_on=[], internalizes=[])
+                 for number, member in enumerate(members, 1)]
         self.plan = self.delivery.save_plan(self.command(), self.owner_job['job_id'], execution_fence='fence-parent',
-            input_manifest=owner_manifest, plan={'children': children}, evidence={'verified': True})
+            input_manifest=owner_manifest, plan={'version': 2, 'retained_task_ids': [], 'tasks': tasks,
+                'owner_final': {'member_ids': [], 'scope': '', 'internalizes': []}}, evidence={'verified': True})
         self.cleanup(self.owner_job, slot='parent')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM unit_builders').fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
-        self.child_keys = {row['member_id']: row['key'] for row in children}
-        return [(member, self.delivery_queries.child_manifest(self.plan['plan_id'], self.child_keys[member])) for member in members]
+        self.task_ids = {row['member_ids'][0]: self.plan['task_ids'][row['key']] for row in tasks}
+        return [(member, self.delivery_queries.task_manifest(self.plan['plan_id'], self.task_ids[member])) for member in members]
 
     def delegate(self, member, manifest, slot='slot-1'):
-        return self.delivery.delegate(self.command(), self.plan['plan_id'], self.child_keys[member], slot=slot,
+        return self.delivery.reserve_task(self.command(), self.plan['plan_id'], self.task_ids[member], slot=slot,
             execution_fence=f'fence-{slot}', input_manifest=manifest, worktree_key=f'worktree-{slot}')
 
     def test_member_gate_blocks_only_that_part_and_projection_agrees_with_dispatch(self):
@@ -195,7 +197,7 @@ class StoreTransitionTests(unittest.TestCase):
         dependent = next(m for m in view['members'] if m['id'] == self.member)
         self.assertEqual(dependent['current_blocker']['code'], 'dependency')
         self.assertEqual(dependent['projected_state'], 'blocked')
-        with self.assertRaisesRegex(TransitionError, 'applicable scoped gate'):
+        with self.assertRaisesRegex(TransitionError, 'scoped authority gate'):
             self.delegate(member, first_manifest)
         self.delegate(sibling, manifest)
         generation = self.view()['membership_generation']
@@ -203,7 +205,7 @@ class StoreTransitionTests(unittest.TestCase):
             db.execute("INSERT INTO member_dependencies(unit_id,member_id,prerequisite_member_id,membership_generation) VALUES(?,?,?,?)", (self.unit_id, sibling, self.member, generation))
         self.assertEqual(self.view()['current_blocker']['code'], 'dependency')
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM job_delegations').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_tasks').fetchone()[0], 1)
 
     def test_third_failure_atomically_fences_other_assignments_and_preserves_uncharged_late_failure(self):
         parts = self.plan_independent_members(4)
@@ -215,7 +217,7 @@ class StoreTransitionTests(unittest.TestCase):
         self.assertEqual(self.view()['current_blocker']['code'], 'budget_exhausted')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM jobs WHERE fenced = 1').fetchone()[0], 5)
-            self.assertEqual(db.execute('SELECT count(*) FROM job_delegations').fetchone()[0], 4)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_tasks').fetchone()[0], 4)
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 4)
         result = self.fail(jobs[3], parts[3][1], slot='slot-4')
         self.assertFalse(result['accepted'])
