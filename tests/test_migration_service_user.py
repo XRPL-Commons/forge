@@ -59,6 +59,27 @@ class MigrationAccountTransportTests(unittest.TestCase):
                 self.assertIn('--service-user forge', command)
                 self.assertIn('--apply --source-revision ' + 'a' * 40, command)
 
+    def test_only_explicit_prepare_installs_dependencies_and_its_error_retries_prepare(self):
+        reply = dict(ok=False, error='sqlite_build_dependencies_unavailable',
+                     exception_type='MigrationError', stage='before_journal')
+        for action in ('plan', 'prepare', 'resume', 'activate', 'upgrade'):
+            with self.subTest(action=action), patch.object(migration, 'bundle', return_value=b'code'), \
+                    patch.object(migration.subprocess, 'run', return_value=SimpleNamespace(
+                        returncode=0, stdout=json.dumps(reply).encode())) as run:
+                with self.assertRaises(SetupError) as caught:
+                    migration.call(self.args(action), action)
+                argv = shlex.split(run.call_args.args[0][-1])
+                self.assertEqual('--prepare-sqlite' in argv, action == 'prepare')
+                if action == 'prepare':
+                    command = str(caught.exception).split('Retry preparation with: ', 1)[1]
+                    retry = parser().parse_args(shlex.split(command)[1:])
+                    self.assertEqual((retry.migration_command, retry.service_user), ('prepare', 'forge'))
+                    self.assertTrue(retry.apply)
+                    self.assertNotIn('migrate resume', str(caught.exception))
+        with patch.object(migration.subprocess, 'run') as run:
+            with self.assertRaises(SetupError): execute(self.args('prepare'))
+            run.assert_not_called()
+
     def test_snapshot_download_uses_same_account_and_checks_identity(self):
         def transfer(command, *, stdout, **kwargs):
             argv = shlex.split(command[-1])
@@ -127,6 +148,60 @@ class ServiceAccountBridgeTests(unittest.TestCase):
                     self.assertEqual(argv[-3:], ['python3', '-c', 'PRIVATE_TOOL'])
                 self.assertEqual(executable, argv[0])
                 self.assertEqual(set(environment) - {'HOME', 'XDG_RUNTIME_DIR'}, {'PATH', 'LANG'})
+
+    def test_prepare_installs_exact_missing_dependencies_as_ssh_administrator_before_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve(); uid = home.stat().st_uid
+            for administrator in (0, uid + 12345):
+                events = []
+                def installed(argv, **kwargs):
+                    events.append(('install', argv, kwargs))
+                    return SimpleNamespace(returncode=0)
+                with self.subTest(administrator=administrator), \
+                        patch.object(_service_host.pwd, 'getpwnam', return_value=SimpleNamespace(pw_dir=str(home), pw_uid=uid)), \
+                        patch.object(_service_host.os, 'geteuid', return_value=administrator), \
+                        patch.object(_service_host.shutil, 'which', return_value=None), \
+                        patch.object(_service_host.subprocess, 'run', side_effect=installed), \
+                        patch.object(_service_host.os, 'chdir'), \
+                        patch.object(_service_host.os, 'execvpe', side_effect=lambda *args: events.append(('switch', args))):
+                    _service_host.launch('forge', ['python3', '-c', 'PRIVATE_BUILD'], prepare_sqlite=True)
+                self.assertEqual([event[0] for event in events], ['install', 'install', 'switch'])
+                prefix = [] if administrator == 0 else ['sudo', '-n', '--']
+                self.assertEqual(events[0][1], [*prefix, 'apt-get', 'update'])
+                self.assertEqual(events[1][1], [*prefix, 'apt-get', 'install', '-y', '--no-install-recommends', 'build-essential'])
+                self.assertEqual(events[0][2]['env']['DEBIAN_FRONTEND'], 'noninteractive')
+                self.assertNotIn('HOME', events[0][2]['env'])
+                self.assertEqual(events[-1][1][1][-3:], ['python3', '-c', 'PRIVATE_BUILD'])
+
+    def test_present_dependencies_and_read_only_launch_do_not_install(self):
+        with patch.object(_service_host.shutil, 'which', return_value='/usr/bin/tool'), \
+                patch.object(_service_host.subprocess, 'run') as run:
+            _service_host.prepare_dependencies()
+            run.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            with patch.object(_service_host.pwd, 'getpwnam', return_value=SimpleNamespace(pw_dir=str(home), pw_uid=home.stat().st_uid)), \
+                    patch.object(_service_host.os, 'chdir'), patch.object(_service_host.os, 'execvpe'), \
+                    patch.object(_service_host, 'prepare_dependencies') as install:
+                _service_host.launch('forge', ['python3', '-c', 'READ_ONLY_PLAN'])
+                install.assert_not_called()
+
+    def test_failed_administrator_install_reports_typed_error_without_building(self):
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            with patch.object(_service_host.pwd, 'getpwnam', return_value=SimpleNamespace(pw_dir=str(home), pw_uid=home.stat().st_uid)), \
+                    patch.object(_service_host.shutil, 'which', return_value=None), \
+                    patch.object(_service_host.subprocess, 'run', return_value=SimpleNamespace(returncode=1)) as install, \
+                    patch.object(_service_host.os, 'execvpe') as execute, \
+                    patch.object(_service_host.sys, 'argv', ['bridge', 'forge', '--prepare-sqlite', 'python3']), \
+                    redirect_stdout(io.StringIO()) as output:
+                _service_host.main()
+                execute.assert_not_called()
+                self.assertEqual(install.call_count, 1)
+                reply = json.loads(output.getvalue())
+                self.assertEqual(reply['error'], 'sqlite_build_dependencies_unavailable')
+                self.assertEqual(reply['stage'], 'before_journal')
 
     def test_sudo_caller_enters_private_home_only_after_switching_user(self):
         with tempfile.TemporaryDirectory() as directory:

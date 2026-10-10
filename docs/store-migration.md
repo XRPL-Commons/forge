@@ -19,7 +19,10 @@ The account must already exist and own its home directory. Root can switch
 directly; another administrator needs noninteractive `sudo` permission to run
 `runuser`. The CLI sets that account's `HOME` and `XDG_RUNTIME_DIR`, so maintenance
 inspects its user services and creates private tools, journals and snapshots as
-that account. Snapshot downloads use the same account. Returned resume commands
+that account. For `prepare --apply`, the SSH administrator installs the fixed
+`build-essential` package only when `cc` or `make` is missing, before switching to
+the service account to build the private SQLite runtime. This does not grant the
+service account additional sudo permissions. Snapshot downloads use the same account. Returned resume commands
 retain the option. `import` and `verify` are local operations and do not accept it.
 This option selects the existing installation's owner; it does not create an
 account, reinstall Forge or authorize activation.

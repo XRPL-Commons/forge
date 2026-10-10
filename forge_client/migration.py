@@ -72,12 +72,12 @@ def service_user(args):
     return user
 
 
-def transport(args, command):
+def transport(args, command, *, prepare_sqlite=False):
     """Both maintenance RPCs and snapshot reads use the same explicit account."""
     user = service_user(args)
     if user is not None:
         program = files('forge_client').joinpath('_service_host.py').read_text()
-        command = ['python3', '-I', '-c', program, user, *command]
+        command = ['python3', '-I', '-c', program, user, *(['--prepare-sqlite'] if prepare_sqlite else []), *command]
     return ssh(args.ssh, shlex.join(command))
 
 
@@ -85,15 +85,17 @@ def call(args,action,**fields):
     # Reuse validation of explicit host/source/root intent.
     Host(args.ssh,args.source,args.root)
     user = service_user(args)
-    resume = shlex.join(['forge', 'migrate', 'upgrade' if action=='upgrade' else 'resume', '--ssh', args.ssh,
+    resume = shlex.join(['forge', 'migrate', 'prepare' if action=='prepare' else 'upgrade' if action=='upgrade' else 'resume', '--ssh', args.ssh,
                          '--source', args.source, '--root', args.root,
                          *(['--service-user', user] if user is not None else []), '--json'])
+    if action == 'prepare':
+        resume += ' --apply'
     if action=='upgrade' and getattr(args,'source_revision',None):
         resume += ' --apply --source-revision '+shlex.quote(args.source_revision)
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP]),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
+    result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP], prepare_sqlite=action=='prepare'),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
             ('The host operation failed. ' if user is None else 'Maintenance could not run as service user '+user+'. Verify that account and root or noninteractive sudo access. ')
             + 'Resume maintenance with: ' + resume)
@@ -102,6 +104,9 @@ def call(args,action,**fields):
         import re
         token=lambda key,default: value[key] if isinstance(value.get(key),str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',value[key]) else default
         code,kind,stage=token('error','failed'),token('exception_type','Exception'),token('stage','unknown')
+        if action == 'prepare':
+            raise SetupError('migration_'+code, 'SQLite runtime preparation could not proceed: '+code+
+                ' ('+kind+' at '+stage+'). Retry preparation with: '+resume)
         if action=='upgrade' and code=='drain_configuration_changed':
             raise SetupError('migration_'+code,'Runtime settings changed while maintenance was draining. The CLI kept the newer settings. '
                 'Switch off agents explicitly before continuing, then resume with: '+resume)
