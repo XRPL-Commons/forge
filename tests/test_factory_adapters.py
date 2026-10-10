@@ -385,6 +385,15 @@ class WorkerContractTests(unittest.TestCase):
         self.assertIn('abbreviations such as CI, PR or GH013', instructions)
         self.assertIn('blocker github_permission', instructions)
 
+    def test_builders_publish_signed_commits_through_the_api(self):
+        from forge.factory.contracts import assignment_note
+        build = assignment_note({**self.note('build'), 'review_policy': {}, 'ci_evidence': None})['instructions']
+        self.assertIn('createCommitOnBranch', build)
+        self.assertIn('never with git push', build)
+        # Integration publishes the members' exact merge commits, which the API cannot create.
+        from forge.factory.contracts import publication
+        self.assertEqual(publication({'builder_stage': 'integration'}), '')
+
     def test_assignment_instructions_teach_the_tone_with_examples(self):
         from forge.factory.contracts import assignment_note
         instructions = assignment_note({**self.note('build'), 'review_policy': {}, 'ci_evidence': None})['instructions']

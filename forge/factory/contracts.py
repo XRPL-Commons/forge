@@ -243,6 +243,19 @@ def claims_issue(body, repo, number):
     return bool(re.search(r'\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+' + target, body, re.I))
 
 
+def publication(job):
+    # Repositories may require signed commits. Commits the publisher App creates
+    # through the API are signed by GitHub; a plain git push is not. Integration
+    # keeps git push because it must publish the members' exact merge commits.
+    if job.get('builder_stage') == 'integration':
+        return ''
+    return ('Publish commits through the GitHub API, never with git push: create the branch ref with '
+            'gh api repos/OWNER/REPO/git/refs if it does not exist, then add each commit with the GraphQL '
+            'createCommitOnBranch mutation (expectedHeadOid set to the current remote head, fileChanges listing every '
+            'added or modified file as base64 contents and every deleted path). GitHub signs these commits, so they '
+            'satisfy repositories that require signed commits. Confirm the remote head is the commit you created. ')
+
+
 def candidate(pr, job, requirements, policy):
     """Verify independently read GitHub facts against a persisted build assignment."""
     meta = submission(pr.get('body') or '')
@@ -453,6 +466,7 @@ def assignment_note(job):
         'If Forge cannot supply a required tool, sandbox capability, dependency access, memory, or CI evidence, '
         'return blocked_environment with blocker toolchain, sandbox, dependency_access, resources, or ci_evidence '
         'and concrete diagnostic evidence in summary. Preserve the existing candidate PR. '
+        + publication(job) +
         'If GitHub rejects a push because repository rules or App permissions are not satisfied, return blocked_environment '
         'with blocker github_permission and the exact rejection evidence. GH013 alone does not identify the failed rule. '
         'Recommend a permission change only when the diagnostic identifies that missing permission. '
