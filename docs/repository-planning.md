@@ -16,7 +16,7 @@ A group becomes one delivery with one owning builder, tracked child assignments,
 
 ## Rules and notes
 
-Standing triage rules are plain text, versioned per repository. The planner must quote the deciding rule in each affected row. Editing rules invalidates pending acceptance against the old revision.
+Standing triage rules are plain text, versioned per repository. The planner must quote the exact deciding rule in each affected row, or use `null` when no pinned rule applies. With empty rules, every quote is `null`. A group row contains at least two distinct issues; every other action covers exactly one. Unchanged single issues use `keep` with empty parameters. The worker receives a provider-compatible row schema derived from the same action definitions exposed by `forge --json commands`; that schema is retained and hashed with its bounded planning context. The host still validates coverage, source identities and rule quotes before publishing a proposal. Editing rules invalidates pending acceptance against the old revision.
 
 Repository notes record conventions, decisions, lessons, questions and intended next actions. Each note has source links, an immutable source identity, an author and revision history. Correct a note or archive it in the planning page. Issue-revision and candidate references become stale when that source stops being current; stale notes are excluded from the next planning context. Commit, document and decision references describe recorded evidence, not current execution authority. Update their note revision when the interpretation changes.
 

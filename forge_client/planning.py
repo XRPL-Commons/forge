@@ -70,6 +70,30 @@ def action_schemas():
     return operations
 
 
+def provider_triage_rows(*, rules):
+    """Generate runner rows from the same action contract exposed by the CLI.
+
+    Provider structured output uses anyOf/enum rather than oneOf/const and
+    leaves uniqueness, URI and encoded-byte checks to canonical host validation.
+    """
+    def adapt(value):
+        if isinstance(value,list):return [adapt(item) for item in value]
+        if not isinstance(value,dict):return value
+        result={}
+        for key,item in value.items():
+            if key.startswith('x-') or key in {'uniqueItems','format'}:continue
+            if key=='const':result.update(type='boolean' if isinstance(item,bool) else 'string',enum=[item])
+            else:result['anyOf' if key=='oneOf' else key]=adapt(item)
+        if 'enum' in result and 'type' not in result:result['type']='string'
+        return result
+    rows=adapt(action_schemas()['edit']['properties']['value'])
+    for branch in rows['anyOf']:
+        if not rules:branch['properties']['rule_quote']={'type':'null'}
+        branch['properties']['rule_quote']['description']=(
+            'Exact substring of context.rules that decides this action; null if no rule applies.')
+    return rows
+
+
 def commands():
     target={'repository':{'type':'string','pattern':r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$','description':'GitHub OWNER/REPO'},
             'server':{'type':'string','format':'uri','pattern':'^https://','description':'Previously connected HTTPS origin'}}
