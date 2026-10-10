@@ -7,7 +7,6 @@ plus an optional richer sentence used when its parameters are supplied.
 from __future__ import annotations
 
 import json
-import re
 
 from . import codes
 
@@ -86,20 +85,24 @@ def github_rule(details):
     """A push GitHub refused by repository rule, worded for the operator, or None.
 
     Older environment gates carry only the worker's report, so its text counts too."""
-    from ..factory.contracts import github_rule as matches
+    from ..factory.contracts import github_rule_kind
     details = details if isinstance(details, dict) else {}
     text = ' '.join(str(details.get(key) or '') for key in ('summary', 'detail'))
-    if details.get('reason') != 'github_permission' and not matches(text):
+    rule = github_rule_kind(text)
+    if details.get('reason') != 'github_permission' and rule is None:
         return None
-    workflows = bool(re.search(r'workflow', text, re.I)) or not re.search(r'signature|signed', text, re.I)
-    if workflows:
+    if rule == 'workflow_permission':
         return {'code': 'github_permission', 'headline': "GitHub won't let Forge change workflow files in this repository",
-                'plain': 'GitHub refused the change because the Forge app is not allowed to edit workflow files here. '
-                         'Give the Forge app the Workflows permission on GitHub and then recheck the issue, or remove '
-                         'the workflow change from the issue, or close the issue.'}
-    return {'code': 'github_permission', 'headline': "GitHub won't accept Forge's commits in this repository",
-            'plain': 'GitHub refused the change because this repository only accepts signed commits, which Forge cannot make. '
-                     'Relax that rule for the Forge app on GitHub and then recheck the issue, or close the issue.'}
+                'plain': 'GitHub reports that the Forge app lacks the Workflows permission needed for this change. '
+                         'Review that permission with a repository administrator, or remove the workflow change from the issue. '
+                         'Recheck the issue after the decision.'}
+    if rule == 'signed_commits':
+        return {'code': 'github_permission', 'headline': "GitHub requires signed commits for this change",
+                'plain': 'GitHub rejected commits that do not satisfy the repository signing rule. '
+                         'Review the signing requirement and how Forge publishes commits with a repository administrator, then recheck the issue.'}
+    return {'code': 'github_permission', 'headline': "GitHub rejected the change under this repository's rules",
+            'plain': 'GitHub refused the change because a repository rule or App permission was not satisfied. '
+                     'Read the reported rejection with a repository administrator to identify the requirement, then recheck the issue.'}
 
 
 def describe_gate(gate):

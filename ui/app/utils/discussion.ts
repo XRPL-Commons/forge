@@ -92,6 +92,13 @@ export interface Presence {
   text?: string
   at?: number
 }
+export interface ProposalActionState {
+  request_id: string | null
+  status: 'preparing' | 'pending' | 'applied' | 'rejected'
+  message: string | null
+  reversible: boolean
+  undo: { request_id: string; status: 'pending' | 'applied' | 'rejected'; message: string | null } | null
+}
 export interface ThreadMessage {
   id: string
   sequence: number
@@ -105,11 +112,12 @@ export interface ThreadMessage {
   joined_at?: number | null
   // It proposed a decision Forge does not offer: the answer stands, the button does not.
   unavailable?: boolean
-  // The operator's own words asking to close: Forge closed it for them.
+  // Historical links and worker prose do not establish an applied action.
   requested?: string
   receipt?: string
   close_error?: string
   undone?: { at: number; actor?: string } | null
+  action_state?: ProposalActionState | null
   // system: the agent left without answering
   event?: 'left'
   reason?: LeftReason
@@ -211,14 +219,26 @@ export function threadEntries(messages: readonly ThreadMessage[], pending: boole
   return entries
 }
 
-// What became of an answer's proposal, for its card: the button, a decision
-// submitted, a close Forge applied because the operator asked (with Undo), or
-// that close undone.
-export type ProposalState = 'none' | 'offer' | 'submitted' | 'closed' | 'reopened'
-export function proposalState(message: Pick<ThreadMessage, 'requested' | 'receipt' | 'undone'> & { proposal?: unknown }): ProposalState {
+// Only canonical action outcomes establish a close or reopen. A receipt links
+// a request; it does not prove GitHub applied it.
+export type ProposalState = 'none' | 'offer' | 'submitted' | 'pending' | 'applied' | 'closed' | 'failed' | 'undo_pending' | 'undo_failed' | 'reopened'
+type ProposalMessage = Pick<ThreadMessage, 'requested' | 'receipt' | 'undone' | 'action_state'> & { proposal?: { action: string } | null }
+export function proposalState(message: ProposalMessage): ProposalState {
   if (!message.proposal) return 'none'
-  if (message.requested && message.receipt) return message.undone ? 'reopened' : 'closed'
-  return message.receipt ? 'submitted' : 'offer'
+  const action = message.action_state
+  if (!action) return message.receipt ? 'submitted' : 'offer'
+  if (action.status === 'preparing' || action.status === 'pending') return 'pending'
+  if (action.status === 'rejected') return 'failed'
+  if (action.undo?.status === 'pending') return 'undo_pending'
+  if (action.undo?.status === 'rejected') return 'undo_failed'
+  if (action.undo?.status === 'applied') return 'reopened'
+  return message.proposal.action === 'close' ? 'closed' : 'applied'
+}
+
+export function canUndoProposal(message: ProposalMessage): boolean {
+  const action = message.action_state
+  return message.proposal?.action === 'close' && action?.status === 'applied' && action.reversible
+    && !action.undo
 }
 
 export const SUGGESTED_PROMPTS = [

@@ -345,6 +345,8 @@ class FactoryTest(unittest.TestCase):
                   'summary': "GitHub rejected publication with GH013: 'refusing to allow a GitHub App to create or update "
                              "workflow `.github/workflows/quality.yml` without `workflows` permission'."}
         self.assertEqual(result(dict(report), job)['blocker'], 'github_permission')
+        generic = {**report, 'summary': 'GH013: Repository rule violations: required status check CI is expected.'}
+        self.assertEqual(result(generic, job)['blocker'], 'github_permission')
         signed = {**report, 'summary': 'Push rejected: Commits must have verified signatures.'}
         self.assertEqual(result(signed, job)['blocker'], 'github_permission')
         self.assertEqual(result({**report, 'summary': 'npm could not reach the registry.'}, job)['blocker'], 'ci_evidence')

@@ -45,7 +45,7 @@ let failedQuestions = new Set()
 //   "(fail)"    first time: Ember joins, then runs out of time
 //   "(auth)"    Bolt joins, cannot sign in, Ember joins instead and answers
 //   "(suggest close)"  Ember proposes Close issue on its own: a card to click
-//   "(close)"   the operator asked to close: Ember closed it for them, with Undo
+//   "Close this issue."  explicit closure request, awaiting canonical confirmation
 //   "(unavailable)"    Ember proposed a decision Forge does not offer
 let turn = null
 // A spec can hold a transient presence phase while it checks the rendered UI.
@@ -83,7 +83,7 @@ const CLOSE = { action: 'close', reason: 'The remaining work needs GitHub App wo
 function answer(agent, instead = null) {
   const lines = LINES.map((text, i) => ({ at: turn.started / 1000 + 1 + i, text }))
   const asked = conversation.messages.findLast(m => m.role === 'user')?.text
-  const outcome = turn.kind === 'close' ? { text: 'Closed it as no longer needed, as you asked. You can undo this.', proposal: CLOSE, requested: asked, receipt: 'close-receipt' }
+  const outcome = turn.kind === 'close' ? { text: 'Requested closure as no longer needed. Waiting for GitHub confirmation.', proposal: CLOSE, requested: asked, receipt: 'close-receipt', action_state: { request_id: 'close-receipt', status: 'pending', message: null, reversible: false, undo: null } }
     : turn.kind === 'suggest' ? { text: 'The rest is blocked by workflow permissions. I would close it.', proposal: CLOSE }
     : turn.kind === 'unavailable' ? { text: 'I would merge it as it is.', proposal: null, unavailable: true }
     : { text: turn.kind === 'long' ? LONG_ANSWER : ANSWER, proposal: { action: 'retry', reason: 'Correct the shared producer type before updating consumers.' } }
@@ -285,6 +285,13 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true })
   }
 
+  if (req.method === 'POST' && pathname === '/__discussion-action') {
+    const message = conversation.messages.find(message => message.id === body?.message_id)
+    if (!message) return send(res, 404, { ok: false })
+    message.action_state = body.action_state
+    return send(res, 200, { ok: true })
+  }
+
   if (req.method === 'POST' && pathname === '/__discussion-time') {
     const elapsed = body?.elapsed
     if (elapsed !== null && (!Number.isFinite(elapsed) || elapsed < 0)) {
@@ -369,7 +376,7 @@ const server = http.createServer(async (req, res) => {
           const failing = text.includes('(fail)') && !failedQuestions.has(text)
           if (failing) failedQuestions.add(text)
           startTurn(body.request_id, text.includes('(hold)') ? 'hold' : text.includes('(slow)') ? 'slow' : text.includes('(long)') ? 'long' : text.includes('(auth)') ? 'auth'
-            : text.includes('(suggest close)') ? 'suggest' : text.includes('(close)') ? 'close' : text.includes('(unavailable)') ? 'unavailable' : failing ? 'fail' : 'answer')
+            : text.includes('(suggest close)') ? 'suggest' : text === 'Close this issue.' ? 'close' : text.includes('(unavailable)') ? 'unavailable' : failing ? 'fail' : 'answer')
         }
       } else if (body.action === 'cancel') {
         const agent = conversation.presence?.agent ?? null
@@ -378,8 +385,13 @@ const server = http.createServer(async (req, res) => {
         turn = null
         Object.assign(conversation, { status: 'cancelled', reason: text, partial: '', presence: { phase: 'left', reason: 'cancelled', text, agent, at: Date.now() / 1000 } })
       }
-      else if (body.action === 'apply') conversation.messages.find(m => m.id === body.message_id).receipt = 'discussion-decision'
-      else if (body.action === 'undo') conversation.messages.find(m => m.id === body.message_id).undone = { at: Date.now() / 1000 }
+      else if (body.action === 'apply') {
+        const message = conversation.messages.find(m => m.id === body.message_id)
+        message.receipt = body.message_id
+        message.action_state = { request_id: body.message_id, status: 'pending', message: null, reversible: false, undo: null }
+      } else if (body.action === 'undo') {
+        conversation.messages.find(m => m.id === body.message_id).action_state.undo = { request_id: 'undo-request', status: 'pending', message: null }
+      }
       return send(res, 200, withToken({ ok: true, request }))
     }
     advance()

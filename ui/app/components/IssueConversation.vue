@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { requestId } from '~/utils/requestId'
 import { ACTION_LABELS, type IssueAction } from '~/utils/issues'
-import { SUGGESTED_PROMPTS, collapsible, elapsedLabel, slowNote, findingDetail, leftLine, liveLine, nearBottom, presenceMood, proposalState, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
+import { SUGGESTED_PROMPTS, collapsible, elapsedLabel, slowNote, findingDetail, leftLine, liveLine, nearBottom, presenceMood, proposalState, canUndoProposal, replyState, threadEntries, unansweredQuestion, unreadReply, type ChatRole, type Presence, type ThreadEntry, type ThreadMessage } from '~/utils/discussion'
 import { persona } from '~/utils/personas'
 interface Message extends ThreadMessage { proposal?: { action: IssueAction; reason: string } | null }
 interface Conversation { messages: Message[]; before: number | null; status: string; provider?: string; reason: string | null; partial: string; origin: { role: string; provider: string; link: string } | null; presence?: Presence | null }
@@ -16,7 +16,7 @@ interface ChatEntry { id: string; role: ChatRole; parts: { type: 'text'; text: s
 // hand the choice back to the panel (`act`), which runs the very same
 // confirm dialog as its own buttons.
 const props = withDefaults(defineProps<{ issueKey: string; active?: boolean; actions?: IssueAction[]; primary?: IssueAction | null; disabled?: boolean }>(), { active: false, actions: () => [], primary: null, disabled: false })
-const emit = defineEmits<{ act: [action: IssueAction, reason: string]; attention: [value: { replying: boolean; unread: boolean }] }>()
+const emit = defineEmits<{ act: [action: IssueAction, reason: string, messageId?: string]; attention: [value: { replying: boolean; unread: boolean }] }>()
 const api = useForgeApi()
 const poll = useResource<Conversation>(() => `/api/issues/discussion?issue=${encodeURIComponent(props.issueKey)}`, path => api.get<Conversation>(path), { interval: 2500 })
 const question = ref('')
@@ -208,11 +208,10 @@ async function cancel() {
   try { await api.act('/api/issues/discussion', { action: 'cancel', key: props.issueKey }); await poll.refresh() }
   catch (e) { error.value = e instanceof Error ? e.message : 'Could not cancel the discussion' }
 }
-// Reopen an issue the agent closed at the operator's request. Not
-// destructive, so one click; the board shows it again after Forge's next look.
+// Request a pinned reversal. Only the refreshed canonical receipt can say reopened.
 const undoing = ref<string | null>(null)
 async function undo(id: string) {
-  if (undoing.value) return
+  if (undoing.value || !byId.value.has(id) || !canUndoProposal(byId.value.get(id)!)) return
   undoing.value = id; error.value = ''
   try { await api.act('/api/issues/discussion', { action: 'undo', key: props.issueKey, message_id: id }); await poll.refresh() }
   catch (e) { error.value = e instanceof Error ? e.message : 'Could not reopen the issue' }
@@ -337,15 +336,16 @@ async function loadOlder() {
                   data-show-more
                   @click="toggle(message.id)"
                 >{{ folded(message.id) ? 'Show more' : 'Show less' }}</UButton>
-                <!-- The proposal: one compact card, the button and its short reason.
-                     A close the operator asked for in words is already done, with Undo. -->
+                <!-- Request progress comes from canonical action receipts, not worker prose. -->
                 <div v-if="byId.get(message.id)!.proposal" class="mt-2 flex w-fit max-w-full flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-line px-3 py-2" data-proposal :data-state="proposalState(byId.get(message.id)!)" aria-label="Suggested decision" role="group">
-                  <template v-if="proposalState(byId.get(message.id)!) === 'closed'">
-                    <p role="status" class="text-sm text-mint-200">Closed as no longer needed, as you asked.</p>
-                    <UButton class="shrink-0" size="xs" color="neutral" variant="outline" icon="i-lucide-undo-2" :loading="undoing === message.id" :disabled="!!undoing" data-undo @click="undo(message.id)">Undo</UButton>
-                  </template>
-                  <p v-else-if="proposalState(byId.get(message.id)!) === 'reopened'" role="status" class="text-sm text-muted">Reopened. Forge checks the issue on GitHub again and returns it to the board.</p>
-                  <p v-else-if="proposalState(byId.get(message.id)!) === 'submitted'" role="status" class="text-sm text-mint-200">Decision submitted. The issue status in Details shows whether Forge accepted it.</p>
+                  <p v-if="proposalState(byId.get(message.id)!) === 'closed'" role="status" class="text-sm text-mint-200">Closed as no longer needed.</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'reopened'" role="status" class="text-sm text-muted">Reopened. Forge checks the issue on GitHub again.</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'undo_pending'" role="status" class="text-sm text-muted">Reopening requested. Waiting for GitHub confirmation.</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'undo_failed'" role="status" class="text-sm text-amber-200">Could not reopen: {{ byId.get(message.id)!.action_state!.undo!.message || 'The request was rejected.' }}</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'failed'" role="status" class="text-sm text-amber-200">Decision not applied: {{ byId.get(message.id)!.action_state!.message || 'The request was rejected.' }}</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'pending'" role="status" class="text-sm text-muted">Decision requested. {{ byId.get(message.id)!.action_state!.message || 'Waiting for GitHub confirmation.' }}</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'applied'" role="status" class="text-sm text-mint-200">Decision applied.</p>
+                  <p v-else-if="proposalState(byId.get(message.id)!) === 'submitted'" role="status" class="text-sm text-muted">Decision submitted. Its outcome has not been confirmed here.</p>
                   <UButton
                     v-else
                     class="shrink-0"
@@ -354,8 +354,9 @@ async function loadOlder() {
                     :variant="byId.get(message.id)!.proposal!.action === primary ? 'solid' : 'outline'"
                     :disabled="disabled || busy"
                     data-proposal-action
-                    @click="emit('act', byId.get(message.id)!.proposal!.action, byId.get(message.id)!.proposal!.reason)"
+                    @click="emit('act', byId.get(message.id)!.proposal!.action, byId.get(message.id)!.proposal!.reason, message.id)"
                   >{{ byId.get(message.id)!.proposal!.action === 'close' ? `${ACTION_LABELS.close}…` : ACTION_LABELS[byId.get(message.id)!.proposal!.action] }}</UButton>
+                  <UButton v-if="canUndoProposal(byId.get(message.id)!)" class="shrink-0" size="xs" color="neutral" variant="outline" icon="i-lucide-undo-2" :loading="undoing === message.id" :disabled="!!undoing || disabled" data-undo @click="undo(message.id)">Undo</UButton>
                   <p class="line-clamp-2 min-w-0 flex-1 basis-48 text-xs text-muted wrap-anywhere" data-proposal-reason :title="byId.get(message.id)!.proposal!.reason">{{ byId.get(message.id)!.proposal!.reason }}</p>
                   <p v-if="byId.get(message.id)!.close_error && proposalState(byId.get(message.id)!) === 'offer'" class="basis-full text-xs text-amber-200 wrap-anywhere" data-close-error>Forge could not close it for you: {{ byId.get(message.id)!.close_error }}</p>
                 </div>

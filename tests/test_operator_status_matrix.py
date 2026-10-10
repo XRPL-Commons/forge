@@ -107,6 +107,25 @@ class OperatorStatusMatrixTests(unittest.TestCase):
                     with self.store.read_snapshot() as db:
                         self.assertEqual(db.execute("SELECT code FROM unit_gates WHERE resolved_at IS NULL").fetchone()[0],'environment')
 
+    def test_repository_rule_advice_requires_the_specific_rejection_evidence(self):
+        cases = [
+            ("GH013: Repository rule violations: required status check CI is expected", "GitHub rejected the change under this repository's rules", False, False),
+            ("GH013: required CI check missing; the app already has Workflows permission", "GitHub rejected the change under this repository's rules", False, False),
+            ("GH013: commits must have verified signatures", "GitHub requires signed commits for this change", False, True),
+            ("Push refused without `workflows` permission", "GitHub won't let Forge change workflow files in this repository", True, False),
+        ]
+        for report,headline,workflows,signed in cases:
+            with self.subTest(report=report), tempfile.TemporaryDirectory() as root:
+                self.prepare(root,'queued')
+                self.life.open_gate(self.command(),'environment',details={'reason':'github_permission','summary':report})
+                issue=PipelineViews(self.store,runtime=validate({}),clock=lambda:100).issues(key='1:1')['issue']
+                self.assertEqual(issue['summary']['headline'],headline)
+                self.assertEqual(issue['operator_status']['reason'],headline)
+                self.assertEqual('Workflows permission' in issue['summary']['plain'],workflows)
+                self.assertEqual('signing rule' in issue['summary']['plain'],signed)
+                self.assertNotIn('which Forge cannot make',issue['summary']['plain'])
+                self.assertEqual(issue['environment_blocker'],report)
+
     def test_a_github_rule_rejection_has_its_own_reason_and_plain_words(self):
         report = ("Read issue comments; installed locked dependencies. Prepared the CI workflow in local commit 0539aaf9…. "
                   "GitHub rejected publication with GH013: 'refusing to allow a GitHub App to create or update workflow "
@@ -127,7 +146,7 @@ class OperatorStatusMatrixTests(unittest.TestCase):
                     self.assertEqual(issue['summary']['headline'],"GitHub won't let Forge change workflow files in this repository")
                     self.assertEqual(issue['operator_status']['reason'],"GitHub won't let Forge change workflow files in this repository")
                     self.assertIn('Workflows permission',issue['summary']['plain'])
-                    self.assertIn('close the issue',issue['summary']['plain'])
+                    self.assertIn('repository administrator',issue['summary']['plain'])
                 else:
                     self.assertEqual(issue['summary']['plain'],details['operator_summary'])
                 for residue in ('GH013','0539aaf9','`','CI '):

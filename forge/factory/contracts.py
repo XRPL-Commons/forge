@@ -20,10 +20,17 @@ HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES = 90, 360, 3
 OPERATOR_SUMMARY_LIMIT = 300
 # Pipeline roles hand the operator 1-2 sentences; discussions answer in chat instead.
 OPERATOR_ROLES = ('build', 'review', 'audit', 'recovery')
-# GitHub refusing a push of workflow files (GH013 without the App's `workflows`
-# permission) or unsigned commits is a repository rule, not a broken toolchain.
-GITHUB_RULE = re.compile(r'\bGH013\b|without\W+workflows?\W+permission|workflows?\W+permission|'
-                         r'verified signatures?|signed commits?|refusing to allow a GitHub App to create or update workflow', re.I)
+# GH013 identifies a repository-rule rejection, not which rule failed.
+GITHUB_RULE = re.compile(r'\bGH013\b|repository rule violations?', re.I)
+WORKFLOW_PERMISSION = re.compile(
+    r'\bwithout\s+(?:the\s+)?[`\"\']*workflows?[`\"\']*\s+permission\b|'
+    r'\b(?:lacks?|missing|needs?)\s+(?:the\s+)?[`\"\']*workflows?[`\"\']*\s+permission\b|'
+    r'\bworkflows?\W+permission\s+(?:is\s+)?(?:missing|required|denied)\b|'
+    r'refusing to allow a GitHub App to create or update workflow', re.I)
+SIGNED_COMMITS = re.compile(
+    r'\bcommits? must (?:have verified signatures?|be signed)\b|'
+    r'\b(?:require[sd]?|requiring)\s+(?:verified signatures?|signed commits?)\b|'
+    r'\bunsigned commits? (?:are )?(?:not allowed|rejected)\b', re.I)
 SENTENCE = re.compile(r'[^.!?]*[.!?]+|[^.!?]+$')
 # One entry per role: a fifth role is one line here and one in harness.role_properties().
 ROLE_FIELDS = {'build': frozenset(),
@@ -70,8 +77,17 @@ def operator_text(text, limit=OPERATOR_SUMMARY_LIMIT):
     return lead[:1].upper() + lead[1:] if lead else ''
 
 
+def github_rule_kind(text):
+    text = str(text or '')
+    if WORKFLOW_PERMISSION.search(text):
+        return 'workflow_permission'
+    if SIGNED_COMMITS.search(text):
+        return 'signed_commits'
+    return 'repository_rule' if GITHUB_RULE.search(text) else None
+
+
 def github_rule(text):
-    return bool(GITHUB_RULE.search(str(text or '')))
+    return github_rule_kind(text) is not None
 
 
 def summary(value, role, at):
@@ -428,9 +444,9 @@ def assignment_note(job):
         'If Forge cannot supply a required tool, sandbox capability, dependency access, memory, or CI evidence, '
         'return blocked_environment with blocker toolchain, sandbox, dependency_access, resources, or ci_evidence '
         'and concrete diagnostic evidence in summary. Preserve the existing candidate PR. '
-        'If GitHub rejects a push by repository rule (for example GH013: a GitHub App cannot change workflow files '
-        'without the workflows permission, or commits must have verified signatures), return blocked_environment '
-        'with blocker github_permission: an operator must change the permission or the issue scope. '
+        'If GitHub rejects a push because repository rules or App permissions are not satisfied, return blocked_environment '
+        'with blocker github_permission and the exact rejection evidence. GH013 alone does not identify the failed rule. '
+        'Recommend a permission change only when the diagnostic identifies that missing permission. '
         'A failing test assertion, type error or code defect is NOT an environment blocker: report actionable findings. '
         'For every other outcome set blocker null. '
         'The controller supplies CI check results bound to head/base revisions when a candidate exists. '

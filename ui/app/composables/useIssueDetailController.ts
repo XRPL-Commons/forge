@@ -172,6 +172,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   })
   const closeOpen = computed(() => decision.value === 'close')
   const assigning = ref(false)
+  const decisionMessage = ref<string | null>(null)
   const assignRequest = useSubmission()
   const preselected = computed(() => preselectedReviewers(detail.value))
   const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
@@ -188,6 +189,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const candidateUrl = computed(() => (candidatePull.value ? pullUrl(candidatePull.value.number) : issueUrl.value))
 
   function askReviewer() {
+    decisionMessage.value = null
     approvalOpen.value = false
     assignRequest.reset()
     assigning.value = true
@@ -196,6 +198,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   function closeReviewer() {
     if (assignRequest.pending.value) return
     assigning.value = false
+    decisionMessage.value = null
     assignRequest.reset()
     submitting.value = false
   }
@@ -266,9 +269,11 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
     if (!issue || !reason) return
     const done = await assignRequest.run(async () => {
       const previous = previousDecision()
-      const reply = await api.act<{ request?: string }>('/api/issues/action', {
-        key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason,
-      })
+      const reply = decisionMessage.value
+        ? await api.act<{ request?: string }>('/api/issues/discussion', { action: 'apply', key: issue.key, message_id: decisionMessage.value, reason })
+        : await api.act<{ request?: string }>('/api/issues/action', {
+          key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason,
+        })
       recordDecision(reply, previous)
     })
     if (!done) return
@@ -401,9 +406,15 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   }
 
   const decisionReason = ref('')
-  function ask(action: IssueAction, reason = '') {
+  function ask(action: IssueAction, reason = '', messageId?: string) {
+    if (action === 'assign_reviewer') {
+      askReviewer()
+      decisionMessage.value = messageId ?? null
+      return
+    }
     decisionRequest.reset()
     decisionReason.value = reason
+    decisionMessage.value = messageId ?? null
     decision.value = action
     submitting.value = true
   }
@@ -443,6 +454,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   function closeDecision() {
     if (decisionRequest.pending.value) return
     decision.value = null
+    decisionMessage.value = null
     decisionRequest.reset()
     submitting.value = false
   }
@@ -459,7 +471,9 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
         submitted.value = { request: null, previous }
         workerReceipt.value = { id: issue.active!, before }
       } else {
-        const reply = await api.act<IssueDetailResponse & { request?: string }>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
+        const reply = decisionMessage.value
+          ? await api.act<IssueDetailResponse & { request?: string }>('/api/issues/discussion', { action: 'apply', key: issue.key, message_id: decisionMessage.value, reason })
+          : await api.act<IssueDetailResponse & { request?: string }>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
         recordDecision(reply, previous)
         if (reply.issue) {
           poll.replace({ detail: reply, fence: null })
@@ -469,6 +483,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
       }
     })
     if (!done) return
+    decisionMessage.value = null
     decision.value = null
     submitting.value = false
     if (!applied) await poll.refresh()

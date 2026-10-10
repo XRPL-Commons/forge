@@ -82,7 +82,7 @@ await ready
             :actions="decisions"
             :primary="conversationPrimary"
             :disabled="busy"
-            @act="(action, reason) => action === 'assign_reviewer' ? askReviewer() : ask(action, reason)"
+            @act="ask"
             @attention="value => chat = value"
           />
         </template>

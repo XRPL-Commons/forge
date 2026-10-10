@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { COLLAPSED_LINES, SLOW_SECONDS, SUGGESTED_PROMPTS, clockTime, collapsible, slowNote, elapsedLabel, findingDetail, issueTab, joinedLine, leftLine, liveLine, proposalState, nearBottom, presenceMood, replyState, tabQuery, threadEntries, unansweredQuestion, unreadReply, type ThreadMessage } from '../../app/utils/discussion'
+import { COLLAPSED_LINES, SLOW_SECONDS, SUGGESTED_PROMPTS, clockTime, collapsible, slowNote, elapsedLabel, findingDetail, issueTab, joinedLine, leftLine, liveLine, proposalState, canUndoProposal, nearBottom, presenceMood, replyState, tabQuery, threadEntries, unansweredQuestion, unreadReply, type ThreadMessage } from '../../app/utils/discussion'
 import { panelQuery } from '../../app/utils/panel'
 import { issuePath } from '../../app/utils/issues'
 
@@ -159,11 +159,34 @@ describe('proposal card', () => {
     expect(proposalState({ proposal })).toBe('offer')
     expect(proposalState({ proposal, receipt: 'r' })).toBe('submitted')
   })
-  it('says a close the operator asked for is done, with Undo, then undone', () => {
-    // Asked in words but not applied (e.g. the issue changed): still the button.
-    expect(proposalState({ proposal, requested: 'close this issue' })).toBe('offer')
-    expect(proposalState({ proposal, requested: 'close this issue', receipt: 'r' })).toBe('closed')
-    expect(proposalState({ proposal, requested: 'close this issue', receipt: 'r', undone: { at: 2 } })).toBe('reopened')
+  it('does not infer a close or Undo from prose, a request ID, or an old undone marker', () => {
+    const message = { proposal, requested: 'close this issue', receipt: 'r', undone: { at: 2 } }
+    expect(proposalState(message)).toBe('submitted')
+    expect(canUndoProposal(message)).toBe(false)
+  })
+  it('follows canonical request outcomes and exact reversible authority', () => {
+    const action_state = { request_id: 'r', status: 'pending' as const, message: 'Waiting for cleanup', reversible: false, undo: null }
+    expect(proposalState({ proposal, action_state })).toBe('pending')
+    expect(canUndoProposal({ proposal, action_state })).toBe(false)
+    expect(proposalState({ proposal, action_state: { ...action_state, status: 'preparing' } })).toBe('pending')
+    expect(proposalState({ proposal, action_state: { ...action_state, status: 'rejected' } })).toBe('failed')
+    const confirmed = { ...action_state, status: 'applied' as const }
+    expect(proposalState({ proposal, action_state: confirmed })).toBe('closed')
+    expect(canUndoProposal({ proposal, action_state: confirmed })).toBe(false)
+    expect(canUndoProposal({ proposal, action_state: { ...confirmed, reversible: true } })).toBe(true)
+    expect(proposalState({ proposal: { action: 'retry' }, action_state: confirmed })).toBe('applied')
+    expect(canUndoProposal({ proposal: { action: 'retry' }, action_state: { ...confirmed, reversible: true } })).toBe(false)
+  })
+  it('waits for confirmed undo and retains rejected undo separately', () => {
+    const action_state = { request_id: 'r', status: 'applied' as const, message: null, reversible: true,
+      undo: { request_id: 'u', status: 'pending' as const, message: null } }
+    expect(proposalState({ proposal, action_state })).toBe('undo_pending')
+    expect(canUndoProposal({ proposal, action_state })).toBe(false)
+    expect(proposalState({ proposal, action_state: { ...action_state, undo: { ...action_state.undo, status: 'applied' } } })).toBe('reopened')
+    const rejected = { ...action_state, reversible: false, undo: { ...action_state.undo, status: 'rejected' as const, message: 'The closure changed' } }
+    expect(proposalState({ proposal, action_state: rejected })).toBe('undo_failed')
+    expect(canUndoProposal({ proposal, action_state: rejected })).toBe(false)
+    expect(canUndoProposal({ proposal, action_state: { ...rejected, reversible: true } })).toBe(false)
   })
 })
 
