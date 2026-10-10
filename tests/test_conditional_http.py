@@ -40,6 +40,7 @@ class ConditionalHTTPTests(unittest.TestCase):
             value = self.handler(etag)
             value.path = '/api/factory'
             value._action_token = 'session-a'
+            value._factory_paused = False
             for method in ('_trusted_host', '_upstream', '_operator_guard', '_signed_in'):
                 setattr(value, method, Mock(return_value=True))
             value._auth_get = Mock(return_value=False)

@@ -921,7 +921,9 @@ class Lifecycle:
         """Apply an ordered authoritative observation to a current or historical member.
 
         Reopening updates GitHub facts only. A terminal unit stays terminal; the
-        operator may subsequently admit the issue into a new unit.
+        operator may subsequently admit the issue into a new unit. Imported units
+        keep their pinned execution inputs and gates until reconciliation accepts
+        them; their GitHub facts remain observable throughout that process.
         """
         remote_updated_at = self._remote_time(remote_updated_at)
         if state not in {"open", "closed"} or type(generation) is not int or generation < 1:
@@ -982,7 +984,10 @@ class Lifecycle:
             db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, reopened_version = ?, version = version + 1 WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), self.clock(), reopened_version, issue_id))
             if assignee_types is not None:
                 db.execute('UPDATE issues SET assignee_types_json=? WHERE id=?', (_json(assignee_types), issue_id))
-            if member["left_at"] is None and unit["state"] not in TERMINAL:
+            reconciliation_pending = db.execute(
+                "SELECT 1 FROM unit_gates WHERE unit_id=? AND code='legacy_reconciliation' AND resolved_at IS NULL",
+                (unit['id'],)).fetchone() is not None
+            if member["left_at"] is None and unit["state"] not in TERMINAL and not reconciliation_pending:
                 if requirements_hash != revision["requirements_hash"]:
                     ambiguous = db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone()
                     from .delivery_inputs import approved_in

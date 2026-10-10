@@ -1,3 +1,6 @@
+import { createHttpTimingRecorder } from '../utils/httpTiming'
+
+const recordTiming = createHttpTimingRecorder(sample => console.debug('[forge-http-timing]', JSON.stringify(sample)))
 export class ForgeApiError extends Error { constructor(public status: number, message: string) { super(message) } }
 const token = () => useState<string>('forge-action-token', () => '')
 
@@ -24,6 +27,7 @@ export function useForgeApi() {
     const entry = resources.entry(path)
     const generation = entry.generation
     const cached = entry.response
+    const timingStarted = import.meta.client && new URLSearchParams(window.location.search).get('timings') === '1' ? performance.now() : undefined
     let response
     try {
       response = await $fetch.raw<T & { ok?: boolean; reason?: string; controls_token?: string }>(path, {
@@ -37,6 +41,7 @@ export function useForgeApi() {
       }
       throw new ForgeApiError(status, reason ?? 'Request failed')
     }
+    if (timingStarted !== undefined) recordTiming(path, response.status, response.headers.get('server-timing'), performance.now() - timingStarted)
     if (response.status === 304 && !cached) throw new ForgeApiError(304, 'Refresh to reload this view.')
     const payload = (response.status === 304 ? cached!.data : response._data) as any
     const etag = response.headers.get('etag')
