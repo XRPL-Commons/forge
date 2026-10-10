@@ -31,7 +31,7 @@ Forge prefers the last attempt's provider when it is available. Another connecte
 
 Open an issue and choose **Discuss blocker**, or open its **Discussion** tab. Ask one concrete question, such as “Which test failed?”, “What needs a human check?” or “What would a different approach change?”
 
-The worker gets the issue, current candidate, recent attempt summaries and recent conversation. This is reconstructed context, not a live attachment to the original worker; it cannot recover an unsaved private conversation.
+The worker receives the issue, current candidate, recent attempt summaries and conversation. It reconstructs context from saved evidence; it cannot recover an unsaved private conversation.
 
 ![Illustrative Discussion panel: the provider name identifies the speaker, activity explains the wait, and Apply this decision is separate from the answer.](assets/discussion-screen.svg)
 
@@ -42,7 +42,7 @@ While an answer is on its way:
 - The answer replaces that line. A worker that left before someone else answered leaves no trace.
 - If a worker leaves and nobody answers, the thread says why. Use **Try again** when offered; an interrupted answer is not a completed decision.
 
-You can leave and return to the saved conversation. Older messages remain readable, although only a bounded recent portion is sent with the next question.
+You can return to the saved conversation. Older messages remain readable; only recent messages accompany the next question.
 
 ## Apply a proposal deliberately
 
@@ -59,7 +59,7 @@ flowchart TD
 
 Read the proposed action and reason before applying it. A submitted action can still be pending or rejected: the controller checks the current issue, requirements and permissions again.
 
-If the issue or pull request changed, an old proposal may no longer apply. Refresh the issue and ask about the new evidence instead of repeatedly submitting the old decision.
+If the issue or pull request changed, refresh and ask about the new evidence before applying an old proposal.
 
 If the agent proposes something Forge does not offer on this issue, its answer still arrives, without a button, noting that the action isn't available here.
 
