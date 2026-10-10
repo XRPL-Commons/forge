@@ -218,20 +218,37 @@ class OperatorTests(unittest.TestCase):
 
     def test_public_projection_uses_one_connection_for_config_repositories_and_jobs(self):
         from unittest.mock import patch
-        self.reserve()
+        from forge.store.queries import Queries
+        job = self.reserve()
+        snapshots = []
         def runtime():
             with self.store.read_snapshot() as db:
+                snapshots.append(db)
                 db.execute('SELECT 1').fetchone()
             return validate({})
         def repositories(config):
             with self.store.read_snapshot() as db:
+                snapshots.append(db)
                 return [dict(id=r['id'], name=r['full_name'], enabled=bool(r['enabled']))
                         for r in db.execute('SELECT * FROM repositories')]
         views = PipelineViews(self.store, runtime=runtime, repositories=repositories, clock=lambda:100)
-        for call in (lambda:views.factory(section='board'), lambda:views.issues(key='i'), lambda:views.issues()):
-            from forge.store.queries import Queries
-            with patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect, \
-                    patch.object(Queries, '_issue', wraps=Queries._issue) as issue_read:
-                call()
+        for name, call, has_jobs in (
+                ('board', lambda:views.factory(section='board'), True),
+                ('detail', lambda:views.issues(key='i'), True),
+                ('list', lambda:views.issues(), False)):
+            snapshots.clear()
+            with self.subTest(view=name), \
+                    patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect, \
+                    patch.object(Queries, '_issue_context', wraps=Queries._issue_context) as issue_read:
+                result = call()
                 self.assertEqual(connect.call_count, 1)
+                # Both the narrow Activity path and rich issue views use this
+                # canonical read in the configuration/repository snapshot.
                 self.assertEqual(issue_read.call_count, 1)
+                self.assertEqual(len(snapshots), 2)
+                self.assertIs(snapshots[0], snapshots[1])
+                self.assertIs(issue_read.call_args.args[0], snapshots[0])
+                row = result['issue'] if name == 'detail' else result['issues'][0]
+                self.assertEqual((row['key'], row['active']), ('i', job))
+                if has_jobs:
+                    self.assertEqual([item['id'] for item in result['jobs']], [job])
