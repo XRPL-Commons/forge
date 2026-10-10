@@ -41,6 +41,7 @@ class DeliveryMigrationTests(unittest.TestCase):
                         db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,role,phase,created_at) VALUES(?,'u',?,?,?,'reserved',2)",(role,role,member,role))
                         db.execute("INSERT INTO job_leases VALUES(?,?,?,2)",(role,role,role))
                         db.execute("INSERT INTO job_launches(job_id,slot,execution_fence,requirements_revision_id,branch,publisher,provider,runner_config_json,policy_json,context_json,deadline) VALUES(?,?,?,'old','forge/issue','builder[bot]','codex','{}','{}','{}',500)",(role,role,role))
+            store = storage.Store(store.root)  # Target release handle.
             upgrade.apply(store); upgrade.apply(store)
             with store.read_snapshot() as db:
                 self.assertEqual([tuple(row) for row in db.execute('SELECT job_id,member_id,requirements_revision_id FROM job_members ORDER BY job_id')],
@@ -79,6 +80,7 @@ class DeliveryMigrationTests(unittest.TestCase):
                     manifest=json.dumps({'legacy_job_id':'legacy-job','source_manifest':'import','assignment_digest':'digest'})
                     db.execute("INSERT INTO attempts(id,unit_id,member_id,membership_generation,assignment_generation,input_manifest_json,budget_generation,created_at) VALUES('legacy-job','u','z-recorded',1,1,?,1,2)",(manifest,))
                     db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,role,phase,outcome,fenced,cleanup,created_at) VALUES('legacy-job','u','legacy-job','z-recorded','build','cleaned','failed',1,1,2)")
+            store = storage.Store(store.root)  # Target release handle.
             upgrade.apply(store)
             views=PipelineViews(store,clock=lambda:100)
             job=views.job('legacy-job')

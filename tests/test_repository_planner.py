@@ -7,7 +7,9 @@ from forge.store.models import TransitionError
 from forge.store.repository_planning import RepositoryPlanning
 from forge.store.transitions import Lifecycle, manifest_hash
 from forge.factory.repository_planner import RepositoryPlanner
-from forge.factory.harness import schema
+from forge.factory.harness import schema, PreparationError
+from forge_client.planning import provider_triage_rows
+from forge.factory.contracts import triage_note
 
 
 class RepositoryPlannerTests(unittest.TestCase):
@@ -135,10 +137,72 @@ class RepositoryPlannerTests(unittest.TestCase):
     def test_context_is_immutable_and_role_schema_has_explicit_publication_target(self):
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         with self.assertRaises(TransitionError):self.plans.progress('triage',context_hash='different')
-        contract=schema({'id':'triage','role':'triage'})
-        choices=contract['properties']['rows']['items']['properties']['parameters']['anyOf']
-        group=next(row for row in choices if 'existing_prs' in row['properties'])
-        self.assertIn('publication_target',group['required'])
+        contract=schema(triage_note({**self.job,'context':self.context}))
+        choices=contract['properties']['rows']['items']['anyOf']
+        group=next(row for row in choices if row['properties']['action']['enum']==['group'])
+        self.assertIn('publication_target',group['properties']['parameters']['required'])
+
+    def test_triage_schema_couples_action_cardinality_and_parameter_contract(self):
+        contract=schema(triage_note({**self.job,'context':{**self.context,'rules':''}}))
+        branches=contract['properties']['rows']['items']['anyOf']
+        expected={'close':{'evidence'},'relabel':{'add','remove'},'park':{'add'},
+                  'group':{'dependencies','existing_prs','publication_target'},
+                  'order':{'prerequisites'},'question':{'question'},'keep':set()}
+        self.assertEqual(len(branches),len(expected))
+        def assert_provider_dialect(value):
+            if isinstance(value,dict):
+                self.assertTrue({'oneOf','const','uniqueItems','format'}.isdisjoint(value))
+                self.assertFalse(any(key.startswith('x-') for key in value))
+                if 'enum' in value:self.assertIn('type',value)
+                for child in value.values():assert_provider_dialect(child)
+            elif isinstance(value,list):
+                for child in value:assert_provider_dialect(child)
+        assert_provider_dialect(contract['properties']['rows'])
+        for branch in branches:
+            props=branch['properties'];action,=props['action']['enum']
+            with self.subTest(action=action):
+                self.assertEqual(set(props['parameters']['required']),expected[action])
+                self.assertFalse(props['parameters']['additionalProperties'])
+                self.assertEqual(props['members']['minItems'],2 if action=='group' else 1)
+                if action!='group':self.assertEqual(props['members']['maxItems'],1)
+                self.assertEqual(props['rule_quote']['type'],'null')
+        with_rules=schema(triage_note({**self.job,'context':{**self.context,'rules':'Keep useful work.','rows_schema':provider_triage_rows(rules='Keep useful work.')}}))
+        for branch in with_rules['properties']['rows']['items']['anyOf']:
+            self.assertEqual([option['type'] for option in branch['properties']['rule_quote']['anyOf']],['null','string'])
+
+    def test_captured_row_schema_is_required_and_pinned_with_context(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        prepared=self.plans.job('triage',context=True)
+        self.assertEqual(prepared['context']['rows_schema'],provider_triage_rows(rules=self.context['rules']))
+        changed={**self.context,'rows_schema':{}}
+        self.assertNotEqual(manifest_hash(changed),prepared['context_hash'])
+        for invalid in (None,{}, {'anyOf':[]}):
+            context={**self.context,'rows_schema':invalid}
+            with self.subTest(invalid=invalid),self.assertRaises(PreparationError):
+                schema(triage_note({**self.job,'context':context}))
+
+    def test_singleton_group_and_invented_rule_remain_rejected_without_effects(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        row={'action':'group','members':['1:1'],'reason':'Useful work','rule_quote':None,
+             'parameters':{'dependencies':[],'existing_prs':[],'publication_target':{'kind':'new'}}}
+        with self.assertRaisesRegex(TransitionError,'at least two'):
+            RepositoryPlanning._row(row,'')
+        row.update(action='keep',parameters={},rule_quote='An invented rule')
+        with self.assertRaisesRegex(TransitionError,'pinned rules'):
+            RepositoryPlanning._row(row,'')
+        self.runner.inspect.return_value={'status':'exited','running':False}
+        self.runner.capture.return_value={'result':{'attempt':'triage','role':'triage','outcome':'pass',
+            'summary':'Keep the issue','rows':[row]}}
+        self.assertEqual(self.controller.drive(self.job)['error'],'triage_proposal_invalid')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM triage_proposal_rows').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM external_effects').fetchone()[0],0)
+        # The prompt gives a valid unchanged-singleton disposition explicitly.
+        from forge.factory.contracts import triage_note
+        note=triage_note({**self.job,'context':self.context})
+        self.assertIn('Group requires at least two issues in one row',note['instructions'])
+        self.assertIn('rule_quote must be null',note['instructions'])
+        self.assertIn('Use keep with empty parameters',note['instructions'])
 
     def test_launch_refreshes_entire_open_backlog_with_native_observation_and_inventory(self):
         from forge.factory.observation_controller import ObservationController

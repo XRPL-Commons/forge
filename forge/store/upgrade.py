@@ -17,7 +17,9 @@ def connection(store, *, write=False):
 
 
 def validate_prefix(store, db):
-    migrations = storage._migrations()
+    # Maintenance constructs this handle from the pinned target release. Use
+    # the same catalog for prefix validation, application and final validation.
+    migrations = store._migration_catalog
     rows = [(row[0], row[1]) for row in db.execute('SELECT version,checksum FROM schema_migrations ORDER BY version')]
     if not rows or len(rows) > len(migrations):
         raise storage.StoreError('schema_newer' if rows else 'schema_incomplete', 'Cannot upgrade this schema')

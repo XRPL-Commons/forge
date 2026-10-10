@@ -550,7 +550,8 @@ class RepositoryPlanning(Lifecycle):
                 issue['gates']=[{'code':g['code'],'member_id':g['member_id']} for g in _gates(db,issue['unit_id'])] if issue['unit_id'] else []
                 issues.append(issue)
             notes=self.repository(proposal['repository_id'])['notes']
-            result={'proposal_id':proposal_id,'rules':rules,'notes':[n for n in notes if not n['needs_refresh']],'issues':issues,
+            from forge_client.planning import provider_triage_rows
+            result={'proposal_id':proposal_id,'rules':rules,'rows_schema':provider_triage_rows(rules=rules),'notes':[n for n in notes if not n['needs_refresh']],'issues':issues,
                 'note_revisions':{n['note_id']:n['revision'] for n in notes},
                 'handoff_note_id':_id(str(proposal['repository_id']),'planner-handoff'),
                 'event_cursor':int(db.execute('SELECT value FROM store_metadata WHERE key=?',

@@ -49,6 +49,23 @@ class StoreDatabaseTests(unittest.TestCase):
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
 
+    def test_catalog_is_loaded_once_per_handle_and_fresh_handles_load_installed_release(self):
+        from forge.store import db as storage
+        catalog = storage._migrations()
+        with patch('forge.store.db._migrations', return_value=catalog) as installed:
+            handle = Store.open(self.root)
+            with handle.read_snapshot():
+                pass
+            with handle.read_snapshot():
+                pass
+            installed.assert_called_once_with()
+            # The caller's list is not retained as mutable schema authority.
+            catalog.append((len(catalog) + 1, 'next-release', '-- next release'))
+            with handle.read_snapshot():
+                pass
+            self.assert_code('schema_incomplete', Store.open, self.root)
+            self.assertEqual(installed.call_count, 2)
+
     def test_validation_reads_only_schema_and_instance_metadata(self):
         with self.store.write() as connection:
             connection.executemany("INSERT INTO store_metadata VALUES (?, ?)",
@@ -237,6 +254,7 @@ os._exit(24)
     def test_mismatched_anchor_refuses_database(self):
         self.store.anchor_path.write_text(json.dumps({"format": 1, "instance_id": "another"}))
         self.assert_code("instance_mismatch", Store.open, self.root)
+        self.assert_code("instance_mismatch", self.value)
 
     def test_corrupt_database_is_not_reset(self):
         self.store.path.write_bytes(b"not a SQLite database")
@@ -247,16 +265,24 @@ os._exit(24)
         with self.store.write() as connection:
             connection.execute("DELETE FROM schema_migrations")
         self.assert_code("schema_incomplete", Store.open, self.root)
+        self.assert_code("schema_incomplete", self.value)
+
+    def test_schema_metadata_drift_is_rejected_by_existing_handle(self):
+        with self.store.write() as connection:
+            connection.execute("UPDATE store_metadata SET value='0' WHERE key='schema_version'")
+        self.assert_code('schema_incomplete', self.value)
 
     def test_modified_migration_checksum_is_rejected(self):
         with self.store.write() as connection:
             connection.execute("UPDATE schema_migrations SET checksum='changed'")
         self.assert_code("schema_checksum", Store.open, self.root)
+        self.assert_code("schema_checksum", self.value)
 
     def test_newer_schema_is_rejected(self):
         with self.store.write() as connection:
             connection.execute("INSERT INTO schema_migrations VALUES (999, 'future', 0)")
         self.assert_code("schema_newer", Store.open, self.root)
+        self.assert_code("schema_newer", self.value)
 
     def test_init_crash_before_anchor_refuses_partial_pair(self):
         with tempfile.TemporaryDirectory() as root:

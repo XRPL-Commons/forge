@@ -59,6 +59,7 @@ HEADLINE_LIMIT, PLAIN_LIMIT = 90, 360
 
 def role_properties(note):
     """Role-specific result fields: a fifth role is one line here."""
+    if note['role']=='triage':return triage_properties(note)
     candidate = {'candidate': {'type': 'string', 'enum': [(note.get('candidate') or {}).get('key')]}}
     return {
         'build': {'issues': {'type': 'array', 'maxItems': 20, 'items': {'type': 'integer', 'minimum': 1},
@@ -82,37 +83,16 @@ def role_properties(note):
                          'type': 'object', 'properties': {k: {'type': 'string'} for k in ('change', 'reason', 'evidence')},
                          'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]}},
         'strategist': strategist_properties(),
-        'triage': triage_properties(),
     }.get(note['role'], {})
 
 
-def triage_properties():
+def triage_properties(note):
     ref = {'type':'object','properties':{key:{'type':'string'} for key in ('url','description','kind','identity')},
            'required':['url','description','kind','identity'],'additionalProperties':False}
-    # Each action has a closed parameter shape. The host validates source pins,
-    # complete coverage, quoted rules and evidence again before publishing.
-    parameters = [
-        {'evidence':{'type':'array','minItems':1,'maxItems':20,'items':ref}},
-        {'add':{'type':'array','items':{'type':'string'}},'remove':{'type':'array','items':{'type':'string'}}},
-        {'add':{'type':'array','items':{'type':'string'}}},
-        {'dependencies':{'type':'array','items':{'type':'object','properties':{k:{'type':'string'} for k in ('issue_id','prerequisite_issue_id')},
-             'required':['issue_id','prerequisite_issue_id'],'additionalProperties':False}},
-         'existing_prs':{'type':'array','items':{'type':'object','properties':{'unit_id':{'type':'string'},'candidate_id':{'type':'string'},'pull_number':{'type':'integer'},'head_oid':{'type':'string'}},
-             'required':['unit_id','candidate_id','pull_number','head_oid'],'additionalProperties':False}}},
-        {'prerequisites':{'type':'array','items':{'type':'string'}}},
-        {'question':{'type':'string'}}, {},
-    ]
-    parameters[3]['existing_prs']['items']['properties']['author']={'type':'object','properties':{'id':{'type':'integer','minimum':1},'type':{'type':'string','enum':['User','Bot']},'login':{'type':'string'}},'required':['id','type','login'],'additionalProperties':False}
-    parameters[3]['existing_prs']['items']['required'].append('author')
-    parameters[3]['publication_target']={'anyOf':[
-        {'type':'object','properties':{'kind':{'type':'string','enum':['new']}},'required':['kind'],'additionalProperties':False},
-        {'type':'object','properties':{'kind':{'type':'string','enum':['existing']},**parameters[3]['existing_prs']['items']['properties'],'ownership_transfer':{'type':'boolean','enum':[True]},'author':{'type':'object','properties':{'id':{'type':'integer','minimum':1},'type':{'type':'string','enum':['User','Bot']},'login':{'type':'string'}},'required':['id','type','login'],'additionalProperties':False}},'required':['kind','unit_id','candidate_id','pull_number','head_oid','author','ownership_transfer'],'additionalProperties':False}]}
-    row = {'type':'object','properties':{
-        'action':{'type':'string','enum':['close','relabel','park','group','order','question','keep']},
-        'members':{'type':'array','minItems':1,'items':{'type':'string'}},
-        'reason':{'type':'string','minLength':1,'maxLength':8192},'rule_quote':{'type':['string','null']},
-        'parameters':{'anyOf':[{'type':'object','properties':fields,'required':list(fields),'additionalProperties':False} for fields in parameters]}},
-        'required':['action','members','reason','rule_quote','parameters'],'additionalProperties':False}
+    # Supplied by the host from its canonical CLI planning action contract.
+    row = note['context'].get('rows_schema')
+    if not isinstance(row,dict) or not isinstance(row.get('anyOf'),list) or not row['anyOf']:
+        raise PreparationError('Triage assignment requires its captured row schema')
     memory={'type':'object','properties':{'content':{'type':'string','minLength':1,'maxLength':8192},
         'sources':{'type':'array','minItems':1,'maxItems':20,'items':ref}},
         'required':['content','sources'],'additionalProperties':False}

@@ -125,6 +125,7 @@ class PolicyMigrationTests(unittest.TestCase):
                 config=Configuration(store)
                 config.replace('factory.json',{'repositories':repos},expected_revision=0)
                 config.replace('runtime.json',source,expected_revision=0,credential_ref='private-ref')
+            store = storage.Store(store.root)  # Target release handle.
             upgrade.apply(store);upgrade.apply(store)
             migrated=Configuration(store).get('runtime.json')
             self.assertEqual(migrated['settings'],legacy_merge_policies(source,repos))

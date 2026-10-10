@@ -280,10 +280,10 @@ class Client:
             self.vault.set(self.key, saved)
         return value
 
-    def request(self, operation, target, **extra):
+    def request(self, endpoint, target, **extra):
         repository(target)
         saved = self._credential()
-        value = self.transport.call(operation, {'repository': target, 'instance': saved['instance'],
+        value = self.transport.call(endpoint, {'repository': target, 'instance': saved['instance'],
             'generation': saved['generation'], **extra}, saved['access_token'])
         require(value.pop('ok', None) is True)
         return value

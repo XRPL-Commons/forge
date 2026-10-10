@@ -1,4 +1,4 @@
-"""Private SQLite storage primitives. Not selected by any runtime entry point.
+"""Private SQLite storage primitives used by the selected runtime.
 
 Initialization is explicit and never repairs or replaces an incomplete store.
 Connections belong to short context managers, not to the Store object.
@@ -107,7 +107,13 @@ def _database_error(error):
 
 
 class Store:
-    """Handle to an initialized private store; creating a handle opens no connection."""
+    """Handle with this release's immutable migration catalog and no open connection.
+
+    A new process/handle loads the installed catalog. Updating source files does
+    not change an existing handle's schema contract; release upgrades construct
+    a fresh handle from the pinned target tool and restart runtime services.
+    Database migration rows, schema metadata and the anchor remain live checks.
+    """
 
     busy_timeout_ms = 1000
 
@@ -117,6 +123,7 @@ class Store:
         self.path = self.directory / "forge.sqlite3"
         self.anchor_path = self.directory / "instance.json"
         self.instance_id = None
+        self._migration_catalog = tuple(_migrations())
         self._reader = ContextVar("forge_store_reader", default=None)
 
     @classmethod
@@ -149,7 +156,7 @@ class Store:
         try:
             connection = store._connect_path(pending)
             connection.execute("BEGIN IMMEDIATE")
-            migrations = _migrations()
+            migrations = store._migration_catalog
             for version, checksum, script in migrations:
                 _execute_script(connection, script)
                 connection.execute("INSERT INTO schema_migrations VALUES (?, ?, ?)", (version, checksum, time.time()))
@@ -232,7 +239,7 @@ class Store:
             raise
 
     def _validate(self, connection):
-        migrations = _migrations()
+        migrations = self._migration_catalog
         rows = connection.execute("SELECT version, checksum FROM schema_migrations ORDER BY version").fetchall()
         if rows and rows[-1][0] > migrations[-1][0]:
             raise StoreError("schema_newer", "The store schema is newer than this binary supports")
