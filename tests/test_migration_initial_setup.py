@@ -215,4 +215,3 @@ class InitialSetupTests(unittest.TestCase):
     def test_real_public_parity_covers_initial_setup_absence(self):
         driver=Cutover(self.host,qualify=self.qualification)
         self.assertTrue(self.activate_initial(driver)['activation'])
-
