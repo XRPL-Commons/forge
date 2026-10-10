@@ -1,6 +1,8 @@
 """Managed delegation is a bounded builder decision, not worker scheduling power."""
 import json
 
+PLANNING_OUTCOMES = ('delegate', 'needs_decision', 'waiting_on_issues', 'blocked_environment', 'unable', 'wait', 'reject')
+
 
 def task_assignment(job):
     """Typed tasks and retained v1 delegated captures share output authority."""

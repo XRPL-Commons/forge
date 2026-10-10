@@ -62,6 +62,23 @@ class TaskContractTests(unittest.TestCase):
         github.pulls.assert_not_called()
         self.assertFalse(read_only_build({'builder_stage': 'integration'}))
 
+    def test_planning_advertises_and_validates_plans_instead_of_implementation_results(self):
+        planning = {**self.job(), 'task': None, 'builder_stage': 'planning'}
+        outcomes = harness.schema(planning)['properties']['outcome']['enum']
+        self.assertEqual(set(outcomes), {'delegate', 'needs_decision', 'waiting_on_issues',
+                                        'blocked_environment', 'unable', 'wait', 'reject'})
+        report = dict(version=1, role='build', attempt=planning['id'], summary='Planned',
+                      outcome='delegate', delegation_plan={'version': 2, 'tasks': [], 'retained_task_ids': [],
+                      'owner_final': {'member_ids': ['a', 'b'], 'scope': 'Implement', 'internalizes': []}}, output_commit=None)
+        self.assertEqual(result(report, planning)['outcome'], 'delegate')
+        for invalid in ('pass', 'needs_human_verification'):
+            with self.subTest(outcome=invalid), self.assertRaises(ValueError):
+                result({**report, 'outcome': invalid, 'delegation_plan': None}, planning)
+        for stage in ('work', 'child', 'integration'):
+            note = {**self.job(), 'builder_stage': stage}
+            self.assertIn('pass', harness.schema(note)['properties']['outcome']['enum'])
+            self.assertIn('needs_human_verification', harness.schema(note)['properties']['outcome']['enum'])
+
     def test_integration_cannot_drop_task_verification_or_replace_human_check_with_ci(self):
         human = {'what': 'Verify physical device', 'why': 'Needs hardware', 'checks': []}
         ci = {'what': 'Run container check', 'why': 'Needs container host', 'checks': ['image-check']}

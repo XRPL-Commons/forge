@@ -187,7 +187,8 @@ def schema(note):
             plan_schema(note.get('input_manifest', {}).get('manifest_version', 1))]}
         props['output_commit'] = {'type': ['string', 'null']}
         if note.get('builder_stage') == 'planning':
-            props['outcome']['enum'].append('delegate')
+            from .delegation_contracts import PLANNING_OUTCOMES
+            props['outcome']['enum'] = list(PLANNING_OUTCOMES)
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
 
 

@@ -294,6 +294,10 @@ def result(value, job):
     from .delegation_contracts import task_assignment
     managed = job.get('builder_stage') is not None or task_assignment(job)
     if managed:
+        if job.get('builder_stage') == 'planning':
+            from .delegation_contracts import PLANNING_OUTCOMES
+            if value['outcome'] not in PLANNING_OUTCOMES:
+                raise ValueError('Planning can propose work or report a blocker, not complete implementation')
         if 'delegation_plan' not in value or 'output_commit' not in value:
             raise ValueError('Managed build results require delegation fields')
         if value['outcome'] == 'delegate':
@@ -463,17 +467,18 @@ def assignment_note(job):
         'the command and stops the servers. Run servers and tests in the same tool invocation. '
         'Use MONGODB_URI, DATABASE_URL, REDIS_URL and MONGOMS_SYSTEM_BINARY supplied for those services. '
         'Do not download servers, use Docker, or connect to another job or production database.')
-    base['instructions'] += (
-        ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
-        'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
-        'Do everything else you can verify, then return needs_human_verification with verification containing '
-        'what (exact commands, synthetic inputs and expected result), why (why workers cannot run it), and checks []. '
-        'Builders must publish the candidate using the normal submission procedure before requesting verification. '
-        'If configured verification_checks perform that exact check, name them in checks; Forge verifies their '
-        'publisher and result at this candidate revision. Otherwise leave checks empty for a human check. '
-        'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
-        'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
-        'Never return blocked_environment or reject only because a check needs access outside the worker.')
+    if job.get('builder_stage') != 'planning':
+        base['instructions'] += (
+            ' Some acceptance checks need what no Forge worker has: building or running a container image, a deployed '
+            'environment, real hardware or a third-party account. That is not an environment blocker and not a code defect. '
+            'Do everything else you can verify, then return needs_human_verification with verification containing '
+            'what (exact commands, synthetic inputs and expected result), why (why workers cannot run it), and checks []. '
+            'Builders must publish the candidate using the normal submission procedure before requesting verification. '
+            'If configured verification_checks perform that exact check, name them in checks; Forge verifies their '
+            'publisher and result at this candidate revision. Otherwise leave checks empty for a human check. '
+            'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
+            'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
+            'Never return blocked_environment or reject only because a check needs access outside the worker.')
     if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation') or job.get('task')):
         from .delegation_contracts import assignment
         return assignment(base, job)

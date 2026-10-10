@@ -93,9 +93,12 @@ class TaskPipelineTests(unittest.TestCase):
         self.assertEqual(f.jobs.job(f.dispatch.step('batch')['job_id'])['builder_stage'], 'planning')
 
     def test_owner_planning_and_integration_dependency_waits_preserve_every_member(self):
+        from forge.factory.contracts import assignment_note
         for stage in ('planning', 'integration'):
             with self.subTest(stage=stage):
                 job = self.waiting_assignment(stage); f = self.f
+                if stage == 'planning':
+                    self.assertNotIn('return needs_human_verification', assignment_note(job)['instructions'])
                 outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Depends on #10')
                 self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
                 with f.store.read_snapshot() as db:
@@ -103,6 +106,24 @@ class TaskPipelineTests(unittest.TestCase):
                     self.assertEqual({row['member_id']: json.loads(row['details_json'])['requirements'] for row in gates},
                                      {pin['member_id']: pin['requirements'] for pin in job['members']})
                     self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
+
+    def test_owner_environment_waits_can_be_repaired_by_normal_member_overrides(self):
+        from forge.store.runtime_requirements import RuntimeRequirements
+        for stage in ('planning', 'integration'):
+            with self.subTest(stage=stage):
+                job = self.waiting_assignment(stage); f = self.f
+                outcome = f.capture(job['id'], outcome='blocked_environment', blocker='services',
+                                    required_services=['postgres'])
+                self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
+                commands = RuntimeRequirements(f.store, clock=lambda: 101)
+                for index, pin in enumerate(job['members']):
+                    commands.set_override(f.command(), requirements_revision_id=pin['requirements_revision_id'],
+                                          override={'mode': 'full', 'services': ['postgres']})
+                    with f.store.read_snapshot() as db:
+                        remaining = {row[0] for row in db.execute("SELECT member_id FROM unit_gates WHERE code='environment' AND resolved_at IS NULL")}
+                        self.assertEqual(remaining, {row['member_id'] for row in job['members'][index+1:]})
+                        self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
+                self.assertTrue(f.dispatch.step('batch')['reserved'])
 
     def test_joint_wait_rejects_own_scope_and_unassigned_quotes(self):
         from forge.factory.contracts import result
