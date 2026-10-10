@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from contextlib import nullcontext
 
 from forge.state import AtomicStore
 from forge.view_cache import ViewCache
@@ -88,6 +89,22 @@ class ViewCacheTests(unittest.TestCase):
 
 
 class ReadOnlyViewTests(unittest.TestCase):
+    def test_refresh_initializes_its_configuration_and_github_only_when_used(self):
+        settings = Mock()
+        settings.locked.side_effect = lambda *args, **kwargs: nullcontext()
+        settings.paused.return_value = False
+        settings.view.return_value = {'repositories': []}
+        with tempfile.TemporaryDirectory() as root, \
+                patch('forge.factory.issues.load', return_value={'hold_labels': []}) as runtime, \
+                patch('forge.factory.issues.GitHub') as github:
+            inventory = IssueInventory(root, settings=settings)
+            runtime.assert_not_called()
+            github.assert_not_called()
+            inventory.refresh()
+            inventory.refresh(force=True)
+            runtime.assert_called_once_with(Path(root))
+            github.assert_called_once_with(settings, runtime.return_value)
+
     def test_action_statuses_never_rewrite_the_store(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

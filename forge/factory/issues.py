@@ -1,5 +1,6 @@
 """Read-only issue inventory and operator-facing decisions, separate from admission."""
 from copy import deepcopy
+from functools import cached_property
 from pathlib import Path
 import re
 import threading
@@ -343,9 +344,17 @@ class IssueInventory:
         self.root = Path(root)
         self.settings = settings or Settings(root)
         self.clock = clock
-        self.runtime = load(root)
-        self.github = github or GitHub(self.settings, self.runtime)
+        if github is not None:
+            self.github = github
         self.path = self.root / 'state/issues/inventory.json'
+
+    @cached_property
+    def runtime(self):
+        return load(self.root)
+
+    @cached_property
+    def github(self):
+        return GitHub(self.settings, self.runtime)
 
     def read(self):
         try:
