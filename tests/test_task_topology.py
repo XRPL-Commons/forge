@@ -353,3 +353,37 @@ class TaskTopologyTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM delegation_plans').fetchone()[0],0)
             self.assertIsNone(db.execute('SELECT outcome FROM jobs WHERE id=?',(job['job_id'],)).fetchone()[0])
+
+    def test_bounded_deep_plan_and_output_join_do_not_use_python_call_stack(self):
+        import sys
+        from forge.store.task_inputs import current_task_output_in,task_output_ref
+        from forge.store.transitions import _json
+        a,b=self.members
+        tasks=[(str(index),'child',[a],[] if index==0 else [str(index-1)],[]) for index in range(160)]
+        previous_limit=sys.getrecursionlimit()
+        try:
+            # The real wire plan is below64KiB. A deliberately small Python
+            # stack makes the independent graph bound observable in this test.
+            sys.setrecursionlimit(120)
+            plan=self.plan(tasks,final=[b])
+            with self.store.write() as db:
+                previous=None
+                for index in range(160):
+                    task_id=plan['task_ids'][str(index)]
+                    pins=[dict(row) for row in db.execute('SELECT member_id,requirements_revision_id FROM delivery_task_members WHERE task_id=?',(task_id,))]
+                    manifest={'manifest_version':2,'members':pins,'base_oid':'base','policy_hash':'policy',
+                              'prerequisite_outputs':[] if previous is None else [previous]}
+                    attempt='deep-'+str(index); job='job-'+attempt; output='output-'+attempt
+                    db.execute("INSERT INTO attempts(id,unit_id,membership_generation,assignment_generation,input_manifest_json,budget_generation,created_at) VALUES(?,'batch',1,1,?,1,100)",(attempt,_json(manifest)))
+                    db.execute("INSERT INTO jobs(id,unit_id,attempt_id,role,phase,outcome,fenced,cleanup,execution_kind,created_at) VALUES(?,'batch',?,'build','cleaned','success',1,1,'task',100)",(job,attempt))
+                    db.execute('INSERT INTO job_tasks VALUES(?,?,?,?)',(job,plan['plan_id'],task_id,'tree-'+attempt))
+                    db.execute("INSERT INTO part_outputs(id,unit_id,attempt_id,membership_generation,commit_oid,base_oid,input_manifest_hash,accepted_at,task_id) VALUES(?,'batch',?,1,?,'base',?,100,?)",
+                        (output,attempt,hashlib.sha1(attempt.encode()).hexdigest(),manifest_hash(manifest),task_id))
+                    previous=task_output_ref(dict(db.execute('SELECT * FROM part_outputs WHERE id=?',(output,)).fetchone()))
+                unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
+                result=current_task_output_in(db,unit,plan['task_ids']['159'],base_oid='base',policy_hash='policy')
+                self.assertEqual(result['id'],'output-deep-159')
+                db.execute("INSERT INTO part_output_invalidations VALUES('output-deep-0','changed','{}',101)")
+                self.assertIsNone(current_task_output_in(db,unit,plan['task_ids']['159'],base_oid='base',policy_hash='policy'))
+        finally:
+            sys.setrecursionlimit(previous_limit)

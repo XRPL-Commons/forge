@@ -49,15 +49,24 @@ def owner_final_in(plan):
 def current_task_output_in(db, unit, task_id, *, base_oid=None, policy_hash=None, visiting=(), _cache=None):
     cache={} if _cache is None else _cache
     key=(task_id,base_oid,policy_hash)
-    if key not in cache:
-        cache[key]=_read_task_output_in(db,unit,task_id,base_oid=base_oid,policy_hash=policy_hash,visiting=visiting,_cache=cache)
+    active=set(visiting); tasks={}; stack=[(task_id,False)]
+    while stack:
+        identity,expanded=stack.pop(); current_key=(identity,base_oid,policy_hash)
+        if current_key in cache: continue
+        if expanded:
+            cache[current_key]=_read_task_output_in(db,unit,identity,base_oid=base_oid,policy_hash=policy_hash,
+                                                  _cache=cache,task=tasks[identity])
+            active.remove(identity)
+            continue
+        if identity in active: raise TransitionError('retained task dependency cycle')
+        task=tasks[identity]=task_in(db,identity); active.add(identity)
+        stack.append((identity,True))
+        for predecessor in reversed(task['dependencies']):
+            stack.append((predecessor,False))
     return cache[key]
 
 
-def _read_task_output_in(db, unit, task_id, *, base_oid=None, policy_hash=None, visiting=(), _cache=None):
-    if task_id in visiting:
-        raise TransitionError('retained task dependency cycle')
-    task=task_in(db,task_id)
+def _read_task_output_in(db, unit, task_id, *, base_oid=None, policy_hash=None, _cache, task):
     if task['unit_id']!=unit['id']:
         raise TransitionError('task belongs to another delivery')
     for pin in task['members']:
@@ -66,7 +75,7 @@ def _read_task_output_in(db, unit, task_id, *, base_oid=None, policy_hash=None, 
             return None
     predecessors=[]
     for predecessor in task['dependencies']:
-        output=current_task_output_in(db,unit,predecessor,base_oid=base_oid,policy_hash=policy_hash,visiting=(*visiting,task_id),_cache=_cache)
+        output=_cache[(predecessor,base_oid,policy_hash)]
         if output is None:
             return None
         predecessors.append(output)

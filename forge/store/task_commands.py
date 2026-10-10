@@ -86,14 +86,22 @@ class TaskCommands:
                                 raise InvalidDelegationPlan('joint prerequisite work requires explicit internalization')
                         else:
                             dependencies[target].add(source)
-            visited,visiting=set(),set()
-            def visit(identity):
-                if identity in visiting: raise InvalidDelegationPlan('task and member dependencies form a cycle')
-                if identity in visited: return
-                visiting.add(identity)
-                for predecessor in dependencies[identity]: visit(predecessor)
-                visiting.remove(identity); visited.add(identity)
-            for identity in scopes: visit(identity)
+            # Kahn's traversal checks the complete compiled graph without a
+            # Python call-stack limit on valid retained dependency chains.
+            from collections import deque
+            remaining={identity:len(edges) for identity,edges in dependencies.items()}
+            dependents={identity:[] for identity in dependencies}
+            for identity,edges in dependencies.items():
+                for predecessor in edges: dependents[predecessor].append(identity)
+            ready=deque(identity for identity,count in remaining.items() if count==0)
+            visited=0
+            while ready:
+                identity=ready.popleft(); visited+=1
+                for dependent in dependents[identity]:
+                    remaining[dependent]-=1
+                    if remaining[dependent]==0: ready.append(dependent)
+            if visited!=len(dependencies):
+                raise InvalidDelegationPlan('task and member dependencies form a cycle')
             for identity in retained:
                 if dependencies[identity]!=set(task_dependencies_in(db,identity)):
                     raise InvalidDelegationPlan('retained task would change immutable prerequisite authority')
