@@ -452,25 +452,33 @@ class ExecutionQueries:
         manifest = job['failure']['input_manifest'] if job['role'] == 'recovery' else job['input_manifest']
         wanted = manifest.get('prerequisite_outputs', manifest.get('part_outputs', []))
         ordered, seen, visiting = [], set(), set()
-        def visit(output):
+        def visit(db, output, version):
             identity = output['output_id']
+            row = db.execute('SELECT o.*,j.id AS job_id,a.input_manifest_json FROM part_outputs o '
+                             'JOIN jobs j ON j.attempt_id=o.attempt_id JOIN attempts a ON a.id=o.attempt_id '
+                             'WHERE o.id=?', (identity,)).fetchone()
+            keys = ('task_id', 'attempt_id', 'commit_oid', 'input_manifest_hash') if version == 2 else ('commit_oid', 'input_manifest_hash')
+            if version not in (1, 2) or row is None or any(row[key] != output[key] for key in keys):
+                raise TransitionError('assigned task output is unavailable')
+            if version == 1:
+                pins = db.execute('SELECT member_id FROM job_members WHERE job_id=?', (row['job_id'],)).fetchall()
+                if len(pins) != 1 or pins[0][0] != output['member_id']:
+                    raise TransitionError('legacy output does not match its original member scope')
+            # Validate each occurrence before deduplicating: two refs cannot
+            # disguise conflicting identity fields under one shared output ID.
             if identity in seen:
                 return
             if identity in visiting:
                 raise TransitionError('assigned output dependency cycle')
             visiting.add(identity)
-            with self.store.read_snapshot() as db:
-                row = db.execute('SELECT o.*,j.id AS job_id,a.input_manifest_json FROM part_outputs o '
-                                 'JOIN jobs j ON j.attempt_id=o.attempt_id JOIN attempts a ON a.id=o.attempt_id '
-                                 'WHERE o.id=?', (identity,)).fetchone()
-            if row is None or any(row[key] != output[key] for key in ('member_id', 'commit_oid', 'input_manifest_hash')):
-                raise TransitionError('assigned child output is unavailable')
-            for prerequisite in json.loads(row['input_manifest_json'])['prerequisite_outputs']:
-                visit(prerequisite)
+            original = json.loads(row['input_manifest_json'])
+            for prerequisite in original['prerequisite_outputs']:
+                visit(db, prerequisite, original.get('manifest_version', 1))
             ordered.append({**output, 'job_id': row['job_id']})
             visiting.remove(identity); seen.add(identity)
-        for output in wanted:
-            visit(output)
+        with self.store.read_snapshot() as db:
+            for output in wanted:
+                visit(db, output, manifest.get('manifest_version', 1))
         return ordered
 
     def input_bundles(self, references):

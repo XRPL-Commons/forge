@@ -166,7 +166,8 @@ class RecoveryController:
         verification = (report is not None and report['outcome'] == 'needs_human_verification'
                         and len(json.dumps(report).encode()) <= 60000)
         policy_current = original['input_manifest'].get('policy_hash') == digest(policy(self.config, original['repo_id'], repository_name=original['repo']))
-        if (original['role'] == 'build' and not original.get('delegation') and original.get('builder_stage') != 'planning'
+        from .delegation_contracts import read_only_build
+        if (original['role'] == 'build' and not read_only_build(original)
                 and policy_current and job['unit_state'] in {'building', 'integrating'}
                 and job['current_candidate_id'] is None
                 and (original.get('builder_stage') == 'integration' or
@@ -183,10 +184,10 @@ class RecoveryController:
                                     pull_number=identity.pull_number, failed_job_id=original['id'], observed_at=self.clock(),
                                     policy_hash=identity.policy_hash, requirements_hash=identity.requirements_hash,
                                     input_manifest_hash=identity.input_manifest_hash)
-                    gates = []
+                    inherited = ResultController._verification(original, report if verification else None)
+                    gates = [inherited] if inherited else []
                     if verification:
                         args['findings'] = report
-                        gates = [ResultController._verification(original, report)]
                     answer = self.commands.recover_publication(self._command(job), recovery_job_id,
                         **args, candidate=identity, evidence=evidence, incomplete=incomplete and not verification, gates=gates)
                     return {'job_id': recovery_job_id, **answer}

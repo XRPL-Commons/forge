@@ -291,7 +291,8 @@ def result(value, job):
             or any(not isinstance(value[k], str) or not value[k].strip()
                    for k in ('summary', 'headline', 'plain', 'operator_summary') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
-    managed = job.get('builder_stage') is not None or job.get('delegation') is not None
+    from .delegation_contracts import task_assignment
+    managed = job.get('builder_stage') is not None or task_assignment(job)
     if managed:
         if 'delegation_plan' not in value or 'output_commit' not in value:
             raise ValueError('Managed build results require delegation fields')
@@ -300,11 +301,11 @@ def result(value, job):
                 raise ValueError('Only the owning builder planning run can propose children')
         elif value['delegation_plan'] is not None:
             raise ValueError('Only delegation can carry a child plan')
-        if job.get('delegation') is not None and value['outcome'] == 'pass':
+        if task_assignment(job) and value['outcome'] in {'pass', 'needs_human_verification'}:
             if not isinstance(value['output_commit'], str) or not SHA.fullmatch(value['output_commit']):
-                raise ValueError('A child must name its exact output commit')
+                raise ValueError('A task must name its exact output commit')
         elif value['output_commit'] is not None:
-            raise ValueError('Only a successful child can report an output commit')
+            raise ValueError('Only a successful task can report an output commit')
     elif value['outcome'] == 'delegate' or value.get('delegation_plan') is not None or value.get('output_commit') is not None:
         raise ValueError('Delegation is outside this assignment')
     verification = value.get('verification')
@@ -471,7 +472,7 @@ def assignment_note(job):
         'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
         'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
         'Never return blocked_environment or reject only because a check needs access outside the worker.')
-    if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation')):
+    if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation') or job.get('task')):
         from .delegation_contracts import assignment
         return assignment(base, job)
     if job['role'] == 'build':

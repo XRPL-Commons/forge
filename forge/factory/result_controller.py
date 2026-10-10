@@ -82,12 +82,21 @@ class ResultController:
 
     @staticmethod
     def _verification(job, report):
-        requested = report['verification']
+        inherited = job.get('input_manifest', {}).get('verification_requests', [])
+        requests = [row['verification'] for row in inherited]
+        if report and report.get('outcome') == 'needs_human_verification':
+            requests.append(report['verification'])
+        if not requests:
+            return None
+        requested = {'what': '\n\n'.join(row['what'] for row in requests),
+                     'why': '\n\n'.join(row['why'] for row in requests),
+                     'checks': sorted({name for row in requests for name in row.get('checks', [])})}
         allowed = {row['name']: row for row in job.get('verification_checks', [])}
         wanted = requested.get('checks', [])
-        checks = [allowed[name] for name in wanted] if wanted and all(name in allowed for name in wanted) else []
+        checks = [allowed[name] for name in wanted] if all(row.get('checks') for row in requests) and all(name in allowed for name in wanted) else []
         return {'code': 'verification_ci' if checks else 'verification_human',
-                'details': {**requested, 'ci': checks, 'job_id': job['id']}}
+                'details': {**requested, 'ci': checks, 'job_id': job['id'],
+                            **({'task_outputs': [row['output_id'] for row in inherited]} if inherited else {})}}
 
     def step(self, job_id):
         with self.store.read_snapshot() as db:
@@ -158,7 +167,8 @@ class ResultController:
                 except InvalidDelegationPlan:
                     return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'invalid_delegation_plan'})}
                 return {'job_id': job_id, **planned}
-            if report and report['outcome'] == 'pass' and job.get('delegation'):
+            from .delegation_contracts import task_assignment, read_only_build
+            if report and report['outcome'] in {'pass', 'needs_human_verification'} and task_assignment(job):
                 from .delegation_artifacts import verify_bundle
                 from ..store.delivery import Delivery
                 try:
@@ -166,10 +176,12 @@ class ResultController:
                     inputs = [job['input_manifest']['base_oid']] + [row['commit_oid'] for row in job['input_manifest']['prerequisite_outputs']]
                     verified = verify_bundle(bundle, report['output_commit'], inputs)
                 except (ValueError, OSError, subprocess.SubprocessError, TransitionError):
-                    return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'invalid_child_output'})}
+                    return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'invalid_task_output'})}
                 evidence.update(verified=True, commit_oid=report['output_commit'], base_oid=job['input_manifest']['base_oid'],
                                 input_manifest_hash=manifest_hash(job['input_manifest']), bundle_digest=verified['digest'])
-                return {'job_id': job_id, **Delivery(self.store, clock=self.clock).accept_part(self._command(job), job_id,
+                delivery = Delivery(self.store, clock=self.clock)
+                accept = delivery.accept_task_output if job['input_manifest'].get('manifest_version', 1) == 2 else delivery.accept_part
+                return {'job_id': job_id, **accept(self._command(job), job_id,
                     **self._args(job, evidence), commit_oid=report['output_commit'])}
             if report and report['outcome'] == 'needs_decision':
                 return {'job_id': job_id, **self._defer(job, evidence, 'decision_required',
@@ -187,7 +199,7 @@ class ResultController:
                 return {'job_id': job_id, **self._defer(job, evidence, 'dependency',
                     {'issues': sorted(report['issues']), 'blocked': blocked, 'evidence': quote,
                      'requirements': requirements, 'job_id': job_id})}
-            publication = (None if job.get('delegation') or job.get('builder_stage') == 'planning' else
+            publication = (None if read_only_build(job) else
                            self.github.publication(job, requirements, job['input_manifest']['policy_hash']))
             if publication:
                 if publication['base'] != job['input_manifest']['base_oid']:
@@ -200,7 +212,8 @@ class ResultController:
                 identity = Candidate(publication['pr'], publication['branch'], publication['head'], publication['base'],
                     job['input_manifest']['policy_hash'], job['input_manifest'].get('requirements_hash', manifest_hash(requirements)), manifest_hash(job['input_manifest']))
                 evidence.update(verified=True, head_oid=identity.head_oid, base_oid=identity.base_oid, pull_number=identity.pull_number)
-                gates = [self._verification(job, report)] if report and report['outcome'] == 'needs_human_verification' else []
+                verification = self._verification(job, report)
+                gates = [verification] if verification else []
                 if job.get('builder_stage') == 'integration':
                     from ..store.delivery import Delivery
                     finish = Delivery(self.store, clock=self.clock).publish_candidate
