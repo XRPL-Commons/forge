@@ -557,3 +557,14 @@ class TaskTopologyTests(unittest.TestCase):
             for row in db.execute("SELECT g.details_json,r.requirements_json FROM unit_gates g JOIN job_members p ON p.member_id=g.member_id JOIN issue_revisions r ON r.id=p.requirements_revision_id WHERE p.job_id=? AND g.code='dependency' AND g.resolved_at IS NULL",(job['job_id'],)):
                 self.assertEqual(json.loads(row['details_json'])['requirements'],json.loads(row['requirements_json']))
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+
+    def test_owner_planning_dependency_wait_uses_all_assigned_members(self):
+        manifest=self.query.builder_manifest('batch','planning',base_oid='base',policy_hash='policy')
+        job=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='owner',input_manifest=manifest)
+        result=self.life.defer_job(self.command(),job['job_id'],execution_fence='owner',input_manifest=manifest,
+            evidence={'reason':'prerequisite'},code='dependency',details={'issues':[10],'blocked':[10],'evidence':'Depends on #10'})
+        self.assertEqual(len(result['gate_ids']),2)
+        with self.store.read_snapshot() as db:
+            gates=[dict(row) for row in db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL")]
+            self.assertEqual({gate['member_id'] for gate in gates},set(self.members))
+            self.assertTrue(all(json.loads(gate['details_json'])['requirements']=={'acceptance':['works']} for gate in gates))
