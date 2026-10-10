@@ -56,7 +56,7 @@ def batches(importer, name, rows, apply):
 
 
 def normalize(importer):
-    ledger=importer.source.json(LEDGER)
+    ledger=importer.source.ledger()
     Ledger.validate(ledger)
     if ledger['slots'] or any(not j['cleanup'] for j in ledger['jobs'].values()):
         raise MigrationError('uncleaned_jobs')

@@ -51,14 +51,15 @@ def check(importer):
             require(row is not None and row[0]==value,'observation_request')
             counts['observation_requests']+=1
         source=importer.source.json('state/onboarding/setup.json',{})
-        if source and all(k in source for k in ('generation','phase','owner','account_type')):
+        if source and all(k in source for k in ('generation','phase')) and (source['phase']=='setup' or all(k in source for k in ('owner','account_type'))):
             row=db.execute("SELECT * FROM setup_instances WHERE scope='live'").fetchone()
             require(row is not None,'setup_instance')
             actual={k:row[k] for k in ('generation','phase','owner','account_type')}
             actual.update(decode(row['settings_json']))
             jobs=db.execute("SELECT id FROM auxiliary_executions WHERE domain='setup' AND owner_id='live' ORDER BY position").fetchall()
             actual['probe_jobs']=[execution(db,j[0]) for j in jobs]
-            require(actual==source,'setup_instance')
+            expected={**source, 'owner':source.get('owner') or '', 'account_type':source.get('account_type') or ''}
+            require(actual==expected,'setup_instance')
             counts['setup_instances']+=1
             counts['auxiliary_executions']+=len(jobs)
         for key,source in importer.source.json('state/deployments.json',{}).get('repositories',{}).items():

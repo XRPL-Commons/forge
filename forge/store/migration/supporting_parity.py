@@ -13,7 +13,7 @@ def check(importer):
     counts = dict(discussions=0,messages=0,discussion_pages=0,discussion_artifacts=0,
                   actions=0,notifications=0,inventory_repositories=0,inventory_pulls=0,inventory_scan_issues=0,inventory_scan_pages=0,provider_cooldowns=0,memory_profiles=0)
     reader = SupportingQueries(importer.store)
-    ledger = importer.source.json('state/factory/factory-ledger.json')
+    ledger = importer.source.ledger()
     with importer.store.read_snapshot() as db:
         for account, value in ledger.get('provider_cooldowns',{}).items():
             row = db.execute('SELECT * FROM provider_cooldowns WHERE account_ref=?',(account,)).fetchone()

@@ -18,7 +18,9 @@ from .contracts import SetupError, require
 # This bootstrap reads only locally supplied code and intent. The remote host
 # never supplies commands. Temporary tools do not replace the running checkout.
 BOOTSTRAP = r'''import base64,hashlib,json,pathlib,sys,tempfile,zipfile,io,os,subprocess
-request=json.loads(sys.stdin.buffer.read(8*1024*1024))
+payload=sys.stdin.buffer.read(64*1024*1024+1)
+if len(payload)>64*1024*1024: raise ValueError("request too large")
+request=json.loads(payload)
 raw=base64.b64decode(request.pop("bundle"),validate=True)
 if hashlib.sha256(raw).hexdigest()!=request.pop("bundle_digest"): raise ValueError("bundle mismatch")
 with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
@@ -174,9 +176,10 @@ def execute(args):
             import re
             require(not args.apply or isinstance(revision,str) and re.fullmatch(r'[0-9a-f]{40}',revision),'upgrade_revision_required','Supply the full release SHA with --source-revision when using --apply.')
             return call(args,'upgrade',apply=args.apply,source_revision=revision)
-        require(not (repair or revision) or args.migration_command=='resume','migration_repair_resume_required','Tool updates are only accepted by migrate resume before SQLite selection.')
+        require(not repair or args.migration_command=='resume','migration_repair_resume_required','Tool repair requires migrate resume.')
+        require(not revision or args.migration_command in {'resume','activate'},'migration_repair_resume_required','Use --source-revision with initial migrate activate or an explicitly authorized migrate resume repair.')
         require(not repair or revision is not None,'migration_repair_revision_required','Select the exact corrected source with --source-revision and --accept-tool-update.')
-        require(not revision or repair,'migration_repair_authorization_required','Supply --accept-tool-update to authorize this source revision.')
+        require(not revision or repair or args.migration_command=='activate','migration_repair_authorization_required','Supply --accept-tool-update to authorize this source revision.')
         if revision:
             import re
             require(re.fullmatch(r'[0-9a-f]{40}',revision) is not None,'migration_repair_revision_required','Use a full lowercase commit SHA for --source-revision.')
@@ -190,6 +193,12 @@ def execute(args):
             return call(args,args.migration_command,**({'accept_tool_update':True,'source_revision':revision} if repair else {}))
         if args.migration_command=='activate':
             require(args.apply,'migration_apply_required','One-way SQLite activation pauses new work, drains workers, verifies migration and restarts Forge. Supply --apply.')
+            if revision:
+                plan=call(args,'plan')
+                require(plan.get('initial_setup') is True,'migration_initial_setup_required','Initial source upgrade requires a never-started legacy setup.')
+                from .source import export
+                pack=export(revision,previous=plan['source_revision']) if revision!=plan['source_revision'] else None
+                return call(args,'activate',apply=True,previous_revision=plan['source_revision'],source_revision=revision,source_pack=pack)
             return call(args,'activate',apply=True)
         if args.migration_command=='prepare':
             require(args.apply,'migration_apply_required','Preparing the private SQLite runtime may install compiler dependencies. Supply --apply.')

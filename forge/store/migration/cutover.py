@@ -15,10 +15,10 @@ from ...legacy_writers import exclusive
 from ..configuration import Configuration
 from ..db import Store, _fsync_directory, _new_file, qualified_sqlite
 from .importer import Importer, importer_version
-from .snapshot import MigrationError, Snapshot, capture, decode, digest, encode, operation_lock, read_regular, sources, uncleaned_auxiliary
+from .snapshot import MigrationError, Snapshot, capture, decode, digest, encode, operation_lock, read_regular, sources, uncleaned_auxiliary, initial_setup, legacy_ledger
 from .source import source_files
 
-STAGES = {'draining','stopping','capturing','importing','validated','selected','complete'}
+STAGES = {'draining','stopping','capturing','importing','validated','selected','complete','source_preparing'}
 
 
 def maintenance_writable(root):
@@ -71,22 +71,35 @@ class Cutover:
         if self.after_stage and stage: self.after_stage(stage)
 
     def _source_current(self,value):
+        bridge=value.get('initial_source')
+        if bridge and value['stage'] in {'stopping','capturing','source_preparing'}:
+            allowed={bridge['from_revision']} if value['stage']!='source_preparing' else {bridge['from_revision'],bridge['to_revision']}
+            if self.host.identity() not in allowed:
+                raise MigrationError('cutover_source_changed')
+            return
         if self.host.identity()!=value['source_revision'] or package_version(self.host.source)!=value['tool_version']:
             raise MigrationError('cutover_source_changed')
 
     def _runtime_current(self,value):
+        if value.get('initial_source'):
+            if not value['initial_runtime_frozen']:
+                return
+            path=self.root/'runtime.json'
+            actual=digest(read_regular(path,limit=65536)) if path.exists() else None
+            if actual!=value['initial_runtime_digest']:
+                raise MigrationError('cutover_runtime_changed')
+            return
         actual=read_regular(self.root/'runtime.json',limit=65536)
         if digest(encode(decode(actual)))!=value['paused_digest']:
             raise MigrationError('cutover_runtime_changed')
 
     def _pending(self):
         data=sources(self.root)
-        from ...factory.ledger import Ledger
-        ledger=decode(data['state/factory/factory-ledger.json']); Ledger.validate(ledger)
+        ledger=legacy_ledger(data)
         return dict(pipeline=sum(not j['cleanup'] for j in ledger['jobs'].values()),
                     slots=len(ledger['slots']),auxiliary=uncleaned_auxiliary(data))
 
-    def activate(self,*,expected_plan=None):
+    def activate(self,*,expected_plan=None,source_revision=None,previous_revision=None,source_pack=None):
         with operation_lock(self.root,'.migration-host.lock'):
             if self.path.exists():
                 return self._resume(self._read())
@@ -97,16 +110,33 @@ class Cutover:
             plan=self.host.inspect()
             if expected_plan is not None and plan['plan']!=expected_plan:
                 raise MigrationError('plan_changed')
+            if previous_revision is not None and plan['source_revision']!=previous_revision:
+                raise MigrationError('initial_source_changed')
             data=sources(self.root)
+            initial=initial_setup(data)
+            if source_revision is not None and not initial:
+                raise MigrationError('initial_source_requires_never_started_setup')
+            if initial and source_revision is None:
+                raise MigrationError('initial_source_revision_required')
             setup=decode(data.get('state/onboarding/setup.json',b'{}'))
-            if setup.get('operation') or 'state/factory-paused.json' in data or setup and setup.get('phase')!='active':
+            if not initial and (setup.get('operation') or 'state/factory-paused.json' in data or setup and setup.get('phase')!='active'):
                 raise MigrationError('cutover_setup_operation_pending')
             if set(plan['blockers'])-{'uncleaned_jobs'}:
                 raise MigrationError('cutover_has_unmanaged_writers')
             if not qualified_sqlite():
                 raise MigrationError('sqlite_unqualified')
             tool_version=importer_version()
-            if package_version(self.host.source)!=tool_version:
+            if initial:
+                import re
+                if not isinstance(source_revision,str) or not re.fullmatch(r'[a-f0-9]{40}',source_revision):
+                    raise MigrationError('initial_source_revision_required')
+                if source_revision!=plan['source_revision']:
+                    if source_pack is None:
+                        raise MigrationError('initial_source_pack_required')
+                    self.host.prepare_source_update(plan['source_revision'],source_revision,tool_version,source_pack=source_pack)
+                elif package_version(self.host.source)!=tool_version:
+                    raise MigrationError('cutover_code_mismatch')
+            elif package_version(self.host.source)!=tool_version:
                 raise MigrationError('cutover_code_mismatch')
             destination=self.root/'sqlite'
             if os.path.lexists(destination):
@@ -114,8 +144,8 @@ class Cutover:
             from ...settings import Settings
             from ...factory.config import load
             with Settings(self.root).locked('runtime-config'):
-                original=load(self.root)
-                paused={**original,'enabled':False,'merge_enabled':False}
+                original=None if initial else load(self.root)
+                paused={**(original or {}),'enabled':False,'merge_enabled':False}
                 identifier=str(uuid.uuid4())
                 value=dict(protocol=1,id=identifier,authorized=True,actor_id="operator:cli:"+str(os.getuid()),root=str(self.root),source=str(self.host.source),
                     source_revision=plan['source_revision'],tool_version=tool_version,services=plan['services'],stage='draining',
@@ -123,8 +153,12 @@ class Cutover:
                     snapshot=str(self.root.parent/('forge-pre-sqlite-'+identifier)),destination=str(destination))
                 # The journal is durable before admission changes. Resume can
                 # complete this write if the process dies in the following gap.
+                if initial:
+                    value.update(stage='stopping',initial_source=dict(from_revision=plan['source_revision'],to_revision=source_revision,prepared=None),
+                                 initial_runtime_digest=None,initial_runtime_frozen=False)
                 self._save(value)
-                atomic_json(self.root/'runtime.json',paused)
+                if not initial:
+                    atomic_json(self.root/'runtime.json',paused)
             return self._resume(value)
 
     def resume(self, *, accept_tool_update=False, source_revision=None):
@@ -144,6 +178,8 @@ class Cutover:
         from ...factory.control import controller_lock
         if os.path.lexists(self.marker) or value['stage'] in {'selected','complete'}:
             raise MigrationError('repair_after_selection_forbidden')
+        if value.get('initial_source'):
+            raise MigrationError('initial_setup_release_repair_not_supported')
         if value['stage'] not in {'importing','validated'}:
             raise MigrationError('repair_requires_frozen_snapshot')
         if os.path.lexists(self.root/'state'/('.pending-storage-'+value['id'])):
@@ -261,7 +297,8 @@ class Cutover:
 
     def _record(self,store,value,stage,**evidence):
         proof={'source_manifest':value.get('manifest'),'service_qualification':value.get('qualification'),
-               'public_parity':value.get('public_parity'),'source_updates':value.get('source_updates',[]),**evidence}
+               'public_parity':value.get('public_parity'),'source_updates':value.get('source_updates',[]),
+               'initial_source':value.get('initial_source'),**evidence}
         with store.write() as db:
             db.execute("INSERT INTO runtime_operations(id,kind,stage,source_revision,manifest_digest,started_at,updated_at,evidence_json) VALUES(?,'activate',?,?,?,?,?,?) "
                 'ON CONFLICT(id) DO UPDATE SET stage=excluded.stage,updated_at=excluded.updated_at,evidence_json=excluded.evidence_json',
@@ -290,6 +327,8 @@ class Cutover:
         from ..runtime import selected
         if selected(self.root).instance_id!=store.instance_id:
             raise MigrationError('runtime_selection_conflict')
+        if value.get('initial_source'):
+            self.host.initial_updater('commit_initial',value,value['initial_source']['prepared'])
         if value['services']:
             self.host.command('systemctl','--user','start',*value['services'])
         if not set(value['services']).issubset(set(self.host.units())):
@@ -335,7 +374,14 @@ class Cutover:
                 raise MigrationError('cutover_drain_not_complete')
             current=sources(self.root)
             setup=decode(current.get('state/onboarding/setup.json',b'{}'))
-            if setup.get('operation') or 'state/factory-paused.json' in current or setup and setup.get('phase')!='active':
+            if value.get('initial_source'):
+                if not initial_setup(current):
+                    raise MigrationError('initial_setup_changed')
+                if not value['initial_runtime_frozen']:
+                    from ...factory.config import load
+                    self._save(value,original_runtime=load(self.root),initial_runtime_frozen=True,
+                               initial_runtime_digest=digest(current['runtime.json']) if 'runtime.json' in current else None)
+            elif setup.get('operation') or 'state/factory-paused.json' in current or setup and setup.get('phase')!='active':
                 raise MigrationError('cutover_setup_operation_pending')
             snapshot_path=Path(value['snapshot'])
             if value['stage'] in {'stopping','capturing'}:
@@ -354,11 +400,21 @@ class Cutover:
                         snapshot=capture(self.root,snapshot_path,source_revision=value['source_revision'],storage_generation=1,quiescent=self.host.quiet)
                     else: snapshot=Snapshot(snapshot_path)
                 self._same_snapshot(snapshot)
-                self._save(value,'importing',manifest=snapshot.id)
+                self._save(value,'source_preparing' if value.get('initial_source') else 'importing',manifest=snapshot.id)
             snapshot=Snapshot(snapshot_path)
             if snapshot.id!=value['manifest']:
                 raise MigrationError('cutover_snapshot_identity_changed')
             self._same_snapshot(snapshot)
+            if value['stage']=='source_preparing':
+                bridge=value['initial_source']
+                self.host.install_source_update(bridge['from_revision'],bridge['to_revision'])
+                if package_version(self.host.source)!=value['tool_version']:
+                    raise MigrationError('repair_bundle_source_mismatch')
+                self._save(value,source_revision=bridge['to_revision'])
+                receipt=self.host.initial_updater('prepare_initial',value)
+                self.host.quiet()
+                self._same_snapshot(snapshot)
+                self._save(value,'importing',initial_source={**bridge,'prepared':receipt})
             importer=Importer(snapshot,value['destination'])
             store=importer.store
             if value['stage']=='importing':

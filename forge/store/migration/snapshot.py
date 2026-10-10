@@ -124,9 +124,61 @@ def sources(root):
     for name in result:
         if name.endswith('.initialized') and name.removesuffix('.initialized')+'.json' not in result:
             raise MigrationError('initialized_source_missing')
-    if 'state/factory/factory-ledger.json' not in result:
-        raise MigrationError('ledger_missing')
+    legacy_ledger(result)  # Absence is valid only for a proven initial setup.
     return result
+
+
+LEDGER = 'state/factory/factory-ledger.json'
+
+
+def initial_setup_blocker(data):
+    """Classify the legacy initialization proof without returning private values."""
+    if LEDGER in data:
+        from ...factory.ledger import Ledger
+        ledger=decode(data[LEDGER])
+        Ledger.validate(ledger)
+        if any(ledger[name] for name in ('issues','jobs','slots','events')):
+            return 'pipeline_history_present'
+    setup = decode(data.get('state/onboarding/setup.json', b'{}'))
+    if (setup.get('version') != 1 or setup.get('phase') != 'setup'
+            or not isinstance(setup.get('generation'), str) or not setup['generation']):
+        return 'initial_setup_identity_missing'
+    if setup.get('operation') is not None:
+        return 'setup_operation_pending'
+    if any(setup.get(key) is not None for key in ('activation_request','activation_revision','reset_receipt')):
+        return 'activation_or_reset_history'
+    if any(name in data for name in ('state/factory-v2.enabled','state/factory-onboarding.enabled')):
+        return 'activation_marker_present'
+    if 'state/factory-paused.json' in data:
+        return 'setup_pause_present'
+    if LEDGER not in data and any(name.startswith('state/factory/') for name in data):
+        return 'additional_factory_state'
+    if uncleaned_auxiliary(data):
+        return 'uncleaned_setup_workers'
+    return None
+
+
+def initial_setup(data):
+    """Prove setup has no activation history or pipeline work.
+
+    Legacy setup creates setup.json before owner selection. Start creates the
+    ledger before its activation markers; reset retains a reset receipt/marker.
+    An empty or absent ledger alone is not evidence of a never-started factory.
+    """
+    return initial_setup_blocker(data) is None
+
+
+def legacy_ledger(data):
+    """Return recorded ledger facts, or the validated never-started empty scope."""
+    from ...factory.ledger import Ledger
+    if LEDGER in data:
+        value = decode(data[LEDGER])
+    elif initial_setup(data):
+        value = dict(version=1, issues={}, jobs={}, slots={}, events=[])
+    else:
+        raise MigrationError('ledger_missing')
+    Ledger.validate(value)
+    return value
 
 
 def uncleaned_auxiliary(data):
@@ -172,9 +224,7 @@ def capture(root, destination, *, source_revision, storage_generation, quiescent
     with operation_lock(root):
         quiescent()
         data = sources(root)
-        from ...factory.ledger import Ledger
-        ledger = decode(data['state/factory/factory-ledger.json'])
-        Ledger.validate(ledger)
+        ledger = legacy_ledger(data)
         if ledger['slots'] or any(not j['cleanup'] for j in ledger['jobs'].values()) or uncleaned_auxiliary(data):
             raise MigrationError('uncleaned_jobs')
         destination.mkdir(mode=0o700)  # Explicitly new; never overwrite an earlier capture.
@@ -231,3 +281,8 @@ class Snapshot:
 
     def json(self, name, default=None):
         return decode(self.read(name)) if name in self.entries else default
+
+    def ledger(self):
+        if LEDGER in self.entries:
+            return legacy_ledger({LEDGER: self.read(LEDGER)})
+        return legacy_ledger({name: self.read(name) for name in self.entries})

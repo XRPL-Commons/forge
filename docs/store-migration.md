@@ -83,6 +83,48 @@ restart. It never switches back to JSON. A failed step retains the private stagi
 and journal; use `plan` to inspect the stage and `resume` to continue after correcting
 the reported blocker. No shell session or manual file transfer is needed.
 
+### Upgrade an unfinished legacy installation
+
+An older installation may already have operator sign-in and settings while its
+setup has never started pipeline work. `plan` reports `setup_phase`,
+`setup_operation_pending`, `initial_setup` and a bounded
+`initial_setup_blocker` code. This path requires setup phase, no activation/reset
+history, no pending operation or uncleaned workers, and an empty validated pipeline
+ledger. A missing ledger is accepted only when the legacy initialization records
+prove that setup has not initialized it; no replacement JSON ledger is written.
+
+Use the current release CLI and pin that same full release commit:
+
+```sh
+forge migrate activate --ssh anvil --service-user forge \
+  --source /home/forge/forge --root /home/forge/.local/share/forge \
+  --source-revision FULL_RELEASE_COMMIT_SHA --apply --json
+```
+
+Run `migrate prepare --apply` first if the plan reports an unqualified SQLite
+runtime. The CLI fetches the pinned source locally, verifies forward ancestry and
+sends only Git objects to the server. GitHub credentials and local Git configuration
+stay on the operator's computer.
+
+The journal pins the original and target commits. With every Forge service
+stopped, the CLI seals the existing configuration and identity snapshot, advances
+the checkout, and uses the host updater to build and qualify the current runner,
+UI and service launchers. These preparations do not rewrite the frozen settings
+or start services. The normal importer then preserves identity, sessions, setup
+phase and settings and checks parity before selecting SQLite. The updater commits
+its new image and host records to SQLite before the original services restart.
+The setup remains unfinished and retains its enabled/merge settings; migration
+does not press **Start** or approve work.
+
+If interrupted, use the ordinary `migrate resume` command with the same SSH,
+service-user, source and root options. It reuses the pinned source and diagnostic
+snapshot. A failure before selection keeps services stopped; a failure after
+selection finishes only the SQLite configuration commit and restart. This source
+bridge is limited to unfinished initial setup; active legacy installations use
+the standard activation and explicit importer repair paths above and below.
+Changing the pinned release during an initial bridge is not supported; the CLI
+rejects `--accept-tool-update` for this path before changing source or state.
+
 ### Resume with a corrected importer
 
 If an import bug requires a newer Forge release, install that CLI release locally

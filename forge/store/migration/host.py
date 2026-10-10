@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import time
 
-from .snapshot import MigrationError, capture, sources, decode, encode, digest, read_regular, operation_lock, uncleaned_auxiliary
+from .snapshot import MigrationError, capture, sources, decode, encode, digest, read_regular, operation_lock, uncleaned_auxiliary, legacy_ledger, initial_setup, initial_setup_blocker
 from ...state import atomic_json
 from ..db import _fsync_directory, qualified_sqlite
 from ...factory.ledger import Ledger
@@ -41,9 +41,11 @@ class Host:
     def inspect(self):
         revision=self.identity()
         data=sources(self.root)
-        ledger=decode(data['state/factory/factory-ledger.json'])
-        Ledger.validate(ledger)
+        ledger=legacy_ledger(data)
         auxiliary=uncleaned_auxiliary(data)
+        setup=decode(data.get('state/onboarding/setup.json',b'{}'))
+        phase=setup.get('phase')
+        setup_phase=phase if phase in {'setup','active','resetting'} else 'unknown'
         blockers=[]
         try:
             cron=self.run(['crontab','-l'],capture_output=True,text=True,timeout=10)
@@ -60,6 +62,8 @@ class Host:
         from .runtime import inspect as runtime_inspect
         prepared=runtime_inspect(self.root)
         return dict(status='blocked' if blockers else 'planned',plan=revision_hash,source_revision=revision,
+                    initial_setup=initial_setup(data),initial_setup_blocker=initial_setup_blocker(data),setup_phase=setup_phase,
+                    setup_operation_pending=bool(setup.get('operation')),
                     source_files=len(data),source_bytes=sum(len(v) for v in data.values()),
                     services=self.units(),blockers=blockers,
                     sqlite_version=sqlite3.sqlite_version,sqlite_qualified=qualified_sqlite(),
@@ -92,7 +96,7 @@ class Host:
             if (str(self.root).encode() in command or str(self.source).encode() in command) and b'git\x00' not in command:
                 raise MigrationError('unmanaged_process')
 
-    def prepare_source_update(self, previous, target, tool_version):
+    def prepare_source_update(self, previous, target, tool_version, *, source_pack=None):
         """Read/fetch and qualify a pinned fast-forward without running host setup."""
         import io
         import tarfile
@@ -103,7 +107,19 @@ class Host:
             raise MigrationError('repair_source_changed')
         if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
             raise MigrationError('repair_source_not_clean')
-        self.command('git','-C',str(self.source),'fetch','--no-tags','origin',target)
+        if source_pack is None:
+            self.command('git','-C',str(self.source),'fetch','--no-tags','origin',target)
+        else:
+            import base64
+            try:
+                raw=base64.b64decode(source_pack['data'],validate=True)
+            except (KeyError,TypeError,ValueError):
+                raise MigrationError('source_pack_invalid') from None
+            if len(raw)>32*1024*1024 or not raw.startswith(b'PACK') or digest(raw)!=source_pack.get('sha256'):
+                raise MigrationError('source_pack_invalid')
+            indexed=self.run(['git','-C',str(self.source),'index-pack','--stdin'],input=raw,capture_output=True,timeout=120)
+            if indexed.returncode:
+                raise MigrationError('source_pack_invalid')
         if self.command('git','-C',str(self.source),'rev-parse',target+'^{commit}')!=target:
             raise MigrationError('repair_revision_mismatch')
         ancestry=self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,target],capture_output=True,timeout=30)
@@ -139,6 +155,28 @@ class Host:
             self.command('git','-c','core.hooksPath=/dev/null','-C',str(self.source),'merge','--ff-only',target)
         if self.identity()!=target:
             raise MigrationError('repair_revision_mismatch')
+
+    def initial_updater(self, action, value, receipt=None):
+        """Run the reconciler from the installed pinned tree, never the tool ZIP."""
+        from .runtime import inspect
+        runtime=inspect(self.root)
+        environment={**os.environ,'PYTHONPATH':str(self.source)}
+        if runtime:
+            environment['LD_LIBRARY_PATH']=runtime['library_directory']
+        payload=dict(action=action,root=str(self.root),operation_id=value['id'],
+                     source_revision=value['source_revision'])
+        if action=='commit_initial':payload['receipt']=receipt
+        result=self.run(['/usr/bin/python3','-m','forge.host_initial_update'],input=json.dumps(payload),
+                        capture_output=True,text=True,timeout=1200,cwd=self.source,env=environment)
+        if result.returncode or len(result.stdout)>1024*1024:
+            raise MigrationError('initial_host_preparation_failed' if action=='prepare_initial' else 'initial_host_commit_failed')
+        try:
+            answer=json.loads(result.stdout)
+        except ValueError:
+            raise MigrationError('initial_host_receipt_invalid') from None
+        if not isinstance(answer,dict):
+            raise MigrationError('initial_host_receipt_invalid')
+        return answer
 
     def restore(self, *, accept_tool_update=False, source_revision=None):
         if (self.root/'.migration-cutover.json').exists():
@@ -198,7 +236,7 @@ def failure(error, request):
         try:
             value=decode(read_regular(path,limit=1048576))
             candidate=value.get('stage')
-            stage=candidate if candidate in {'draining','stopping','capturing','importing','validated','selected','complete','installing','migrating','reconciling'} else 'journal_unreadable'
+            stage=candidate if candidate in {'draining','stopping','capturing','importing','validated','selected','complete','installing','migrating','reconciling','source_preparing'} else 'journal_unreadable'
         except Exception:
             stage='journal_unreadable'
     name=type(error).__name__
@@ -225,7 +263,7 @@ def run(request):
     if request['action']=='activate':
         if request.get('apply') is not True: raise MigrationError('activation_not_authorized')
         from .cutover import Cutover
-        return Cutover(host).activate(expected_plan=request.get('plan'))
+        return Cutover(host).activate(expected_plan=request.get('plan'),source_revision=request.get('source_revision'),previous_revision=request.get('previous_revision'),source_pack=request.get('source_pack'))
     if request['action']=='capture':
         return host.capture(request['destination'],request['plan'])
     raise MigrationError('unknown_migration_action')
