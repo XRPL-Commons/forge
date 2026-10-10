@@ -235,7 +235,9 @@ class DispatchController:
             role = {'queued': 'build', 'building': 'build', 'integrating': 'build', 'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
             gates = applicable_gates(db, unit, member['id'] if member and role == 'build' else None, unit['current_candidate_id'])
             if grouped and role == 'build':
-                gates = [gate for gate in gates if gate['member_id'] is None and gate['code'] not in {'cleanup_pending', 'result_pending'}]
+                # Exact job waits belong to the task selector; a failed sibling
+                # cannot prevent an independent task from reaching that authority.
+                gates = [gate for gate in gates if gate['member_id'] is None and gate.get('job_id') is None]
             reason = gates[0]['code'] if gates else None
             if not grouped and db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0', (unit_id,)).fetchone():
                 reason = 'cleanup_pending'
@@ -348,7 +350,7 @@ class DispatchController:
                     from ..store.delivery import Delivery
                     Delivery(self.store, clock=self.clock).environment_conflict(
                         Command(str(uuid.uuid4()), 'supervisor:dispatch', unit_id, snapshot['unit']['version']),
-                        plan_id=assignment['plan_id'], task_id=assignment.get('task_id'), choices=choices)
+                        plan_id=assignment['input_manifest']['plan_id'], task_id=assignment.get('task_id'), choices=choices)
                 return {**result, 'reason': 'environment_conflict', 'member_choices': choices}
             config = worker_config(config, {'environment_choice': choice})
         if snapshot['grouped']:

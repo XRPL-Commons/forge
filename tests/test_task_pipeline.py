@@ -181,3 +181,45 @@ class TaskPipelineTests(unittest.TestCase):
             gate = db.execute("SELECT details_json FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()
             self.assertEqual(json.loads(gate[0])['choices'], choices)
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
+
+    def test_failed_task_wait_does_not_block_independent_task_dispatch(self):
+        self.plan(lambda members: self.value([
+            self.definition('first', [members[0]['member_id']]),
+            self.definition('second', [members[1]['member_id']])]))
+        f = self.f
+        failed = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertTrue(f.capture(failed['id'], outcome='unable')['charged'])
+        with f.store.read_snapshot() as db:
+            wait = db.execute("SELECT job_id FROM unit_gates WHERE code='recovery_pending' AND resolved_at IS NULL").fetchone()
+            self.assertEqual(wait[0], failed['id'])
+        independent = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertNotEqual(independent['task']['id'], failed['task']['id'])
+        head, bundle = self.bundle('independent-after-failure')
+        self.assertTrue(f.capture(independent['id'], output_commit=head, bundle=bundle)['accepted'])
+        # New owner work must still wait for the failed task's investigation.
+        self.assertFalse(f.dispatch.step('batch')['reserved'])
+        with f.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM builder_assignments WHERE stage='planning'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 1)
+
+    def test_integration_environment_conflict_records_operator_decision(self):
+        owner = self.plan(lambda members: self.value([], [row['member_id'] for row in members]))
+        f = self.f
+        a, b = [row['member_id'] for row in owner['members']]
+        choices = {a: {'tier': 'standard', 'automatic': False, 'services': []},
+                   b: {'tier': 'full', 'automatic': True, 'services': ['postgres']}}
+        with f.store.write() as db:
+            for revision, member in enumerate(owner['members'], 1):
+                db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at,member_id) VALUES(?,?,?,?,?,?,?)',
+                    ('batch', revision, json.dumps(choices[member['member_id']]), member['requirements_revision_id'], 'config', 100, member['member_id']))
+        f.dispatch.prepare = lambda snapshot, role: PreparedDispatch(f.base, role + '[bot]', f.config, member_choices=choices)
+        result = f.dispatch.step('batch')
+        self.assertEqual(result['reason'], 'environment_conflict')
+        with f.store.read_snapshot() as db:
+            gate = db.execute("SELECT details_json FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()
+            details = json.loads(gate[0])
+            self.assertIsNone(details['task_id'])
+            self.assertEqual(details['choices'], choices)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
+        self.assertFalse(f.dispatch.step('batch')['reserved'])

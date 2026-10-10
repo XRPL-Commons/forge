@@ -23,9 +23,9 @@ class ObsoleteMemberRecoveryTests(unittest.TestCase):
 
     def failed_child(self):
         parent=self.dispatch.step('batch')['job_id']
-        children=[dict(key=str(index),member_id=member['member_id'],scope='Implement member',dependencies=[])
+        children=[dict(key=str(index),executor='child',member_ids=[member['member_id']],scope='Implement member',depends_on=[],internalizes=[])
                   for index,member in enumerate(self.jobs.job(parent)['members'])]
-        self.capture(parent,outcome='delegate',delegation_plan={'children':children})
+        self.capture(parent,outcome='delegate',delegation_plan=delivery_fixture.DeliveryPipelineTests.plan_value(children))
         identifier=self.dispatch.step('batch')['job_id']
         self.assertTrue(self.capture(identifier,outcome='unable')['charged'])
         return self.jobs.job(identifier)
@@ -38,7 +38,7 @@ class ObsoleteMemberRecoveryTests(unittest.TestCase):
             state_reason='completed' if closed else None,title='Issue',body=body,requirements=requirements,
             remote_updated_at='2026-10-10T00:00:00Z',generation=1)
         if closed:
-            self.life.open_gate(self.command(),'membership_decision',member_id=job['member_id'],
+            self.life.open_gate(self.command(),'membership_decision',member_id=job['members'][0]['member_id'],
                 details={'reason':'member_closed','state_reason':'completed'})
         self.github.issue.side_effect=lambda item: (
             {'number':item['number'],'state':'closed' if closed and item['number']==number else 'open',
@@ -74,10 +74,10 @@ class ObsoleteMemberRecoveryTests(unittest.TestCase):
     def test_closed_child_is_investigated_then_explicit_close_member_can_finish(self):
         failed=self.failed_child();self.change(failed,closed=True)
         with self.assertRaisesRegex(TransitionError,'mandatory investigations'):
-            self.delivery.drop_member(self.command(),failed['member_id'],membership_generation=failed['membership_generation'],
+            self.delivery.drop_member(self.command(),failed['members'][0]['member_id'],membership_generation=failed['membership_generation'],
                 dependent_decisions={},evidence={'approved':True},disposition='close')
         self.investigate(failed)
-        result=self.delivery.drop_member(self.command(),failed['member_id'],membership_generation=failed['membership_generation'],
+        result=self.delivery.drop_member(self.command(),failed['members'][0]['member_id'],membership_generation=failed['membership_generation'],
             dependent_decisions={},evidence={'approved':True},disposition='close')
         self.assertEqual(result['closed_issue_id'],failed['issue_key'])
 
@@ -120,9 +120,10 @@ class OriginalOutputRecoveryTests(unittest.TestCase):
         planning=self.jobs.job(parent)
         with self.store.read_snapshot() as db:
             unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
-            children=[dict(key=str(member['issue_number']),member_id=member['member_id'],scope='Implement member',
-                dependencies=dependencies_in(db,unit,member['member_id'])) for member in planning['members']]
-        self.capture(parent,outcome='delegate',delegation_plan={'children':children})
+            keys={member['member_id']:str(member['issue_number']) for member in planning['members']}
+            children=[dict(key=keys[member['member_id']],executor='child',member_ids=[member['member_id']],scope='Implement member',
+                depends_on=[keys[predecessor] for predecessor in dependencies_in(db,unit,member['member_id'])], internalizes=[]) for member in planning['members']]
+        self.capture(parent,outcome='delegate',delegation_plan=delivery_fixture.DeliveryPipelineTests.plan_value(children))
         first=self.dispatch.step('batch')['job_id']
         self.assertEqual(self.jobs.job(first)['issue_number'],1)
         head,bundle=self.child_bundle(1)
