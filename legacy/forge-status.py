@@ -429,12 +429,12 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(value, dict): raise ValueError('Expected a conversation action')
                 action = value.get('action')
                 fields = {'send': {'key', 'action', 'message', 'request_id'}, 'cancel': {'key', 'action'}, 'apply': {'key', 'action', 'message_id'}, 'undo': {'key', 'action', 'message_id'}}
-                if action not in fields or set(value) != fields[action]: raise ValueError('Invalid conversation action')
+                if action not in fields or set(value) not in (fields[action], fields[action] | ({'reason'} if action=='apply' else set())): raise ValueError('Invalid conversation action')
                 result = None
                 if action == 'send': result = service.send(value['key'], value['message'], value['request_id'], actor_id=self._operator_actor())
                 elif action == 'cancel': service.cancel(value['key'], actor_id=self._operator_actor())
                 elif action == 'undo': result = service.undo(value['key'], value['message_id'], actor_id=self._operator_actor())
-                else: result = service.apply(value['key'], value['message_id'], actor_id=self._operator_actor())
+                else: result = service.apply(value['key'], value['message_id'], actor_id=self._operator_actor(), **({'reason':value['reason']} if 'reason' in value else {}))
                 self._send(json.dumps({'ok': True, 'request': result}));return
             if self.path == '/api/issues/verify':
                 from forge.factory.store_operator import selected_service

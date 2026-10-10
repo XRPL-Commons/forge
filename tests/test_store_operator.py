@@ -14,9 +14,10 @@ from tests import test_store_result_controller as helpers
 class Remote(helpers.GitHub):
     def __init__(self):
         super().__init__()
-        self.calls=[];self.after_write=None;self.comments=[]
+        self.calls=[];self.after_write=None;self.comments=[];self.events=[]
+    def publisher(self,role):return 'forge-controller[bot]'
     def pages(self,role,item,path):
-        return deepcopy(self.comments)
+        return deepcopy(self.events if path.endswith('/events') else self.comments)
     def call(self,role,item,method,path,payload=None):
         self.calls.append((method,path,payload))
         if method=='POST' and path.endswith('/labels'):
@@ -24,7 +25,11 @@ class Remote(helpers.GitHub):
         elif method=='DELETE' and '/labels/' in path:
             from urllib.parse import unquote
             label=unquote(path.split('/labels/')[1]);self.issue_value['labels']=[v for v in self.issue_value['labels'] if v!=label]
-        elif method=='PATCH' and '/issues/' in path:self.issue_value.update(payload)
+        elif method=='PATCH' and '/issues/' in path:
+            before=self.issue_value['state'];self.issue_value.update(payload)
+            if before!=self.issue_value['state']:
+                self.events.append(dict(id=len(self.events)+1,event='closed' if payload['state']=='closed' else 'reopened',
+                                        actor=dict(id=123,login=self.publisher('controller'),type='Bot')))
         elif method=='POST' and path.endswith('/comments'):self.comments.append(dict(payload))
         else:raise AssertionError((method,path,payload))
         if self.after_write:self.after_write()
@@ -106,15 +111,74 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(len(self.github.comments),1)
     def test_reopen_undoes_an_applied_close_and_asks_for_a_fresh_look(self):
         request=self.request('close')
-        with self.assertRaises(TransitionError):self.actions.reopen('i',request)  # Still closing: nothing to undo yet.
+        with self.assertRaises(TransitionError):self.actions.reopen('i',request)
         self.actions.step(request)
-        self.assertEqual(self.actions.reopen('i',request),{'request_id':request,'reopened':True})
+        undo=self.actions.reopen('i',request)
+        self.assertEqual(self.github.issue_value['state'],'closed')
+        self.assertEqual(self.status(undo)['status'],'pending')
+        self.assertTrue(self.actions.step(undo)['applied'])
         self.assertEqual(self.github.issue_value['state'],'open')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT actor_id FROM operator_observation_requests WHERE issue_id=?',('i',)).fetchone()[0],'github:1609016')
         self.github.calls.clear()
-        self.actions.reopen('i',request)  # Already open: no second write.
+        self.assertEqual(self.actions.reopen('i',request),undo)
+        self.actions.step(undo)
         self.assertEqual(self.github.calls,[])
+        with self.store.read_snapshot() as db:
+            states=[json.loads(row[0])['status'] for row in db.execute("SELECT payload_json FROM events WHERE json_extract(payload_json,'$.operator_request')=? ORDER BY sequence",(undo,))]
+        self.assertEqual(states,['pending','applied'])
+
+    def test_close_and_undo_recover_lost_write_responses_from_exact_event_lineage(self):
+        request=self.request('close')
+        def lose_patch():
+            if self.github.calls[-1][0]=='PATCH':raise GitHubUnavailable('lost reply')
+        self.github.after_write=lose_patch
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None
+        self.assertTrue(self.actions.step(request)['applied'])
+        self.assertEqual(len(self.github.events),1)
+        undo=self.actions.reopen('i',request)
+        self.github.after_write=lose_patch
+        self.assertEqual(self.actions.step(undo)['pending'],'github_observation')
+        self.github.after_write=None
+        self.assertTrue(self.actions.step(undo)['applied'])
+        self.assertEqual([event['event'] for event in self.github.events],['closed','reopened'])
+
+    def test_undo_never_reopens_a_later_unrelated_closure(self):
+        request=self.request('close');self.actions.step(request)
+        undo=self.actions.reopen('i',request)
+        self.github.events.extend([dict(id=2,event='reopened',actor=dict(id=99,login='operator',type='User')),
+                                   dict(id=3,event='closed',actor=dict(id=99,login='operator',type='User'))])
+        self.github.calls.clear()
+        self.assertTrue(self.actions.step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.github.issue_value['state'],'closed')
+
+    def test_undo_generation_and_actor_remain_pinned(self):
+        request=self.request('close');self.actions.step(request);undo=self.actions.reopen('i',request)
+        self.actions.actor_id='github:other'
+        with self.assertRaises(IdempotencyConflict):self.actions.reopen('i',request)
+        with self.store.write() as db:db.execute("UPDATE issues SET version=version+1 WHERE id='i'")
+        self.github.calls.clear()
+        self.assertTrue(self.actions.step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+
+    def test_close_effect_requires_controller_event_and_missing_event_stays_pending(self):
+        request=self.request('close')
+        original=self.github.pages
+        self.github.pages=lambda role,item,path: [] if path.endswith('/events') else original(role,item,path)
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.pages=original
+        self.github.events[-1]['actor']={'id':99,'login':'other','type':'User'}
+        self.assertTrue(self.actions.step(request)['rejected'])
+
+    def test_older_close_effect_without_lineage_is_rejected_without_adopting_remote_closure(self):
+        request=self.request('close');row=self.actions._request(request)
+        self.actions._intent(row,'close-issue',{'number':1,'state_reason':'not_planned'})
+        self.github.issue_value.update(state='closed',state_reason='not_planned')
+        self.assertTrue(self.actions.step(request)['rejected'])
+        self.assertEqual(self.github.calls,[])
+
     def test_reopen_only_undoes_a_close(self):
         request=self.request('pause');self.actions.step(request)
         with self.assertRaises(TransitionError):self.actions.reopen('i',request)

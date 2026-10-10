@@ -1,7 +1,7 @@
 """Durable issue conversations. Discussion runs have read-only repository tokens.
 
 The service drives one disposable discussion at a time under controller_lock.
-Only an explicit operator Apply enters the existing issue decision queue.
+An explicit operator Apply or the exact documented close command enters the decision queue.
 """
 from copy import deepcopy
 from pathlib import Path
@@ -34,8 +34,7 @@ BUTTONS = {
 }
 # Closing is the operator's call. Only their own words in the latest message
 # let a persona close for them; its own suggestion stays a card to click.
-CLOSE_ASKED = re.compile(r"\b(close|closing|drop)\b", re.I)
-CLOSE_REFUSED = re.compile(r"\b(don'?t|do not|never|not|no need to)\s+(close|drop)\b", re.I)
+CLOSE_COMMAND = re.compile(r"(?:(?:please\s+)?(?:close|drop)\s+this\s+issue[.!]?|(?:can|could)\s+you\s+(?:please\s+)?(?:close|drop)\s+this\s+issue[?.!]?)", re.I)
 # Answers took 100-150 s, and container start plus reading the repository can
 # take longer; 300 s timed out with nothing streamed (tokenlab #7).
 DISCUSSION_SECONDS = 600
@@ -85,8 +84,10 @@ def note(job):
                 "evidence, a scope edit, or a different external action is needed. The operator must explicitly Apply any proposal. "
                 "When close is available and the work is no longer needed or cannot be done here, you may propose close; its reason is "
                 "one sentence for the closing comment on GitHub. Set close_now true only when the operator's latest message explicitly "
-                "asks you to close this issue and your proposal is close: Forge then closes it for them, so say in your reply that it is "
-                "closed and that they can undo it. Otherwise close_now is false; never close on your own initiative. "
+                "is exactly 'close this issue' or 'drop this issue', optionally preceded by please, can you, or could you (and please), "
+                "with final punctuation allowed, and your proposal is close. "
+                "Forge records a close request for independent execution. Say only that closing was requested; never claim it is "
+                "closed or reversible before confirmation. Instructional questions, conditions and other wording require Apply. Otherwise close_now is false. "
                 "Keep headline to a few words and plain to one sentence. "
                 "Return outcome pass for a completed discussion, even if the underlying issue remains blocked; blocker null. "
                 "Return the final structured response. The trusted harness writes /work/result.json; do not write it yourself. "
@@ -100,7 +101,7 @@ def offered(row):
 
 
 def asked_to_close(text):
-    return isinstance(text, str) and bool(CLOSE_ASKED.search(text)) and not CLOSE_REFUSED.search(text)
+    return isinstance(text, str) and bool(CLOSE_COMMAND.fullmatch(text.strip()))
 
 
 def proposal_in(result, job):
@@ -305,7 +306,7 @@ class Discussions:
     def undo(self, key, message_id, *, actor_id=None):
         raise ValueError("Reopen the issue on GitHub; undo needs Forge's SQLite runtime")
 
-    def apply(self, key, message_id, *, actor_id=None):
+    def apply(self, key, message_id, *, actor_id=None, reason=None):
         row = self.issue(key)
         from .issue_actions import request
         with self.store.transaction() as data:
@@ -316,7 +317,7 @@ class Discussions:
             proposal = message["proposal"]
             # A stable request identity survives a crash between the action write and receipt.
             receipt = request(self.root, key=key, revision=message["revision"], action=proposal["action"],
-                              reason=proposal["reason"], request_id=message["id"], actor_id=actor_id)
+                              reason=proposal["reason"] if reason is None else reason, request_id=message["id"], actor_id=actor_id)
             message["receipt"] = receipt
             return receipt
 
@@ -555,7 +556,9 @@ class Discussions:
                 raise RunnerError("its answer was empty")
             # Too long for a chat reply: keep the lead, never lose the answer.
             answer = trim(answer, ANSWER_CAP)
-            proposal, unavailable_action, close_now = proposal_in(result, job)
+            proposal, unavailable_action, _ = proposal_in(result, job)
+            # Legacy messages have no retained authenticated author or durable action outbox.
+            close_now = False
             # Persist reply before cleanup. Restart never duplicates a completed message.
             with self.store.transaction() as data:
                 thread = data[key]

@@ -206,14 +206,14 @@ class DiscussionsTest(unittest.TestCase):
         self.assertIn('close_now true only when the operator', note(job)['instructions'])
         self.assertEqual(role_properties({**note(job), 'context': {'actions': []}})['proposal'], {'type': 'null'})
 
-    def test_legacy_close_on_request_applies_and_persona_suggestion_does_not(self):
+    def test_legacy_messages_do_not_grant_unattributed_automatic_close(self):
         self.row.update(closable=True)
         with patch('forge.factory.issue_actions.request', return_value='receipt') as applied:
             identifier = str(uuid.uuid4()); self.service.send('1:2', 'close this issue', identifier)
             self.service.tick(self.config, self.github, self.settings)
             self.finish(self.service.read()['1:2']['job'], proposal={'action': 'close', 'reason': 'Not needed.'}, close_now=True)
-            self.assertEqual(applied.call_args.kwargs['action'], 'close')
-            self.assertEqual(self.service.view('1:2')['messages'][-1]['receipt'], 'receipt')
+            applied.assert_not_called()
+            self.assertNotIn('receipt',self.service.view('1:2')['messages'][-1])
         with patch('forge.factory.issue_actions.request', return_value='receipt') as applied:
             self.service.send('1:2', 'What next?', str(uuid.uuid4()))
             self.service.tick(self.config, self.github, self.settings)

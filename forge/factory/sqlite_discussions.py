@@ -39,7 +39,7 @@ class SQLiteDiscussions:
         return self.commands.active()
 
     def live(self):
-        return bool(self.active_jobs() or self.commands.keys(queued=True,limit=1))
+        return bool(self.active_jobs() or self.commands.keys(queued=True,limit=1) or self.commands.pending_actions(limit=1))
 
     def view(self,key,before=None):
         self.issue(key)
@@ -66,44 +66,39 @@ class SQLiteDiscussions:
             if self.commands.cancel(key,actor=self.actor_id):
                 self.left(key,None,'cancelled')
 
-    def apply(self,key,message_id,*,actor_id=None):
-        self.issue(key)
-        thread=self.commands.thread(key)
-        found=next((m for m in thread['messages'] if m['id']==message_id and m['role']=='assistant'),None)
-        if not found or not found.get('proposal'):
-            raise ValueError('There is no proposal to apply')
-        if found.get('receipt'): return found['receipt']
+    def _submit(self,key,intent):
         from .issue_actions import request
-        actor=actor_id or self.actor_id
-        proposal=found['proposal']
-        receipt=request(self.root,key=key,revision=found['revision'],action=proposal['action'],reason=proposal['reason'],
-                        request_id=message_id,actor_id=actor)
-        # A close the operator asked for in words is recorded with those words.
-        self.commands.receipt(key,message_id,receipt,actor=actor,**({'reason':closed_for(found['requested'])} if found.get('requested') else {}))
+        with self.db.read_snapshot() as db:issue_id=self.commands._issue(db,key)['id']
+        try:
+            receipt=request(self.root,key=issue_id,revision=intent['revision'],action=intent['action'],reason=intent['reason'],
+                            request_id=intent['request_id'],actor_id=intent['actor_id'])
+        except GitHubUnavailable:
+            return intent['request_id']  # Durable intent remains pending for the next supervisor cycle.
+        except ValueError as error:
+            self.commands.mark(key,intent['request_id'],actor=intent['actor_id'],action_error=scrub(str(error))[:400])
+            return intent['request_id']
+        self.commands.receipt(key,intent['request_id'],receipt,actor=intent['actor_id'])
         return receipt
 
-    def close_for(self,key,message_id,actor_id):
-        """The operator asked in so many words: apply the persona's Close as that operator, through their own path."""
-        try: self.apply(key,message_id,actor_id=actor_id)
-        except (ValueError,GitHubUnavailable) as error:
-            # Not closed: the card stays, with why, for the operator to click.
-            self.commands.mark(key,message_id,actor='agent:discussion',close_error=scrub(str(error))[:200] or 'Forge could not close it')
+    def apply(self,key,message_id,*,actor_id=None,reason=None):
+        self.issue(key)
+        intent=self.commands.request_action(key,message_id,actor=actor_id or self.actor_id,reason=reason)
+        return self._submit(key,intent)
+
+    def reconcile_actions(self):
+        for key,intent in self.commands.pending_actions():self._submit(key,intent)
 
     def undo(self,key,message_id,*,actor_id=None):
-        """Reopen an issue the persona closed at the operator's request; observation returns it to the board."""
         self.issue(key)
         found=next((m for m in self.commands.thread(key)['messages'] if m['id']==message_id and m['role']=='assistant'),None)
-        if not found or not found.get('requested') or not found.get('receipt'):
-            raise ValueError('There is no close to undo')
-        if found.get('undone'): return found['undone']
+        state=found.get('action_state') if found else None
+        if not state or (not state['reversible'] and not state.get('undo')):
+            raise ValueError('There is no confirmed close to undo')
         from .store_operator import selected_service
-        actor=actor_id or self.actor_id
-        service=selected_service(self.root,actor_id=actor)
-        if service is None: raise ValueError('Reopen the issue on GitHub')
-        service.reopen(key,found['receipt'])
-        undone=dict(at=self.clock(),actor=actor)
-        self.commands.mark(key,message_id,actor=actor,undone=undone,reason='Reopened from the discussion: the operator undid the close')
-        return undone
+        service=selected_service(self.root,actor_id=actor_id or self.actor_id)
+        if service is None:raise ValueError('Reopen the issue on GitHub')
+        with self.db.read_snapshot() as db:issue=self.commands._issue(db,key)
+        return service.reopen(issue['id'],state['request_id'])
 
     def context(self,key,row):
         with self.db.read_snapshot() as db:
@@ -160,6 +155,7 @@ class SQLiteDiscussions:
         return any(not driver.snapshot(row['id'])['reason'] for row in units)
 
     def tick(self,config,github,settings,*,launch=True):
+        self.reconcile_actions()
         self.commands.prune_logs()
         active=self.active_jobs()
         if active:
@@ -254,9 +250,7 @@ class SQLiteDiscussions:
             if unavailable: entry['unavailable']=True
             if close_now: entry['requested']=asker[1]
             accepted=self.commands.answer(key,job['id'],entry,capture=capture,presence=dict(phase='answered',agent=agent(job),at=self.clock()))
-            if accepted and close_now:  # Once, across a restart before cleanup.
-                found=next((m for m in self.commands.thread(key,limit=1)['messages'] if m['id']==job['id']),{})
-                if not found.get('receipt') and not found.get('close_error'): self.close_for(key,job['id'],asker[0])
+            if accepted and close_now:self.reconcile_actions()
             if accepted:
                 job=self.commands.job(job['id']); runner.reset(job); self.commands.cleanup(job['id'])
         except RunnerCapacity:

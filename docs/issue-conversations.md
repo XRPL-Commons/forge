@@ -67,7 +67,11 @@ If the agent proposes something Forge does not offer on this issue, its answer s
 
 Whenever the issue can be closed, **Close issue** is one of the decisions the agent may propose, with a one-sentence reason. Its card opens the usual Close dialog with that reason filled in; nothing closes until you confirm.
 
-When you ask in so many words ("close this issue"), the agent closes it for you in that turn, through the same path as the button and as you: Forge closes its pull request and closes the issue on GitHub as not planned, with the agent's reason as the comment. The reply says it is closed and offers **Undo**, which reopens the issue on GitHub; Forge's next look returns it to the board. The issue's history records that the close came from the discussion, quoting your message. The agent never closes on its own initiative, and no other decision is applied this way.
+A direct command such as “close this issue” or “drop this issue” records a close request under your identity. Forge also recognizes “please close this issue”, “could you close this issue?” and “can you please close this issue?”. These are exact command forms, with optional final punctuation; questions such as “how do I close this issue?”, conditional requests and other wording remain proposals for you to confirm.
+
+The reply shows **Close requested** while the controller stops work and closes the issue and its Forge pull request. **Closed** appears only after GitHub confirms the action. A rejected request shows its reason. The closing comment uses the reason you confirmed.
+
+**Undo** is offered only for the unchanged closure Forge confirmed. It records a separate request to reopen the issue; **Reopened** appears after GitHub confirms that request. A later reopen or closure by someone else prevents Undo of the earlier closure. Undo does not reopen the pull request or restore work and budgets. Forge requests a fresh observation so the issue can return to the board. No other discussion proposal is applied automatically.
 
 Discussion does not approve a merge, waive a security check or edit the repository. Its separate, read-only worker does not consume the issue's failure attempts, but does use provider capacity and usage.
 
