@@ -159,6 +159,62 @@ class PilotTests(unittest.TestCase):
 
 
 class WizardResumeTests(unittest.TestCase):
+    def app_wizard(self, views, answers, handoffs):
+        from forge_client.factory_setup import _wizard
+        factory = Mock()
+        factory.state = {'factory_owner':{'login':'example'},'factory_actor':{'login':'operator'}}
+        factory.call.side_effect = views
+        factory.apps.side_effect = handoffs
+        ask, tell, browser = Mock(side_effect=answers), Mock(), Mock()
+        with patch('forge_client.factory_setup.FactorySetup',return_value=factory):
+            result = _wizard(Mock(ssh='anvil'),ask=ask,tell=tell,open_browser=browser)
+        return factory, result, tell, browser
+
+    def app_view(self, **roles):
+        return {'phase':'setup','roles':{
+            role: roles.get(role, {'registered':True,'status':'ok'})
+            for role in ('build','review','audit','controller')}, 'harnesses':[]}
+
+    def test_incomplete_role_stays_selected_after_check_and_unknown_choice(self):
+        view = self.app_view(build={'registered':False,'status':'missing'},
+                             review={'registered':False,'status':'missing'})
+        factory, result, tell, browser = self.app_wizard(
+            [view, view, view], ['check','yes','save'], [{'url':'https://forge.example/build'}])
+        factory.apps.assert_called_once_with(role='build',owner='example',apply=True)
+        self.assertEqual([call.args[0] for call in factory.call.call_args_list], ['status','refresh','refresh'])
+        factory.account.assert_not_called()
+        factory.prepare_repository.assert_not_called()
+        self.assertEqual(result,view)
+        self.assertIn('forge setup continue --ssh anvil', ' '.join(call.args[0] for call in tell.call_args_list))
+
+    def test_passkey_or_expired_handoff_reopens_then_verifies_before_next_role(self):
+        view = self.app_view(build={'registered':False,'status':'missing'},
+                             review={'registered':False,'status':'missing'})
+        refreshed = self.app_view(review={'registered':False,'status':'missing'})
+        factory, result, tell, browser = self.app_wizard(
+            [view, view, view, refreshed], ['check','reopen','check','save'],
+            [{'url':'https://forge.example/old'}, {'url':'https://forge.example/renewed'},
+             {'url':'https://forge.example/review'}])
+        self.assertEqual([call.kwargs['role'] for call in factory.apps.call_args_list], ['build','build','review'])
+        self.assertEqual([call.args[0] for call in browser.call_args_list],
+                         ['https://forge.example/old','https://forge.example/renewed','https://forge.example/review'])
+        self.assertEqual(result,refreshed)
+        self.assertIn('Do not fill in the blank form manually.', ' '.join(call.args[0] for call in tell.call_args_list))
+        factory.account.assert_not_called()
+
+    def test_registered_but_uninstalled_resume_reopens_existing_installation(self):
+        view = self.app_view(build={'registered':True,'status':'missing'})
+        link = 'https://github.com/apps/existing-build/installations/new'
+        factory, result, tell, browser = self.app_wizard(
+            [view, view, view], ['check','reopen','save'], [{'install_url':link}, {'install_url':link}])
+        self.assertEqual([call.args[0] for call in browser.call_args_list], [link,link])
+        self.assertEqual([call.kwargs['role'] for call in factory.apps.call_args_list], ['build','build'])
+        output = ' '.join(call.args[0] for call in tell.call_args_list)
+        self.assertIn('Install this existing App', output)
+        self.assertNotIn('approve App registration', output)
+        factory.prepare_repository.assert_not_called()
+        self.assertEqual(result,view)
+
     def test_ready_apps_are_not_registered_again_and_operator_start_is_explicit(self):
         from forge_client.factory_setup import _wizard
         factory = Mock()

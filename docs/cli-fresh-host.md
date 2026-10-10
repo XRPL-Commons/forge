@@ -175,6 +175,19 @@ server identity and setup generation, and expires after ten minutes. Resume the
 same command if a handoff expires. Passkey and organization approvals remain
 browser actions performed by the operator.
 
+After each App, choose **check** in the CLI. It refreshes GitHub access and stays
+on that role until registration and installation access are verified. Choose
+**reopen browser** to return to the same step: a registered App opens its existing
+installation link; an expired registration handoff is renewed. **Save and exit**
+keeps progress for `forge setup continue --ssh USER@HOST`. Verified roles are
+skipped on resume.
+
+If GitHub passkey verification leaves you on a blank App registration form,
+complete verification, then choose **reopen browser** in the CLI and use the
+Forge page's **Continue on GitHub** button again. Do not fill in that blank form
+manually. The CLI supplies the role manifest and handles the remaining setup;
+you perform the browser approvals and select the repository installation.
+
 Next, choose a coding account. For browser login, the CLI opens an interactive
 provider login on the host over pinned SSH and gives you its browser instructions.
 API keys and tokens use a hidden prompt or private stdin. Account credentials stay
