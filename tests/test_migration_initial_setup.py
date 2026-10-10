@@ -27,9 +27,9 @@ class InitialSetupTests(unittest.TestCase):
         self.host.identity=lambda:self.current
         self.source_updates=[]
         self.host.prepare_source_update=lambda *args,**kwargs:self.source_updates.append(('verify',args,kwargs))
-        def install(previous,target):
+        def install(previous,target,**kwargs):
             self.assertFalse(self.active)
-            self.source_updates.append(('install',previous,target))
+            self.source_updates.append(('install',previous,target,kwargs))
             self.current=target
         self.host.install_source_update=install
         self.updater=[]
@@ -103,7 +103,7 @@ class InitialSetupTests(unittest.TestCase):
                   instance_id='initial-instance',epoch='epoch',sessions={'hashed-cookie':dict(operator={'id':7,'login':'operator'},csrf='synthetic-csrf',expires=4102444800)},
                   flows={},clients={},devices={},device_window={'start':1,'count':0},connection_lookups={})
         self.write(AUTH,auth)
-        self.activate_initial()
+        self.driver().activate(source_revision='b'*40,previous_revision='a'*40,source_pack={'fixture':True},replace_initial_source=True)
         store=selected(self.root)
         self.assertEqual(IdentityQueries(store).session('hashed-cookie',100),auth['sessions']['hashed-cookie'])
         self.assertEqual((store.root/CREDENTIAL).read_text(),'s'*40)
@@ -211,6 +211,44 @@ class InitialSetupTests(unittest.TestCase):
         self.assertFalse(self.active)
         self.assertIsNone(selected(self.root))
         self.assertTrue(self.driver().resume()['activation'])
+
+    def test_explicit_replacement_freezes_original_state_and_resumes_pinned_mode(self):
+        def fail(stage):
+            if stage=='source_preparing':raise RuntimeError('interrupted')
+        with self.assertRaisesRegex(RuntimeError,'interrupted'):
+            self.driver(after_stage=fail).activate(source_revision='b'*40,previous_revision='a'*40,
+                source_pack={'fixture':True},replace_initial_source=True)
+        journal=json.loads(self.cutover.path.read_text())
+        self.assertEqual(journal['initial_source'],dict(from_revision='a'*40,to_revision='b'*40,mode='replace',prepared=None))
+        self.assertEqual(self.driver().status()['initial_source'],dict(from_revision='a'*40,to_revision='b'*40,mode='replace'))
+        self.assertEqual(self.current,'a'*40)
+        self.assertEqual(Snapshot(journal['snapshot']).manifest['source_revision'],'a'*40)
+        self.assertEqual(sources(self.root),self.original_sources)
+        for options in (dict(source_revision='c'*40,replace_initial_source=True),
+                        dict(source_revision='b'*40,replace_initial_source=False),
+                        dict(previous_revision='c'*40,replace_initial_source=True)):
+            with self.assertRaisesRegex(MigrationError,'initial_source_authority_mismatch'):
+                self.driver().activate(**options)
+        result=self.driver().resume()
+        self.assertTrue(result['activation'])
+        self.assertEqual(result['diagnostic_copy'],journal['snapshot'])
+        self.assertEqual(self.source_updates[-1],('install','a'*40,'b'*40,{'replace_initial_source':True}))
+        self.assertEqual(sources(self.root),self.original_sources)
+
+    def test_replacement_requires_explicit_full_initial_pins(self):
+        for options in ({},dict(source_revision='b'*40),dict(previous_revision='a'*40)):
+            with self.assertRaisesRegex(MigrationError,'initial_source_replacement_requires_pins'):
+                self.driver().activate(replace_initial_source=True,**options)
+        self.assertFalse(self.cutover.path.exists())
+        self.assertFalse(self.source_updates)
+
+    def test_replacement_does_not_admit_active_legacy_state(self):
+        self.write('state/factory/factory-ledger.json',dict(version=1,issues={},jobs={},slots={},events=[]))
+        self.write('state/onboarding/setup.json',{**self.setup,'phase':'active'})
+        with self.assertRaisesRegex(MigrationError,'initial_source_requires_never_started_setup'):
+            self.driver().activate(source_revision='b'*40,previous_revision='a'*40,source_pack={'fixture':True},replace_initial_source=True)
+        self.assertFalse(self.cutover.path.exists())
+        self.assertFalse(self.source_updates)
 
     def test_real_public_parity_covers_initial_setup_absence(self):
         driver=Cutover(self.host,qualify=self.qualification)
