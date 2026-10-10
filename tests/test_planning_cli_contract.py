@@ -1,11 +1,16 @@
 """Agent discovery matches the actual parser and strict server operation boundary."""
 from copy import deepcopy
 import argparse
+import io
+from pathlib import Path
+import tempfile
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from forge_client.cli import parser,execute
+from forge_client.connection import Client, Transport, connection_lock
+from tests.test_client_connections import MemoryVault
 from forge_client.planning import action_schemas
 from forge.factory.planning_service import PlanningService
 from forge.store.repository_planning import ACTIONS,NOTE_KINDS,RepositoryPlanning
@@ -16,6 +21,47 @@ class ReachedService(Exception):pass
 
 
 class PlanningCLIContractTests(unittest.TestCase):
+    def test_cli_planning_modes_reach_real_client_transport_with_distinct_endpoint_and_operation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            server='https://forge.example'
+            vault=MemoryVault();transport=Transport(server)
+            client=Client(server,vault=vault,transport=transport,clock=lambda:100)
+            token='t'*43
+            vault.set(client.key,{'state':'connected','base':server,'instance':'i'*43,'generation':'generation-one',
+                'access_token':token,'access_expires':1000})
+            requests=[]
+            def respond(request,timeout):
+                requests.append(request)
+                response=io.BytesIO(b'{"ok":true,"received":true}')
+                response.status=200
+                return response
+            request_id='11111111-1111-4111-8111-111111111111'
+            action={'action':'rules','request_id':request_id,'expected_revision':2,
+                'rules':'Keep standing documentation issues open.','proposals_enabled':True}
+            path=root/'decision.json';path.write_text(json.dumps(action))
+            cases=[(['triage','example/repo','--server',server,'--request-id',request_id],
+                    'action',{'action':'triage','request_id':request_id}),
+                (['planning','example/repo','--server',server,'--proposal','proposal-one','--row','row-one','--after','cursor-one'],
+                    'read',{'proposal_id':'proposal-one','row_id':'row-one','after':'cursor-one'}),
+                (['planning','example/repo','--server',server,'--action-file',str(path)],'action',action)]
+            with patch('forge_client.cli.Client',return_value=client), \
+                    patch('forge_client.cli.GitHub') as github, \
+                    patch('forge_client.cli.connection_lock',side_effect=lambda key:connection_lock(key,root/'locks')), \
+                    patch.object(transport.opener,'open',side_effect=respond):
+                github.return_value.repository.return_value={'id':10,'name':'example/repo','owner':{'id':20}}
+                for argv,operation,payload in cases:
+                    with self.subTest(operation=operation,payload=payload['action'] if 'action' in payload else 'read'):
+                        self.assertEqual(execute(parser().parse_args(argv)),{'received':True})
+                        request=requests[-1]
+                        self.assertEqual(request.full_url,server+'/api/client/planning')
+                        self.assertEqual(request.method,'POST')
+                        self.assertEqual(request.get_header('Authorization'),'Bearer '+token)
+                        self.assertEqual(json.loads(request.data),{
+                            'repository':{'id':10,'name':'example/repo'},'instance':'i'*43,'generation':'generation-one',
+                            'operation':operation,'payload':payload})
+            self.assertEqual(len(requests),3)
+
     def test_export_covers_each_actual_cli_argument_without_changing_capabilities(self):
         cli=parser()
         commands=execute(cli.parse_args(['--json','commands']))['planning_commands']
