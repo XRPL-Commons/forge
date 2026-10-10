@@ -1,7 +1,7 @@
 """Private SQLite storage primitives used by the selected runtime.
 
 Initialization is explicit and never repairs or replaces an incomplete store.
-Connections belong to short context managers, not to the Store object.
+Connections belong to explicit scopes, not to the Store object's lifetime.
 """
 
 from contextlib import contextmanager
@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import threading
 import time
 import uuid
 
@@ -107,7 +108,7 @@ def _database_error(error):
 
 
 class Store:
-    """Handle with this release's immutable migration catalog and no open connection.
+    """Handle with this release's immutable catalog and scoped connections.
 
     A new process/handle loads the installed catalog. Updating source files does
     not change an existing handle's schema contract; release upgrades construct
@@ -125,6 +126,7 @@ class Store:
         self.instance_id = None
         self._migration_catalog = tuple(_migrations())
         self._reader = ContextVar("forge_store_reader", default=None)
+        self._read_lease = ContextVar("forge_store_read_lease", default=None)
 
     @classmethod
     def create(cls, private_root, instance_id=None):
@@ -219,16 +221,7 @@ class Store:
         from .remote_time import register
         register(connection)
         try:
-            connection.execute(f"PRAGMA busy_timeout={int(self.busy_timeout_ms)}")
-            if connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
-                raise StoreError("store_invalid", "WAL could not be enabled")
-            connection.execute("PRAGMA synchronous=FULL")
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA trusted_schema=OFF")
-            if (connection.execute("PRAGMA synchronous").fetchone()[0] != 2
-                    or connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1
-                    or connection.execute("PRAGMA trusted_schema").fetchone()[0] != 0):
-                raise StoreError("store_invalid", "Required SQLite settings could not be enabled")
+            self._configure_connection(connection)
             for suffix in ("-wal", "-shm"):
                 sidecar = Path(str(path) + suffix)
                 if os.path.lexists(sidecar):
@@ -237,6 +230,18 @@ class Store:
         except BaseException:
             connection.close()
             raise
+
+    def _configure_connection(self, connection):
+        connection.execute(f"PRAGMA busy_timeout={int(self.busy_timeout_ms)}")
+        if connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+            raise StoreError("store_invalid", "WAL could not be enabled")
+        connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
+        if (connection.execute("PRAGMA synchronous").fetchone()[0] != 2
+                or connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1
+                or connection.execute("PRAGMA trusted_schema").fetchone()[0] != 0):
+            raise StoreError("store_invalid", "Required SQLite settings could not be enabled")
 
     def _validate(self, connection):
         migrations = self._migration_catalog
@@ -271,8 +276,24 @@ class Store:
         _qualify()
         self._paths()
         connection = None
+        lease = self._read_lease.get() if read_only else None
+        borrowed = bool(lease is not None and lease['thread'] == threading.get_ident() and not lease['busy'])
+        if borrowed:
+            lease['busy'] = True
         try:
-            connection = self._connect_path(self.path, read_only=read_only)
+            if borrowed:
+                identity = self.path.stat()
+                identity = (identity.st_dev, identity.st_ino)
+                if lease['connection'] is None:
+                    lease['connection'] = self._connect_path(self.path, read_only=True)
+                    lease['identity'] = identity
+                elif lease['identity'] != identity:
+                    raise StoreError('store_changed', 'The database file changed during this read request')
+                else:
+                    self._configure_connection(lease['connection'])
+                connection = lease['connection']
+            else:
+                connection = self._connect_path(self.path, read_only=read_only)
             self._validate(connection)
             yield connection
         except sqlite3.OperationalError as error:
@@ -282,8 +303,31 @@ class Store:
                 raise _database_error(error) from error
             raise
         finally:
-            if connection is not None:
+            if borrowed:
+                try:
+                    if connection is not None:
+                        connection.rollback()
+                finally:
+                    lease['busy'] = False
+            elif connection is not None:
                 connection.close()
+
+    @contextmanager
+    def read_connection_lease(self):
+        """Reuse a physical read connection across separate request snapshots.
+
+        Transactions still belong to read_snapshot/read_session. Each checkout
+        validates the live database and anchor; writes and concurrent/reentrant
+        checkouts use their own connections. This scope owns no cached data.
+        """
+        lease = dict(connection=None, identity=None, busy=False, thread=threading.get_ident())
+        token = self._read_lease.set(lease)
+        try:
+            yield
+        finally:
+            self._read_lease.reset(token)
+            if lease['connection'] is not None:
+                lease['connection'].close()
 
     @contextmanager
     def read_session(self):

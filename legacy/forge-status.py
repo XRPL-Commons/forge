@@ -546,6 +546,20 @@ class H(BaseHTTPRequestHandler):
         if not self._trusted_host() or not self._upstream():
             self.send_error(403);return
         u = urlparse(self.path)
+        store = None
+        if u.path in {'/api/factory', '/api/issues', '/api/delivery'}:
+            from forge.store.runtime import selected
+            try:
+                store = selected(WD)
+            except (ValueError, OSError, RuntimeError, KeyError, TypeError):
+                self.send_error(503);return
+        # Keep authorization and projection transactions separate, while the
+        # cached GET owns the physical read connection until its response ends.
+        # Long polls and mutation routes never acquire this lease.
+        with store.read_connection_lease() if store is not None else nullcontext():
+            self._get(u)
+
+    def _get(self, u):
         if not self._operator_guard(read_snapshot=True):
             return
         if self._auth_get(u):

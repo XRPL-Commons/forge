@@ -97,7 +97,7 @@ class OperatorReadSnapshotTests(unittest.TestCase):
             first.do_GET()
             first.send_error.assert_not_called()
             self.assertEqual(json.loads(first.wfile.getvalue())['value'], 'after')
-            self.assertEqual(connect.call_count, 2)  # One auth snapshot and one projection.
+            self.assertEqual(connect.call_count, 1)  # Separate snapshots, one physical connection.
             tag = next(c.args[1] for c in first.send_header.call_args_list if c.args[0] == 'ETag')
             connect.reset_mock()
             warm = self.handler(); warm.do_GET()
@@ -112,6 +112,7 @@ class OperatorReadSnapshotTests(unittest.TestCase):
     def test_wait_holds_no_auth_snapshot_and_rechecks_revocation(self):
         def wait(**kwargs):
             self.assertIsNone(self.store._reader.get())
+            self.assertIsNone(self.store._read_lease.get())
             self.writer_auth.logout(self.token)
             return {'board': {}, 'events': []}
         with patch('forge.factory.control.public_views', return_value=Mock()), \
@@ -123,3 +124,31 @@ class OperatorReadSnapshotTests(unittest.TestCase):
             handler.send_response.assert_not_called()
             self.assertEqual(connect.call_count, 2)
         self.assertIsNone(self.store._reader.get())
+
+    def test_cached_response_reauthenticates_after_revocation(self):
+        with patch('forge.factory.control.factory_view', return_value={'issues': []}) as projection:
+            first = self.handler(); first.do_GET()
+            tag = next(c.args[1] for c in first.send_header.call_args_list if c.args[0] == 'ETag')
+            self.writer_auth.logout(self.token)
+            denied = self.handler(tag=tag); denied.do_GET()
+            denied.send_error.assert_called_once_with(401)
+            denied.send_response.assert_not_called()
+            projection.assert_called_once()
+        self.assertIsNone(self.store._read_lease.get())
+
+    def test_projection_failure_and_disconnected_response_release_lease(self):
+        import sqlite3
+        opened=[]
+        original=self.store._connect_path
+        def connect(*args, **kwargs):
+            result=original(*args, **kwargs); opened.append(result); return result
+        for failure in ('projection', 'response'):
+            with self.subTest(failure=failure), patch.object(self.store, '_connect_path', side_effect=connect), \
+                    patch('forge.factory.control.factory_view', side_effect=ValueError('invalid projection') if failure=='projection' else None, return_value={'issues': []}):
+                handler=self.handler()
+                if failure=='response':
+                    handler.wfile=Mock();handler.wfile.write.side_effect=BrokenPipeError('disconnected')
+                    with self.assertRaises(BrokenPipeError):handler.do_GET()
+                else:handler.do_GET()
+                self.assertIsNone(self.store._read_lease.get())
+                with self.assertRaises(sqlite3.ProgrammingError):opened[-1].execute('SELECT 1')
