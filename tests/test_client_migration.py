@@ -29,6 +29,44 @@ class MigrationCLITests(unittest.TestCase):
         export.assert_called_once_with('b'*40,previous='a'*40)
         self.assertEqual(call.call_args.kwargs,dict(apply=True,previous_revision='a'*40,source_revision='b'*40,source_pack={'sha256':'digest','data':'pack'}))
 
+    def test_initial_source_replacement_is_discoverable_and_pins_explicit_mode(self):
+        commands=execute(parser().parse_args(['--json','commands']))['migration_commands']
+        schema=commands['activate']['input_schema']
+        self.assertEqual(schema['properties']['replace_initial_source']['const'],True)
+        self.assertEqual(schema['dependentRequired']['replace_initial_source'],['source_revision'])
+        for action,contract in commands.items():
+            if action!='activate':self.assertNotIn('replace_initial_source',contract['input_schema']['properties'])
+        args=parser().parse_args(['migrate','activate','--ssh','anvil','--source','/srv/source','--root','/srv/runtime',
+                                 '--apply','--source-revision','b'*40,'--replace-initial-source'])
+        with patch('forge_client.migration.call',side_effect=[{'initial_setup':True,'source_revision':'a'*40},{'status':'active'}]) as call, \
+                patch('forge_client.source.export',return_value={'sha256':'digest','data':'pack'}) as export:
+            self.assertEqual(execute(args)['status'],'active')
+        export.assert_called_once_with('b'*40,previous='a'*40,replace_initial_source=True)
+        self.assertEqual(call.call_args.kwargs,dict(apply=True,previous_revision='a'*40,source_revision='b'*40,
+                         source_pack={'sha256':'digest','data':'pack'},replace_initial_source=True))
+
+    def test_initial_source_replacement_rejects_other_operations_and_missing_pins_before_io(self):
+        common=['--ssh','anvil','--source','/srv/source','--root','/srv/runtime','--replace-initial-source']
+        cases=[['migrate',action,*common,'--apply','--source-revision','b'*40]
+               for action in ('plan','prepare','capture','resume','import','verify','upgrade')]
+        cases.extend([['migrate','activate',*common,'--source-revision','b'*40],
+                      ['migrate','activate',*common,'--apply'],
+                      ['migrate','activate',*common,'--apply','--source-revision','main'],
+                      ['migrate','activate',*common,'--apply','--source-revision','']])
+        for argv in cases:
+            with self.subTest(argv=argv),patch('forge_client.migration.call') as call,patch('forge_client.source.export') as export:
+                with self.assertRaises(SetupError):execute(parser().parse_args(argv))
+                call.assert_not_called();export.assert_not_called()
+
+    def test_initial_source_replacement_rejects_started_host_before_export(self):
+        args=parser().parse_args(['migrate','activate','--ssh','anvil','--source','/srv/source','--root','/srv/runtime',
+                                 '--apply','--source-revision','b'*40,'--replace-initial-source'])
+        with patch('forge_client.migration.call',return_value={'initial_setup':False,'source_revision':'a'*40}) as call, \
+                patch('forge_client.source.export') as export:
+            with self.assertRaises(SetupError) as error:execute(args)
+        self.assertEqual(error.exception.code,'migration_initial_setup_required')
+        self.assertEqual(call.call_count,1);export.assert_not_called()
+
     def test_initial_source_bridge_rejects_active_host_before_export(self):
         args=parser().parse_args(['migrate','activate','--ssh','anvil','--source','/srv/source','--root','/srv/runtime','--apply','--source-revision','b'*40])
         with patch('forge_client.migration.call',return_value={'initial_setup':False}) as call, patch('forge_client.source.export') as export:

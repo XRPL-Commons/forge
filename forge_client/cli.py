@@ -59,6 +59,8 @@ def migration_commands():
         if action == 'activate':
             properties['source_revision']={'type':'string','pattern':'^[0-9a-f]{40}$',
                 'description':'Required to upgrade a never-started legacy setup; pin the same release as this CLI. plan must report initial_setup=true.'}
+            properties['replace_initial_source']={'type':'boolean','const':True,
+                'description':'Explicitly replace divergent source only for a never-started setup (initial_setup=true), preserving settings and identity. Requires apply and source_revision; ordinary updates remain forward-only.'}
         if action == 'upgrade':
             properties.update(apply={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
         if action == 'resume':
@@ -74,6 +76,7 @@ def migration_commands():
             'initial_source_upgrade': action == 'activate',
             'target': 'selected SSH host' if remote else 'private local staging',
         }
+    result['activate']['input_schema']['dependentRequired']={'replace_initial_source':['source_revision']}
     return result
 
 
@@ -192,6 +195,7 @@ def parser():
     migration.add_argument('--accept-tool-update', action='store_true', help='resume: authorize a pinned source-only repair and reimport the same frozen snapshot before selection')
     migration.add_argument('--service-user', help='Run remote maintenance as this existing Unix service account; default is the SSH account')
     migration.add_argument('--source-revision', help='Full commit SHA for an upgrade, initial-setup activation source bridge, or explicitly authorized resume repair')
+    migration.add_argument('--replace-initial-source', action='store_true', help='activate --apply --source-revision: explicitly replace divergent source of a never-started setup, preserving settings and identity')
     migration.add_argument('--batch', type=int, default=100)
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     sub.add_parser('commands', help='List every command as JSON for agents')

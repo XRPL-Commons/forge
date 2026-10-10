@@ -170,6 +170,9 @@ def execute(args):
                 'invalid_service_user', '--service-user applies only to remote migration operations.')
         repair=getattr(args,'accept_tool_update',False)
         revision=getattr(args,'source_revision',None)
+        replace_initial_source=getattr(args,'replace_initial_source',False)
+        require(not replace_initial_source or args.migration_command=='activate' and args.apply and bool(revision),
+                'migration_initial_source_replacement_options', '--replace-initial-source requires migrate activate --apply --source-revision FULL_COMMIT_SHA; resume reuses the journal mode.')
         if args.migration_command=='upgrade':
             require(args.ssh and args.source and args.root,'migration_host_required','Select --ssh, --source and --root for this host.')
             require(not repair,'upgrade_options_invalid','Schema upgrades do not use --accept-tool-update.')
@@ -197,8 +200,9 @@ def execute(args):
                 plan=call(args,'plan')
                 require(plan.get('initial_setup') is True,'migration_initial_setup_required','Initial source upgrade requires a never-started legacy setup.')
                 from .source import export
-                pack=export(revision,previous=plan['source_revision']) if revision!=plan['source_revision'] else None
-                return call(args,'activate',apply=True,previous_revision=plan['source_revision'],source_revision=revision,source_pack=pack)
+                replacement={'replace_initial_source':True} if replace_initial_source else {}
+                pack=export(revision,previous=plan['source_revision'],**replacement) if revision!=plan['source_revision'] else None
+                return call(args,'activate',apply=True,previous_revision=plan['source_revision'],source_revision=revision,source_pack=pack,**replacement)
             return call(args,'activate',apply=True)
         if args.migration_command=='prepare':
             require(args.apply,'migration_apply_required','Preparing the private SQLite runtime may install compiler dependencies. Supply --apply.')

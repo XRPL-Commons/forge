@@ -106,7 +106,26 @@ runtime. The CLI fetches the pinned source locally, verifies forward ancestry an
 sends only Git objects to the server. GitHub credentials and local Git configuration
 stay on the operator's computer.
 
-The journal pins the original and target commits. With every Forge service
+If the installed setup's source is not an ancestor of the pinned release, the
+forward check stops before activation. For this never-started setup only, explicitly
+add `--replace-initial-source` to the activation command:
+
+```sh
+forge migrate activate --ssh anvil --service-user forge \
+  --source /home/forge/forge --root /home/forge/.local/share/forge \
+  --source-revision FULL_RELEASE_COMMIT_SHA --replace-initial-source --apply --json
+```
+
+This choice transfers the complete target Git ancestry and replaces a clean
+checkout after capture, without forcing over local edits. The server rechecks the
+never-started setup facts with writers stopped. Configuration, operator identity,
+sessions and setup state still pass through the same captured import and parity
+checks. It does not authorize replacement of a running factory's source. The flag
+is accepted only for `activate --apply --source-revision`; normal activation and
+upgrades keep their forward-only source checks. Resume uses the recorded choice
+without repeating the flag.
+
+The journal pins the original and target commits and the replacement choice. With every Forge service
 stopped, the CLI seals the existing configuration and identity snapshot, advances
 the checkout, and uses the host updater to build and qualify the current runner,
 UI and service launchers. These preparations do not rewrite the frozen settings
