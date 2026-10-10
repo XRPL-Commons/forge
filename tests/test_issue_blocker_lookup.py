@@ -7,6 +7,7 @@ from forge.store import codes, db as storage, upgrade
 from forge.factory.store_views import COMPLETION_SQL
 from forge.factory.issue_selection import IssueSelection
 from tests import test_operator_status_matrix as matrix
+from tests.historical_store_fixtures import status_case
 
 
 class IssueBlockerLookupTests(unittest.TestCase):
@@ -27,22 +28,37 @@ class IssueBlockerLookupTests(unittest.TestCase):
         migrations = storage._migrations()
         for case in matrix.MATRIX:
             with self.subTest(case=case['name']), tempfile.TemporaryDirectory() as root:
-                fixture = matrix.OperatorStatusMatrixTests()
                 with patch('forge.store.db._migrations', return_value=migrations[:27]):
-                    fixture.prepare(root, case['name'])
-                    before = self.rows(fixture.store, legacy=True)
-                    data = self.data(fixture.store)
-                fixture.store = storage.Store(fixture.store.root)  # Target release handle.
-                fixture.views.store = fixture.store
-                result = upgrade.apply(fixture.store)
+                    store = storage.Store.create(root)
+                    status_case(store, case['name'])
+                    before = self.rows(store, legacy=True)
+                    data = self.data(store)
+                # 028 changes a selector/index only: every stored row must be exact.
+                with patch('forge.store.db._migrations', return_value=migrations[:28]):
+                    boundary = storage.Store(root)
+                    result = upgrade.apply(boundary)
+                    self.assertEqual(result['current_schema'], 28)
+                    self.assertEqual(self.rows(boundary, legacy=True), before)
+                    self.assertEqual(self.data(boundary), data)
+                    self.assertEqual(upgrade.apply(boundary), result)
+                # Today's schema intentionally adds tables and normalizes process
+                # gates. It must preserve history and the same canonical status.
+                store = storage.Store(root)
+                result = upgrade.apply(store)
                 self.assertEqual(result['current_schema'], len(migrations))
-                # Only 030's transitional reclassification may change a row (#241).
                 expected = [{**row, 'public_status': 'working'} if codes.transitional(row['reason_code']) else row
                             for row in before]
-                self.assertEqual(self.rows(fixture.store), expected)
-                self.assertEqual(self.data(fixture.store), data)
-                self.assertEqual(upgrade.apply(fixture.store), result)
-                self.assertEqual(self.rows(fixture.store), expected)
+                self.assertEqual(self.rows(store), expected)
+                self.assertEqual(upgrade.apply(store), result)
+                self.assertEqual(self.rows(store), expected)
+                after = self.data(store)
+                for table in ('issues', 'issue_revisions', 'attempts', 'candidates',
+                              'job_members', 'budget_entries', 'events'):
+                    self.assertEqual(after[table], data[table], table)
+                from forge.factory.store_views import PipelineViews
+                from forge.factory.config import validate
+                view = PipelineViews(store, runtime=validate({}), clock=lambda:100)
+                self.assertEqual(view.issues(key='1:1')['issue']['status'], case['expected']['code'])
 
     def test_issue_lookup_uses_its_indexed_gates_and_retains_precedence(self):
         with tempfile.TemporaryDirectory() as root:

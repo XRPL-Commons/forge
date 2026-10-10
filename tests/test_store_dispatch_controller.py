@@ -338,12 +338,19 @@ class DispatchTests(unittest.TestCase):
         catalog = storage._migrations()
         with patch('forge.store.db._migrations', return_value=catalog[:28]):
             self.store = Store.create(directory.name)
-        self.life = Executions(self.store, clock=lambda: self.now)
-        self.admit('u', 1); self.admit('v', 2)
-        old = self.job(self.driver().step('u'))
+        from tests.historical_store_fixtures import reservation
+        old_id = reservation(self.store, config=self.config,
+                             policy=policy(self.config,1,repository_name='owner/repo'), base_oid=BASE)
         with self.store.read_snapshot() as db:
             history = [tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence')]
+            columns = [row['name'] for row in db.execute('PRAGMA table_info(jobs)')]
             jobs = [tuple(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')]
+        with patch('forge.store.db._migrations', return_value=catalog[:29]):
+            boundary = Store(directory.name)
+            self.assertEqual(upgrade.apply(boundary)['current_schema'],29)
+            with boundary.read_snapshot() as db:
+                self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')], jobs)
+                self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence')], history)
         target = Store(directory.name)
         self.assertEqual(upgrade.apply(target)['current_schema'], len(catalog))
         self.assertEqual(upgrade.apply(target)['pending_migrations'], [])
@@ -355,7 +362,8 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(page['items'][1]['reason'], 'cleanup_pending')
         with self.store.read_snapshot() as db:
             self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence LIMIT ?', (len(history),))], history)
-            self.assertEqual(tuple(db.execute('SELECT * FROM jobs WHERE id=?', (old['id'],)).fetchone()), jobs[0])
+            self.assertEqual(tuple(db.execute('SELECT '+','.join(columns)+' FROM jobs WHERE id=?', (old_id,)).fetchone()), jobs[0])
+            self.assertEqual(db.execute('SELECT execution_kind FROM jobs WHERE id=?',(old_id,)).fetchone()[0], 'legacy')
             plan = db.execute("EXPLAIN QUERY PLAN SELECT e.sequence FROM events e "
                 "JOIN jobs j ON j.id=e.job_id JOIN job_launches l ON l.job_id=j.id "
                 "WHERE e.unit_id=? AND e.kind='attempt_reserved' AND j.role='build' "
