@@ -413,7 +413,9 @@ class PipelineViews:
                 'FROM jobs j JOIN unit_issues m ON m.unit_id=j.unit_id AND '+JOB_MEMBER_SCOPE+' '
                 'JOIN issues i ON i.id=m.issue_id WHERE j.id=? ORDER BY m.id',(job_id,))]
             assignment=db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?',(job_id,)).fetchone()
-            child=db.execute('SELECT d.delegation_key,p.builder_id,p.parent_job_id FROM job_delegations d JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?',(job_id,)).fetchone()
+            task=db.execute('SELECT t.id,t.task_key,t.executor,p.builder_id,p.parent_job_id '
+                'FROM job_tasks j JOIN delivery_tasks t ON t.id=j.task_id '
+                'JOIN delegation_plans p ON p.id=j.plan_id WHERE j.job_id=?',(job_id,)).fetchone()
             singular=members[0] if len(members)==1 else None
             from ..store.resource_usage import read_in as resources_in
             return {**{k:row[k] for k in ('id','role','slot','provider','provider_id','model','phase','outcome','created_at','deadline','branch')},
@@ -421,34 +423,38 @@ class PipelineViews:
                     'cleanup':bool(row['cleanup']),'fenced':bool(row['source_fenced'] if row['source_fenced'] is not None else row['fenced']),
                     'execution_fenced':bool(row['fenced']),'issue_key':singular['issue_key'] if singular else None,
                     'unit_id':row['unit_id'],'members':members,
-                    'builder_id':assignment['builder_id'] if assignment else child['builder_id'] if child else None,
-                    'builder_stage':assignment['stage'] if assignment else 'child' if child else None,
-                    'parent_job_id':child['parent_job_id'] if child else None,
-                    'delegation_key':child['delegation_key'] if child else None,
+                    'builder_id':task['builder_id'] if task else assignment['builder_id'] if assignment else None,
+                    'builder_stage':'task' if task else assignment['stage'] if assignment else None,
+                    'parent_job_id':task['parent_job_id'] if task else None,
+                    'task_id':task['id'] if task else None,
+                    'task_key':task['task_key'] if task else None,
+                    'task_executor':task['executor'] if task else None,
                     'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':singular['issue_number'] if singular else None,
                     'started_at':row['started_at'],'observed_at':row['observed_at'],'last_observed':row['observed_at'],
                     'observed_status':row['observed_status'], 'resource_usage':resources_in(db,job_id)}
 
     @projection
-    def delivery(self, issue_key, *, after=''):
+    def delivery(self, issue_key, *, after='', task_after=''):
         """Lazy, bounded execution tree without logs, notes or request payloads."""
         from ..store.delivery import DeliveryQueries
         from ..store.delivery_inputs import dependencies_in
         from ..store.status import describe_gate
         if not isinstance(after,str) or len(after)>200:
             raise ValueError('Invalid delivery history cursor')
+        if not isinstance(task_after,str) or len(task_after)>400:
+            raise ValueError('Invalid delivery task cursor')
         with self.store.read_snapshot() as db:
             issue = Queries._issue(db, issue_key)
             unit_id = issue['lifecycle']['unit_id'] or issue['lifecycle']['historical_unit_id']
             if not unit_id or not db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone():
                 raise ValueError('This issue has no approved delivery')
-            tree = DeliveryQueries(self.store).tree(unit_id,after=after,limit=50)
+            tree = DeliveryQueries(self.store).tree(unit_id,after=after,limit=50,task_after=task_after,task_limit=50)
             members = [dict(row) for row in db.execute('SELECT m.id,m.issue_id AS issue_key,m.state,m.requirements_revision_id,i.github_number AS number,r.title '
                 'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=m.requirements_revision_id '
                 'WHERE m.unit_id=? AND m.left_at IS NULL ORDER BY i.github_number',(unit_id,))]
             unit = dict(db.execute('SELECT * FROM units WHERE id=?',(unit_id,)).fetchone())
             candidate = db.execute('SELECT pull_number FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone()
-            outputs = {row['member_id']:row for row in tree['outputs']}
+            contributions = tree['contributions']
             member_index = {member['id']: member for member in members}
             for member in members:
                 canonical = Queries._issue(db, member['issue_key'], include_gates=True)
@@ -459,20 +465,20 @@ class PipelineViews:
                 gates = canonical['lifecycle']['gates']
                 # Expose coded scope and common wording, never arbitrary gate details.
                 member['gates'] = [dict(id=gate['id'], code=gate['code'], reason=describe_gate(gate),
-                    member_id=gate['member_id'], candidate_id=gate['candidate_id'], subject_key=gate['subject_key'])
+                    member_id=gate['member_id'], candidate_id=gate['candidate_id'], job_id=gate.get('job_id'), subject_key=gate['subject_key'])
                     for gate in gates]
                 member['blocker'] = member['gates'][0] if member['gates'] else None
                 member['operator_status'] = operator_status(canonical, bool(active_jobs))
                 member['active_job_ids'] = active_jobs
-                member['output'] = outputs.get(member['id'])
-                member['output_commit'] = member['output']['commit_oid'] if member['output'] else None
+                member['contributions'] = contributions[member['id']]
                 member['dependencies'] = [dict(member_id=prerequisite,
                     issue_key=member_index[prerequisite]['issue_key'], number=member_index[prerequisite]['number'],
-                    output=outputs.get(prerequisite)) for prerequisite in dependencies_in(db, unit, member['id'])]
-            return dict(unit_id=unit_id,version=tree['version'],state=unit['state'],repo_id=issue['repository_id'],
+                    contributions=contributions[prerequisite]) for prerequisite in dependencies_in(db, unit, member['id'])]
+            return dict(response_version=2,unit_id=unit_id,version=tree['version'],state=unit['state'],repo_id=issue['repository_id'],
                 repo=issue['repository'],builder_id=tree['builder']['id'] if tree['builder'] else None,
                 candidate_pr=candidate[0] if candidate else None,members=members,
                 jobs=[self.job(job['id']) for job in tree['jobs']],next_cursor=tree['next_cursor'],
+                plan=tree['plan'],tasks=tree['tasks'],task_next_cursor=tree['task_next_cursor'],tasks_complete=tree['tasks_complete'],
                 charged_failures=tree['charged_failures'],failure_limit=3)
 
     def output(self, job_id):

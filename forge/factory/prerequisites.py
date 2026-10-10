@@ -11,7 +11,7 @@ def blocker(fact):
     if fact.get('error'):
         return fact['error']
     if fact['kind'] == 'internal':
-        return None if fact['output_id'] else 'prerequisite_output_pending'
+        return None if fact['ready'] else 'prerequisite_output_pending'
     if fact['state'] != 'closed':
         return 'prerequisite_open'
     if fact['kind'] == 'pull_request':
@@ -43,7 +43,7 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
     This function never changes identities, gates, counters or unit versions. The
     requirements controller commits its observations; merge admission only reads.
     """
-    from ..store.delivery_inputs import dependencies_in, current_output_in
+    from ..store.delivery_inputs import dependencies_in, member_contributions_in
     from ..store.models import TransitionError
     from ..store.repository_requirements import orders_in
 
@@ -95,9 +95,9 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
         needed = {internal[ref] for ref in refs if ref in internal}
         needed.update(internal_identity[(binding['repository_id'], binding['number'])]
             for binding in bindings.values() if (binding['repository_id'], binding['number']) in internal_identity)
-        outputs = {key: current_output_in(db, unit, key) for key in needed}
+        contributions = {key: member_contributions_in(db, unit, key) for key in needed}
 
-    facts, blocked = [], []
+    facts, blocked, external_blocked = [], [], []
     for ref in sorted(refs):
         binding = bindings.get(ref)
         internal_member = internal.get(ref)
@@ -106,9 +106,11 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
         if internal_member:
             if internal_member not in approved:
                 raise TransitionError('Requirements declare a member dependency absent from the approved composition')
-            output = outputs[internal_member]
+            contribution = contributions[internal_member]
             fact = dict(reference=ref, kind='internal', member_id=internal_member,
-                        output_id=output['id'] if output else None)
+                        plan_id=contribution['plan_id'], candidate_id=contribution['candidate_id'],
+                        output_ids=sorted(output['output_id'] for output in contribution['outputs']),
+                        ready=contribution['ready'], owner_final_pending=contribution['owner_final_pending'])
             reason = blocker(fact)
         else:
             fact = github.prerequisite(ref, binding)
@@ -119,4 +121,6 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
         facts.append(fact)
         if reason:
             blocked.append({'reference': ref, 'reason': reason})
-    return {'facts': facts, 'blocked': blocked}
+            if fact.get('kind') != 'internal':
+                external_blocked.append({'reference': ref, 'reason': reason})
+    return {'facts': facts, 'blocked': blocked, 'external_blocked': external_blocked}

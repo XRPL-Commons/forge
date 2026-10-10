@@ -35,7 +35,9 @@ class ClientRepositories:
                                       value['instance'], value['generation'])
 
     def read(self, token, value):
-        fields(value, ('repository', 'instance', 'generation', 'section', 'number', 'page') + (('after',) if isinstance(value,dict) and value.get('section') == 'delivery' else ()))
+        fields(value, ('repository', 'instance', 'generation', 'section', 'number', 'page') +
+               (('after',) + (('task_after',) if 'task_after' in value else ())
+                if isinstance(value,dict) and value.get('section') == 'delivery' else ()))
         self.authorize(token, value, 'repositories:read')
         section = value['section']
         need(section in ('repository', 'activity', 'issues', 'issue', 'delivery'))
@@ -51,9 +53,15 @@ class ClientRepositories:
         elif section == 'delivery':
             from .factory.control import public_views
             need(isinstance(value['after'],str) and len(value['after']) <= 200)
+            task_after = value.get('task_after', '')
+            need(isinstance(task_after,str) and len(task_after) <= 400)
             service = public_views(self.settings.root)
             need(service is not None, 'runtime_unavailable', 'Delivery history requires the active SQLite runtime.')
-            result = service.delivery(f"{target['id']}:{value['number']}",after=value['after'])
+            from .store.models import DeliveryPlanChanged
+            try:
+                result = service.delivery(f"{target['id']}:{value['number']}",after=value['after'],task_after=task_after)
+            except DeliveryPlanChanged:
+                raise ConnectionError('delivery_plan_changed','The delivery plan changed. Restart task paging.',409) from None
             need(result['repo_id'] == target['id'], 'repository_mismatch', 'Delivery belongs to another repository.')
         elif section == 'activity':
             from .factory.control import view

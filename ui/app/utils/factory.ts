@@ -26,9 +26,10 @@ export interface ResourceUsage {
 export interface JobView {
   id: string; issue_key: string | null; repo_id: number; repo: string; issue_number: number | null
   unit_id?: string; members?: Array<{ member_id: string; issue_key: string; issue_number: number }>
-  builder_id?: string | null; builder_stage?: 'planning' | 'integration' | 'child' | null
+  builder_id?: string | null; builder_stage?: 'planning' | 'integration' | 'child' | 'task' | null
   parent_job_id?: string | null; delegation_key?: string | null
   resource_usage?: ResourceUsage
+  task_id?: string | null; task_key?: string | null; task_executor?: 'owner' | 'child' | null
   role: JobRole; slot: string; provider: string; provider_id: string | null; model: string | null
   phase: 'reserved' | 'created' | 'launching' | 'running' | 'stopping' | 'cleaned' | 'external'
   outcome: string | null; cleanup: boolean; fenced: boolean
