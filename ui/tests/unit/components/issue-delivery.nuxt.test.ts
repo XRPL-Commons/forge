@@ -25,7 +25,11 @@ describe('combined delivery', () => {
           gates: [{ id: null, code: 'dependency', reason: 'Waiting for accepted prerequisite outputs', member_id: 'three', candidate_id: null, subject_key: 'member:three' }],
           dependencies: [{ member_id: 'two', issue_key: '1:12', number: 12, output: null }] },
       ],
-      jobs: [{ id: 'parent', role: 'build', phase: 'cleaned', outcome: 'planned', builder_stage: 'planning', issue_key: null, members: [{}, {}] },
+      jobs: [{ id: 'parent', role: 'build', phase: 'cleaned', outcome: 'planned', builder_stage: 'planning', issue_key: null, members: [{}, {}], resource_usage: {
+        captured_at: 210, wall: { seconds: 55, started_at: 150, finished_at: 205, provenance: 'docker_inspect', unavailable_reason: null },
+        sample: { sampled_at: 190, cpu_seconds: 2.5, memory_bytes: 1048576, provenance: 'docker_engine_stats' },
+        collection: { checked_at: 209, status: 'unavailable', reason: 'container_not_running' },
+      } },
         { id: 'child', role: 'build', phase: 'running', outcome: null, builder_stage: 'child', parent_job_id: 'parent', issue_key: '1:12', issue_number: 12, delegation_key: 'two' }],
     })
     const wrapper = await mountSuspended(IssueDelivery, { props: { issueKey: '1:11' } })
@@ -35,6 +39,7 @@ describe('combined delivery', () => {
     expect(get).toHaveBeenCalledWith('/api/delivery?issue=1%3A11&after=')
     expect(wrapper.text()).toContain('1 / 3 shared failures')
     expect(wrapper.text()).toContain('Builder planning')
+    expect(wrapper.get('[aria-label="Measured execution resources"]').text()).toContain('CPU 2.5 s cumulative')
     expect(wrapper.text()).toContain('Child implementation')
     const members = wrapper.get('[aria-label="Delivery members"]').findAll(':scope > li')
     expect(members[0]!.text()).toContain('Blocked')

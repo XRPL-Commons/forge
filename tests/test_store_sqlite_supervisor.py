@@ -121,7 +121,7 @@ class Runner:
     def capacity(self):
         return {'allowed': True}
 
-    def inspect(self, job):
+    def inspect(self, job, *, resources=False):
         return self.containers.get(job['id'])
 
     def create(self, job):

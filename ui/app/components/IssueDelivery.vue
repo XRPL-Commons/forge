@@ -64,6 +64,7 @@ function label(job: JobView) {
           <NuxtLink :to="`/issues/${encodeURIComponent(job.issue_key ?? issueKey)}?job=${encodeURIComponent(job.id)}`" class="hover:underline">{{ label(job) }}</NuxtLink>
           <span v-if="job.builder_stage === 'child'" class="ml-2 text-xs text-muted">#{{ job.issue_number }} · {{ job.delegation_key }}</span>
           <span v-else-if="job.members && job.members.length > 1" class="ml-2 text-xs text-muted">{{ job.members.length }} issues</span>
+          <JobResourceUsage v-if="job.resource_usage" :usage="job.resource_usage" />
         </li>
       </ul>
       <p v-if="!delivery.jobs.length" class="text-muted">The builder has not started yet.</p>

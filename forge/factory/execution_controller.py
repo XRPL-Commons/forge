@@ -108,7 +108,7 @@ class ExecutionController:
                 if self._can_launch(job) and current and current['status'] != 'created':
                     job = self._progress(job, 'running', current['id'])
 
-        current = runner.inspect(job)
+        current = runner.inspect(job, resources=True)
         self.commands.observe(job_id, execution_fence=job['execution_fence'], observation=current)
         finished = current is None or current['status'] in {'exited', 'dead'}
         deadline = self.clock() >= job['deadline']

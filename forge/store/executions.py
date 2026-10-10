@@ -193,6 +193,9 @@ class Executions(Lifecycle):
                 raise TransitionError('observation does not own the exact leased container')
             db.execute('UPDATE job_execution_state SET container_id=COALESCE(container_id,?),observed_at=?,observed_status=?,started_at=COALESCE(?,started_at) WHERE job_id=?',
                        (container, self.clock(), status, started, job_id))
+            if observation is not None:
+                from .resource_usage import observe_in
+                observe_in(db, job_id, container, observation.get('resources'))
 
     def collect(self, command, job_id, *, execution_fence, capture):
         """Commit capture and fence launch before reset; never accept worker claims."""
@@ -217,6 +220,8 @@ class Executions(Lifecycle):
                 raise TransitionError('execution already has a capture or result')
             now = self.clock()
             _artifact(db, job_id, 'worker_capture', content, now)
+            from .resource_usage import capture_in
+            capture_in(db, job_id, structured, now)
             _artifact(db, job_id, 'logs', logs, now)
             if bundle is not None:
                 if not db.execute('SELECT 1 FROM job_delegations WHERE job_id=?', (job_id,)).fetchone():
