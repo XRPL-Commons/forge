@@ -83,6 +83,30 @@ class StoreCodesTests(unittest.TestCase):
                         with self.assertRaises(sqlite3.IntegrityError):
                             self.db.execute(statement,args)
 
+    def test_every_gate_is_classified_and_sql_status_agrees_with_python(self):
+        from forge.factory.status_projection import public_status
+        self.assertEqual(set(codes.GATE_PRESENTATION), set(codes.GATES))
+        self.assertEqual(set(codes.GATE_PRESENTATION.values()), {codes.TRANSITIONAL, codes.BLOCKING})
+        self.assertFalse(codes.transitional('invented'))
+        self.assertFalse(codes.transitional(None))
+        self.unit(); self.issue_and_member(); self.candidate()
+        self.db.execute("UPDATE units SET current_candidate_id='c'")
+        for code, fact in codes.GATES.items():
+            scope = 'unit' if 'unit' in fact.scopes else 'member' if 'member' in fact.scopes else 'candidate'
+            with self.subTest(code=code):
+                self.db.execute('SAVEPOINT gate')
+                self.db.execute("INSERT INTO unit_gates(id,unit_id,member_id,candidate_id,subject_key,code,created_at) VALUES('g','u',?,?,?,?,1)",
+                                ('m' if scope == 'member' else None, 'c' if scope == 'candidate' else None,
+                                 {'unit':'unit','member':'member:m','candidate':'candidate:c'}[scope], code))
+                row = self.db.execute("SELECT reason_code,public_status FROM public_issue_index WHERE id='i'").fetchone()
+                self.db.execute('ROLLBACK TO gate'); self.db.execute('RELEASE gate')
+                self.assertEqual(row[0], code)
+                issue = {'lifecycle': {'state': 'blocked', 'reason_code': code}}
+                # A gate decides the status whether or not a job is live.
+                self.assertEqual(public_status(issue, True), public_status(issue, False))
+                self.assertEqual(public_status(issue) == 'working', codes.transitional(code))
+                self.assertEqual(row[1], public_status(issue))
+
     def test_registry_cannot_be_extended_or_rewritten_by_runtime_sql(self):
         for statement in ("INSERT INTO unit_states VALUES('invented',0)",
                           "UPDATE gate_codes SET release='observation' WHERE code='operator_pause'",

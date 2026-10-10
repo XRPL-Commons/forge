@@ -424,6 +424,14 @@ Build; `1:619` waits on `#601`; `1:720` is paused (asleep on the shelf);
 `1:721` (environment), `1:722` (change of approach) and `1:730` (approval
 needed) join the two failed issues, so five issues need the operator.
 
+## checking/
+
+`factory.json` only (#241): `1:701` has finished review and its result is
+being checked (`result_pending`, `transition.role: review`, no live job);
+`1:702` is under a running review job (`33333333-…`); `1:703` is paused by
+the operator. The settling issue rests at the review machine, reads Working,
+and only `1:703` sits on the hold bench.
+
 ## completed-many/
 
 `factory.json` only: the default factory with `2:606` replaced by 25 completed

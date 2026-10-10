@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forge.store import db as storage, upgrade
+from forge.store import codes, db as storage, upgrade
 from forge.factory.store_views import COMPLETION_SQL
 from tests import test_operator_status_matrix as matrix
 
@@ -35,11 +35,14 @@ class IssueBlockerLookupTests(unittest.TestCase):
                 fixture.views.store = fixture.store
                 result = upgrade.apply(fixture.store)
                 self.assertEqual(result['current_schema'], len(migrations))
-                self.assertEqual(self.rows(fixture.store), before)
+                # Only 030's transitional reclassification may change a row (#241).
+                expected = [{**row, 'public_status': 'working'} if codes.transitional(row['reason_code']) else row
+                            for row in before]
+                self.assertEqual(self.rows(fixture.store), expected)
                 self.assertEqual(self.data(fixture.store), data)
                 self.assertEqual(fixture.views.factory(issue='1:1'), board)
                 self.assertEqual(upgrade.apply(fixture.store), result)
-                self.assertEqual(self.rows(fixture.store), before)
+                self.assertEqual(self.rows(fixture.store), expected)
 
     def test_issue_lookup_uses_its_indexed_gates_and_retains_precedence(self):
         with tempfile.TemporaryDirectory() as root:

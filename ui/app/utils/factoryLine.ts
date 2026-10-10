@@ -39,6 +39,9 @@ export interface LineItem {
   on?: number[]
   // A worker for this issue is running right now (not starting, not stale).
   running: boolean
+  // At a machine but not running: its job is reserved and not yet launched,
+  // or the stage is checking the job that just finished (#241).
+  phase?: 'starting' | 'checking'
   // The plain-language second line of the tooltip.
   status: string
   card: CardModel
@@ -137,6 +140,8 @@ export function lineReason(issue: Pick<LedgerIssueView, 'attention_kind'>): Atte
   return kind && (LINE_REASONS as string[]).includes(kind) ? kind as AttentionReason : null
 }
 
+const STARTING_PHASES = new Set(['reserved', 'created', 'launching'])
+
 function columnStatus(card: CardModel, stage: LineStage): string {
   if (stage === 'queued') return 'Waiting for a worker'
   return card.phaseLabel
@@ -155,10 +160,13 @@ export function lineState(view: FactoryView | null | undefined, now: number, gro
       ...(card.operator_status ? { status: card.operator_status.label } : {}),
     })
   }
+  const jobs = new Map((view.jobs ?? []).map(job => [job.id, job]))
   for (const role of COLUMN_ROLES) {
     for (const card of groups.columns[role]) {
-      const stage: LineStage = card.jobId ? role : 'queued'
-      add(card, stage, { next: stage === 'queued' ? role : undefined, status: columnStatus(card, stage) })
+      const stage: LineStage = card.jobId || card.checking ? role : 'queued'
+      const job = card.jobId ? jobs.get(card.jobId) : undefined
+      const phase = card.checking ? 'checking' : job && STARTING_PHASES.has(job.phase) ? 'starting' : undefined
+      add(card, stage, { next: stage === 'queued' ? role : undefined, status: columnStatus(card, stage), ...(phase ? { phase } : {}) })
     }
   }
   for (const card of groups.finishing) add(card, 'approval', { status: card.phaseLabel === 'Merging' ? 'Merging' : 'Approved, waiting to merge' })
@@ -245,6 +253,7 @@ export function lineTooltip(item: LineItem, showRepo: boolean): string {
   const label = canonical?.label ?? LINE_STAGE_LABELS[item.stage]
   const reason = canonical?.reason ?? item.status
   const parts = [name, label]
+  if (item.phase === 'starting') parts.push('Starting')
   if (reason && reason !== label) parts.push(reason)
   if (showRepo) parts.push(item.repo)
   return parts.join(' · ')

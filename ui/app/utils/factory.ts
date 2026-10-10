@@ -41,6 +41,9 @@ export interface LedgerIssueView extends OperatorStatusSource {
   attempts?: Array<Pick<JobView, 'id' | 'role' | 'outcome' | 'phase' | 'created_at' | 'started_at'>>
   state: IssueState; reason: string | null; active: string | null; failure_count: number
   hold_kind?: string | null
+  // A transitional gate (#241): the stage is settling the job that just
+  // finished, e.g. checking a review's result. Not a hold. Older payloads omit it.
+  transition?: { code: string; role: string | null; job_id: string | null } | null
   merge_gate_kind?: string | null
   candidate?: { pr?: number } | null
   // The plain-language card of the last outcome (contracts §2, LedgerIssueView).
@@ -130,6 +133,8 @@ export interface CardModel extends OperatorStatusSource {
   // merged or closed (null while it is open).
   updatedAt: number | null
   doneAt: number | null
+  // At a machine without a live job because that stage is settling its result.
+  checking?: boolean
 }
 
 
@@ -175,6 +180,12 @@ export function isRunning(view: FactoryView | null | undefined, job: FactorySumm
 // the dependency closes, so it is never counted or shown as waiting for one.
 export function waitingOnDependencies(issue: LedgerIssueView | null | undefined): boolean {
   return !!issue?.blocked_dependencies?.length
+}
+
+// The bay an issue stays in while its stage settles a finished job (#241).
+export function settlingRole(issue: Pick<LedgerIssueView, 'transition'> | null | undefined): ColumnRole | null {
+  const role = issue?.transition?.role
+  return role && (COLUMN_ROLES as string[]).includes(role) ? role as ColumnRole : null
 }
 
 export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, view: FactoryView | null | undefined, now: number): string {
@@ -428,8 +439,11 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
   for (const issue of view.issues ?? []) {
     const job = jobFor(view, issue)
     const card = issueCard(issue, job, view, now, tracked)
-    // An issue with a live job belongs to the column of that job's role;
-    // without one it waits in the column of the stage that comes next.
+    // An issue with a live job belongs to the column of that job's role; one
+    // settling a finished job stays at that job's machine; otherwise it waits
+    // in the column of the stage that comes next.
+    const settling = job ? null : settlingRole(issue)
+    if (settling) { groups.columns[settling].push({ ...card, checking: true }); continue }
     if (!job && issue.ownership_wait && !['merged', 'cancelled', 'failed', 'hold'].includes(issue.state)) { groups.owned.push(card); continue }
     if (!job && waitingOnDependencies(issue) && NEXT_ROLE[issue.state]) { groups.waiting.push(card); continue }
     const role = job && COLUMN_ROLES.includes(job.role as ColumnRole)
@@ -504,7 +518,7 @@ export function readout(view: FactoryView | null | undefined, now: number): Read
   return {
     occupied: usage.occupied, working: usage.running,
     slots: roles.reduce((total, role) => total + (Number(slots[role]) || 0), 0),
-    queued: issues.filter(issue => !jobFor(view, issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length,
+    queued: issues.filter(issue => !jobFor(view, issue) && !settlingRole(issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length,
     merging: issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length,
     merged: mergedToday(view, now),
   }
