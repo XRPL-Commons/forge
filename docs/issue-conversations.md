@@ -1,6 +1,6 @@
 # Talking to a worker
 
-Use **Discuss blocker** to ask about an issue without starting another implementation attempt. A worker reads the saved evidence, explains what it found and may offer a decision; only your explicit **Apply this decision** asks Forge to change anything.
+Use **Discuss blocker** to ask about an issue without starting another implementation attempt. A worker reads the saved evidence, explains what it found and may offer a decision. To change the issue, choose **Apply this decision** or give an explicit close command as described below.
 
 ```mermaid
 sequenceDiagram
