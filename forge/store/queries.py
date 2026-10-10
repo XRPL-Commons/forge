@@ -82,7 +82,7 @@ class Queries:
             lifecycle.update(reason_code='observation_unavailable',
                              display_status=status.describe('observation_unavailable'))
         else:
-            lifecycle['display_status'] = status.describe(blocker['code'] if blocker else unit['state'])
+            lifecycle['display_status'] = status.describe_gate(blocker) if blocker else status.describe(unit['state'])
         if projected == 'untracked' and issue['github_state'] == 'open':
             failed = connection.execute('SELECT reason_code,observed_at,retry_after FROM issue_discovery_observations '
                                         'WHERE issue_id=? AND revision_id=?',

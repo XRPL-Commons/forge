@@ -12,6 +12,7 @@ from forge.factory.config import validate
 from forge.factory.store_views import PipelineViews
 from forge.store.executions import Executions, Launch
 from forge.store.models import Command
+from forge.store.queries import Queries
 from forge_client import cli
 from tests import test_delivery_execution as fixtures
 
@@ -71,6 +72,7 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         self.assertEqual(dependent['operator_status']['reason_code'], 'dependency')
         self.assertEqual(dependent['operator_status']['reason'], 'Waiting for accepted prerequisite outputs')
         self.assertEqual(dependent['gates'][0]['reason'], dependent['operator_status']['reason'])
+        self.assertEqual(Queries(self.store).issue('1:2')['lifecycle']['display_status'], dependent['operator_status']['reason'])
         self.assertEqual(dependent['dependencies'], [{'member_id': held['id'], 'issue_key': '1:1', 'number': 1, 'output': None}])
         self.assertEqual(running['operator_status']['code'], 'working')
         self.assertEqual(running['gates'], [])
@@ -99,6 +101,25 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         self.assertEqual({gate['code'] for gate in first['gates']}, {'label_hold', 'environment'})
         self.assertEqual(second['operator_status']['code'], 'queued')
         self.assertEqual(second['gates'], [])
+
+    def test_dropped_prerequisite_leaves_current_graph_and_becomes_external(self):
+        self.prepare()
+        removed, dependent = self.members['1:1'], self.members['1:2']
+        self.delivery.drop_member(self.command(), removed, membership_generation=1,
+            dependent_decisions={dependent: 'wait_external'}, evidence={'approved': True})
+        tree = self.views.delivery('1:2')
+        self.assertNotIn(removed, {member['id'] for member in tree['members']})
+        row = next(member for member in tree['members'] if member['id'] == dependent)
+        self.assertEqual(row['dependencies'], [])
+        self.assertEqual(row['operator_status']['reason_code'], 'dependency')
+        self.assertEqual(row['operator_status']['reason'], 'Waiting for other issues to close')
+        self.assertEqual(Queries(self.store).issue('1:2')['lifecycle']['display_status'], row['operator_status']['reason'])
+        # Historical edges remain auditable, but the current generation excludes
+        # the retired member. The public projection can require exact membership.
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM member_dependencies WHERE prerequisite_member_id=?', (removed,)).fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM member_dependencies d JOIN units u ON u.id=d.unit_id '
+                'WHERE d.membership_generation=u.membership_generation AND d.prerequisite_member_id=?', (removed,)).fetchone()[0], 0)
 
     def test_scoped_client_and_cli_preserve_member_progress_and_exact_references(self):
         _, plan, _ = self.prepare()
