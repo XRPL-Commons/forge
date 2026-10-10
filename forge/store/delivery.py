@@ -272,7 +272,7 @@ class Delivery(TaskCommands, Lifecycle):
         return self._apply(command,'reserve_builder',payload,change)
 
     def save_plan(self,command,job_id,*,execution_fence,input_manifest,plan,evidence):
-        if isinstance(plan,dict) and plan.get('version')==2:
+        if input_manifest.get('manifest_version',1)==2:
             return self.save_task_plan(command,job_id,execution_fence=execution_fence,input_manifest=input_manifest,plan=plan,evidence=evidence)
         return self._save_legacy_plan(command,job_id,execution_fence=execution_fence,input_manifest=input_manifest,plan=plan,evidence=evidence)
 

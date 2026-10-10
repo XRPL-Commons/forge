@@ -283,3 +283,73 @@ class TaskTopologyTests(unittest.TestCase):
             rows={row['member_id']:dict(row) for row in db.execute("SELECT * FROM issue_selection_facts WHERE unit_id='batch'")}
             self.assertEqual(rows[a]['indexed_reason_code'],'cleanup_pending')
             self.assertIsNone(rows[b]['indexed_reason_code']);self.assertEqual(rows[b]['indexed_status'],'queued')
+
+    def test_pending_v1_planning_and_integration_keep_original_manifest_contract(self):
+        from unittest.mock import patch
+        from forge.store.models import Candidate
+        # Recreate a pre-upgrade planning assignment, then consume its late result
+        # after the normal reader has switched to v2. No manifest is rewritten.
+        with patch.object(Delivery,'_builder_manifest_in',staticmethod(Delivery._builder_manifest_v1_in)):
+            old=self.fixture.manifest()
+            parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='old-owner',execution_fence='old-plan',input_manifest=old)
+        children=[{'key':str(index),'member_id':member,'scope':'Implement member','dependencies':[]} for index,member in enumerate(self.members)]
+        saved=self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='old-plan',input_manifest=old,plan={'children':children},evidence={'verified':True})
+        self.fixture.clean(parent,'old-plan')
+        self.assertNotIn('manifest_version',old)
+        self.assertTrue(all(item['input_manifest']['manifest_version']==2 for item in self.query.assignments('batch',base_oid='base',policy_hash='policy')['items']))
+        # Exact v1 child captures and integration assignments can still finish.
+        for index in range(2):
+            job,manifest=self.fixture.child(saved,str(index));self.fixture.accept(job,manifest,str(index))
+        with self.store.read_snapshot() as db:
+            unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
+            original=Delivery._builder_manifest_v1_in(db,unit,'integration','base','policy')
+        with patch.object(Delivery,'_builder_manifest_in',staticmethod(Delivery._builder_manifest_v1_in)):
+            integration=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='old-integration',input_manifest=original)
+        candidate=Candidate(12,'forge/old','c'*40,'base','policy',original['requirements_hash'],manifest_hash(original))
+        command=self.command();args=dict(execution_fence='old-integration',input_manifest=original,candidate=candidate,
+            evidence={'verified':True,'pull_number':12,'head_oid':candidate.head_oid,'base_oid':'base'})
+        receipt=self.delivery.publish_candidate(command,integration['job_id'],**args)
+        self.assertTrue(receipt['accepted'])
+        self.assertEqual(Delivery(Store(self.store.root),clock=lambda:101).publish_candidate(command,integration['job_id'],**args),receipt)
+        with self.store.read_snapshot() as db:
+            stored=db.execute('SELECT input_manifest_json FROM attempts WHERE id=?',(integration['attempt_id'],)).fetchone()[0]
+            self.assertEqual(json.loads(stored),original)
+            self.assertEqual(db.execute('SELECT input_manifest_hash FROM candidates WHERE id=?',(receipt['candidate_id'],)).fetchone()[0],manifest_hash(original))
+
+    def test_overlapping_captured_deferrals_preserve_both_results_and_gate_lineage(self):
+        from forge.store.executions import Executions
+        a,b=self.members
+        plan=self.plan([('one','child',[a,b],[],[]),('two','child',[a],[],[])])
+        jobs=[self.reserve(plan,key) for key in ('one','two')]
+        for (job,manifest),key in zip(jobs,('one','two')):
+            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':''})
+            self.fixture.clean(job,key)
+        receipts=[]
+        for (job,manifest),key in zip(jobs,('one','two')):
+            command=self.command();args=dict(execution_fence=key,input_manifest=manifest,
+                evidence={'reason':'missing_'+key},code='environment',details={'reason':'missing_'+key})
+            result=self.life.defer_job(command,job['job_id'],**args);receipts.append((command,result))
+            self.assertTrue(result['accepted'])
+            self.assertEqual(Lifecycle(Store(self.store.root),clock=lambda:101).defer_job(command,job['job_id'],**args),result)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM jobs WHERE outcome='deferred'").fetchone()[0],2)
+            gates=[dict(row) for row in db.execute("SELECT * FROM unit_gates WHERE code='environment' AND resolved_at IS NULL")]
+            self.assertEqual({gate['member_id'] for gate in gates},{a,b})
+            joined=json.loads(next(gate for gate in gates if gate['member_id']==a)['details_json'])
+            self.assertEqual(joined['reason'],'missing_one')
+            self.assertEqual(joined['worker_waits'],[{'job_id':jobs[1][0]['job_id'],'request_id':receipts[1][0].request_id}])
+            prior=db.execute('SELECT resolution FROM unit_gates WHERE id=?',(joined['previous_gate_id'],)).fetchone()[0]
+            self.assertEqual(prior,'superseded')
+            additional=json.loads(db.execute('SELECT payload_json FROM decisions WHERE request_id=?',(joined['worker_waits'][0]['request_id'],)).fetchone()[0])
+            self.assertEqual(additional['details'],{'reason':'missing_two'})
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+
+    def test_v2_assignment_cannot_downgrade_its_plan_contract(self):
+        manifest=self.query.builder_manifest('batch','planning',base_oid='base',policy_hash='policy')
+        job=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='plan',input_manifest=manifest)
+        legacy={'children':[{'key':str(i),'member_id':member,'scope':'Implement','dependencies':[]} for i,member in enumerate(self.members)]}
+        with self.assertRaises(InvalidDelegationPlan):
+            self.delivery.save_plan(self.command(),job['job_id'],execution_fence='plan',input_manifest=manifest,plan=legacy,evidence={'verified':True})
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM delegation_plans').fetchone()[0],0)
+            self.assertIsNone(db.execute('SELECT outcome FROM jobs WHERE id=?',(job['job_id'],)).fetchone()[0])

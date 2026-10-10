@@ -385,3 +385,25 @@ The timestamp upgrade normalizes existing issue and pull-request observations to
 UTC with six fractional digits. It fixes unchanged imported issues being treated
 as newer than fresh GitHub reads. The following migration indexes request audit
 lookups so their cost does not grow with unrelated retained history.
+
+
+### Task topology schema upgrade
+
+Migration 033 converts existing child assignments into immutable tasks and exact
+member pins. It preserves original attempt manifests, their hashes, accepted
+output IDs and retained Git bundles. Pending v1 planning, child and integration
+results are interpreted against their original assignment contract; accepting an
+old plan creates normalized task rows. New assignments use manifest version 2.
+No captured result is rewritten to resemble a new assignment.
+
+Cleanup, result and investigation gates belong to their recorded physical jobs.
+They remain visible on every issue in that job's scope, while independent jobs
+can continue. Historical gates and charges remain retained.
+
+The supported upgrade stops writers before rebuilding the referenced tables.
+Only its dedicated migration connection temporarily disables foreign-key
+checking before the transaction. Full integrity and foreign-key checks must pass
+before commit; failure rolls back the entire change. Enforcement is restored
+before the connection closes. Runtime connections keep enforcement enabled.
+Use the normal pinned `forge migrate upgrade --apply` workflow above; no manual
+SQL or data export is required.

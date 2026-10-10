@@ -715,7 +715,21 @@ class Lifecycle:
             scoped = bool(task and code in {'environment','decision_required','dependency'})
             subjects = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id',(job_id,))]
                         if scoped else [member_id])
-            gate_ids = [self._open_gate(db, command, code, {**details, 'job_id': job_id}, subject, candidate_id) for subject in subjects]
+            gate_ids = []
+            for subject in subjects:
+                value = {**details, 'job_id': job_id}
+                previous = (db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code=? AND resolved_at IS NULL",
+                                       (unit['id'],subject,code)).fetchone() if scoped else None)
+                if previous is not None:
+                    # One canonical member/code gate can represent several exact
+                    # worker waits. Keep its original reason and immutable gate
+                    # lineage; every additional reason is in the named decision.
+                    value = json.loads(previous['details_json'])
+                    waits = value.get('worker_waits', [])
+                    value = {**value, 'worker_waits': [*waits, {'job_id': job_id, 'request_id': command.request_id}],
+                             'previous_gate_id': previous['id']}
+                    self._resolve(db, command, previous['id'], {'additional_worker_wait': job_id}, resolution='superseded')
+                gate_ids.append(self._open_gate(db, command, code, value, subject, candidate_id))
             gate_id = gate_ids[0] if len(gate_ids)==1 else None
             if code == 'provider_unavailable':
                 launch = db.execute('SELECT provider,provider_id,runner_config_json FROM job_launches WHERE job_id=?', (job_id,)).fetchone()
