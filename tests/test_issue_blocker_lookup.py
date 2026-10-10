@@ -31,6 +31,8 @@ class IssueBlockerLookupTests(unittest.TestCase):
                     before = self.rows(fixture.store)
                     data = self.data(fixture.store)
                     board = fixture.views.factory(issue='1:1')
+                fixture.store = storage.Store(fixture.store.root)  # Target release handle.
+                fixture.views.store = fixture.store
                 result = upgrade.apply(fixture.store)
                 self.assertEqual(result['current_schema'], len(migrations))
                 self.assertEqual(self.rows(fixture.store), before)

@@ -162,6 +162,7 @@ class PlanningTests(unittest.TestCase):
             previous=storage.Store.create(Path(temporary.name)/'previous')
             job={'id':'aux-old','slot':'setup-old','deadline':500,'fenced':False,'cleanup':False,'capture':{'result':{'value':'preserved'}}}
             with previous.write() as db:save_in(db,'setup','repo',job,90)
+        previous = storage.Store(previous.root)  # Target release handle.
         upgrade.apply(previous)
         with previous.read_snapshot() as db:
             self.assertEqual(job_in(db,'aux-old')['capture'],job['capture'])

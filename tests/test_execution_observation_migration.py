@@ -29,6 +29,7 @@ class ExecutionObservationMigrationTests(unittest.TestCase):
                     db.execute("UPDATE jobs SET phase='running' WHERE id=?", (job,))
                     db.execute('UPDATE job_execution_state SET container_id=?,captured_at=? WHERE job_id=?', ('container',99,job))
                     db.execute('INSERT INTO job_public_metadata(job_id,started_at,observed_at) VALUES(?,?,?)', (job,80,95))
+            store = storage.Store(store.root)  # Target release handle.
             upgrade.apply(store)
             upgrade.apply(store)
             view = PipelineViews(store).job(job)

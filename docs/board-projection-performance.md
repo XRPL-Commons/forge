@@ -43,3 +43,30 @@ The repository reader now uses the projection's already validated runtime for
 merge policy and environment readiness. It shares the Settings readiness
 implementation and omits the unrelated sync/header reads. The full Settings
 endpoint retains those fields and behavior. No state is cached between requests.
+
+### Migration catalog lifetime
+
+Each `Store` now loads the installed migration SQL and checksums once into an
+immutable tuple. All of that handle's connections still read and validate the
+applied migration rows, schema metadata, instance anchor and private paths.
+Database state is not cached. An already running handle keeps its release's
+schema contract even if files on disk change.
+
+The explicit upgrade command constructs a fresh Store from the pinned target
+tool. Prefix validation, migration application and final validation use that
+same catalog. Runtime services restart after the upgrade. Old handles reject a
+database upgraded beyond their catalog; fresh handles load the new installation.
+
+A local paired comparison on qualified SQLite 3.53.1 used a populated schema-28
+fixture with one working issue. Each version ran 42 times in alternating order;
+the first two samples were excluded. Board and completed objects were identical.
+
+| Local operation | Median before | Median after |
+| --- | ---: | ---: |
+| Open, validate and read one snapshot | 3.089 ms | 2.386 ms |
+| Board projection | 6.218 ms | 5.554 ms |
+| Completed projection | 4.359 ms | 3.686 ms |
+
+These local fixture results measure the catalog change against release
+`f883620`. They do not establish production or authenticated HTTP latency;
+normal authenticated `Server-Timing` measurements qualify the deployed result.

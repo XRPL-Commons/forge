@@ -29,6 +29,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/project')")
                 db.execute("INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,remote_updated_at,observed_at) VALUES('1:1',1,1,'open','r','2026-10-03T16:02:51Z',1)")
                 db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES('r','1:1','Issue','','body','req','{}',1)")
+        previous = storage.Store(previous.root)  # Target release handle.
         upgrade.apply(previous)
         upgrade.apply(previous)
         with previous.read_snapshot() as db:
@@ -39,11 +40,16 @@ class SchemaUpgradeTests(unittest.TestCase):
     def test_runtime_refuses_old_schema_until_explicit_atomic_upgrade(self):
         script = 'CREATE TABLE upgrade_probe(value INTEGER);\nINSERT INTO upgrade_probe VALUES(42);\n'
         with patch('forge.store.db._migrations', return_value=self.following(script)):
+            target = storage.Store(self.store.root)
             with self.assertRaisesRegex(storage.StoreError, 'explicit schema migration'):
                 storage.Store.open(self.store.root)
-            self.assertEqual(upgrade.inspect(self.store)['pending_migrations'], [len(self.original)+1])
-            upgrade.apply(self.store)
-            upgrade.apply(self.store)  # Repeating after a lost response does not reapply it.
+            self.assertEqual(upgrade.inspect(target)['pending_migrations'], [len(self.original)+1])
+            upgrade.apply(target)
+            upgrade.apply(target)  # Repeating after a lost response does not reapply it.
+            with self.assertRaises(storage.StoreError) as old_runtime:
+                with self.store.read_snapshot():
+                    pass
+            self.assertEqual(old_runtime.exception.code, 'schema_newer')
             with storage.Store.open(self.store.root).read_snapshot() as db:
                 self.assertEqual(db.execute('SELECT value FROM upgrade_probe').fetchall()[0][0], 42)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM schema_migrations').fetchone()[0], len(self.original)+1)
@@ -51,8 +57,9 @@ class SchemaUpgradeTests(unittest.TestCase):
     def test_failed_migration_rolls_back_schema_data_and_version(self):
         script = 'CREATE TABLE upgrade_probe(value INTEGER);\nINSERT INTO missing_table VALUES(42);\n'
         with patch('forge.store.db._migrations', return_value=self.following(script)):
+            target = storage.Store(self.store.root)
             with self.assertRaises(storage.sqlite3.DatabaseError):
-                upgrade.apply(self.store)
+                upgrade.apply(target)
         with storage.Store.open(self.store.root).read_snapshot() as db:
             self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='upgrade_probe'").fetchone())
             self.assertEqual(db.execute('SELECT COUNT(*) FROM schema_migrations').fetchone()[0], len(self.original))
@@ -60,8 +67,9 @@ class SchemaUpgradeTests(unittest.TestCase):
     def test_changed_history_and_anchor_are_rejected_before_upgrade(self):
         changed = [(n, 'incorrect' if n == 1 else checksum, script) for n, checksum, script in self.original]
         with patch('forge.store.db._migrations', return_value=changed):
+            target = storage.Store(self.store.root)
             with self.assertRaises(storage.StoreError) as result:
-                upgrade.apply(self.store)
+                upgrade.apply(target)
             self.assertEqual(result.exception.code, 'schema_checksum')
         self.store.instance_id = 'different-instance'
         with self.assertRaises(storage.StoreError) as result:
@@ -112,12 +120,13 @@ class UpgradeHostTests(SchemaUpgradeTests):
     def test_lost_update_resumes_after_committed_schema_without_reapplying(self):
         script = 'CREATE TABLE upgrade_probe(value INTEGER);\nINSERT INTO upgrade_probe VALUES(42);\n'
         with patch('forge.store.db._migrations', return_value=self.following(script)):
+            target = storage.Store(self.store.root)
             self.fail_update = True
             with self.assertRaisesRegex(MigrationError, 'upgrade_host_update_failed'):
                 self.upgrader.run(revision='b'*40, apply=True)
             self.assertEqual(self.upgrader.read()['stage'], 'reconciling')
             self.assertEqual(self.active, [])
-            with self.store.read_snapshot() as db:
+            with target.read_snapshot() as db:
                 self.assertEqual(db.execute('SELECT value FROM upgrade_probe').fetchone()[0], 42)
             self.fail_update = False
             self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
@@ -265,7 +274,7 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertFalse(self.runtime()[1]['enabled'])
         self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
         self.assertTrue(self.runtime()[1]['enabled'])
-        self.assertEqual(upgrade.inspect(self.store)['current_schema'], len(self.original))
+        self.assertEqual(upgrade.inspect(storage.Store(self.store.root))['current_schema'], len(self.original))
 
     def test_partially_restarted_updater_drains_new_workers_before_retry(self):
         from types import SimpleNamespace
