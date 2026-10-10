@@ -130,6 +130,10 @@ proposal. Existing connections do not gain new grants automatically.
 `forge planning ... --action-file FILE` accepts explicit typed proposal decisions;
 `forge delivery inspect ...` returns the membership-change preview that
 `drop`, `close-member`, `dissolve` or `resume-delivery` can approve with `--decision FILE --apply`.
+Delivery progress includes canonical member status, all applicable blockers,
+active assignment IDs and exact prerequisite/output references. An accepted output
+does not clear a member’s independent holds.
+
 The progress read `repo delivery` uses an issue number; membership commands use
 the exact issue key returned by `repo issues`. See [repository planning](../docs/repository-planning.md)
 and [delivery execution](../docs/delivery-execution.md#change-membership-explicitly)

@@ -148,6 +148,18 @@ Agents can use `forge repo delivery OWNER/REPO NUMBER --server HTTPS_ORIGIN --js
 existing `repositories:read` grant and exposes no worker credentials, prompts or
 raw output.
 
+Each member has the same `operator_status` as its issue page, its selected
+`blocker`, and every applicable `gates` entry with code and scope. Accepted output
+is separate progress: it does not hide a hold or another independent blocker.
+`active_job_ids` uses immutable assignment membership and is independent of the
+execution-history page.
+
+`requirements_revision_id` pins the approved member scope. `output` is the current
+accepted receipt (`output_id`, `member_id`, `commit_oid`, `input_manifest_hash`), or
+null. Each internal `dependencies` entry identifies the prerequisite member and
+issue, with its exact current output receipt or null while pending. The UI links
+those prerequisites and uses the same projection as `forge repo delivery`.
+
 ## Change membership explicitly
 
 Ordinary pause, backlog, environment and runner-reset actions target the selected

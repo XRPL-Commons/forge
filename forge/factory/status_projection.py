@@ -3,7 +3,7 @@
 Lifecycle gates remain independent. This read projection names the selected
 blocker separately from the broad state; it never changes scheduling authority.
 """
-from ..store.status import describe
+from ..store.status import describe, describe_gate
 
 LABELS = {
     'backlog': 'Backlog', 'queued': 'Queued', 'working': 'Working',
@@ -43,5 +43,9 @@ def operator_status(issue, active=False):
         reason_code = None
     elif reason_code is None:
         reason_code = life['stage_code']
-    return {'code':code, 'label':LABELS[code], 'reason_code':reason_code,
-            'reason':describe(reason_code) if reason_code else 'Not queued for Forge'}
+    blocker = life.get('current_blocker')
+    if blocker and blocker['code'] == reason_code:
+        reason = describe_gate(blocker)
+    else:
+        reason = describe(reason_code) if reason_code else 'Not queued for Forge'
+    return {'code':code, 'label':LABELS[code], 'reason_code':reason_code, 'reason':reason}

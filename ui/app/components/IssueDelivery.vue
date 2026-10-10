@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { jobSummary, type JobView } from '~/utils/factory'
+import type { CanonicalIssueStatus } from '~/utils/operatorStatus'
 
 const props = defineProps<{ issueKey: string }>()
 const open = ref(false)
 const cursors = ref<string[]>([''])
 const cursor = computed(() => cursors.value.at(-1) ?? '')
 const api = useForgeApi()
+interface OutputRef { output_id: string; member_id: string; commit_oid: string; input_manifest_hash: string }
+interface DeliveryGate { id: string | null; code: string; reason: string; member_id: string | null; candidate_id: string | null; subject_key: string }
 interface DeliveryView {
   unit_id: string; version: number; state: string; builder_id: string | null
   repo: string; candidate_pr: number | null; charged_failures: number; failure_limit: number
-  members: Array<{ id: string; issue_key: string; number: number; title: string; state: string; output_commit: string | null }>
+  members: Array<{
+    id: string; issue_key: string; number: number; title: string; operator_status: CanonicalIssueStatus
+    gates: DeliveryGate[]; output: OutputRef | null
+    dependencies: Array<{ member_id: string; issue_key: string; number: number; output: OutputRef | null }>
+  }>
   jobs: JobView[]; next_cursor: string | null
 }
 const resource = useResource<DeliveryView>(
@@ -33,10 +40,23 @@ function label(job: JobView) {
       <p class="text-muted">{{ delivery.charged_failures }} / {{ delivery.failure_limit }} shared failures
         <a v-if="delivery.candidate_pr" :href="`https://github.com/${delivery.repo}/pull/${delivery.candidate_pr}`" target="_blank" rel="noopener noreferrer" class="ml-2 text-sky-200 underline">PR #{{ delivery.candidate_pr }} ↗</a>
       </p>
-      <ul aria-label="Delivery members" class="space-y-1">
+      <ul aria-label="Delivery members" class="space-y-3">
         <li v-for="member in delivery.members" :key="member.id">
           <NuxtLink :to="`/issues/${encodeURIComponent(member.issue_key)}`" class="text-sky-200 hover:underline">#{{ member.number }} {{ member.title }}</NuxtLink>
-          <span class="ml-2 text-xs text-muted">{{ member.output_commit ? 'Output accepted' : member.state }}</span>
+          <span class="ml-2 text-xs text-muted">{{ member.operator_status.label }}</span>
+          <ul v-if="member.gates.length" :aria-label="`Blockers for issue ${member.number}`" class="ml-4 list-disc text-xs text-muted">
+            <li v-for="gate in member.gates" :key="`${gate.code}:${gate.subject_key}:${gate.candidate_id}`">{{ gate.reason }}</li>
+          </ul>
+          <p v-else class="text-xs text-muted">{{ member.operator_status.reason }}</p>
+          <p v-if="member.output" class="text-xs text-muted">Output accepted ·
+            <a :href="`https://github.com/${delivery.repo}/commit/${member.output.commit_oid}`" target="_blank" rel="noopener noreferrer" class="text-sky-200 hover:underline">{{ member.output.commit_oid.slice(0, 7) }} ↗</a>
+          </p>
+          <ul v-if="member.dependencies.length" :aria-label="`Prerequisites for issue ${member.number}`" class="text-xs text-muted">
+            <li v-for="dependency in member.dependencies" :key="dependency.member_id">
+              Prerequisite <NuxtLink :to="`/issues/${encodeURIComponent(dependency.issue_key)}`" class="text-sky-200 hover:underline">#{{ dependency.number }}</NuxtLink>
+              · {{ dependency.output ? 'Output accepted' : 'Waiting for output' }}
+            </li>
+          </ul>
         </li>
       </ul>
       <ul aria-label="Delivery executions" class="space-y-2">

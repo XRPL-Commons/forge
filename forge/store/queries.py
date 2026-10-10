@@ -35,7 +35,7 @@ class Queries:
             return project_unit(connection, unit_id)
 
     @staticmethod
-    def _issue(connection, issue_id, *, include_body=False):
+    def _issue(connection, issue_id, *, include_body=False, include_gates=False):
         # List pages never select requirements or issue bodies. These can be
         # large, and belong to the explicit single-issue detail request.
         body = ', r.body, r.requirements_json' if include_body else ''
@@ -57,6 +57,7 @@ class Queries:
         ).fetchone()
         unit = None
         blocker = None
+        gates = []
         if member:
             unit = dict(connection.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())
             if member['left_at'] is None and unit['state'] not in TERMINAL:
@@ -89,6 +90,8 @@ class Queries:
             if failed:
                 lifecycle.update(reason_code=failed['reason_code'], display_status=status.describe(failed['reason_code']))
                 issue['discovery_observation'] = dict(failed)
+        if include_gates:
+            lifecycle['gates'] = gates
         issue['lifecycle'] = lifecycle
         return issue
 
