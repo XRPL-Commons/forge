@@ -90,15 +90,20 @@ class Upgrade:
             value = self.read() if self.path.exists() else None
             previous = value
             if value and value['source_revision'] != revision:
-                # A new pinned apply is explicit forward-repair intent. Preserve
-                # services stopped by the earlier attempt and validate ancestry.
-                if self.host.identity() not in {value['previous_revision'], value['source_revision']}:
+                if value['stage'] == 'complete':
+                    # Completion releases source, service and drain ownership.
+                    # A later application release can be the next upgrade's base.
+                    previous = None
+                elif self.host.identity() not in {value['previous_revision'], value['source_revision']}:
+                    # Forward repair still belongs to the unfinished operation.
                     raise MigrationError('upgrade_source_changed')
                 value = None
             if value:
                 if value['source_revision'] != revision or value['tool_version'] != tool_version:
                     raise MigrationError('upgrade_intent_changed')
                 if value['stage'] == 'complete':
+                    if self.host.identity() != revision:
+                        raise MigrationError('upgrade_source_changed')
                     return {'status': 'upgraded', **self.status()}
             else:
                 plan = self.status()
