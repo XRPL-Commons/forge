@@ -1,4 +1,4 @@
-"""Private SQLite storage primitives. Not selected by any runtime entry point.
+"""Private SQLite storage primitives used by the selected runtime.
 
 Initialization is explicit and never repairs or replaces an incomplete store.
 Connections belong to short context managers, not to the Store object.
