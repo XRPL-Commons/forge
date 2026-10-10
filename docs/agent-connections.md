@@ -3,7 +3,9 @@
 The local client connects once, prepares repositories with local GitHub authority,
 and asks Forge to verify and enable them through the same services used by the UI.
 Connections have explicit scope, short-lived credentials and revocation.
-Fresh Forge installation stays in #136.
+For a fresh server, use the [CLI installation wizard](cli-fresh-host.md) first.
+`forge setup new` guides installation through the first verified merge; this
+guide covers scoped agent connections to an existing server.
 
 ## Prerequisites
 
@@ -27,7 +29,9 @@ pipx install .
 forge --json commands
 ```
 
-The package contains `forge_client` only, not the server. Its installed `forge`
+The package installs the `forge` client command and the `forge_client` and `forge`
+Python modules used for shared contracts and host maintenance. Installing it does
+not build worker images, deploy services or start a server. The installed `forge`
 command is separate from the host administration entry point `bin/forge`.
 No PyPI release has been published. A virtual environment and `pip install .`
 are an alternative to pipx. No user credentials are included in the package.
