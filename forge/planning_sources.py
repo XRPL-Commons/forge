@@ -1,8 +1,14 @@
 """Captured planner sources: one identity/URL authority for notes and handoffs."""
 from copy import deepcopy
-import re
 
 from .planning_contract import action_schemas, provider_schema
+
+
+def _pattern_literal(value):
+    # JSON Schema patterns use ECMAScript, including Unicode-mode validators.
+    # Escape only SyntaxCharacters outside character classes: Python re.escape
+    # also escapes '-' (among others), which is an invalid Unicode identity escape.
+    return ''.join('\\' + char if char in r'\^$.*+?()[]{}|' else char for char in value)
 
 
 class PlanningSources:
@@ -40,10 +46,10 @@ class PlanningSources:
             props['kind']={'type':'string','enum':[kind]}
             if identity_field:
                 props['identity']['description']='Copy the exact '+identity_field+' from one context.issues entry; pair its GitHub URL.'
-                props['url']['pattern']='^'+re.escape(self.prefix+path)+r'[1-9][0-9]*$'
+                props['url']['pattern']='^'+_pattern_literal(self.prefix+path)+r'[1-9][0-9]*$'
             else:
                 props['identity']={'type':'string','enum':[self.head]}
                 if kind=='commit':props['url']={'type':'string','enum':[self.prefix+path+self.head]}
-                else:props['url']['pattern']='^'+re.escape(self.prefix+path+self.head+'/')
+                else:props['url']['pattern']='^'+_pattern_literal(self.prefix+path+self.head+'/')
             branches.append(branch)
         return {'anyOf':branches}
