@@ -2,7 +2,7 @@
 from copy import deepcopy
 import re
 
-from forge_client.planning import action_schemas, provider_schema
+from .planning_contract import action_schemas, provider_schema
 
 
 class PlanningSources:
