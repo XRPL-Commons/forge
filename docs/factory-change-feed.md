@@ -78,6 +78,10 @@ Every checkout revalidates the live schema and instance and restores the require
 SQLite settings. Writes and independent nested reads use separate connections.
 The request closes its connection on success or failure; it is never pooled
 between requests. Long polls and authentication callbacks do not use this lease.
+The board starts from current memberships of nonterminal units, then applies
+the canonical issue selector and ordering. Paused and gated members remain
+candidates. An empty discovery-failure set skips its classification query in
+the same snapshot; nonempty sets retain the canonical status checks.
 The output projection closes its metadata snapshot before reading a live engine
 tail. A long-poll wait uses autocommit reads and opens the response snapshot only after
 the wait ends, so it does not prevent WAL checkpoint progress.
