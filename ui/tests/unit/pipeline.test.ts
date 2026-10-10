@@ -96,7 +96,7 @@ describe('attemptNote', () => {
   it('counts attempts only once one failed', () => {
     expect(attemptNote({ status: 'queued', attempts: null })).toBe('')
     expect(attemptNote({ status: 'queued', attempts: { failed: 0, limit: 3 } })).toBe('')
-    expect(attemptNote({ status: 'attention', attempts: { failed: 3, limit: 3 } })).toBe('attempt 3 of 3 failed')
-    expect(attemptNote({ status: 'working', attempts: { failed: 1, limit: 3 } })).toBe('attempt 2 of 3')
+    expect(attemptNote({ status: 'attention', attempts: { failed: 3, limit: 3 } })).toBe('Attempt 3 of 3 failed.')
+    expect(attemptNote({ status: 'working', attempts: { failed: 1, limit: 3 } })).toBe('Attempt 2 of 3 is running.')
   })
 })

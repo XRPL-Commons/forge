@@ -7,7 +7,7 @@ const {
   decisions, primary, now, jobs, selectedJob, showOutput, internalJob, RESET, resetting,
   resetRequest, outputOpen, askReviewer, askReset, closeReset, confirmReset, ask, root, rootClass,
   filling, fillHeight, tab, TABS, chat, chatAttention, statusLabel, issueTab, conversationPrimary,
-  output, facts, times, stageNote, statusReason, ready,
+  output, facts, times, stageNote, statusReason, ready, sentence,
 } = controller
 await ready
 </script>
@@ -55,9 +55,9 @@ await ready
         </template>
         <template #details>
           <p v-if="stageNote || (pipeline?.attempts && !facts)" id="issue-attempt-line" class="mb-3 text-xs" :class="pipeline ? NOTE_TONE[pipeline.state] : ''">
-            <span v-if="stageNote" id="issue-stage-note">{{ stageNote }}</span>
+            <span v-if="stageNote" id="issue-stage-note">{{ sentence(stageNote) }}</span>
             <template v-if="pipeline?.attempts && !facts">
-              <span v-if="stageNote" class="text-muted" aria-hidden="true"> · </span>
+              <template v-if="stageNote">{{ ' ' }}</template>
               <span id="issue-attempts" class="text-muted">{{ pipeline.attempts }}</span>
             </template>
           </p>

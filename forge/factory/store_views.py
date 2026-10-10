@@ -15,6 +15,7 @@ from ..store.transitions import manifest_hash
 from .config import validate, merge_mode
 from .live_output import summarize
 from .status_projection import operator_status
+from ..store.status import github_rule
 
 
 LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 'reviewing': 'built',
@@ -235,11 +236,17 @@ class PipelineViews:
         fresh = not issue.get('body_truncated') and issue['observed_at'] is not None and 0 <= self.clock()-issue['observed_at'] < 300
         actions = available_actions(issue, unit, cleanup=cleanup, pending=pending) if fresh else []
         wording = life['display_status']
-        summary={'headline':wording,'plain':details.get('summary') or details.get('reason') or wording}
+        from .contracts import clamp,operator_text,plain_text,HEADLINE_LIMIT
+        # The bubble speaks to the operator; the worker's technical report stays
+        # in environment_blocker, behind the panel's Technical details toggle.
+        technical=details.get('summary')
+        summary={'headline':wording,'plain':details.get('operator_summary') or (operator_text(technical) if isinstance(technical,str) else technical)
+                 or details.get('reason') or wording}
         written=environment_block.get('summary') or (json.loads(context['summary_json']) if context and context['summary_json'] and (decision or reason=='budget_exhausted') else None)
         if isinstance(written,dict) and written.get('headline'):
-            from .contracts import clamp,plain_text,HEADLINE_LIMIT
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
+        if reason=='environment' and (rule:=github_rule(environment_block)):
+            summary={'headline':rule['headline'],'plain':rule['plain']}
         delivery_approved = bool(unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone())
         row = dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
             title=issue['title'], content_hash=display[0] if display else issue['content_hash'], body_truncated=bool(issue.get('body_truncated')),

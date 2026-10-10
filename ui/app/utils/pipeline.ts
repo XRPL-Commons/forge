@@ -18,7 +18,7 @@ export interface PipelineView {
   state: StepState | 'closed'
   // A few words on the current stage: "Failed", "Waiting for approval", …
   note: string
-  // "attempt 3 of 3" when attempts have been charged; empty otherwise.
+  // "Attempt 3 of 3 failed." when attempts have been charged; empty otherwise.
   attempts: string
 }
 
@@ -125,8 +125,8 @@ function locate(row: PipelineRow): { at: StageId | null; state: PipelineView['st
 export function attemptNote(row: Pick<PipelineRow, 'status' | 'attempts'>): string {
   const attempts = row.attempts
   if (!attempts || !(attempts.failed > 0)) return ''
-  if (row.status === 'working' && attempts.failed < attempts.limit) return `attempt ${attempts.failed + 1} of ${attempts.limit}`
-  return `attempt ${Math.min(attempts.failed, attempts.limit)} of ${attempts.limit} failed`
+  if (row.status === 'working' && attempts.failed < attempts.limit) return `Attempt ${attempts.failed + 1} of ${attempts.limit} is running.`
+  return `Attempt ${Math.min(attempts.failed, attempts.limit)} of ${attempts.limit} failed.`
 }
 
 export function issuePipeline(row: PipelineRow): PipelineView {

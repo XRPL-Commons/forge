@@ -26,7 +26,7 @@ describe('workbenchLook', () => {
     expect(view.scene.smoke).toBe(true)
     expect(view.scene.beacon).toBe(false)
     expect(view.badges.map(badge => badge.state)).toEqual(['current', 'future', 'future', 'future', 'future'])
-    expect(view.attempts).toEqual({ lost: 0, left: 3, limit: 3, text: 'attempt 1 of 3' })
+    expect(view.attempts).toEqual({ lost: 0, left: 3, limit: 3, text: 'Attempt 1 of 3' })
     expect(view.label).toBe('Cube for #50, Build stage, working')
   })
 
@@ -45,13 +45,13 @@ describe('workbenchLook', () => {
     expect([view.stage, view.mood, view.needsYou]).toEqual(['audit', 'worried', true])
     expect(view.scene.scorches).toBe(3)
     expect(view.scene.beacon).toBe(true)
-    expect(view.attempts).toEqual({ lost: 3, left: 0, limit: 3, text: '0 of 3 left' })
+    expect(view.attempts).toEqual({ lost: 3, left: 0, limit: 3, text: '0 of 3 attempts left' })
     expect(view.label).toBe('Cube for #50, Security stage, needs attention')
   })
 
   it('counts lives against the limit the server sends, never past it', () => {
     expect(look({ status: 'attention', actions: ['retry'], attempts: { failed: 2, limit: 5 } }).attempts)
-      .toEqual({ lost: 2, left: 3, limit: 5, text: '3 of 5 left' })
+      .toEqual({ lost: 2, left: 3, limit: 5, text: '3 of 5 attempts left' })
     expect(look({ status: 'attention', actions: ['retry'], attempts: { failed: 7, limit: 3 } }).scene.scorches).toBe(3)
     expect(look({ attempts: null }).attempts).toBeNull()
   })

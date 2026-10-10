@@ -379,17 +379,17 @@ describe('deployment verdicts', () => {
 
   it('writes the issue page line for each of the three states', () => {
     const line = (key: string) => deploymentLine(tracked.issues.find((entry: any) => entry.key === key), tracked, now)
-    expect(line('1:701')).toEqual({ text: 'Deployed · commit abc1234 read from the live site · 12 min ago', runUrl: null })
-    expect(line('1:702')).toEqual({ text: 'Waiting for deploy', runUrl: null })
-    expect(line('1:703')).toEqual({ text: 'Deploy failed · commit fed4321 · 5 min ago', runUrl: 'https://github.com/x/y/actions/runs/9' })
+    expect(line('1:701')).toEqual({ text: 'This change was deployed 12 minutes ago, according to the live site.', runUrl: null })
+    expect(line('1:702')).toEqual({ text: 'Waiting for this change to be deployed.', runUrl: null })
+    expect(line('1:703')).toEqual({ text: 'Deploying this change failed 5 minutes ago.', runUrl: 'https://github.com/x/y/actions/runs/9' })
     expect(line('2:704')).toBe(null)
     expect(deploymentLine(null, tracked, now)).toBe(null)
   })
 
   it('names the source when the evidence is a GitHub deployment, and omits the age before mount', () => {
     const github = merged({ key: '1:705', deployed: { commit: '0123456789ab', at: now - 30, via: 'github' } })
-    expect(deploymentLine(github, tracked, now)!.text).toBe('Deployed · commit 0123456 from a GitHub deployment · just now')
-    expect(deploymentLine(github, tracked, 0)!.text).toBe('Deployed · commit 0123456 from a GitHub deployment')
+    expect(deploymentLine(github, tracked, now)!.text).toBe('This change was deployed just now, according to a GitHub deployment.')
+    expect(deploymentLine(github, tracked, 0)!.text).toBe('This change was deployed, according to a GitHub deployment.')
   })
 })
 

@@ -4,7 +4,7 @@
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
 import { operatorLabel, operatorReason, type OperatorStatusSource } from './operatorStatus'
 import type { CodingAccount } from './accounts'
-import { ago, clampTitle, reviewerMentions, shortCommit } from './format'
+import { clampTitle, reviewerMentions, spelledAgo } from './format'
 import type { PortraitLook } from './cube'
 import { isDropped, ledgerLook, type ClosedAs } from './workbench'
 import type { OnboardingView } from './onboarding'
@@ -302,18 +302,16 @@ export function deploymentLine(
   now: number,
 ): { text: string; runUrl: string | null } | null {
   if (!issue) return null
-  const when = (at: number) => (now ? ' · ' + ago(now - at) : '')
+  // Sentences for the issue panel: when, and on what evidence; no commit hash.
+  const when = (at: number) => (now ? ' ' + spelledAgo(now - at) : '')
   if (issue.deployed) {
-    const via = issue.deployed.via === 'github' ? 'from a GitHub deployment' : 'read from the live site'
-    return { text: `Deployed · commit ${shortCommit(issue.deployed.commit)} ${via}${when(issue.deployed.at)}`, runUrl: null }
+    const via = issue.deployed.via === 'github' ? 'a GitHub deployment' : 'the live site'
+    return { text: `This change was deployed${when(issue.deployed.at)}, according to ${via}.`, runUrl: null }
   }
   if (issue.deploy_failed) {
-    return {
-      text: `Deploy failed · commit ${shortCommit(issue.deploy_failed.sha)}${when(issue.deploy_failed.at)}`,
-      runUrl: issue.deploy_failed.run_url ?? null,
-    }
+    return { text: `Deploying this change failed${when(issue.deploy_failed.at)}.`, runUrl: issue.deploy_failed.run_url ?? null }
   }
-  if (issue.state === 'merged' && trackedRepositories(view).has(issue.repo_id)) return { text: 'Waiting for deploy', runUrl: null }
+  if (issue.state === 'merged' && trackedRepositories(view).has(issue.repo_id)) return { text: 'Waiting for this change to be deployed.', runUrl: null }
   return null
 }
 

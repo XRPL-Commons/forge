@@ -245,6 +245,25 @@ export function summaryBlock(
   return { headline, plain, details }
 }
 
+// The worker's technical report, for the toggle under the bubble: only when
+// it says more than the plain words the bubble already shows.
+export function technicalDetails(
+  issue: Pick<IssueDetail, 'summary' | 'explanation' | 'environment_blocker'> | null | undefined,
+  shown: string[],
+): string {
+  const details = summaryBlock(issue)?.details ?? ''
+  const said = shown.map(line => line.trim().toLowerCase())
+  return details && !said.includes(details.toLowerCase()) ? details : ''
+}
+
+// A terse note as a sentence: a capital first letter and a full stop.
+export function sentence(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  const capital = trimmed[0]!.toUpperCase() + trimmed.slice(1)
+  return /[.!?…]$/.test(capital) ? capital : `${capital}.`
+}
+
 // An issue that needs a person but offers no button: say so, and point at
 // the note that explains what (the summary above the action bar), instead
 // of claiming nothing is needed.
@@ -405,9 +424,17 @@ export function reviewPull(pulls: PullRequestRef[] | null | undefined): PullRequ
 const PULL_PREFIXES: Record<PullRequestKind, string> = {
   candidate: 'PR', forge_attempt: 'Earlier Forge draft', external: 'Other PR',
 }
+// The issue panel reads in full words; compact cards keep the short labels.
+const PULL_NAMES: Record<PullRequestKind, string> = {
+  candidate: 'Pull request', forge_attempt: 'Earlier Forge draft', external: 'Other pull request',
+}
 
 export function pullLabel(pull: PullRequestRef): string {
   return `${(pull.kind && PULL_PREFIXES[pull.kind]) || 'PR'} #${pull.number}`
+}
+
+export function pullName(pull: PullRequestRef): string {
+  return `${(pull.kind && PULL_NAMES[pull.kind]) || 'Pull request'} #${pull.number}`
 }
 
 export function attemptsText(attempts: IssueAttempts | null | undefined): string {

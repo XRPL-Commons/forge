@@ -14,6 +14,20 @@ export function ago(seconds: number): string {
 export function shortCommit(commit: string | null | undefined): string {
   return (commit ?? '').slice(0, 7)
 }
+// A duration in words, for a panel read in sentences.
+export function spelled(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  if (total < 60) return unit(total, 'second')
+  if (total < 3600) return unit(Math.floor(total / 60), 'minute')
+  const minutes = Math.floor((total % 3600) / 60)
+  return unit(Math.floor(total / 3600), 'hour') + (minutes ? ` ${unit(minutes, 'minute')}` : '')
+}
+
+// "12 minutes ago": an age in words, for sentences.
+export function spelledAgo(seconds: number): string {
+  return seconds < 60 ? 'just now' : `${spelled(seconds < 3600 ? Math.floor(seconds / 60) * 60 : Math.floor(seconds / 3600) * 3600)} ago`
+}
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return 'less than a minute'
   const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60)
