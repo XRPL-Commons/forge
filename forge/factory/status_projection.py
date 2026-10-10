@@ -3,6 +3,7 @@
 Lifecycle gates remain independent. This read projection names the selected
 blocker separately from the broad state; it never changes scheduling authority.
 """
+from ..store.codes import transitional
 from ..store.status import describe, describe_gate
 
 LABELS = {
@@ -27,6 +28,9 @@ def public_status(issue, active=False):
         return 'blocked'
     if reason in ATTENTION:
         return 'attention'
+    # Capturing a result or cleaning up is the stage still at work, not a wait.
+    if transitional(reason):
+        return 'working'
     return 'waiting' if reason else 'working' if active else 'queued'
 
 

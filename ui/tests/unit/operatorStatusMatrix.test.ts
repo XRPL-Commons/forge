@@ -66,12 +66,12 @@ describe('canonical projection/API/UI status matrix', () => {
     }
   })
 
-  it('uses the canonical current stage while waiting for cleanup or result validation', () => {
+  it('shows the current stage at work while it cleans up or checks a result', () => {
     for (const name of ['cleanup_pending', 'result_pending']) {
       const { row } = views(matrix.find(value => value.name === name)!.expected)
       const pipeline = issuePipeline({ ...row, stage_code: 'auditing', ledger_state: 'ready' })
       expect(pipeline.current).toBe('audit')
-      expect(pipeline.state).toBe('waiting')
+      expect(pipeline.state).toBe('active')
     }
   })
 

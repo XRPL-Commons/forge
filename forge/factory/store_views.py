@@ -9,6 +9,7 @@ import math
 import time
 
 from ..store.artifacts import Artifacts, ArtifactExpired
+from ..store.codes import transitional
 from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
 from ..store.transitions import manifest_hash
@@ -29,7 +30,7 @@ def _legacy_stage(lifecycle):
         return 'failed'
     if reason == 'recovery_pending':
         return 'investigating'
-    return 'hold' if reason else LEGACY_STAGE.get(lifecycle['stage_code'])
+    return 'hold' if reason and not transitional(reason) else LEGACY_STAGE.get(lifecycle['stage_code'])
 
 
 # Public history can use an imported job's explicit member identity even when
@@ -327,6 +328,14 @@ class PipelineViews:
         unit, reason = row['_unit'], row['reason_code']
         if unit is None:
             return None
+        # Both the slim board and rich detail use this canonical blocker.
+        transition = None
+        blocker = row['lifecycle']['current_blocker']
+        if blocker and transitional(reason):
+            details = json.loads(blocker['details_json'])
+            settled = db.execute('SELECT role FROM jobs WHERE id=?', (details.get('job_id'),)).fetchone()
+            role = settled and {'integration': 'build'}.get(settled['role'], settled['role'])
+            transition = dict(code=reason, job_id=details.get('job_id') if settled else None, role=role or None)
         if completed_at is None:
             completed_at = db.execute('SELECT '+COMPLETION_SQL+' FROM units u WHERE u.id=?', (unit['id'],)).fetchone()[0]
         candidate=db.execute('SELECT pull_number,head_oid FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone() if unit['current_candidate_id'] else None
@@ -347,7 +356,7 @@ class PipelineViews:
             'reason':row['explanation'] if reason else None,'failure_count':(row['attempts'] or {}).get('failed',0),
             'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,
             'last_summary':row['_last_summary'],'history':history,'created_at':unit['created_at'],'last_observed':row['last_checked'],
-            'hold_kind':reason,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
+            'hold_kind':None if transitional(reason) else reason,'transition':transition,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
             'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
             'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
             'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':completed_at or None}
@@ -551,7 +560,7 @@ class PipelineViews:
                     issues.append({**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code','operator_status')},
                         'state':'hold', 'reason':row['explanation'], 'failure_count':0, 'candidate':None,
                         'last_summary':row['summary'], 'history':[], 'created_at':selected['observed_at'],
-                        'last_observed':selected['observed_at'], 'hold_kind':row['reason_code'],
+                        'last_observed':selected['observed_at'], 'hold_kind':row['reason_code'], 'transition':None,
                         'merge_gate_kind':None, 'attention_kind':'question', 'closed_as':None,
                         'reviewers_requested':None, 'attempts':[], 'blocked_dependencies':[],
                         'deployed':None, 'deploy_failed':None, 'completed_at':None})

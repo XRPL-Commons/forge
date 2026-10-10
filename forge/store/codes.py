@@ -144,6 +144,31 @@ GATES: dict[str, Gate] = {
     'merge_conflict': Gate('candidate', 'transition', CANDIDATE),
 }
 
+# How an open gate reads to the operator (#241). A transitional gate is the
+# current stage settling (capturing a result, cleaning up, routing a failure):
+# it shows as work in progress at that stage. A blocking gate needs something
+# outside the pipeline and is a hold. Every code is listed; unknown is blocking.
+TRANSITIONAL, BLOCKING = 'transitional', 'blocking'
+GATE_PRESENTATION: dict[str, str] = {
+    'operator_pause': BLOCKING, 'operator_backlog': BLOCKING, 'label_hold': BLOCKING,
+    'membership_decision': BLOCKING, 'operator_sync': BLOCKING, 'triage_sync': BLOCKING,
+    'external_change': BLOCKING, 'ownership_conflict': BLOCKING, 'budget_exhausted': BLOCKING,
+    'approach_required': BLOCKING, 'decision_required': BLOCKING, 'repository_setup': BLOCKING,
+    'environment': BLOCKING, 'observation_unavailable': BLOCKING, 'legacy_reconciliation': BLOCKING,
+    'dependency': BLOCKING,
+    'recovery_pending': TRANSITIONAL, 'cleanup_pending': TRANSITIONAL, 'result_pending': TRANSITIONAL,
+    'provider_unavailable': BLOCKING, 'capacity': BLOCKING, 'retry_delay': BLOCKING,
+    'verification_human': BLOCKING, 'verification_ci': BLOCKING, 'approval_required': BLOCKING,
+    'changes_requested': BLOCKING, 'merge_checks': BLOCKING, 'merge_conflict': BLOCKING,
+}
+TRANSITIONAL_GATES = frozenset(code for code, value in GATE_PRESENTATION.items() if value == TRANSITIONAL)
+
+
+def transitional(code) -> bool:
+    """Whether this gate is the current stage settling rather than a hold."""
+    return GATE_PRESENTATION.get(code) == TRANSITIONAL
+
+
 # --- Jobs, artifacts and events --------------------------------------------
 
 JOB_ROLES = ('build', 'integration', 'review', 'audit', 'recovery', 'merge')
