@@ -74,6 +74,14 @@ def _event(row, fields=('at','kind','reason')):
 COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND (e.kind IN ('merged','closed','dissolved') OR (e.kind='legacy_event' AND json_extract(e.payload_json,'$.legacy_kind') IN ('merged','cancelled'))) ORDER BY e.sequence DESC LIMIT 1),0)"
 
 
+# Every completed card already has a terminal-unit membership. Restrict the
+# canonical index's input to those issue IDs, including former memberships;
+# its existing latest-membership and lifecycle predicates still decide matches.
+COMPLETED_MEMBERS_SQL = ("WITH terminal_members AS MATERIALIZED (SELECT DISTINCT m.issue_id FROM units terminal "
+    "JOIN unit_issues m ON m.unit_id=terminal.id WHERE terminal.state IN ('merged','closed','dissolved')) ")
+COMPLETED_SOURCE_SQL = 'terminal_members t CROSS JOIN public_issue_index x ON x.id=t.issue_id'
+
+
 def projection(method):
     @wraps(method)
     def read(self, *args, **kwargs):
@@ -480,7 +488,9 @@ class PipelineViews:
                 except ValueError:raise ValueError('Invalid completed cursor') from None
                 if not sep or not key or not math.isfinite(at):raise ValueError('Invalid completed cursor')
                 clauses.append('('+COMPLETION_SQL+',x.id)<(?,?)');params.extend((at,key))
-            rows=db.execute('SELECT x.id,u.updated_at,'+COMPLETION_SQL+' AS completed_at FROM public_issue_index x JOIN units u ON u.id=x.unit_id WHERE '+
+            prefix = COMPLETED_MEMBERS_SQL if section == 'completed' else ''
+            source = COMPLETED_SOURCE_SQL if section == 'completed' else 'public_issue_index x'
+            rows=db.execute(prefix+'SELECT x.id,u.updated_at,'+COMPLETION_SQL+' AS completed_at FROM '+source+' JOIN units u ON u.id=x.unit_id WHERE '+
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
             issues=[]
             for selected in rows[:size]:
@@ -523,7 +533,7 @@ class PipelineViews:
                 (self.clock()-86400,self.clock()-604800)).fetchone()
             # Count issue identities, so SQLite can omit blocker joins whose
             # columns are irrelevant to the canonical terminal predicates.
-            completed_count=db.execute('SELECT COUNT(*) FROM (SELECT DISTINCT x.id FROM public_issue_index x WHERE '+completed+')').fetchone()[0]
+            completed_count=db.execute(COMPLETED_MEMBERS_SQL+'SELECT COUNT(*) FROM (SELECT DISTINCT x.id FROM '+COMPLETED_SOURCE_SQL+' WHERE '+completed+')').fetchone()[0]
             runner_count=db.execute('SELECT COUNT(*) FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) AND '+runner_filter).fetchone()[0]
             running=bool(db.execute("SELECT 1 FROM jobs WHERE phase='running' AND cleanup=0 LIMIT 1").fetchone())
             accounts=[]

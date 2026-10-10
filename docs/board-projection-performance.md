@@ -70,3 +70,28 @@ the first two samples were excluded. Board and completed objects were identical.
 These local fixture results measure the catalog change against release
 `f883620`. They do not establish production or authenticated HTTP latency;
 normal authenticated `Server-Timing` measurements qualify the deployed result.
+
+### Completed selection from terminal memberships
+
+Completed-page selection and counting first collect distinct issue IDs from all
+memberships of terminal units, including former memberships. The existing
+`public_issue_index` still applies its canonical latest-membership and lifecycle
+predicates. This avoids classifying the unrelated untracked inventory. Existing
+unit-state, unit-membership and issue-identity indexes serve the query; there is
+no new schema, stored status or cache.
+
+A local synthetic comparison against `7ab6023` used SQLite 3.53.1 and 24
+alternating calls per version, excluding two warmups. The larger fixture had
+1,035 issues, 115 terminal units and four active jobs. Both completed-page
+objects (50 then eight cards), order, counts and cursors matched exactly.
+
+| Local completed first page | Median before | Median after |
+| --- | ---: | ---: |
+| 1,035 issues | 11.372 ms | 10.224 ms |
+| Two issues | 3.863 ms | 3.900 ms |
+
+Focused lifecycle coverage also preserves removed closed members, released and
+dissolved members in newer deliveries, reopened issues and closed untracked
+issues. Former memberships must remain in the candidate input; final canonical
+predicates determine whether they match. These are local projection results,
+not authenticated HTTP evidence, and the larger result remains above 10 ms.
