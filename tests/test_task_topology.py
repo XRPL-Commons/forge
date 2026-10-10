@@ -387,3 +387,18 @@ class TaskTopologyTests(unittest.TestCase):
                 self.assertIsNone(current_task_output_in(db,unit,plan['task_ids']['159'],base_oid='base',policy_hash='policy'))
         finally:
             sys.setrecursionlimit(previous_limit)
+
+    def test_pending_recovery_allows_independent_task_but_no_new_owner_plan(self):
+        a,b=self.members
+        plan=self.plan([('failed','child',[a],[],[]),('independent','child',[b],[],[])])
+        job,manifest=self.reserve(plan,'failed')
+        self.life.record_failure(self.command(),job['job_id'],execution_fence='failed',input_manifest=manifest,evidence={'reason':'code_failure'})
+        self.fixture.clean(job,'failed')
+        assignments=self.query.assignments('batch',base_oid='base',policy_hash='policy')
+        self.assertEqual([item['key'] for item in assignments['items']],['independent'])
+        other,inputs=self.reserve(plan,'independent');self.accept(other,inputs,'independent')
+        waiting=self.query.assignments('batch',base_oid='base',policy_hash='policy')
+        self.assertEqual(waiting['items'],[]);self.assertEqual(waiting['pending_reason'],'recovery_pending')
+        changed=self.query.builder_manifest('batch','planning',base_oid='base',policy_hash='policy')
+        with self.assertRaises(TransitionError):
+            self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='retry',input_manifest=changed)

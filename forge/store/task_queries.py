@@ -22,12 +22,15 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
         'LEFT JOIN job_tasks t ON t.job_id=j.id LEFT JOIN delivery_tasks d ON d.id=t.task_id '
         'WHERE j.unit_id=? AND (j.cleanup=0 OR j.outcome IS NULL)',(unit['id'],))]
     if any(row['task_id'] is None for row in active): return result(reason='builder_cleanup_pending')
+    from .recovery import pending_mandatory
+    recovery_pending=pending_mandatory(db,unit['id'])
     plan=current_plan_in(db,unit['id'])
     current=plan_current_in(db,unit,plan,base_oid,policy_hash,whole_members=False)
     if current:
         tasks=plan_tasks_in(db,plan['id'])
         outputs={task['id']:current_task_output_in(db,unit,task['id'],base_oid=base_oid,policy_hash=policy_hash) for task in tasks}
         if all(outputs.values()) and plan_current_in(db,unit,plan,base_oid,policy_hash):
+            if recovery_pending: return result(reason='recovery_pending')
             if active: return result(reason='child_cleanup_pending')
             if allowed_members is not None and not set(members)<=allowed_members: return result(reason='member_blocked')
             if scoped_task_gates_in(db,unit,members,candidate_id=unit['current_candidate_id']): return result(reason='member_blocked')
@@ -55,6 +58,7 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
         if candidates: return result(candidates[:limit])
         if not needs_plan or active: return result(reason='children_running' if active else 'member_blocked')
     if active: return result(reason='children_running')
+    if recovery_pending: return result(reason='recovery_pending')
     # Planning is read-only and may propose independent work around scoped blockers.
     if all(scoped_task_gates_in(db,unit,[member]) for member in members): return result(reason='member_blocked')
     return result([{'stage':'planning','input_manifest':builder_manifest_in(db,unit,'planning',base_oid,policy_hash)}])
