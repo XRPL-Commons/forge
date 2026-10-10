@@ -233,8 +233,14 @@ class Recovery(Executions):
             concrete = bool(alternative and findings['evidence'] and change not in prior and not cosmetic
                             and not findings['incomplete'] and not findings['uncertainty'].strip())
             if (repeated or uncertain) and not concrete:
-                if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='approach_required' AND resolved_at IS NULL", (unit['id'],)).fetchone():
-                    self._open_gate(db, command, 'approach_required', {'failed_job_id': failed['id'], 'reason': 'different_approach_required'}, job['member_id'])
+                task = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?', (failed['id'],)).fetchone()
+                scopes = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (failed['id'],))]
+                          if task else [failed['member_id']])
+                if not scopes:
+                    raise TransitionError('a task investigation requires its complete failed scope')
+                for scope in scopes:
+                    if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='approach_required' AND member_id IS ? AND resolved_at IS NULL", (unit['id'], scope)).fetchone():
+                        self._open_gate(db, command, 'approach_required', {'failed_job_id': failed['id'], 'reason': 'different_approach_required'}, scope)
                 approach = True
             if not approach and alternative and not findings['incomplete']:
                 db.execute('INSERT INTO unit_context(unit_id,retry_plan_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET retry_plan_json=excluded.retry_plan_json',
