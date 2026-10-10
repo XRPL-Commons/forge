@@ -1,0 +1,285 @@
+"""Independent tasks retain exact issue scope, joins and physical execution gates."""
+import hashlib
+import json
+import tempfile
+import unittest
+
+from forge.store.db import Store
+from forge.store.delivery import Delivery,DeliveryQueries
+from forge.store.models import Command,InvalidDelegationPlan,TransitionError
+from forge.store.transitions import Lifecycle,project_unit,manifest_hash
+
+
+class TaskTopologyTests(unittest.TestCase):
+    def setUp(self):
+        from tests.test_delivery_execution import DeliveryExecutionTests
+        fixture=DeliveryExecutionTests(); fixture.setUp(); self.addCleanup(fixture.doCleanups)
+        self.fixture=fixture; self.store=fixture.store; self.life=fixture.life
+        self.delivery=fixture.delivery; self.query=fixture.query; self.command=fixture.command
+        fixture.compose(); self.members=list(fixture.members.values())
+
+    def plan(self,tasks,final=(),internalizes=()):
+        manifest=self.query.builder_manifest('batch','planning',base_oid='base',policy_hash='policy')
+        parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='parent',input_manifest=manifest)
+        rows=[{'key':key,'executor':executor,'member_ids':members,'scope':'Implement '+key,'depends_on':dependencies,'internalizes':edges}
+              for key,executor,members,dependencies,edges in tasks]
+        saved=self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='parent',input_manifest=manifest,
+            plan={'version':2,'retained_task_ids':[],'tasks':rows,'owner_final':{'member_ids':list(final),'scope':'Finish owner work','internalizes':list(internalizes)}},evidence={'verified':True})
+        self.fixture.clean(parent,'parent')
+        return saved
+
+    def reserve(self,plan,key):
+        identity=plan['task_ids'][key]; manifest=self.query.task_manifest(plan['plan_id'],identity)
+        from forge.store.executions import Launch
+        job=self.delivery.reserve_task(self.command(),plan['plan_id'],identity,slot=key,execution_fence=key,input_manifest=manifest,worktree_key=key,launch=Launch('forge/work','builder[bot]','codex',1000,{},{}))
+        return job,manifest
+
+    def accept(self,job,manifest,key):
+        from forge.store.artifacts import Artifacts
+        bundle=b'retained verified test bundle'; digest=hashlib.sha256(bundle).hexdigest(); commit=hashlib.sha1(key.encode()).hexdigest()
+        from forge.store.executions import Executions
+        Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':'','worktree_bundle':bundle})
+        self.fixture.clean(job,key)
+        result=self.delivery.accept_task_output(self.command(),job['job_id'],execution_fence=key,input_manifest=manifest,commit_oid=commit,
+            evidence={'verified':True,'commit_oid':commit,'base_oid':'base','input_manifest_hash':manifest_hash(manifest),'bundle_digest':digest})
+        return result
+
+    def test_two_tasks_same_issue_and_shared_task_join_exact_outputs(self):
+        a,b=self.members
+        plan=self.plan([('a1','child',[a],[],[]),('a2','child',[a],[],[]),('shared','child',[a,b],['a1','a2'],[])])
+        one,m1=self.reserve(plan,'a1'); two,m2=self.reserve(plan,'a2')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],2)
+            self.assertEqual([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=?',(one['job_id'],))],[a])
+        with self.assertRaises(TransitionError): self.reserve(plan,'shared')
+        o1=self.accept(one,m1,'a1');o2=self.accept(two,m2,'a2')
+        shared,manifest=self.reserve(plan,'shared')
+        self.assertEqual({ref['output_id'] for ref in manifest['prerequisite_outputs']},{o1['output_id'],o2['output_id']})
+        self.assertEqual({pin['member_id'] for pin in manifest['members']},{a,b})
+        self.accept(shared,manifest,'shared')
+        tree=self.query.tree('batch'); self.assertTrue(tree['contributions'][a]['ready']);self.assertTrue(tree['contributions'][b]['ready'])
+        self.assertEqual(len(tree['contributions'][a]['outputs']),3)
+        integration=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
+        self.assertEqual(integration['stage'],'integration');self.assertEqual(len(integration['input_manifest']['part_outputs']),3)
+
+    def test_zero_delegation_and_owner_task_before_child(self):
+        a,b=self.members
+        plan=self.plan([('owner','owner',[a],[],[]),('child','child',[b],['owner'],[])])
+        ready=self.query.assignments('batch',base_oid='base',policy_hash='policy')['items']
+        self.assertEqual([item['executor'] for item in ready],['owner'])
+        job,manifest=self.reserve(plan,'owner');self.accept(job,manifest,'owner')
+        child,manifest=self.reserve(plan,'child');self.accept(child,manifest,'child')
+        self.assertEqual(self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']['stage'],'integration')
+
+    def test_empty_task_graph_runs_owner_final(self):
+        self.plan([],self.members)
+        assignment=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
+        self.assertEqual(assignment['stage'],'integration');self.assertEqual(assignment['input_manifest']['part_outputs'],[])
+        tree=self.query.tree('batch');self.assertTrue(all(row['owner_final_pending'] for row in tree['contributions'].values()))
+
+    def test_member_fence_reaches_intersecting_task_and_task_descendants_only(self):
+        a,b=self.members
+        plan=self.plan([('a','child',[a],[],[]),('b','child',[b],[],[])])
+        one,m1=self.reserve(plan,'a');two,m2=self.reserve(plan,'b')
+        with self.store.write() as db:self.life.fence_member_in(db,self.command(),a,reason='hold')
+        with self.store.read_snapshot() as db:
+            jobs=dict(db.execute('SELECT id,fenced FROM jobs WHERE id IN (?,?)',(one['job_id'],two['job_id'])))
+            self.assertEqual(jobs,{one['job_id']:1,two['job_id']:0})
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],2)
+        self.assertTrue(self.accept(two,m2,'b')['accepted'])
+
+    def test_owner_final_receipt_is_bound_to_exact_candidate(self):
+        from forge.store.models import Candidate
+        self.plan([],self.members)
+        manifest=self.query.builder_manifest('batch','integration',base_oid='base',policy_hash='policy')
+        job=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='integrate',input_manifest=manifest)
+        candidate=Candidate(8,'forge/work','c'*40,'base','policy',manifest['requirements_hash'],manifest_hash(manifest))
+        self.delivery.publish_candidate(self.command(),job['job_id'],execution_fence='integrate',input_manifest=manifest,candidate=candidate,
+            evidence={'verified':True,'pull_number':8,'head_oid':candidate.head_oid,'base_oid':'base'})
+        tree=self.query.tree('batch')
+        self.assertTrue(all(row['ready'] and not row['owner_final_pending'] and row['candidate_id'] for row in tree['contributions'].values()))
+
+    def test_changed_other_member_does_not_revoke_independent_captured_task(self):
+        from forge.store.executions import Executions
+        a,b=self.members
+        plan=self.plan([('a','child',[a],[],[]),('b','child',[b],[],[])])
+        job,manifest=self.reserve(plan,'b')
+        # A real immutable revision change with the same membership generation.
+        with self.store.write() as db:
+            old=dict(db.execute('SELECT r.* FROM issue_revisions r JOIN unit_issues m ON m.requirements_revision_id=r.id WHERE m.id=?',(a,)).fetchone())
+            db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)',
+                       ('changed',old['issue_id'],'Changed','changed','changed','changed',old['requirements_json'],101))
+            db.execute('UPDATE unit_issues SET requirements_revision_id=? WHERE id=?',('changed',a))
+        running=next(task for task in self.query.tree('batch')['tasks'] if task['key']=='b')
+        self.assertEqual(running['status'],'working');self.assertIsNone(running['pending_reason'])
+        self.assertTrue(self.accept(job,manifest,'b')['accepted'])
+        tree=self.query.tree('batch');self.assertTrue(tree['contributions'][b]['ready'])
+        self.assertFalse(tree['contributions'][a]['ready'])
+        self.assertEqual(self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']['stage'],'planning')
+
+    def test_scoped_cleanup_is_independent_for_two_tasks_on_same_issue(self):
+        from forge.store.executions import Executions
+        a,b=self.members
+        plan=self.plan([('one','child',[a,b],[],[]),('two','child',[a],[],[])])
+        first,m1=self.reserve(plan,'one');second,m2=self.reserve(plan,'two')
+        executions=Executions(self.store,clock=lambda:100)
+        for job,key in [(first,'one'),(second,'two')]:
+            executions.collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':'','worktree_bundle':b'bundle'})
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='cleanup_pending' AND resolved_at IS NULL").fetchone()[0],2)
+        self.fixture.clean(first,'one')
+        with self.store.read_snapshot() as db:
+            self.assertEqual([row[0] for row in db.execute("SELECT job_id FROM unit_gates WHERE code='cleanup_pending' AND resolved_at IS NULL")],[second['job_id']])
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],1)
+
+    def test_joint_task_requires_explicit_internalization_and_output_join(self):
+        a,b=self.members
+        with self.store.write() as db: db.execute('INSERT INTO member_dependencies VALUES(?,?,?,1)',('batch',b,a))
+        edge={'prerequisite_member_id':a,'member_id':b}
+        with self.assertRaises(InvalidDelegationPlan): self.plan([('joint','child',[a,b],[],[])])
+        # The failed store transaction did not consume the planning result.
+        with self.store.read_snapshot() as db:
+            job=dict(db.execute("SELECT j.id,a.input_manifest_json FROM jobs j JOIN attempts a ON a.id=j.attempt_id WHERE j.unit_id='batch' AND j.outcome IS NULL").fetchone())
+        manifest=json.loads(job['input_manifest_json'])
+        saved=self.delivery.save_plan(self.command(),job['id'],execution_fence='parent',input_manifest=manifest,
+            plan={'version':2,'retained_task_ids':[],'tasks':[{'key':'joint','executor':'child','member_ids':[a,b],'scope':'Joint change','depends_on':[],'internalizes':[edge]}],
+                  'owner_final':{'member_ids':[],'scope':'','internalizes':[]}},evidence={'verified':True})
+        self.fixture.clean({'job_id':job['id']},'parent')
+        child,manifest=self.reserve(saved,'joint');self.accept(child,manifest,'joint')
+        self.assertEqual(self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']['stage'],'integration')
+
+    def test_child_cannot_depend_on_owner_work_delayed_until_integration(self):
+        a,b=self.members
+        with self.store.write() as db: db.execute('INSERT INTO member_dependencies VALUES(?,?,?,1)',('batch',b,a))
+        with self.assertRaises(InvalidDelegationPlan): self.plan([('child','child',[b],[],[])],final=[a])
+
+    def test_task_page_keeps_full_contributions_and_rejects_changed_plan(self):
+        from forge.store.models import DeliveryPlanChanged
+        a,b=self.members
+        self.plan([('one','child',[a],[],[]),('two','child',[a,b],[],[])])
+        page=self.query.tree('batch',task_limit=1)
+        self.assertFalse(page['tasks_complete']);self.assertEqual(len(page['contributions'][a]['task_ids']),2)
+        next_page=self.query.tree('batch',task_after=page['task_next_cursor'],task_limit=1)
+        self.assertTrue(next_page['tasks_complete'])
+        self.plan([],self.members)
+        with self.assertRaises(DeliveryPlanChanged): self.query.tree('batch',task_after=page['task_next_cursor'])
+
+    def test_replanned_task_outputs_are_bound_to_new_base_and_policy(self):
+        a,b=self.members
+        plan=self.plan([('shared','child',[a,b],[],[])])
+        job,manifest=self.reserve(plan,'shared');self.accept(job,manifest,'shared')
+        changed=self.query.builder_manifest('batch','planning',base_oid='new-base',policy_hash='new-policy')
+        parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='new',input_manifest=changed)
+        self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='new',input_manifest=changed,
+            plan={'version':2,'retained_task_ids':[plan['task_ids']['shared']],'tasks':[],
+                  'owner_final':{'member_ids':[],'scope':'','internalizes':[]}},evidence={'verified':True})
+        self.fixture.clean(parent,'new')
+        from forge.store.task_inputs import member_contributions_in
+        with self.store.read_snapshot() as db:
+            unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
+            contribution=member_contributions_in(db,unit,a)
+            self.assertFalse(contribution['ready']);self.assertEqual(contribution['outputs'],[])
+        assignment=self.query.next_assignment('batch',base_oid='new-base',policy_hash='new-policy')['assignment']
+        self.assertEqual(assignment['stage'],'task');self.assertEqual(assignment['input_manifest']['base_oid'],'new-base')
+
+    def set_choices(self,choices):
+        with self.store.write() as db:
+            for revision,(member,choice) in enumerate(choices.items(),1):
+                pin=db.execute('SELECT requirements_revision_id FROM unit_issues WHERE id=?',(member,)).fetchone()[0]
+                db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at,member_id) VALUES(?,?,?,?,?,?,?)',
+                    ('batch',revision,json.dumps(choice),pin,'config',100,member))
+
+    def test_environment_conflict_is_uncharged_and_allows_one_meaningful_replan(self):
+        a,b=self.members
+        plan=self.plan([('shared','child',[a,b],[],[])])
+        choices={a:{'tier':'standard','automatic':False,'services':[]},b:{'tier':'full','automatic':True,'services':['postgres']}}
+        self.set_choices(choices)
+        command=self.command();args=dict(plan_id=plan['plan_id'],task_id=plan['task_ids']['shared'],choices=choices)
+        receipt=self.delivery.environment_conflict(command,**args)
+        self.assertEqual(receipt,self.delivery.environment_conflict(command,**args));self.assertTrue(receipt['replan_allowed'])
+        assignment=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
+        self.assertEqual(assignment['stage'],'planning');self.assertEqual(len(assignment['input_manifest']['environment_conflicts']),1)
+        self.plan([('same-conflict','child',[a,b],[],[])])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()[0],1)
+        self.assertIsNone(self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment'])
+
+    def test_integration_environment_conflict_requires_operator_without_execution(self):
+        a,b=self.members
+        plan=self.plan([],self.members)
+        choices={a:{'tier':'standard','automatic':False,'services':[]},b:{'tier':'full','automatic':True,'services':['postgres']}}
+        self.set_choices(choices)
+        receipt=self.delivery.environment_conflict(self.command(),plan_id=plan['plan_id'],task_id=None,choices=choices)
+        self.assertFalse(receipt['replan_allowed']);self.assertIsNotNone(receipt['gate_id'])
+        with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],0)
+
+    def test_task_publication_is_never_singleton_finish_authority(self):
+        from forge.store.models import Candidate
+        plan=self.plan([('shared','child',self.members,[],[])])
+        job,manifest=self.reserve(plan,'shared')
+        with self.assertRaises(TransitionError):
+            self.life.finish_job(self.command(),job['job_id'],execution_fence='shared',input_manifest=manifest,
+                candidate=Candidate(5,'forge/work','a'*40,'base','policy',manifest['requirements_hash'],manifest_hash(manifest)),
+                evidence={'verified':True,'head_oid':'a'*40,'base_oid':'base','pull_number':5})
+
+    def test_concurrent_task_reservations_share_cas_and_replay_survives_restart(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from forge.store.models import VersionConflict
+        plan=self.plan([('one','child',self.members,[],[]),('two','child',self.members,[],[])])
+        commands=[self.command(),self.command()]; barrier=Barrier(2)
+        def attempt(index):
+            key=('one','two')[index]; identity=plan['task_ids'][key]
+            manifest=self.query.task_manifest(plan['plan_id'],identity)
+            args=dict(slot='only-slot',execution_fence=key,input_manifest=manifest,worktree_key=key)
+            barrier.wait()
+            try: return index,Delivery(Store(self.store.root),clock=lambda:100).reserve_task(commands[index],plan['plan_id'],identity,**args),args
+            except VersionConflict: return index,None,args
+        with ThreadPoolExecutor(max_workers=2) as pool: results=list(pool.map(attempt,range(2)))
+        accepted=[row for row in results if row[1] is not None];self.assertEqual(len(accepted),1)
+        index,receipt,args=accepted[0]; identity=plan['task_ids'][('one','two')[index]]
+        self.assertEqual(Delivery(Store(self.store.root),clock=lambda:101).reserve_task(commands[index],plan['plan_id'],identity,**args),receipt)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM job_tasks').fetchone()[0],1)
+
+    def test_multi_member_failures_charge_one_shared_budget_per_attempt(self):
+        plan=self.plan([(str(index),'child',self.members,[],[]) for index in range(4)])
+        jobs=[self.reserve(plan,str(index)) for index in range(4)]
+        for index,(job,manifest) in enumerate(jobs):
+            command=self.command(); args=dict(execution_fence=str(index),input_manifest=manifest,evidence={'reason':'code_failure'})
+            result=self.life.record_failure(command,job['job_id'],**args)
+            self.assertEqual(result['charged'],index<3)
+            self.assertEqual(Lifecycle(Store(self.store.root),clock=lambda:101).record_failure(command,job['job_id'],**args),result)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],3)
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='recovery_pending' AND job_id IS NOT NULL").fetchone()[0],3)
+            self.assertEqual(db.execute("SELECT count(*) FROM jobs WHERE unit_id='batch' AND fenced=0").fetchone()[0],0)
+
+    def test_worker_wait_uses_every_exact_task_member_not_delivery_scope(self):
+        a,b=self.members
+        plan=self.plan([('first','child',[a],[],[]),('second','child',[b],[],[])])
+        job,manifest=self.reserve(plan,'first')
+        result=self.life.defer_job(self.command(),job['job_id'],execution_fence='first',input_manifest=manifest,
+            evidence={'reason':'needs_database'},code='environment',details={'reason':'missing_service'})
+        with self.store.read_snapshot() as db:
+            self.assertEqual([row[0] for row in db.execute("SELECT member_id FROM unit_gates WHERE code='environment' AND resolved_at IS NULL")],[a])
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+        self.assertTrue(self.reserve(plan,'second')[0]['job_id'])
+
+    def test_sql_process_status_uses_exact_job_members(self):
+        from forge.store.executions import Executions
+        a,b=self.members
+        plan=self.plan([('a','child',[a],[],[]),('b','child',[b],[],[])])
+        job,manifest=self.reserve(plan,'a')
+        with self.store.read_snapshot() as db:
+            rows={row['member_id']:dict(row) for row in db.execute("SELECT * FROM issue_selection_facts WHERE unit_id='batch'")}
+            self.assertEqual((rows[a]['active'],rows[b]['active']),(1,0))
+            self.assertEqual(rows[b]['indexed_status'],'queued')
+        Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence='a',capture={'logs':'','worktree_bundle':b'bundle'})
+        with self.store.read_snapshot() as db:
+            rows={row['member_id']:dict(row) for row in db.execute("SELECT * FROM issue_selection_facts WHERE unit_id='batch'")}
+            self.assertEqual(rows[a]['indexed_reason_code'],'cleanup_pending')
+            self.assertIsNone(rows[b]['indexed_reason_code']);self.assertEqual(rows[b]['indexed_status'],'queued')

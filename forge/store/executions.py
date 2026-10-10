@@ -407,13 +407,13 @@ class ExecutionQueries:
             assignment = db.execute('SELECT builder_id,stage FROM builder_assignments WHERE job_id=?', (job_id,)).fetchone()
             if assignment:
                 job.update(builder_id=assignment['builder_id'], builder_stage=assignment['stage'])
-            delegation = db.execute('SELECT d.*,p.builder_id,p.parent_job_id,p.plan_json FROM job_delegations d '
-                                    'JOIN delegation_plans p ON p.id=d.plan_id WHERE d.job_id=?', (job_id,)).fetchone()
-            if delegation:
-                job['delegation'] = {key: delegation[key] for key in
-                                     ('plan_id', 'builder_id', 'parent_job_id', 'delegation_key', 'worktree_key')}
-                job['delegation']['scope'] = next(child['scope'] for child in json.loads(delegation['plan_json'])['children']
-                                                  if child['key'] == delegation['delegation_key'])
+            task=db.execute('SELECT t.id,t.task_key,t.executor,t.scope,t.builder_id,x.plan_id,x.worktree_key,p.parent_job_id '
+                'FROM job_tasks x JOIN delivery_tasks t ON t.id=x.task_id JOIN delegation_plans p ON p.id=x.plan_id WHERE x.job_id=?',(job_id,)).fetchone()
+            if task:
+                job['task']={**dict(task),'key':task['task_key']}
+                job.update(builder_id=task['builder_id'],builder_stage='task',task_id=task['id'],task_key=task['task_key'],task_executor=task['executor'])
+                if job['input_manifest'].get('manifest_version')!=2:
+                    job['delegation']={key:task[key] for key in ('plan_id','builder_id','parent_job_id','worktree_key','scope')}|{'delegation_key':task['task_key']}
             job['history'] = {'failures': [], 'retry_plan': None, 'verified_checks': []}
             context = db.execute('SELECT retry_plan_json FROM unit_context WHERE unit_id=?', (job['unit_id'],)).fetchone()
             if context and context[0]:

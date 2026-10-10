@@ -41,11 +41,24 @@ def inspect(store):
                 'pending_migrations': [version for version, _, _ in migrations[current:]]}
 
 
+# These installed migrations rebuild referenced tables using SQLite's documented
+# ALTER TABLE procedure. Only this dedicated maintenance connection may disable
+# FK enforcement; every resulting reference is checked before the atomic commit.
+# https://www.sqlite.org/lang_altertable.html#making_other_kinds_of_table_schema_changes
+TABLE_REBUILD_MIGRATIONS = frozenset({33})
+
+
 def apply(store):
     """Caller has stopped all writers; the entire forward change commits once."""
     with connection(store, write=True) as db:
-        db.execute('BEGIN IMMEDIATE')
+        migrations,current=validate_prefix(store,db)
+        rebuilding=any(version in TABLE_REBUILD_MIGRATIONS for version,_,_ in migrations[current:])
         try:
+            if rebuilding:
+                db.execute('PRAGMA foreign_keys=OFF')
+                if db.execute('PRAGMA foreign_keys').fetchone()[0]!=0:
+                    raise storage.StoreError('schema_upgrade_invalid','Cannot enter the explicit table-rebuild transaction')
+            db.execute('BEGIN IMMEDIATE')
             migrations, current = validate_prefix(store, db)
             for version, checksum, script in migrations[current:]:
                 storage._execute_script(db, script)
@@ -58,4 +71,10 @@ def apply(store):
         except BaseException:
             db.rollback()
             raise
+        finally:
+            if rebuilding:
+                db.execute('PRAGMA legacy_alter_table=OFF')
+                db.execute('PRAGMA foreign_keys=ON')
+                if db.execute('PRAGMA foreign_keys').fetchone()[0]!=1:
+                    raise storage.StoreError('schema_upgrade_invalid','Foreign-key enforcement was not restored')
     return inspect(store)
