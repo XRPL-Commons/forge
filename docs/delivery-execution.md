@@ -60,6 +60,25 @@ history using a job-ID cursor. `job_members` is the uniform immutable scope for
 all jobs, including Review, Audit and Recovery; migration 22 preserves original
 launch requirement pins and retires the scalar launch column.
 
+## Sharing factory capacity
+
+Dispatch keeps a bounded traversal cursor so blocked deliveries cannot hide later
+work. Within each page, Audit precedes Review, then build work. Deliveries in the
+same role get turns in least-recent allocation order, with unserved deliveries
+first and unit ID breaking ties. Planning, each child and integration all consume
+one build turn; a large group does not retain the next free slot automatically.
+
+Allocation order comes from the retained `attempt_reserved` event sequence joined
+to its exact job role and committed launch. Reservation, leases and that event
+commit together. A restart keeps the order; blocked visits, failed transactions
+and command replay do not create another turn. Migration 29 adds an index for
+these lookups without changing stored work or allocation history.
+
+The existing memory escalation drain takes precedence over ordinary turns so
+smaller work cannot continually refill capacity needed by an eligible larger
+retry. Provider availability, capacity leases, fresh admission and scoped fences
+are still checked before a reservation succeeds.
+
 ## Invalidation, retries and cancellation
 
 An accepted output is current only while its requirements, base, policy and
@@ -128,6 +147,18 @@ continuation target, so rework updates the same PR.
 Agents can use `forge repo delivery OWNER/REPO NUMBER --server HTTPS_ORIGIN --json`, then pass `--after` with `next_cursor` for another page. This uses the
 existing `repositories:read` grant and exposes no worker credentials, prompts or
 raw output.
+
+Each member has the same `operator_status` as its issue page, its selected
+`blocker`, and every applicable `gates` entry with code and scope. Accepted output
+is separate progress: it does not hide a hold or another independent blocker.
+`active_job_ids` uses immutable assignment membership and is independent of the
+execution-history page.
+
+`requirements_revision_id` pins the approved member scope. `output` is the current
+accepted receipt (`output_id`, `member_id`, `commit_oid`, `input_manifest_hash`), or
+null. Each internal `dependencies` entry identifies the prerequisite member and
+issue, with its exact current output receipt or null while pending. The UI links
+those prerequisites and uses the same projection as `forge repo delivery`.
 
 ## Change membership explicitly
 

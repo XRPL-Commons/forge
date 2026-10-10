@@ -35,7 +35,7 @@ class Queries:
             return project_unit(connection, unit_id)
 
     @staticmethod
-    def _issue(connection, issue_id, *, include_body=False):
+    def _issue(connection, issue_id, *, include_body=False, include_gates=False):
         # List pages never select requirements or issue bodies. These can be
         # large, and belong to the explicit single-issue detail request.
         body = ', r.body, r.requirements_json' if include_body else ''
@@ -57,6 +57,7 @@ class Queries:
         ).fetchone()
         unit = None
         blocker = None
+        gates = []
         if member:
             unit = dict(connection.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())
             if member['left_at'] is None and unit['state'] not in TERMINAL:
@@ -81,7 +82,7 @@ class Queries:
             lifecycle.update(reason_code='observation_unavailable',
                              display_status=status.describe('observation_unavailable'))
         else:
-            lifecycle['display_status'] = status.describe(blocker['code'] if blocker else unit['state'])
+            lifecycle['display_status'] = status.describe_gate(blocker) if blocker else status.describe(unit['state'])
         if projected == 'untracked' and issue['github_state'] == 'open':
             failed = connection.execute('SELECT reason_code,observed_at,retry_after FROM issue_discovery_observations '
                                         'WHERE issue_id=? AND revision_id=?',
@@ -89,6 +90,8 @@ class Queries:
             if failed:
                 lifecycle.update(reason_code=failed['reason_code'], display_status=status.describe(failed['reason_code']))
                 issue['discovery_observation'] = dict(failed)
+        if include_gates:
+            lifecycle['gates'] = gates
         issue['lifecycle'] = lifecycle
         return issue
 

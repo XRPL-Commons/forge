@@ -2,6 +2,7 @@ from copy import deepcopy
 from dataclasses import replace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from forge.factory.config import validate, policy
 from forge.factory.dispatch_controller import DispatchController, GitHubPrepare, PreparedDispatch
@@ -282,6 +283,60 @@ class DispatchTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM job_launches').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM events WHERE kind='attempt_reserved'").fetchone()[0], 0)
+
+    def test_review_priority_precedes_an_unserved_build_delivery(self):
+        self.admit('v', 2)
+        job = self.job(self.controller.step('v'))
+        candidate = Candidate(10, job['branch'], HEAD, BASE, job['input_manifest']['policy_hash'],
+                              manifest_hash('github-requirements'), manifest_hash(job['input_manifest']))
+        self.life.finish_job(Command('finish-v', 'test', 'v', job['unit_version']), job['id'],
+            execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
+            evidence={'head_oid': HEAD, 'base_oid': BASE, 'pull_number': 10}, candidate=candidate)
+        self.life.verify_cleanup(self.command('v'), job['id'], execution_fence=job['execution_fence'],
+                                 evidence={'process_stopped': True, 'resources_released': True})
+        page = self.driver().cycle()
+        self.assertEqual([(item['unit_id'], item['role']) for item in page['items']], [('v', 'review'), ('u', 'build')])
+        review = self.job(page['items'][0])
+        self.life.finish_job(Command('finish-review-v', 'test', 'v', review['unit_version']), review['id'],
+            execution_fence=review['execution_fence'], input_manifest=review['input_manifest'],
+            evidence={'candidate_id': review['candidate_id'], 'verdict': 'pass'})
+        self.now += 1
+        self.life.verify_cleanup(self.command('v'), review['id'], execution_fence=review['execution_fence'],
+                                 evidence={'process_stopped': True, 'resources_released': True})
+        audit = self.driver().cycle()['items'][0]
+        self.assertEqual((audit['unit_id'], audit['role']), ('v', 'audit'))
+
+    def test_schema28_reservations_retain_order_through_index_upgrade(self):
+        from forge.store import db as storage
+        from forge.store import upgrade
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        catalog = storage._migrations()
+        with patch('forge.store.db._migrations', return_value=catalog[:28]):
+            self.store = Store.create(directory.name)
+        self.life = Executions(self.store, clock=lambda: self.now)
+        self.admit('u', 1); self.admit('v', 2)
+        old = self.job(self.driver().step('u'))
+        with self.store.read_snapshot() as db:
+            history = [tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence')]
+            jobs = [tuple(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')]
+        target = Store(directory.name)
+        self.assertEqual(upgrade.apply(target)['current_schema'], 29)
+        self.assertEqual(upgrade.apply(target)['pending_migrations'], [])
+        self.store = target
+        # Previously allocated u is still occupied; the new v gets first turn.
+        page = self.driver().cycle()
+        self.assertEqual([item['unit_id'] for item in page['items']], ['v', 'u'])
+        self.assertTrue(page['items'][0]['reserved'])
+        self.assertEqual(page['items'][1]['reason'], 'cleanup_pending')
+        with self.store.read_snapshot() as db:
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence LIMIT ?', (len(history),))], history)
+            self.assertEqual(tuple(db.execute('SELECT * FROM jobs WHERE id=?', (old['id'],)).fetchone()), jobs[0])
+            plan = db.execute("EXPLAIN QUERY PLAN SELECT e.sequence FROM events e "
+                "JOIN jobs j ON j.id=e.job_id JOIN job_launches l ON l.job_id=j.id "
+                "WHERE e.unit_id=? AND e.kind='attempt_reserved' AND j.role='build' "
+                'ORDER BY e.sequence DESC LIMIT 1', ('u',)).fetchall()
+            self.assertTrue(any('unit_reservation_events' in row['detail'] for row in plan), [tuple(row) for row in plan])
 
     def test_capacity_is_shared_with_discussions(self):
         with self.store.write() as db:

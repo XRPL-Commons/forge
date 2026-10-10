@@ -6,6 +6,8 @@ plus an optional richer sentence used when its parameters are supplied.
 """
 from __future__ import annotations
 
+import json
+
 from . import codes
 
 WORDING: dict[str, tuple[str, str | None]] = {
@@ -77,3 +79,10 @@ def describe(code: str, **params) -> str:
 def registered_codes() -> set[str]:
     """Every code that must have wording."""
     return set(codes.UNIT_STATES) | set(codes.CLOSE_CODES) | set(codes.GATES) | set(codes.DISCOVERY_REASONS)
+
+
+def describe_gate(gate):
+    """Common wording for a gate, including its typed dependency distinction."""
+    if gate['code'] == 'dependency' and json.loads(gate['details_json']).get('reason') == 'prerequisite_output_pending':
+        return 'Waiting for accepted prerequisite outputs'
+    return describe(gate['code'])

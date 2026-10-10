@@ -374,6 +374,8 @@ class PipelineViews:
     def delivery(self, issue_key, *, after=''):
         """Lazy, bounded execution tree without logs, notes or request payloads."""
         from ..store.delivery import DeliveryQueries
+        from ..store.delivery_inputs import dependencies_in
+        from ..store.status import describe_gate
         if not isinstance(after,str) or len(after)>200:
             raise ValueError('Invalid delivery history cursor')
         with self.store.read_snapshot() as db:
@@ -382,14 +384,32 @@ class PipelineViews:
             if not unit_id or not db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone():
                 raise ValueError('This issue has no approved delivery')
             tree = DeliveryQueries(self.store).tree(unit_id,after=after,limit=50)
-            members = [dict(row) for row in db.execute('SELECT m.id,m.issue_id AS issue_key,m.state,i.github_number AS number,r.title '
+            members = [dict(row) for row in db.execute('SELECT m.id,m.issue_id AS issue_key,m.state,m.requirements_revision_id,i.github_number AS number,r.title '
                 'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=m.requirements_revision_id '
                 'WHERE m.unit_id=? AND m.left_at IS NULL ORDER BY i.github_number',(unit_id,))]
-            unit = db.execute('SELECT state,current_candidate_id FROM units WHERE id=?',(unit_id,)).fetchone()
+            unit = dict(db.execute('SELECT * FROM units WHERE id=?',(unit_id,)).fetchone())
             candidate = db.execute('SELECT pull_number FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone()
             outputs = {row['member_id']:row for row in tree['outputs']}
+            member_index = {member['id']: member for member in members}
             for member in members:
-                member['output_commit'] = outputs.get(member['id'],{}).get('commit_oid')
+                canonical = Queries._issue(db, member['issue_key'], include_gates=True)
+                active_jobs = [row['id'] for row in db.execute(
+                    'SELECT j.id FROM jobs j WHERE j.unit_id=? AND j.cleanup=0 AND j.fenced=0 '
+                    'AND j.outcome IS NULL AND ' + ISSUE_JOB_SCOPE + ' ORDER BY j.created_at,j.id',
+                    (unit_id, member['issue_key']))]
+                gates = canonical['lifecycle']['gates']
+                # Expose coded scope and common wording, never arbitrary gate details.
+                member['gates'] = [dict(id=gate['id'], code=gate['code'], reason=describe_gate(gate),
+                    member_id=gate['member_id'], candidate_id=gate['candidate_id'], subject_key=gate['subject_key'])
+                    for gate in gates]
+                member['blocker'] = member['gates'][0] if member['gates'] else None
+                member['operator_status'] = operator_status(canonical, bool(active_jobs))
+                member['active_job_ids'] = active_jobs
+                member['output'] = outputs.get(member['id'])
+                member['output_commit'] = member['output']['commit_oid'] if member['output'] else None
+                member['dependencies'] = [dict(member_id=prerequisite,
+                    issue_key=member_index[prerequisite]['issue_key'], number=member_index[prerequisite]['number'],
+                    output=outputs.get(prerequisite)) for prerequisite in dependencies_in(db, unit, member['id'])]
             return dict(unit_id=unit_id,version=tree['version'],state=unit['state'],repo_id=issue['repository_id'],
                 repo=issue['repository'],builder_id=tree['builder']['id'] if tree['builder'] else None,
                 candidate_pr=candidate[0] if candidate else None,members=members,
