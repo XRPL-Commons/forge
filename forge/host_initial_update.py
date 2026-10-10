@@ -3,9 +3,10 @@
 The maintenance journal owns authorization and service start. This updater owns
 its prepared managed-file receipt and the atomic configuration commit.
 """
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -169,13 +170,28 @@ def commit_initial(root, supplied, *, operation_id, source_revision=None):
     return supplied
 
 
+@contextmanager
+def diagnostic_output():
+    """Keep FD 1 reserved for the receipt, including inherited child output."""
+    sys.stdout.flush()
+    saved = os.dup(1)
+    try:
+        os.dup2(2, 1)
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        sys.stderr.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+
+
 def main():
     request = json.load(sys.stdin)
     if set(request) not in ({'action', 'root', 'operation_id', 'source_revision'},
                             {'action', 'root', 'operation_id', 'source_revision', 'receipt'}):
         raise MigrationError('invalid_initial_host_update_request')
     arguments = {key: request[key] for key in ('operation_id', 'source_revision')}
-    with redirect_stdout(sys.stderr):
+    with diagnostic_output():
         if request['action'] == 'prepare_initial' and 'receipt' not in request:
             result = prepare_initial(request['root'], **arguments)
         elif request['action'] == 'commit_initial' and 'receipt' in request:

@@ -21,7 +21,7 @@ from forge.store.transitions import Lifecycle
 
 class DeliveryPipelineTests(unittest.TestCase):
     dependencies=()
-    def setUp(self):
+    def setUp(self, existing_author=None):
         self.directory = tempfile.TemporaryDirectory(); self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.env = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
@@ -37,13 +37,28 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.jobs = ExecutionQueries(self.store)
         self.serial = 0
         pins = []
+        receipts = []
         for number in (1, 2):
             row = self.life.admit_issue(request_id='admit-' + str(number), actor_id='operator', unit_id='source-' + str(number),
                 issue_id='issue-' + str(number), repository_id=1, repository_name='example/repo', issue_number=number,
                 title='Issue', body='Scope', requirements='req-' + str(number), observed_at=90)
+            version = 1
+            if existing_author and number == 1:
+                from forge.store.models import Candidate
+                from forge.store.transitions import manifest_hash
+                candidate = Candidate(7, 'existing-topic', 'a' * 40, self.base, 'old-policy', manifest_hash('req-1'), 'old-input')
+                chosen = self.life.adopt_candidate(self.command('source-1'), candidate,
+                    evidence={'approved': True, 'verified': True, **{key: getattr(candidate, key) for key in
+                        ('pull_number', 'head_oid', 'base_oid', 'policy_hash', 'input_manifest_hash')}})
+                version = chosen['version']
+                receipts.append(dict(unit_id='source-1', candidate_id=chosen['candidate_id'], verified=True, merged=False,
+                    pull_number=7, head_oid='a' * 40, observed_at=100, author=existing_author))
             pins.append(dict(issue_id='issue-' + str(number), issue_version=1, requirements_revision_id=row['revision_id'],
-                             unit_id='source-' + str(number), unit_version=1, member_id=row['member_id']))
-        proposal = dict(repository_id=1, base_branch='main', members=pins, dependencies=list(self.dependencies), existing_prs=[], rationale='One change')
+                             unit_id='source-' + str(number), unit_version=version, member_id=row['member_id']))
+        proposal = dict(repository_id=1, base_branch='main', members=pins, dependencies=list(self.dependencies), existing_prs=receipts, rationale='One change')
+        if existing_author:
+            proposal['publication_target'] = {'kind': 'existing', 'ownership_transfer': True,
+                **{key: receipts[0][key] for key in ('unit_id', 'candidate_id', 'pull_number', 'head_oid', 'author')}}
         self.delivery.compose(Command('compose', 'operator', 'batch', 1), **proposal,
             approval={'approved': True, 'composition_hash': self.delivery.composition_hash(**proposal)})
         self.config = validate({'enabled': True, 'repository_merge_policies': {'1': 'auto'}, 'image': 'sha256:' + 'a' * 64, 'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}})
@@ -184,6 +199,73 @@ class DeliveryPipelineTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT state FROM units WHERE id='batch'").fetchone()[0], 'merging')
             self.assertEqual(db.execute('SELECT COUNT(*) FROM candidates').fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs WHERE role IN ('review','audit')").fetchone()[0], 2)
+
+    def test_changed_base_retains_exact_group_publication_for_fresh_planning(self):
+        from copy import deepcopy
+        from forge.factory.ownership import publication_context, owned_publication_matches
+        integration = self.integrate()
+        old_base = self.base
+        self.base = 'd' * 40
+        author = {'id': 91, 'login': 'build[bot]', 'type': 'Bot'}
+        self.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40,
+                                              'base': self.base, 'author': author}
+        self.assertEqual(self.capture(integration['id'])['pending'], 'base_reconciliation')
+        self.assertFalse(self.results.step(integration['id'])['accepted'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM candidates').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE resolved_at IS NULL").fetchone()[0], 0)
+        pr = {'number': 9, 'state': 'open', 'draft': False, 'merged': False, 'body': 'Fixes #1\nFixes #2',
+              'user': author, 'head': {'sha': 'c' * 40, 'ref': integration['branch'], 'repo': {'id': 1}},
+              'base': {'sha': self.base, 'ref': 'main', 'repo': {'id': 1}}}
+        context = publication_context(self.store, 'batch', {})
+        self.assertTrue(owned_publication_matches(pr, context))
+        for altered in ({**pr, 'number': 10}, {**pr, 'user': {**author, 'id': 92}},
+                        {**pr, 'head': {**pr['head'], 'sha': 'e' * 40}}):
+            self.assertFalse(owned_publication_matches(altered, context))
+        self.github.pr.return_value = pr; self.github.pulls.return_value = [pr]
+        self.github.target.return_value = 'main'; self.github.protections.return_value = True
+        self.github.call.return_value = {'commit': {'sha': self.base}}
+        self.github.ci_evidence.return_value = {}
+        self.dispatch.prepare = GitHubPrepare(self.github, self.config)
+        # This is the normal read admission and dispatch path after coordinator restart.
+        changed_author = deepcopy(pr); changed_author['user']['id'] = 92
+        self.github.pr.return_value = changed_author
+        self.assertFalse(self.dispatch.step('batch')['reserved'])
+        self.github.pr.return_value = pr
+        resumed = self.jobs.job(self.dispatch.step('batch')['job_id'])
+        self.assertEqual(resumed['builder_stage'], 'planning')
+        self.assertEqual(resumed['builder_id'], integration['builder_id'])
+        self.assertEqual(resumed['input_manifest']['base_oid'], self.base)
+        self.assertNotEqual(resumed['input_manifest']['base_oid'], old_base)
+        self.assertEqual(resumed['input_manifest']['previous_publication']['head_oid'], 'c' * 40)
+        self.assertEqual(resumed['input_manifest']['previous_publication']['source_job_id'], integration['id'])
+        self.assertEqual((resumed['branch'], resumed['resume_pr'], resumed['resume_head']), (integration['branch'], 9, 'c' * 40))
+
+    def test_existing_target_base_revocation_preserves_original_author_and_exact_pr(self):
+        from forge.factory.ownership import publication_context, publication_transfer_matches
+        from forge.store.models import TransitionError
+        author = {'id': 73, 'login': 'maintainer', 'type': 'User'}
+        self.setUp(existing_author=author)
+        integration = self.integrate()
+        self.capture(integration['id'], classifier=lambda _: None)
+        publication = dict(pull_number=7, branch='existing-topic', head_oid='c' * 40, base_oid='d' * 40,
+                           repository_id=1, base_branch='main', author=author)
+        args = dict(execution_fence=integration['execution_fence'], input_manifest=integration['input_manifest'])
+        for changed in ({**publication, 'pull_number': 8}, {**publication, 'author': {**author, 'id': 74}}):
+            with self.assertRaises(TransitionError):
+                self.executions.revoke_captured_base(self.command(), integration['id'], **args, publication=changed)
+        self.executions.revoke_captured_base(self.command(), integration['id'], **args, publication=publication)
+        self.assertFalse(self.results.step(integration['id'])['accepted'])
+        context = publication_context(self.store, 'batch', {})
+        self.assertEqual(context['publication_transfer']['author'], author)
+        self.assertEqual(context['publication_transfer']['expected_head'], 'c' * 40)
+        pr = {'number': 7, 'state': 'open', 'merged': False, 'user': author,
+              'head': {'sha': 'c' * 40, 'ref': 'existing-topic', 'repo': {'id': 1}},
+              'base': {'sha': 'd' * 40, 'ref': 'main', 'repo': {'id': 1}}}
+        self.assertTrue(publication_transfer_matches(pr, context, allow_publication=False))
+        self.assertFalse(publication_transfer_matches({**pr, 'number': 8}, context))
+        self.assertFalse(publication_transfer_matches({**pr, 'user': {**author, 'id': 74}}, context))
 
     def test_late_combined_publication_corrects_only_its_parent_failure(self):
         integration = self.integrate()

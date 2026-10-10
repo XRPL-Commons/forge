@@ -2,6 +2,9 @@
 from contextlib import ExitStack
 import io
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 import tempfile
 import unittest
@@ -148,3 +151,45 @@ class InitialHostUpdateTests(unittest.TestCase):
         with patch.object(initial.Host, 'quiet', side_effect=MigrationError('writers_not_stopped')):
             with self.assertRaisesRegex(MigrationError, 'writers_not_stopped'): self.prepare()
         self.assertTrue(all(argv[:2] == ['git', '-C'] for argv in self.host.calls))
+
+
+class InitialHostUpdateProtocolTests(unittest.TestCase):
+    def invoke(self, action, *, fail=False):
+        # A real child uses inherited FD 1 just like npm, Docker and systemctl.
+        script = textwrap.dedent("""
+            import json, os, sys
+            from forge import host_initial_update as initial, host_update
+            def reconcile(*args, **kwargs):
+                print('python-progress')
+                host_update.command([sys.executable, '-c',
+                    r"import os; os.write(1, b'child-stdout\\n'); os.write(2, b'child-stderr\\n')"])
+                if sys.argv[1] == 'fail':
+                    raise RuntimeError('fixture failure')
+                return {'version': 1, 'prepared_digest': 'qualified-fixture'}
+            initial.prepare_initial = reconcile
+            initial.commit_initial = reconcile
+            try:
+                initial.main()
+            except RuntimeError:
+                os.write(1, b'restored-protocol-fd\\n')
+                sys.exit(3)
+        """)
+        request = dict(action=action, root='/unused', operation_id='fixture', source_revision='a' * 40)
+        if action == 'commit_initial': request['receipt'] = {'fixture': True}
+        return subprocess.run([sys.executable, '-c', script, 'fail' if fail else 'pass'],
+                              input=json.dumps(request), capture_output=True, text=True, timeout=15)
+
+    def test_prepare_and_commit_return_one_json_receipt_with_real_child_diagnostics_on_stderr(self):
+        for action in ('prepare_initial', 'commit_initial'):
+            with self.subTest(action=action):
+                result = self.invoke(action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {'version': 1, 'prepared_digest': 'qualified-fixture'})
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                self.assertEqual(set(result.stderr.splitlines()), {'python-progress', 'child-stdout', 'child-stderr'})
+
+    def test_failed_preparation_emits_no_receipt_and_restores_protocol_descriptor(self):
+        result = self.invoke('prepare_initial', fail=True)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.stdout, 'restored-protocol-fd\n')
+        self.assertEqual(set(result.stderr.splitlines()), {'python-progress', 'child-stdout', 'child-stderr'})

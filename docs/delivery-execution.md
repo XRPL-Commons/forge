@@ -200,3 +200,18 @@ Use **Resume delivery** or `forge delivery resume-delivery` with the same inspec
 file and explicit approval to clear that pause after cleanup. This preserves each
 member's own pause, backlog, label hold, environment gate, accepted output and
 failure history. Resuming one issue cannot silently resume the whole delivery.
+
+### A target branch moves during a build
+
+A verified publication must still match the base pinned by its build assignment.
+If the PR's base has advanced before result acceptance, Forge revokes that exact
+cleaned capture. The normal stale-result transition releases its result wait
+without a failure charge or investigation; other operator and environment gates
+remain in force. The next assignment reads the fresh base.
+
+For a combined delivery, the revocation receipt retains the verified PR number,
+branch, head, repository, target branch, and author. This is continuation authority,
+not an accepted review candidate. Subsequent planning and integration reuse that
+PR only while its recorded identity still matches GitHub. An operator-approved
+existing PR keeps its original author and publication target. Review and audit
+still run against the candidate eventually accepted on the fresh base.

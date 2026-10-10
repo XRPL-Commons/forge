@@ -36,7 +36,7 @@ class GitHub:
         if self.publication_value is None:
             return None
         value = candidate(self.publication_value, job, requirements, policy)
-        return dict(value, branch=self.publication_value['head']['ref'])
+        return dict(value, branch=self.publication_value['head']['ref'], author=self.publication_value['user'])
 
     def pr(self, item, number):
         return deepcopy(self.pr_value)
@@ -116,7 +116,7 @@ class ResultControllerTests(unittest.TestCase):
     def publish(self, job):
         self.github.publication_value = dict(number=7, state='open', draft=False, merged=False,
             body='<!-- forge-submission ' + json.dumps(dict(version=1, issue=1, attempt=job, head=HEAD)) + ' -->',
-            user={'login': 'builder[bot]', 'type': 'Bot'},
+            user={'id': 42, 'login': 'builder[bot]', 'type': 'Bot'},
             head={'sha': HEAD, 'ref': 'forge/issue-1', 'repo': {'id': 1}},
             base={'sha': BASE, 'ref': 'main', 'repo': {'id': 1}})
         self.github.pr_value = deepcopy(self.github.publication_value)
@@ -187,6 +187,80 @@ class ResultControllerTests(unittest.TestCase):
         next_job = self.reserve()
         self.assertNotEqual(next_job, job)
         self.assertEqual(self.queries.job(next_job)['input_manifest']['policy_hash'], digest(self.policy))
+
+    def changed_base_publication(self, job):
+        self.publish(job)
+        self.github.publication_value['base']['sha'] = 'c' * 40
+        return dict(pull_number=7, branch='forge/issue-1', head_oid=HEAD, base_oid='c' * 40,
+                    repository_id=1, base_branch='main', author=self.github.publication_value['user'])
+
+    def test_changed_base_capture_is_consumed_uncharged_then_reassigned(self):
+        job = self.reserve()
+        self.changed_base_publication(job)
+        self.capture(job, self.report(job))
+        self.assertEqual(self.controller.step(job)['pending'], 'base_reconciliation')
+        self.assertTrue(self.queries.job(job)['result_revoked'])
+        self.assertFalse(self.controller.step(job)['accepted'])
+        self.assertEqual(self.controller.step(job)['outcome'], 'stale_failure')
+        self.assertEqual(self.charges(), 0)
+        self.assertIsNone(self.view()['reason_code'])
+        self.manifest['base_oid'] = 'c' * 40
+        fresh = self.reserve()
+        self.assertEqual(self.queries.job(fresh)['input_manifest']['base_oid'], 'c' * 40)
+        self.assertEqual(self.github.publication_value['number'], 7)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM candidates').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM attempt_failures').fetchone()[0], 0)
+
+    def test_base_revocation_preserves_other_gates_and_exact_replay(self):
+        job = self.reserve()
+        publication = self.changed_base_publication(job)
+        self.capture(job, self.report(job))
+        self.life.open_gate(self.command(), 'environment', details={'reason': 'operator_recheck'})
+        command = self.command()
+        args = dict(execution_fence=self.queries.job(job)['execution_fence'], input_manifest=self.manifest, publication=publication)
+        first = self.life.revoke_captured_base(command, job, **args)
+        self.assertEqual(self.life.revoke_captured_base(command, job, **args), first)
+        self.assertFalse(self.controller.step(job)['accepted'])
+        self.assertEqual(self.view()['reason_code'], 'environment')
+        self.assertEqual(self.charges(), 0)
+
+    def test_base_revocation_requires_current_cleaned_capture_fence_and_target(self):
+        job = self.reserve()
+        publication = self.changed_base_publication(job)
+        self.capture(job, self.report(job), cleanup=False)
+        row = self.queries.job(job)
+        args = dict(execution_fence=row['execution_fence'], input_manifest=self.manifest, publication=publication)
+        with self.assertRaisesRegex(TransitionError, 'cleaned build capture'):
+            self.life.revoke_captured_base(self.command(), job, **args)
+        self.life.verify_cleanup(self.command(), job, execution_fence=row['execution_fence'],
+            evidence={'process_stopped': True, 'resources_released': True})
+        for changed in (dict(execution_fence='wrong'), dict(input_manifest={**self.manifest, 'base_oid': 'd' * 40}),
+                        dict(publication={**publication, 'base_oid': BASE}),
+                        dict(publication={**publication, 'repository_id': 2}),
+                        dict(publication={**publication, 'branch': 'unrelated'}),
+                        dict(publication={**publication, 'author': {'id': 43, 'login': 'other[bot]', 'type': 'Bot'}})):
+            with self.subTest(changed=changed), self.assertRaises(TransitionError):
+                self.life.revoke_captured_base(self.command(), job, **{**args, **changed})
+        self.assertFalse(self.queries.job(job)['result_revoked'])
+        self.life.pause(self.command())
+        with self.assertRaisesRegex(TransitionError, 'current cleaned'):
+            self.life.revoke_captured_base(self.command(), job, **args)
+        self.assertFalse(self.controller.step(job)['accepted'])
+        self.assertEqual(self.view()['reason_code'], 'operator_pause')
+        self.assertEqual(self.charges(), 0)
+
+    def test_pause_during_changed_base_read_cannot_revoke_current_authority(self):
+        job = self.reserve()
+        self.changed_base_publication(job)
+        self.capture(job, self.report(job))
+        self.github.after_publication = lambda: self.life.pause(self.command())
+        with self.assertRaises(VersionConflict):
+            self.controller.step(job)
+        self.github.after_publication = None
+        self.assertFalse(self.controller.step(job)['accepted'])
+        self.assertEqual(self.view()['reason_code'], 'operator_pause')
+        self.assertEqual(self.charges(), 0)
 
     def test_policy_revocation_preserves_independent_environment_gate(self):
         job = self.reserve()

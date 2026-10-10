@@ -109,6 +109,30 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(job['branch'].startswith('forge/issue-1-'))
         self.assertEqual(self.controller.step('u')['reason'], 'cleanup_pending')
 
+    def test_base_revoked_capture_reuses_owned_pr_with_fresh_base(self):
+        from forge.factory.result_controller import ResultController
+        identifier = self.controller.step('u')['job_id']
+        queries = ExecutionQueries(self.store)
+        job = queries.job(identifier)
+        self.now += 1
+        self.life.collect(self.command(), identifier, execution_fence=job['execution_fence'], capture={'result': None, 'logs': ''})
+        self.now += 1
+        self.life.verify_cleanup(self.command(), identifier, execution_fence=job['execution_fence'],
+            evidence={'process_stopped': True, 'resources_released': True})
+        self.now += 1
+        self.life.revoke_captured_base(self.command(), identifier, execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
+            publication=dict(pull_number=7, branch=job['branch'], head_oid=HEAD, base_oid='c' * 40, repository_id=1,
+                             base_branch='main', author={'id': 42, 'login': 'build[bot]', 'type': 'Bot'}))
+        result = ResultController(self.store, self.github, policy=lambda _: policy(self.config, 1, repository_name='owner/repo'), clock=lambda: self.now)
+        self.assertFalse(result.step(identifier)['accepted'])
+        self.github.head = 'c' * 40
+        self.github.draft = {'pr': 7, 'branch': job['branch']}
+        fresh = self.job(self.controller.step('u'))
+        self.assertEqual(fresh['input_manifest']['base_oid'], 'c' * 40)
+        self.assertEqual((fresh['resume_pr'], fresh['branch']), (7, job['branch']))
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0], 0)
+
     def test_every_admission_failure_leaves_no_attempt_or_budget_charge(self):
         cases = [lambda: setattr(self, 'allowed', False),
                  lambda: setattr(self.runner, 'allowed', False),
