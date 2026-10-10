@@ -16,8 +16,8 @@ class BroadCanonicalConnection:
     def __init__(self, connection):
         self.connection = connection
     def execute(self, sql, *args):
-        if sql.startswith(COMPLETED_MEMBERS_SQL):
-            sql = sql[len(COMPLETED_MEMBERS_SQL):].replace(COMPLETED_SOURCE_SQL, 'public_issue_index x')
+        if COMPLETED_MEMBERS_SQL[5:] in sql:
+            sql = sql.replace(',' + COMPLETED_MEMBERS_SQL[5:], ' ').replace(COMPLETED_SOURCE_SQL, 'public_issue_index x')
         return self.connection.execute(sql, *args)
     def __getattr__(self, key):
         return getattr(self.connection, key)
@@ -138,7 +138,7 @@ class CompletedSelectionTests(unittest.TestCase):
         class CaptureConnection:
             def __init__(self, connection): self.connection = connection
             def execute(self, sql, *args):
-                if sql.startswith(COMPLETED_MEMBERS_SQL): captured.append((sql, args))
+                if COMPLETED_MEMBERS_SQL[5:] in sql: captured.append((sql, args))
                 return self.connection.execute(sql, *args)
             def __getattr__(self, key): return getattr(self.connection, key)
         self.store._connect_path = lambda *args, **kwargs: CaptureConnection(original(*args, **kwargs))

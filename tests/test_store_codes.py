@@ -3,6 +3,7 @@ import sqlite3
 import unittest
 from pathlib import Path
 
+from forge.factory.issue_selection import IssueSelection
 from forge.store import codes, status
 from forge.store.models import GateCode, Phase, Role
 
@@ -98,7 +99,7 @@ class StoreCodesTests(unittest.TestCase):
                 self.db.execute("INSERT INTO unit_gates(id,unit_id,member_id,candidate_id,subject_key,code,created_at) VALUES('g','u',?,?,?,?,1)",
                                 ('m' if scope == 'member' else None, 'c' if scope == 'candidate' else None,
                                  {'unit':'unit','member':'member:m','candidate':'candidate:c'}[scope], code))
-                row = self.db.execute("SELECT reason_code,public_status FROM public_issue_index WHERE id='i'").fetchone()
+                row = IssueSelection(self.db).execute("SELECT reason_code,public_status FROM public_issue_index WHERE id='i'").fetchone()
                 self.db.execute('ROLLBACK TO gate'); self.db.execute('RELEASE gate')
                 self.assertEqual(row[0], code)
                 issue = {'lifecycle': {'state': 'blocked', 'reason_code': code}}

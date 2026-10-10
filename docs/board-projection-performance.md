@@ -75,10 +75,11 @@ normal authenticated `Server-Timing` measurements qualify the deployed result.
 
 Completed-page selection and counting first collect distinct issue IDs from all
 memberships of terminal units, including former memberships. The existing
-`public_issue_index` still applies its canonical latest-membership and lifecycle
-predicates. This avoids classifying the unrelated untracked inventory. Existing
-unit-state, unit-membership and issue-identity indexes serve the query; there is
-no new schema, stored status or cache.
+`issue_selection_facts` retains the indexed latest-membership and terminal
+identity predicates. The shared `IssueSelection` query supplies canonical
+status and blocker reasons before filtering (see below). This avoids classifying
+the unrelated untracked inventory. Existing unit-state, unit-membership and
+issue-identity indexes serve this narrowing; it introduces no stored status or cache.
 
 A local synthetic comparison against `7ab6023` used SQLite 3.53.1 and 24
 alternating calls per version, excluding two warmups. The larger fixture had
@@ -95,3 +96,25 @@ dissolved members in newer deliveries, reopened issues and closed untracked
 issues. Former memberships must remain in the candidate input; final canonical
 predicates determine whether they match. These are local projection results,
 not authenticated HTTP evidence, and the larger result remains above 10 ms.
+
+
+### Dependency-aware selection before pagination
+
+Schema 031 renames the former public-status SQL view to `issue_selection_facts`.
+Its `indexed_status` and `indexed_reason_code` columns are coarse selection
+facts: SQL edge existence cannot decide whether recursively pinned child outputs
+are still valid. Callers use `IssueSelection` in the same read snapshot as their
+page projection. It starts from current dependency edges and approved-delivery
+identities, loads only members of those affected deliveries within the request's
+repository/search scope, and uses the existing lifecycle/output evaluator and operator status projector.
+It joins those exact statuses and reasons into the SQL query before filtering,
+counting, ordering and pagination. No lifecycle status is persisted or cached.
+
+Members without dependencies are included because a delivery-wide gate can
+apply to them. Approved deliveries without edges also need exact child-job
+scope, so a running child does not make its idle siblings appear to be working.
+Removed/terminal memberships keep the existing historical identity rules; terminal pages do not evaluate active dependency graphs. Bodies and
+artifacts remain lazy, and already-loaded member contexts are reused by page
+rendering. This migration changes a read contract only; it neither changes
+outputs nor grants dispatch/publication authority. Release qualification for 031
+must include data preservation, schema integrity and idempotent replay.
