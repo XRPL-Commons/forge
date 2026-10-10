@@ -6,6 +6,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge.view_cache import ViewCache
+from pathlib import Path
+from tests.test_sqlite_identity import selected_store
+from forge.factory.config import load
 from tests.test_dashboard import dashboard
 
 
@@ -86,6 +89,28 @@ class HTTPServerTimingTests(unittest.TestCase):
         handler.send_response.assert_called_once_with(304)
         self.assertEqual(set(self.timing(handler)), {'cache_miss', 'projection', 'conditional', 'request'})
         self.assertEqual(handler.wfile.getvalue(), b'')
+
+    def test_sqlite_issue_cache_hits_do_not_read_projection_settings_or_create_github(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = selected_store(Path(root))
+            with store.read_snapshot() as db:
+                db.execute('SELECT 1').fetchone()
+            with patch.object(dashboard, 'WD', root), \
+                    patch.object(dashboard, 'VIEWS', ViewCache(clock=lambda: 1)), \
+                    patch('forge.factory.issues.IssueInventory.start_refresh'), \
+                    patch('forge.factory.issues.GitHub') as github, \
+                    patch('forge.factory.issues.load', wraps=load) as runtime:
+                first = self.handler('/api/issues'); first.do_GET()
+                first.send_response.assert_called_once_with(200)
+                runtime.assert_called_once()
+                tag = self.header(first, 'ETag')
+                warm = self.handler('/api/issues'); warm.do_GET()
+                self.assertEqual(warm.wfile.getvalue(), first.wfile.getvalue())
+                self.assertIn('cache_hit', self.timing(warm))
+                unchanged = self.handler('/api/issues', tag); unchanged.do_GET()
+                unchanged.send_response.assert_called_once_with(304)
+                runtime.assert_called_once()
+                github.assert_not_called()
 
     def test_uncached_auth_and_error_responses_do_not_inherit_timing(self):
         handler = self.handler('/api/factory?section=board')

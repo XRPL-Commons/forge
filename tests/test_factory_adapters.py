@@ -368,7 +368,22 @@ class WorkerContractTests(unittest.TestCase):
             self.assertFalse(shape['additionalProperties'])
             optional_build = {'issues', 'evidence'} if role == 'build' else set()
             self.assertEqual(set(shape['properties']) - optional_build - {'version', 'attempt', 'role', 'outcome', 'blocker',
-                                                         'summary', 'headline', 'plain', 'decision', 'required_services', 'verification'}, set(ROLE_FIELDS[role]))
+                                                         'summary', 'headline', 'plain', 'operator_summary', 'decision', 'required_services', 'verification'}, set(ROLE_FIELDS[role]))
+
+    def test_pipeline_roles_must_write_an_operator_summary(self):
+        from forge.factory import contracts
+        from forge.factory.harness import ENVIRONMENT_BLOCKERS, schema
+        # The image duplicates the contract's blockers and summary limit.
+        self.assertEqual(ENVIRONMENT_BLOCKERS, contracts.ENVIRONMENT_BLOCKERS)
+        for role in ('build', 'review', 'audit', 'recovery'):
+            shape = schema(self.note(role))
+            self.assertIn('operator_summary', shape['required'])
+            self.assertEqual(shape['properties']['operator_summary']['maxLength'], contracts.OPERATOR_SUMMARY_LIMIT)
+            self.assertIn('github_permission', shape['properties']['blocker']['enum'])
+        instructions = contracts.assignment_note({**self.note('build'), 'review_policy': {}, 'ci_evidence': None})['instructions']
+        self.assertIn('operator_summary is one or two complete sentences', instructions)
+        self.assertIn('abbreviations such as CI, PR or GH013', instructions)
+        self.assertIn('blocker github_permission', instructions)
 
     def test_assignment_instructions_teach_the_tone_with_examples(self):
         from forge.factory.contracts import assignment_note

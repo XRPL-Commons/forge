@@ -92,7 +92,7 @@ export function workbenchLook(row: WorkbenchRow, options: { stalled?: boolean } 
   let attempts: AttemptLives | null = null
   if (row.attempts && row.attempts.limit > 0) {
     const limit = row.attempts.limit, left = limit - failures
-    const text = !failures && working ? `attempt 1 of ${limit}` : `${left} of ${limit} left`
+    const text = !failures && working ? `Attempt 1 of ${limit}` : `${left} of ${limit} attempts left`
     attempts = { lost: failures, left, limit, text }
   }
 

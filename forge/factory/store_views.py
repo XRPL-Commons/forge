@@ -9,12 +9,16 @@ import math
 import time
 
 from ..store.artifacts import Artifacts, ArtifactExpired
+from ..store.codes import transitional
 from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
 from ..store.transitions import manifest_hash
 from .config import validate, merge_mode
 from .live_output import summarize
 from .status_projection import operator_status
+from ..store.status import github_rule
+from ..store.job_scope import JOB_MEMBER_SCOPE, ISSUE_JOB_SCOPE, issue_jobs_in
+from .issue_selection import IssueSelection
 
 
 LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 'reviewing': 'built',
@@ -29,15 +33,9 @@ def _legacy_stage(lifecycle):
         return 'failed'
     if reason == 'recovery_pending':
         return 'investigating'
-    return 'hold' if reason else LEGACY_STAGE.get(lifecycle['stage_code'])
+    return 'hold' if reason and not transitional(reason) else LEGACY_STAGE.get(lifecycle['stage_code'])
 
 
-# Public history can use an imported job's explicit member identity even when
-# its original requirements revision was never recorded. This does not create
-# an execution pin or select a member from the unit's current membership.
-JOB_MEMBER_SCOPE = "(m.id IN (SELECT p.member_id FROM job_members p WHERE p.job_id=j.id) OR " \
-    "(m.id=j.member_id AND NOT EXISTS(SELECT 1 FROM job_members p WHERE p.job_id=j.id)))"
-ISSUE_JOB_SCOPE = 'EXISTS(SELECT 1 FROM unit_issues m WHERE m.unit_id=j.unit_id AND m.issue_id=? AND '+JOB_MEMBER_SCOPE+')'
 
 
 def action_revision(db, issue_id):
@@ -184,14 +182,12 @@ class PipelineViews:
                 url='https://github.com/'+repository+('/pull/' if fact and fact.get('kind')=='pull_request' else '/issues/')+number))
         return result
 
-    def _row(self, db, issue_id, *, detail=False, config):
-        issue = Queries._issue(db, issue_id, include_body=detail)
+    def _row(self, db, issue_id, *, detail=False, config, issue_context=None):
+        issue, unit = issue_context if issue_context is not None else Queries._issue_context(db, issue_id, include_body=detail)
         life = issue['lifecycle']
         unit_id = life['unit_id'] or life['historical_unit_id']
-        unit = dict(db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()) if unit_id else None
         scope = ISSUE_JOB_SCOPE
-        jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + scope +
-                          ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id,issue_id)).fetchall() if unit_id else []
+        jobs = issue_jobs_in(db, unit_id, issue_id)
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
         cleanup = bool(unit_id and db.execute('SELECT 1 FROM jobs j WHERE j.unit_id=? AND j.cleanup=0 AND ' + scope + ' LIMIT 1', (unit_id,issue_id)).fetchone())
         pending = db.execute("SELECT 1 FROM issue_action_requests WHERE issue_id=? AND status='pending' LIMIT 1", (issue_id,)).fetchone() is not None
@@ -238,11 +234,17 @@ class PipelineViews:
         fresh = not issue.get('body_truncated') and issue['observed_at'] is not None and 0 <= self.clock()-issue['observed_at'] < 300
         actions = available_actions(issue, unit, cleanup=cleanup, pending=pending) if fresh else []
         wording = life['display_status']
-        summary={'headline':wording,'plain':details.get('summary') or details.get('reason') or wording}
+        from .contracts import clamp,operator_text,plain_text,HEADLINE_LIMIT
+        # The bubble speaks to the operator; the worker's technical report stays
+        # in environment_blocker, behind the panel's Technical details toggle.
+        technical=details.get('summary')
+        summary={'headline':wording,'plain':details.get('operator_summary') or (operator_text(technical) if isinstance(technical,str) else technical)
+                 or details.get('reason') or wording}
         written=environment_block.get('summary') or (json.loads(context['summary_json']) if context and context['summary_json'] and (decision or reason=='budget_exhausted') else None)
         if isinstance(written,dict) and written.get('headline'):
-            from .contracts import clamp,plain_text,HEADLINE_LIMIT
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
+        if reason=='environment' and (rule:=github_rule(environment_block)):
+            summary={'headline':rule['headline'],'plain':rule['plain']}
         delivery_approved = bool(unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone())
         row = dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
             title=issue['title'], content_hash=display[0] if display else issue['content_hash'], body_truncated=bool(issue.get('body_truncated')),
@@ -287,17 +289,16 @@ class PipelineViews:
     def _public(row):
         return {key:value for key,value in row.items() if not key.startswith('_')}
 
-    def _activity_row(self, db, issue_id):
+    def _activity_row(self, db, issue_id, *, issue_context=None):
         """Only the inputs consumed by Activity's card serializer.
 
         Canonical lifecycle and worker visibility are shared with issue views;
         action prompts, related PR collections and editing fields belong there.
         """
-        issue, unit = Queries._issue_context(db, issue_id)
+        issue, unit = issue_context if issue_context is not None else Queries._issue_context(db, issue_id)
         life = issue['lifecycle']
         unit_id = unit['id'] if unit else None
-        jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + ISSUE_JOB_SCOPE +
-                          ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id, issue_id)).fetchall() if unit else []
+        jobs = issue_jobs_in(db, unit_id, issue_id)
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
         operator = operator_status(issue, bool(active))
         context = db.execute('SELECT summary_json,last_observed_at FROM unit_context WHERE unit_id=?', (unit_id,)).fetchone() if unit else None
@@ -327,6 +328,14 @@ class PipelineViews:
         unit, reason = row['_unit'], row['reason_code']
         if unit is None:
             return None
+        # Both the slim board and rich detail use this canonical blocker.
+        transition = None
+        blocker = row['lifecycle']['current_blocker']
+        if blocker and transitional(reason):
+            details = json.loads(blocker['details_json'])
+            settled = db.execute('SELECT role FROM jobs WHERE id=?', (details.get('job_id'),)).fetchone()
+            role = settled and {'integration': 'build'}.get(settled['role'], settled['role'])
+            transition = dict(code=reason, job_id=details.get('job_id') if settled else None, role=role or None)
         if completed_at is None:
             completed_at = db.execute('SELECT '+COMPLETION_SQL+' FROM units u WHERE u.id=?', (unit['id'],)).fetchone()[0]
         candidate=db.execute('SELECT pull_number,head_oid FROM candidates WHERE id=?',(unit['current_candidate_id'],)).fetchone() if unit['current_candidate_id'] else None
@@ -347,7 +356,7 @@ class PipelineViews:
             'reason':row['explanation'] if reason else None,'failure_count':(row['attempts'] or {}).get('failed',0),
             'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,
             'last_summary':row['_last_summary'],'history':history,'created_at':unit['created_at'],'last_observed':row['last_checked'],
-            'hold_kind':reason,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
+            'hold_kind':None if transitional(reason) else reason,'transition':transition,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
             'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
             'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
             'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':completed_at or None}
@@ -386,9 +395,11 @@ class PipelineViews:
                 clauses.append("instr(lower(p.title||' '||r.full_name||' #'||i.github_number),lower(?))>0");parameters.append(query)
             source=(' FROM issues i JOIN issue_revisions p ON p.id=i.current_revision_id JOIN repositories r ON r.id=i.repository_id '
                     'JOIN public_issue_index x ON x.id=i.id WHERE '+' AND '.join(clauses))
-            total=db.execute('SELECT COUNT(*)'+source,parameters).fetchone()[0]
-            ids=db.execute('SELECT i.id'+source+' ORDER BY r.full_name COLLATE NOCASE,i.github_number LIMIT 50 OFFSET ?',(*parameters,(page-1)*50)).fetchall()
-            rows=[self._public(self._row(db,row[0],config=config)) for row in ids]
+            selection=IssueSelection(db, repository_id=repo_id, query=query, enabled_only=True, github_state='open' if state=='open' else None)
+            total=selection.execute('SELECT COUNT(*)'+source,parameters).fetchone()[0]
+            ids=selection.execute('SELECT i.id'+source+' ORDER BY r.full_name COLLATE NOCASE,i.github_number LIMIT 50 OFFSET ?',(*parameters,(page-1)*50)).fetchall()
+            contexts=selection.contexts([row[0] for row in ids])
+            rows=[self._public(self._row(db,row[0],config=config,issue_context=contexts[row[0]])) for row in ids]
             return dict(issues=rows,total=total,page=page,pages=max(1,math.ceil(total/50)),repositories=scopes,
                         complete=all(scope['complete'] and scope['fresh'] for scope in scopes if repo_id is None or scope['id']==repo_id),actions=self._actions(db))
 
@@ -529,18 +540,20 @@ class PipelineViews:
                 clauses.append('('+COMPLETION_SQL+',x.id)<(?,?)');params.extend((at,key))
             prefix = COMPLETED_MEMBERS_SQL if section == 'completed' else ''
             source = COMPLETED_SOURCE_SQL if section == 'completed' else 'public_issue_index x'
-            rows=db.execute(prefix+'SELECT x.id,u.updated_at,'+COMPLETION_SQL+' AS completed_at FROM '+source+' JOIN units u ON u.id=x.unit_id WHERE '+
+            selection=IssueSelection(db, issue_id=issue, terminal_only=section=='completed')
+            rows=selection.execute(prefix+'SELECT x.id,u.updated_at,'+COMPLETION_SQL+' AS completed_at FROM '+source+' JOIN units u ON u.id=x.unit_id WHERE '+
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
             issues=[]
+            contexts=selection.contexts([row['id'] for row in rows[:size]])
             for selected in rows[:size]:
-                row=self._activity_row(db,selected['id'])
+                row=self._activity_row(db,selected['id'],issue_context=contexts[selected['id']])
                 issues.append(self._factory_issue(db, row, completed_at=selected['completed_at']))
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
             if section in (None, 'board') and len(issues) < size:
                 # Discovery is sparse. Keep it as the outer input so an empty
                 # observation set does not classify the whole issue backlog.
-                failed = db.execute("SELECT x.id,d.observed_at FROM issue_discovery_observations d "
+                failed = selection.execute("SELECT x.id,d.observed_at FROM issue_discovery_observations d "
                     'CROSS JOIN public_issue_index x ON x.id=d.issue_id '
                     "WHERE x.unit_id IS NULL AND x.public_status='attention' "
                     + ('AND x.id=? ' if issue is not None else '')
@@ -551,7 +564,7 @@ class PipelineViews:
                     issues.append({**{key:row[key] for key in ('key','repo_id','repo','number','title','active','lifecycle','status','reason_code','stage_code','operator_status')},
                         'state':'hold', 'reason':row['explanation'], 'failure_count':0, 'candidate':None,
                         'last_summary':row['summary'], 'history':[], 'created_at':selected['observed_at'],
-                        'last_observed':selected['observed_at'], 'hold_kind':row['reason_code'],
+                        'last_observed':selected['observed_at'], 'hold_kind':row['reason_code'], 'transition':None,
                         'merge_gate_kind':None, 'attention_kind':'question', 'closed_as':None,
                         'reviewers_requested':None, 'attempts':[], 'blocked_dependencies':[],
                         'deployed':None, 'deploy_failed':None, 'completed_at':None})
@@ -572,7 +585,7 @@ class PipelineViews:
                 (self.clock()-86400,self.clock()-604800)).fetchone()
             # Count issue identities, so SQLite can omit blocker joins whose
             # columns are irrelevant to the canonical terminal predicates.
-            completed_count=db.execute(COMPLETED_MEMBERS_SQL+'SELECT COUNT(*) FROM (SELECT DISTINCT x.id FROM '+COMPLETED_SOURCE_SQL+' WHERE '+completed+')').fetchone()[0]
+            completed_count=selection.execute(COMPLETED_MEMBERS_SQL+'SELECT COUNT(*) FROM (SELECT DISTINCT x.id FROM '+COMPLETED_SOURCE_SQL+' WHERE '+completed+')').fetchone()[0]
             runner_count=db.execute('SELECT COUNT(*) FROM jobs j WHERE (j.cleanup=0 OR j.outcome IS NULL) AND '+runner_filter).fetchone()[0]
             running=bool(db.execute("SELECT 1 FROM jobs WHERE phase='running' AND cleanup=0 LIMIT 1").fetchone())
             accounts=[]

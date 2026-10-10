@@ -250,6 +250,16 @@ class OperatorHTTPTests(unittest.TestCase):
             self.assertNotIn('private-code', output.getvalue())
             self.assertIn('operator_sign_in_failed', output.getvalue())
 
+    def test_discussion_confirmation_preserves_authenticated_actor_and_edited_reason(self):
+        with patch('forge.factory.discussions.Discussions') as factory:
+            factory.return_value.apply.return_value='stable-request'
+            handler=self.request('/api/issues/discussion',{'key':'1:2','action':'apply','message_id':'message','reason':'Operator edited reason'},signed=True)
+            handler.send_error.assert_not_called()
+            factory.return_value.apply.assert_called_once_with('1:2','message',actor_id='github:123',reason='Operator edited reason')
+        with patch('forge.factory.discussions.Discussions') as factory:
+            self.request('/api/issues/discussion',{'key':'1:2','action':'apply','message_id':'message','actor_id':'github:other'},signed=True)
+            factory.return_value.apply.assert_not_called()
+
     def test_session_csrf_replaces_global_capability(self):
         with patch.object(dashboard, 'settings_service') as service:
             self.request('/api/settings/sync', {}, signed=True, **{'X-Forge-Action': dashboard.CONTROLS_TOKEN}).send_error.assert_called_once_with(403)

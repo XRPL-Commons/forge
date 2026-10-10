@@ -4,8 +4,9 @@
 // under it and the actions in their order of importance. Pure, so the copy
 // the operator reads is decided (and tested) here, not in templates.
 import { elapsed, type JobRole, type JobView } from './factory'
+import { spelled } from './format'
 import { modelLabel, persona } from './personas'
-import { summaryBlock, statusLabel, type IssueAction, type IssueDetail } from './issues'
+import { sentence, summaryBlock, statusLabel, type IssueAction, type IssueDetail } from './issues'
 import type { StageId } from './pipeline'
 
 // ---------------------------------------------------------------------------
@@ -175,9 +176,9 @@ export interface WorkFacts {
   who: string
   model: string
   provider: string | null
-  // "Build · attempt 2 of 3"
+  // "Build, attempt 2 of 3"
   attempt: string
-  // "12 min in · 18 min left" / "past its deadline"
+  // "12 minutes in, 18 minutes left." / "Past its deadline."
   timing: string
   overdue: boolean
   branch: string | null
@@ -190,15 +191,15 @@ export function workFacts(job: Pick<JobView, 'role' | 'provider' | 'model' | 'cr
   const who = persona(job.provider)
   const started = job.started_at ?? job.created_at
   const parts: string[] = []
-  if (started && now) parts.push(`${elapsed(now - started)} in`)
+  if (started && now) parts.push(`${spelled(now - started)} in`)
   const overdue = !!(job.deadline && now && now >= job.deadline)
-  if (job.deadline && now) parts.push(overdue ? 'past its deadline' : `${elapsed(job.deadline - now)} left`)
+  if (job.deadline && now) parts.push(overdue ? 'past its deadline' : `${spelled(job.deadline - now)} left`)
   const limit = attempts?.limit ?? 0
   const attempt = job.role === 'build' && limit
-    ? `${ROLE_NAMES.build} · attempt ${Math.min((attempts?.failed ?? 0) + 1, limit)} of ${limit}`
+    ? `${ROLE_NAMES.build}, attempt ${Math.min((attempts?.failed ?? 0) + 1, limit)} of ${limit}`
     : ROLE_NAMES[job.role] ?? job.role
   return { who: who.name, provider: job.provider ?? null, model: modelLabel(job.model, job.provider), attempt,
-    timing: parts.join(' · '), overdue, branch: job.branch ?? null }
+    timing: parts.length ? sentence(parts.join(', ')) : '', overdue, branch: job.branch ?? null }
 }
 
 // ---------------------------------------------------------------------------

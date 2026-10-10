@@ -4,11 +4,13 @@ import { ACTION_LABELS, ACTION_PENDING_LABELS, type IssueAction } from '~/utils/
 // Dropping an issue is the one decision that cannot be undone from Forge, so
 // its dialog says exactly what happens on GitHub and asks why. Like
 // DecisionPanel it knows no endpoints: the detail route submits it.
-const props = defineProps<{ open: boolean; issueKey: string; number: number; pull?: number | null; error?: string | null; pending?: boolean }>()
+// `reason` prefills the box when a discussion proposed the close; the
+// operator still reads it and confirms.
+const props = defineProps<{ open: boolean; issueKey: string; number: number; pull?: number | null; error?: string | null; pending?: boolean; reason?: string }>()
 const emit = defineEmits<{ submit: [decision: { action: IssueAction; reason: string }]; close: [] }>()
 
 const reason = ref('')
-watch(() => props.open, (open) => { if (open) reason.value = '' }, { immediate: true })
+watch(() => props.open, (open) => { if (open) reason.value = props.reason ?? '' }, { immediate: true })
 const ready = computed(() => reason.value.trim().length > 0)
 
 function submit() {

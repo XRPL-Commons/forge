@@ -108,16 +108,20 @@ onBeforeUnmount(() => {
 .workbench { container-type: inline-size; }
 .workbench-row { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 14px; align-items: center; }
 .workbench-canvas { overflow: hidden; border: 1px solid var(--color-line); border-radius: 10px; background: #16191f; }
+/* An opaque surface, tail included: the page never shows through it, and
+   only the border carries the state colour (mixed into the bubble, not into
+   transparency, so it stays solid too). */
 .workbench-bubble {
+  --bubble-line: var(--color-bubble-line);
   position: relative; min-width: 0; padding: 12px 14px; border-radius: 14px;
-  background: var(--color-bubble); border: 1.5px solid var(--color-bubble-line);
+  background-color: var(--color-bubble); border: 1.5px solid var(--bubble-line);
 }
 .workbench-bubble::before {
   content: ""; position: absolute; left: -9px; top: 50%; width: 14px; height: 14px;
-  background: var(--color-bubble); border-left: 1.5px solid var(--color-bubble-line); border-bottom: 1.5px solid var(--color-bubble-line);
+  background-color: var(--color-bubble); border-left: 1.5px solid var(--bubble-line); border-bottom: 1.5px solid var(--bubble-line);
   transform: translateY(-50%) rotate(45deg);
 }
-.workbench-bubble.attention, .workbench-bubble.attention::before { border-color: color-mix(in srgb, var(--color-amber-200) 65%, transparent); }
+.workbench-bubble.attention { --bubble-line: color-mix(in srgb, var(--color-amber-200) 65%, var(--color-bubble)); }
 @container (max-width: 440px) {
   .workbench-row { grid-template-columns: minmax(0, 1fr); }
   .workbench-bubble::before { left: 50%; top: -9px; transform: translateX(-50%) rotate(135deg); }

@@ -11,7 +11,7 @@ from ..store.executions import provider_available
 from ..store.models import TransitionError
 from .activity import merge, public
 from .discussions import (ACTIONS, BUTTONS, ANSWER_CAP, REASON_CAP, DISCUSSION_SECONDS, FINDING_SECONDS,
-    KEY, ACCOUNTS, Discussions, agent, ended, excerpt, operator_only, partial_text, presence, trim)
+    KEY, ACCOUNTS, Discussions, agent, closed_for, ended, excerpt, offered, operator_only, partial_text, presence, proposal_in, trim)
 from .github import GitHubUnavailable
 from .runner import ContainerRunner, RunnerError, RunnerCapacity, RunnerUnavailable, scrub
 
@@ -39,7 +39,7 @@ class SQLiteDiscussions:
         return self.commands.active()
 
     def live(self):
-        return bool(self.active_jobs() or self.commands.keys(queued=True,limit=1))
+        return bool(self.active_jobs() or self.commands.keys(queued=True,limit=1) or self.commands.pending_actions(limit=1))
 
     def view(self,key,before=None):
         self.issue(key)
@@ -66,20 +66,39 @@ class SQLiteDiscussions:
             if self.commands.cancel(key,actor=self.actor_id):
                 self.left(key,None,'cancelled')
 
-    def apply(self,key,message_id,*,actor_id=None):
-        self.issue(key)
-        thread=self.commands.thread(key)
-        found=next((m for m in thread['messages'] if m['id']==message_id and m['role']=='assistant'),None)
-        if not found or not found.get('proposal'):
-            raise ValueError('There is no proposal to apply')
-        if found.get('receipt'): return found['receipt']
+    def _submit(self,key,intent):
         from .issue_actions import request
-        actor=actor_id or self.actor_id
-        proposal=found['proposal']
-        receipt=request(self.root,key=key,revision=found['revision'],action=proposal['action'],reason=proposal['reason'],
-                        request_id=message_id,actor_id=actor)
-        self.commands.receipt(key,message_id,receipt,actor=actor)
+        with self.db.read_snapshot() as db:issue_id=self.commands._issue(db,key)['id']
+        try:
+            receipt=request(self.root,key=issue_id,revision=intent['revision'],action=intent['action'],reason=intent['reason'],
+                            request_id=intent['request_id'],actor_id=intent['actor_id'])
+        except GitHubUnavailable:
+            return intent['request_id']  # Durable intent remains pending for the next supervisor cycle.
+        except ValueError as error:
+            self.commands.mark(key,intent['request_id'],actor=intent['actor_id'],action_error=scrub(str(error))[:400])
+            return intent['request_id']
+        self.commands.receipt(key,intent['request_id'],receipt,actor=intent['actor_id'])
         return receipt
+
+    def apply(self,key,message_id,*,actor_id=None,reason=None):
+        self.issue(key)
+        intent=self.commands.request_action(key,message_id,actor=actor_id or self.actor_id,reason=reason)
+        return self._submit(key,intent)
+
+    def reconcile_actions(self):
+        for key,intent in self.commands.pending_actions():self._submit(key,intent)
+
+    def undo(self,key,message_id,*,actor_id=None):
+        self.issue(key)
+        found=next((m for m in self.commands.thread(key)['messages'] if m['id']==message_id and m['role']=='assistant'),None)
+        state=found.get('action_state') if found else None
+        if not state or (not state['reversible'] and not state.get('undo')):
+            raise ValueError('There is no confirmed close to undo')
+        from .store_operator import selected_service
+        service=selected_service(self.root,actor_id=actor_id or self.actor_id)
+        if service is None:raise ValueError('Reopen the issue on GitHub')
+        with self.db.read_snapshot() as db:issue=self.commands._issue(db,key)
+        return service.reopen(issue['id'],state['request_id'])
 
     def context(self,key,row):
         with self.db.read_snapshot() as db:
@@ -99,7 +118,7 @@ class SQLiteDiscussions:
             if not isinstance(result,dict): result={}
             evidence.append(dict(attempt=job['id'],role=job['role'],provider=job['provider'],phase=job['phase'],outcome=job['outcome'],
                 created_at=job['created_at'],summary=scrub(str(result.get('summary','')))[:10000],link='/issues/'+key+'?job='+job['id']))
-        actions=[a for a in row['actions'] if a in ACTIONS]+(['close'] if row.get('closable') and 'close' not in row['actions'] else [])
+        actions=offered(row)
         issue_row={k:row.get(k) for k in ('key','repo','number','title','body','status','reason','dependencies','pull_requests')}
         issue_row['body']=str(issue_row.get('body') or '')[:24000]
         history=[dict(at=e['at'],kind=e['kind'],reason=scrub(str(json.loads(e['payload_json']).get('reason') or ''))[:2000]) for e in reversed(events)]
@@ -136,6 +155,7 @@ class SQLiteDiscussions:
         return any(not driver.snapshot(row['id'])['reason'] for row in units)
 
     def tick(self,config,github,settings,*,launch=True):
+        self.reconcile_actions()
         self.commands.prune_logs()
         active=self.active_jobs()
         if active:
@@ -218,18 +238,19 @@ class SQLiteDiscussions:
                 self.left(key,job,reason,detail,until,capture=capture); return
             answer=result.get('summary')
             if not isinstance(answer,str) or not answer.strip(): raise RunnerError('its answer was empty')
-            proposal=result.get('proposal')
-            if proposal is not None:
-                if (not isinstance(proposal,dict) or set(proposal)!={'action','reason'} or proposal['action'] not in job['context']['actions']
-                        or not isinstance(proposal['reason'],str) or not proposal['reason'].strip()):
-                    raise RunnerError('it proposed a decision that is not available; ask it to reconsider')
-                proposal=dict(action=proposal['action'],reason=trim(proposal['reason'],REASON_CAP))
+            proposal,unavailable,close_now=proposal_in(result,job)
+            # Only the operator who wrote the latest message, in those words, lets the persona close.
+            asker=self.commands.asker(key) if close_now else None
+            close_now=bool(asker and asker[1]==job['messages'][-1]['text'])
             thread=self.commands.thread(key,limit=1); here=thread.get('presence') or {}
             activity,_=merge(here.get('activity'),here.get('seen'),capture.get('logs',''),self.clock(),here.get('joined_at'))
             entry=dict(id=job['id'],role='assistant',text=scrub(trim(answer,ANSWER_CAP)),proposal=proposal,
                 revision=job['context']['revision'],at=self.clock(),agent=agent(job),joined_at=job.get('joined_at'),
                 instead_of=here.get('instead_of'),activity=public(activity))
+            if unavailable: entry['unavailable']=True
+            if close_now: entry['requested']=asker[1]
             accepted=self.commands.answer(key,job['id'],entry,capture=capture,presence=dict(phase='answered',agent=agent(job),at=self.clock()))
+            if accepted and close_now:self.reconcile_actions()
             if accepted:
                 job=self.commands.job(job['id']); runner.reset(job); self.commands.cleanup(job['id'])
         except RunnerCapacity:

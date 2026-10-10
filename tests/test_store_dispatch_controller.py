@@ -345,7 +345,7 @@ class DispatchTests(unittest.TestCase):
             history = [tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence')]
             jobs = [tuple(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')]
         target = Store(directory.name)
-        self.assertEqual(upgrade.apply(target)['current_schema'], 29)
+        self.assertEqual(upgrade.apply(target)['current_schema'], len(catalog))
         self.assertEqual(upgrade.apply(target)['pending_migrations'], [])
         self.store = target
         # Previously allocated u is still occupied; the new v gets first turn.

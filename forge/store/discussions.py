@@ -70,7 +70,7 @@ class DiscussionStore:
                 return request_id
             working=thread['status'] in {'queued','running','cancelling'}
             latest=db.execute("SELECT * FROM messages WHERE discussion_id=? AND role IN ('operator','assistant') ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
-            if latest and latest['role']=='operator' and latest['content']==text:
+            if latest and latest['role']=='operator' and latest['content']==text and latest['author_id']==actor:
                 if working:
                     return latest['id']
                 identifier=latest['id']
@@ -134,8 +134,63 @@ class DiscussionStore:
             return dict(id=row['id'],version=row['version'],status=row['status'],reason=row['reason'],partial=row['partial'] or '',
                 requested_at=row['requested_at'],revision=row['source_revision'],cancel_requested=bool(row['cancel_requested']),
                 origin=json.loads(row['origin']) if row['origin'] else None,presence=json.loads(row['presence_json']) if row['presence_json'] else None,
-                auto_retry=row['auto_retry'],avoid=json.loads(row['avoid_json']),messages=[message(m) for m in page],
+                auto_retry=row['auto_retry'],avoid=json.loads(row['avoid_json']),messages=[self._message(db,m) for m in page],
                 before=page[0]['sequence'] if len(rows)>limit else None,job=self._job(db,job_id) if job_id else None)
+
+    @staticmethod
+    def _message(db,row):
+        value=message(row)
+        intent=value.get('action_intent')
+        identifier=intent['request_id'] if intent else value.get('receipt')
+        if identifier:
+            from ..factory.store_operator import action_state_in
+            state=action_state_in(db,identifier)
+            if state is None and intent:
+                error=value.get('action_error')
+                state=dict(request_id=identifier,status='rejected' if error else 'preparing',
+                           message=error or 'Recording operator decision',reversible=False,undo=None)
+            if state:value['action_state']=state
+        # Actor authority is retained internally, not supplied back by a browser.
+        value.pop('action_intent',None)
+        return value
+
+    @staticmethod
+    def _intent(entry,actor,*,reason=None):
+        if not isinstance(actor,str) or not actor or actor.startswith('agent:'):
+            raise TransitionError('An authenticated operator identity is required')
+        proposal=entry.get('proposal')
+        if not proposal:raise TransitionError('There is no proposal to apply')
+        reason=proposal['reason'] if reason is None else reason
+        if not isinstance(reason,str) or not reason.strip() or len(reason)>2000:
+            raise TransitionError('Record the reason for this decision')
+        return dict(request_id=entry['id'],actor_id=actor,revision=entry['revision'],
+                    action=proposal['action'],reason=reason.strip())
+
+    def request_action(self,key,message_id,*,actor,reason=None):
+        with self.store.write() as db:
+            writable(db)
+            thread=self._thread(db,key)
+            row=db.execute("SELECT * FROM messages WHERE discussion_id=? AND id=? AND role='assistant'",(thread['id'],message_id)).fetchone()
+            if row is None:raise TransitionError('There is no proposal to apply')
+            entry=message(row);intent=self._intent(entry,actor,reason=reason)
+            metadata=json.loads(row['metadata_json'])
+            previous=metadata.get('action_intent')
+            if previous and previous!=intent:raise IdempotencyConflict('This proposal already has a different operator decision')
+            if not previous:
+                metadata['action_intent']=intent
+                db.execute('UPDATE messages SET metadata_json=? WHERE id=?',(_json(metadata),message_id))
+                self._touch(db,thread['id']);self._event(db,thread,'proposal_requested',actor,request_id=message_id)
+            return intent
+
+    def pending_actions(self,*,limit=50):
+        with self.store.read_snapshot() as db:
+            rows=db.execute("""SELECT m.id,m.metadata_json,i.repository_id,i.github_number FROM messages m
+                JOIN discussions d ON d.id=m.discussion_id JOIN issues i ON i.id=d.issue_id
+                LEFT JOIN issue_action_requests q ON q.id=m.id
+                WHERE json_type(m.metadata_json,'$.action_intent')='object'
+                AND json_type(m.metadata_json,'$.action_error') IS NULL AND q.id IS NULL
+                ORDER BY m.created_at,m.id LIMIT ?""",(limit,)).fetchall()
+            return [(str(row['repository_id'])+':'+str(row['github_number']),json.loads(row['metadata_json'])['action_intent']) for row in rows]
 
     def keys(self,*,queued=False,limit=100):
         with self.store.read_snapshot() as db:
@@ -245,6 +300,15 @@ class DiscussionStore:
             if job.get('completed'): return True
             if job['fenced'] or thread['current_execution_id']!=job_id or thread['cancel_requested']:
                 return False
+            if entry.get('requested'):
+                from ..factory.discussions import asked_to_close
+                operator=db.execute("SELECT * FROM messages WHERE discussion_id=? AND role='operator' ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
+                latest=job['messages'][-1]
+                if (operator is None or latest['role']!='user' or operator['content']!=latest['text']
+                        or entry['requested']!=operator['content'] or not asked_to_close(operator['content'])
+                        or (entry.get('proposal') or {}).get('action')!='close'):
+                    raise TransitionError('The close command no longer matches the authenticated operator message')
+                entry={**entry,'action_intent':self._intent(entry,operator['author_id'])}
             self._capture(db,job_id,capture)
             self._append(db,thread,entry,'agent:discussion')
             db.execute('UPDATE discussion_runtime SET completed=1 WHERE execution_id=?',(job_id,))
@@ -289,7 +353,7 @@ class DiscussionStore:
                 self._touch(db,thread['id'])
             self._event(db,thread,'cleaned',execution_id=job_id)
 
-    def receipt(self,key,message_id,receipt,*,actor):
+    def receipt(self,key,message_id,receipt,*,actor,**details):
         with self.store.write() as db:
             writable(db)
             thread=self._thread(db,key)
@@ -300,7 +364,26 @@ class DiscussionStore:
                 raise IdempotencyConflict('proposal already has another receipt')
             metadata['receipt']=receipt
             db.execute('UPDATE messages SET metadata_json=? WHERE id=?',(_json(metadata),message_id))
-            self._event(db,thread,'proposal_applied',actor,message_id=message_id,receipt=receipt)
+            self._event(db,thread,'proposal_requested',actor,message_id=message_id,receipt=receipt,**details)
+
+    def mark(self,key,message_id,*,actor,reason=None,**fields):
+        """Record what became of an answer's proposal: a failed close or its undo."""
+        with self.store.write() as db:
+            writable(db)
+            thread=self._thread(db,key)
+            row=db.execute("SELECT * FROM messages WHERE discussion_id=? AND id=? AND role='assistant'",(thread['id'],message_id)).fetchone()
+            if row is None: raise KeyError(message_id)
+            metadata=json.loads(row['metadata_json'])|fields
+            db.execute('UPDATE messages SET metadata_json=? WHERE id=?',(_json(metadata),message_id))
+            self._touch(db,thread['id'])
+            self._event(db,thread,'proposal_'+next(iter(fields)),actor,message_id=message_id,**({'reason':reason} if reason else {}))
+
+    def asker(self,key):
+        """(author, words) of the operator's latest message."""
+        with self.store.read_snapshot() as db:
+            thread=self._thread(db,key)
+            row=db.execute("SELECT author_id,content FROM messages WHERE discussion_id=? AND role='operator' ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
+            return (row['author_id'],row['content']) if row else None
 
     def prune_logs(self):
         with self.store.write() as db:

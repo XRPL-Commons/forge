@@ -2,7 +2,7 @@
 // pure: the components turn these into router.replace() calls and classes.
 import type { PanelQuery, QueryValue } from './panel'
 import type { AgentMood } from './cube'
-import { modelLabel, persona } from './personas'
+import { modelLabel, persona, personaSays } from './personas'
 
 export type IssueTab = 'details' | 'discussion'
 
@@ -92,6 +92,13 @@ export interface Presence {
   text?: string
   at?: number
 }
+export interface ProposalActionState {
+  request_id: string | null
+  status: 'preparing' | 'pending' | 'applied' | 'rejected'
+  message: string | null
+  reversible: boolean
+  undo: { request_id: string; status: 'pending' | 'applied' | 'rejected'; message: string | null } | null
+}
 export interface ThreadMessage {
   id: string
   sequence: number
@@ -103,6 +110,14 @@ export interface ThreadMessage {
   activity?: ActivityLine[]
   instead_of?: AgentInfo | null
   joined_at?: number | null
+  // It proposed a decision Forge does not offer: the answer stands, the button does not.
+  unavailable?: boolean
+  // Historical links and worker prose do not establish an applied action.
+  requested?: string
+  receipt?: string
+  close_error?: string
+  undone?: { at: number; actor?: string } | null
+  action_state?: ProposalActionState | null
   // system: the agent left without answering
   event?: 'left'
   reason?: LeftReason
@@ -119,17 +134,19 @@ export function presenceMood(phase: PresencePhase | undefined): AgentMood {
   return 'happy'
 }
 
-// What the agent is doing, in one phrase: a context answer is quick; reading
-// the code takes minutes, so the operator knows which to expect.
-export function modeLine(mode: AnswerMode | undefined): string {
-  return mode === 'code' ? 'Checking the code' : 'Answering from saved evidence'
+// Past about 90 s, a gentle word on why it is taking a while, folded into
+// the one live line after the elapsed time.
+export const SLOW_SECONDS = 90
+export function slowNote(mode: AnswerMode | undefined, seconds: number): string | null {
+  if (seconds < SLOW_SECONDS) return null
+  return mode === 'code' ? 'reading the code, longer than usual' : 'longer than usual'
 }
 
-// Past about 90 s, a gentle word on why it is taking a while.
-export const SLOW_SECONDS = 90
-export function slowNote(name: string, mode: AnswerMode | undefined, seconds: number): string | null {
-  if (seconds < SLOW_SECONDS) return null
-  return `Taking longer than usual: ${name} is ${mode === 'code' ? 'reading the code' : 'still working on it'}`
+// The one live line while an agent works: only what it is doing now, never
+// the log of what it did. The answer replaces it.
+export function liveLine(agent: AgentInfo | null | undefined, activity: readonly ActivityLine[], instead?: AgentInfo | null): string {
+  const current = activity[activity.length - 1]
+  return current ? personaSays(persona(agent?.provider).name, current.text) : joinedLine(agent, instead)
 }
 
 // Whether an answer runs past about `lines` lines in the chat column, and so
@@ -180,12 +197,13 @@ export function leftLine(message: Pick<ThreadMessage, 'text' | 'reason' | 'until
   return message.reason === 'quota' && message.until ? `${message.text} until ${clockTime(message.until, locale)}` : message.text
 }
 
-// The thread as the chat shows it: before each answer a system line says who
-// joined; a left line with nothing after it offers Try again (unless Forge is
-// already finding someone else).
+// The thread as the chat shows it: questions and answers. The answer replaces
+// the status that led to it, so a left line someone else answered after
+// ("Bolt is out of quota", then Ember's answer) is gone; one with nothing
+// after it stays and offers Try again (unless Forge is already finding
+// someone else).
 export type ThreadEntry =
   | { kind: 'user'; id: string; message: ThreadMessage }
-  | { kind: 'joined'; id: string; agent: AgentInfo | null; instead: AgentInfo | null }
   | { kind: 'answer'; id: string; message: ThreadMessage }
   | { kind: 'left'; id: string; message: ThreadMessage; actionable: boolean }
 export function threadEntries(messages: readonly ThreadMessage[], pending: boolean): ThreadEntry[] {
@@ -193,14 +211,34 @@ export function threadEntries(messages: readonly ThreadMessage[], pending: boole
   messages.forEach((message, index) => {
     if (message.role === 'user') entries.push({ kind: 'user', id: message.id, message })
     else if (message.role === 'system') {
+      if (messages.slice(index + 1).find(m => m.role !== 'system')?.role === 'assistant') return
       const last = index === messages.length - 1
       entries.push({ kind: 'left', id: message.id, message, actionable: last && !pending && !message.retrying })
-    } else {
-      if (message.agent) entries.push({ kind: 'joined', id: `joined-${message.id}`, agent: message.agent, instead: message.instead_of ?? null })
-      entries.push({ kind: 'answer', id: message.id, message })
-    }
+    } else entries.push({ kind: 'answer', id: message.id, message })
   })
   return entries
+}
+
+// Only canonical action outcomes establish a close or reopen. A receipt links
+// a request; it does not prove GitHub applied it.
+export type ProposalState = 'none' | 'offer' | 'submitted' | 'pending' | 'applied' | 'closed' | 'failed' | 'undo_pending' | 'undo_failed' | 'reopened'
+type ProposalMessage = Pick<ThreadMessage, 'requested' | 'receipt' | 'undone' | 'action_state'> & { proposal?: { action: string } | null }
+export function proposalState(message: ProposalMessage): ProposalState {
+  if (!message.proposal) return 'none'
+  const action = message.action_state
+  if (!action) return message.receipt ? 'submitted' : 'offer'
+  if (action.status === 'preparing' || action.status === 'pending') return 'pending'
+  if (action.status === 'rejected') return 'failed'
+  if (action.undo?.status === 'pending') return 'undo_pending'
+  if (action.undo?.status === 'rejected') return 'undo_failed'
+  if (action.undo?.status === 'applied') return 'reopened'
+  return message.proposal.action === 'close' ? 'closed' : 'applied'
+}
+
+export function canUndoProposal(message: ProposalMessage): boolean {
+  const action = message.action_state
+  return message.proposal?.action === 'close' && action?.status === 'applied' && action.reversible
+    && !action.undo
 }
 
 export const SUGGESTED_PROMPTS = [

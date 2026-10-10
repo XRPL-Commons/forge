@@ -46,30 +46,51 @@ class Queries:
         The unit remains available as historical context when a removed or
         reopened member no longer inherits its lifecycle. It grants no authority.
         """
-        # List pages never select requirements or issue bodies. These can be
-        # large, and belong to the explicit single-issue detail request.
+        return Queries._issue_contexts(connection, [issue_id], include_body=include_body,
+                                       include_gates=include_gates)[issue_id]
+
+    @staticmethod
+    def _issue_contexts(connection, issue_ids, *, include_body=False, include_gates=False):
+        """Hydrate one bounded page; lifecycle decisions still share one projector."""
+        identifiers = tuple(dict.fromkeys(issue_ids))
+        if not identifiers:
+            return {}
+        _limit(len(identifiers))
+        placeholders = ','.join('?' for _ in identifiers)
+        # Bodies and requirements remain exclusive to explicit detail reads.
         body = ', r.body, r.requirements_json' if include_body else ''
-        row = connection.execute(
+        rows = connection.execute(
             "SELECT i.*, r.title, r.content_hash, r.requirements_hash, COALESCE(v.body_truncated,0) AS body_truncated, p.full_name AS repository"
             + body + ' FROM issues i JOIN issue_revisions r ON r.id=i.current_revision_id LEFT JOIN revision_presentation v ON v.revision_id=r.id '
-            'JOIN repositories p ON p.id=i.repository_id WHERE i.id=?', (issue_id,),
-        ).fetchone()
-        if row is None:
-            raise KeyError(issue_id)
-        issue = dict(row)
+            'JOIN repositories p ON p.id=i.repository_id WHERE i.id IN (' + placeholders + ')', identifiers,
+        ).fetchall()
+        issues = {row['id']: dict(row) for row in rows}
+        for identifier in identifiers:
+            if identifier not in issues:
+                raise KeyError(identifier)
+        members = {row['issue_id']: dict(row) for row in connection.execute(
+            'SELECT m.* FROM issues i JOIN unit_issues m ON m.id=('
+            'SELECT id FROM unit_issues WHERE issue_id=i.id '
+            'ORDER BY (left_at IS NULL) DESC, joined_at DESC, id DESC LIMIT 1) '
+            'WHERE i.id IN (' + placeholders + ')', identifiers)}
+        unit_ids = tuple({member['unit_id'] for member in members.values()})
+        units = {row['id']: dict(row) for row in connection.execute(
+            'SELECT * FROM units WHERE id IN (' + ','.join('?' for _ in unit_ids) + ')', unit_ids)} if unit_ids else {}
+        return {identifier: Queries._project_issue(connection, issues[identifier], members.get(identifier),
+                    units[members[identifier]['unit_id']] if identifier in members else None,
+                    include_body=include_body, include_gates=include_gates) for identifier in identifiers}
+
+    @staticmethod
+    def _project_issue(connection, issue, member, historical_unit, *, include_body=False, include_gates=False):
+        issue_id = issue['id']
         for field in ('labels', 'assignees', 'assignee_types'):
             issue[field] = json.loads(issue.pop(field + '_json'))
         if include_body:
             issue['requirements'] = json.loads(issue.pop('requirements_json'))
-        member = connection.execute(
-            'SELECT * FROM unit_issues WHERE issue_id=? '
-            'ORDER BY (left_at IS NULL) DESC, joined_at DESC, id DESC LIMIT 1', (issue_id,),
-        ).fetchone()
-        unit = historical_unit = None
+        unit = historical_unit
         blocker = None
         gates = []
         if member:
-            unit = historical_unit = dict(connection.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())
             if member['left_at'] is None and unit['state'] not in TERMINAL:
                 gates = applicable_gates(connection, unit, member['id'], unit['current_candidate_id'])
                 blocker = gates[0] if gates else None

@@ -113,10 +113,10 @@ describe('workFacts', () => {
   it('names the persona, the model, the attempt and the time left', () => {
     const facts = workFacts({ role: 'build', provider: 'claude', model: 'claude-sonnet-4-6', created_at: 1000, started_at: 1060, deadline: 2860, branch: 'forge/5-build' },
       { failed: 1, limit: 3 }, 1780)
-    expect(facts).toEqual({ who: 'Ember', provider: 'claude', model: 'Claude Sonnet 4.6', attempt: 'Build · attempt 2 of 3',
-      timing: '12 min in · 18 min left', overdue: false, branch: 'forge/5-build' })
+    expect(facts).toEqual({ who: 'Ember', provider: 'claude', model: 'Claude Sonnet 4.6', attempt: 'Build, attempt 2 of 3',
+      timing: '12 minutes in, 18 minutes left.', overdue: false, branch: 'forge/5-build' })
     const late = workFacts({ role: 'review', provider: 'grok', model: null, created_at: 1000, started_at: null, deadline: 1500 }, null, 1600)
-    expect([late.who, late.model, late.attempt, late.timing, late.overdue, late.branch]).toEqual(['Nova', 'Grok', 'Review', '10 min in · past its deadline', true, null])
+    expect([late.who, late.model, late.attempt, late.timing, late.overdue, late.branch]).toEqual(['Nova', 'Grok', 'Review', '10 minutes in, past its deadline.', true, null])
   })
 })
 

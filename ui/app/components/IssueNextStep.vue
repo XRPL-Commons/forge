@@ -5,7 +5,7 @@ const {
   setupNeeded, primary, secondary, candidatePull, approvalOpen, sentToGitHub, approval, now,
   reviewRequested, approvals, checked, checkingSince, checkNote, checkRequest, deployment,
   siblingLink, pullUrl, askReviewer, checkNow, ask, confirmVerification, tab, ACTION_LABELS,
-  attentionNote, pullLabel, plan, moreItems, live, bubble, facts,
+  attentionNote, pullLabel, plan, moreItems, live, bubble, facts, technical, technicalOpen,
 } = useIssueDetailContext()
 </script>
 <template>
@@ -48,6 +48,22 @@ const {
               </p>
               <p v-if="!bubble?.headline && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
             </IssueWorkbench>
+            <!-- The worker's technical report, for whoever wants it; the bubble
+                 keeps to plain words. -->
+            <div v-if="technical" id="issue-technical" class="-mt-1.5">
+              <UButton
+                id="issue-technical-toggle"
+                size="xs"
+                color="neutral"
+                variant="link"
+                class="px-0 text-muted"
+                :icon="technicalOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
+                :aria-expanded="technicalOpen"
+                aria-controls="issue-technical-text"
+                @click="technicalOpen = !technicalOpen"
+              >Technical details</UButton>
+              <p v-show="technicalOpen" id="issue-technical-text" class="mt-1 whitespace-pre-line rounded-lg border border-line bg-panel px-3 py-2 text-xs text-muted wrap-anywhere">{{ technical }}</p>
+            </div>
 
             <!-- Who is on it, for how long and where the work lands. -->
             <dl v-if="facts" id="issue-work" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 rounded-xl border border-line bg-panel px-3 py-2.5 text-xs">
@@ -83,7 +99,9 @@ const {
                 <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
               </section>
               <p v-if="detail.merge_policy" id="issue-merge-policy" class="text-xs text-muted">
-                Merge policy · {{ detail.merge_policy === 'auto' ? 'Automatic after checks pass; audit or verification may require human approval.' : 'Human approval required.' }}
+                {{ detail.merge_policy === 'auto'
+                  ? 'Forge merges this automatically once checks pass. A security audit or a verification may still need your approval.'
+                  : 'Forge merges this only after a person approves it.' }}
               </p>
               <p v-if="approval && (sentToGitHub || !bubble?.headline)" role="status" class="text-sm text-amber-200">Waiting for your approval on GitHub</p>
               <ul
@@ -101,14 +119,14 @@ const {
               <p v-if="detail.merge_blocker" class="text-sm text-amber-200">Check the pull request checks and repository rules on GitHub. If branch rules block the controller, configure its pull-request bypass in Repository setup. Forge will retry after the blocker is resolved.</p>
               <p v-if="reviewRequested" id="review-requested" class="text-sm text-muted">{{ reviewRequested }}</p>
               <p v-if="deployment" id="issue-deployment" class="text-sm text-muted">
-                Deployment · {{ deployment.text }}
+                {{ deployment.text }}
                 <a
                   v-if="deployment.runUrl"
                   :href="deployment.runUrl"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="ml-1 text-sky-200 underline-offset-4 hover:underline"
-                >Deploy run ↗</a>
+                >See the deployment run ↗</a>
               </p>
 
               <!-- What this issue waits for: one chip per dependency. -->
@@ -133,14 +151,14 @@ const {
                 <h3 class="font-medium">Verification needed</h3>
                 <p class="text-muted">{{ detail.verification_request.why }}</p>
                 <pre class="whitespace-pre-wrap break-words font-sans">{{ detail.verification_request.what }}</pre>
-                <p v-if="detail.verification_request.ci?.length" class="text-muted">Waiting for configured CI checks: {{ detail.verification_request.ci.map(check => check.name).join(', ') }}. Forge checks them automatically.</p>
+                <p v-if="detail.verification_request.ci?.length" class="text-muted">Waiting for the configured automated checks: {{ detail.verification_request.ci.map(check => check.name).join(', ') }}. Forge checks them automatically.</p>
                 <template v-else-if="detail.verification_request.can_confirm">
                   <p class="text-muted">Run these steps on the current pull request revision. Record what you checked and confirm only after they pass.</p>
                   <UTextarea v-model="verificationStatement" aria-label="Verification evidence" placeholder="What I checked and the result" :maxlength="2000" :disabled="busy" class="w-full" />
                   <UButton :disabled="busy || !verificationStatement.trim()" :loading="verificationRequest.pending.value" @click="confirmVerification">Confirm verification passed</UButton>
                   <p v-if="verificationRequest.error.value" role="alert" class="text-error">{{ verificationRequest.error.value }}</p>
                 </template>
-                <p v-else class="text-muted">Run these steps on the current PR revision, then approve on GitHub if they pass. If they fail, comment on the PR and retry with the findings.</p>
+                <p v-else class="text-muted">Run these steps on the current version of the pull request, then approve it on GitHub if they pass. If they fail, comment on the pull request and retry with the findings.</p>
               </section>
 
               <!-- One primary way forward (or a calm line saying none is

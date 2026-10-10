@@ -322,6 +322,36 @@ class FactoryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 result(broken, job)
 
+    def test_the_operator_summary_is_kept_and_older_results_get_a_sanitized_lead(self):
+        job = self.job()
+        report = self.report(job)
+        written = result({**report, 'operator_summary': 'The change is ready. Review starts next. A third sentence.'}, job)
+        self.assertEqual(written['operator_summary'], 'The change is ready. Review starts next.')
+        for broken in ('', '  ', 3):
+            with self.assertRaises(ValueError):
+                result({**report, 'operator_summary': broken}, job)
+        older = {k: v for k, v in report.items() if k not in ('headline', 'plain', 'operator_summary')}
+        older['summary'] = ('Prepared the CI workflow in local commit 0539aaf9… and updated `.github/workflows/quality.yml`. '
+                            'GitHub rejected publication with GH013.')
+        lead = result(dict(older), job)['operator_summary']
+        self.assertEqual(lead, 'Prepared the automated checks workflow in local commit and updated.')
+        for residue in ('0539aaf9', '`', 'GH013', 'CI', '.github'):
+            self.assertNotIn(residue, lead)
+
+    def test_a_github_rule_rejection_is_not_a_build_environment_problem(self):
+        from forge.factory.contracts import operator_text
+        job = self.job()
+        report = {**self.report(job), 'outcome': 'blocked_environment', 'blocker': 'ci_evidence', 'required_services': [],
+                  'summary': "GitHub rejected publication with GH013: 'refusing to allow a GitHub App to create or update "
+                             "workflow `.github/workflows/quality.yml` without `workflows` permission'."}
+        self.assertEqual(result(dict(report), job)['blocker'], 'github_permission')
+        generic = {**report, 'summary': 'GH013: Repository rule violations: required status check CI is expected.'}
+        self.assertEqual(result(generic, job)['blocker'], 'github_permission')
+        signed = {**report, 'summary': 'Push rejected: Commits must have verified signatures.'}
+        self.assertEqual(result(signed, job)['blocker'], 'github_permission')
+        self.assertEqual(result({**report, 'summary': 'npm could not reach the registry.'}, job)['blocker'], 'ci_evidence')
+        self.assertEqual(operator_text('The PR #4 CI run failed on abc1234def.'), 'The pull request #4 automated checks run failed on a commit.')
+
     def test_every_outcome_keeps_the_plain_language_card_with_the_issue(self):
         card = {'headline': 'Built and waiting for review',
                 'plain': 'The change is written and its pull request is open. Review starts next.'}

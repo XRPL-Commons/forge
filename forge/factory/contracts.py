@@ -14,9 +14,23 @@ RETRY_STATE = {'build': 'ready', 'review': 'built', 'audit': 'reviewed', 'merge'
 SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?\Z')
 MARKER = re.compile(r'<!-- forge-submission\s+(.*?)\s+-->', re.S)
 MAX_FAILURES = 3
-ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services')
+ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services', 'github_permission')
 # Plain-language limits, shared with harness.schema(). result() truncates, never rejects.
 HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES = 90, 360, 3
+OPERATOR_SUMMARY_LIMIT = 300
+# Pipeline roles hand the operator 1-2 sentences; discussions answer in chat instead.
+OPERATOR_ROLES = ('build', 'review', 'audit', 'recovery')
+# GH013 identifies a repository-rule rejection, not which rule failed.
+GITHUB_RULE = re.compile(r'\bGH013\b|repository rule violations?', re.I)
+WORKFLOW_PERMISSION = re.compile(
+    r'\bwithout\s+(?:the\s+)?[`\"\']*workflows?[`\"\']*\s+permission\b|'
+    r'\b(?:lacks?|missing|needs?)\s+(?:the\s+)?[`\"\']*workflows?[`\"\']*\s+permission\b|'
+    r'\bworkflows?\W+permission\s+(?:is\s+)?(?:missing|required|denied)\b|'
+    r'refusing to allow a GitHub App to create or update workflow', re.I)
+SIGNED_COMMITS = re.compile(
+    r'\bcommits? must (?:have verified signatures?|be signed)\b|'
+    r'\b(?:require[sd]?|requiring)\s+(?:verified signatures?|signed commits?)\b|'
+    r'\bunsigned commits? (?:are )?(?:not allowed|rejected)\b', re.I)
 SENTENCE = re.compile(r'[^.!?]*[.!?]+|[^.!?]+$')
 # One entry per role: a fifth role is one line here and one in harness.role_properties().
 ROLE_FIELDS = {'build': frozenset(),
@@ -42,12 +56,47 @@ def plain_text(text, limit=PLAIN_LIMIT, sentences=PLAIN_SENTENCES):
     return clamp(kept or collapsed, limit)
 
 
+# Technical residue an operator should not have to parse: code spans, commit
+# hashes, error codes, file paths and the abbreviations workers favour.
+_CODE_SPAN = re.compile(r'`[^`]*`')
+_RESIDUE = ((re.compile(r'(?<![\w.])(?:\.?[\w-]+/)+[\w-]+\.\w+'), 'a file'),
+            (re.compile(r'\b(commit)\s+(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b(?:…|\.\.\.)?'), r'\1'),
+            (re.compile(r'\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b(?:…|\.\.\.)?'), 'a commit'),
+            (re.compile(r'\s*\b[A-Z]{2,}[0-9]{2,}\b:?'), ''))
+_WORDS = ((re.compile(r'\bPRs?\b'), 'pull request'), (re.compile(r'\bCI\b'), 'automated checks'),
+          (re.compile(r'\brepo\b', re.I), 'repository'), (re.compile(r'\bdeps\b', re.I), 'dependencies'))
+
+
+def operator_text(text, limit=OPERATOR_SUMMARY_LIMIT):
+    """An older result's lead sentence, stripped of technical residue, for the bubble."""
+    text = _CODE_SPAN.sub('', ' '.join(str(text or '').split()))
+    for pattern, word in _RESIDUE + _WORDS:
+        text = pattern.sub(word, text)
+    text = re.sub(r'\s+([,.;:])', r'\1', re.sub(r'\(\s*\)|\s{2,}', ' ', text)).strip(' ,;:')
+    lead = plain_text(text, limit, 1)
+    return lead[:1].upper() + lead[1:] if lead else ''
+
+
+def github_rule_kind(text):
+    text = str(text or '')
+    if WORKFLOW_PERMISSION.search(text):
+        return 'workflow_permission'
+    if SIGNED_COMMITS.search(text):
+        return 'signed_commits'
+    return 'repository_rule' if GITHUB_RULE.search(text) else None
+
+
+def github_rule(text):
+    return github_rule_kind(text) is not None
+
+
 def summary(value, role, at):
     """The plain-language card kept with an outcome, for a reader who does not read code."""
     headline = clamp((value or {}).get('headline'), HEADLINE_LIMIT) if isinstance(value, dict) else ''
     if not headline:
         return None
-    return {'headline': headline, 'plain': plain_text(value.get('plain')), 'role': role, 'at': at}
+    # The operator summary is written for this card; older results keep plain.
+    return {'headline': headline, 'plain': plain_text(value.get('operator_summary') or value.get('plain')), 'role': role, 'at': at}
 
 
 def environment_key(config):
@@ -232,7 +281,7 @@ def result(value, job):
     common = {'version', 'attempt', 'role', 'outcome', 'summary'}
     # Older image contracts remain readable during a rolling upgrade: a worker
     # launched from the previous image writes neither blocker nor plain language.
-    common |= {key for key in ('blocker', 'headline', 'plain', 'decision', 'required_services', 'verification') if key in value}
+    common |= {key for key in ('blocker', 'headline', 'plain', 'operator_summary', 'decision', 'required_services', 'verification') if key in value}
     role = job['role']
     if role == 'build':
         common |= {key for key in ('issues', 'evidence', 'delegation_plan', 'output_commit') if key in value}
@@ -240,7 +289,7 @@ def result(value, job):
             or value['attempt'] != job['id'] or value['role'] != role
             or value['outcome'] not in {'pass', 'reject', 'unable', 'wait', 'blocked_environment', 'needs_decision', 'needs_human_verification', 'waiting_on_issues', 'delegate'}
             or any(not isinstance(value[k], str) or not value[k].strip()
-                   for k in ('summary', 'headline', 'plain') if k in value)):
+                   for k in ('summary', 'headline', 'plain', 'operator_summary') if k in value)):
         raise ValueError('Worker result does not satisfy its assignment')
     managed = job.get('builder_stage') is not None or job.get('delegation') is not None
     if managed:
@@ -297,7 +346,14 @@ def result(value, job):
     # too; the schema workers are handed keeps both fields required.
     value['headline'] = (clamp(value['headline'], HEADLINE_LIMIT) if 'headline' in value
                          else plain_text(value['summary'], HEADLINE_LIMIT, 1))
-    value['plain'] = plain_text(value['plain'] if 'plain' in value else value['summary'])
+    written = value['plain'] if 'plain' in value else value['summary']
+    value['plain'] = plain_text(written)
+    value['operator_summary'] = (plain_text(value['operator_summary'], OPERATOR_SUMMARY_LIMIT, 2)
+                                 if 'operator_summary' in value else operator_text(written))
+    # A push GitHub refused by repository rule is not a broken environment,
+    # whichever blocker the worker picked.
+    if value['outcome'] == 'blocked_environment' and value.get('blocker') != 'services' and github_rule(value['summary']):
+        value['blocker'] = 'github_permission'
     if ((value['outcome'] == 'blocked_environment' and value.get('blocker') not in ENVIRONMENT_BLOCKERS)
             or (value['outcome'] != 'blocked_environment' and value.get('blocker') is not None)):
         raise ValueError('Environment blockers require a supported reason code')
@@ -337,7 +393,12 @@ def plain_language():
         'change, so the tests stop the attempt. The issue cannot move on until that is fixed. Forge will '
         'investigate the failure." headline "Waiting for you to confirm the database migration ran", plain '
         '"The change needs the new database column before it is safe to merge. Someone with production '
-        'access has to run the migration. Forge waits until that is confirmed."')
+        'access has to run the migration. Forge waits until that is confirmed." '
+        f'operator_summary is one or two complete sentences (at most {OPERATOR_SUMMARY_LIMIT} characters) for an operator '
+        'who is not an engineer: what happened, and what they can do about it, if anything. Write every word out: no '
+        'commit hashes, error codes, file paths, field names or abbreviations such as CI, PR or GH013. Example: "GitHub '
+        'refused the change because Forge is not allowed to edit workflow files in this repository. Give the Forge app '
+        'the Workflows permission, or remove that part of the issue." The technical detail stays in summary.')
 
 
 def assignment_note(job):
@@ -383,6 +444,9 @@ def assignment_note(job):
         'If Forge cannot supply a required tool, sandbox capability, dependency access, memory, or CI evidence, '
         'return blocked_environment with blocker toolchain, sandbox, dependency_access, resources, or ci_evidence '
         'and concrete diagnostic evidence in summary. Preserve the existing candidate PR. '
+        'If GitHub rejects a push because repository rules or App permissions are not satisfied, return blocked_environment '
+        'with blocker github_permission and the exact rejection evidence. GH013 alone does not identify the failed rule. '
+        'Recommend a permission change only when the diagnostic identifies that missing permission. '
         'A failing test assertion, type error or code defect is NOT an environment blocker: report actionable findings. '
         'For every other outcome set blocker null. '
         'The controller supplies CI check results bound to head/base revisions when a candidate exists. '

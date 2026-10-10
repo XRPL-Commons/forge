@@ -28,6 +28,26 @@ def labels(issue):
     return {row['name'] if isinstance(row, dict) else row for row in issue.get('labels', [])}
 
 
+def undo_id(request_id):
+    return str(uuid.uuid5(uuid.NAMESPACE_URL,'forge:undo-close:'+request_id))
+
+
+def action_state_in(db,request_id):
+    """Project recorded request/effect outcomes; a request ID is never success."""
+    row=db.execute('SELECT q.*,a.result_json FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id WHERE q.id=?',(request_id,)).fetchone()
+    if row is None:return None
+    undo=db.execute("SELECT id,status,message FROM issue_action_requests WHERE id=? AND action='reopen'",(undo_id(request_id),)).fetchone()
+    reversible=False
+    if row['action']=='close' and row['status']=='applied' and undo is None:
+        effect=db.execute("SELECT receipt_json FROM operator_action_effects WHERE request_id=? AND step='close-issue' AND status='confirmed'",(request_id,)).fetchone()
+        issue=db.execute('SELECT github_state,state_reason,version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()
+        result=json.loads(row['result_json']) if row['result_json'] else {}
+        reversible=bool(effect and json.loads(effect[0]).get('closure_event') and issue['github_state']=='closed'
+                        and issue['state_reason']=='not_planned' and issue['version']==result.get('closed_issue_version'))
+    return dict(request_id=request_id,status=row['status'],message=row['message'] or '',reversible=reversible,
+                undo=dict(request_id=undo['id'],status=undo['status'],message=undo['message'] or '') if undo else None)
+
+
 class OperatorActions(Lifecycle):
     def __init__(self, store, github, *, actor_id=None, config, requirements=None, verification=None, clock=time.time):
         super().__init__(store, clock=clock)
@@ -248,6 +268,8 @@ class OperatorActions(Lifecycle):
             # Recheck local authority immediately before each remote effect.
             if self._baseline(db,row['unit_id'])!=row['plan']['baseline']:
                 raise TransitionError('Delivery changed while applying the decision')
+            if row['action']=='reopen' and db.execute('SELECT version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()[0]!=row['plan']['issue_version']:
+                raise TransitionError('Issue changed after Undo was requested')
             previous=db.execute('SELECT payload_json FROM operator_action_effects WHERE request_id=? AND step=?',(row['id'],step)).fetchone()
             if previous and previous[0]!=_json(payload):raise IdempotencyConflict('Effect identity has another payload')
             db.execute("INSERT OR IGNORE INTO operator_action_effects VALUES(?,?,'pending',?,NULL,?,?)",(row['id'],step,_json(payload),self.clock(),self.clock()))
@@ -306,13 +328,192 @@ class OperatorActions(Lifecycle):
                 raise GitHubUnavailable('Candidate closure is unconfirmed')
             self._receipt(row,'close-pr',{'closed':True,'merged':False})
         issue=self._remote(row)
-        if row['action']=='close_member' and issue.get('state')=='closed':return issue
-        self._intent(row,'close-issue',{'number':row['item']['number'],'state_reason':'not_planned'})
-        if issue.get('state')=='open':self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
+        if row['action']=='close_member':
+            # Member closure is a composition decision, not a reversible singleton close.
+            if issue.get('state')=='closed':return issue
+            self._intent(row,'close-issue',{'number':row['item']['number'],'state_reason':'not_planned'})
+            self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
+            issue=self._remote(row)
+            if issue.get('state')!='closed' or issue.get('state_reason')!='not_planned':raise GitHubUnavailable('Issue closure is unconfirmed')
+            self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned'})
+            return issue
+        if row['action']=='close' and issue.get('state')=='open':self._comment(row)
+        with self.store.read_snapshot() as db:
+            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(row['id'],)).fetchone()
+        transitions=self._issue_transitions(row)
+        if effect:
+            intent=json.loads(effect['payload_json'])
+            if 'previous_event' not in intent:
+                raise TransitionError('This older close request has no GitHub event lineage; review its closure on GitHub')
+            if effect['status']=='confirmed':
+                receipt=json.loads(effect['receipt_json'])
+                if not transitions or transitions[-1]!=receipt['closure_event']:
+                    raise TransitionError('The original Forge closure changed on GitHub')
+                if issue.get('state')!='closed' or issue.get('state_reason')!='not_planned':
+                    raise GitHubUnavailable('Issue closure is unconfirmed')
+                return issue
+        else:
+            if issue.get('state')!='open':raise TransitionError('Another action already closed this issue')
+            intent={'number':row['item']['number'],'state_reason':'not_planned',
+                    'previous_event':transitions[-1]['id'] if transitions else None}
+            self._intent(row,'close-issue',intent)
+        following=self._following(transitions,intent['previous_event'])
+        if not following and issue.get('state')=='open':
+            self._intent(row,'close-issue',intent)
+            self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
         issue=self._remote(row)
+        transitions=self._issue_transitions(row)
+        following=self._following(transitions,intent['previous_event'])
+        if not following:raise GitHubUnavailable('Issue closure event is unconfirmed')
+        if len(following)!=1 or not self._own_transition(following[0],'closed'):
+            raise TransitionError('Issue closure does not match this Forge decision')
         if issue.get('state')!='closed' or issue.get('state_reason')!='not_planned':raise GitHubUnavailable('Issue closure is unconfirmed')
-        self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned'})
+        self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned','closure_event':following[0]})
         return issue
+
+    def _comment(self,row):
+        """The operator's reason as the closing comment, posted once across restarts."""
+        body='Closed from Forge as not planned: '+row['reason']
+        with self.store.read_snapshot() as db:
+            done=db.execute("SELECT status FROM operator_action_effects WHERE request_id=? AND step='close-comment'",(row['id'],)).fetchone()
+        if done and done[0]=='confirmed':return
+        path=f"/issues/{row['item']['number']}/comments"
+        # An unconfirmed earlier write may have landed: never post it twice.
+        if not (done and any(c.get('body')==body for c in self.github.pages('controller',row['item'],path))):
+            self._intent(row,'close-comment',{'body':body})
+            self.github.call('controller',row['item'],'POST',path,{'body':body})
+        self._receipt(row,'close-comment',{'posted':True})
+
+    def _issue_transitions(self,row):
+        events=self.github.pages('controller',row['item'],f"/issues/{row['item']['number']}/events")
+        result=[]
+        for event in events:
+            if event.get('event') not in {'closed','reopened'}:continue
+            actor=event.get('actor') or {}
+            if type(event.get('id')) is not int or type(actor.get('id')) is not int or not actor.get('login'):
+                raise GitHubUnavailable('Issue event identity is unconfirmed')
+            result.append({'id':event['id'],'event':event['event'],
+                           'actor':{key:actor.get(key) for key in ('id','login','type')}})
+        if len({event['id'] for event in result})!=len(result):raise GitHubUnavailable('Issue event sequence is unconfirmed')
+        return result
+
+    @staticmethod
+    def _following(events,previous):
+        if previous is None:return events
+        for index,event in enumerate(events):
+            if event['id']==previous:return events[index+1:]
+        raise TransitionError('Original issue event is no longer verifiable')
+
+    def _own_transition(self,event,kind):
+        return (event['event']==kind and event['actor']['type']=='Bot'
+                and event['actor']['login']==self.github.publisher('controller'))
+
+    def reopen(self,key,request_id):
+        """Persist one Undo of an exact confirmed closure; the supervisor owns its effect."""
+        if not isinstance(self.actor_id,str) or not self.actor_id or len(self.actor_id)>256:
+            raise TransitionError('An authenticated operator identity is required')
+        identifier=undo_id(request_id)
+        with self.store.write() as db:
+            writable(db)
+            previous=db.execute('SELECT q.issue_id,a.actor_id FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id WHERE q.id=?',(identifier,)).fetchone()
+            if previous:
+                if (previous['issue_id'],previous['actor_id'])!=(key,self.actor_id):raise IdempotencyConflict('Undo already belongs to another operator decision')
+                return identifier
+            original=db.execute('SELECT q.*,a.unit_id FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id WHERE q.id=?',(request_id,)).fetchone()
+            state=action_state_in(db,request_id)
+            if not original or original['issue_id']!=key or not state['reversible']:
+                raise TransitionError('Only the unchanged, confirmed Forge closure can be undone')
+            if db.execute("SELECT 1 FROM issue_action_requests WHERE issue_id=? AND status='pending'",(key,)).fetchone():
+                raise TransitionError('Another decision is being applied to this issue')
+            issue=Queries._issue(db,key);unit=_unit(db,original['unit_id'])
+            effect=db.execute("SELECT receipt_json FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(request_id,)).fetchone()
+            plan={'baseline':self._baseline(db,unit['id']),'original_request':request_id,
+                  'closure_event':json.loads(effect[0])['closure_event'],'issue_version':issue['version']}
+            revision=action_revision(db,key)
+            db.execute("INSERT INTO issue_action_requests(id,issue_id,action,expected_revision,status,reason,message,plan_json,created_at) VALUES(?,?,'reopen',?,'pending','Undo the confirmed Forge closure','Reopening requested',?,?)",
+                (identifier,key,revision,_json(plan),self.clock()))
+            db.execute('INSERT INTO operator_action_authority(request_id,actor_id,unit_id,expected_unit_version,expected_issue_version,payload_digest,updated_at) VALUES(?,?,?,?,?,?,?)',
+                (identifier,self.actor_id,unit['id'],unit['version'],issue['version'],manifest_hash({'actor':self.actor_id,'original_request':request_id,'plan':plan}),self.clock()))
+            self._event(db,Command(identifier,self.actor_id,unit['id'],unit['version']),'lifecycle_changed',
+                        {'operator_request':identifier,'action':'reopen','status':'pending','original_request':request_id},issue_id=key)
+        return identifier
+
+    def _completed_close(self,row):
+        """Read back an already-issued close before deciding whether a NEW write is allowed."""
+        with self.store.read_snapshot() as db:
+            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(row['id'],)).fetchone()
+        if effect is None:return None
+        intent=json.loads(effect['payload_json'])
+        if 'previous_event' not in intent:
+            raise TransitionError('This older close request has no GitHub event lineage; review its closure on GitHub')
+        events=self._issue_transitions(row)
+        following=self._following(events,intent['previous_event'])
+        remote,_=self.github.issue(row['item'])
+        if not following:
+            if remote.get('state')=='closed':raise GitHubUnavailable('Issue closure event is unconfirmed')
+            return None
+        if len(following)!=1 or not self._own_transition(following[0],'closed'):
+            raise TransitionError('Issue closure does not match this Forge decision')
+        if remote.get('number')!=row['item']['number'] or remote.get('state')!='closed' or remote.get('state_reason')!='not_planned':
+            raise GitHubUnavailable('Issue closure is unconfirmed')
+        if effect['status']=='confirmed' and json.loads(effect['receipt_json'])['closure_event']!=following[0]:
+            raise TransitionError('The confirmed Forge closure event changed')
+        self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned','closure_event':following[0]})
+        return remote
+
+    def _acknowledge_close(self,row):
+        """A completed effect is historical fact, not permission to overwrite newer lifecycle facts."""
+        with self.store.write() as db:
+            writable(db)
+            current=db.execute('SELECT status FROM issue_action_requests WHERE id=?',(row['id'],)).fetchone()
+            if current['status']!='pending':return {'request_id':row['id'],'status':current['status']}
+            issue=db.execute('SELECT github_state,state_reason,version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()
+            result={'applied':True}
+            if issue['github_state']=='closed' and issue['state_reason']=='not_planned':
+                result['closed_issue_version']=issue['version']
+            db.execute("UPDATE issue_action_requests SET status='applied',message='Operator decision applied' WHERE id=?",(row['id'],))
+            db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json(result),self.clock(),row['id']))
+            db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
+            self._event(db,Command(row['id']+':receipt',row['actor_id'],row['unit_id'],row['unit']['version']),'lifecycle_changed',
+                        {'operator_request':row['id'],'action':'close','status':'applied','reconciled_effect':True},issue_id=row['issue_id'])
+        return {'request_id':row['id'],'applied':True}
+
+    def _reopen_step(self,row):
+        with self.store.read_snapshot() as db:
+            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='reopen-issue'",(row['id'],)).fetchone()
+        closure=row['plan']['closure_event']
+        events=self._issue_transitions(row)
+        original=next((event for event in events if event['id']==closure['id']),None)
+        if original!=closure:raise TransitionError('Original Forge closure is no longer verifiable')
+        following=self._following(events,closure['id'])
+        remote,_=self.github.issue(row['item'])
+        if effect is None:
+            if following or remote.get('state')!='closed' or remote.get('state_reason')!='not_planned':
+                raise TransitionError('The issue was changed after the original Forge closure')
+            self._intent(row,'reopen-issue',{'closure_event':closure,'number':row['item']['number']})
+        if not following and remote.get('state')=='closed':
+            if remote.get('state_reason')!='not_planned':raise TransitionError('The original closure reason changed on GitHub')
+            self._intent(row,'reopen-issue',{'closure_event':closure,'number':row['item']['number']})
+            self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'open'})
+        events=self._issue_transitions(row);following=self._following(events,closure['id'])
+        remote,_=self.github.issue(row['item'])
+        if not following:raise GitHubUnavailable('Reopening event is unconfirmed')
+        if len(following)!=1 or not self._own_transition(following[0],'reopened'):
+            raise TransitionError('A later GitHub change prevents Undo of the original closure')
+        if remote.get('state')!='open':raise GitHubUnavailable('Reopening is unconfirmed')
+        if effect is not None and effect['status']=='confirmed' and json.loads(effect['receipt_json'])['reopen_event']!=following[0]:
+            raise TransitionError('The confirmed Forge reopening event changed')
+        self._receipt(row,'reopen-issue',{'reopened':True,'closure_event':closure,'reopen_event':following[0]})
+        with self.store.write() as db:
+            writable(db)
+            current=db.execute('SELECT status FROM issue_action_requests WHERE id=?',(row['id'],)).fetchone()
+            if current['status']!='pending':return {'request_id':row['id'],'status':current['status']}
+            db.execute("UPDATE issue_action_requests SET status='applied',message='Issue reopened' WHERE id=?",(row['id'],))
+            db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'reopened':True,'original_request':row['plan']['original_request']}),self.clock(),row['id']))
+            db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
+            self._event(db,Command(row['id']+':complete',row['actor_id'],row['unit_id'],row['unit']['version']),'lifecycle_changed',
+                        {'operator_request':row['id'],'action':'reopen','status':'applied'},issue_id=row['issue_id'])
+        return {'request_id':row['id'],'applied':True}
 
     def _reviewers(self,row):
         candidate=row['candidate'];names=row['plan']['reviewers']
@@ -384,6 +585,7 @@ class OperatorActions(Lifecycle):
                 else:
                     result=authority.drop_member_in(db,command,unit,**row['plan']['membership'],evidence=evidence,disposition='close' if action=='close_member' else 'release')
             else:result={'applied':True}
+            if action=='close':result['closed_issue_version']=db.execute('SELECT version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()[0]
             db.execute("UPDATE issue_action_requests SET status='applied',message='Operator decision applied' WHERE id=?",(row['id'],))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'applied':True,**result}),self.clock(),row['id']))
             return {'request_id':row['id'],'applied':True,**result}
@@ -402,6 +604,8 @@ class OperatorActions(Lifecycle):
                     if scope:self.fence_member_in(db,command,scope,reason='operator_decision_changed')
                     else:self._fence(db,command)
                 self._save(db,command,'reject_operator_action',{'request_id':row['id']},{'rejected':True})
+            if row['action']=='reopen':
+                self._event(db,command,'lifecycle_changed',{'operator_request':row['id'],'action':'reopen','status':'rejected','reason':message},issue_id=row['issue_id'])
             db.execute("UPDATE issue_action_requests SET status='rejected',message=? WHERE id=?",(message,row['id']))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'rejected':True,'reason':message}),self.clock(),row['id']))
         return {'request_id':row['id'],'rejected':True}
@@ -415,6 +619,13 @@ class OperatorActions(Lifecycle):
         row=self._request(identifier)
         if row['status']!='pending':return {'request_id':identifier,'status':row['status']}
         try:
+            if row['action']=='reopen':return self._reopen_step(row)
+            if row['action']=='close':
+                completed=self._completed_close(row)
+                if completed is not None:
+                    row=self._request(identifier)
+                    if row['current']:return self._complete(row,completed)
+                    return self._acknowledge_close(row)
             if not row['current']:raise TransitionError('Delivery changed while applying the decision')
             if row['action'] in {'resume','queue','retry','close'}|DELIVERY_ACTIONS:
                 with self.store.read_snapshot() as db:

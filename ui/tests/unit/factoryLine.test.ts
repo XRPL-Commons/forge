@@ -305,3 +305,47 @@ describe('worker capacity follows jobs rather than grouped issue cards', () => {
     expect(readout(snapshot, now)).toMatchObject({ occupied: 2, working: 0 })
   })
 })
+
+// #241: an issue between two stages is the stage settling, never a hold.
+describe('transitional gates', () => {
+  const working = (reason: string, reasonCode: string) => ({ code: 'working', label: 'Working', reason_code: reasonCode, reason })
+  function settling(): any {
+    return view([
+      issue(1, { state: 'built', transition: { code: 'result_pending', role: 'review', job_id: 'job-r' },
+        operator_status: working('Checking the completed worker result', 'result_pending') }),
+      issue(2, { state: 'ready', transition: { code: 'cleanup_pending', role: 'build', job_id: 'job-b' },
+        operator_status: working('Cleaning up a finished attempt', 'cleanup_pending') }),
+      issue(3, { state: 'reviewed', active: 'job-3', operator_status: working('In audit', 'auditing') }),
+      issue(4, { state: 'hold', reason: 'Paused by an operator', hold_kind: 'operator_pause' }),
+    ], [job(3, 'audit', { phase: 'reserved', observed_status: null, observed_at: null, started_at: null })])
+  }
+
+  it('keeps a checking issue in the bay of the job it finished', () => {
+    const state = lineState(settling(), now)!
+    const groups = lineGroups(state.items)
+    expect(groups.review.map(item => [item.id, item.phase, item.running])).toEqual([['1:1', 'checking', false]])
+    expect(groups.build.map(item => [item.id, item.phase])).toEqual([['1:2', 'checking']])
+    expect(groups.hold.map(item => item.id)).toEqual(['1:4'])
+    expect(groups.queued).toEqual([])
+    expect(lineTooltip(stageOf(state, '1:1')!, false)).toBe('#1 · Working · Checking the completed worker result')
+  })
+
+  it('counts a reserved job toward its bay as starting', () => {
+    const state = lineState(settling(), now)!
+    const audit = lineGroups(state.items).audit
+    expect(audit.map(item => [item.id, item.phase, item.running])).toEqual([['1:3', 'starting', false]])
+    expect(lineTooltip(audit[0]!, false)).toBe('#3 · Working · Starting · In audit')
+  })
+
+  it('agrees with the readout: settling issues are neither queued nor on hold', () => {
+    const v = settling()
+    const state = lineState(v, now)!
+    expect(readout(v, now)!.queued).toBe(lineGroups(state.items).queued.length)
+    expect(lineSummary(state, lineAnalyse(state))).toContain('on hold 1')
+  })
+
+  it('ignores a transition naming no bay', () => {
+    const state = lineState(view([issue(1, { state: 'built', transition: { code: 'recovery_pending', role: 'recovery', job_id: 'x' } })]), now)!
+    expect(lineGroups(state.items).queued.map(item => [item.id, item.next])).toEqual([['1:1', 'review']])
+  })
+})

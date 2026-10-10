@@ -14,7 +14,10 @@ from tests import test_store_result_controller as helpers
 class Remote(helpers.GitHub):
     def __init__(self):
         super().__init__()
-        self.calls=[];self.after_write=None
+        self.calls=[];self.after_write=None;self.comments=[];self.events=[]
+    def publisher(self,role):return 'forge-controller[bot]'
+    def pages(self,role,item,path):
+        return deepcopy(self.events if path.endswith('/events') else self.comments)
     def call(self,role,item,method,path,payload=None):
         self.calls.append((method,path,payload))
         if method=='POST' and path.endswith('/labels'):
@@ -22,7 +25,12 @@ class Remote(helpers.GitHub):
         elif method=='DELETE' and '/labels/' in path:
             from urllib.parse import unquote
             label=unquote(path.split('/labels/')[1]);self.issue_value['labels']=[v for v in self.issue_value['labels'] if v!=label]
-        elif method=='PATCH' and '/issues/' in path:self.issue_value.update(payload)
+        elif method=='PATCH' and '/issues/' in path:
+            before=self.issue_value['state'];self.issue_value.update(payload)
+            if before!=self.issue_value['state']:
+                self.events.append(dict(id=len(self.events)+1,event='closed' if payload['state']=='closed' else 'reopened',
+                                        actor=dict(id=123,login=self.publisher('controller'),type='Bot')))
+        elif method=='POST' and path.endswith('/comments'):self.comments.append(dict(payload))
         else:raise AssertionError((method,path,payload))
         if self.after_write:self.after_write()
         return deepcopy(self.issue_value)
@@ -92,6 +100,88 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(self.view()['state'],'closed')
         self.assertEqual(self.view()['close_code'],'github_not_planned')
         with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+        # The operator's reason is the closing comment on GitHub, as the dialog promises.
+        self.assertEqual(self.github.comments,[{'body':'Closed from Forge as not planned: Operator reason'}])
+    def test_close_comment_is_posted_once_across_a_lost_response(self):
+        request=self.request('close')
+        self.github.after_write=lambda:(_ for _ in ()).throw(GitHubUnavailable('lost response'))
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None
+        self.assertTrue(self.actions.step(request)['applied'])
+        self.assertEqual(len(self.github.comments),1)
+    def test_reopen_undoes_an_applied_close_and_asks_for_a_fresh_look(self):
+        request=self.request('close')
+        with self.assertRaises(TransitionError):self.actions.reopen('i',request)
+        self.actions.step(request)
+        undo=self.actions.reopen('i',request)
+        self.assertEqual(self.github.issue_value['state'],'closed')
+        self.assertEqual(self.status(undo)['status'],'pending')
+        self.assertTrue(self.actions.step(undo)['applied'])
+        self.assertEqual(self.github.issue_value['state'],'open')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT actor_id FROM operator_observation_requests WHERE issue_id=?',('i',)).fetchone()[0],'github:1609016')
+        self.github.calls.clear()
+        self.assertEqual(self.actions.reopen('i',request),undo)
+        self.actions.step(undo)
+        self.assertEqual(self.github.calls,[])
+        with self.store.read_snapshot() as db:
+            states=[json.loads(row[0])['status'] for row in db.execute("SELECT payload_json FROM events WHERE json_extract(payload_json,'$.operator_request')=? ORDER BY sequence",(undo,))]
+        self.assertEqual(states,['pending','applied'])
+
+    def test_close_and_undo_recover_lost_write_responses_from_exact_event_lineage(self):
+        request=self.request('close')
+        def lose_patch():
+            if self.github.calls[-1][0]=='PATCH':raise GitHubUnavailable('lost reply')
+        self.github.after_write=lose_patch
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None
+        self.assertTrue(self.actions.step(request)['applied'])
+        self.assertEqual(len(self.github.events),1)
+        undo=self.actions.reopen('i',request)
+        self.github.after_write=lose_patch
+        self.assertEqual(self.actions.step(undo)['pending'],'github_observation')
+        self.github.after_write=None
+        self.assertTrue(self.actions.step(undo)['applied'])
+        self.assertEqual([event['event'] for event in self.github.events],['closed','reopened'])
+
+    def test_undo_never_reopens_a_later_unrelated_closure(self):
+        request=self.request('close');self.actions.step(request)
+        undo=self.actions.reopen('i',request)
+        self.github.events.extend([dict(id=2,event='reopened',actor=dict(id=99,login='operator',type='User')),
+                                   dict(id=3,event='closed',actor=dict(id=99,login='operator',type='User'))])
+        self.github.calls.clear()
+        self.assertTrue(self.actions.step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.github.issue_value['state'],'closed')
+
+    def test_undo_generation_and_actor_remain_pinned(self):
+        request=self.request('close');self.actions.step(request);undo=self.actions.reopen('i',request)
+        self.actions.actor_id='github:other'
+        with self.assertRaises(IdempotencyConflict):self.actions.reopen('i',request)
+        with self.store.write() as db:db.execute("UPDATE issues SET version=version+1 WHERE id='i'")
+        self.github.calls.clear()
+        self.assertTrue(self.actions.step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+
+    def test_close_effect_requires_controller_event_and_missing_event_stays_pending(self):
+        request=self.request('close')
+        original=self.github.pages
+        self.github.pages=lambda role,item,path: [] if path.endswith('/events') else original(role,item,path)
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.pages=original
+        self.github.events[-1]['actor']={'id':99,'login':'other','type':'User'}
+        self.assertTrue(self.actions.step(request)['rejected'])
+
+    def test_older_close_effect_without_lineage_is_rejected_without_adopting_remote_closure(self):
+        request=self.request('close');row=self.actions._request(request)
+        self.actions._intent(row,'close-issue',{'number':1,'state_reason':'not_planned'})
+        self.github.issue_value.update(state='closed',state_reason='not_planned')
+        self.assertTrue(self.actions.step(request)['rejected'])
+        self.assertEqual(self.github.calls,[])
+
+    def test_reopen_only_undoes_a_close(self):
+        request=self.request('pause');self.actions.step(request)
+        with self.assertRaises(TransitionError):self.actions.reopen('i',request)
     def test_imported_pending_request_never_executes_without_actor_authority(self):
         with self.store.write() as db:
             db.execute("INSERT INTO issue_action_requests(id,issue_id,action,expected_revision,status,reason,created_at) VALUES('old','i','pause','old','pending','old',1)")
@@ -239,12 +329,13 @@ class OperatorTests(unittest.TestCase):
             snapshots.clear()
             with self.subTest(view=name), \
                     patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect, \
-                    patch.object(Queries, '_issue_context', wraps=Queries._issue_context) as issue_read:
+                    patch.object(Queries, '_issue_contexts', wraps=Queries._issue_contexts) as issue_read:
                 result = call()
                 self.assertEqual(connect.call_count, 1)
-                # Both the narrow Activity path and rich issue views use this
-                # canonical read in the configuration/repository snapshot.
+                # Batched lists and singleton detail share the canonical read
+                # in the configuration/repository snapshot.
                 self.assertEqual(issue_read.call_count, 1)
+                self.assertEqual(issue_read.call_args.args[1], ['i'])
                 self.assertEqual(len(snapshots), 2)
                 self.assertIs(snapshots[0], snapshots[1])
                 self.assertIs(issue_read.call_args.args[0], snapshots[0])
@@ -252,3 +343,124 @@ class OperatorTests(unittest.TestCase):
                 self.assertEqual((row['key'], row['active']), ('i', job))
                 if has_jobs:
                     self.assertEqual([item['id'] for item in result['jobs']], [job])
+
+
+class OperatorEffectObservationReplayTests(unittest.TestCase):
+    """Normal observation may consume our own write before its response is reconciled."""
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+        from forge.store.db import Store
+        from forge.store.executions import Executions
+        self.directory=TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.store=Store.create(self.directory.name);self.github=Remote();self.config=validate({})
+        self.github.issue_value.update(title='Issue',updated_at='2026-10-10T00:00:01Z')
+        admitted=Executions(self.store,clock=lambda:100).admit_issue(request_id='admit',actor_id='operator',unit_id='u',issue_id='1:1',
+            repository_id=1,repository_name='owner/repo',issue_number=1,title='Issue',body='Body',requirements='requirements',observed_at=90)
+        self.member=admitted['member_id'];self.actions=self.service()
+
+    def service(self):
+        return OperatorActions(self.store,self.github,actor_id='github:42',config=self.config,clock=lambda:100)
+
+    def close(self):
+        with self.store.read_snapshot() as db:revision=action_revision(db,'1:1')
+        return self.actions.request('1:1','close',revision,'No longer needed')
+
+    def observe_closed(self):
+        from forge.factory.observation_controller import ObservationController
+        result=ObservationController(self.store,self.github,admission=lambda _:True,clock=lambda:100).observe_member('u',self.member,'1:1')
+        self.assertEqual(result['close_code'],'github_not_planned')
+
+    def observe_reopened(self):
+        from forge.factory.store_inventory import StoreInventory
+        StoreInventory(self.store,None,self.github,config=self.config,clock=lambda:100).record(
+            {'id':1,'name':'owner/repo'},deepcopy(self.github.issue_value),'requirements')
+
+    def snapshot(self):
+        with self.store.read_snapshot() as db:
+            return dict(db.execute("SELECT * FROM units WHERE id='u'").fetchone()),dict(db.execute("SELECT * FROM issues WHERE id='1:1'").fetchone())
+
+    def lose_response(self):
+        if self.github.calls[-1][0]=='PATCH':
+            if self.github.issue_value['state']=='open':
+                self.github.issue_value.update(state_reason='reopened',updated_at='2026-10-10T00:00:02Z')
+            raise GitHubUnavailable('lost PATCH reply')
+
+    def test_observer_settles_our_close_before_reconstructed_service_acknowledges_it(self):
+        request=self.close();self.github.after_write=self.lose_response
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None;self.observe_closed();before=self.snapshot()
+        self.github.calls.clear()
+        restarted=self.service()
+        self.assertTrue(restarted.step(request)['applied'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.snapshot(),before)
+        with self.store.read_snapshot() as db:
+            from forge.factory.store_operator import action_state_in
+            state=action_state_in(db,request)
+            self.assertEqual((state['status'],state['reversible']),('applied',True))
+        self.assertEqual(restarted.step(request)['status'],'applied')
+        self.assertEqual(self.github.calls,[])
+
+    def test_inventory_observes_our_reopen_before_reconstructed_service_acknowledges_it(self):
+        request=self.close();self.actions.step(request);undo=self.actions.reopen('1:1',request)
+        self.github.after_write=self.lose_response
+        self.assertEqual(self.actions.step(undo)['pending'],'github_observation')
+        self.github.after_write=None;self.observe_reopened();before=self.snapshot()
+        self.github.calls.clear()
+        restarted=self.service()
+        self.assertTrue(restarted.step(undo)['applied'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.snapshot(),before)
+        with self.store.read_snapshot() as db:
+            from forge.factory.store_operator import action_state_in
+            state=action_state_in(db,request)
+            self.assertEqual(state['undo']['status'],'applied')
+            actor=db.execute('SELECT actor_id FROM operator_action_authority WHERE request_id=?',(undo,)).fetchone()[0]
+            self.assertEqual(actor,'github:42')
+        self.assertEqual(restarted.step(undo)['status'],'applied')
+
+    def test_existing_effect_does_not_authorize_new_write_after_observed_fact_change(self):
+        request=self.close();self.actions.step(request);undo=self.actions.reopen('1:1',request)
+        row=self.actions._request(undo)
+        self.actions._intent(row,'reopen-issue',{'closure_event':row['plan']['closure_event'],'number':1})
+        self.github.issue_value.update(title='A changed issue',updated_at='2026-10-10T00:00:02Z')
+        self.observe_reopened()  # Inventory sees changed facts, but issue remains closed.
+        self.github.calls.clear()
+        self.assertTrue(self.service().step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.github.issue_value['state'],'closed')
+
+    def test_observation_does_not_let_undo_claim_an_unrelated_reopen(self):
+        request=self.close();self.actions.step(request);undo=self.actions.reopen('1:1',request)
+        row=self.actions._request(undo)
+        self.actions._intent(row,'reopen-issue',{'closure_event':row['plan']['closure_event'],'number':1})
+        self.github.events.append(dict(id=2,event='reopened',actor=dict(id=99,login='another-operator',type='User')))
+        self.github.issue_value.update(state='open',state_reason='reopened',updated_at='2026-10-10T00:00:02Z')
+        self.observe_reopened();self.github.calls.clear()
+        self.assertTrue(self.service().step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+
+    def test_close_receipt_preserves_new_facts_then_observation_settles_original_sync(self):
+        from forge.store.models import Command
+        from forge.store.transitions import Lifecycle
+        request=self.close();self.github.after_write=self.lose_response
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None
+        self.github.requirements='changed requirements'
+        with self.store.read_snapshot() as db:version=db.execute("SELECT version FROM units WHERE id='u'").fetchone()[0]
+        Lifecycle(self.store,clock=lambda:100).observe_issue(Command('observe-facts','supervisor:observer','u',version),'1:1',
+            state='closed',state_reason='not_planned',title='Issue',body='Body',requirements=self.github.requirements,
+            remote_updated_at='2026-10-10T00:00:02Z',generation=1)
+        before=self.snapshot();self.github.calls.clear()
+        self.assertTrue(self.service().step(request)['applied'])
+        self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.github.calls,[])
+        with self.store.read_snapshot() as db:
+            self.assertIsNotNone(db.execute("SELECT 1 FROM operator_observation_requests WHERE issue_id='1:1'").fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='operator_sync' AND resolved_at IS NULL").fetchone()[0],1)
+        self.github.issue_value['updated_at']='2026-10-10T00:00:02Z'
+        self.observe_closed()
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='operator_sync' AND resolved_at IS NULL").fetchone()[0],0)
+            self.assertIsNone(db.execute("SELECT 1 FROM operator_observation_requests WHERE issue_id='1:1'").fetchone())
+            self.assertEqual(db.execute("SELECT status FROM issue_action_requests WHERE id=?",(request,)).fetchone()[0],'applied')

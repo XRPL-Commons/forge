@@ -81,8 +81,35 @@ def registered_codes() -> set[str]:
     return set(codes.UNIT_STATES) | set(codes.CLOSE_CODES) | set(codes.GATES) | set(codes.DISCOVERY_REASONS)
 
 
+def github_rule(details):
+    """A push GitHub refused by repository rule, worded for the operator, or None.
+
+    Older environment gates carry only the worker's report, so its text counts too."""
+    from ..factory.contracts import github_rule_kind
+    details = details if isinstance(details, dict) else {}
+    text = ' '.join(str(details.get(key) or '') for key in ('summary', 'detail'))
+    rule = github_rule_kind(text)
+    if details.get('reason') != 'github_permission' and rule is None:
+        return None
+    if rule == 'workflow_permission':
+        return {'code': 'github_permission', 'headline': "GitHub won't let Forge change workflow files in this repository",
+                'plain': 'GitHub reports that the Forge app lacks the Workflows permission needed for this change. '
+                         'Review that permission with a repository administrator, or remove the workflow change from the issue. '
+                         'Recheck the issue after the decision.'}
+    if rule == 'signed_commits':
+        return {'code': 'github_permission', 'headline': "GitHub requires signed commits for this change",
+                'plain': 'GitHub rejected commits that do not satisfy the repository signing rule. '
+                         'Review the signing requirement and how Forge publishes commits with a repository administrator, then recheck the issue.'}
+    return {'code': 'github_permission', 'headline': "GitHub rejected the change under this repository's rules",
+            'plain': 'GitHub refused the change because a repository rule or App permission was not satisfied. '
+                     'Read the reported rejection with a repository administrator to identify the requirement, then recheck the issue.'}
+
+
 def describe_gate(gate):
     """Common wording for a gate, including its typed dependency distinction."""
-    if gate['code'] == 'dependency' and json.loads(gate['details_json']).get('reason') == 'prerequisite_output_pending':
+    details = json.loads(gate['details_json'])
+    if gate['code'] == 'dependency' and details.get('reason') == 'prerequisite_output_pending':
         return 'Waiting for accepted prerequisite outputs'
+    if gate['code'] == 'environment' and (rule := github_rule(details.get('value', details))):
+        return rule['headline']
     return describe(gate['code'])

@@ -91,7 +91,8 @@ export default async function (page, { base, scenario, requests }) {
   await page.goto(base + '/issues/2%3A606')
   await waitForText(page, 'Normalize webhook signature verification')
   const line = (await page.locator('#issue-deployment').innerText()).trim()
-  assert.ok(line.startsWith('Deployment · Deployed · commit abc1234 read from the live site'), line)
+  assert.ok(line.startsWith('This change was deployed') && line.includes('according to the live site.'), line)
+  assert.equal(line.includes('abc1234'), false, 'no commit hash in the sentence')
   // A merged issue: the cube is done, every stage earned, nothing left to do.
   assert.equal(await page.locator('#issue-workbench').getAttribute('aria-label'), 'Cube for #606, Merged stage, merged')
   assert.deepEqual(await page.locator('#issue-stages li').evaluateAll(items => items.map(item => item.dataset.state)),

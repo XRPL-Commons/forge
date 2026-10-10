@@ -62,6 +62,14 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         child, _ = self.running_child(plan, '2')
         self.hold()
         tree = self.views.delivery('1:1')
+        with self.store.read_snapshot() as db:
+            contexts = Queries._issue_contexts(db, ['1:1', '1:2', '1:3'], include_gates=True)
+            for key, (issue, _) in contexts.items():
+                self.assertEqual(issue, Queries._issue(db, key, include_gates=True))
+            self.assertEqual({gate['code'] for gate in contexts['1:1'][0]['lifecycle']['gates']},
+                             {'label_hold', 'environment'})
+            self.assertEqual(contexts['1:2'][0]['lifecycle']['reason_code'], 'dependency')
+            self.assertEqual(contexts['1:3'][0]['lifecycle']['gates'], [])
         members = {member['issue_key']: member for member in tree['members']}
         for key, member in members.items():
             self.assertEqual(member['operator_status'], self.views.issues(key=key)['issue']['operator_status'])
