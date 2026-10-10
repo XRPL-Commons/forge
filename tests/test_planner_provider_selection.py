@@ -27,7 +27,7 @@ class PlannerProviderSelectionTests(unittest.TestCase):
             unit_id='unit',issue_id='10:1',repository_id=10,repository_name='example/project',issue_number=1,
             title='Work',body='Details',requirements='digest',observed_at=self.now)
         request=planner.plans.queue(10,request_id='plan',actor_id='operator',base_branch='main')
-        context=planner.plans.context(request['proposal_id'])
+        context=planner.plans.context(request['proposal_id'],head='a'*40)
         job=dict(id='11111111-1111-4111-8111-111111111111',proposal_id=request['proposal_id'],slot='repository-triage',role='triage',
             repo_id=10,repo='example/project',head='a'*40,deadline=self.now+1800,fenced=False,cleanup=False,
             runner_config=worker,context_hash=manifest_hash(context))
@@ -74,6 +74,9 @@ class PlannerProviderSelectionTests(unittest.TestCase):
         self.assertEqual(assignment['model'],'claude-test-model')
         self.assertEqual(assignment['harness_argv'],selected['harness_argv'])
         self.assertEqual(assignment['role'],'triage')
+        captured=planner.plans.job(job['id'],context=True)['context']
+        self.assertEqual(assignment['context']['note_sources_schema'],captured['note_sources_schema'])
+        self.assertEqual(manifest_hash(assignment['context']),job['context_hash'])
         self.assertEqual(credentials,{'CLAUDE_CODE_OAUTH_TOKEN':'selected-claude-test-token',
             'GH_TOKEN':'read-only-github-test-token'})
         github.token.assert_called_once_with('recovery',10,worker=True)

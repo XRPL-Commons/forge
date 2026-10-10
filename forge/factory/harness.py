@@ -87,12 +87,13 @@ def role_properties(note):
 
 
 def triage_properties(note):
-    ref = {'type':'object','properties':{key:{'type':'string'} for key in ('url','description','kind','identity')},
-           'required':['url','description','kind','identity'],'additionalProperties':False}
     # Supplied by the host from its canonical CLI planning action contract.
     row = note['context'].get('rows_schema')
     if not isinstance(row,dict) or not isinstance(row.get('anyOf'),list) or not row['anyOf']:
         raise PreparationError('Triage assignment requires its captured row schema')
+    ref = note['context'].get('note_sources_schema')
+    if not isinstance(ref,dict) or not isinstance(ref.get('anyOf'),list) or not ref['anyOf']:
+        raise PreparationError('Triage assignment requires its captured note source schema')
     memory={'type':'object','properties':{'content':{'type':'string','minLength':1,'maxLength':8192},
         'sources':{'type':'array','minItems':1,'maxItems':20,'items':ref}},
         'required':['content','sources'],'additionalProperties':False}

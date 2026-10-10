@@ -62,12 +62,12 @@ class RepositoryPlanner:
         if entry is None:return {'waiting':'coding_account'}
         self.refresh(repo)
         self.plans.refresh_inputs(run['id'])
-        context=self.plans.context(run['id'])
         with self.store.read_snapshot() as db:
             branch=db.execute('SELECT base_branch FROM triage_proposals WHERE id=?',(run['id'],)).fetchone()[0]
         item={'repo_id':repo['id'],'repo':repo['name']}
         head=(self.github.call('controller',item,'GET','/branches/'+quote(branch,safe='')).get('commit') or {}).get('sha')
         if not isinstance(head,str) or not SHA.fullmatch(head):raise GitHubUnavailable('Repository planning head could not be verified')
+        context=self.plans.context(run['id'],head=head)
         for issue in context['issues']:
             if issue['candidate_id']:
                 pr=self.github.call('controller',item,'GET',f"/pulls/{issue['pull_number']}")
