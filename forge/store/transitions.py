@@ -49,8 +49,14 @@ def _gates(db, unit_id):
         "SELECT * FROM unit_gates WHERE unit_id = ? AND resolved_at IS NULL", (unit_id,)
     ).fetchall()
     scopes={}
-    for row in db.execute('SELECT p.job_id,p.member_id FROM job_members p JOIN jobs j ON j.id=p.job_id WHERE j.unit_id=?',(unit_id,)):
-        scopes.setdefault(row['job_id'],[]).append(row['member_id'])
+    job_ids=sorted({row['job_id'] for row in rows if row['job_id'] is not None})
+    if job_ids:
+        # Only unresolved process gates consume these immutable scopes. Start
+        # from their exact IDs, rather than walking every retained unit job.
+        for row in db.execute('SELECT p.job_id,p.member_id FROM json_each(?) requested '
+                'CROSS JOIN jobs j ON j.id=requested.value CROSS JOIN job_members p ON p.job_id=j.id '
+                'WHERE j.unit_id=?', (json.dumps(job_ids),unit_id)):
+            scopes.setdefault(row['job_id'],[]).append(row['member_id'])
     return sorted((dict(row)|{'job_member_ids':scopes.get(row['job_id'],[])} for row in rows), key=lambda g: (GATE_PRIORITY[g["code"]], g["created_at"], g["id"]))
 
 
