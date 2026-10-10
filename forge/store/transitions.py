@@ -727,7 +727,16 @@ class Lifecycle:
                     value = json.loads(previous['details_json'])
                     waits = value.get('worker_waits', [])
                     value = {**value, 'worker_waits': [*waits, {'job_id': job_id, 'request_id': command.request_id}],
-                             'previous_gate_id': previous['id']}
+                             'previous_gate_id': previous['id'], 'source': 'worker_waits'}
+                    if code == 'dependency':
+                        requirements = json.loads(db.execute('SELECT r.requirements_json FROM unit_issues m JOIN issue_revisions r ON r.id=m.requirements_revision_id WHERE m.id=?',(subject,)).fetchone()[0])
+                        if details.get('requirements') != requirements or (value.get('requirements') is not None and value['requirements'] != requirements):
+                            raise TransitionError('combined dependency waits must pin the current member requirements')
+                        value.update(requirements=requirements,
+                            issues=sorted(set(value.get('issues',[])) | set(details['issues'])),
+                            blocked=sorted({number for number in value.get('blocked',[]) if type(number) is int} | set(details['blocked'])))
+                    elif code == 'environment':
+                        value['required_services']=sorted(set(value.get('required_services',[])) | set(details.get('required_services',[])))
                     self._resolve(db, command, previous['id'], {'additional_worker_wait': job_id}, resolution='superseded')
                 gate_ids.append(self._open_gate(db, command, code, value, subject, candidate_id))
             gate_id = gate_ids[0] if len(gate_ids)==1 else None

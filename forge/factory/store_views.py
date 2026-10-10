@@ -202,7 +202,8 @@ class PipelineViews:
         gates={}
         if unit_id:
             for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'],life['member_id'])):
-                value=json.loads(gate['details_json']);gates[gate['code']]=(dict(gate),value.get('value',value))
+                from ..store.worker_waits import details_in
+                value=details_in(db,gate);gates[gate['code']]=(dict(gate),value.get('value',value))
         decision=gates.get('decision_required',(None,None))[1]
         verification=gates.get('verification_human') or gates.get('verification_ci')
         environment_block=gates.get('environment',(None,{}))[1] or {}

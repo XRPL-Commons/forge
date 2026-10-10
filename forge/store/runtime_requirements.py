@@ -151,6 +151,8 @@ class RuntimeRequirements(Executions):
                 if details.get('requirements') is not None and details['requirements']!=current_digest:
                     authority_changed = True
                     self._resolve(db,command,gate['id'],{'superseded_by_requirements':requirements_revision_id})
+            worker_wait=any(json.loads(gate['details_json']).get('requirements')==current_digest
+                            and json.loads(gate['details_json']).get('issues') for gate in gates)
             if clear:
                 for gate in owned:
                     authority_changed = True
@@ -163,13 +165,14 @@ class RuntimeRequirements(Executions):
                     if details.get('requirements')==digest and {own.rsplit('#',1)[0]+'#'+str(number) for number in details.get('issues',[])}<=set(refs):
                         authority_changed = True
                         self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation})
-            elif not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned):
+            elif (not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned)) and (authority_changed or not worker_wait):
                 authority_changed = True
                 for gate in owned:
                     self._resolve(db,command,gate['id'],{'superseded_by_observation':generation})
                 self.fence_member_in(db,command,member['id'],reason='prerequisite_changed')
-                self._open_gate(db,command,'dependency',{'source':'runtime_dependencies','requirements_revision_id':requirements_revision_id,
-                    'blocked':blocked},member['id'])
+                if not worker_wait:
+                    self._open_gate(db,command,'dependency',{'source':'runtime_dependencies','requirements_revision_id':requirements_revision_id,
+                        'blocked':blocked},member['id'])
             self._event(db,command,'lifecycle_changed',{'dependency_generation':generation,'clear':clear})
             return {'clear':clear,'generation':generation}
         return self._apply(command,'observe_dependencies',payload,change,version_changed=lambda: authority_changed)
@@ -306,7 +309,8 @@ class RuntimeRequirements(Executions):
                 return {'accepted':False}
             if job['role'] not in {'build','integration','review','audit'} or not job['cleanup']:
                 raise TransitionError('environment retry requires a cleaned pipeline assignment')
-            for gate in applicable_gates(db,unit,job['member_id'],job['candidate_id']):
+            from .task_inputs import task_execution_gates_in
+            for gate in task_execution_gates_in(db,unit,job):
                 if gate['code'] not in {'result_pending','cleanup_pending'} or json.loads(gate['details_json']).get('job_id')!=job_id:
                     raise TransitionError('another gate prevents environment retry')
             launch=db.execute('SELECT runner_config_json,branch FROM job_launches WHERE job_id=?',(job_id,)).fetchone()

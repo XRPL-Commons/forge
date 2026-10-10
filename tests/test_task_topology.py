@@ -327,7 +327,7 @@ class TaskTopologyTests(unittest.TestCase):
         receipts=[]
         for (job,manifest),key in zip(jobs,('one','two')):
             command=self.command();args=dict(execution_fence=key,input_manifest=manifest,
-                evidence={'reason':'missing_'+key},code='environment',details={'reason':'missing_'+key})
+                evidence={'reason':'missing_'+key},code='environment',details={'reason':'missing_'+key,'required_services':['postgres' if key=='one' else 'redis']})
             result=self.life.defer_job(command,job['job_id'],**args);receipts.append((command,result))
             self.assertTrue(result['accepted'])
             self.assertEqual(Lifecycle(Store(self.store.root),clock=lambda:101).defer_job(command,job['job_id'],**args),result)
@@ -337,11 +337,13 @@ class TaskTopologyTests(unittest.TestCase):
             self.assertEqual({gate['member_id'] for gate in gates},{a,b})
             joined=json.loads(next(gate for gate in gates if gate['member_id']==a)['details_json'])
             self.assertEqual(joined['reason'],'missing_one')
+            self.assertEqual(joined['source'],'worker_waits')
+            self.assertEqual(joined['required_services'],['postgres','redis'])
             self.assertEqual(joined['worker_waits'],[{'job_id':jobs[1][0]['job_id'],'request_id':receipts[1][0].request_id}])
             prior=db.execute('SELECT resolution FROM unit_gates WHERE id=?',(joined['previous_gate_id'],)).fetchone()[0]
             self.assertEqual(prior,'superseded')
             additional=json.loads(db.execute('SELECT payload_json FROM decisions WHERE request_id=?',(joined['worker_waits'][0]['request_id'],)).fetchone()[0])
-            self.assertEqual(additional['details'],{'reason':'missing_two'})
+            self.assertEqual(additional['details'],{'reason':'missing_two','required_services':['redis']})
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
 
     def test_v2_assignment_cannot_downgrade_its_plan_contract(self):
@@ -402,3 +404,120 @@ class TaskTopologyTests(unittest.TestCase):
         changed=self.query.builder_manifest('batch','planning',base_oid='base',policy_hash='policy')
         with self.assertRaises(TransitionError):
             self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='retry',input_manifest=changed)
+
+    def test_distinct_dependency_waits_remain_until_every_declared_issue_completes(self):
+        from forge.store.executions import Executions
+        from forge.store.runtime_requirements import RuntimeRequirements
+        from forge.factory.prerequisites import collect
+        a,b=self.members
+        plan=self.plan([('one','child',[a],[],[]),('two','child',[a],[],[])],final=[b])
+        jobs=[self.reserve(plan,key) for key in ('one','two')]
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT r.id,r.requirements_json FROM unit_issues m JOIN issue_revisions r ON r.id=m.requirements_revision_id WHERE m.id=?',(a,)).fetchone()
+            revision=row['id'];requirements=json.loads(row['requirements_json'])
+        for (job,manifest),key in zip(jobs,('one','two')):
+            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':''})
+            self.fixture.clean(job,key)
+        for (job,manifest),key,number in zip(jobs,('one','two'),(10,11)):
+            self.life.defer_job(self.command(),job['job_id'],execution_fence=key,input_manifest=manifest,evidence={'reason':'prerequisite'},code='dependency',
+                details={'requirements':requirements,'issues':[number],'blocked':[number],'evidence':'Depends on #'+str(number)})
+        class GitHub:
+            completed={10}
+            def prerequisite(self,reference,binding):
+                number=int(reference.rsplit('#',1)[1]);done=number in self.completed
+                return {'reference':reference,'kind':'issue','repository_id':1,'github_id':1000+number,'number':number,
+                        'state':'closed' if done else 'open','state_reason':'completed' if done else None,'merged':False,
+                        'updated_at':'2026-10-10T12:00:00Z'}
+        github=GitHub();commands=RuntimeRequirements(self.store,clock=lambda:101)
+        observation=collect(self.store,github,unit_id='batch',member_id=a,requirements_revision_id=revision,body='Scope')
+        self.assertEqual({fact['number'] for fact in observation['facts']},{10,11})
+        first=commands.dependencies(self.command(),requirements_revision_id=revision,generation=1,facts=observation['facts'])
+        self.assertFalse(first['clear'])
+        with self.store.read_snapshot() as db: version=db.execute("SELECT version FROM units WHERE id='batch'").fetchone()[0]
+        commands.dependencies(self.command(),requirements_revision_id=revision,generation=2,facts=observation['facts'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT version FROM units WHERE id='batch'").fetchone()[0],version)
+            self.assertEqual(db.execute('SELECT max(generation) FROM dependency_checks WHERE member_id=?',(a,)).fetchone()[0],2)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE member_id=? AND code='dependency' AND resolved_at IS NULL",(a,)).fetchone()[0],1)
+        github.completed.add(11)
+        observation=collect(self.store,github,unit_id='batch',member_id=a,requirements_revision_id=revision,body='Scope')
+        second=commands.dependencies(self.command(),requirements_revision_id=revision,generation=3,facts=observation['facts'])
+        self.assertTrue(second['clear'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE member_id=? AND code='dependency' AND resolved_at IS NULL",(a,)).fetchone()[0],0)
+        # Fresh proof remains tied to both identities if one reopens later.
+        self.assertEqual({fact['number'] for fact in collect(self.store,github,unit_id='batch',member_id=a,requirements_revision_id=revision,body='Scope')['facts']},{10,11})
+
+    def test_overlapping_decisions_present_every_question_and_option(self):
+        from forge.store.executions import Executions
+        a,b=self.members
+        plan=self.plan([('one','child',[a],[],[]),('two','child',[a],[],[])],final=[b])
+        jobs=[self.reserve(plan,key) for key in ('one','two')]
+        for (job,manifest),key in zip(jobs,('one','two')):
+            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':''});self.fixture.clean(job,key)
+        for (job,manifest),key in zip(jobs,('one','two')):
+            self.life.defer_job(self.command(),job['job_id'],execution_fence=key,input_manifest=manifest,evidence={'reason':'question'},code='decision_required',
+                details={'question':'Question '+key,'options':[key+' A',key+' B'],'recommendation':'Choose '+key+' A','evidence':'Evidence '+key})
+        with self.store.read_snapshot() as db:
+            from forge.store.worker_waits import details_in
+            value=details_in(db,db.execute("SELECT * FROM unit_gates WHERE member_id=? AND code='decision_required' AND resolved_at IS NULL",(a,)).fetchone())
+            self.assertEqual(value['source'],'worker_waits')
+            self.assertEqual(value['question'],'Task one: Question one\n\nTask two: Question two')
+            self.assertEqual(value['options'],['Task one: one A','Task one: one B','Task two: two A','Task two: two B'])
+            self.assertEqual(value['recommendation'],'Task one: Choose one A\n\nTask two: Choose two A')
+
+    def test_large_individually_valid_decisions_are_all_visible_and_release_current_set(self):
+        from forge.store.executions import Executions
+        from forge.store.worker_waits import details_in
+        from forge.store.models import VersionConflict
+        from forge.factory.store_views import PipelineViews
+        from forge.factory.config import validate
+        a,b=self.members
+        keys=[str(index) for index in range(4)]
+        plan=self.plan([(key,'child',[a],[],[]) for key in keys],final=[b])
+        jobs=[self.reserve(plan,key) for key in keys]
+        for (job,manifest),key in zip(jobs,keys):
+            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':''});self.fixture.clean(job,key)
+        stale=None
+        for (job,manifest),key in zip(jobs,keys):
+            report={'question':key+'Q'*3990,'recommendation':key+'R'*3990,'evidence':key+'E'*3990,
+                    'options':[key+str(index)+'O'*990 for index in range(6)]}
+            self.life.defer_job(self.command(),job['job_id'],execution_fence=key,input_manifest=manifest,evidence={'reason':'question'},code='decision_required',details=report)
+            if stale is None: stale=self.command()
+        with self.store.read_snapshot() as db:
+            gate=dict(db.execute("SELECT * FROM unit_gates WHERE member_id=? AND code='decision_required' AND resolved_at IS NULL",(a,)).fetchone())
+            expanded=details_in(db,gate)
+            self.assertLess(len(gate['details_json'].encode()),65536)
+            self.assertGreater(len(json.dumps(expanded).encode()),65536)
+            self.assertEqual({wait['job_id'] for wait in expanded['waits']},{job['job_id'] for job,_ in jobs})
+            self.assertEqual(len(expanded['options']),24)
+            self.assertEqual(db.execute("SELECT count(*) FROM jobs WHERE outcome='deferred'").fetchone()[0],4)
+            issue=db.execute('SELECT issue_id FROM unit_issues WHERE id=?',(a,)).fetchone()[0]
+        detail=PipelineViews(self.store,runtime=validate({}),clock=lambda:101).issues(key=issue)['issue']
+        self.assertEqual(detail['decision_request'],expanded)
+        with self.assertRaises(VersionConflict):
+            self.life.resolve_gate(stale,gate['id'],release='operator',evidence={'decision':'Address every displayed task question'})
+        self.life.resolve_gate(self.command(),gate['id'],release='operator',evidence={'decision':'Address every displayed task question'})
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()[0],0)
+
+    def test_environment_retry_checks_exact_task_scope_and_own_process_gates(self):
+        from forge.store.executions import Executions
+        from forge.store.runtime_requirements import RuntimeRequirements
+        a,b=self.members
+        plan=self.plan([('one','child',[a],[],[]),('two','child',[a],[],[])],final=[b])
+        jobs=[self.reserve(plan,key) for key in ('one','two')]
+        for (job,manifest),key in zip(jobs,('one','two')):
+            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=key,capture={'logs':''})
+        self.fixture.clean(jobs[0][0],'one')
+        own=self.life.open_gate(self.command(),'label_hold',member_id=a,details={'reason':'hold'})
+        self.life.open_gate(self.command(),'label_hold',member_id=b,details={'reason':'unrelated_hold'})
+        commands=RuntimeRequirements(self.store,clock=lambda:101)
+        args=dict(execution_fence='one',input_manifest=jobs[0][1],kind='services',selection={'services':['postgres']},evidence={'full_environment_available':True})
+        with self.assertRaises(TransitionError):commands.environment_retry(self.command(),jobs[0][0]['job_id'],**args)
+        self.life.resolve_gate(self.command(),own['gate_id'],release='observation',evidence={'verified':True,'observed_at':101})
+        self.assertTrue(commands.environment_retry(self.command(),jobs[0][0]['job_id'],**args)['accepted'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT cleanup FROM jobs WHERE id=?',(jobs[1][0]['job_id'],)).fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE member_id=? AND code='label_hold' AND resolved_at IS NULL",(b,)).fetchone()[0],1)
