@@ -568,3 +568,31 @@ class TaskTopologyTests(unittest.TestCase):
             gates=[dict(row) for row in db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL")]
             self.assertEqual({gate['member_id'] for gate in gates},set(self.members))
             self.assertTrue(all(json.loads(gate['details_json'])['requirements']=={'acceptance':['works']} for gate in gates))
+
+    def _owner_environment_override(self,stage):
+        from forge.store.runtime_requirements import RuntimeRequirements
+        if stage=='integration': self.plan([],self.members)
+        manifest=self.query.builder_manifest('batch',stage,base_oid='base',policy_hash='policy')
+        job=self.delivery.reserve_builder(self.command(),stage=stage,slot='owner',execution_fence='owner',input_manifest=manifest)
+        result=self.life.defer_job(self.command(),job['job_id'],execution_fence='owner',input_manifest=manifest,
+            evidence={'reason':'services'},code='environment',details={'reason':'services','required_services':['postgres']})
+        self.assertEqual(len(result['gate_ids']),2)
+        commands=RuntimeRequirements(self.store,clock=lambda:101)
+        remaining=set(self.members)
+        for member in self.members:
+            with self.store.read_snapshot() as db:
+                revision=db.execute('SELECT requirements_revision_id FROM unit_issues WHERE id=?',(member,)).fetchone()[0]
+            commands.set_override(self.command(),requirements_revision_id=revision,override={'mode':'full','services':['postgres']})
+            remaining.remove(member)
+            with self.store.read_snapshot() as db:
+                gates={row[0] for row in db.execute("SELECT member_id FROM unit_gates WHERE code='environment' AND resolved_at IS NULL")}
+                self.assertEqual(gates,remaining)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM issue_environment_observations WHERE override_json IS NOT NULL').fetchone()[0],2)
+
+    def test_owner_planning_environment_wait_is_repaired_per_member(self):
+        self._owner_environment_override('planning')
+
+    def test_owner_integration_environment_wait_is_repaired_per_member(self):
+        self._owner_environment_override('integration')

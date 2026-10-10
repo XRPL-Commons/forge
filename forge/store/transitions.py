@@ -698,7 +698,7 @@ class Lifecycle:
             task = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?',(job_id,)).fetchone()
             owner = db.execute('SELECT 1 FROM builder_assignments WHERE job_id=?',(job_id,)).fetchone()
             scoped = bool(task and code in {'environment','decision_required','dependency'}
-                          or owner and code == 'dependency')
+                          or owner and code in {'environment','dependency'})
             subjects = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id',(job_id,))]
                         if scoped else [member_id])
             gate_ids = []
