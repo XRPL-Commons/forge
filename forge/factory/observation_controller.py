@@ -61,13 +61,28 @@ class ObservationController:
     def _command(unit):
         return Command(str(uuid.uuid4()), 'supervisor:observation', unit['id'], unit['version'])
 
+    def _read_pr(self, item, candidate):
+        pr = self.github.pr(item, candidate['pull_number'])
+        if (pr.get('number') != candidate['pull_number']
+                or (pr.get('head') or {}).get('repo', {}).get('id') != item['repo_id']
+                or (pr.get('base') or {}).get('repo', {}).get('id') != item['repo_id']):
+            raise GitHubUnavailable('Candidate repository identity is unverified')
+        if (type(pr.get('merged')) is not bool
+                or any(not isinstance(pr.get(part, {}).get('sha'), str) or not pr[part]['sha'] for part in ('head', 'base'))
+                or pr['merged'] and (not isinstance(pr.get('merge_commit_sha'), str) or not pr['merge_commit_sha'])
+                or not pr['merged'] and (pr.get('state') not in {'open', 'closed'}
+                    or pr.get('state') == 'open' and type(pr.get('draft')) is not bool
+                    or not isinstance(pr.get('base', {}).get('ref'), str) or not pr['base']['ref'])):
+            raise GitHubUnavailable('Candidate observation is incomplete')
+        return pr
+
     def _external_change(self, unit, detail):
         with self.store.read_snapshot() as db:
             existing = db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='external_change' "
                                   'AND resolved_at IS NULL', (unit['id'],)).fetchone()
         if not existing:
             self.commands.open_gate(self._command(unit), 'external_change', details={'reason': detail})
-        return {'unit_id': unit['id'], 'pending': 'external_change'}
+        return {'unit_id': unit['id'], 'observed': True, 'pending': 'external_change'}
 
     def step(self, unit_id):
         unit=self.queries.unit(unit_id)
@@ -83,7 +98,7 @@ class ObservationController:
         with self.store.read_snapshot() as db:
             requested=db.execute('SELECT requested_at FROM operator_observation_requests WHERE issue_id=?',(issue_id,)).fetchone()
         outcome=self._step_member(unit_id,member_id)
-        if requested and not outcome.get('stale') and not outcome.get('pending'):
+        if requested and (outcome.get('observed') or outcome.get('terminal')):
             with self.store.write() as db:
                 db.execute('DELETE FROM operator_observation_requests WHERE issue_id=? AND requested_at=?',(issue_id,requested[0]))
         return outcome
@@ -110,34 +125,33 @@ class ObservationController:
             assignees=assignees, hold_labels=self.hold_labels,
             assignee_types={row['login']: row['type'] for row in remote.get('assignees', [])
                             if isinstance(row, dict) and row.get('type')})
-        if reconciliation_pending:
-            # Issue freshness does not establish imported execution authority.
-            # The lifecycle records these facts without rebinding inputs or gates.
-            outcome = self.commands.observe_issue(self._command(unit), issue['id'], **observation)
-            return {'unit_id': unit_id, 'pending': 'legacy_reconciliation', 'stale': outcome.get('stale', False)}
-        remote_pr, pr_error = None, None
+        remote_pr, observation_error = None, None
         if candidate:
             try:
-                remote_pr = self.github.pr(item, candidate['pull_number'])
+                remote_pr = self._read_pr(item, candidate)
             except (GitHubUnavailable, RequestBudgetExhausted) as error:
-                pr_error = error
+                observation_error = error
         terminal = remote['state'] == 'closed' or remote_pr is not None and remote_pr.get('merged') is True
         # A verified closure must fence its worker even when unrelated inventory
         # or candidate reads are unavailable. It cannot clear ownership/readiness.
         conflict = allowed = None
-        if not terminal and pr_error is None:
-            pulls = [pr for pr in self.github.pulls(item)
-                     if not active_publication_matches(self.store, unit_id, pr)]
-            conflict = ownership(remote, item, item['repo'], pulls) is not None
-            allowed = self.admission(item)
-            if type(allowed) is not bool:
-                raise TransitionError('admission adapter must return a verified boolean')
+        if not terminal and observation_error is None:
+            try:
+                pulls = [pr for pr in self.github.pulls(item)
+                         if not active_publication_matches(self.store, unit_id, pr)]
+                conflict = ownership(remote, item, item['repo'], pulls) is not None
+                allowed = self.admission(item)
+                if type(allowed) is not bool:
+                    raise TransitionError('admission adapter must return a verified boolean')
+            except (GitHubUnavailable, RequestBudgetExhausted) as error:
+                observation_error = error
         outcome = self.commands.observe_issue(self._command(unit), issue['id'], **observation,
             admission=allowed, ownership_conflict=conflict)
-        if isinstance(pr_error, RequestBudgetExhausted):
-            # Persist the already verified issue closure/holds before deferring
-            # the unfinished candidate read. Keep this exact member pending.
-            raise pr_error
+        if observation_error:
+            # Persist verified issue facts even when a later required read fails.
+            # Budget deferral keeps this exact member pending; an unavailable
+            # candidate/ownership read cannot count as a complete observation.
+            raise observation_error
         if outcome.get('stale'):
             return {'unit_id': unit_id, 'stale': True}
         current = self._snapshot(unit_id, member_id)
@@ -146,16 +160,14 @@ class ObservationController:
         unit, issue, selected, item = current
         # A requirements change may already have superseded the candidate.
         if candidate and (not selected or selected['id'] != candidate['id']):
-            return {'unit_id': unit_id, 'invalidated': 'requirements'}
+            return {'unit_id': unit_id, 'observed': True, 'invalidated': 'requirements'}
         proof = {'issue_version': issue['version']}
-        if pr_error:
-            raise pr_error
         if selected:
-            pr = remote_pr if remote_pr is not None else self.github.pr(item, selected['pull_number'])
-            if (pr.get('number') != selected['pull_number']
-                    or (pr.get('head') or {}).get('repo', {}).get('id') != item['repo_id']
-                    or (pr.get('base') or {}).get('repo', {}).get('id') != item['repo_id']):
-                raise GitHubUnavailable('Candidate repository identity is unverified')
+            pr = remote_pr if remote_pr is not None else self._read_pr(item, selected)
+            if reconciliation_pending:
+                # Collection can finish without accepting an imported candidate,
+                # its execution inputs, or any migration/readiness gate.
+                return {'unit_id': unit_id, 'observed': True, 'pending': 'legacy_reconciliation'}
             exact_head = pr.get('head', {}).get('sha') == selected['head_oid']
             exact_base = pr.get('base', {}).get('sha') == selected['base_oid']
             if pr.get('merged') is True:
@@ -166,12 +178,10 @@ class ObservationController:
                 if busy:
                     return self._external_change(unit, 'external_merge_observed')
                 merge_sha = pr.get('merge_commit_sha')
-                return {'unit_id': unit_id, **self.commands.confirm_merged(self._command(unit), selected['id'],
+                return {'unit_id': unit_id, 'observed': True, **self.commands.confirm_merged(self._command(unit), selected['id'],
                     merge_sha=merge_sha, evidence={'verified': True, 'merged': True, 'merge_sha': merge_sha,
                         'pull_number': selected['pull_number'], 'head_oid': selected['head_oid'],
                         'base_oid': selected['base_oid']})}
-            if pr.get('merged') is not False:
-                raise GitHubUnavailable('Candidate merge state is unverified')
             if remote['state'] == 'open' and active_publication_matches(self.store, unit_id, pr):
                 return {'unit_id': unit_id, 'observed': True, 'publishing': True}
             if not exact_head:
@@ -185,16 +195,18 @@ class ObservationController:
                     return self._external_change(unit, 'candidate_target_changed')
                 if not exact_base or self.policy is not None and self.policy(item) != selected['policy_hash']:
                     reason = 'base_changed' if not exact_base else 'policy_changed'
-                    return {'unit_id': unit_id, **self.commands.invalidate_candidate(self._command(unit),
+                    return {'unit_id': unit_id, 'observed': True, **self.commands.invalidate_candidate(self._command(unit),
                         selected['id'], reason=reason, evidence=proof)}
+        if reconciliation_pending:
+            return {'unit_id': unit_id, 'observed': True, 'pending': 'legacy_reconciliation'}
         if remote['state'] == 'closed' and remote.get('state_reason') in {'completed', 'not_planned', 'duplicate'}:
             if unit['delivery_approved']:
                 with self.store.read_snapshot() as db:
                     existing=db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='membership_decision' AND resolved_at IS NULL",(unit_id,member_id)).fetchone()
                 if not existing:
                     self.commands.open_gate(self._command(unit),'membership_decision',member_id=member_id,details={'reason':'member_closed','state_reason':remote['state_reason']})
-                return {'unit_id':unit_id,'pending':'membership_decision'}
-            return {'unit_id': unit_id, **self.commands.close_unit(self._command(unit),
+                return {'unit_id':unit_id,'observed':True,'pending':'membership_decision'}
+            return {'unit_id': unit_id, 'observed': True, **self.commands.close_unit(self._command(unit),
                 close_code='github_' + remote['state_reason'], evidence=proof)}
         return {'unit_id': unit_id, 'observed': True}
 
@@ -239,9 +251,9 @@ class ObservationController:
                         state['errors']+=1
                         phase_errors.add(outcome['error'])
                         state['error_codes']=sorted(set(state['error_codes']+[outcome['error']]))[:10]
-                    elif outcome.get('pending') or outcome.get('stale'):state['deferred']+=1
                     elif outcome.get('terminal'):state['retired']+=1
-                    else:state['refreshed']+=1
+                    elif outcome.get('observed'):state['refreshed']+=1
+                    else:state['deferred']+=1
                     state['cursor']={key:member[key] for key in ('unit_id','member_id','membership_generation')}
                     if len(items)<100:items.append({**outcome,'member_id':member['member_id']})
                     checkpoint()

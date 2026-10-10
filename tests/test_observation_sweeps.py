@@ -135,6 +135,30 @@ class GroupSweepTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='recovery_pending'").fetchone()[0],0)
 
+    def test_observed_group_closure_completes_while_member_decision_remains(self):
+        self.compose(2)
+        github=SweepGitHub()
+        original=github.issue
+        def issue(item):
+            value,requirements=original(item)
+            if item['number']==1:value.update(state='closed',state_reason='completed')
+            return value,requirements
+        github.issue=issue
+        result=self.controller(github).cycle()
+        self.assertTrue(result['sweep']['complete'])
+        self.assertEqual(result['sweep']['refreshed'],2)
+        self.assertEqual(result['sweep']['deferred'],0)
+        closed=next(row for row in result['items'] if row.get('pending'))
+        self.assertTrue(closed['observed']);self.assertEqual(closed['pending'],'membership_decision')
+        with self.store.read_snapshot() as db:
+            gate=db.execute("SELECT member_id FROM unit_gates WHERE code='membership_decision' AND resolved_at IS NULL").fetchone()
+            self.assertEqual(gate[0],self.members['issue-0'])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_issues WHERE unit_id='batch' AND left_at IS NULL").fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+        again=self.controller(github).cycle()
+        self.assertTrue(again['sweep']['complete'])
+        self.assertEqual(again['sweep']['refreshed'],2)
+
     def test_membership_change_restarts_current_unit_against_its_live_members(self):
         self.compose(3)
         first=SweepGitHub(allowance=1)
