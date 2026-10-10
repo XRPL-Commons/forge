@@ -342,6 +342,8 @@ class GitHub:
                 if any(not self.contains(job, head, value['head']) for head in inputs):
                     return None
             value['branch'] = pr['head']['ref']
+            if value['base'] != job.get('input_manifest', {}).get('base_oid', value['base']):
+                value['author'] = {key: pr['user'][key] for key in ('id', 'login', 'type')}
             return value
         except (ValueError, TypeError, KeyError):
             return None

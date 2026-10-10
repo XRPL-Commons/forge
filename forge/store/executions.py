@@ -14,7 +14,7 @@ import zlib
 from .artifacts import Artifacts, MAX_ARTIFACT_SIZE
 from .models import TransitionError
 from .runtime import writable
-from .transitions import Lifecycle, _json, applicable_gates
+from .transitions import Lifecycle, _json, applicable_gates, manifest_hash
 
 
 @dataclass(frozen=True)
@@ -274,6 +274,59 @@ class Executions(Lifecycle):
                         {'reason': 'policy_changed', 'policy_hash': policy_hash}, job_id=job_id)
             return {'job_id': job_id, 'result_revoked': True}
         return self._apply(command, 'revoke_captured_policy', payload, change)
+
+
+    def revoke_captured_base(self, command, job_id, *, execution_fence, input_manifest, publication):
+        """Retain a verified publication while retiring its obsolete build base.
+
+        This receipt owns only continuation of the exact PR, never acceptance of
+        a candidate. The next result pass consumes the revoked capture uncharged.
+        """
+        from ..factory.contracts import SHA
+        fields = {'pull_number', 'branch', 'head_oid', 'base_oid', 'repository_id', 'base_branch', 'author'}
+        if (not isinstance(publication, dict) or set(publication) != fields
+                or type(publication['pull_number']) is not int or publication['pull_number'] <= 0
+                or type(publication['repository_id']) is not int
+                or any(not isinstance(publication[key], str) or not publication[key] for key in ('branch', 'base_branch'))
+                or any(not isinstance(publication[key], str) or not SHA.fullmatch(publication[key]) for key in ('head_oid', 'base_oid'))
+                or not isinstance(publication['author'], dict) or set(publication['author']) != {'id', 'login', 'type'}
+                or type(publication['author']['id']) is not int or publication['author']['id'] <= 0
+                or any(not isinstance(publication['author'][key], str) or not publication['author'][key] for key in ('login', 'type'))
+                or not isinstance(input_manifest, dict) or publication['base_oid'] == input_manifest.get('base_oid')):
+            raise TransitionError('captured base revocation requires an exact changed publication identity')
+        payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest, publication=publication)
+        def change(db, unit):
+            job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
+            capture = db.execute('SELECT captured_at,capture_authorized,result_revoked FROM job_execution_state WHERE job_id=?', (job_id,)).fetchone()
+            if (not current or job['role'] != 'build' or not job['cleanup'] or capture is None
+                    or capture['captured_at'] is None or not capture['capture_authorized'] or capture['result_revoked']):
+                raise TransitionError('base revocation requires a current cleaned build capture')
+            launch = db.execute('SELECT branch,publisher FROM job_launches WHERE job_id=?', (job_id,)).fetchone()
+            if (publication['branch'] != launch['branch'] or publication['repository_id'] != unit['repository_id']
+                    or publication['base_branch'] != unit['base_branch']):
+                raise TransitionError('publication differs from the assigned build target')
+            grouped = db.execute('SELECT stage FROM builder_assignments WHERE job_id=?', (job_id,)).fetchone()
+            if grouped:
+                if grouped['stage'] != 'integration':
+                    raise TransitionError('only integration can retain a grouped publication')
+                from .delivery import Delivery
+                from .models import Candidate
+                identity = Candidate(publication['pull_number'], publication['branch'], publication['head_oid'], publication['base_oid'],
+                                     input_manifest['policy_hash'], input_manifest['requirements_hash'], manifest_hash(input_manifest))
+                Delivery._publication_target_in(input_manifest, identity)
+            elif db.execute('SELECT 1 FROM job_delegations WHERE job_id=?', (job_id,)).fetchone():
+                raise TransitionError('children cannot retain a publication')
+            target = input_manifest.get('publication_target') or {}
+            expected_author = target['author'] if grouped and target.get('kind') == 'existing' else None
+            author_matches = (publication['author'] == expected_author if expected_author is not None else
+                              publication['author']['type'] == 'Bot' and publication['author']['login'] == launch['publisher'])
+            if not author_matches:
+                raise TransitionError('publication author differs from the assigned publisher')
+            db.execute('UPDATE jobs SET fenced=1 WHERE id=?', (job_id,))
+            db.execute('UPDATE job_execution_state SET result_revoked=1 WHERE job_id=?', (job_id,))
+            self._event(db, command, 'attempt_fenced', {'reason': 'base_changed', 'publication': publication}, job_id=job_id)
+            return {'job_id': job_id, 'result_revoked': True}
+        return self._apply(command, 'revoke_captured_base', payload, change)
 
 
 class ExecutionQueries:

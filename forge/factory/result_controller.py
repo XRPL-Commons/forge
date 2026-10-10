@@ -190,6 +190,13 @@ class ResultController:
             publication = (None if job.get('delegation') or job.get('builder_stage') == 'planning' else
                            self.github.publication(job, requirements, job['input_manifest']['policy_hash']))
             if publication:
+                if publication['base'] != job['input_manifest']['base_oid']:
+                    Executions(self.store, clock=self.clock).revoke_captured_base(self._command(job), job_id,
+                        execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
+                        publication=dict(pull_number=publication['pr'], branch=publication['branch'],
+                            head_oid=publication['head'], base_oid=publication['base'], repository_id=job['repo_id'],
+                            base_branch=job['target_branch'], author=publication['author']))
+                    return {'job_id': job_id, 'pending': 'base_reconciliation'}
                 identity = Candidate(publication['pr'], publication['branch'], publication['head'], publication['base'],
                     job['input_manifest']['policy_hash'], job['input_manifest'].get('requirements_hash', manifest_hash(requirements)), manifest_hash(job['input_manifest']))
                 evidence.update(verified=True, head_oid=identity.head_oid, base_oid=identity.base_oid, pull_number=identity.pull_number)

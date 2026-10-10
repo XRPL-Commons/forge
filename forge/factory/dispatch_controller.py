@@ -172,7 +172,8 @@ class GitHubPrepare:
                     or current.get('base', {}).get('repo', {}).get('id') != unit['repository_id']
                     or current.get('state') != 'open' or current.get('merged')
                     or current.get('user', {}).get('login') != self.github.publisher('build')
-                    or current.get('user', {}).get('type') != 'Bot'):
+                    or current.get('user', {}).get('type') != 'Bot'
+                    or 'author' in previous and {key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')} != previous['author']):
                 return None
             context.update(resume_branch=previous['branch'], resume_pr=previous['pull_number'],
                            resume_head=previous['head_oid'], publication_author={key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')})

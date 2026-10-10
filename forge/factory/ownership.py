@@ -67,9 +67,13 @@ def publication_context(store, unit_id, item):
             from ..store.delivery_inputs import previous_publication_in
             previous = previous_publication_in(db, unit_id)
             if previous:
-                owner = db.execute("SELECT j.id,l.publisher FROM candidate_evidence c JOIN jobs j ON j.attempt_id=c.attempt_id "
-                                   "JOIN job_launches l ON l.job_id=j.id WHERE c.candidate_id=? AND c.kind='publication'",
-                                   (previous['id'],)).fetchone()
+                if 'source_job_id' in previous:
+                    owner = db.execute('SELECT job_id AS id,publisher FROM job_launches WHERE job_id=?',
+                                       (previous['source_job_id'],)).fetchone()
+                else:
+                    owner = db.execute("SELECT j.id,l.publisher FROM candidate_evidence c JOIN jobs j ON j.attempt_id=c.attempt_id "
+                                       "JOIN job_launches l ON l.job_id=j.id WHERE c.candidate_id=? AND c.kind='publication'",
+                                       (previous['id'],)).fetchone()
                 if owner:
                     item = {**item, 'owned_publication': {**previous, 'repository_id': unit['repository_id'],
                             'base_branch': unit['base_branch'], 'publisher': owner['publisher'], 'attempt': owner['id']}}
@@ -175,6 +179,8 @@ def owned_publication_matches(pr, context):
     """An invalidated review candidate remains the same builder's publication."""
     previous = context.get('owned_publication')
     if not previous:
+        return False
+    if 'author' in previous and {key: (pr.get('user') or {}).get(key) for key in ('id', 'login', 'type')} != previous['author']:
         return False
     return (pr.get('number') == previous['pull_number'] and pr.get('state') == 'open' and not pr.get('merged')
             and pr.get('head', {}).get('sha') == previous['head_oid']

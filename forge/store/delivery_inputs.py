@@ -79,7 +79,15 @@ def existing_candidates_in(db, unit_id):
 
 
 def previous_publication_in(db, unit_id):
-    """Last selected publication survives candidate invalidation for rework."""
-    row = db.execute("SELECT c.* FROM events e JOIN candidates c ON c.id=json_extract(e.payload_json,'$.candidate_id') "
-                     "WHERE e.unit_id=? AND e.kind='candidate_selected' ORDER BY e.sequence DESC LIMIT 1", (unit_id,)).fetchone()
-    return dict(row) if row else None
+    """Latest accepted or base-invalidated integration publication, by event order."""
+    event = db.execute("SELECT e.kind,e.job_id,e.payload_json FROM events e "
+        "WHERE e.unit_id=? AND (e.kind='candidate_selected' OR e.kind='attempt_fenced' "
+        "AND json_extract(e.payload_json,'$.reason')='base_changed' "
+        "AND EXISTS(SELECT 1 FROM builder_assignments b WHERE b.job_id=e.job_id AND b.stage='integration')) "
+        "ORDER BY e.sequence DESC LIMIT 1", (unit_id,)).fetchone()
+    if event is None:
+        return None
+    payload = json.loads(event['payload_json'])
+    if event['kind'] == 'candidate_selected':
+        return dict(db.execute('SELECT * FROM candidates WHERE id=?', (payload['candidate_id'],)).fetchone())
+    return {**payload['publication'], 'source_job_id': event['job_id']}
