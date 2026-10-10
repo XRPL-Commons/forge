@@ -438,11 +438,49 @@ class OperatorActions(Lifecycle):
                         {'operator_request':identifier,'action':'reopen','status':'pending','original_request':request_id},issue_id=key)
         return identifier
 
+    def _completed_close(self,row):
+        """Read back an already-issued close before deciding whether a NEW write is allowed."""
+        with self.store.read_snapshot() as db:
+            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(row['id'],)).fetchone()
+        if effect is None:return None
+        intent=json.loads(effect['payload_json'])
+        if 'previous_event' not in intent:
+            raise TransitionError('This older close request has no GitHub event lineage; review its closure on GitHub')
+        events=self._issue_transitions(row)
+        following=self._following(events,intent['previous_event'])
+        remote,_=self.github.issue(row['item'])
+        if not following:
+            if remote.get('state')=='closed':raise GitHubUnavailable('Issue closure event is unconfirmed')
+            return None
+        if len(following)!=1 or not self._own_transition(following[0],'closed'):
+            raise TransitionError('Issue closure does not match this Forge decision')
+        if remote.get('number')!=row['item']['number'] or remote.get('state')!='closed' or remote.get('state_reason')!='not_planned':
+            raise GitHubUnavailable('Issue closure is unconfirmed')
+        if effect['status']=='confirmed' and json.loads(effect['receipt_json'])['closure_event']!=following[0]:
+            raise TransitionError('The confirmed Forge closure event changed')
+        self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned','closure_event':following[0]})
+        return remote
+
+    def _acknowledge_close(self,row):
+        """A completed effect is historical fact, not permission to overwrite newer lifecycle facts."""
+        with self.store.write() as db:
+            writable(db)
+            current=db.execute('SELECT status FROM issue_action_requests WHERE id=?',(row['id'],)).fetchone()
+            if current['status']!='pending':return {'request_id':row['id'],'status':current['status']}
+            issue=db.execute('SELECT github_state,state_reason,version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()
+            result={'applied':True}
+            if issue['github_state']=='closed' and issue['state_reason']=='not_planned':
+                result['closed_issue_version']=issue['version']
+            db.execute("UPDATE issue_action_requests SET status='applied',message='Operator decision applied' WHERE id=?",(row['id'],))
+            db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json(result),self.clock(),row['id']))
+            db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
+            self._event(db,Command(row['id']+':receipt',row['actor_id'],row['unit_id'],row['unit']['version']),'lifecycle_changed',
+                        {'operator_request':row['id'],'action':'close','status':'applied','reconciled_effect':True},issue_id=row['issue_id'])
+        return {'request_id':row['id'],'applied':True}
+
     def _reopen_step(self,row):
         with self.store.read_snapshot() as db:
-            issue=db.execute('SELECT version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()
             effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='reopen-issue'",(row['id'],)).fetchone()
-        if issue['version']!=row['plan']['issue_version']:raise TransitionError('Issue changed after Undo was requested')
         closure=row['plan']['closure_event']
         events=self._issue_transitions(row)
         original=next((event for event in events if event['id']==closure['id']),None)
@@ -463,11 +501,13 @@ class OperatorActions(Lifecycle):
         if len(following)!=1 or not self._own_transition(following[0],'reopened'):
             raise TransitionError('A later GitHub change prevents Undo of the original closure')
         if remote.get('state')!='open':raise GitHubUnavailable('Reopening is unconfirmed')
+        if effect is not None and effect['status']=='confirmed' and json.loads(effect['receipt_json'])['reopen_event']!=following[0]:
+            raise TransitionError('The confirmed Forge reopening event changed')
         self._receipt(row,'reopen-issue',{'reopened':True,'closure_event':closure,'reopen_event':following[0]})
         with self.store.write() as db:
             writable(db)
-            if self._baseline(db,row['unit_id'])!=row['plan']['baseline'] or db.execute('SELECT version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()[0]!=row['plan']['issue_version']:
-                raise TransitionError('Issue changed while confirming Undo')
+            current=db.execute('SELECT status FROM issue_action_requests WHERE id=?',(row['id'],)).fetchone()
+            if current['status']!='pending':return {'request_id':row['id'],'status':current['status']}
             db.execute("UPDATE issue_action_requests SET status='applied',message='Issue reopened' WHERE id=?",(row['id'],))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'reopened':True,'original_request':row['plan']['original_request']}),self.clock(),row['id']))
             db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
@@ -579,8 +619,14 @@ class OperatorActions(Lifecycle):
         row=self._request(identifier)
         if row['status']!='pending':return {'request_id':identifier,'status':row['status']}
         try:
-            if not row['current']:raise TransitionError('Delivery changed while applying the decision')
             if row['action']=='reopen':return self._reopen_step(row)
+            if row['action']=='close':
+                completed=self._completed_close(row)
+                if completed is not None:
+                    row=self._request(identifier)
+                    if row['current']:return self._complete(row,completed)
+                    return self._acknowledge_close(row)
+            if not row['current']:raise TransitionError('Delivery changed while applying the decision')
             if row['action'] in {'resume','queue','retry','close'}|DELIVERY_ACTIONS:
                 with self.store.read_snapshot() as db:
                     if row['action']=='retry' or row['action'] in DELIVERY_ACTIONS:

@@ -342,3 +342,124 @@ class OperatorTests(unittest.TestCase):
                 self.assertEqual((row['key'], row['active']), ('i', job))
                 if has_jobs:
                     self.assertEqual([item['id'] for item in result['jobs']], [job])
+
+
+class OperatorEffectObservationReplayTests(unittest.TestCase):
+    """Normal observation may consume our own write before its response is reconciled."""
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+        from forge.store.db import Store
+        from forge.store.executions import Executions
+        self.directory=TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.store=Store.create(self.directory.name);self.github=Remote();self.config=validate({})
+        self.github.issue_value.update(title='Issue',updated_at='2026-10-10T00:00:01Z')
+        admitted=Executions(self.store,clock=lambda:100).admit_issue(request_id='admit',actor_id='operator',unit_id='u',issue_id='1:1',
+            repository_id=1,repository_name='owner/repo',issue_number=1,title='Issue',body='Body',requirements='requirements',observed_at=90)
+        self.member=admitted['member_id'];self.actions=self.service()
+
+    def service(self):
+        return OperatorActions(self.store,self.github,actor_id='github:42',config=self.config,clock=lambda:100)
+
+    def close(self):
+        with self.store.read_snapshot() as db:revision=action_revision(db,'1:1')
+        return self.actions.request('1:1','close',revision,'No longer needed')
+
+    def observe_closed(self):
+        from forge.factory.observation_controller import ObservationController
+        result=ObservationController(self.store,self.github,admission=lambda _:True,clock=lambda:100).observe_member('u',self.member,'1:1')
+        self.assertEqual(result['close_code'],'github_not_planned')
+
+    def observe_reopened(self):
+        from forge.factory.store_inventory import StoreInventory
+        StoreInventory(self.store,None,self.github,config=self.config,clock=lambda:100).record(
+            {'id':1,'name':'owner/repo'},deepcopy(self.github.issue_value),'requirements')
+
+    def snapshot(self):
+        with self.store.read_snapshot() as db:
+            return dict(db.execute("SELECT * FROM units WHERE id='u'").fetchone()),dict(db.execute("SELECT * FROM issues WHERE id='1:1'").fetchone())
+
+    def lose_response(self):
+        if self.github.calls[-1][0]=='PATCH':
+            if self.github.issue_value['state']=='open':
+                self.github.issue_value.update(state_reason='reopened',updated_at='2026-10-10T00:00:02Z')
+            raise GitHubUnavailable('lost PATCH reply')
+
+    def test_observer_settles_our_close_before_reconstructed_service_acknowledges_it(self):
+        request=self.close();self.github.after_write=self.lose_response
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None;self.observe_closed();before=self.snapshot()
+        self.github.calls.clear()
+        restarted=self.service()
+        self.assertTrue(restarted.step(request)['applied'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.snapshot(),before)
+        with self.store.read_snapshot() as db:
+            from forge.factory.store_operator import action_state_in
+            state=action_state_in(db,request)
+            self.assertEqual((state['status'],state['reversible']),('applied',True))
+        self.assertEqual(restarted.step(request)['status'],'applied')
+        self.assertEqual(self.github.calls,[])
+
+    def test_inventory_observes_our_reopen_before_reconstructed_service_acknowledges_it(self):
+        request=self.close();self.actions.step(request);undo=self.actions.reopen('1:1',request)
+        self.github.after_write=self.lose_response
+        self.assertEqual(self.actions.step(undo)['pending'],'github_observation')
+        self.github.after_write=None;self.observe_reopened();before=self.snapshot()
+        self.github.calls.clear()
+        restarted=self.service()
+        self.assertTrue(restarted.step(undo)['applied'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.snapshot(),before)
+        with self.store.read_snapshot() as db:
+            from forge.factory.store_operator import action_state_in
+            state=action_state_in(db,request)
+            self.assertEqual(state['undo']['status'],'applied')
+            actor=db.execute('SELECT actor_id FROM operator_action_authority WHERE request_id=?',(undo,)).fetchone()[0]
+            self.assertEqual(actor,'github:42')
+        self.assertEqual(restarted.step(undo)['status'],'applied')
+
+    def test_existing_effect_does_not_authorize_new_write_after_observed_fact_change(self):
+        request=self.close();self.actions.step(request);undo=self.actions.reopen('1:1',request)
+        row=self.actions._request(undo)
+        self.actions._intent(row,'reopen-issue',{'closure_event':row['plan']['closure_event'],'number':1})
+        self.github.issue_value.update(title='A changed issue',updated_at='2026-10-10T00:00:02Z')
+        self.observe_reopened()  # Inventory sees changed facts, but issue remains closed.
+        self.github.calls.clear()
+        self.assertTrue(self.service().step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.github.issue_value['state'],'closed')
+
+    def test_observation_does_not_let_undo_claim_an_unrelated_reopen(self):
+        request=self.close();self.actions.step(request);undo=self.actions.reopen('1:1',request)
+        row=self.actions._request(undo)
+        self.actions._intent(row,'reopen-issue',{'closure_event':row['plan']['closure_event'],'number':1})
+        self.github.events.append(dict(id=2,event='reopened',actor=dict(id=99,login='another-operator',type='User')))
+        self.github.issue_value.update(state='open',state_reason='reopened',updated_at='2026-10-10T00:00:02Z')
+        self.observe_reopened();self.github.calls.clear()
+        self.assertTrue(self.service().step(undo)['rejected'])
+        self.assertEqual(self.github.calls,[])
+
+    def test_close_receipt_preserves_new_facts_then_observation_settles_original_sync(self):
+        from forge.store.models import Command
+        from forge.store.transitions import Lifecycle
+        request=self.close();self.github.after_write=self.lose_response
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None
+        self.github.requirements='changed requirements'
+        with self.store.read_snapshot() as db:version=db.execute("SELECT version FROM units WHERE id='u'").fetchone()[0]
+        Lifecycle(self.store,clock=lambda:100).observe_issue(Command('observe-facts','supervisor:observer','u',version),'1:1',
+            state='closed',state_reason='not_planned',title='Issue',body='Body',requirements=self.github.requirements,
+            remote_updated_at='2026-10-10T00:00:02Z',generation=1)
+        before=self.snapshot();self.github.calls.clear()
+        self.assertTrue(self.service().step(request)['applied'])
+        self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.github.calls,[])
+        with self.store.read_snapshot() as db:
+            self.assertIsNotNone(db.execute("SELECT 1 FROM operator_observation_requests WHERE issue_id='1:1'").fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='operator_sync' AND resolved_at IS NULL").fetchone()[0],1)
+        self.github.issue_value['updated_at']='2026-10-10T00:00:02Z'
+        self.observe_closed()
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='operator_sync' AND resolved_at IS NULL").fetchone()[0],0)
+            self.assertIsNone(db.execute("SELECT 1 FROM operator_observation_requests WHERE issue_id='1:1'").fetchone())
+            self.assertEqual(db.execute("SELECT status FROM issue_action_requests WHERE id=?",(request,)).fetchone()[0],'applied')
