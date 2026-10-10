@@ -90,7 +90,7 @@ def verify(snapshot,store):
             counts.update({name+':'+key:value for key,value in result.items()})
         except (MigrationError,ValueError,KeyError,TypeError) as error:
             findings.append({'domain':name,'code':getattr(error,'code','normalized_facts_unavailable')})
-    ledger=snapshot.json('state/factory/factory-ledger.json',{})
+    ledger=snapshot.ledger()
     with materialized(snapshot) as root, legacy_views(snapshot,ledger,now):
         try:
             old_settings=Settings(root,client=NoNetwork(),clock=lambda:now)

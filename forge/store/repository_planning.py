@@ -496,7 +496,7 @@ class RepositoryPlanning(Lifecycle):
     def members(self,row_id,*,after='',limit=100):
         if type(limit) is not int or not 1<=limit<=100 or not isinstance(after,str):raise TransitionError('Invalid member page')
         with self.store.read_snapshot() as db:
-            rows=db.execute('SELECT m.issue_id,i.github_number,r.title,p.issue_version,p.requirements_revision_id,p.unit_id,p.unit_version,p.member_id,p.candidate_id,c.pull_number,c.head_oid,x.author_json '
+            rows=db.execute('SELECT m.issue_id,i.github_number,i.github_state,i.observed_at,r.title,p.issue_version,p.requirements_revision_id,p.unit_id,p.unit_version,p.member_id,p.candidate_id,c.pull_number,c.head_oid,x.author_json '
                 'FROM triage_row_members m JOIN triage_proposal_rows row ON row.id=m.row_id '
                 'JOIN triage_proposal_inputs p ON p.proposal_id=row.proposal_id AND p.issue_id=m.issue_id '
                 'JOIN issues i ON i.id=m.issue_id JOIN issue_revisions r ON r.id=p.requirements_revision_id '

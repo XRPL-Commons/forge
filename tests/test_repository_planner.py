@@ -134,6 +134,46 @@ class RepositoryPlannerTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
             self.assertEqual(db.execute('SELECT status FROM repository_triage_runs').fetchone()[0],'failed')
 
+    def test_triage_prompt_and_all_output_text_schemas_are_proposal_only(self):
+        assignment=triage_note({**self.job,'context':self.context})
+        self.assertIn('This run only proposes actions',assignment['instructions'])
+        self.assertIn('Evidence that the underlying work is fixed does not mean the GitHub issue is closed',assignment['instructions'])
+        props=schema(assignment)['properties']
+        descriptions=[props[key]['description'] for key in ('summary','headline','plain')]
+        descriptions.append(props['notes']['items']['properties']['content']['description'])
+        descriptions.append(props['handoff']['anyOf'][1]['properties']['content']['description'])
+        self.assertTrue(all('awaiting operator approval' in text and 'proposed actions' in text for text in descriptions))
+        for row in props['rows']['items']['anyOf']:
+            self.assertIn('do not report this proposal as an executed change',row['properties']['reason']['description'])
+
+    def test_false_completion_prose_remains_evidence_without_action_authority(self):
+        from forge.store.auxiliary import _artifact
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        claim='This pass closed #1.'
+        result={'attempt':'triage','role':'triage','outcome':'pass','summary':claim,'rows':[{
+            'action':'close','members':['1:1'],'reason':claim,'rule_quote':None,'parameters':{'evidence':[self._source()]}}],
+            'notes':[{'note_id':None,'kind':'decision','content':claim,'sources':[self._source()]}],
+            'handoff':{'content':claim,'sources':[self._source()]}}
+        self.plans.progress('triage',capture={'result':result},fenced=True,cleanup=True)
+        with self.store.read_snapshot() as db:captured=_artifact(db,'triage','capture')
+        self.assertEqual(self.controller._finish(self.plans.job('triage'))['phase'],'complete')
+        public=self.plans.proposal(self.request['proposal_id'])
+        self.assertEqual(public['rationale'],claim)
+        row=public['rows'][0]
+        self.assertEqual((row['status'],row['decision_id'],row['effects']),('proposed',None,[]))
+        self.assertEqual((row['members'][0]['github_state'],row['members'][0]['observed_at']),('open',90))
+        self.assertEqual({n['content'] for n in self.plans.repository(1)['notes']},{claim})
+        with self.store.read_snapshot() as db:
+            self.assertEqual(_artifact(db,'triage','capture'),captured)
+            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+        accepted=self.plans.accept(public['id'],expected_version=public['version'],accept_rows=[row['id']],reject_rows=[],
+            request_id='explicit-approval',actor_id='github:7',config={'ready_label':'ready','hold_labels':['hold']})
+        row=self.plans.proposal(public['id'])['rows'][0]
+        self.assertEqual(row['status'],'accepted')
+        self.assertEqual(row['effects'][0]['status'],'pending')
+        self.assertEqual(row['members'][0]['github_state'],'open')
+        self.assertEqual(len(accepted['effects']),1)
+
     def test_context_is_immutable_and_role_schema_has_explicit_publication_target(self):
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         with self.assertRaises(TransitionError):self.plans.progress('triage',context_hash='different')

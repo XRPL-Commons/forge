@@ -6,7 +6,7 @@ from .snapshot import MigrationError, decode, encode, digest
 
 
 def check(importer):
-    source=importer.source.json('state/factory/factory-ledger.json')
+    source=importer.source.ledger()
     counters={'units':0,'jobs':0,'events':0,'budget_histories':0,'candidates':0,'artifact_chunks':0}
     with importer.store.read_snapshot() as db:
         for key,item in source['issues'].items():

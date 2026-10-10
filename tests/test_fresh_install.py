@@ -179,6 +179,18 @@ class TransportTests(unittest.TestCase):
                 InstallerHost('root@anvil.example', run=lambda *a, **k: json.dumps(raw).encode()).call('plan', INTENT)
             self.assertNotIn(secret, str(caught.exception))
 
+    def test_old_server_error_points_to_read_only_service_account_plan(self):
+        host = InstallerHost('root@anvil.example', run=lambda *a, **k:
+            json.dumps({'ok': False, 'error': 'server_maintenance_required'}).encode())
+        with self.assertRaises(SetupError) as caught:
+            host.rpc('payload', {})
+        self.assertEqual(caught.exception.code, 'server_maintenance_required')
+        command = str(caught.exception).split('Run: ', 1)[1]
+        args = parser().parse_args(shlex.split(command)[1:])
+        self.assertEqual((args.migration_command, args.ssh, args.service_user, args.source, args.root),
+                         ('plan', 'root@anvil.example', 'forge', SOURCE, ROOT))
+        self.assertFalse(args.apply)
+
     def test_destination_cannot_inject_shell_options(self):
         for value in ('-oProxyCommand=bad', 'root@host;touch /tmp/x', 'root@host\nother'):
             with self.assertRaises(SetupError): InstallerHost(value)

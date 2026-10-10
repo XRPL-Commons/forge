@@ -1,6 +1,6 @@
 // @vitest-environment nuxt
 import { describe, it, expect, vi } from 'vitest'
-import { ref } from 'vue'
+import { ref, nextTick } from 'vue'
 import { mountSuspended, mockNuxtImport } from '@nuxt/test-utils/runtime'
 import PlanningPage from '../../../app/pages/planning/[id].vue'
 const state = vi.hoisted(() => ({ current: null as any }))
@@ -11,12 +11,51 @@ function setup() {
     resource: { error: ref(null) }, view: ref({ repository: { id: 1, name: 'example/project' }, planning: { rules: 'Keep related work together', notes: [], proposals_enabled: true, runs: [] }, proposals: { items: [], next: null } }),
     proposal: ref({ id: 'proposal', version: 2, status: 'proposed', rationale: 'One delivery', next: null, total: 1, run: null, rows: [{
       id: 'row', action: 'group', status: 'proposed', reason: 'Related scope', rule_quote: 'Keep related work together', member_count: 1, members_next: null, effects: [],
-      members: [{ issue_id: '1:1', github_number: 1, title: 'Work', pull_number: 7, head_oid: 'a'.repeat(40) }],
+      members: [{ issue_id: '1:1', github_number: 1, github_state: 'open', observed_at: 100, title: 'Work', pull_number: 7, head_oid: 'a'.repeat(40) }],
       parameters: { existing_prs: [], dependencies: [], publication_target: { kind: 'existing', pull_number: 7, author: { id: 8, login: 'maintainer', type: 'User' }, ownership_transfer: true } },
     }] }), busy: ref(false), error: ref(''), open: vi.fn(), members: vi.fn(), history: vi.fn(), act: vi.fn(), decide: vi.fn(),
   }
 }
 describe('repository planning approval', () => {
+  it('attributes planner prose while showing observed state and unapproved actions as facts', async () => {
+    setup()
+    const claim = 'This pass closed #1.'
+    state.current.proposal.value.rationale = claim
+    Object.assign(state.current.proposal.value.rows[0], { action: 'close', reason: claim, parameters: { evidence: [] } })
+    state.current.view.value.planning.notes = [
+      { note_id: 'planner-note', revision: 1, kind: 'decision', content: claim, actor_id: 'supervisor:triage', sources: [], needs_refresh: false },
+      { note_id: 'operator-note', revision: 2, kind: 'decision', content: 'Closing is proposed.', actor_id: 'github:7', sources: [], needs_refresh: false },
+    ]
+    const wrapper = await mountSuspended(PlanningPage)
+    expect(wrapper.get('[data-testid="planner-rationale"]').text()).toBe(claim)
+    expect(wrapper.text()).toContain('Planner rationale')
+    expect(wrapper.text()).toContain('Planner note · decision · revision 1')
+    expect(wrapper.text()).toContain('Operator note · decision · revision 2')
+    expect(wrapper.get('[data-testid="planning-approval-status"]').text()).toBe('Awaiting approval')
+    expect(wrapper.get('[data-testid="planning-issue-state"]').text()).toContain('Last observed open')
+    expect(wrapper.get('[data-testid="planning-issue-state"] time').attributes('datetime')).toBe('1970-01-01T00:01:40.000Z')
+    expect(wrapper.find('[data-testid="planning-effect-status"]').exists()).toBe(false)
+    expect(state.current.decide).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('keeps approval separate from pending or confirmed GitHub effects', async () => {
+    setup()
+    const row = state.current.proposal.value.rows[0]
+    Object.assign(row, { action: 'close', status: 'accepted', parameters: { evidence: [] }, effects: [{ id: 'effect', status: 'pending' }] })
+    const wrapper = await mountSuspended(PlanningPage)
+    expect(wrapper.get('[data-testid="planning-approval-status"]').text()).toBe('Approved')
+    expect(wrapper.get('[data-testid="planning-effect-status"]').text()).toBe('Awaiting GitHub confirmation')
+    expect(wrapper.get('[data-testid="planning-issue-state"]').text()).toContain('Last observed open')
+    row.effects[0].status = 'confirmed'
+    row.members[0].github_state = 'closed'
+    row.members[0].observed_at = 200
+    await nextTick()
+    expect(wrapper.get('[data-testid="planning-effect-status"]').text()).toBe('Verified on GitHub')
+    expect(wrapper.get('[data-testid="planning-issue-state"]').text()).toContain('Last observed closed')
+    expect(wrapper.get('[data-testid="planning-issue-state"] time').attributes('datetime')).toBe('1970-01-01T00:03:20.000Z')
+    expect(state.current.decide).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('shows existing PR transfer and rule evidence before explicit acceptance', async () => {
     setup()
     const wrapper = await mountSuspended(PlanningPage)

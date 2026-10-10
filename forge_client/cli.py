@@ -46,12 +46,19 @@ def migration_commands():
         names = ('ssh', 'source', 'root') if remote else ('snapshot', 'destination')
         properties = {name: {'type': 'string'} for name in names}
         required = list(names)
+        if remote:
+            from .migration import SERVICE_USER_PATTERN
+            properties['service_user'] = {'type': 'string', 'pattern': '^'+SERVICE_USER_PATTERN+'$',
+                'description': 'Existing Unix account owning Forge; default is the SSH account'}
         if action == 'capture':
             properties.update(snapshot={'type': 'string'}, apply={'type': 'boolean', 'const': True})
             required += ['snapshot', 'apply']
         if action in ('prepare','activate'):
             properties['apply'] = {'type':'boolean','const':True}
             required.append('apply')
+        if action == 'activate':
+            properties['source_revision']={'type':'string','pattern':'^[0-9a-f]{40}$',
+                'description':'Required to upgrade a never-started legacy setup; pin the same release as this CLI. plan must report initial_setup=true.'}
         if action == 'upgrade':
             properties.update(apply={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
         if action == 'resume':
@@ -64,6 +71,7 @@ def migration_commands():
             'maintenance': action in ('capture', 'resume', 'activate', 'upgrade'),
             'installs_private_runtime': action == 'prepare',
             'activation_supported': action in ('activate','resume'),
+            'initial_source_upgrade': action == 'activate',
             'target': 'selected SSH host' if remote else 'private local staging',
         }
     return result
@@ -182,7 +190,8 @@ def parser():
         migration.add_argument('--'+name)
     migration.add_argument('--apply', action='store_true', help='Authorize runtime preparation, capture, or one-way SQLite activation')
     migration.add_argument('--accept-tool-update', action='store_true', help='resume: authorize a pinned source-only repair and reimport the same frozen snapshot before selection')
-    migration.add_argument('--source-revision', help='Full commit SHA for an upgrade or an explicitly authorized resume repair')
+    migration.add_argument('--service-user', help='Run remote maintenance as this existing Unix service account; default is the SSH account')
+    migration.add_argument('--source-revision', help='Full commit SHA for an upgrade, initial-setup activation source bridge, or explicitly authorized resume repair')
     migration.add_argument('--batch', type=int, default=100)
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     sub.add_parser('commands', help='List every command as JSON for agents')

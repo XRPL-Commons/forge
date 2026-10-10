@@ -1,8 +1,10 @@
 """Deterministic migration CLI: preparation, staged inspection and one-way activation."""
 import base64
 import io
+from importlib.resources import files
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -16,7 +18,9 @@ from .contracts import SetupError, require
 # This bootstrap reads only locally supplied code and intent. The remote host
 # never supplies commands. Temporary tools do not replace the running checkout.
 BOOTSTRAP = r'''import base64,hashlib,json,pathlib,sys,tempfile,zipfile,io,os,subprocess
-request=json.loads(sys.stdin.buffer.read(8*1024*1024))
+payload=sys.stdin.buffer.read(64*1024*1024+1)
+if len(payload)>64*1024*1024: raise ValueError("request too large")
+request=json.loads(payload)
 raw=base64.b64decode(request.pop("bundle"),validate=True)
 if hashlib.sha256(raw).hexdigest()!=request.pop("bundle_digest"): raise ValueError("bundle mismatch")
 with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
@@ -60,24 +64,51 @@ def ssh(host, command):
             '-o','ClearAllForwardings=yes','-o','ForwardX11=no',host,command]
 
 
+SERVICE_USER_PATTERN = r'[a-z_][a-z0-9_-]{0,31}'
+
+
+def service_user(args):
+    user = getattr(args, 'service_user', None)
+    require(user is None or isinstance(user, str) and re.fullmatch(SERVICE_USER_PATTERN, user),
+            'invalid_service_user', 'Use the existing Unix service account name, such as forge.')
+    return user
+
+
+def transport(args, command, *, prepare_sqlite=False):
+    """Both maintenance RPCs and snapshot reads use the same explicit account."""
+    user = service_user(args)
+    if user is not None:
+        program = files('forge_client').joinpath('_service_host.py').read_text()
+        command = ['python3', '-I', '-c', program, user, *(['--prepare-sqlite'] if prepare_sqlite else []), *command]
+    return ssh(args.ssh, shlex.join(command))
+
+
 def call(args,action,**fields):
     # Reuse validation of explicit host/source/root intent.
     Host(args.ssh,args.source,args.root)
-    resume = shlex.join(['forge', 'migrate', 'upgrade' if action=='upgrade' else 'resume', '--ssh', args.ssh,
-                         '--source', args.source, '--root', args.root, '--json'])
+    user = service_user(args)
+    resume = shlex.join(['forge', 'migrate', 'prepare' if action=='prepare' else 'upgrade' if action=='upgrade' else 'resume', '--ssh', args.ssh,
+                         '--source', args.source, '--root', args.root,
+                         *(['--service-user', user] if user is not None else []), '--json'])
+    if action == 'prepare':
+        resume += ' --apply'
     if action=='upgrade' and getattr(args,'source_revision',None):
         resume += ' --apply --source-revision '+shlex.quote(args.source_revision)
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
+    result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP], prepare_sqlite=action=='prepare'),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
-            'The host operation failed. Resume maintenance with: ' + resume)
+            ('The host operation failed. ' if user is None else 'Maintenance could not run as service user '+user+'. Verify that account and root or noninteractive sudo access. ')
+            + 'Resume maintenance with: ' + resume)
     value=json.loads(result.stdout)
     if value.get('ok') is not True:
         import re
         token=lambda key,default: value[key] if isinstance(value.get(key),str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',value[key]) else default
         code,kind,stage=token('error','failed'),token('exception_type','Exception'),token('stage','unknown')
+        if action == 'prepare':
+            raise SetupError('migration_'+code, 'SQLite runtime preparation could not proceed: '+code+
+                ' ('+kind+' at '+stage+'). Retry preparation with: '+resume)
         if action=='upgrade' and code=='drain_configuration_changed':
             raise SetupError('migration_'+code,'Runtime settings changed while maintenance was draining. The CLI kept the newer settings. '
                 'Switch off agents explicitly before continuing, then resume with: '+resume)
@@ -104,12 +135,13 @@ with tarfile.open(fileobj=sys.stdout.buffer,mode="w|") as archive:
     import tarfile
     from forge.store.migration.snapshot import Snapshot
     from forge.store.db import _new_file,_fsync_directory
+    service_user(args)
     local=Path(local).absolute()
     local.mkdir(mode=0o700)
     os.chmod(local,0o700)
     # Redirect the binary stream to a private file; no source contents enter logs.
     with tempfile.TemporaryFile() as stream:
-        process=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(script)+' '+shlex.quote(remote)),stdout=stream,stderr=subprocess.PIPE,timeout=300)
+        process=subprocess.run(transport(args, ['python3', '-c', script, remote]),stdout=stream,stderr=subprocess.PIPE,timeout=300)
         require(process.returncode==0,'snapshot_transfer_failed','Private snapshot transfer failed.')
         stream.seek(0)
         with tarfile.open(fileobj=stream,mode='r:') as archive:
@@ -133,6 +165,9 @@ def execute(args):
     from forge.store.db import StoreError
     import sqlite3
     try:
+        user = service_user(args)
+        require(user is None or args.migration_command not in ('import', 'verify'),
+                'invalid_service_user', '--service-user applies only to remote migration operations.')
         repair=getattr(args,'accept_tool_update',False)
         revision=getattr(args,'source_revision',None)
         if args.migration_command=='upgrade':
@@ -141,9 +176,10 @@ def execute(args):
             import re
             require(not args.apply or isinstance(revision,str) and re.fullmatch(r'[0-9a-f]{40}',revision),'upgrade_revision_required','Supply the full release SHA with --source-revision when using --apply.')
             return call(args,'upgrade',apply=args.apply,source_revision=revision)
-        require(not (repair or revision) or args.migration_command=='resume','migration_repair_resume_required','Tool updates are only accepted by migrate resume before SQLite selection.')
+        require(not repair or args.migration_command=='resume','migration_repair_resume_required','Tool repair requires migrate resume.')
+        require(not revision or args.migration_command in {'resume','activate'},'migration_repair_resume_required','Use --source-revision with initial migrate activate or an explicitly authorized migrate resume repair.')
         require(not repair or revision is not None,'migration_repair_revision_required','Select the exact corrected source with --source-revision and --accept-tool-update.')
-        require(not revision or repair,'migration_repair_authorization_required','Supply --accept-tool-update to authorize this source revision.')
+        require(not revision or repair or args.migration_command=='activate','migration_repair_authorization_required','Supply --accept-tool-update to authorize this source revision.')
         if revision:
             import re
             require(re.fullmatch(r'[0-9a-f]{40}',revision) is not None,'migration_repair_revision_required','Use a full lowercase commit SHA for --source-revision.')
@@ -157,6 +193,12 @@ def execute(args):
             return call(args,args.migration_command,**({'accept_tool_update':True,'source_revision':revision} if repair else {}))
         if args.migration_command=='activate':
             require(args.apply,'migration_apply_required','One-way SQLite activation pauses new work, drains workers, verifies migration and restarts Forge. Supply --apply.')
+            if revision:
+                plan=call(args,'plan')
+                require(plan.get('initial_setup') is True,'migration_initial_setup_required','Initial source upgrade requires a never-started legacy setup.')
+                from .source import export
+                pack=export(revision,previous=plan['source_revision']) if revision!=plan['source_revision'] else None
+                return call(args,'activate',apply=True,previous_revision=plan['source_revision'],source_revision=revision,source_pack=pack)
             return call(args,'activate',apply=True)
         if args.migration_command=='prepare':
             require(args.apply,'migration_apply_required','Preparing the private SQLite runtime may install compiler dependencies. Supply --apply.')

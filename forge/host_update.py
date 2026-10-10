@@ -511,9 +511,14 @@ def reconcile(root, bind=None, assume_yes=False):
     """Install or update the host. Returns True when running workers need requalification."""
     from .store.migration.cutover import maintenance_writable
     maintenance_writable(root)
+    return _reconcile(root, bind=bind, assume_yes=assume_yes)
+
+
+def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
+    """Shared installer; initial cutover defers configuration and service activation."""
     root = Path(root)
     fresh = runtime_document(root, 'host-runtime.json') is None
-    record = Record(root)
+    record = prepared_record if prepared_record is not None else Record(root)
     units = Path.home() / '.config/systemd/user'
     bind = resolve_bind(root, bind, units)
     source = source_revision()
@@ -564,7 +569,7 @@ def reconcile(root, bind=None, assume_yes=False):
         plan.append('operator UI release ' + release)
     plan += ['service ' + name for name in unit_changes]
     plan += ['remove overriding drop-in ' + path.name + ' from ' + name for name, path, _ in overrides]
-    if not fresh and not plan and not restart:
+    if prepared_record is None and not fresh and not plan and not restart:
         print('Forge host is up to date' + (' at ' + source[:12] if source else '') + '.')
         return False
     if not fresh:
@@ -608,7 +613,7 @@ def reconcile(root, bind=None, assume_yes=False):
     except subprocess.CalledProcessError:
         raise ValueError('The worker egress proxy did not become healthy; see `docker logs forge-egress-1`, '
                          'correct it and rerun this command.') from None
-    if not fresh and runtime_changed:
+    if prepared_record is None and not fresh and runtime_changed:
         switch_runtime(root, image, APPARMOR_PROFILE)
         if full_image:
             switch_full_environment(root, full_image)
@@ -627,6 +632,9 @@ def reconcile(root, bind=None, assume_yes=False):
             shutil.move(str(path), target / path.name)
         print('Moved overriding drop-ins to ' + str(backup))
     command(['systemctl', '--user', 'daemon-reload'])
+    if prepared_record is not None:
+        return prepared_record.finish(bind=bind, source=source, image=image, ui_release=release,
+                                      full_image=full_image, seccomp_inputs=seccomp_inputs)
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
     # The API first: the UI and supervisor depend on it.
     ordered = [name + '.service' for name in SERVICES if fresh or name in restart]

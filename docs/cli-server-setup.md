@@ -1,8 +1,14 @@
-# Set up operator sign-in with the local CLI
+# Configure sign-in on an existing Forge host
 
 `forge server setup` configures sign-in and private HTTPS on an **existing Forge
 host**. Run it once per server. After setup, operators sign in through the UI;
 adding repositories does not require repeating this command.
+
+For a fresh VM, start with [`forge setup new`](cli-fresh-host.md). That wizard
+handles installation, private networking, sign-in, role Apps, a coding account,
+repository checks and explicit Start, then follows the first issue to a verified
+merge. It runs host commands and file transfers through the CLI; no separate
+remote terminal is required. Each stage also has a noninteractive JSON command.
 
 The local CLI uses your SSH authority for host configuration and your local
 GitHub CLI to resolve operator usernames to numeric IDs. GitHub administrative
@@ -24,7 +30,12 @@ controller state, outside workers and the UI container.
   `*.ts.net` name. This command supports private Serve on port 443.
 - Sign in to `gh` locally. Operator names are resolved using GitHub's user API.
 
-Fresh installation, role App registration and provider setup remain in #136.
+`forge server setup` covers sign-in and HTTPS only. For a host installed through
+`forge setup new`, use `forge setup sign-in --ssh HOST` for the guided sign-in
+stage, then `forge setup continue --ssh HOST` for role Apps, coding account and
+repository setup. These commands resume the saved installation. GitHub,
+Tailscale and provider browser approvals remain explicit operator handoffs.
+
 For an existing custom reverse proxy, use the
 [host configuration instructions](operator-sign-in.md#manual-host-configuration).
 

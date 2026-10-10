@@ -28,7 +28,10 @@ class IdentityHostTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         home = Path(temporary.name).resolve()
-        for name, value in (('facts', Mock()), ('HOME', home),
+        (home / 'source/forge').mkdir(parents=True)
+        for name in ('launch.py', 'operator_bootstrap.py'):
+            (home / 'source/forge' / name).touch()
+        for name, value in (('facts', Mock()), ('HOME', home), ('SOURCE', home / 'source'),
                             ('read', Mock(return_value={'intent': INTENT, 'step': 'complete'}))):
             context = patch.object(remote, name, value)
             context.start(); self.addCleanup(context.stop)
@@ -54,6 +57,13 @@ class IdentityHostTests(unittest.TestCase):
         self.assertEqual(json.loads(options['input'])['secret'], SECRET)
         self.assertNotIn(SECRET, str(argv) + str(options['env']))
         self.assertEqual(options['stderr'], remote.subprocess.DEVNULL)
+
+    def test_old_server_reports_maintenance_before_bootstrap_or_secret_transfer(self):
+        (remote.SOURCE / 'forge/launch.py').unlink()
+        with patch.object(remote.subprocess, 'run') as run:
+            with self.assertRaisesRegex(remote.InstallError, '^server_maintenance_required$'):
+                remote.identity_dispatch(self.request)
+        run.assert_not_called()
 
     def test_wrong_installation_or_incomplete_host_stops_before_process(self):
         for installation in ({'intent': {**INTENT, 'id': '2' * 32}, 'step': 'complete'},

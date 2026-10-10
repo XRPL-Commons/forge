@@ -11,8 +11,8 @@ GitHub before the issue advances.
 ## Install
 
 This repository contains the Forge server, workers, web UI and local CLI. Install
-the CLI on your computer or your external agent's computer; install the server
-on its Linux host.
+the CLI on your computer or your external agent's computer, then use
+`forge setup new` to install and configure the server on its Linux host.
 
 ### Local CLI
 
@@ -32,8 +32,10 @@ forge server setup --help
 If your shell cannot find `forge`, run `uv tool update-shell` and open a new terminal.
 
 This fetches the repository but installs only the `forge-agent-client` Python
-distribution: `forge_client`, its dependencies and the `forge` command. It does
-not install or start the Forge server. No PyPI release is currently published.
+distribution: the `forge` client command, `forge_client`, and the `forge` Python
+modules used for shared contracts and host maintenance. Installing this package
+does not build worker images, deploy services or start a server. No PyPI release
+is currently published.
 
 | Command | Run it on | Purpose |
 | --- | --- | --- |
@@ -43,16 +45,19 @@ not install or start the Forge server. No PyPI release is currently published.
 | `bin/forge setup` | The Forge server, from its source checkout | Install services, prepare workers and connect coding accounts |
 | `bin/forge update` | The Forge server, from its source checkout | Update the source and reconcile the installed services |
 
-Follow [CLI server setup](docs/cli-server-setup.md) for SSH, Tailscale and local
-GitHub CLI prerequisites, then [agent connections](docs/agent-connections.md) to
-approve a scoped external agent connection. Connections require an unlocked
-macOS Keychain or Linux Secret Service for local credential storage.
-
-The CLI also supports [fresh-host installation](docs/cli-fresh-host.md). Run
-`forge setup new` for the guided path from a fresh VM to a first verified merge;
+For a fresh VM, follow [fresh-host installation](docs/cli-fresh-host.md). Run
+`forge setup new` for the guided path through installation, sign-in, role Apps,
+a coding account and repository checks to a first verified merge.
 `forge setup continue --ssh USER@HOST` resumes factory setup after sign-in.
 Each stage has JSON operations for agents. The CLI handles SSH and transfers,
 keeps GitHub administration local, and asks explicitly before Start.
+
+For an existing Forge host that needs operator sign-in and private HTTPS, use
+[CLI server setup](docs/cli-server-setup.md). Then follow
+[agent connections](docs/agent-connections.md) to approve a scoped external agent
+connection. Connections require an unlocked macOS Keychain or Linux Secret
+Service for local credential storage.
+
 For repository setup on an existing server:
 
 ```sh
@@ -186,7 +191,7 @@ must be enabled explicitly.
 | Directory | Purpose |
 | --- | --- |
 | `forge/` | Setup/update, settings, the setup supervisor, and the durable factory (`forge/factory`) |
-| `forge_client/` | Standalone local CLI for server sign-in setup and scoped agent connections |
+| `forge_client/` | Local CLI for installation, host maintenance and scoped agent connections |
 | `ui/` | Operator UI (Nuxt) |
 | `observer/` | Independent observation and isolation experiments |
 | `deploy/` | Runner image, isolation policies and deployment utilities |

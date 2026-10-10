@@ -65,11 +65,11 @@ def normalize(importer):
     name='state/onboarding/setup.json'
     if name in importer.source.entries:
         source=importer.source.json(name)
-        if source and all(field in source for field in ('generation','phase','owner','account_type')):
+        if source and all(field in source for field in ('generation','phase')) and (source['phase']=='setup' or all(k in source for k in ('owner','account_type'))):
             def setup(db,_):
                 value={k:v for k,v in source.items() if k not in ('generation','phase','owner','account_type','probe_jobs')}
-                insert(db,'setup_instances',scope='live',generation=source['generation'],phase=source['phase'],owner=source['owner'],
-                       account_type=source['account_type'],settings_json=json_text(value))
+                insert(db,'setup_instances',scope='live',generation=source['generation'],phase=source['phase'],owner=source.get('owner') or '',
+                       account_type=source.get('account_type') or '',settings_json=json_text(value))
             batches(importer,'normalized:setup_instance',[None],setup)
             batches(importer,'normalized:setup_probes',list(enumerate(source.get('probe_jobs',[]))),lambda db,pair:
                     execution(db,'setup','live',pair[0],pair[1]))

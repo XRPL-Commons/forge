@@ -14,6 +14,27 @@ from forge_client.migration import bundle
 
 
 class MigrationCLITests(unittest.TestCase):
+    def test_commands_discover_initial_activation_source_revision(self):
+        schema=execute(parser().parse_args(['--json','commands']))['migration_commands']['activate']
+        self.assertTrue(schema['initial_source_upgrade'])
+        field=schema['input_schema']['properties']['source_revision']
+        self.assertEqual(field['pattern'],'^[0-9a-f]{40}$')
+        self.assertIn('initial_setup=true',field['description'])
+
+    def test_initial_activation_exports_local_forward_source_and_pins_revisions(self):
+        args=parser().parse_args(['migrate','activate','--ssh','anvil','--source','/srv/source','--root','/srv/runtime','--apply','--source-revision','b'*40])
+        with patch('forge_client.migration.call',side_effect=[{'initial_setup':True,'plan':'p','source_revision':'a'*40},{'status':'active'}]) as call, \
+                patch('forge_client.source.export',return_value={'sha256':'digest','data':'pack'}) as export:
+            self.assertEqual(execute(args)['status'],'active')
+        export.assert_called_once_with('b'*40,previous='a'*40)
+        self.assertEqual(call.call_args.kwargs,dict(apply=True,previous_revision='a'*40,source_revision='b'*40,source_pack={'sha256':'digest','data':'pack'}))
+
+    def test_initial_source_bridge_rejects_active_host_before_export(self):
+        args=parser().parse_args(['migrate','activate','--ssh','anvil','--source','/srv/source','--root','/srv/runtime','--apply','--source-revision','b'*40])
+        with patch('forge_client.migration.call',return_value={'initial_setup':False}) as call, patch('forge_client.source.export') as export:
+            with self.assertRaises(SetupError):execute(args)
+        self.assertEqual(call.call_count,1);export.assert_not_called()
+
     def test_upgrade_plan_and_pinned_apply_are_machine_readable(self):
         values=['migrate','upgrade','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
         with patch('forge_client.migration.call',return_value={'status':'planned'}) as call:

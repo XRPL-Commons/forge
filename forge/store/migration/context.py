@@ -65,7 +65,7 @@ def normalize(importer, ledger):
 
 def check(importer):
     from ..artifacts import Artifacts
-    ledger=importer.source.json('state/factory/factory-ledger.json')
+    ledger=importer.source.ledger()
     counts={'unit_contexts':0,'attempt_failures':0,'dependency_members':0}
     with importer.store.read_snapshot() as db:
         for key,value in ledger['issues'].items():

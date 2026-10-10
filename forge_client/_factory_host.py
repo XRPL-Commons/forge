@@ -5,9 +5,9 @@ import subprocess
 import sys
 
 if globals().get('__package__'):
-    from ._install_host import ENV, HOME, ROOT, SOURCE, InstallError, need, read, facts, validate_intent
+    from ._install_host import ENV, HOME, ROOT, SOURCE, InstallError, need, read, facts, validate_intent, require_setup_entrypoint
 else:
-    from forge_install_helpers import ENV, HOME, ROOT, SOURCE, InstallError, need, read, facts, validate_intent
+    from forge_install_helpers import ENV, HOME, ROOT, SOURCE, InstallError, need, read, facts, validate_intent, require_setup_entrypoint
 
 
 def dispatch(request):
@@ -22,6 +22,7 @@ def dispatch(request):
     account = pwd.getpwnam('forge')
     need(account.pw_uid > 0 and account.pw_dir == str(HOME) and HOME.resolve() == HOME
          and HOME.stat().st_uid == account.pw_uid, 'existing_installation')
+    require_setup_entrypoint(SOURCE, 'forge.installation_setup')
     args = ['runuser', '-u', 'forge', '--', 'env', '-i', 'PATH=/usr/sbin:/usr/bin:/sbin:/bin',
             'HOME=' + str(HOME), 'LANG=C.UTF-8', 'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
             '/usr/bin/python3', '-m', 'forge.launch', 'forge.installation_setup', '--root', str(ROOT)]
