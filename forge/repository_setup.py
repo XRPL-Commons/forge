@@ -12,6 +12,11 @@ RULESET_NAME = 'Forge review baseline'
 DEPLOYMENT_LABEL = 'forge:deployment'
 
 
+class SetupObservationChanged(ValueError):
+    """The configuration owning a remote setup observation was replaced."""
+
+
+
 def ruleset(branch, controller_app_id):
     # The standalone client and server download must produce the same policy.
     from forge_client.contracts import baseline
@@ -61,7 +66,7 @@ class RepositorySetup:
         except (OSError, ValueError):
             return {'repositories': {}}
 
-    def save_observation(self, repo_id, data, *, expected_generation=None):
+    def save_observation(self, repo_id, data, *, expected_generation=None, expected_config=None):
         if self.database is None:
             write_json(self.path, data)
             return
@@ -69,7 +74,15 @@ class RepositorySetup:
         value = data['repositories'][str(repo_id)]
         with self.database.write() as db:
             writable(db)
-            self.settings._generation(db, expected_generation)
+            try:
+                self.settings._generation(db, expected_generation)
+            except ValueError as error:
+                raise SetupObservationChanged(str(error)) from error
+            if expected_config is not None:
+                current = db.execute("SELECT settings_json FROM configuration WHERE domain=? AND subject='instance' AND active=1",
+                                     (self.settings.domain,)).fetchone()
+                if current is None or digest(json.loads(current[0])) != expected_config:
+                    raise SetupObservationChanged('Repository settings changed during the protection check')
             # Access discovery can include a repository not yet enabled locally.
             db.execute('INSERT INTO repositories(id,full_name,enabled) VALUES(?,?,0) ON CONFLICT(id) DO NOTHING',
                        (repo_id, value['name']))

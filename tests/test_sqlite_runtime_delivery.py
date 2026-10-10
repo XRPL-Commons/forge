@@ -25,6 +25,11 @@ class GitHub(DeliveryGitHub):
         self.remote['labels'] = ['ready']
         self.deadline = float('inf')
 
+    def protection_report(self, item, candidate):
+        return dict(repo_id=item['repo_id'], branch=candidate['base_ref'], available=True, observed_at=100.0,
+                    requirements=[{'id': 'reviews', 'passed': True}, {'id': 'stale', 'passed': True}],
+                    bypass={'status': 'ready'})
+
     def discover(self, connection):
         role = list(ROLE_PERMISSIONS)[connection['app_id'] - 1]
         return {'repositories': [{'id': 1, 'name': 'owner/repo', 'archived': False}],

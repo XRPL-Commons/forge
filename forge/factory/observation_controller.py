@@ -1,8 +1,8 @@
 """Ordered GitHub observations for every current SQLite delivery member.
 
 Collection generations are reserved before network reads. A late response cannot
-replace a newer observation. All issue facts, holds and readiness changes commit
-with one lifecycle command; imported reconciliation gates are never auto-cleared.
+replace a newer observation. Issue facts and holds commit together. Repository readiness uses its own
+revision-bound lifecycle observation; imported reconciliation gates stay intact.
 """
 import time
 import uuid
@@ -17,11 +17,12 @@ from .ownership import ownership, active_publication_matches
 
 
 class ObservationController:
-    def __init__(self, store, github, *, admission, policy=None,
+    def __init__(self, store, github, *, admission, policy=None, readiness=None,
                  hold_labels=('hold', 'blocked'), clock=time.time, monotonic=time.monotonic):
         self.store, self.github, self.admission = store, github, admission
         self.policy, self.hold_labels, self.clock = policy, tuple(hold_labels), clock
         self.monotonic = monotonic
+        self.readiness = readiness
         self.commands = Lifecycle(store, clock=clock)
         self.queries = Queries(store)
 
@@ -146,7 +147,9 @@ class ObservationController:
             except (GitHubUnavailable, RequestBudgetExhausted) as error:
                 observation_error = error
         outcome = self.commands.observe_issue(self._command(unit), issue['id'], **observation,
-            admission=allowed, ownership_conflict=conflict)
+            admission=None if self.readiness else allowed, ownership_conflict=conflict)
+        if self.readiness and allowed is not None and not outcome.get('stale'):
+            self.readiness.observe(unit_id)
         if observation_error:
             # Persist verified issue facts even when a later required read fails.
             # Budget deferral keeps this exact member pending; an unavailable
