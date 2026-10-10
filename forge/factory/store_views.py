@@ -358,7 +358,7 @@ class PipelineViews:
             if delivery['status']=='success':deployed={'commit':delivery['commit_oid'],'at':delivery['observed_at'],'via':context.get('via','github')}
             elif delivery['status']=='failure':failed={'sha':delivery['commit_oid'],'at':delivery['observed_at'],'run_url':context.get('run_url')}
         events=reads.events.get(unit['id'], []) if reads is not None else db.execute('SELECT kind,at,payload_json FROM events WHERE unit_id=? ORDER BY sequence DESC LIMIT 3',(unit['id'],)).fetchall()
-        history=[_event(e,('at','kind','provider','model')) for e in reversed(events)]
+        history=list(reversed(events)) if reads is not None else [_event(e,('at','kind','provider','model')) for e in reversed(events)]
         if unit['state'] in {'merged','closed','dissolved'} and completed_at and not any(e['kind'] in {'merged','cancelled','closed','dissolved'} for e in history):
             history.insert(0,{'kind':'merged' if unit['state']=='merged' else 'cancelled','at':completed_at})
         attention={'approval_required':'approve','verification_human':'verify','budget_exhausted':'failed',
