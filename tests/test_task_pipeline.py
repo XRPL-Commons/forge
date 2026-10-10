@@ -1,0 +1,183 @@
+"""Composed v2 controller, store and real Git bundle acceptance paths."""
+import json
+import unittest
+
+from tests import test_delivery_pipeline as fixtures
+from forge.store.task_inputs import member_contributions_in
+from forge.factory.config import validate
+from forge.factory.dispatch_controller import PreparedDispatch
+
+
+class TaskPipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.f = fixtures.DeliveryPipelineTests('runTest')
+        self.f.setUp(); self.addCleanup(self.f.doCleanups)
+
+    def plan(self, build):
+        f = self.f
+        identifier = f.dispatch.step('batch')['job_id']
+        job = f.jobs.job(identifier)
+        self.assertEqual(job['input_manifest']['manifest_version'], 2)
+        plan = build(job['members'])
+        self.assertTrue(f.capture(identifier, outcome='delegate', delegation_plan=plan)['accepted'])
+        return job
+
+    @staticmethod
+    def definition(key, members, *, executor='child', depends_on=()):
+        return {'key': key, 'member_ids': list(members), 'scope': 'Implement ' + key,
+                'executor': executor, 'depends_on': list(depends_on), 'internalizes': []}
+
+    @staticmethod
+    def value(tasks, owner=()):
+        return {'version': 2, 'retained_task_ids': [], 'tasks': tasks,
+                'owner_final': {'member_ids': list(owner), 'scope': 'Complete final owner work' if owner else '', 'internalizes': []}}
+
+    def bundle(self, name, parent=None):
+        f = self.f
+        f.git('checkout', '--quiet', '--detach', parent or f.base)
+        (f.repo / name).write_text(name + '\n')
+        f.git('add', name); f.git('commit', '-qm', name)
+        head = f.git('rev-parse', 'HEAD').strip()
+        path = f.root / (name + '.bundle')
+        f.git('bundle', 'create', str(path), 'HEAD', '^' + f.base)
+        return head, path.read_bytes()
+
+    def test_owner_only_plan_goes_directly_to_one_integration(self):
+        owner = self.plan(lambda members: self.value([], [row['member_id'] for row in members]))
+        f = self.f
+        integration = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertEqual(integration['builder_stage'], 'integration')
+        self.assertEqual(integration['builder_id'], owner['builder_id'])
+        self.assertEqual(integration['input_manifest']['part_outputs'], [])
+        self.assertEqual(len(integration['members']), 2)
+        f.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': f.base}
+        self.assertTrue(f.capture(integration['id'])['accepted'])
+        self.assertEqual(f.dispatch.step('batch')['role'], 'review')
+
+    def test_shared_task_needs_every_member_and_combines_only_its_environment_scope(self):
+        owner = self.plan(lambda members: self.value([
+            self.definition('shared', [row['member_id'] for row in members])]))
+        f = self.f
+        first, second = [row['member_id'] for row in owner['members']]
+        f.config = validate({**f.config, 'memory': '4g', 'memory_tiers': ['4g', '8g', '16g'],
+            'environment_tiers': {'full': {'memory': '8g', 'image': 'sha256:' + 'b' * 64, 'cpus': 2}}})
+        f.dispatch = f.dispatcher()
+        choices = {first: {'tier': 'full', 'services': ['postgres'], 'automatic': True}}
+        f.dispatch.prepare = lambda snapshot, role: PreparedDispatch(f.base, role + '[bot]', f.config, member_choices=choices)
+        self.assertFalse(f.dispatch.step('batch')['reserved'])
+        choices[second] = {'tier': 'full', 'services': ['redis'], 'automatic': True}
+        with f.store.write() as db:
+            db.execute('INSERT INTO issue_environment_observations(issue_id,memory_retry_json) VALUES(?,?)',
+                       (owner['members'][1]['issue_key'], json.dumps({'role': 'build', 'memory': '16g'})))
+        task = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertEqual({row['member_id'] for row in task['members']}, {first, second})
+        self.assertEqual(task['runner_config']['services'], ['postgres', 'redis'])
+        self.assertEqual(task['runner_config']['memory'], '16384m')
+
+    def test_same_member_tasks_run_independently_and_first_output_is_not_member_completion(self):
+        owner = self.plan(lambda members: self.value([
+            self.definition('first', [members[0]['member_id']]), self.definition('second', [members[0]['member_id']])],
+            [members[1]['member_id']]))
+        f = self.f
+        first = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        second = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertNotEqual(first['task']['id'], second['task']['id'])
+        self.assertEqual(first['members'], second['members'])
+        for index, job in enumerate((first, second)):
+            head, bundle = self.bundle('part-' + str(index))
+            self.assertTrue(f.capture(job['id'], output_commit=head, bundle=bundle)['accepted'])
+            with f.store.read_snapshot() as db:
+                unit = dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
+                contributions = member_contributions_in(db, unit, owner['members'][0]['member_id'])
+                self.assertEqual(contributions['ready'], index == 1)
+        integration = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertEqual(len(integration['input_manifest']['part_outputs']), 2)
+
+    def test_owner_checkpoint_then_children_preserve_exact_graph_and_human_verification(self):
+        owner = self.plan(lambda members: self.value([
+            self.definition('checkpoint', [row['member_id'] for row in members], executor='owner'),
+            self.definition('left', [members[0]['member_id']], depends_on=['checkpoint']),
+            self.definition('right', [members[1]['member_id']], depends_on=['checkpoint'])]))
+        f = self.f
+        checkpoint = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertEqual(checkpoint['task']['executor'], 'owner')
+        self.assertEqual(len(checkpoint['members']), 2)
+        self.assertFalse(f.dispatch.step('batch')['reserved'])
+        head, bundle = self.bundle('checkpoint')
+        self.assertTrue(f.capture(checkpoint['id'], output_commit=head, bundle=bundle)['accepted'])
+        children = [f.jobs.job(f.dispatch.step('batch')['job_id']) for _ in range(2)]
+        request = {'what': 'Check the physical device', 'why': 'Needs hardware', 'checks': []}
+        for index, child in enumerate(children):
+            self.assertEqual([row['commit_oid'] for row in child['input_manifest']['prerequisite_outputs']], [head])
+            child_head, child_bundle = self.bundle('child-' + str(index), head)
+            fields = {'outcome': 'needs_human_verification', 'verification': request} if index == 0 else {}
+            self.assertTrue(f.capture(child['id'], output_commit=child_head, bundle=child_bundle, **fields)['accepted'])
+        integration = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertEqual(integration['builder_id'], owner['builder_id'])
+        references = f.jobs.input_refs(integration)
+        self.assertEqual(len(references), 3)
+        self.assertEqual(references[0]['job_id'], checkpoint['id'])
+        self.assertEqual(len(integration['input_manifest']['verification_requests']), 1)
+        f.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': f.base}
+        self.assertTrue(f.capture(integration['id'])['accepted'])
+        with f.store.read_snapshot() as db:
+            gate = db.execute("SELECT details_json FROM unit_gates WHERE unit_id='batch' AND code='verification_human' AND resolved_at IS NULL").fetchone()
+            self.assertIn(request['what'], json.loads(gate[0])['what'])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
+
+    def test_recovery_preserves_all_failed_task_pins_beside_independent_active_task(self):
+        from forge.factory.recovery_controller import RecoveryController
+        owner = self.plan(lambda members: self.value([
+            self.definition('failed', [row['member_id'] for row in members]),
+            self.definition('independent', [members[0]['member_id']])]))
+        f = self.f
+        failed = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        independent = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertTrue(f.capture(failed['id'], outcome='unable')['charged'])
+        recovery = RecoveryController(f.store, f.runner, f.github, config=f.config,
+                                      admission=lambda _: True, clock=lambda: 100)
+        identifier = recovery.schedule(failed['id'])['job_id']
+        investigation = f.jobs.job(identifier)
+        self.assertEqual(investigation['input_manifest']['members'],
+            [{'member_id': row['member_id'], 'requirements_revision_id': row['requirements_revision_id']}
+             for row in failed['members']])
+        self.assertEqual(investigation['members'], failed['members'])
+        self.assertFalse(f.jobs.job(independent['id'])['fenced'])
+        f.github.publication.reset_mock()
+        result = f.capture(identifier, classifier=recovery.finish, pattern='Concrete cause',
+                           evidence=['Observed failure'], uncertainty='', alternative=None)
+        self.assertTrue(result['accepted'])
+        f.github.publication.assert_not_called()
+        with f.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT investigation FROM attempt_failures WHERE attempt_id=?", (failed['attempt_id'],)).fetchone()[0], 'complete')
+
+    def test_environment_conflict_requests_replan_without_lease_or_charge(self):
+        owner = self.plan(lambda members: self.value([
+            self.definition('shared', [row['member_id'] for row in members])]))
+        f = self.f
+        a, b = [row['member_id'] for row in owner['members']]
+        choices = {a: {'tier': 'standard', 'automatic': False, 'services': []},
+                   b: {'tier': 'full', 'automatic': True, 'services': ['postgres']}}
+        with f.store.write() as db:
+            for revision, member in enumerate(owner['members'], 1):
+                db.execute('INSERT INTO unit_environment(unit_id,revision,choice,requirements_revision_id,config_hash,created_at,member_id) VALUES(?,?,?,?,?,?,?)',
+                    ('batch', revision, json.dumps(choices[member['member_id']]), member['requirements_revision_id'], 'config', 100, member['member_id']))
+        f.dispatch.prepare = lambda snapshot, role: PreparedDispatch(f.base, role + '[bot]', f.config, member_choices=choices)
+        result = f.dispatch.step('batch')
+        self.assertEqual(result['reason'], 'environment_conflict')
+        with f.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
+        replan = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.assertEqual(replan['builder_stage'], 'planning')
+        self.assertEqual(replan['input_manifest']['environment_conflicts'][0]['choices'], choices)
+        self.assertEqual(replan['runner_config']['environment_tier'], 'standard')
+        # Repeating the same incompatible split cannot launch a planning loop.
+        self.assertTrue(f.capture(replan['id'], outcome='delegate', delegation_plan=self.value([
+            self.definition('same-shared', [a, b])]))['accepted'])
+        self.assertFalse(f.dispatch.step('batch')['reserved'])
+        with f.store.read_snapshot() as db:
+            gate = db.execute("SELECT details_json FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()
+            self.assertEqual(json.loads(gate[0])['choices'], choices)
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)

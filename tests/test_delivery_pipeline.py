@@ -108,18 +108,23 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.git('bundle', 'create', str(path), 'HEAD', '^' + self.base)
         return head, path.read_bytes()
 
+    @staticmethod
+    def plan_value(tasks):
+        return {'version': 2, 'retained_task_ids': [], 'tasks': tasks,
+                'owner_final': {'member_ids': [], 'scope': '', 'internalizes': []}}
+
     def integrate(self):
         parent = self.dispatch.step('batch')['job_id']
         planning = self.jobs.job(parent)
         self.assertIsNone(planning['issue_number'])
         self.assertEqual(len(planning['members']), 2)
-        children = [dict(key='part-' + str(index), member_id=member['member_id'], scope='Implement member', dependencies=[])
+        children = [dict(key='part-' + str(index), executor='child', member_ids=[member['member_id']], scope='Implement member', depends_on=[], internalizes=[])
                     for index, member in enumerate(planning['members'])]
-        self.assertTrue(self.capture(parent, outcome='delegate', delegation_plan={'children': children})['accepted'])
+        self.assertTrue(self.capture(parent, outcome='delegate', delegation_plan=self.plan_value(children))['accepted'])
         # Restarting the coordinator retains the plan and never reserves it twice.
         self.dispatch = self.dispatcher()
         first = self.dispatch.step('batch')['job_id']; second = self.dispatch.step('batch')['job_id']
-        self.assertEqual(self.jobs.job(first)['delegation']['parent_job_id'], parent)
+        self.assertEqual(self.jobs.job(first)['task']['parent_job_id'], parent)
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM job_leases').fetchone()[0], 2)
         self.assertFalse(self.dispatch.step('batch')['reserved'])
@@ -145,8 +150,8 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.delivery.compose(Command('compose-other', 'operator', 'other', 1), **proposal,
             approval={'approved': True, 'composition_hash': self.delivery.composition_hash(**proposal)})
         self.config['slots']['build'] = 1
-        expected = [('batch', 'planning'), ('other', 'planning'), ('batch', 'child'),
-                    ('other', 'child'), ('batch', 'child'), ('other', 'child')]
+        expected = [('batch', 'planning'), ('other', 'planning'), ('batch', 'task'),
+                    ('other', 'task'), ('batch', 'task'), ('other', 'task')]
         allocations = []
         for index, (unit, stage) in enumerate(expected):
             # New store and controller handles, with a frozen clock: only durable
@@ -163,9 +168,9 @@ class DeliveryPipelineTests(unittest.TestCase):
             with self.store.read_snapshot() as db:
                 self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 1)
             if stage == 'planning':
-                children = [dict(key='part-' + str(i), member_id=member['member_id'], scope='Implement member', dependencies=[])
+                children = [dict(key='part-' + str(i), executor='child', member_ids=[member['member_id']], scope='Implement member', depends_on=[], internalizes=[])
                             for i, member in enumerate(job['members'])]
-                result = self.capture(job['id'], outcome='delegate', delegation_plan={'children': children})
+                result = self.capture(job['id'], outcome='delegate', delegation_plan=self.plan_value(children))
             else:
                 head, bundle = self.child_bundle(index)
                 result = self.capture(job['id'], output_commit=head, bundle=bundle)
@@ -240,7 +245,15 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertNotEqual(resumed['input_manifest']['base_oid'], old_base)
         self.assertEqual(resumed['input_manifest']['previous_publication']['head_oid'], 'c' * 40)
         self.assertEqual(resumed['input_manifest']['previous_publication']['source_job_id'], integration['id'])
-        self.assertEqual((resumed['branch'], resumed['resume_pr'], resumed['resume_head']), (integration['branch'], 9, 'c' * 40))
+        self.assertNotEqual(resumed['branch'], integration['branch'])
+        self.assertNotIn('resume_pr', resumed)
+        self.assertTrue(self.capture(resumed['id'], outcome='delegate', delegation_plan={
+            'version': 2, 'retained_task_ids': [], 'tasks': [],
+            'owner_final': {'member_ids': [row['member_id'] for row in resumed['members']],
+                            'scope': 'Rebase the combined delivery', 'internalizes': []}})['accepted'])
+        publisher = self.jobs.job(self.dispatch.step('batch')['job_id'])
+        self.assertEqual(publisher['builder_stage'], 'integration')
+        self.assertEqual((publisher['branch'], publisher['resume_pr'], publisher['resume_head']), (integration['branch'], 9, 'c' * 40))
 
     def test_existing_target_base_revocation_preserves_original_author_and_exact_pr(self):
         from forge.factory.ownership import publication_context, publication_transfer_matches
@@ -313,8 +326,8 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.dispatch = self.dispatcher()
         parent = self.dispatch.step('batch')['job_id']; planning = self.jobs.job(parent)
         members = planning['members']
-        plan = {'children': [dict(key='part-' + str(index), member_id=member['member_id'], scope='Implement member', dependencies=[])
-                             for index, member in enumerate(members)]}
+        plan = self.plan_value([dict(key='part-' + str(index), executor='child', member_ids=[member['member_id']], scope='Implement member', depends_on=[], internalizes=[])
+                             for index, member in enumerate(members)])
         self.capture(parent, outcome='delegate', delegation_plan=plan)
         with self.store.write() as db:
             for member, memory in zip(members, ['16g', '8g']):
@@ -373,6 +386,15 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.ci_evidence.return_value = {}
         self.dispatch.prepare = GitHubPrepare(self.github, self.config)
         resumed = self.jobs.job(self.dispatch.step('batch')['job_id'])
+        self.assertEqual(resumed['builder_stage'], 'planning')
+        self.assertNotIn('resume_pr', resumed)
+        self.assertNotEqual(resumed['branch'], integration['branch'])
+        self.assertTrue(self.capture(resumed['id'], outcome='delegate', delegation_plan={
+            'version': 2, 'retained_task_ids': [], 'tasks': [],
+            'owner_final': {'member_ids': [row['member_id'] for row in resumed['members']],
+                            'scope': 'Revise the combined delivery', 'internalizes': []}})['accepted'])
+        resumed = self.jobs.job(self.dispatch.step('batch')['job_id'])
+        self.assertEqual(resumed['builder_stage'], 'integration')
         self.assertEqual(resumed['resume_pr'], 9)
         self.assertEqual(resumed['resume_head'], 'c' * 40)
         self.assertEqual(resumed['branch'], integration['branch'])
@@ -410,14 +432,14 @@ class DeliveryPipelineTests(unittest.TestCase):
             self.assertEqual(detail['active'], parent)
             self.assertTrue(detail['delivery_approved'])
             self.assertFalse(detail['closable'])
-        plan = {'children': [dict(key=str(index),member_id=member['member_id'],scope='Implement',dependencies=[])
-                             for index,member in enumerate(planning['members'])]}
+        plan = self.plan_value([dict(key=str(index),executor='child',member_ids=[member['member_id']],scope='Implement',depends_on=[],internalizes=[])
+                             for index,member in enumerate(planning['members'])])
         self.capture(parent,outcome='delegate',delegation_plan=plan)
         first = self.dispatch.step('batch')['job_id']; second = self.dispatch.step('batch')['job_id']
         for identifier in (first,second):
             child = views.job(identifier)
             self.assertEqual(child['parent_job_id'],parent)
-            self.assertEqual(child['builder_stage'],'child')
+            self.assertEqual(child['builder_stage'],'task')
             detail = views.issues(key=child['issue_key'])
             self.assertEqual(detail['issue']['active'],identifier)
             self.assertEqual([job['id'] for job in detail['jobs']],[identifier])
