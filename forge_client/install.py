@@ -22,6 +22,7 @@ ROOT = '/home/forge/.local/share/forge'
 REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 STEPS = ['packages', 'account', 'source', 'isolation', 'host']
 ERRORS = {
+    'server_maintenance_required': 'The installed server predates this setup command. Inspect maintenance before continuing setup.',
     'factory_setup_failed': 'Factory setup could not complete. Inspect setup status and the server checks before resuming.',
     'storage_required': 'Initialize the selected SQLite runtime before continuing setup.',
     'setup_changed': 'Setup identity or configuration changed. Inspect it before continuing.',
@@ -162,7 +163,11 @@ class InstallerHost:
         if result.get('ok') is not True:
             code = result.get('error')
             code = code if isinstance(code, str) and code in ERRORS else 'host_command_failed'
-            raise SetupError(code, ERRORS[code])
+            reason = ERRORS[code]
+            if code == 'server_maintenance_required':
+                reason += ' Run: ' + shlex.join(['forge', 'migrate', 'plan', '--ssh', self.ssh,
+                    '--service-user', 'forge', '--source', SOURCE, '--root', ROOT, '--json'])
+            raise SetupError(code, reason)
         return result
 
     @staticmethod

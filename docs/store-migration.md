@@ -4,6 +4,26 @@ The CLI prepares, validates and activates the SQLite runtime for an existing
 Forge installation. `capture`, `import` and `verify` remain useful for an offline
 rehearsal. Only `activate --apply` authorizes the production switch.
 
+## Select the server service account
+
+Remote maintenance runs as the SSH account by default. If SSH connects as root or
+an administrator while Forge runs under a separate Unix account, add
+`--service-user` to every remote migration command:
+
+```sh
+forge migrate plan --ssh anvil --service-user forge \
+  --source /home/forge/forge --root /home/forge/.local/share/forge --json
+```
+
+The account must already exist and own its home directory. Root can switch
+directly; another administrator needs noninteractive `sudo` permission to run
+`runuser`. The CLI sets that account's `HOME` and `XDG_RUNTIME_DIR`, so maintenance
+inspects its user services and creates private tools, journals and snapshots as
+that account. Snapshot downloads use the same account. Returned resume commands
+retain the option. `import` and `verify` are local operations and do not accept it.
+This option selects the existing installation's owner; it does not create an
+account, reinstall Forge or authorize activation.
+
 ## Activate an existing server
 
 Install the CLI from the same release deployed on the server. Update the managed

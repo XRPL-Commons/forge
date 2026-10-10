@@ -39,6 +39,14 @@ def need(value, code):
         raise InstallError(code)
 
 
+def require_setup_entrypoint(source, module):
+    # Setup RPCs require these installed entrypoints; an older checkout needs
+    # maintenance before it can understand the current setup protocol.
+    need((source / 'forge/launch.py').is_file()
+         and (source / (module.replace('.', '/') + '.py')).is_file(),
+         'server_maintenance_required')
+
+
 def run(argv, *, capture=False, timeout=1800, input_file=None):
     result = subprocess.run(argv, check=True, stdin=subprocess.DEVNULL if input_file is None else input_file,
                             stdout=subprocess.PIPE if capture else None,

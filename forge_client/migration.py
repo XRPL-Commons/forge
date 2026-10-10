@@ -1,8 +1,10 @@
 """Deterministic migration CLI: preparation, staged inspection and one-way activation."""
 import base64
 import io
+from importlib.resources import files
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -60,19 +62,41 @@ def ssh(host, command):
             '-o','ClearAllForwardings=yes','-o','ForwardX11=no',host,command]
 
 
+SERVICE_USER_PATTERN = r'[a-z_][a-z0-9_-]{0,31}'
+
+
+def service_user(args):
+    user = getattr(args, 'service_user', None)
+    require(user is None or isinstance(user, str) and re.fullmatch(SERVICE_USER_PATTERN, user),
+            'invalid_service_user', 'Use the existing Unix service account name, such as forge.')
+    return user
+
+
+def transport(args, command):
+    """Both maintenance RPCs and snapshot reads use the same explicit account."""
+    user = service_user(args)
+    if user is not None:
+        program = files('forge_client').joinpath('_service_host.py').read_text()
+        command = ['python3', '-I', '-c', program, user, *command]
+    return ssh(args.ssh, shlex.join(command))
+
+
 def call(args,action,**fields):
     # Reuse validation of explicit host/source/root intent.
     Host(args.ssh,args.source,args.root)
+    user = service_user(args)
     resume = shlex.join(['forge', 'migrate', 'upgrade' if action=='upgrade' else 'resume', '--ssh', args.ssh,
-                         '--source', args.source, '--root', args.root, '--json'])
+                         '--source', args.source, '--root', args.root,
+                         *(['--service-user', user] if user is not None else []), '--json'])
     if action=='upgrade' and getattr(args,'source_revision',None):
         resume += ' --apply --source-revision '+shlex.quote(args.source_revision)
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(BOOTSTRAP)),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
+    result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP]),input=json.dumps(request).encode(),capture_output=True,timeout=1500 if action in {'prepare','activate','resume','upgrade'} else 300)
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
-            'The host operation failed. Resume maintenance with: ' + resume)
+            ('The host operation failed. ' if user is None else 'Maintenance could not run as service user '+user+'. Verify that account and root or noninteractive sudo access. ')
+            + 'Resume maintenance with: ' + resume)
     value=json.loads(result.stdout)
     if value.get('ok') is not True:
         import re
@@ -104,12 +128,13 @@ with tarfile.open(fileobj=sys.stdout.buffer,mode="w|") as archive:
     import tarfile
     from forge.store.migration.snapshot import Snapshot
     from forge.store.db import _new_file,_fsync_directory
+    service_user(args)
     local=Path(local).absolute()
     local.mkdir(mode=0o700)
     os.chmod(local,0o700)
     # Redirect the binary stream to a private file; no source contents enter logs.
     with tempfile.TemporaryFile() as stream:
-        process=subprocess.run(ssh(args.ssh,'python3 -c '+shlex.quote(script)+' '+shlex.quote(remote)),stdout=stream,stderr=subprocess.PIPE,timeout=300)
+        process=subprocess.run(transport(args, ['python3', '-c', script, remote]),stdout=stream,stderr=subprocess.PIPE,timeout=300)
         require(process.returncode==0,'snapshot_transfer_failed','Private snapshot transfer failed.')
         stream.seek(0)
         with tarfile.open(fileobj=stream,mode='r:') as archive:
@@ -133,6 +158,9 @@ def execute(args):
     from forge.store.db import StoreError
     import sqlite3
     try:
+        user = service_user(args)
+        require(user is None or args.migration_command not in ('import', 'verify'),
+                'invalid_service_user', '--service-user applies only to remote migration operations.')
         repair=getattr(args,'accept_tool_update',False)
         revision=getattr(args,'source_revision',None)
         if args.migration_command=='upgrade':

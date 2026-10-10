@@ -194,6 +194,9 @@ class SetupHostTransportTests(unittest.TestCase):
         secret = 'synthetic-provider-secret-for-private-stdin'
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
+            (home / 'source/forge').mkdir(parents=True)
+            for name in ('launch.py', 'installation_setup.py'):
+                (home / 'source/forge' / name).touch()
             request = {'version':1,'intent':{'id':'a'*32},'setup':{'setup_id':'a'*32,'action':'account',
                        'parameters':{'provider':'codex','kind':'api_key','secret':secret}}}
             account = SimpleNamespace(pw_uid=os.getuid(),pw_dir=str(home))
@@ -210,6 +213,22 @@ class SetupHostTransportTests(unittest.TestCase):
             self.assertNotIn(secret,str(argv))
             self.assertNotIn(secret,str(run.call_args.kwargs['env']))
             self.assertEqual(json.loads(run.call_args.kwargs['input'])['parameters']['secret'],secret)
+
+    def test_old_server_reports_maintenance_before_setup_process(self):
+        import os
+        from forge_client import _factory_host as host
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            request = {'version':1,'intent':{'id':'a'*32},'setup':{'setup_id':'a'*32,'action':'inspect'}}
+            account = SimpleNamespace(pw_uid=os.getuid(),pw_dir=str(home))
+            with patch.object(host,'HOME',home), patch.object(host,'SOURCE',home/'source'), \
+                 patch.object(host,'validate_intent'), patch.object(host,'facts'), \
+                 patch.object(host,'read',return_value={'intent':request['intent'],'step':'complete'}), \
+                 patch.object(host.pwd,'getpwnam',return_value=account), \
+                 patch.object(host.subprocess,'run') as run:
+                with self.assertRaisesRegex(host.InstallError, '^server_maintenance_required$'):
+                    host.dispatch(request)
+                run.assert_not_called()
 
     def test_wrong_installation_or_setup_id_cannot_reach_service_account(self):
         from forge_client import _factory_host as host

@@ -46,6 +46,10 @@ def migration_commands():
         names = ('ssh', 'source', 'root') if remote else ('snapshot', 'destination')
         properties = {name: {'type': 'string'} for name in names}
         required = list(names)
+        if remote:
+            from .migration import SERVICE_USER_PATTERN
+            properties['service_user'] = {'type': 'string', 'pattern': '^'+SERVICE_USER_PATTERN+'$',
+                'description': 'Existing Unix account owning Forge; default is the SSH account'}
         if action == 'capture':
             properties.update(snapshot={'type': 'string'}, apply={'type': 'boolean', 'const': True})
             required += ['snapshot', 'apply']
@@ -182,6 +186,7 @@ def parser():
         migration.add_argument('--'+name)
     migration.add_argument('--apply', action='store_true', help='Authorize runtime preparation, capture, or one-way SQLite activation')
     migration.add_argument('--accept-tool-update', action='store_true', help='resume: authorize a pinned source-only repair and reimport the same frozen snapshot before selection')
+    migration.add_argument('--service-user', help='Run remote maintenance as this existing Unix service account; default is the SSH account')
     migration.add_argument('--source-revision', help='Full commit SHA for an upgrade or an explicitly authorized resume repair')
     migration.add_argument('--batch', type=int, default=100)
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
