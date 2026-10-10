@@ -226,10 +226,15 @@ function record(req, pathname, query, body) {
 
 function send(res, status, payload, headers = {}) {
   const data = Buffer.from(JSON.stringify(payload))
+  const timed = res.req.method === 'GET' && ['/api/factory', '/api/issues', '/api/delivery'].includes(new URL(res.req.url, ORIGIN).pathname)
+  if (timed) headers = { ...headers, 'server-timing': 'projection;dur=1, cache_miss;dur=2, request;dur=3' }
   if (res.req.method === 'GET' && status === 200) {
     const etag = '"' + createHash('sha256').update(data).digest('hex') + '"'
     headers = { ...headers, etag, 'cache-control': 'private, no-store' }
-    if (res.req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end() }
+    if (res.req.headers['if-none-match'] === etag) {
+      if (timed) headers['server-timing'] = 'cache_validated;dur=0.5, conditional;dur=0.1, request;dur=1'
+      res.writeHead(304, headers); return res.end()
+    }
   }
   res.writeHead(status, { 'content-type' : 'application/json; charset=utf-8', 'content-length': String(data.length), ...headers })
   res.end(data)

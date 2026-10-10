@@ -1,6 +1,5 @@
-import { createHttpTimingRecorder } from '../utils/httpTiming'
+import { createHttpTimingRecorder, type HttpTimingSample } from '../utils/httpTiming'
 
-const recordTiming = createHttpTimingRecorder(sample => console.debug('[forge-http-timing]', JSON.stringify(sample)))
 export class ForgeApiError extends Error { constructor(public status: number, message: string) { super(message) } }
 const token = () => useState<string>('forge-action-token', () => '')
 
@@ -11,6 +10,9 @@ function checkOk(status: number, payload: any, fallback: string) {
 export interface GetOptions { timeout?: number; signal?: AbortSignal }
 
 export function useForgeApi() {
+  const samples = useState<HttpTimingSample[]>('forge-http-timings', () => [])
+  const recordTiming = createHttpTimingRecorder(samples.value, import.meta.server ? 'server_render' : 'browser')
+  const serverTimings = import.meta.server && useRequestURL().searchParams.get('timings') === '1'
   const current = token()
   const resources = useResources()
   const redirecting = useState<boolean>('forge-sign-in-redirecting', () => false)
@@ -27,7 +29,8 @@ export function useForgeApi() {
     const entry = resources.entry(path)
     const generation = entry.generation
     const cached = entry.response
-    const timingStarted = import.meta.client && new URLSearchParams(window.location.search).get('timings') === '1' ? performance.now() : undefined
+    const collectTiming = import.meta.server ? serverTimings : new URLSearchParams(window.location.search).get('timings') === '1'
+    const timingStarted = collectTiming ? performance.now() : undefined
     let response
     try {
       response = await $fetch.raw<T & { ok?: boolean; reason?: string; controls_token?: string }>(path, {

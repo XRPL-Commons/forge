@@ -34,7 +34,6 @@ beforeEach(() => {
 
 describe('useForgeApi', () => {
   it('records real response timings only when the page opts in, without payloads or query values', async () => {
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
     const previous = window.location.href
     try {
       fetchRaw.mockResolvedValue({ status: 200, headers: new Headers({ 'server-timing': 'cache_miss;dur=20, request;dur=22' }),
@@ -42,18 +41,17 @@ describe('useForgeApi', () => {
       window.history.replaceState(null, '', '/')
       const api = useForgeApi()
       await api.get('/api/factory')
-      expect(debug).not.toHaveBeenCalled()
+      expect(store['forge-http-timings']!.value).toEqual([])
       window.history.replaceState(null, '', '/?timings=1')
       await api.get('/api/factory?issue=private-repo:123')
-      expect(debug).toHaveBeenCalledOnce()
-      const [prefix, encoded] = debug.mock.calls[0]!
-      expect(prefix).toBe('[forge-http-timing]')
-      expect(JSON.parse(encoded)).toEqual({ view: 'factory', status: 200, browserMs: expect.any(Number),
+      expect(store['forge-http-timings']!.value).toHaveLength(1)
+      const sample = store['forge-http-timings']!.value[0]
+      expect(sample).toEqual({ view: 'factory', source: 'browser', status: 200, fetchMs: expect.any(Number),
         serverMs: { cache_miss: 20, request: 22 } })
-      expect(encoded).not.toContain('private')
+      expect(JSON.stringify(sample)).not.toContain('private')
+      expect(fetchRaw).toHaveBeenCalledTimes(2)
     } finally {
       window.history.replaceState(null, '', previous)
-      debug.mockRestore()
     }
   })
 

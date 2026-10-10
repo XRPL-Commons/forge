@@ -131,21 +131,29 @@ agent grant is needed. The existing `ui/tools/measure-pages.mjs` starts a fresh
 unauthenticated context; its results do not qualify authenticated production
 requests.
 
-For bounded browser diagnostics, add `?timings=1` to the signed-in page URL
+For bounded page diagnostics, add `?timings=1` to the signed-in page URL
 (or `&timings=1` if it already has a query). Ordinary UI reads then write up to
-100 `[forge-http-timing]` debug entries to that tab's console. Reload to start a
-new sample window; remove the parameter to stop collecting. Each entry contains
-a fixed view label, HTTP status, numeric server durations and `browserMs` for
-the actual fetch. Board, completed history, issue lists and issue details have
-separate labels.
-No URL, issue identifier, payload, cookie or token is logged, and no sample is
-persisted or sent to another service. This does not generate additional requests
+100 `[forge-http-timing]` debug entries to that tab's console, including the
+initial server-rendered board fetch. The samples live in request-scoped Nuxt
+state and hydrate with that page; separate requests never share them. The same
+100-sample limit covers server-render and browser reads together. Reload to start
+a new window; remove the parameter to stop collecting. Each entry contains a
+fixed view label, `source` (`server_render` or `browser`), HTTP status, numeric
+server durations and `fetchMs`. Board, completed history, issue lists and issue
+details have separate labels.
+No URL, issue identifier, response payload, cookie or token is recorded. Only
+these timing samples are included in the opted-in page's hydration state; none
+are persisted to disk or sent to another service. This does not generate additional requests
 or change cache behavior. Use console debug/verbose visibility to inspect it.
 
 Group samples by view and actual cache classification before calculating
 percentiles. Keep 200/304 status as another dimension: a 304 may still have
-projected a response. `browserMs` includes fetch and browser/proxy/network work;
-`serverMs.request` is the on-server handler interval described above. Retain
+projected a response. Keep `source` separate as well. `fetchMs` runs immediately
+around the actual `$fetch.raw` call through response parsing. For `browser`, it
+includes browser/proxy/network work; for `server_render`, it measures Nuxt's
+server-side API fetch and excludes page rendering, hydration, and the browser's
+document transfer. It is not end-to-end page latency. `serverMs.request` is the
+Python handler interval described above. Retain
 sample counts, and do not claim an unobserved cache class was qualified.
 These are successful timed-response samples: failed requests, timeouts, aborts
 and responses without the timing header are absent. Record failure and timeout
