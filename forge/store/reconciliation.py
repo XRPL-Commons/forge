@@ -2,6 +2,7 @@
 import json
 
 from .models import TransitionError
+from .remote_time import order as remote_order
 from .transitions import Lifecycle, _id, _json, manifest_hash
 
 
@@ -31,7 +32,10 @@ class Reconciliation(Lifecycle):
                     or proof.get('issue_version')!=issue['version'] or observed.get('number')!=issue['github_number']
                     or observed.get('state')!='closed' or observed.get('state_reason') not in {'completed','not_planned','duplicate'}):
                 raise TransitionError('migration closure requires fresh exact issue provenance')
-            updated = self._remote_time(observed['updated_at']); self._prove_not_merged(db,unit,proof)
+            updated = self._remote_time(observed['updated_at'])
+            if remote_order(updated) < remote_order(issue['remote_updated_at']):
+                raise TransitionError('migration issue observation is older than canonical facts')
+            self._prove_not_merged(db,unit,proof)
             db.execute("UPDATE issues SET github_state='closed',state_reason=?,remote_updated_at=?,observed_at=?,version=version+1 WHERE id=?",
                 (observed['state_reason'],updated,self.clock(),issue['id']))
             self._event(db,command,'issue_observed',proof,issue_id=issue['id'])
@@ -74,12 +78,18 @@ class Reconciliation(Lifecycle):
             if observed.get('number')!=issue['github_number'] or observed.get('state')!='open' or 'pull_request' in observed:
                 raise TransitionError('migration observation must identify the open issue')
             updated = self._remote_time(observed['updated_at'])
-            revision=_id(command.request_id,'reconciled-revision')
+            if remote_order(updated) < remote_order(issue['remote_updated_at']):
+                raise TransitionError('migration issue observation is older than canonical facts')
             requirements=proof['requirements']; requirements_hash=manifest_hash(requirements)
-            db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)',
-                (revision,issue['id'],observed['title'],observed.get('body') or '',manifest_hash([observed['title'],observed.get('body') or '']),requirements_hash,_json(requirements),self.clock()))
-            from .presentation import record_revision_display
-            record_revision_display(db,revision,observed.get('body') or '',requirements)
+            content_hash=manifest_hash([observed['title'],observed.get('body') or ''])
+            existing=db.execute('SELECT id FROM issue_revisions WHERE issue_id=? AND content_hash=? AND requirements_hash=?',
+                (issue['id'],content_hash,requirements_hash)).fetchone()
+            revision=existing['id'] if existing else _id(command.request_id,'reconciled-revision')
+            if not existing:
+                db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)',
+                    (revision,issue['id'],observed['title'],observed.get('body') or '',content_hash,requirements_hash,_json(requirements),self.clock()))
+                from .presentation import record_revision_display
+                record_revision_display(db,revision,observed.get('body') or '',requirements)
             db.execute('UPDATE issues SET current_revision_id=?,remote_updated_at=?,observed_at=?,labels_json=?,assignees_json=?,assignee_types_json=?,version=version+1 WHERE id=?',
                 (revision,updated,self.clock(),_json(observed.get('labels',[])),_json(observed.get('assignees',[])),_json(observed.get('assignee_types',{})),issue['id']))
             db.execute('UPDATE unit_issues SET requirements_revision_id=? WHERE id=?',(revision,member['id']))

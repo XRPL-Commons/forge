@@ -94,8 +94,9 @@ class ObservationController:
             return {'unit_id': unit_id, 'terminal': True}
         unit, issue, candidate, item = snapshot
         with self.store.read_snapshot() as db:
-            if db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='legacy_reconciliation' AND resolved_at IS NULL", (unit_id,)).fetchone():
-                return {'unit_id': unit_id, 'pending': 'legacy_reconciliation'}
+            reconciliation_pending = db.execute(
+                "SELECT 1 FROM unit_gates WHERE unit_id=? AND code='legacy_reconciliation' AND resolved_at IS NULL",
+                (unit_id,)).fetchone() is not None
         generation = self._generation(issue)
         remote, requirements = self.github.issue(item)
         if (remote.get('number') != item['number'] or 'pull_request' in remote
@@ -103,6 +104,17 @@ class ObservationController:
             raise GitHubUnavailable('Issue observation identity or ordering is unverified')
         labels = [row['name'] if isinstance(row, dict) else row for row in remote.get('labels', [])]
         assignees = [row['login'] if isinstance(row, dict) else row for row in remote.get('assignees', [])]
+        observation = dict(state=remote['state'], state_reason=remote.get('state_reason'),
+            title=remote['title'], body=remote.get('body') or '', requirements=requirements,
+            remote_updated_at=remote['updated_at'], generation=generation, labels=labels,
+            assignees=assignees, hold_labels=self.hold_labels,
+            assignee_types={row['login']: row['type'] for row in remote.get('assignees', [])
+                            if isinstance(row, dict) and row.get('type')})
+        if reconciliation_pending:
+            # Issue freshness does not establish imported execution authority.
+            # The lifecycle records these facts without rebinding inputs or gates.
+            outcome = self.commands.observe_issue(self._command(unit), issue['id'], **observation)
+            return {'unit_id': unit_id, 'pending': 'legacy_reconciliation', 'stale': outcome.get('stale', False)}
         remote_pr, pr_error = None, None
         if candidate:
             try:
@@ -120,13 +132,8 @@ class ObservationController:
             allowed = self.admission(item)
             if type(allowed) is not bool:
                 raise TransitionError('admission adapter must return a verified boolean')
-        outcome = self.commands.observe_issue(self._command(unit), issue['id'], state=remote['state'],
-            state_reason=remote.get('state_reason'), title=remote['title'], body=remote.get('body') or '',
-            requirements=requirements, remote_updated_at=remote['updated_at'], generation=generation,
-            labels=labels, assignees=assignees, hold_labels=self.hold_labels,
-            admission=allowed, ownership_conflict=conflict,
-            assignee_types={row['login']: row['type'] for row in remote.get('assignees', [])
-                            if isinstance(row, dict) and row.get('type')})
+        outcome = self.commands.observe_issue(self._command(unit), issue['id'], **observation,
+            admission=allowed, ownership_conflict=conflict)
         if isinstance(pr_error, RequestBudgetExhausted):
             # Persist the already verified issue closure/holds before deferring
             # the unfinished candidate read. Keep this exact member pending.

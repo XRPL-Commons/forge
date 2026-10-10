@@ -70,7 +70,74 @@ class ReconciliationTests(unittest.TestCase):
         self.setup_store(candidate=True)
         observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
         self.assertEqual(observer.step(self.unit)['pending'],'legacy_reconciliation')
-        self.assertEqual(self.github.calls,0);self.assertEqual(self.view()['current_candidate_id'],'legacy:candidate:identity')
+        self.assertEqual(self.github.calls,1);self.assertEqual(self.view()['current_candidate_id'],'legacy:candidate:identity')
+    def test_protection_pending_refreshes_issue_without_releasing_imported_authority(self):
+        self.setup_store(candidate=True)
+        life=Lifecycle(self.store,clock=lambda:self.now)
+        life.open_gate(Command('hold','operator',self.unit,self.view()['version']),
+            'label_hold',details={'source':'github_labels','issue_id':'legacy:issue:1:1'})
+        self.github.remote['labels']=[{'name':'hold'}]
+        self.github.protections=lambda *args:False
+        before=self.view()
+        with self.store.read_snapshot() as db:
+            pinned=db.execute('SELECT requirements_revision_id FROM unit_issues WHERE unit_id=?',(self.unit,)).fetchone()[0]
+            gates=[tuple(row) for row in db.execute('SELECT id,code,details_json,resolved_at FROM unit_gates ORDER BY id')]
+        self.assertEqual(self.controller.step(self.unit)['pending'],'target_protection_changed')
+        observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
+        report=observer.cycle()
+        self.assertEqual(report['items'][0]['pending'],'legacy_reconciliation')
+        self.assertEqual(report['sweep']['deferred'],1)
+        self.assertEqual(report['sweep']['refreshed'],0)
+        self.assertFalse(report['sweep']['complete'])
+        self.assertEqual(report['sweep']['coverage']['stale_members'],0)
+        self.assertEqual(report['sweep']['coverage']['oldest_observed_at'],self.now)
+        after=self.view()
+        for field in ('state','current_candidate_id','budget_generation','charged_failures','membership_generation'):
+            self.assertEqual(after[field],before[field],field)
+        with self.store.read_snapshot() as db:
+            issue=db.execute('SELECT i.*,r.body FROM issues i JOIN issue_revisions r ON r.id=i.current_revision_id').fetchone()
+            refreshed_revision=issue['current_revision_id']
+            self.assertEqual(issue['body'],'Fresh complete body')
+            self.assertEqual(json.loads(issue['labels_json']),['hold'])
+            self.assertEqual(issue['observed_at'],self.now)
+            self.assertNotEqual(refreshed_revision,pinned)
+            self.assertEqual(db.execute('SELECT requirements_revision_id FROM unit_issues WHERE unit_id=?',(self.unit,)).fetchone()[0],pinned)
+            self.assertEqual([tuple(row) for row in db.execute('SELECT id,code,details_json,resolved_at FROM unit_gates ORDER BY id')],gates)
+            revisions=db.execute('SELECT COUNT(*) FROM issue_revisions').fetchone()[0]
+        self.github.protections=lambda *args:True
+        result=self.controller.step(self.unit)
+        self.assertTrue(result['reconciled'])
+        self.assertEqual(result['requirements_revision_id'],refreshed_revision)
+        self.assertEqual(self.view()['reason_code'],'label_hold')
+        self.assertEqual(self.view()['charged_failures'],before['charged_failures'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM issue_revisions').fetchone()[0],revisions)
+            self.assertEqual([row[0] for row in db.execute('SELECT code FROM unit_gates WHERE resolved_at IS NULL')],['label_hold'])
+
+    def test_imported_fact_refresh_preserves_order_and_unknown_closure_guard(self):
+        self.setup_store(candidate=True)
+        observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
+        self.github.remote.update(state='closed',state_reason=None)
+        self.assertEqual(observer.step(self.unit)['pending'],'legacy_reconciliation')
+        self.assertEqual(self.controller.step(self.unit)['pending'],'legacy_closure_provenance_unknown')
+        self.assertEqual(self.view()['state'],'reviewing')
+        self.assertEqual(self.view()['current_candidate_id'],'legacy:candidate:identity')
+        self.now+=1
+        self.github.remote.update(state='open',updated_at='2026-10-07T00:00:00Z',body='Older response')
+        result=observer.step(self.unit)
+        self.assertEqual(result['pending'],'legacy_reconciliation');self.assertTrue(result['stale'])
+        with self.assertRaisesRegex(TransitionError,'older than canonical facts'):
+            self.controller.step(self.unit)
+        with self.store.read_snapshot() as db:
+            issue=db.execute('SELECT i.*,r.body FROM issues i JOIN issue_revisions r ON r.id=i.current_revision_id').fetchone()
+            self.assertEqual(issue['github_state'],'closed')
+            self.assertEqual(issue['body'],'Fresh complete body')
+            self.assertEqual(issue['observed_at'],self.now-1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='legacy_reconciliation' AND resolved_at IS NULL").fetchone()[0],1)
+        self.github.remote.update(state='closed',state_reason='not_planned')
+        with self.assertRaisesRegex(TransitionError,'older than canonical facts'):
+            self.controller.step(self.unit)
+
     def test_same_candidate_rebound_with_independent_verification_gate(self):
         self.issue['verification_request']=dict(candidate='identity',ci=[],what='Confirm behavior',created_at=13,resume_state='built')
         self.setup_store(candidate=True)
