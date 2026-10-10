@@ -66,11 +66,11 @@ class DeliveryPipelineTests(unittest.TestCase):
             prepare=lambda snapshot, role: PreparedDispatch(self.base, role + '[bot]', self.config,
                 snapshot['candidate']['branch'] if snapshot['candidate'] else None), admission=lambda _: True, clock=lambda: 100)
 
-    def command(self):
+    def command(self, unit='batch'):
         self.serial += 1
         with self.store.read_snapshot() as db:
-            version = db.execute("SELECT version FROM units WHERE id='batch'").fetchone()[0]
-        return Command('test-' + str(self.serial), 'supervisor:test', 'batch', version)
+            version = db.execute('SELECT version FROM units WHERE id=?', (unit,)).fetchone()[0]
+        return Command('test-' + str(self.serial), 'supervisor:test', unit, version)
 
     def capture(self, identifier, *, outcome='pass', bundle=None, classifier=None, **fields):
         job = self.jobs.job(identifier)
@@ -79,8 +79,8 @@ class DeliveryPipelineTests(unittest.TestCase):
             report.setdefault('delegation_plan', None); report.setdefault('output_commit', None)
         capture = {'result': report, 'logs': '', 'execution': {'exit_code': 0}}
         if bundle is not None: capture['worktree_bundle'] = bundle
-        self.executions.collect(self.command(), identifier, execution_fence=job['execution_fence'], capture=capture)
-        self.life.verify_cleanup(self.command(), identifier, execution_fence=job['execution_fence'],
+        self.executions.collect(self.command(job['unit_id']), identifier, execution_fence=job['execution_fence'], capture=capture)
+        self.life.verify_cleanup(self.command(job['unit_id']), identifier, execution_fence=job['execution_fence'],
                                  evidence={'process_stopped': True, 'resources_released': True})
         return (classifier or self.results.step)(identifier)
 
@@ -116,6 +116,55 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertEqual(integration['builder_stage'], 'integration')
         self.assertEqual(len(list(self.jobs.input_bundles(self.jobs.input_refs(integration)))), 2)
         return integration
+
+    def test_single_build_slot_alternates_deliveries_through_children_after_restart(self):
+        pins = []
+        for number in (3, 4):
+            unit, issue = 'source-' + str(number), 'issue-' + str(number)
+            row = self.life.admit_issue(request_id='admit-' + str(number), actor_id='operator', unit_id=unit,
+                issue_id=issue, repository_id=1, repository_name='example/repo', issue_number=number,
+                title='Issue', body='Scope', requirements='req-' + str(number), observed_at=90)
+            pins.append(dict(issue_id=issue, issue_version=1, requirements_revision_id=row['revision_id'],
+                             unit_id=unit, unit_version=1, member_id=row['member_id']))
+        proposal = dict(repository_id=1, base_branch='main', members=pins, dependencies=[], existing_prs=[], rationale='Another change')
+        self.delivery.compose(Command('compose-other', 'operator', 'other', 1), **proposal,
+            approval={'approved': True, 'composition_hash': self.delivery.composition_hash(**proposal)})
+        self.config['slots']['build'] = 1
+        expected = [('batch', 'planning'), ('other', 'planning'), ('batch', 'child'),
+                    ('other', 'child'), ('batch', 'child'), ('other', 'child')]
+        allocations = []
+        for index, (unit, stage) in enumerate(expected):
+            # New store and controller handles, with a frozen clock: only durable
+            # reservation order can distinguish turns, not process state or time.
+            self.store = Store.open(self.root / 'state')
+            page = self.dispatcher().cycle()
+            reserved = [item for item in page['items'] if item.get('reserved')]
+            self.assertEqual(len(reserved), 1, page)
+            job = self.jobs.job(reserved[0]['job_id'])
+            self.assertEqual(job['unit_id'], unit)
+            self.assertEqual(job['slot'], 'build-1')
+            self.assertEqual(job.get('builder_stage') or 'child', stage)
+            allocations.append(job['id'])
+            with self.store.read_snapshot() as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 1)
+            if stage == 'planning':
+                children = [dict(key='part-' + str(i), member_id=member['member_id'], scope='Implement member', dependencies=[])
+                            for i, member in enumerate(job['members'])]
+                result = self.capture(job['id'], outcome='delegate', delegation_plan={'children': children})
+            else:
+                head, bundle = self.child_bundle(index)
+                result = self.capture(job['id'], output_commit=head, bundle=bundle)
+            self.assertTrue(result['accepted'])
+        # Both deliveries are ready to integrate; neither had to wait for the
+        # other delivery's complete sequence of child work.
+        selected = [item for item in self.dispatcher().cycle()['items'] if item.get('reserved')]
+        integration = self.jobs.job(selected[0]['job_id'])
+        self.assertEqual((integration['unit_id'], integration['builder_stage']), ('batch', 'integration'))
+        with self.store.read_snapshot() as db:
+            events = db.execute("SELECT e.job_id FROM events e JOIN jobs j ON j.id=e.job_id "
+                "WHERE e.kind='attempt_reserved' ORDER BY e.sequence").fetchall()
+            self.assertEqual([row[0] for row in events], allocations + [integration['id']])
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
 
     def test_two_parallel_children_resume_owner_and_publish_one_reviewed_candidate(self):
         integration = self.integrate()

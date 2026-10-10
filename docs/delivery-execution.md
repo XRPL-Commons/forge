@@ -60,6 +60,25 @@ history using a job-ID cursor. `job_members` is the uniform immutable scope for
 all jobs, including Review, Audit and Recovery; migration 22 preserves original
 launch requirement pins and retires the scalar launch column.
 
+## Sharing factory capacity
+
+Dispatch keeps a bounded traversal cursor so blocked deliveries cannot hide later
+work. Within each page, Audit precedes Review, then build work. Deliveries in the
+same role get turns in least-recent allocation order, with unserved deliveries
+first and unit ID breaking ties. Planning, each child and integration all consume
+one build turn; a large group does not retain the next free slot automatically.
+
+Allocation order comes from the retained `attempt_reserved` event sequence joined
+to its exact job role and committed launch. Reservation, leases and that event
+commit together. A restart keeps the order; blocked visits, failed transactions
+and command replay do not create another turn. Migration 29 adds an index for
+these lookups without changing stored work or allocation history.
+
+The existing memory escalation drain takes precedence over ordinary turns so
+smaller work cannot continually refill capacity needed by an eligible larger
+retry. Provider availability, capacity leases, fresh admission and scoped fences
+are still checked before a reservation succeeds.
+
 ## Invalidation, retries and cancellation
 
 An accepted output is current only while its requirements, base, policy and

@@ -409,8 +409,10 @@ class DispatchController:
 
     def cycle(self, *, after=None, limit=50):
         # Default scans remember their page across turns and controller restarts.
-        # Role priority applies within each bounded page, so an old blocked unit
-        # cannot indefinitely hide later ready work. Explicit cursors are read-only.
+        # Within a page, same-role deliveries share turns in successful reservation
+        # order. Atomic reservation events retain that order across restarts, without
+        # advancing it for blocked visits or failed reservations. Role priority and
+        # the bounded traversal cursor remain independent of allocation order.
         limit = _limit(limit)
         automatic = after is None
         if after is not None and not isinstance(after, str):
@@ -423,8 +425,13 @@ class DispatchController:
             if automatic:
                 cursor = db.execute("SELECT cursor FROM runtime_controls WHERE name='dispatch_cursor'").fetchone()
                 after = cursor[0] if cursor and cursor[0] else ''
-            rows = db.execute("SELECT id,state FROM units WHERE id>? AND state IN ('queued','building','integrating','reviewing','auditing') "
-                              'ORDER BY id LIMIT ?', (after, limit + 1)).fetchall()
+            rows = db.execute("SELECT u.id,u.state,coalesce((SELECT e.sequence FROM events e "
+                "JOIN jobs j ON j.id=e.job_id JOIN job_launches l ON l.job_id=j.id "
+                "WHERE e.unit_id=u.id AND e.kind='attempt_reserved' AND j.role=CASE u.state "
+                "WHEN 'reviewing' THEN 'review' WHEN 'auditing' THEN 'audit' ELSE 'build' END "
+                "ORDER BY e.sequence DESC LIMIT 1),0) AS allocation_sequence FROM units u "
+                "WHERE u.id>? AND u.state IN ('queued','building','integrating','reviewing','auditing') "
+                'ORDER BY u.id LIMIT ?', (after, limit + 1)).fetchall()
         # An eligible memory escalation drains capacity; smaller work must not
         # refill it while the next bounded allocation is waiting to fit.
         if self.config['memory_tiers']:
@@ -445,7 +452,7 @@ class DispatchController:
         page = rows[:limit]
         priority = {'auditing': 0, 'reviewing': 1, 'building': 2, 'integrating': 2, 'queued': 2}
         items = []
-        for row in sorted(page, key=lambda row: priority[row['state']]):
+        for row in sorted(page, key=lambda row: (priority[row['state']], row['allocation_sequence'], row['id'])):
             try:
                 items.append(self.step(row['id']))
             except (RunnerError, GitHubUnavailable, TransitionError, StoreError, OSError) as error:
