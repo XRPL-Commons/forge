@@ -31,7 +31,6 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     config = validate(config if config is not None else load(root))
     if not dispatch or settings.paused():
         config = {**config, 'enabled': False, 'merge_enabled': False}
-    supplied_runner = runner
     runner = runner or ContainerRunner(config, environ=Credentials(root).environment())
     github = github or GitHub(settings, config, clock=clock)
 
@@ -65,8 +64,13 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
 
     from .repository_planner import RepositoryPlanner
     from .triage_effects import TriageEffects
+    def planner_runner(worker):
+        # The setup service supplies a real runner configured for the default
+        # provider. Each owned planner must use its immutable selected config.
+        return ContainerRunner(worker, environ=runner.environ) if isinstance(runner, ContainerRunner) else runner
+
     parts['planning'] = RepositoryPlanner(store, github, config=config, settings=settings,
-        observations=parts['observations'], runner=lambda worker: supplied_runner if supplied_runner is not None else ContainerRunner(worker, environ=Credentials(root).environment()), clock=clock)
+        observations=parts['observations'], runner=planner_runner, clock=clock)
     parts['triage_effects'] = TriageEffects(store, github, config=config, clock=clock)
     from .reconciliation_controller import ReconciliationController
     parts['reconciliation'] = ReconciliationController(store, github, config=config, admission=admission,
