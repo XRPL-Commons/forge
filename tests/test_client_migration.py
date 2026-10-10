@@ -67,6 +67,56 @@ class MigrationCLITests(unittest.TestCase):
             self.assertTrue(all(n.startswith('forge/') and (n.endswith(('.py','.sql')) or
                 Path(n).match('forge/harnesses/*/manifest.json')) for n in names))
 
+    def test_isolated_upgrade_bundle_owns_planning_contract_and_source_identity(self):
+        from forge.store.migration.importer import importer_version
+        with tempfile.TemporaryDirectory() as directory:
+            directory=str(Path(directory).resolve())
+            with zipfile.ZipFile(io.BytesIO(bundle())) as archive:
+                self.assertIn('forge/planning_contract.py',archive.namelist())
+                self.assertNotIn('forge_client/planning.py',archive.namelist())
+                archive.extractall(directory)
+            script = r'''import importlib.util,json,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+assert importlib.util.find_spec('forge_client') is None
+from forge.store.migration.host import Host,run
+from forge.store.migration.upgrade import Upgrade
+from forge.store.migration.importer import importer_version
+from forge.store.migration.cutover import package_version
+from forge.store.repository_planning import RepositoryPlanning
+from forge.store.fresh import initialize
+from forge.store.transitions import Lifecycle
+before=importer_version()
+assert before==package_version(sys.argv[1])
+with tempfile.TemporaryDirectory() as runtime:
+    root=Path(runtime).resolve()
+    store=initialize(root)
+    Lifecycle(store).admit_issue(request_id='admit',actor_id='operator',unit_id='unit',issue_id='1:1',
+        repository_id=1,repository_name='example/project',issue_number=1,title='Work',body='',requirements='req',observed_at=1)
+    plans=RepositoryPlanning(store)
+    proposal=plans.queue(1,request_id='proposal',actor_id='operator',base_branch='main')
+    context=plans.context(proposal['proposal_id'],head='a'*40)
+    assert context['rows_schema']['anyOf'] and context['note_sources_schema']['anyOf']
+    with patch.object(Host,'identity',return_value='a'*40):
+        status=Upgrade(Host(root,sys.argv[1])).status()
+        result=run(dict(action='upgrade',root=str(root),source=sys.argv[1],apply=False))
+    assert status['blockers']==[] and result['status']=='planned'
+    assert result['current_schema']==result['target_schema']
+path=Path(sys.argv[1])/'forge/planning_contract.py'
+path.write_text(path.read_text()+'\n')
+after=importer_version()
+assert after!=before and package_version(sys.argv[1])==after
+print(json.dumps({'before':before,'isolated_upgrade':'planned','contract_change_hashed':True}))
+'''
+            result=subprocess.run([sys.executable,'-I','-c',script,directory],cwd=directory,
+                                  capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            report=json.loads(result.stdout)
+            self.assertEqual(report['before'],importer_version())
+            self.assertEqual(report['isolated_upgrade'],'planned')
+            self.assertTrue(report['contract_change_hashed'])
+
     def test_isolated_bundle_validates_runtime_and_binds_manifest_identity(self):
         from forge.store.migration.importer import importer_version
         with tempfile.TemporaryDirectory() as directory:

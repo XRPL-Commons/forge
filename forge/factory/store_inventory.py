@@ -92,13 +92,29 @@ class StoreInventory:
         types = {r['login']: r['type'] for r in remote.get('assignees', []) if isinstance(r, dict) and r.get('type')}
         facts = dict(state=state, state_reason=remote.get('state_reason'), title=title, body=body, remote_updated_at=updated,
                      labels=labels, assignees=people, assignee_types=types)
-        if requirements is None:
+        partial = requirements is None
+        if partial:
             requirements = {'source': 'inventory', 'complete': False, 'content_hash': manifest_hash([title, body])}
+        unchanged_historical = False
         with self.store.read_snapshot() as db:
             member = db.execute('SELECT u.id,u.version,u.state FROM unit_issues m JOIN units u ON u.id=m.unit_id '
                                 'WHERE m.issue_id=? ORDER BY (m.left_at IS NULL) DESC,m.joined_at DESC LIMIT 1', (key,)).fetchone()
             previous = db.execute('SELECT * FROM issues WHERE id=?', (key,)).fetchone()
+            if partial and previous and member and member['state'] in ('merged', 'closed', 'dissolved'):
+                known = db.execute('SELECT content_hash,requirements_json FROM issue_revisions WHERE id=?',
+                                   (previous['current_revision_id'],)).fetchone()
+                # Historical units receive no new complete evidence from an
+                # identical listing either. Keep their last full observation.
+                same_listing = (remote_order(previous['remote_updated_at']) == remote_order(updated)
+                    and known['content_hash'] == manifest_hash([title, body])
+                    and previous['github_state'] == state and previous['state_reason'] == facts['state_reason']
+                    and sorted(json.loads(previous['labels_json'])) == sorted(labels)
+                    and sorted(json.loads(previous['assignees_json'])) == sorted(people)
+                    and json.loads(previous['assignee_types_json']) == types)
+                unchanged_historical = same_listing and complete_requirements(json.loads(known['requirements_json']))
         if previous:self._label_display(repo,key,labels)
+        if unchanged_historical:
+            return key
         if member:
             if member['state'] not in ('merged', 'closed', 'dissolved'):
                 return key
@@ -121,7 +137,18 @@ class StoreInventory:
                 return key
             db.execute('INSERT INTO repositories(id,full_name,enabled) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING',
                        (repo['id'], repo['name'], int(repo.get('enabled', False))))
-            content_hash, req_hash = manifest_hash([title, body]), manifest_hash(requirements)
+            content_hash = manifest_hash([title, body])
+            observed_at = self.clock()
+            # A listing omits comments. It cannot replace unchanged complete
+            # requirements or renew the evidence from the last full read.
+            if partial and previous and remote_order(previous['remote_updated_at']) == remote_order(updated):
+                known = db.execute('SELECT content_hash,requirements_json FROM issue_revisions WHERE id=?',
+                                   (previous['current_revision_id'],)).fetchone()
+                known_requirements = json.loads(known['requirements_json'])
+                if known['content_hash'] == content_hash and complete_requirements(known_requirements):
+                    requirements = known_requirements
+                    observed_at = previous['observed_at']
+            req_hash = manifest_hash(requirements)
             old_revision = db.execute('SELECT id FROM issue_revisions WHERE issue_id=? AND content_hash=? AND requirements_hash=?',
                                       (key, content_hash, req_hash)).fetchone()
             revision = old_revision[0] if old_revision else str(uuid.uuid4())
@@ -133,22 +160,24 @@ class StoreInventory:
                            'VALUES(?,?,?,?,?,?,?,?)', (revision, key, title, body, content_hash, req_hash, json.dumps(requirements), self.clock()))
                 from ..store.presentation import record_revision_display
                 record_revision_display(db,revision,body,requirements)
-            reopened = previous['reopened_version'] if previous else 0
-            if previous and state == 'open' and (previous['github_state'] == 'closed' or facts['state_reason'] == 'reopened'):
-                reopened = previous['version'] + 1
-            db.execute('UPDATE issues SET github_state=?,state_reason=?,current_revision_id=?,remote_updated_at=?,collection_generation=collection_generation+1,'
-                       'labels_json=?,assignees_json=?,assignee_types_json=?,observed_at=?,reopened_version=?,version=version+1 WHERE id=?',
-                       (state, facts['state_reason'], revision, updated, json.dumps(labels), json.dumps(people), json.dumps(types), self.clock(), reopened, key))
             observed = (state, facts['state_reason'], revision, updated, sorted(labels), sorted(people), types)
             before = ((previous['github_state'], previous['state_reason'], previous['current_revision_id'],
                        previous['remote_updated_at'], sorted(json.loads(previous['labels_json'])),
                        sorted(json.loads(previous['assignees_json'])), json.loads(previous['assignee_types_json']))
                       if previous else None)
+            changed = before is None or before[:3]+before[4:] != observed[:3]+observed[4:]
+            reopened = previous['reopened_version'] if previous else 0
+            if previous and state == 'open' and (previous['github_state'] == 'closed'
+                    or facts['state_reason'] == 'reopened' and previous['state_reason'] != 'reopened'):
+                reopened = previous['version'] + 1
+            db.execute('UPDATE issues SET github_state=?,state_reason=?,current_revision_id=?,remote_updated_at=?,collection_generation=collection_generation+1,'
+                       'labels_json=?,assignees_json=?,assignee_types_json=?,observed_at=?,reopened_version=?,version=version+? WHERE id=?',
+                       (state, facts['state_reason'], revision, updated, json.dumps(labels), json.dumps(people), json.dumps(types), observed_at, reopened, int(changed), key))
             if before != observed:
                 self._observed(db, key, revision_id=revision,
-                    planning_changed=before is None or before[:3]+before[4:] != observed[:3]+observed[4:])
+                    planning_changed=changed)
         self._label_display(repo,key,labels)
-        if complete_requirements(requirements):self.clear_failure(key)
+        if not partial and complete_requirements(requirements):self.clear_failure(key)
         return key
 
     def refresh(self, force=False):

@@ -193,6 +193,19 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(self.view()['state'], 'merged')
         self.assertEqual(self.view()['merge_sha'], 'merge')
 
+    def test_verified_changed_candidate_is_complete_while_external_change_stays_blocked(self):
+        github=GitHub()
+        build=self.reserve();self.accept_build(build);self.cleanup(build)
+        selected=self.view()['current_candidate_id']
+        github.pr=lambda item,number: {'number':1,'merged':False,'state':'open','draft':False,
+            'head':{'sha':'external-head','repo':{'id':1}},'base':{'sha':'base','ref':'main','repo':{'id':1}}}
+        result=self.controller(github).cycle()
+        self.assertTrue(result['sweep']['complete'])
+        self.assertEqual(result['sweep']['refreshed'],1)
+        self.assertEqual(result['items'][0]['pending'],'external_change')
+        self.assertEqual(self.view()['reason_code'],'external_change')
+        self.assertEqual(self.view()['current_candidate_id'],selected)
+
     def test_policy_change_invalidates_candidate_and_preserves_operator_pause(self):
         github = GitHub()
         build = self.reserve()

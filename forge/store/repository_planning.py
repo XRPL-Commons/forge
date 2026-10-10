@@ -10,6 +10,7 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
+from ..planning_sources import PlanningSources
 from .models import Command, IdempotencyConflict, TransitionError, VersionConflict
 from .runtime import writable
 from .transitions import Lifecycle, _id, _json, _unit, _gates, manifest_hash, project_unit
@@ -281,8 +282,7 @@ class RepositoryPlanning(Lifecycle):
             updates.append({**handoff,'note_id':_id(str(proposal['repository_id']),'planner-handoff'),'kind':'next_action'})
         if len({n['note_id'] for n in updates})!=len(updates):raise TransitionError('A planner note may be revised only once per result')
         repository=db.execute('SELECT full_name FROM repositories WHERE id=?',(proposal['repository_id'],)).fetchone()[0]
-        issues={n['requirements_revision_id']:n for n in context['issues']}
-        candidates={n['candidate_id']:n for n in context['issues'] if n['candidate_id']}
+        authority=PlanningSources(repository,job['head'],context['issues'])
         receipts=[]
         for note in updates:
             content=text(note['content'],8192);sources=references(note['sources'])
@@ -290,13 +290,7 @@ class RepositoryPlanning(Lifecycle):
             for source in sources:
                 # Sources bind to the exact evidence this worker received. Notes
                 # remain interpretations; source validity never grants work authority.
-                prefix='https://github.com/'+repository+'/'
-                identity=source['identity'];kind=source['kind'];url=source['url']
-                valid=(kind=='issue_revision' and identity in issues and url==prefix+'issues/'+str(issues[identity]['github_number'])
-                    or kind=='candidate' and identity in candidates and url==prefix+'pull/'+str(candidates[identity]['pull_number'])
-                    or kind=='commit' and identity==job['head'] and url==prefix+'commit/'+identity
-                    or kind=='document' and identity==job['head'] and url.startswith(prefix+'blob/'+identity+'/'))
-                if not valid:raise TransitionError('Planner note source must identify its captured issue, candidate or repository commit')
+                if not authority.matches(source):raise TransitionError('Planner note source must identify its captured issue, candidate or repository commit')
             prior=db.execute('SELECT * FROM repository_note_revisions WHERE note_id=? ORDER BY revision DESC LIMIT 1',(note['note_id'],)).fetchone()
             expected=context['note_revisions'].get(note['note_id'],0)
             reason=None
@@ -532,7 +526,7 @@ class RepositoryPlanning(Lifecycle):
                 db.execute('INSERT INTO triage_proposal_inputs VALUES(?,?,?,?,?,?,?,?)',(proposal_id,*pin.values()))
             self._capture_cursor_in(db,proposal_id)
 
-    def context(self,proposal_id):
+    def context(self,proposal_id,*,head):
         with self.store.read_snapshot() as db:
             proposal=db.execute('SELECT * FROM triage_proposals WHERE id=?',(proposal_id,)).fetchone()
             if not proposal:raise TransitionError('Unknown proposal')
@@ -550,12 +544,14 @@ class RepositoryPlanning(Lifecycle):
                 issue['gates']=[{'code':g['code'],'member_id':g['member_id']} for g in _gates(db,issue['unit_id'])] if issue['unit_id'] else []
                 issues.append(issue)
             notes=self.repository(proposal['repository_id'])['notes']
-            from forge_client.planning import provider_triage_rows
+            from ..planning_contract import provider_triage_rows
             result={'proposal_id':proposal_id,'rules':rules,'rows_schema':provider_triage_rows(rules=rules),'notes':[n for n in notes if not n['needs_refresh']],'issues':issues,
                 'note_revisions':{n['note_id']:n['revision'] for n in notes},
                 'handoff_note_id':_id(str(proposal['repository_id']),'planner-handoff'),
                 'event_cursor':int(db.execute('SELECT value FROM store_metadata WHERE key=?',
                     ('repository_planning_inputs:'+proposal_id,)).fetchone()[0])}
+            repository=db.execute('SELECT full_name FROM repositories WHERE id=?',(proposal['repository_id'],)).fetchone()[0]
+            result['note_sources_schema']=PlanningSources(repository,head,issues).schema()
             if len(_json(result).encode())>512*1024:
                 raise TransitionError('Repository context exceeds the 512 KiB planning input limit; reduce note or issue text before requesting triage')
             return result
@@ -581,6 +577,8 @@ class RepositoryPlanning(Lifecycle):
         payload=_json(context).encode()
         if len(payload)>512*1024:raise TransitionError('Planning context exceeds its 512 KiB launch limit')
         if manifest_hash(context)!=job['context_hash']:raise TransitionError('Planning context identity changed')
+        if context.get('note_sources_schema')!=PlanningSources(job['repo'],job['head'],context['issues']).schema():
+            raise TransitionError('Planning note sources must match the assigned repository and head')
         with self.store.write() as db:
             writable(db)
             proposal=self._proposal(db,proposal_id,1)

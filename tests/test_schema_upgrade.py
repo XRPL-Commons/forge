@@ -153,6 +153,83 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertEqual(self.current, 'c'*40)
         self.assertEqual(len(self.active), 3)
 
+    def test_completed_upgrade_allows_new_maintenance_after_application_release(self):
+        self.runtime(enabled=True, model='original')
+        with self.store.write() as db:
+            db.execute("INSERT INTO store_metadata VALUES('retained-runtime-data','preserved')")
+            history = [tuple(row) for row in db.execute('SELECT * FROM schema_migrations ORDER BY version')]
+        instance = self.store.instance_id
+        self.upgrader.run(revision='b'*40, apply=True)
+        # An ordinary application deployment advances source without changing
+        # the last completed schema journal. Its current settings/services own
+        # the next maintenance boundary, not the completed journal's receipts.
+        self.current = 'c'*40
+        self.active = ['forge-status.service', 'forge-supervisor.service']
+        self.runtime(enabled=False, model='operator-choice')
+        self.calls.clear()
+        with patch.object(self.host, 'prepare_source_update') as prepare, \
+                patch.object(storage.Store, 'create', side_effect=AssertionError('must not reset storage')):
+            result = self.upgrader.run(revision='d'*40, apply=True)
+        self.assertEqual(result['status'], 'upgraded')
+        self.assertEqual(prepare.call_args_list[0].args, ('c'*40, 'd'*40, 'tool'))
+        self.assertEqual(prepare.call_args_list[1].args, ('c'*40, 'd'*40, 'tool'))
+        self.assertIn(('install', 'c'*40, 'd'*40), self.calls)
+        journal = self.upgrader.read()
+        self.assertEqual(journal['previous_revision'], 'c'*40)
+        self.assertEqual(journal['source_revision'], 'd'*40)
+        self.assertEqual(journal['services'], ['forge-status.service', 'forge-supervisor.service'])
+        self.assertFalse(journal['drain']['original_enabled'])
+        self.assertEqual(self.runtime()[1], {'enabled':False, 'model':'operator-choice'})
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT value FROM store_metadata WHERE key='retained-runtime-data'").fetchone()[0], 'preserved')
+            self.assertEqual(db.execute("SELECT value FROM store_metadata WHERE key='instance_id'").fetchone()[0], instance)
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM schema_migrations ORDER BY version')], history)
+        # Lost-response replay retains completed same-intent behavior.
+        self.calls.clear()
+        with patch.object(self.host, 'prepare_source_update') as prepare:
+            self.assertEqual(self.upgrader.run(revision='d'*40, apply=True)['status'], 'upgraded')
+        prepare.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    def test_completed_replay_does_not_claim_or_restore_a_superseded_source(self):
+        self.upgrader.run(revision='b'*40, apply=True)
+        saved = self.upgrader.path.read_bytes()
+        self.current = 'c'*40
+        self.calls.clear()
+        with patch.object(self.host, 'prepare_source_update') as prepare:
+            with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
+                self.upgrader.run(revision='b'*40, apply=True)
+        prepare.assert_not_called()
+        self.assertEqual(self.current, 'c'*40)
+        self.assertEqual(self.upgrader.path.read_bytes(), saved)
+        self.assertEqual(self.calls, [])
+
+    def test_completed_journal_does_not_bypass_new_source_qualification(self):
+        self.upgrader.run(revision='b'*40, apply=True)
+        saved = self.upgrader.path.read_bytes()
+        self.current = 'c'*40
+        self.calls.clear()
+        with patch.object(self.host, 'prepare_source_update', side_effect=MigrationError('source_not_ancestor')) as prepare:
+            with self.assertRaisesRegex(MigrationError, 'source_not_ancestor'):
+                self.upgrader.run(revision='d'*40, apply=True)
+        prepare.assert_called_once_with('c'*40, 'd'*40, 'tool')
+        self.assertEqual(self.upgrader.path.read_bytes(), saved)
+        self.assertEqual(self.calls, [])
+
+    def test_unfinished_forward_repair_rejects_unowned_source(self):
+        self.fail_update = True
+        with self.assertRaisesRegex(MigrationError, 'upgrade_host_update_failed'):
+            self.upgrader.run(revision='b'*40, apply=True)
+        saved = self.upgrader.path.read_bytes()
+        self.current = 'c'*40
+        self.calls.clear()
+        with patch.object(self.host, 'prepare_source_update') as prepare:
+            with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
+                self.upgrader.run(revision='d'*40, apply=True)
+        prepare.assert_not_called()
+        self.assertEqual(self.upgrader.path.read_bytes(), saved)
+        self.assertEqual(self.calls, [])
+
     def test_resume_revalidates_source_before_reconciling(self):
         self.fail_update = True
         with self.assertRaises(MigrationError):

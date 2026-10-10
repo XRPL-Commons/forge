@@ -258,8 +258,8 @@ class Lifecycle:
         return {"stage_code": projected["stage_code"], "current_candidate_id": projected["current_candidate_id"],
                 "current_blocker": {"id": blocker["id"], "code": blocker["code"], "subject_key": blocker["subject_key"]} if blocker else None}
 
-    def _save(self, db, command, operation, payload, values, *, initial=False, before=None):
-        if not initial:
+    def _save(self, db, command, operation, payload, values, *, initial=False, before=None, advance_version=True):
+        if not initial and advance_version:
             db.execute("UPDATE units SET version = version + 1, updated_at = ? WHERE id = ?", (self.clock(), command.unit_id))
         projected = project_unit(db, command.unit_id)
         primary = projected["current_blocker"]
@@ -279,7 +279,7 @@ class Lifecycle:
         self._event(db, command, "decision_applied", {"command": operation, "version": result["version"], "before": before, "after": after})
         return result
 
-    def _apply(self, command, operation, payload, change):
+    def _apply(self, command, operation, payload, change, *, version_changed=None):
         if not command.request_id or not command.actor_id or type(command.expected_version) is not int or command.expected_version < 1:
             raise TransitionError("request, actor and positive expected version are required")
         with self._command_transaction(command, operation, payload) as db:
@@ -290,7 +290,9 @@ class Lifecycle:
             if unit["version"] != command.expected_version:
                 raise VersionConflict("unit changed; read its current version before retrying")
             before = self._lifecycle_summary(project_unit(db, command.unit_id))
-            return self._save(db, command, operation, payload, change(db, unit), before=before)
+            values = change(db, unit)
+            return self._save(db, command, operation, payload, values, before=before,
+                              advance_version=version_changed() if version_changed is not None else True)
 
     def admit_issue(self, *, request_id, actor_id, unit_id, issue_id, repository_id, repository_name,
                     issue_number, title, body, requirements, observed_at, base_branch="main"):
@@ -951,7 +953,11 @@ class Lifecycle:
             payload.update(hold_labels=sorted(set(hold_labels)), admission=admission, ownership_conflict=ownership_conflict)
         if assignee_types is not None:
             payload['assignee_types'] = assignee_types
+        # Observation ordering/freshness is distinct from the facts and gates
+        # authorized by an operator proposal. Other commands keep their CAS bump.
+        authority_changed = False
         def change(db, unit):
+            nonlocal authority_changed
             old = db.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
             member = db.execute("SELECT * FROM unit_issues WHERE unit_id = ? AND issue_id = ? ORDER BY joined_at DESC LIMIT 1", (unit["id"], issue_id)).fetchone()
             owner = db.execute("SELECT unit_id FROM unit_issues WHERE issue_id = ? AND left_at IS NULL", (issue_id,)).fetchone()
@@ -970,7 +976,7 @@ class Lifecycle:
             if new_order == old_order:
                 if changed:
                     raise TransitionError("conflicting observations share the same ordering identity")
-                return {"issue_id": issue_id, "stale": False, "unchanged": True, "revision_id": old["current_revision_id"]}
+            authority_changed = changed
             existing = db.execute("SELECT id FROM issue_revisions WHERE issue_id = ? AND content_hash = ? AND requirements_hash = ?", (issue_id, content_hash, requirements_hash)).fetchone()
             revision_id = existing[0] if existing else _id(command.request_id, "revision")
             if not existing:
@@ -981,7 +987,8 @@ class Lifecycle:
                 reopened_version = old['version'] + 1
             elif not reopened_version and old['state_reason'] == 'reopened':
                 reopened_version = old['version']
-            db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, reopened_version = ?, version = version + 1 WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), self.clock(), reopened_version, issue_id))
+            observed_at = self.clock() if new_order > old_order else old["observed_at"]
+            db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, reopened_version = ?, version = version + ? WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), observed_at, reopened_version, int(changed), issue_id))
             if assignee_types is not None:
                 db.execute('UPDATE issues SET assignee_types_json=? WHERE id=?', (_json(assignee_types), issue_id))
             reconciliation_pending = db.execute(
@@ -1004,11 +1011,13 @@ class Lifecycle:
                 matching_hold = [g for g in _gates(db, unit["id"]) if g["code"] == "label_hold" and g["member_id"] == member["id"]]
                 held = bool(set(hold_labels).intersection(payload["labels"]))
                 if held and not matching_hold:
+                    authority_changed = True
                     self.fence_member_in(db, command, member["id"], reason="issue_observation_changed")
                     self._open_gate(db, command, "label_hold", {"source": "github_labels", "issue_id": issue_id}, member["id"])
                 elif not held:
                     for gate in matching_hold:
                         if json.loads(gate["details_json"]).get("source") == "github_labels":
+                            authority_changed = True
                             self._resolve(db, command, gate["id"], {"observed_at": self.clock(), "labels": payload["labels"]})
                 for code, blocked, scope in (
                         ('repository_setup', None if admission is None else not admission, None),
@@ -1018,6 +1027,7 @@ class Lifecycle:
                     existing_gates = [g for g in _gates(db, unit['id'])
                                       if g['code'] == code and g['member_id'] == scope]
                     if blocked and not existing_gates:
+                        authority_changed = True
                         if scope is None:
                             self._fence(db, command)
                         else:
@@ -1026,10 +1036,11 @@ class Lifecycle:
                     elif not blocked:
                         for gate in existing_gates:
                             if json.loads(gate['details_json']).get('source') == 'controller_observation':
+                                authority_changed = True
                                 self._resolve(db, command, gate['id'], {'verified': True, 'observed_at': self.clock()})
-            self._event(db, command, "issue_observed", {**payload, "planning_changed": changed}, issue_id=issue_id)
-            return {"issue_id": issue_id, "stale": False, "revision_id": revision_id}
-        return self._apply(command, "observe_issue", payload, change)
+            self._event(db, command, "issue_observed", {**payload, "planning_changed": authority_changed}, issue_id=issue_id)
+            return {"issue_id": issue_id, "stale": False, "revision_id": revision_id, "unchanged": not authority_changed}
+        return self._apply(command, "observe_issue", payload, change, version_changed=lambda: authority_changed)
 
     def admit_known_issue(self, *, request_id, actor_id, unit_id, issue_id, expected_issue_version, base_branch="main"):
         """Admit a reopened or previously released issue without reusing its old unit."""

@@ -13,13 +13,13 @@ from tests import test_store_import as fixtures
 class GitHub:
     def __init__(self):
         self.remote=dict(number=1,state='open',title='Change',body='Fresh complete body',updated_at='2026-10-08T00:00:00Z',labels=[],assignees=[])
-        self.requirements='requirements-hash';self.calls=0;self.runs=[]
+        self.requirements='requirements-hash';self.calls=0;self.runs=[];self.pull_reads=0;self.pr_reads=0
         self.pull=dict(number=12,state='open',merged=False,draft=False,head=dict(sha='head',ref='work',repo={'id':1}),base=dict(sha='base',ref='main',repo={'id':1}))
     def issue(self,item):self.calls+=1;return self.remote.copy(),self.requirements
-    def pulls(self,item):return []
+    def pulls(self,item):self.pull_reads+=1;return []
     def target(self,item):return 'main'
     def protections(self,item,candidate):return True
-    def pr(self,item,number):return self.pull
+    def pr(self,item,number):self.pr_reads+=1;return self.pull
     def call(self,*args):return {'commit':{'sha':'base'}}
     def pages(self,*args):return self.runs
     def connection(self,role):return {'app_id':10 if role=='review' else 11}
@@ -86,9 +86,12 @@ class ReconciliationTests(unittest.TestCase):
         observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
         report=observer.cycle()
         self.assertEqual(report['items'][0]['pending'],'legacy_reconciliation')
-        self.assertEqual(report['sweep']['deferred'],1)
-        self.assertEqual(report['sweep']['refreshed'],0)
-        self.assertFalse(report['sweep']['complete'])
+        self.assertTrue(report['items'][0]['observed'])
+        self.assertEqual(self.github.pull_reads,2)
+        self.assertEqual(self.github.pr_reads,2)
+        self.assertEqual(report['sweep']['deferred'],0)
+        self.assertEqual(report['sweep']['refreshed'],1)
+        self.assertTrue(report['sweep']['complete'])
         self.assertEqual(report['sweep']['coverage']['stale_members'],0)
         self.assertEqual(report['sweep']['coverage']['oldest_observed_at'],self.now)
         after=self.view()
@@ -125,7 +128,7 @@ class ReconciliationTests(unittest.TestCase):
         self.now+=1
         self.github.remote.update(state='open',updated_at='2026-10-07T00:00:00Z',body='Older response')
         result=observer.step(self.unit)
-        self.assertEqual(result['pending'],'legacy_reconciliation');self.assertTrue(result['stale'])
+        self.assertTrue(result['stale']);self.assertNotIn('observed',result)
         with self.assertRaisesRegex(TransitionError,'older than canonical facts'):
             self.controller.step(self.unit)
         with self.store.read_snapshot() as db:
@@ -137,6 +140,69 @@ class ReconciliationTests(unittest.TestCase):
         self.github.remote.update(state='closed',state_reason='not_planned')
         with self.assertRaisesRegex(TransitionError,'older than canonical facts'):
             self.controller.step(self.unit)
+
+    def test_held_import_without_candidate_collects_ownership_and_completes_refresh(self):
+        self.setup_store()
+        life=Lifecycle(self.store,clock=lambda:self.now)
+        life.open_gate(Command('hold','operator',self.unit,self.view()['version']),
+            'label_hold',details={'source':'github_labels'})
+        self.github.remote['labels']=[{'name':'hold'}]
+        with self.store.write() as db:
+            issue_id=db.execute('SELECT issue_id FROM unit_issues WHERE unit_id=?',(self.unit,)).fetchone()[0]
+            db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?)',(issue_id,'operator',self.now-1))
+        observer=ObservationController(self.store,self.github,admission=lambda item:False,clock=lambda:self.now)
+        result=observer.cycle()
+        self.assertTrue(result['sweep']['complete'])
+        self.assertEqual(self.github.pull_reads,1);self.assertEqual(self.github.pr_reads,0)
+        self.assertEqual(result['items'][0]['pending'],'legacy_reconciliation')
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM operator_observation_requests').fetchone())
+            self.assertEqual({row[0] for row in db.execute('SELECT code FROM unit_gates WHERE resolved_at IS NULL')},
+                             {'label_hold','legacy_reconciliation'})
+            self.assertIsNone(db.execute('SELECT 1 FROM candidates').fetchone())
+
+    def test_imported_ownership_budget_continues_without_claiming_complete(self):
+        from unittest.mock import patch
+        from forge.factory.github import GitHubBudgetExhausted
+        self.setup_store()
+        observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
+        with patch.object(self.github,'pulls',side_effect=GitHubBudgetExhausted('Next cycle')):
+            result=observer.cycle()
+        self.assertFalse(result['sweep']['complete']);self.assertEqual(result['sweep']['visits'],0)
+        self.assertEqual(result['deferred'],'github_budget')
+        self.assertEqual(result['sweep']['coverage']['stale_members'],0)
+        self.assertEqual(self.view()['reason_code'],'legacy_reconciliation')
+        result=observer.cycle()
+        self.assertTrue(result['sweep']['complete']);self.assertEqual(result['sweep']['refreshed'],1)
+        self.assertEqual(result['sweep']['phases'],2)
+        self.assertEqual(self.view()['reason_code'],'legacy_reconciliation')
+
+    def test_imported_candidate_read_failure_is_incomplete_even_with_fresh_issue(self):
+        from unittest.mock import patch
+        from forge.factory.github import GitHubUnavailable
+        self.setup_store(candidate=True)
+        observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
+        with patch.object(self.github,'pr',side_effect=GitHubUnavailable('Unavailable')):
+            result=observer.cycle()
+        self.assertFalse(result['sweep']['complete']);self.assertEqual(result['sweep']['errors'],1)
+        self.assertEqual(result['sweep']['refreshed'],0)
+        self.assertEqual(result['sweep']['coverage']['stale_members'],0)
+        self.assertEqual(self.view()['current_candidate_id'],'legacy:candidate:identity')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='legacy_reconciliation' AND resolved_at IS NULL").fetchone()[0],1)
+
+    def test_imported_changed_candidate_is_observed_without_accepting_or_invalidating_it(self):
+        self.setup_store(candidate=True)
+        before=self.view()
+        self.github.pull['head']['sha']='different-head'
+        observer=ObservationController(self.store,self.github,admission=lambda item:True,clock=lambda:self.now)
+        self.assertTrue(observer.cycle()['sweep']['complete'])
+        for field in ('state','current_candidate_id','budget_generation','charged_failures','membership_generation'):
+            self.assertEqual(self.view()[field],before[field],field)
+        self.assertEqual(self.github.pull_reads,1);self.assertEqual(self.github.pr_reads,1)
+        self.github.pull['merged']=None
+        result=observer.cycle()
+        self.assertFalse(result['sweep']['complete']);self.assertEqual(result['sweep']['errors'],1)
 
     def test_same_candidate_rebound_with_independent_verification_gate(self):
         self.issue['verification_request']=dict(candidate='identity',ci=[],what='Confirm behavior',created_at=13,resume_state='built')

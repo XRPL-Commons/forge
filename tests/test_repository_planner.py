@@ -20,7 +20,7 @@ class RepositoryPlannerTests(unittest.TestCase):
             repository_id=1,repository_name='example/project',issue_number=1,title='Work',body='Details',requirements='digest',observed_at=90)
         self.plans=RepositoryPlanning(self.store,clock=lambda:self.now)
         self.request=self.plans.queue(1,request_id='request',actor_id='operator',base_branch='main')
-        self.context=self.plans.context(self.request['proposal_id'])
+        self.context=self.plans.context(self.request['proposal_id'],head='a'*40)
         self.job={'id':'triage','proposal_id':self.request['proposal_id'],'slot':'repository-triage','role':'triage','repo_id':1,'repo':'example/project',
             'head':'a'*40,'deadline':500,'fenced':False,'cleanup':False,'runner_config':{},'context_hash':manifest_hash(self.context)}
         self.runner=Mock();self.github=Mock();self.settings=Mock();self.settings.paused.return_value=False
@@ -181,6 +181,29 @@ class RepositoryPlannerTests(unittest.TestCase):
             with self.subTest(invalid=invalid),self.assertRaises(PreparationError):
                 schema(triage_note({**self.job,'context':context}))
 
+    def test_note_contract_must_match_assigned_head_before_reservation(self):
+        wrong={**self.job,'head':'b'*40}
+        with self.assertRaisesRegex(TransitionError,'assigned repository and head'):
+            self.plans.reserve(self.request['proposal_id'],wrong,self.context)
+        self.assertEqual(self.plans.runs()[0]['status'],'queued')
+        for invalid in (None,{}, {'anyOf':[]}):
+            with self.subTest(invalid=invalid),self.assertRaises(PreparationError):
+                schema(triage_note({**self.job,'context':{**self.context,'note_sources_schema':invalid}}))
+
+    def test_captured_invalid_source_is_rejected_without_rewriting_worker_evidence(self):
+        self.plans.reserve(self.request['proposal_id'],self.job,self.context)
+        source={**self._source(),'kind':'issue'}
+        job=self._capture(notes=[{'note_id':None,'kind':'lesson','content':'Keep evidence','sources':[source]}])
+        before=job['capture']
+        self.assertEqual(self.controller._finish(job)['error'],'triage_proposal_invalid')
+        self.assertEqual(self.plans.job('triage')['capture'],before)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM triage_proposal_rows').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM repository_note_revisions').fetchone()[0],0)
+        note=triage_note({**self.job,'context':self.context})
+        self.assertIn('issue_revision, candidate, commit or document',note['instructions'])
+        self.assertIn('requirements_revision_id (not issue_id or issue number)',note['instructions'])
+
     def test_singleton_group_and_invented_rule_remain_rejected_without_effects(self):
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         row={'action':'group','members':['1:1'],'reason':'Useful work','rule_quote':None,
@@ -265,7 +288,7 @@ class RepositoryPlannerTests(unittest.TestCase):
         restarted=RepositoryPlanning(self.store,clock=lambda:self.now)
         self.assertEqual([(r['repository_id'],r['reason']) for r in restarted.due()],[(1,'repository_event')])
         request=restarted.queue(1,request_id='second',actor_id='supervisor:repository_event-triage',base_branch='main')
-        context=restarted.context(request['proposal_id'])
+        context=restarted.context(request['proposal_id'],head='a'*40)
         job={**self.job,'id':'second-worker','proposal_id':request['proposal_id'],'deadline':1000,'context_hash':manifest_hash(context)}
         restarted.reserve(request['proposal_id'],job,context)
         self.now=800
@@ -291,7 +314,7 @@ class RepositoryPlannerTests(unittest.TestCase):
         self.now=110
         Lifecycle(self.store,clock=lambda:self.now).admit_issue(request_id='discovered',actor_id='operator',unit_id='new',issue_id='1:2',
             repository_id=1,repository_name='example/project',issue_number=2,title='New work',body='',requirements='new',observed_at=110)
-        context=self.plans.context(self.request['proposal_id'])
+        context=self.plans.context(self.request['proposal_id'],head='a'*40)
         self.assertEqual([i['issue_id'] for i in context['issues']],['1:1'])
         self.job['context_hash']=manifest_hash(context)
         self.plans.reserve(self.request['proposal_id'],self.job,context)
@@ -304,7 +327,7 @@ class RepositoryPlannerTests(unittest.TestCase):
         for key in ('lesson',handoff_id):
             self.plans.note(1,note_id=key,expected_revision=0,kind='lesson' if key=='lesson' else 'next_action',content='Before',
                 sources=[self._source()],request_id=key,actor_id='supervisor:triage')
-        self.context=self.plans.context(self.request['proposal_id']);self.job['context_hash']=manifest_hash(self.context)
+        self.context=self.plans.context(self.request['proposal_id'],head='a'*40);self.job['context_hash']=manifest_hash(self.context)
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         job=self._capture(notes=[{'note_id':'lesson','kind':'lesson','content':'Consolidated','sources':[self._source()]}],
             handoff={'content':'Next investigation','sources':[self._source()]})
@@ -345,12 +368,12 @@ class RepositoryPlannerTests(unittest.TestCase):
         self.assertEqual(self.plans.due(),[])  # generated context never schedules itself
         self._observe(body='Changed requirement')
         self.assertTrue(all(n['needs_refresh'] for n in self.plans.repository(1)['notes']))
-        self.assertEqual(self.plans.context(self.request['proposal_id'])['notes'],[])
+        self.assertEqual(self.plans.context(self.request['proposal_id'],head='a'*40)['notes'],[])
 
     def test_operator_correction_wins_without_discarding_proposal(self):
         self.plans.note(1,note_id='lesson',expected_revision=0,kind='lesson',content='Initial',sources=[self._source()],
             request_id='initial',actor_id='supervisor:triage')
-        self.context=self.plans.context(self.request['proposal_id']);self.job['context_hash']=manifest_hash(self.context)
+        self.context=self.plans.context(self.request['proposal_id'],head='a'*40);self.job['context_hash']=manifest_hash(self.context)
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         self.plans.note(1,note_id='lesson',expected_revision=1,kind='lesson',content='Operator correction',sources=[self._source()],
             request_id='correct',actor_id='github:7')

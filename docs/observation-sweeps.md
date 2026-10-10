@@ -1,7 +1,7 @@
 # GitHub observation sweeps
 
-The SQLite supervisor walks all current open delivery members in bounded SQL
-pages during its observation phase. A page size of 50 limits each database read;
+The SQLite supervisor walks all current members of nonterminal deliveries in
+bounded SQL pages during its observation phase. A page size of 50 limits each database read;
 it does not limit the phase to 50 deliveries. Network calls never hold a database
 transaction. This remains sequential remote collection; repository batching and
 concurrent collection are separate work.
@@ -54,16 +54,20 @@ Private `store_metadata` records contain bounded receipts:
   HTTP attempt/failure totals and the last observed numeric rate-limit headers.
 
 A sweep records pages and member visits, refreshed/deferred/error outcomes, and
-actual HTTP attempts including token issuance. Quota headers describe the last
+actual HTTP attempts including token issuance. A refreshed member has completed
+its required issue and ownership/selected-PR reads; it need not be ready to run.
+Known negative findings and outstanding operator decisions remain lifecycle
+blockers, reported separately from observation completion. Quota headers describe the last
 response carrying numeric quota headers, not a combined quota across installations. Receipts contain no request
 paths, request bodies, tokens or raw response headers.
 
 At the end of each phase, coverage comes from current active members and their
 canonical issue observation timestamps relative to the sweep start. It reports
 current unit/member counts, stale or unknown members, stale units and the oldest
-successful observation age. Moving an already observed issue between deliveries
-can preserve valid GitHub freshness. Freshness alone does not establish candidate
-or ownership reconciliation for a new member. The structural scope receipt prevents
+successful observation age. These timestamps cover issue facts, not PR or
+ownership reads. Moving an already observed issue between deliveries can preserve
+valid issue freshness without completing the new member's observation. The
+structural scope receipt prevents
 a fresh admission or recomposition behind the cursor from producing a falsely
 complete sweep.
 
@@ -71,7 +75,19 @@ A healthy complete receipt requires reaching the end, fresh coverage for all
 current members, unchanged structural scope, and no failed/deferred visits. A process interrupted before its
 checkpoint leaves the sweep marked interrupted; its request totals may be
 incomplete and it is excluded from healthy latency samples. Issue freshness alone
-does not hide a failed candidate or ownership reconciliation.
+does not hide a missing, failed, stale or interrupted candidate/ownership read.
+
+Observation completion does not release execution authority. An imported member
+still reads its issue, relevant open PRs for ownership, and any selected PR while
+`legacy_reconciliation` stays open. Verified facts can complete the sweep while
+its imported requirements, candidate, hold and reconciliation gates remain
+unchanged. Migration acceptance still requires its separate fresh protection,
+ownership and candidate proofs. A grouped member's observed closure similarly
+completes observation while its explicit `membership_decision` remains pending;
+a verified external candidate change can be observed while `external_change`
+continues to block work. Unknown PR identity or merge state remains an error,
+not a successful negative observation. Explicit issue refresh requests finish
+once the required observation completes, even when an operator decision remains.
 
 ## Remaining qualification
 
