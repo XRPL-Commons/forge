@@ -329,12 +329,13 @@ class OperatorTests(unittest.TestCase):
             snapshots.clear()
             with self.subTest(view=name), \
                     patch.object(self.store, '_connect_path', wraps=self.store._connect_path) as connect, \
-                    patch.object(Queries, '_issue_context', wraps=Queries._issue_context) as issue_read:
+                    patch.object(Queries, '_issue_contexts', wraps=Queries._issue_contexts) as issue_read:
                 result = call()
                 self.assertEqual(connect.call_count, 1)
-                # Both the narrow Activity path and rich issue views use this
-                # canonical read in the configuration/repository snapshot.
+                # Batched lists and singleton detail share the canonical read
+                # in the configuration/repository snapshot.
                 self.assertEqual(issue_read.call_count, 1)
+                self.assertEqual(issue_read.call_args.args[1], ['i'])
                 self.assertEqual(len(snapshots), 2)
                 self.assertIs(snapshots[0], snapshots[1])
                 self.assertIs(issue_read.call_args.args[0], snapshots[0])
