@@ -21,6 +21,77 @@ def error_message(text):
     return 'Claude Code did not return a usable result'
 
 
+# Claude Code terminal result messages share the documented Agent SDK shape.
+# Keep provider diagnostics separate from the authoritative Forge result file.
+RESULT_SUBTYPES = frozenset(('success', 'error_during_execution', 'error_max_turns',
+                             'error_max_budget_usd', 'error_max_structured_output_retries'))
+SCHEMA_ERROR = 'Error: --json-schema is not a valid JSON Schema'
+ERROR_BYTES = 1024
+ERROR_COUNT = 3
+API_ERRORS = frozenset(('authentication_failed', 'oauth_org_not_allowed', 'account_on_hold',
+    'verification_required', 'billing_error', 'rate_limit', 'overloaded', 'invalid_request',
+    'model_not_found', 'server_error', 'unknown', 'max_output_tokens', 'cloud_credential_error'))
+
+
+def api_error_fields(event, status_key):
+    category = event.get('error')
+    status = event.get(status_key)
+    return dict(error=category if isinstance(category, str) and category in API_ERRORS else None,
+                **{status_key: status if type(status) is int and 100 <= status <= 599 else None})
+
+
+def failure_diagnostic(code, response, raw, events=()):
+    """Select complete provider errors; the host scrubs delivered secrets.
+
+    Never truncate strings before that scrub: a cut opaque credential would no
+    longer match its delivered value. No model result, tool output or transcript
+    text belongs in this diagnostic.
+    """
+    startup = next((line for line in raw.splitlines() if line.startswith(SCHEMA_ERROR)), None)
+    subtype = response.get('subtype')
+    known_subtype = subtype if isinstance(subtype, str) and subtype in RESULT_SUBTYPES else None
+    structured = isinstance(response.get('structured_output'), dict)
+    if startup is not None:
+        reason = 'startup_schema_invalid'
+    elif known_subtype == 'error_max_structured_output_retries':
+        reason = 'structured_output_retries_exhausted'
+    elif not response:
+        reason = 'terminal_result_missing'
+    elif response.get('is_error') or known_subtype and known_subtype.startswith('error_'):
+        reason = 'terminal_error'
+    elif not structured:
+        reason = 'structured_output_missing'
+    else:
+        reason = 'cli_exit_nonzero'
+    errors = response.get('errors', [])
+    errors = errors if isinstance(errors, list) else []
+    if startup is not None:
+        errors = [startup, *errors]
+    selected = [item for item in errors if isinstance(item, str)
+                and len(json.dumps(item).encode()) <= ERROR_BYTES][:ERROR_COUNT]
+    diagnostic = dict(provider='claude', reason=reason, exit_code=code, terminal_result=bool(response),
+                subtype=known_subtype, subtype_recognized=subtype in RESULT_SUBTYPES if isinstance(subtype, str) else False,
+                is_error=response.get('is_error') if type(response.get('is_error')) is bool else None,
+                structured_output=structured, error_count=len(errors), errors=selected,
+                omitted_errors=len(errors)-len(selected))
+    if 'api_error_status' in response:
+        diagnostic['api_error_status'] = api_error_fields(response, 'api_error_status')['api_error_status']
+    retry = next((event for event in reversed(events)
+                  if event.get('type') == 'system' and event.get('subtype') == 'api_retry'), None)
+    if retry is not None:
+        diagnostic['last_api_retry'] = api_error_fields(retry, 'error_status')
+        for key in ('attempt', 'max_retries', 'retry_delay_ms'):
+            value = retry.get(key)
+            if type(value) is int and 0 <= value <= 2**53-1:
+                diagnostic['last_api_retry'][key] = value
+    api_error = next((event for event in reversed(events) if event.get('type') == 'assistant'
+                      and isinstance(event.get('error'), str) and event['error'] in API_ERRORS), None)
+    if api_error is not None:
+        diagnostic['last_api_error'] = api_error_fields(api_error, 'api_error_status')
+    # These prior API observations are not evidence of the terminal cause.
+    return diagnostic
+
+
 FAILURE_REASONS = {'Provider authentication_error; reconnect the account': 'provider_login_expired',
                    'Provider usage limit reached': 'provider_usage_limit'}
 
@@ -139,7 +210,8 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
     response = next((e for e in reversed(events) if e.get('type') == 'result'), {})
     if code or response.get('is_error') or not isinstance(response.get('structured_output'), dict):
         message = error_message(raw)
-        print(json.dumps({'type': 'error', 'message': message}), flush=True)
+        print(json.dumps({'type': 'error', 'message': message,
+                          'provider_failure': failure_diagnostic(code, response, raw, events)}), flush=True)
         return None, message
     if canary and not canary_completed(events, *canary):
         raise RuntimeError('Native sandbox canary execution was not verified')

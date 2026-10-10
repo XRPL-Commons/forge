@@ -61,7 +61,11 @@ def process_isolation(config):
 def scrub(text, secrets=()):
     for value in secrets:
         if value:
-            text = text.replace(value, '[REDACTED]')
+            # Structured provider errors serialize credentials inside JSON.
+            # Match those complete encodings before retaining a bounded tail.
+            encodings = {value, json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1]}
+            for encoded in sorted(encodings, key=len, reverse=True):
+                text = text.replace(encoded, '[REDACTED]')
     text = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,})\b', '[REDACTED]', text)
     # Login files carry OAuth access/refresh tokens as JWTs.
     text = re.sub(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b', '[REDACTED]', text)
@@ -406,7 +410,7 @@ class ContainerRunner:
         secrets = self._scrub_values(job)
         try:
             observation['logs'] = scrub(self.call(['logs', '--tail', str(int(lines)), current['id']],
-                combine=True, timeout=observation_timeout(deadline, 5), max_output=262144).stdout.decode(errors='replace')[-65536:], secrets)
+                combine=True, timeout=observation_timeout(deadline, 5), max_output=262144).stdout.decode(errors='replace'), secrets)[-65536:]
         except RunnerError:
             observation['missing'].append('running output')
         return observation
@@ -434,7 +438,7 @@ class ContainerRunner:
         except (RunnerError, ValueError, tarfile.TarError, UnicodeError):
             captured['missing'].append('valid result artifact')
         try:
-            captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace')[-65536:], secrets)
+            captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace'), secrets)[-65536:]
         except RunnerError:
             captured['missing'].append('runner logs')
         if job.get('delegation') is not None:
