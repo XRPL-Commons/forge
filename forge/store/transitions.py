@@ -464,32 +464,16 @@ class Lifecycle:
     def fence_member_in(self, db, command, member_id, *, reason, include_descendants=True):
         """Fence affected physical assignments without revoking independent parts."""
         unit = _unit(db,command.unit_id)
-        members = self._members(db,unit['id'])
-        if member_id not in {member['id'] for member in members}:
-            raise TransitionError('scoped fencing requires a current member')
-        affected = {member_id}
-        if include_descendants:
-            from .delivery_inputs import dependencies_in
-            while True:
-                descendants = {member['id'] for member in members if set(dependencies_in(db,unit,member['id'])) & affected}
-                if descendants.issubset(affected):
-                    break
-                affected.update(descendants)
-        from .task_inputs import affected_tasks_in
-        tasks=affected_tasks_in(db,unit['id'],affected)
-        jobs=[]
-        for row in db.execute('SELECT j.id,j.member_id,j.cleanup,j.outcome,t.task_id FROM jobs j LEFT JOIN job_tasks t ON t.job_id=j.id WHERE j.unit_id=?',(unit['id'],)):
-            if row['cleanup'] and row['outcome'] is not None: continue
-            scope={pin[0] for pin in db.execute('SELECT member_id FROM job_members WHERE job_id=?',(row['id'],))}
-            if (row['task_id'] in tasks if row['task_id'] is not None else bool(scope & affected)):
-                jobs.append(dict(row))
+        from .job_scope import affected_jobs_in
+        scope = affected_jobs_in(db, unit, {member_id}, include_descendants=include_descendants)
+        jobs = scope['jobs']
         for job in jobs:
             db.execute('UPDATE jobs SET fenced=1 WHERE id=?',(job['id'],))
             db.execute('UPDATE job_execution_state SET result_revoked=1 WHERE job_id=?',(job['id'],))
             if not job['cleanup']:
                 self._ensure_cleanup_gate(db,command,job['id'],job['member_id'])
             self._event(db,command,'attempt_fenced',{'reason':reason,'member_id':member_id},job_id=job['id'])
-        return {'member_ids':sorted(affected),'job_ids':[job['id'] for job in jobs]}
+        return {'member_ids':scope['member_ids'],'job_ids':[job['id'] for job in jobs]}
 
     def _ensure_cleanup_gate(self, db, command, job_id, member_id):
         subject = f"job:{job_id}"

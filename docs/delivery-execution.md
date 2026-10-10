@@ -231,7 +231,9 @@ singleton budgets; it retains the old delivery history and cannot erase an
 uncertain merge or release an uncleaned worker lease.
 
 
-Stopping a shared builder, Review or Audit run creates a whole-delivery pause.
+Stopping a task pauses its explicitly assigned issue members and fences affected
+tasks and their dependents. Independent tasks keep running. Stopping a planning,
+final integration, Review or Audit run creates a whole-delivery pause.
 Use **Resume delivery** or `forge delivery resume-delivery` with the same inspected
 file and explicit approval to clear that pause after cleanup. This preserves each
 member's own pause, backlog, label hold, environment gate, accepted output and
