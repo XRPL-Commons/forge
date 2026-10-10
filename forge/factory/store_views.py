@@ -107,7 +107,8 @@ class PipelineViews:
 
     def _collections(self, db, issue, unit_id, candidate, *, detail, config):
         numbers={row[0] for row in db.execute('SELECT issue_number FROM revision_display_dependencies WHERE revision_id=? ORDER BY issue_number LIMIT 101',(issue['current_revision_id'],))}
-        numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? AND i.repository_id=? ORDER BY i.github_number LIMIT 101',(issue['id'],issue['current_revision_id'],issue['repository_id'])))
+        # Start from this revision's sparse edges, not every issue in its repository.
+        numbers.update(row[0] for row in db.execute('SELECT i.github_number FROM issue_dependencies d CROSS JOIN issues i ON i.id=d.prerequisite_issue_id WHERE d.issue_id=? AND d.requirements_revision_id=? AND i.repository_id=? ORDER BY i.github_number LIMIT 101',(issue['id'],issue['current_revision_id'],issue['repository_id'])))
         if unit_id:
             source=db.execute('SELECT d.requirements_body,p.source_content_hash FROM dependency_observations d JOIN revision_presentation p ON p.revision_id=? WHERE d.unit_id=?',(issue['current_revision_id'],unit_id)).fetchone()
             if source and source['requirements_body']==source['source_content_hash']:
