@@ -118,3 +118,33 @@ artifacts remain lazy, and already-loaded member contexts are reused by page
 rendering. This migration changes a read contract only; it neither changes
 outputs nor grants dispatch/publication authority. Release qualification for 031
 must include data preservation, schema integrity and idempotent replay.
+
+### Collect delivery gates once per read snapshot
+
+Issue pages used to collect the same delivery's gates once for each member.
+Each collection walks all current members and validates their recursive output
+references. A 40-member star therefore repeated 1,600 member dependency checks
+while selecting the page.
+
+`IssueGateFacts` now owns those facts during one read projection. It collects
+once per unit and uses the same canonical member/candidate scope and priority
+function for each issue. `IssueSelection` retains this owner across its bounded
+context batches and final page rendering. The owner is discarded with the read
+snapshot. Lifecycle and admission calls still collect fresh facts, and recursive
+output validation is unchanged. This requires no schema migration or stored
+cache.
+
+A local synthetic comparison against `3f08658` used 14 alternating calls,
+excluding two warmups. Full board and issue-page responses matched exactly.
+Projection measurements include opening and validating the read snapshot.
+
+| Local board fixture | Median before | Median after |
+| --- | ---: | ---: |
+| 1,035 ordinary issues | 7.264 ms | 7.256 ms |
+| 12-member dependency chain | 18.118 ms | 7.780 ms |
+| 40-member dependency star | 34.863 ms | 9.587 ms |
+
+These are synthetic projection measurements, not deployed authenticated HTTP
+latency. The existing output evaluator still walks recursive prerequisite
+references; the change removes repeated gate collection without introducing a
+second validity evaluator.

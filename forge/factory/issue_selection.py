@@ -6,7 +6,7 @@ issues need Python facts.
 """
 import json
 
-from ..store.queries import Queries, MAX_PAGE_SIZE
+from ..store.queries import Queries, IssueGateFacts, MAX_PAGE_SIZE
 from ..store.job_scope import issue_jobs_in
 from .status_projection import public_status
 
@@ -29,6 +29,7 @@ class IssueSelection:
                  github_state=None, terminal_only=False):
         self.db = db
         self._contexts = {}
+        self._gate_facts = IssueGateFacts(db)
         overrides = []
         if not terminal_only:
             clauses = ['m.left_at IS NULL']
@@ -47,7 +48,7 @@ class IssueSelection:
                 'JOIN issues i ON i.id=m.issue_id JOIN repositories r ON r.id=i.repository_id '
                 'JOIN issue_revisions p ON p.id=i.current_revision_id WHERE ' + ' AND '.join(clauses) + ' ORDER BY i.id', parameters)
             while identifiers := [row[0] for row in candidates.fetchmany(MAX_PAGE_SIZE)]:
-                contexts = Queries._issue_contexts(db, identifiers)
+                contexts = Queries._issue_contexts(db, identifiers, gate_facts=self._gate_facts)
                 self._contexts.update(contexts)
                 for identifier, (issue, unit) in contexts.items():
                     jobs = issue_jobs_in(db, unit['id'], identifier)
@@ -72,5 +73,5 @@ class IssueSelection:
 
     def contexts(self, identifiers):
         missing = [identifier for identifier in identifiers if identifier not in self._contexts]
-        self._contexts.update(Queries._issue_contexts(self.db, missing))
+        self._contexts.update(Queries._issue_contexts(self.db, missing, gate_facts=self._gate_facts))
         return {identifier: self._contexts[identifier] for identifier in identifiers}
