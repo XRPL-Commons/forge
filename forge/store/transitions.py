@@ -702,6 +702,14 @@ class Lifecycle:
             gate_ids = []
             for subject in subjects:
                 value = {**details, 'job_id': job_id}
+                if code == 'dependency' and subject is not None:
+                    pin = db.execute('SELECT r.requirements_json FROM job_members p JOIN issue_revisions r ON r.id=p.requirements_revision_id WHERE p.job_id=? AND p.member_id=?',(job_id,subject)).fetchone()
+                    if pin is None:
+                        raise TransitionError('dependency wait has no exact assigned member requirements')
+                    requirements = json.loads(pin[0])
+                    if 'requirements' in details and details['requirements'] != requirements:
+                        raise TransitionError('dependency wait quotes different assigned requirements')
+                    value['requirements'] = requirements
                 previous = (db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code=? AND resolved_at IS NULL",
                                        (unit['id'],subject,code)).fetchone() if scoped else None)
                 if previous is not None:
@@ -713,8 +721,7 @@ class Lifecycle:
                     value = {**value, 'worker_waits': [*waits, {'job_id': job_id, 'request_id': command.request_id}],
                              'previous_gate_id': previous['id'], 'source': 'worker_waits'}
                     if code == 'dependency':
-                        requirements = json.loads(db.execute('SELECT r.requirements_json FROM unit_issues m JOIN issue_revisions r ON r.id=m.requirements_revision_id WHERE m.id=?',(subject,)).fetchone()[0])
-                        if details.get('requirements') != requirements or (value.get('requirements') is not None and value['requirements'] != requirements):
+                        if value.get('requirements') is not None and value['requirements'] != requirements:
                             raise TransitionError('combined dependency waits must pin the current member requirements')
                         value.update(requirements=requirements,
                             issues=sorted(set(value.get('issues',[])) | set(details['issues'])),

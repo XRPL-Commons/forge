@@ -532,3 +532,28 @@ class TaskTopologyTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT cleanup FROM jobs WHERE id=?',(jobs[1][0]['job_id'],)).fetchone()[0],0)
             self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE member_id=? AND code='label_hold' AND resolved_at IS NULL",(b,)).fetchone()[0],1)
+
+    def test_joint_task_dependency_wait_binds_each_distinct_assigned_revision(self):
+        from forge.store.executions import Executions
+        a,b=self.members
+        with self.store.write() as db:
+            original=dict(db.execute('SELECT r.* FROM unit_issues m JOIN issue_revisions r ON r.id=m.requirements_revision_id WHERE m.id=?',(b,)).fetchone())
+            db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,?,?,?,?,?,?)',
+                ('other-revision',original['issue_id'],original['title'],original['body'],original['content_hash'],'other-requirements',json.dumps({'acceptance':['other behavior']}),100))
+            db.execute("UPDATE unit_issues SET requirements_revision_id='other-revision' WHERE id=?",(b,))
+            db.execute("UPDATE issues SET current_revision_id='other-revision' WHERE id=?",(original['issue_id'],))
+        plan=self.plan([('shared','child',[a,b],[],[])])
+        job,manifest=self.reserve(plan,'shared')
+        Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence='shared',capture={'logs':''})
+        self.fixture.clean(job,'shared')
+        details={'issues':[10],'blocked':[10],'evidence':'Depends on #10'}
+        with self.assertRaises(TransitionError):
+            self.life.defer_job(self.command(),job['job_id'],execution_fence='shared',input_manifest=manifest,
+                evidence={'reason':'prerequisite'},code='dependency',details={**details,'requirements':{'acceptance':['works']}})
+        receipt=self.life.defer_job(self.command(),job['job_id'],execution_fence='shared',input_manifest=manifest,
+            evidence={'reason':'prerequisite'},code='dependency',details=details)
+        self.assertEqual(len(receipt['gate_ids']),2)
+        with self.store.read_snapshot() as db:
+            for row in db.execute("SELECT g.details_json,r.requirements_json FROM unit_gates g JOIN job_members p ON p.member_id=g.member_id JOIN issue_revisions r ON r.id=p.requirements_revision_id WHERE p.job_id=? AND g.code='dependency' AND g.resolved_at IS NULL",(job['job_id'],)):
+                self.assertEqual(json.loads(row['details_json'])['requirements'],json.loads(row['requirements_json']))
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
