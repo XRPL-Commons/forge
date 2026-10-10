@@ -136,7 +136,8 @@ For bounded browser diagnostics, add `?timings=1` to the signed-in page URL
 100 `[forge-http-timing]` debug entries to that tab's console. Reload to start a
 new sample window; remove the parameter to stop collecting. Each entry contains
 a fixed view label, HTTP status, numeric server durations and `browserMs` for
-the actual fetch. Board and completed-history requests have separate labels.
+the actual fetch. Board, completed history, issue lists and issue details have
+separate labels.
 No URL, issue identifier, payload, cookie or token is logged, and no sample is
 persisted or sent to another service. This does not generate additional requests
 or change cache behavior. Use console debug/verbose visibility to inspect it.
@@ -146,3 +147,7 @@ percentiles. Keep 200/304 status as another dimension: a 304 may still have
 projected a response. `browserMs` includes fetch and browser/proxy/network work;
 `serverMs.request` is the on-server handler interval described above. Retain
 sample counts, and do not claim an unobserved cache class was qualified.
+These are successful timed-response samples: failed requests, timeouts, aborts
+and responses without the timing header are absent. Record failure and timeout
+counts separately during qualification so a latency percentile does not hide
+unsuccessful requests.

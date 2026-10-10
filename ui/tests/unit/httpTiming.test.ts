@@ -13,6 +13,11 @@ describe('opt-in HTTP timing records', () => {
     expect(samples[1]).toEqual({ view: 'delivery', status: 304, browserMs: 5, serverMs: { cache_validated: 1, request: 2 } })
     record('/api/factory?section=board', 200, 'request;dur=3', 4)
     expect(samples[2]).toEqual({ view: 'board', status: 200, browserMs: 4, serverMs: { request: 3 } })
+    record('/api/issues?state=open', 200, 'request;dur=3', 4)
+    record('/api/issues?issue=private-repo:123', 200, 'request;dur=3', 4)
+    expect(samples.slice(3)).toEqual(['issue_list', 'issue_detail'].map(view => ({
+      view, status: 200, browserMs: 4, serverMs: { request: 3 },
+    })))
   })
 
   it('only emits bounded samples with known numeric server timing', () => {

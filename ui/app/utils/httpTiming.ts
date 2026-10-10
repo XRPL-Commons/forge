@@ -8,10 +8,12 @@ export function createHttpTimingRecorder(emit: (sample: object) => void) {
   return (path: string, status: number, header: string | null, browserMs: number) => {
     const [pathname, query] = path.split('?')
     let view = views[pathname!]
+    const parameters = new URLSearchParams(query)
     if (view === 'factory') {
-      const section = new URLSearchParams(query).get('section')
+      const section = parameters.get('section')
       if (section === 'board' || section === 'completed') view = section
     }
+    if (view === 'issues') view = parameters.has('issue') ? 'issue_detail' : 'issue_list'
     if (!view || !header || count >= 100) return
     const serverMs: Record<string, number> = {}
     for (const field of header.split(',')) {
