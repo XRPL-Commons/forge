@@ -5,7 +5,11 @@ failed CLI invocation emits the existing `type: error` event and fixed message,
 plus `provider_failure` metadata in the normal runner log:
 
 - Process exit code and terminal-result presence.
-- Documented terminal subtype, `is_error`, and structured-output presence.
+- Documented terminal subtype, `is_error`, structured-output presence, and the
+  terminal `api_error_status` when provided.
+- The latest typed assistant API error and `system/api_retry` observation, using
+  only known error categories and numeric status/retry fields. These are
+  earlier observations, not inferred terminal causes.
 - A reason distinguishing startup schema rejection, exhausted structured-output
   retries, missing terminal result, missing structured output, terminal error,
   or a nonzero process exit despite a structured response.
@@ -28,3 +32,8 @@ distinguishes retry exhaustion from a successful terminal result lacking a
 structured output, and recommends examining terminal `errors` to distinguish
 validation failures from output retraction. These diagnostics preserve that
 evidence without treating an absent result as proof of a schema problem.
+
+The [CLI retry event contract](https://code.claude.com/docs/en/headless#handle-api-retries)
+and the pinned CLI stream schemas define the selected API error categories and
+numeric fields. Assistant content, `error_details`, and unconfirmed generic
+`type: error` input shapes are excluded.

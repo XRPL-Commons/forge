@@ -109,6 +109,39 @@ class ClaudeFailureDiagnosticTests(unittest.TestCase):
         self.assertEqual(diagnostic['omitted_errors'], 2)
         self.assertNotIn('private-subtype-value', raw); self.assertNotIn('private prompt', raw)
 
+    def test_typed_api_observations_are_provenance_specific_and_exclude_payloads(self):
+        events = [dict(type='system', subtype='api_retry', error='overloaded', error_status=529,
+                       attempt=1, max_retries=3, retry_delay_ms=500, session_id='private session'),
+                  dict(type='system', subtype='api_retry', error='server_error', error_status=500,
+                       attempt=2, max_retries=3, retry_delay_ms=1000,
+                       message='private retry text', no_response={'extra': 'private retry payload'}),
+                  dict(type='assistant', error='invalid_request', api_error_status=400,
+                       error_details='private API text', message={'content': 'private model text'}),
+                  dict(type='error', error={'type': 'invalid_request', 'message': 'unconfirmed private shape'}),
+                  dict(type='result', subtype='success', is_error=True, api_error_status=400)]
+        _, lines, raw = self.invoke(1, events)
+        diagnostic = lines[0]['provider_failure']
+        self.assertEqual(diagnostic['reason'], 'terminal_error')
+        self.assertEqual(diagnostic['api_error_status'], 400)
+        self.assertEqual(diagnostic['last_api_retry'], dict(error='server_error', error_status=500,
+                                                          attempt=2, max_retries=3, retry_delay_ms=1000))
+        self.assertEqual(diagnostic['last_api_error'], dict(error='invalid_request', api_error_status=400))
+        for content in ('private session', 'private retry text', 'private retry payload', 'private API text',
+                        'private model text', 'unconfirmed private shape'):
+            self.assertNotIn(content, raw)
+        # A retry followed by a missing terminal result remains a missing
+        # terminal result. Its prior error category is not a guessed cause.
+        _, lines, _ = self.invoke(1, events[:2])
+        self.assertEqual(lines[0]['provider_failure']['reason'], 'terminal_result_missing')
+        self.assertEqual(lines[0]['provider_failure']['last_api_retry']['error_status'], 500)
+        _, lines, raw = self.invoke(1, [dict(type='system', subtype='api_retry', error='private unknown category',
+                                           error_status='private status', attempt=True, max_retries=2**100,
+                                           retry_delay_ms='private delay'),
+                                      dict(type='assistant', error='private unknown category', api_error_status=400)])
+        self.assertEqual(lines[0]['provider_failure']['last_api_retry'], dict(error=None, error_status=None))
+        self.assertNotIn('last_api_error', lines[0]['provider_failure'])
+        self.assertNotIn('private', raw)
+
     def test_existing_auth_quota_classifications_and_success_authority_stay_unchanged(self):
         for reason, expected in [('authentication_error', 'Provider authentication_error; reconnect the account'),
                                  ('rate_limit', 'Provider usage limit reached')]:
