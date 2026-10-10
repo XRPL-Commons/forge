@@ -21,6 +21,17 @@ LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 
                 'auditing': 'reviewed', 'merging': 'audited', 'merged': 'merged', 'closed': 'cancelled', 'dissolved': 'cancelled'}
 
 
+def _legacy_stage(lifecycle):
+    reason = lifecycle['reason_code']
+    if reason in {'approval_required', 'verification_human', 'verification_ci'}:
+        return 'approval_needed'
+    if reason == 'budget_exhausted':
+        return 'failed'
+    if reason == 'recovery_pending':
+        return 'investigating'
+    return 'hold' if reason else LEGACY_STAGE.get(lifecycle['stage_code'])
+
+
 # Public history can use an imported job's explicit member identity even when
 # its original requirements revision was never recorded. This does not create
 # an execution pin or select a member from the unit's current membership.
@@ -220,15 +231,7 @@ class PipelineViews:
         charges = db.execute("SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries b "
                              'JOIN attempts a ON a.id=b.attempt_id WHERE a.unit_id=? AND a.budget_generation=?',
                              (unit_id, unit['budget_generation'])).fetchone()[0] if unit else 0
-        legacy = LEGACY_STAGE.get(life['stage_code'])
-        if reason in {'approval_required', 'verification_human', 'verification_ci'}:
-            legacy = 'approval_needed'
-        elif reason == 'budget_exhausted':
-            legacy = 'failed'
-        elif reason == 'recovery_pending':
-            legacy = 'investigating'
-        elif reason:
-            legacy = 'hold'
+        legacy = _legacy_stage(life)
         environment = db.execute('SELECT choice_json,override_json,environment_hold_json FROM issue_environment_observations WHERE issue_id=?', (issue_id,)).fetchone() if unit_id else None
         if environment and environment['environment_hold_json'] and unit['state'] in {'merged','closed','dissolved'}:
             environment_block=json.loads(environment['environment_hold_json'])
@@ -283,6 +286,42 @@ class PipelineViews:
     @staticmethod
     def _public(row):
         return {key:value for key,value in row.items() if not key.startswith('_')}
+
+    def _activity_row(self, db, issue_id):
+        """Only the inputs consumed by Activity's card serializer.
+
+        Canonical lifecycle and worker visibility are shared with issue views;
+        action prompts, related PR collections and editing fields belong there.
+        """
+        issue, unit = Queries._issue_context(db, issue_id)
+        life = issue['lifecycle']
+        unit_id = unit['id'] if unit else None
+        jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + ISSUE_JOB_SCOPE +
+                          ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id, issue_id)).fetchall() if unit else []
+        active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
+        operator = operator_status(issue, bool(active))
+        context = db.execute('SELECT summary_json,last_observed_at FROM unit_context WHERE unit_id=?', (unit_id,)).fetchone() if unit else None
+        historical = bool(unit and unit['state'] in {'merged', 'closed', 'dissolved'})
+        if context and not historical:
+            # Match the same bounded applicable gate collection as issue views.
+            historical = any(gate['code'] == 'legacy_reconciliation' for gate in db.execute(
+                'SELECT code FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) '
+                'AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',
+                (unit_id, life['candidate_id'], life['member_id'])))
+        checked = context['last_observed_at'] if context and historical else issue['observed_at'] if unit else None
+        prerequisites = self._prerequisites(db, issue, unit_id)
+        blocked = [row['number'] for row in prerequisites if not row['complete'] and
+                   row['reason'] != 'prerequisite_unobserved' and row['repository'] == issue['repository'].lower()]
+        charges = db.execute("SELECT COALESCE(SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries b "
+                             'JOIN attempts a ON a.id=b.attempt_id WHERE a.unit_id=? AND a.budget_generation=?',
+                             (unit_id, unit['budget_generation'])).fetchone()[0] if unit else 0
+        return dict(key=issue_id, repo=issue['repository'], repo_id=issue['repository_id'], number=issue['github_number'],
+                    title=issue['title'], state_reason=issue['state_reason'], lifecycle=life,
+                    active=active['id'] if active else None, status=operator['code'], operator_status=operator,
+                    reason_code=life['reason_code'], stage_code=life['stage_code'], ledger_state=_legacy_stage(life),
+                    explanation=life['display_status'], last_checked=checked, attempts={'failed': charges} if charges else None,
+                    _unit=unit, _jobs=[dict(job) for job in jobs], _blocked_dependencies=blocked,
+                    _last_summary=json.loads(context['summary_json']) if context and context['summary_json'] else None)
 
     def _factory_issue(self, db, row, *, completed_at=None):
         unit, reason = row['_unit'], row['reason_code']
@@ -494,7 +533,7 @@ class PipelineViews:
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
             issues=[]
             for selected in rows[:size]:
-                row=self._row(db,selected['id'],config=config)
+                row=self._activity_row(db,selected['id'])
                 issues.append(self._factory_issue(db, row, completed_at=selected['completed_at']))
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.

@@ -36,6 +36,16 @@ class Queries:
 
     @staticmethod
     def _issue(connection, issue_id, *, include_body=False, include_gates=False):
+        return Queries._issue_context(connection, issue_id, include_body=include_body,
+                                      include_gates=include_gates)[0]
+
+    @staticmethod
+    def _issue_context(connection, issue_id, *, include_body=False, include_gates=False):
+        """Canonical issue and its latest membership's unit in one snapshot.
+
+        The unit remains available as historical context when a removed or
+        reopened member no longer inherits its lifecycle. It grants no authority.
+        """
         # List pages never select requirements or issue bodies. These can be
         # large, and belong to the explicit single-issue detail request.
         body = ', r.body, r.requirements_json' if include_body else ''
@@ -55,11 +65,11 @@ class Queries:
             'SELECT * FROM unit_issues WHERE issue_id=? '
             'ORDER BY (left_at IS NULL) DESC, joined_at DESC, id DESC LIMIT 1', (issue_id,),
         ).fetchone()
-        unit = None
+        unit = historical_unit = None
         blocker = None
         gates = []
         if member:
-            unit = dict(connection.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())
+            unit = historical_unit = dict(connection.execute('SELECT * FROM units WHERE id=?', (member['unit_id'],)).fetchone())
             if member['left_at'] is None and unit['state'] not in TERMINAL:
                 gates = applicable_gates(connection, unit, member['id'], unit['current_candidate_id'])
                 blocker = gates[0] if gates else None
@@ -93,7 +103,7 @@ class Queries:
         if include_gates:
             lifecycle['gates'] = gates
         issue['lifecycle'] = lifecycle
-        return issue
+        return issue, historical_unit
 
     def issue(self, issue_id):
         with self.store.read_snapshot() as connection:
