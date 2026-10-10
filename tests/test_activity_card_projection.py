@@ -12,7 +12,7 @@ from tests import test_store_public_parity as imported
 
 class RichIssueCards(PipelineViews):
     """The original Activity path remains available through issue detail reads."""
-    def _activity_row(self, db, issue_id):
+    def _activity_row(self, db, issue_id, *, issue_context=None):
         return self._row(db, issue_id, config=self._config())
 
 

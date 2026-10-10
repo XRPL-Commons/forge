@@ -186,11 +186,10 @@ class PipelineViews:
                 url='https://github.com/'+repository+('/pull/' if fact and fact.get('kind')=='pull_request' else '/issues/')+number))
         return result
 
-    def _row(self, db, issue_id, *, detail=False, config):
-        issue = Queries._issue(db, issue_id, include_body=detail)
+    def _row(self, db, issue_id, *, detail=False, config, issue_context=None):
+        issue, unit = issue_context if issue_context is not None else Queries._issue_context(db, issue_id, include_body=detail)
         life = issue['lifecycle']
         unit_id = life['unit_id'] or life['historical_unit_id']
-        unit = dict(db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()) if unit_id else None
         scope = ISSUE_JOB_SCOPE
         jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + scope +
                           ' ORDER BY j.created_at DESC,j.id DESC LIMIT 6', (unit_id,issue_id)).fetchall() if unit_id else []
@@ -295,13 +294,13 @@ class PipelineViews:
     def _public(row):
         return {key:value for key,value in row.items() if not key.startswith('_')}
 
-    def _activity_row(self, db, issue_id):
+    def _activity_row(self, db, issue_id, *, issue_context=None):
         """Only the inputs consumed by Activity's card serializer.
 
         Canonical lifecycle and worker visibility are shared with issue views;
         action prompts, related PR collections and editing fields belong there.
         """
-        issue, unit = Queries._issue_context(db, issue_id)
+        issue, unit = issue_context if issue_context is not None else Queries._issue_context(db, issue_id)
         life = issue['lifecycle']
         unit_id = unit['id'] if unit else None
         jobs = db.execute("SELECT j.id,j.role,j.phase,j.outcome,j.cleanup,j.fenced,j.created_at FROM jobs j WHERE j.unit_id=? AND " + ISSUE_JOB_SCOPE +
@@ -404,7 +403,8 @@ class PipelineViews:
                     'JOIN public_issue_index x ON x.id=i.id WHERE '+' AND '.join(clauses))
             total=db.execute('SELECT COUNT(*)'+source,parameters).fetchone()[0]
             ids=db.execute('SELECT i.id'+source+' ORDER BY r.full_name COLLATE NOCASE,i.github_number LIMIT 50 OFFSET ?',(*parameters,(page-1)*50)).fetchall()
-            rows=[self._public(self._row(db,row[0],config=config)) for row in ids]
+            contexts=Queries._issue_contexts(db,[row[0] for row in ids])
+            rows=[self._public(self._row(db,row[0],config=config,issue_context=contexts[row[0]])) for row in ids]
             return dict(issues=rows,total=total,page=page,pages=max(1,math.ceil(total/50)),repositories=scopes,
                         complete=all(scope['complete'] and scope['fresh'] for scope in scopes if repo_id is None or scope['id']==repo_id),actions=self._actions(db))
 
@@ -548,8 +548,9 @@ class PipelineViews:
             rows=db.execute(prefix+'SELECT x.id,u.updated_at,'+COMPLETION_SQL+' AS completed_at FROM '+source+' JOIN units u ON u.id=x.unit_id WHERE '+
                 ' AND '.join(clauses)+' ORDER BY '+('completed_at' if section=='completed' else 'u.updated_at')+' DESC,x.id DESC LIMIT ?',(*params,size+1)).fetchall()
             issues=[]
+            contexts=Queries._issue_contexts(db,[row['id'] for row in rows[:size]])
             for selected in rows[:size]:
-                row=self._activity_row(db,selected['id'])
+                row=self._activity_row(db,selected['id'],issue_context=contexts[selected['id']])
                 issues.append(self._factory_issue(db, row, completed_at=selected['completed_at']))
             # Failed pre-admission observations have no unit yet. Show them on
             # their own issue cards instead of turning them into controller errors.
