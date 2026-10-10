@@ -307,12 +307,45 @@ class OperatorActions(Lifecycle):
             self._receipt(row,'close-pr',{'closed':True,'merged':False})
         issue=self._remote(row)
         if row['action']=='close_member' and issue.get('state')=='closed':return issue
+        if row['action']=='close' and issue.get('state')=='open':self._comment(row)
         self._intent(row,'close-issue',{'number':row['item']['number'],'state_reason':'not_planned'})
         if issue.get('state')=='open':self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
         issue=self._remote(row)
         if issue.get('state')!='closed' or issue.get('state_reason')!='not_planned':raise GitHubUnavailable('Issue closure is unconfirmed')
         self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned'})
         return issue
+
+    def _comment(self,row):
+        """The operator's reason as the closing comment, posted once across restarts."""
+        body='Closed from Forge as not planned: '+row['reason']
+        with self.store.read_snapshot() as db:
+            done=db.execute("SELECT status FROM operator_action_effects WHERE request_id=? AND step='close-comment'",(row['id'],)).fetchone()
+        if done and done[0]=='confirmed':return
+        path=f"/issues/{row['item']['number']}/comments"
+        # An unconfirmed earlier write may have landed: never post it twice.
+        if not (done and any(c.get('body')==body for c in self.github.pages('controller',row['item'],path))):
+            self._intent(row,'close-comment',{'body':body})
+            self.github.call('controller',row['item'],'POST',path,{'body':body})
+        self._receipt(row,'close-comment',{'posted':True})
+
+    def reopen(self,key,request_id):
+        """Undo a close this operator path applied: reopen the issue on GitHub.
+        The next observation returns it to the board; nothing else is restored."""
+        if not self.actor_id:raise TransitionError('An authenticated operator identity is required')
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT issue_id,action,status FROM issue_action_requests WHERE id=?',(request_id,)).fetchone()
+            if row is None or row['issue_id']!=key or row['action']!='close':raise TransitionError('Only a close Forge applied can be undone here')
+            if row['status']!='applied':raise TransitionError('Forge is still closing this issue; undo it once it is closed')
+            issue=Queries._issue(db,key)
+        item=dict(repo_id=issue['repository_id'],repo=issue['repository'],number=issue['github_number'],key=key)
+        remote,_=self.github.issue(item)
+        if remote.get('state')=='closed':
+            if remote.get('state_reason')!='not_planned':raise TransitionError('The issue was closed another way on GitHub; reopen it there')
+            self.github.call('controller',item,'PATCH',f"/issues/{item['number']}",{'state':'open'})
+            remote,_=self.github.issue(item)
+            if remote.get('state')!='open':raise GitHubUnavailable('Reopening the issue is unconfirmed')
+        self.request_check(key)
+        return {'request_id':request_id,'reopened':True}
 
     def _reviewers(self,row):
         candidate=row['candidate'];names=row['plan']['reviewers']

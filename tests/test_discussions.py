@@ -188,11 +188,37 @@ class DiscussionsTest(unittest.TestCase):
         self.assertEqual(self.service.view('1:2')['status'], 'idle')
 
     def test_forbidden_proposal_is_not_shown_as_applicable(self):
+        # Never a dead end: the answer arrives, the unavailable button does not.
         job = self.start(); self.finish(job, proposal={'action': 'merge', 'reason': 'Skip review'})
-        self.assertEqual([m['role'] for m in self.service.view('1:2')['messages']], ['user', 'system'])
-        self.assertIn('not available', self.service.view('1:2')['messages'][-1]['text'])
-        self.assertEqual(self.service.view('1:2')['status'], 'unavailable')
-        self.assertTrue(self.service.active_jobs()[0]['fenced'])
+        self.assertEqual([m['role'] for m in self.service.view('1:2')['messages']], ['user', 'assistant'])
+        reply = self.service.view('1:2')['messages'][-1]
+        self.assertEqual((reply['text'], reply['proposal'], reply['unavailable']), ('Fix the shared producer type first.', None, True))
+        self.assertEqual(self.service.view('1:2')['status'], 'idle')
+
+    def test_close_is_offered_whenever_the_issue_is_closable_and_in_the_schema(self):
+        from forge.factory.harness import role_properties
+        self.row.update(actions=['retry'], closable=True)
+        job = self.start()
+        self.assertEqual(job['context']['actions'], ['retry', 'close'])
+        schema = role_properties(note(job))
+        self.assertEqual(schema['proposal']['anyOf'][1]['properties']['action']['enum'], ['retry', 'close'])
+        self.assertEqual(schema['close_now']['type'], 'boolean')
+        self.assertIn('close_now true only when the operator', note(job)['instructions'])
+        self.assertEqual(role_properties({**note(job), 'context': {'actions': []}})['proposal'], {'type': 'null'})
+
+    def test_legacy_close_on_request_applies_and_persona_suggestion_does_not(self):
+        self.row.update(closable=True)
+        with patch('forge.factory.issue_actions.request', return_value='receipt') as applied:
+            identifier = str(uuid.uuid4()); self.service.send('1:2', 'close this issue', identifier)
+            self.service.tick(self.config, self.github, self.settings)
+            self.finish(self.service.read()['1:2']['job'], proposal={'action': 'close', 'reason': 'Not needed.'}, close_now=True)
+            self.assertEqual(applied.call_args.kwargs['action'], 'close')
+            self.assertEqual(self.service.view('1:2')['messages'][-1]['receipt'], 'receipt')
+        with patch('forge.factory.issue_actions.request', return_value='receipt') as applied:
+            self.service.send('1:2', 'What next?', str(uuid.uuid4()))
+            self.service.tick(self.config, self.github, self.settings)
+            self.finish(self.service.read()['1:2']['job'], proposal={'action': 'close', 'reason': 'Not needed.'}, close_now=True)
+            applied.assert_not_called()
 
     def test_stream_only_contains_public_assistant_text(self):
         events = [{'type': 'assistant', 'message': {'content': [{'type': 'thinking', 'thinking': 'private'}, {'type': 'text', 'text': 'Checking evidence'}, {'type': 'tool_use', 'input': 'secret'}]}},

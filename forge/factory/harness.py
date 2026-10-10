@@ -72,9 +72,7 @@ def role_properties(note):
             'options': {'type': 'array', 'minItems': 2, 'maxItems': 6,
                         'items': {'type': 'string', 'minLength': 1, 'maxLength': 1000}}},
             'required': ['question', 'options', 'recommendation', 'evidence'], 'additionalProperties': False}]}},
-        'discussion': {'proposal': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
-            'action': {'type': 'string', 'enum': ['retry', 'resume', 'recheck', 'queue', 'pause', 'backlog']},
-            'reason': {'type': 'string', 'maxLength': 2000}}, 'required': ['action', 'reason'], 'additionalProperties': False}]}},
+        'discussion': discussion_properties(note),
         'review': candidate,
         'audit': {**candidate, 'human_required': {'type': 'string', 'enum': ['required', 'not_required', 'unknown']},
                   'human_reason': {'type': 'string'}},
@@ -84,6 +82,16 @@ def role_properties(note):
                          'required': ['change', 'reason', 'evidence'], 'additionalProperties': False}]}},
         'strategist': strategist_properties(),
     }.get(note['role'], {})
+
+
+def discussion_properties(note):
+    # Exactly the decisions Forge offers on this issue right now, Close included when it is closable.
+    actions = [a for a in (note.get('context') or {}).get('actions') or [] if isinstance(a, str)]
+    proposal = {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': actions},
+        'reason': {'type': 'string', 'maxLength': 2000}}, 'required': ['action', 'reason'], 'additionalProperties': False}
+    return {'proposal': {'anyOf': [{'type': 'null'}, proposal]} if actions else {'type': 'null'},
+            'close_now': {'type': 'boolean', 'description': "True only when the operator's latest message explicitly asks to close "
+                          'this issue and proposal.action is close; Forge then closes it for them. Otherwise false.'}}
 
 
 def triage_properties(note):

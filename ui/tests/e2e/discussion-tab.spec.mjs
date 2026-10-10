@@ -47,13 +47,14 @@ export default async function (page, { base }) {
   await left.getByRole('button', { name: 'Try again' }).click()
   await page.locator('[data-presence]').waitFor()
   await page.locator('[data-proposal-action]').waitFor()
-  assert.equal(await left.getByRole('button', { name: 'Try again' }).count(), 0)
+  // Answered after all: the answer replaces the leave line.
+  assert.equal(await left.count(), 0)
   assert.equal(await page.locator('[data-role="user"]').filter({ hasText: 'What changed? (fail)' }).count(), 1)
 
   // The same words again after a failure are Try again, never a second copy.
   await prompt.fill('And now? (fail)')
   await prompt.press('Enter')
-  await page.locator('[data-left][data-reason="timeout"]').nth(1).waitFor()
+  await left.waitFor()
   await prompt.fill('And now? (fail)')
   await prompt.press('Enter')
   await page.locator('[data-presence]').waitFor()
@@ -72,7 +73,7 @@ export default async function (page, { base }) {
   assert.equal(await auth.getByRole('button', { name: 'Try again' }).count(), 0)
   assert.equal(await auth.locator('canvas[data-persona="Bolt"]').count(), 1)
   await page.locator('[data-proposal-action]').nth(2).waitFor({ timeout: 20000 })
-  assert.equal((await page.locator('[data-joined]').last().innerText()).trim(), 'Ember joined instead · Claude Sonnet 4.6')
+  assert.equal(await auth.count(), 0, 'Ember answered instead: the answer replaces Bolt\'s leave line')
   assert.equal((await page.locator('[data-role="assistant"]').last().locator('[data-persona-name]').innerText()).trim(), 'Ember')
 
   // A reply in progress shows on the tab while the operator is on Details.

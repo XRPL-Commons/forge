@@ -14,7 +14,9 @@ from tests import test_store_result_controller as helpers
 class Remote(helpers.GitHub):
     def __init__(self):
         super().__init__()
-        self.calls=[];self.after_write=None
+        self.calls=[];self.after_write=None;self.comments=[]
+    def pages(self,role,item,path):
+        return deepcopy(self.comments)
     def call(self,role,item,method,path,payload=None):
         self.calls.append((method,path,payload))
         if method=='POST' and path.endswith('/labels'):
@@ -23,6 +25,7 @@ class Remote(helpers.GitHub):
             from urllib.parse import unquote
             label=unquote(path.split('/labels/')[1]);self.issue_value['labels']=[v for v in self.issue_value['labels'] if v!=label]
         elif method=='PATCH' and '/issues/' in path:self.issue_value.update(payload)
+        elif method=='POST' and path.endswith('/comments'):self.comments.append(dict(payload))
         else:raise AssertionError((method,path,payload))
         if self.after_write:self.after_write()
         return deepcopy(self.issue_value)
@@ -92,6 +95,29 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(self.view()['state'],'closed')
         self.assertEqual(self.view()['close_code'],'github_not_planned')
         with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
+        # The operator's reason is the closing comment on GitHub, as the dialog promises.
+        self.assertEqual(self.github.comments,[{'body':'Closed from Forge as not planned: Operator reason'}])
+    def test_close_comment_is_posted_once_across_a_lost_response(self):
+        request=self.request('close')
+        self.github.after_write=lambda:(_ for _ in ()).throw(GitHubUnavailable('lost response'))
+        self.assertEqual(self.actions.step(request)['pending'],'github_observation')
+        self.github.after_write=None
+        self.assertTrue(self.actions.step(request)['applied'])
+        self.assertEqual(len(self.github.comments),1)
+    def test_reopen_undoes_an_applied_close_and_asks_for_a_fresh_look(self):
+        request=self.request('close')
+        with self.assertRaises(TransitionError):self.actions.reopen('i',request)  # Still closing: nothing to undo yet.
+        self.actions.step(request)
+        self.assertEqual(self.actions.reopen('i',request),{'request_id':request,'reopened':True})
+        self.assertEqual(self.github.issue_value['state'],'open')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT actor_id FROM operator_observation_requests WHERE issue_id=?',('i',)).fetchone()[0],'github:1609016')
+        self.github.calls.clear()
+        self.actions.reopen('i',request)  # Already open: no second write.
+        self.assertEqual(self.github.calls,[])
+    def test_reopen_only_undoes_a_close(self):
+        request=self.request('pause');self.actions.step(request)
+        with self.assertRaises(TransitionError):self.actions.reopen('i',request)
     def test_imported_pending_request_never_executes_without_actor_authority(self):
         with self.store.write() as db:
             db.execute("INSERT INTO issue_action_requests(id,issue_id,action,expected_revision,status,reason,created_at) VALUES('old','i','pause','old','pending','old',1)")
