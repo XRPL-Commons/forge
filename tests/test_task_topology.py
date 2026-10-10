@@ -298,8 +298,19 @@ class TaskTopologyTests(unittest.TestCase):
         self.assertNotIn('manifest_version',old)
         self.assertTrue(all(item['input_manifest']['manifest_version']==2 for item in self.query.assignments('batch',base_oid='base',policy_hash='policy')['items']))
         # Exact v1 child captures and integration assignments can still finish.
+        from forge.store.executions import Executions, Launch
         for index in range(2):
-            job,manifest=self.fixture.child(saved,str(index));self.fixture.accept(job,manifest,str(index))
+            key=str(index); fence='legacy-'+key
+            manifest=self.query.child_manifest(saved['plan_id'],key)
+            job=self.delivery.delegate(self.command(),saved['plan_id'],key,slot='legacy-slot-'+key,
+                execution_fence=fence,input_manifest=manifest,worktree_key='legacy-tree-'+key,
+                launch=Launch('forge/legacy-'+key,'builder[bot]','codex',1000,{},{}))
+            bundle=b'verified historical bundle'; digest=hashlib.sha256(bundle).hexdigest(); commit=('a' if index==0 else 'b')*40
+            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=fence,
+                capture={'logs':'','worktree_bundle':bundle})
+            self.fixture.clean(job,fence)
+            self.delivery.accept_part(self.command(),job['job_id'],execution_fence=fence,input_manifest=manifest,commit_oid=commit,
+                evidence={'verified':True,'commit_oid':commit,'base_oid':'base','input_manifest_hash':manifest_hash(manifest),'bundle_digest':digest})
         with self.store.read_snapshot() as db:
             unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
             original=Delivery._builder_manifest_v1_in(db,unit,'integration','base','policy')
