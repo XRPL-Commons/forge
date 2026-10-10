@@ -20,7 +20,8 @@ def export(revision, *, previous=None, run=run_bounded):
     require(executable, 'git_missing', 'Install Git locally before setting up Forge.')
     try:
         with tempfile.TemporaryDirectory(prefix='forge-source-') as directory:
-            git = [executable, '-C', directory]
+            # This disposable checkout must have no writers after a Git command returns.
+            git = [executable, '-c', 'maintenance.auto=false', '-C', directory]
             run(git + ['init', '--quiet'])
             run(git + ['remote', 'add', 'origin', REPOSITORY])
             # Local Git's credential helper may use the local GitHub login.

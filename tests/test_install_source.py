@@ -1,6 +1,7 @@
 """Real Git object transfer, with a local fixture standing in for GitHub."""
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -33,7 +34,8 @@ class SourceTransferTests(unittest.TestCase):
         self.git(self.original, 'config', 'fixture.operator-secret', 'synthetic-github-admin-only-local')
 
     def git(self, directory, *args):
-        return subprocess.run(['git', '-C', str(directory), *args], check=True, capture_output=True, text=True).stdout.strip()
+        # Fixture commits must finish their own maintenance before temporary cleanup.
+        return subprocess.run(['git', '-c', 'maintenance.autoDetach=false', '-C', str(directory), *args], check=True, capture_output=True, text=True).stdout.strip()
 
     def commit(self, message):
         self.git(self.original, '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture',
@@ -94,12 +96,13 @@ class SourceTransferTests(unittest.TestCase):
         subprocess.run(['git','-C',str(installed),'index-pack','--stdin'],input=base64.b64decode(old['data']),check=True,capture_output=True)
         (installed/'.git/shallow').write_text(self.revision+'\n')
         self.git(installed,'checkout','--detach',self.revision)
+        trace=self.directory/'source-transfer-trace.jsonl'
         pack=export(target_revision,previous=self.revision,run=self.local_run)
         commands=[]
         def run(argv,**kwargs):
             commands.append(argv)
             self.assertNotIn('fetch',argv)
-            return subprocess.run(argv,**kwargs)
+            return subprocess.run(argv,env={**os.environ,'GIT_TRACE2_EVENT':str(trace)},**kwargs)
         host=Host(self.directory/'runtime',installed,run=run)
         host.identity=lambda:self.git(installed,'rev-parse','HEAD')
         host.prepare_source_update(self.revision,target_revision,package_version(self.original),source_pack=pack)
@@ -109,6 +112,11 @@ class SourceTransferTests(unittest.TestCase):
         self.assertEqual((installed/'forge/__init__.py').read_text(),'# public source fixture\n')
         self.assertNotIn('synthetic-github-admin-only-local',(installed/'.git/config').read_text())
         self.assertFalse((installed/'old-secret').exists())
+        events=[json.loads(line) for line in trace.read_text().splitlines()]
+        started=[event['argv'] for event in events if event['event']=='start']
+        self.assertTrue(any('merge' in argv for argv in started))
+        children=[event['argv'] for event in events if event['event']=='child_start']
+        self.assertFalse(any('maintenance' in argv or 'gc' in argv for argv in children), children)
 
     def test_upgrade_export_rejects_unrelated_source_history(self):
         from forge_client.contracts import SetupError

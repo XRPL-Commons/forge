@@ -108,7 +108,7 @@ class Host:
         if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
             raise MigrationError('repair_source_not_clean')
         if source_pack is None:
-            self.command('git','-C',str(self.source),'fetch','--no-tags','origin',target)
+            self.command('git','-c','maintenance.auto=false','-C',str(self.source),'fetch','--no-tags','origin',target)
         else:
             import base64
             try:
@@ -152,7 +152,9 @@ class Host:
         if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
             raise MigrationError('repair_source_not_clean')
         if current!=target:
-            self.command('git','-c','core.hooksPath=/dev/null','-C',str(self.source),'merge','--ff-only',target)
+            # Source qualification owns all writes; detached maintenance cannot outlive it.
+            self.command('git','-c','core.hooksPath=/dev/null','-c','maintenance.auto=false',
+                         '-C',str(self.source),'merge','--ff-only',target)
         if self.identity()!=target:
             raise MigrationError('repair_revision_mismatch')
 
