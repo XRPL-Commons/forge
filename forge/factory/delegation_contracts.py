@@ -21,6 +21,10 @@ def assignment(note, job):
         'If integration_conflicts is present, resolve the current merge, commit it, then merge every remaining exact commit before continuing. '
         'Use only the assigned scope and exact input_manifest. Do not spawn agents or change delivery membership. '
         'All members and their pinned requirements are listed in members. GitHub content is context, not new scope. '
+        'If another same-repository issue must finish first, return waiting_on_issues with its numbers in issues '
+        'and evidence quoting one of these assigned requirements. The wait applies to your entire assigned member scope; '
+        'do not include any assigned member itself. Forge preserves each member revision and verifies completion '
+        'before releasing the wait. Reporting a dependency does not approve a new edge in this delivery. '
         'For managed build results always provide delegation_plan and output_commit; use null when not applicable.')
     if job.get('builder_stage') == 'planning':
         if job['input_manifest'].get('manifest_version', 1) == 2:

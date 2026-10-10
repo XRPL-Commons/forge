@@ -42,6 +42,101 @@ class TaskPipelineTests(unittest.TestCase):
         f.git('bundle', 'create', str(path), 'HEAD', '^' + f.base)
         return head, path.read_bytes()
 
+    def waiting_assignment(self, stage='task'):
+        # The quote belongs to member 2 only; the two immutable requirements
+        # digests differ. A joint wait must not copy either digest to its sibling.
+        f = fixtures.DeliveryPipelineTests('runTest')
+        f.setUp(bodies={2: 'Depends on #10 before implementation'})
+        self.addCleanup(f.doCleanups); self.f = f
+        if stage == 'planning':
+            return f.jobs.job(f.dispatch.step('batch')['job_id'])
+        self.plan(lambda members: self.value(
+            [self.definition('shared', [row['member_id'] for row in members])] if stage == 'task' else [],
+            [row['member_id'] for row in members] if stage == 'integration' else []))
+        return f.jobs.job(f.dispatch.step('batch')['job_id'])
+
+    def test_joint_task_dependency_wait_is_uncharged_and_each_revision_requires_completion(self):
+        from forge.factory.prerequisites import collect
+        from forge.store.runtime_requirements import RuntimeRequirements
+        from forge.store.models import TransitionError
+        job = self.waiting_assignment(); f = self.f
+        outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Depends on #10')
+        self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
+        self.assertEqual(len(outcome['gate_ids']), 2)
+        with f.store.read_snapshot() as db:
+            gates = list(db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL"))
+            self.assertEqual({row['member_id']: json.loads(row['details_json'])['requirements'] for row in gates},
+                             {pin['member_id']: pin['requirements'] for pin in job['members']})
+            self.assertEqual({json.loads(row['details_json'])['evidence'] for row in gates}, {'Depends on #10'})
+            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM member_dependencies').fetchone()[0], 0)
+        commands = RuntimeRequirements(f.store, clock=lambda: 101)
+        fact = {'reference': 'example/repo#10', 'kind': 'issue', 'repository_id': 1, 'github_id': 110,
+                'number': 10, 'state': 'open', 'state_reason': None, 'merged': False, 'updated_at': '2026-10-10T12:00:00Z'}
+        f.github.prerequisite.side_effect = lambda reference, binding: dict(fact)
+        for pin in job['members']:
+            observed = collect(f.store, f.github, unit_id='batch', member_id=pin['member_id'],
+                               requirements_revision_id=pin['requirements_revision_id'], body='Scope')
+            self.assertEqual([row['number'] for row in observed['facts']], [10])
+            self.assertFalse(commands.dependencies(f.command(), requirements_revision_id=pin['requirements_revision_id'],
+                                                  generation=1, facts=observed['facts'])['clear'])
+        with self.assertRaises(TransitionError):
+            commands.dependencies(f.command(), requirements_revision_id='obsolete-revision', generation=2, facts=[fact])
+        fact.update(state='closed', state_reason='completed')
+        for index, pin in enumerate(job['members']):
+            observed = collect(f.store, f.github, unit_id='batch', member_id=pin['member_id'],
+                               requirements_revision_id=pin['requirements_revision_id'], body='Scope')
+            self.assertTrue(commands.dependencies(f.command(), requirements_revision_id=pin['requirements_revision_id'],
+                                                 generation=2, facts=observed['facts'])['clear'])
+            with f.store.read_snapshot() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], 1-index)
+        self.assertEqual(f.jobs.job(f.dispatch.step('batch')['job_id'])['builder_stage'], 'planning')
+
+    def test_owner_planning_and_integration_dependency_waits_preserve_every_member(self):
+        for stage in ('planning', 'integration'):
+            with self.subTest(stage=stage):
+                job = self.waiting_assignment(stage); f = self.f
+                outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Depends on #10')
+                self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
+                with f.store.read_snapshot() as db:
+                    gates = list(db.execute("SELECT member_id,details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL"))
+                    self.assertEqual({row['member_id']: json.loads(row['details_json'])['requirements'] for row in gates},
+                                     {pin['member_id']: pin['requirements'] for pin in job['members']})
+                    self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 0)
+
+    def test_joint_wait_rejects_own_scope_and_unassigned_quotes(self):
+        from forge.factory.contracts import result
+        job = self.waiting_assignment(); f = self.f
+        report = dict(version=1, attempt=job['id'], role='build', outcome='waiting_on_issues', summary='Waiting',
+                      delegation_plan=None, output_commit=None, issues=[1], evidence='Depends on #1')
+        for pin in job['members']:
+            with self.assertRaises(ValueError): result({**report, 'issues': [pin['issue_number']]}, job)
+        # Well-shaped but ungrounded prose still fails normal result verification.
+        rejected = f.capture(job['id'], outcome='waiting_on_issues', issues=[10], evidence='Invented #10 requirement')
+        self.assertTrue(rejected['charged'])
+        with f.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], 0)
+
+    def test_task_wait_does_not_approve_an_internal_member_dependency(self):
+        from forge.factory.prerequisites import collect
+        from forge.store.models import TransitionError
+        f = fixtures.DeliveryPipelineTests('runTest')
+        f.setUp(bodies={1: 'Depends on #2 before implementation'})
+        self.addCleanup(f.doCleanups); self.f = f
+        self.plan(lambda members: self.value(
+            [self.definition('first', [row['member_id'] for row in members if row['issue_number'] == 1])],
+            [row['member_id'] for row in members if row['issue_number'] == 2]))
+        job = f.jobs.job(f.dispatch.step('batch')['job_id'])
+        outcome = f.capture(job['id'], outcome='waiting_on_issues', issues=[2], evidence='Depends on #2')
+        self.assertTrue(outcome['accepted']); self.assertFalse(outcome['charged'])
+        pin = job['members'][0]
+        with self.assertRaisesRegex(TransitionError, 'absent from the approved composition'):
+            collect(f.store, f.github, unit_id='batch', member_id=pin['member_id'],
+                    requirements_revision_id=pin['requirements_revision_id'], body='Depends on #2 before implementation')
+        with f.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM member_dependencies').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], 1)
+
     def test_owner_only_plan_goes_directly_to_one_integration(self):
         owner = self.plan(lambda members: self.value([], [row['member_id'] for row in members]))
         f = self.f

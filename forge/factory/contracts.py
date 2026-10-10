@@ -324,8 +324,10 @@ def result(value, job):
         raise ValueError('Only needs_human_verification can request verification')
     if value['outcome'] == 'waiting_on_issues':
         numbers, evidence = value.get('issues'), value.get('evidence')
+        assigned_numbers = {member['issue_number'] for member in job.get('members', [])}
+        assigned_numbers.add(job.get('issue_number'))
         if (role != 'build' or not isinstance(numbers, list) or not 1 <= len(numbers) <= 20
-                or any(type(n) is not int or n <= 0 or n == job.get('issue_number') for n in numbers)
+                or any(type(n) is not int or n <= 0 or n in assigned_numbers for n in numbers)
                 or len(set(numbers)) != len(numbers)
                 or not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 2000):
             raise ValueError('A dependency wait needs same-repository issue numbers and a requirements quote')

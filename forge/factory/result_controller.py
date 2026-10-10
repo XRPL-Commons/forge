@@ -136,7 +136,6 @@ class ResultController:
                     'unit_state': job['unit_state']}, job['repo']):
                 return {'job_id': job_id, 'pending': 'issue_reconciliation'}
             remote_members.append(remote)
-        issue = remote_members[0] if len(remote_members) == 1 else None
         requirements = job['requirements']
         current_policy = self.policy(job)
         if digest(current_policy) != job['input_manifest']['policy_hash']:
@@ -186,9 +185,12 @@ class ResultController:
             if report and report['outcome'] == 'needs_decision':
                 return {'job_id': job_id, **self._defer(job, evidence, 'decision_required',
                     {**report['decision'], 'job_id': job_id})}
-            if report and report['outcome'] == 'waiting_on_issues' and issue is not None:
+            if report and report['outcome'] == 'waiting_on_issues':
                 quote = report['evidence'].strip()
-                if quote not in (issue.get('body') or '') or not all(
+                # A task's requirements are its exact combined member context.
+                # The quote must occur in that context, not in every member;
+                # the resulting wait applies to the entire assigned scope.
+                if not any(quote in (remote.get('body') or '') for remote in remote_members) or not all(
                         re.search(rf'(?<![\w/])#{number}\b', quote) for number in report['issues']):
                     return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'ungrounded_dependencies'})}
                 blocked = []
@@ -198,7 +200,7 @@ class ResultController:
                         blocked.append(number)
                 return {'job_id': job_id, **self._defer(job, evidence, 'dependency',
                     {'issues': sorted(report['issues']), 'blocked': blocked, 'evidence': quote,
-                     'requirements': requirements, 'job_id': job_id})}
+                     **({'requirements': requirements} if len(members) == 1 else {}), 'job_id': job_id})}
             publication = (None if read_only_build(job) else
                            self.github.publication(job, requirements, job['input_manifest']['policy_hash']))
             if publication:

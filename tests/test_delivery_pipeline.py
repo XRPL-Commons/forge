@@ -21,7 +21,7 @@ from forge.store.transitions import Lifecycle
 
 class DeliveryPipelineTests(unittest.TestCase):
     dependencies=()
-    def setUp(self, existing_author=None):
+    def setUp(self, existing_author=None, bodies=None):
         self.directory = tempfile.TemporaryDirectory(); self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.env = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
@@ -41,7 +41,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         for number in (1, 2):
             row = self.life.admit_issue(request_id='admit-' + str(number), actor_id='operator', unit_id='source-' + str(number),
                 issue_id='issue-' + str(number), repository_id=1, repository_name='example/repo', issue_number=number,
-                title='Issue', body='Scope', requirements='req-' + str(number), observed_at=90)
+                title='Issue', body=(bodies or {}).get(number, 'Scope'), requirements='req-' + str(number), observed_at=90)
             version = 1
             if existing_author and number == 1:
                 from forge.store.models import Candidate
@@ -64,7 +64,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.config = validate({'enabled': True, 'repository_merge_policies': {'1': 'auto'}, 'image': 'sha256:' + 'a' * 64, 'slots': {'build': 2, 'review': 1, 'audit': 1, 'recovery': 1}})
         self.runner = Mock(); self.runner.capacity.return_value = {'allowed': True}
         self.github = Mock()
-        self.github.issue.side_effect = lambda item: ({'state': 'open', 'body': 'Scope', 'labels': []}, 'req-' + str(item['number']))
+        self.github.issue.side_effect = lambda item: ({'state': 'open', 'body': (bodies or {}).get(item['number'], 'Scope'), 'labels': []}, 'req-' + str(item['number']))
         self.github.publication.return_value = None
         self.github.pulls.return_value = []
         self.github.publisher.side_effect = lambda role: role + '[bot]'
