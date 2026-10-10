@@ -1038,7 +1038,7 @@ class Lifecycle:
                             if json.loads(gate['details_json']).get('source') == 'controller_observation':
                                 authority_changed = True
                                 self._resolve(db, command, gate['id'], {'verified': True, 'observed_at': self.clock()})
-            self._event(db, command, "issue_observed", {**payload, "planning_changed": changed}, issue_id=issue_id)
+            self._event(db, command, "issue_observed", {**payload, "planning_changed": authority_changed}, issue_id=issue_id)
             return {"issue_id": issue_id, "stale": False, "revision_id": revision_id, "unchanged": not authority_changed}
         return self._apply(command, "observe_issue", payload, change, version_changed=lambda: authority_changed)
 

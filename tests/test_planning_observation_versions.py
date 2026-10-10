@@ -1,4 +1,5 @@
 """Observation freshness cannot revoke unchanged operator proposal inputs."""
+import json
 import tempfile
 import unittest
 from copy import deepcopy
@@ -10,6 +11,7 @@ from forge.store.db import Store
 from forge.store.delivery import Delivery
 from forge.store.models import Command, VersionConflict
 from forge.store.repository_planning import RepositoryPlanning, pin_in
+from forge.store.runtime_requirements import RuntimeRequirements
 from forge.store.transitions import Lifecycle
 
 
@@ -43,6 +45,18 @@ class PlanningObservationVersionsTests(unittest.TestCase):
         return self.life.observe_issue(Command(request, 'supervisor', f'unit-{number}', self.pin(number)['unit_version']),
                                        f'1:{number}', **facts)
 
+    def dependencies(self, *, number=1, generation=1, facts=None, request=None):
+        return RuntimeRequirements(self.store, clock=lambda: self.now).dependencies(
+            Command(request or f'deps-{number}-{generation}', 'supervisor', f'unit-{number}', self.pin(number)['unit_version']),
+            requirements_revision_id=self.pin(number)['requirements_revision_id'], generation=generation,
+            facts=facts or [])
+
+    @staticmethod
+    def prerequisite(number=2, **changes):
+        return dict(reference=f'other/project#{number}', repository_id=2, github_id=100 + number,
+                    number=number, kind='issue', state='closed', state_reason='completed', merged=False,
+                    updated_at='2026-10-10T00:00:00Z') | changes
+
     def proposal(self, *, group=False):
         self.plans.begin(1, proposal_id='proposal', request_id='begin', actor_id='planner', base_branch='main')
         members = ['1:1', '1:2'] if group else ['1:1']
@@ -72,16 +86,74 @@ class PlanningObservationVersionsTests(unittest.TestCase):
         self.assertEqual(self.accept(row)['status'], 'accepted')
 
     def test_group_approval_keeps_exact_pins_across_background_observations(self):
-        self.admit(); self.admit(2); row = self.proposal(group=True)
+        self.admit(); self.admit(2)
+        for n in (1, 2): self.dependencies(number=n)
+        row = self.proposal(group=True)
         before = [self.pin(n) for n in (1, 2)]
         for n in (1, 2):
             self.observe(number=n, generation=2, request=f'background-{n}')
+            self.dependencies(number=n, generation=2)
         self.assertEqual([self.pin(n) for n in (1, 2)], before)
         result = self.accept(row)
         self.assertEqual(len(result['units']), 1)
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM unit_issues WHERE unit_id=? AND left_at IS NULL',
                                         (result['units'][0],)).fetchone()[0], 2)
+
+    def test_fresh_empty_dependency_checks_keep_proposal_and_record_proof_time(self):
+        self.admit(); self.dependencies(); row = self.proposal(); before = self.pin()
+        self.now += 1; self.dependencies(generation=2)
+        self.assertEqual(self.pin(), before)
+        self.now += 1
+        self.assertTrue(self.dependencies(generation=2, request='same-generation')['stale'])
+        self.assertTrue(self.dependencies(generation=1, request='old-generation')['stale'])
+        self.assertEqual(self.pin(), before)
+        with self.store.read_snapshot() as db:
+            self.assertEqual([tuple(row) for row in db.execute('SELECT generation,observed_at FROM dependency_checks ORDER BY generation')],
+                             [(1, 100), (2, 101)])
+        self.assertEqual(self.accept(row)['status'], 'accepted')
+
+    def test_prerequisite_timestamp_and_order_changes_do_not_revoke_proposal(self):
+        self.admit(); facts = [self.prerequisite(), self.prerequisite(3)]
+        self.dependencies(facts=facts); row = self.proposal(); before = self.pin()
+        self.now += 1
+        refreshed = [{**fact, 'updated_at': '2026-10-10T00:01:00Z'} for fact in reversed(facts)]
+        self.dependencies(generation=2, facts=refreshed)
+        self.assertEqual(self.pin(), before)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(json.loads(db.execute('SELECT facts_json FROM dependency_checks ORDER BY generation DESC LIMIT 1').fetchone()[0]), refreshed)
+        self.assertEqual(self.accept(row)['status'], 'accepted')
+
+    def test_prerequisite_completion_outage_and_identity_changes_still_revoke(self):
+        self.admit(); fact = self.prerequisite(); self.dependencies(facts=[fact])
+        row = self.proposal(); before = self.pin()
+        reopened = {**fact, 'state': 'open', 'state_reason': None}
+        self.dependencies(generation=2, facts=[reopened])
+        self.assertEqual(self.pin()['unit_version'], before['unit_version'] + 1)
+        with self.assertRaises(VersionConflict): self.accept(row)
+        blocked = self.pin(); self.dependencies(generation=3, facts=[reopened])
+        self.assertEqual(self.pin(), blocked)
+        self.dependencies(generation=4, facts=[{'reference': fact['reference'], 'error': 'prerequisite_inaccessible'}])
+        self.assertEqual(self.pin()['unit_version'], blocked['unit_version'] + 1)
+        self.dependencies(generation=5, facts=[fact]); restored = self.pin()
+        self.dependencies(generation=6, facts=[{**fact, 'repository_id': 3}])
+        self.assertEqual(self.pin()['unit_version'], restored['unit_version'] + 1)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT repository_id FROM prerequisite_identities').fetchone()[0], 2)
+            details = json.loads(db.execute("SELECT details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0])
+            self.assertEqual(details['blocked'][0]['reason'], 'prerequisite_identity_changed')
+
+    def test_identical_dependency_proof_still_resolves_new_observation_gate(self):
+        self.admit(); fact = self.prerequisite(); self.dependencies(facts=[fact])
+        self.life.open_gate(Command('expired-proof', 'supervisor', 'unit-1', self.pin()['unit_version']),
+            'dependency', member_id=self.pin()['member_id'],
+            details={'source': 'runtime_dependencies', 'reason': 'prerequisites_need_observation'})
+        row = self.proposal(); before = self.pin()
+        self.dependencies(generation=2, facts=[fact])
+        self.assertEqual(self.pin()['unit_version'], before['unit_version'] + 1)
+        with self.assertRaises(VersionConflict): self.accept(row)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()[0], 0)
 
     def test_actual_issue_changes_still_invalidate_pins(self):
         self.admit(); row = self.proposal(); before = self.pin()
@@ -96,6 +168,9 @@ class PlanningObservationVersionsTests(unittest.TestCase):
         blocked = self.pin()
         self.assertEqual(blocked['issue_version'], before['issue_version'])
         self.assertEqual(blocked['unit_version'], before['unit_version'] + 1)
+        with self.store.read_snapshot() as db:
+            event = db.execute("SELECT payload_json FROM events WHERE kind='issue_observed' ORDER BY sequence DESC LIMIT 1").fetchone()
+            self.assertTrue(json.loads(event[0])['planning_changed'])
         with self.assertRaises(VersionConflict): self.accept(row)
         self.observe(request='clear-gates', admission=True, ownership_conflict=False)
         self.assertEqual(self.pin()['unit_version'], blocked['unit_version'] + 1)

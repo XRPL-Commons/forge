@@ -42,6 +42,12 @@ def learn_memory_in(db,unit,job,now):
             db.execute('UPDATE issue_environment_observations SET memory_retry_json=NULL WHERE issue_id=?',(member['issue_id'],))
 
 
+def _dependency_facts(facts):
+    """Prerequisite authority excludes transport ordering and remote timestamps."""
+    return {fact['reference']: {key: value for key, value in fact.items() if key != 'updated_at'}
+            for fact in facts}
+
+
 class RuntimeRequirements(Executions):
     @staticmethod
     def _revision_member(db, unit, revision_id):
@@ -80,13 +86,15 @@ class RuntimeRequirements(Executions):
         if len(set(refs))!=len(refs):
             raise TransitionError('Dependency observations must be unique')
         payload=dict(requirements_revision_id=requirements_revision_id,generation=generation,facts=facts)
+        authority_changed = False
         def change(db,unit):
+            nonlocal authority_changed
             self._live(unit)
             member=self._revision_member(db,unit,requirements_revision_id)
             if member['requirements_revision_id']!=requirements_revision_id:
                 raise TransitionError('dependency evidence quotes an obsolete requirements revision')
-            previous=db.execute('SELECT generation FROM dependency_checks WHERE member_id=? ORDER BY generation DESC LIMIT 1',(member['id'],)).fetchone()
-            if previous and generation<=previous[0]:
+            previous=db.execute('SELECT * FROM dependency_checks WHERE member_id=? ORDER BY generation DESC LIMIT 1',(member['id'],)).fetchone()
+            if previous and generation<=previous['generation']:
                 return {'stale':True}
             from .repository_requirements import orders_in
             required=set(orders_in(db,member['issue_id'],requirements_revision_id))
@@ -119,7 +127,11 @@ class RuntimeRequirements(Executions):
                         db.execute('INSERT INTO prerequisite_identities VALUES(?,?,?,?,?,?)',(fact['reference'],*identity,self.clock()))
                 if reason:
                     blocked.append({'reference':fact['reference'],'reason':reason})
+            blocked.sort(key=lambda fact: fact['reference'])
             clear=not blocked
+            authority_changed = (previous is None or previous['requirements_revision_id'] != requirements_revision_id
+                or bool(previous['clear']) != clear
+                or _dependency_facts(json.loads(previous['facts_json'])) != _dependency_facts(facts))
             db.execute('INSERT INTO dependency_checks VALUES(?,?,?,?,?,?,?,?)',
                        (_id(command.request_id,'dependency-check'),unit['id'],member['id'],requirements_revision_id,generation,int(clear),_json(facts),self.clock()))
             gates=db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND code='dependency' AND member_id IS ? AND resolved_at IS NULL",
@@ -129,9 +141,11 @@ class RuntimeRequirements(Executions):
             for gate in gates:
                 details=json.loads(gate['details_json'])
                 if details.get('requirements') is not None and details['requirements']!=current_digest:
+                    authority_changed = True
                     self._resolve(db,command,gate['id'],{'superseded_by_requirements':requirements_revision_id})
             if clear:
                 for gate in owned:
+                    authority_changed = True
                     self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation})
                 # Worker-declared waits bind to the same requirements digest and
                 # are cleared only if every named prerequisite was observed closed.
@@ -139,8 +153,10 @@ class RuntimeRequirements(Executions):
                 for gate in gates:
                     details=json.loads(gate['details_json'])
                     if details.get('requirements')==digest and {own.rsplit('#',1)[0]+'#'+str(number) for number in details.get('issues',[])}<=set(refs):
+                        authority_changed = True
                         self._resolve(db,command,gate['id'],{'verified':True,'requirements_revision_id':requirements_revision_id,'generation':generation})
             elif not owned or any(json.loads(g['details_json']).get('blocked')!=blocked for g in owned):
+                authority_changed = True
                 for gate in owned:
                     self._resolve(db,command,gate['id'],{'superseded_by_observation':generation})
                 self.fence_member_in(db,command,member['id'],reason='prerequisite_changed')
@@ -148,7 +164,7 @@ class RuntimeRequirements(Executions):
                     'blocked':blocked},member['id'])
             self._event(db,command,'lifecycle_changed',{'dependency_generation':generation,'clear':clear})
             return {'clear':clear,'generation':generation}
-        return self._apply(command,'observe_dependencies',payload,change)
+        return self._apply(command,'observe_dependencies',payload,change,version_changed=lambda: authority_changed)
 
     def select_environment(self,command,*,requirements_revision_id,choice,labels,config_hash):
         if (not isinstance(choice,dict) or choice.get('tier') not in {'standard','full'} or type(choice.get('automatic')) is not bool
