@@ -245,9 +245,9 @@ def claims_issue(body, repo, number):
 
 def publication(job):
     # Repositories may require signed commits. Commits the publisher App creates
-    # through the API are signed by GitHub; a plain git push is not. Integration
-    # keeps git push because it must publish the members' exact merge commits.
-    if job.get('builder_stage') == 'integration':
+    # through the API are signed by GitHub; a plain git push is not. Only builders
+    # publish; integration keeps git push for the members' exact merge commits.
+    if job.get('role') != 'build' or job.get('builder_stage') == 'integration':
         return ''
     return ('Publish commits through the GitHub API, never with git push: create the branch ref with '
             'gh api repos/OWNER/REPO/git/refs if it does not exist, then add each commit with the GraphQL '

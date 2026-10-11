@@ -392,7 +392,9 @@ class WorkerContractTests(unittest.TestCase):
         self.assertIn('never with git push', build)
         # Integration publishes the members' exact merge commits, which the API cannot create.
         from forge.factory.contracts import publication
-        self.assertEqual(publication({'builder_stage': 'integration'}), '')
+        self.assertEqual(publication({'role': 'build', 'builder_stage': 'integration'}), '')
+        for role in ('review', 'audit', 'recovery'):
+            self.assertEqual(publication({'role': role}), '')
 
     def test_assignment_instructions_teach_the_tone_with_examples(self):
         from forge.factory.contracts import assignment_note
