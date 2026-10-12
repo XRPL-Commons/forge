@@ -34,6 +34,14 @@ class PreparedDispatch:
     member_choices: dict | None = None
 
 
+@dataclass(frozen=True)
+class StaleBase:
+    """The candidate was built on a base the target branch has moved past."""
+    candidate_id: str
+    candidate_base_oid: str
+    base_oid: str
+
+
 def memory_config(config, role, profile, environments):
     """One allocation authority for a physical execution's exact issue scope."""
     from .capacity import memory_bytes
@@ -99,7 +107,7 @@ class GitHubPrepare:
         if not isinstance(base, str) or not SHA.fullmatch(base):
             raise GitHubUnavailable('Target branch head could not be verified')
         if candidate and candidate['base_oid'] != base:
-            return None
+            return StaleBase(candidate['id'], candidate['base_oid'], base)
         from .environments import choose, worker_config
         environment = snapshot.get('environment') or {}
         item.update(environment_choice=environment.get('choice'), environment_override=environment.get('override'),
@@ -167,7 +175,7 @@ class GitHubPrepare:
         if not isinstance(base, str) or not SHA.fullmatch(base):
             raise GitHubUnavailable('Target branch head could not be verified')
         if candidate and candidate['base_oid'] != base:
-            return None
+            return StaleBase(candidate['id'], candidate['base_oid'], base)
         config = deepcopy(self.config)
         context = {'review_policy': policy(config, item['repo_id'], repository_name=item['repo']), 'verification_checks': config['repository_verification'].get(item['repo'], []),
                    'ci_evidence': self.github.ci_evidence({**item, 'candidate': dict(head=candidate['head_oid'], base=candidate['base_oid']) if candidate else None})}
@@ -309,6 +317,16 @@ class DispatchController:
         if slot is None:
             return {**result, 'reason': 'role_capacity'}
         prepared = self.prepare(deepcopy(snapshot), role)
+        if isinstance(prepared, StaleBase):
+            # Review and audit only judge a candidate on the current base. Send
+            # it back for an uncharged rework instead of waiting forever.
+            if role not in ('review', 'audit') or not snapshot['candidate'] or snapshot['candidate']['id'] != prepared.candidate_id:
+                return {**result, 'reason': 'observation_changed'}
+            self.commands.invalidate_candidate(
+                Command(str(uuid.uuid4()), 'supervisor:dispatch', unit_id, snapshot['unit']['version']),
+                prepared.candidate_id, reason='base_changed',
+                evidence={'verified': True, 'candidate_base_oid': prepared.candidate_base_oid, 'base_oid': prepared.base_oid})
+            return {**result, 'reason': 'base_changed'}
         if prepared is None:
             reason = self.snapshot(unit_id)['reason'] if self.readiness else None
             return {**result, 'reason': reason or 'observation_changed'}

@@ -249,9 +249,6 @@ class DispatchTests(unittest.TestCase):
         self.now += 1
         self.life.verify_cleanup(self.command(), job['id'], execution_fence=job['execution_fence'],
                                  evidence={'process_stopped': True, 'resources_released': True})
-        self.github.head = 'c' * 40
-        self.assertEqual(self.controller.step('u')['reason'], 'observation_changed')
-        self.github.head = BASE
         reviewed = self.controller.step('u')
         review = self.job(reviewed)
         self.assertEqual(review['role'], 'review')
@@ -260,6 +257,30 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(review['input_manifest']['candidate_id'], review['candidate_id'])
         self.assertEqual(review['ci_evidence']['verified'], {'head': HEAD, 'base': BASE})
         self.assertEqual(review['review_policy'], policy(self.config,1,repository_name='owner/repo'))
+
+    def test_review_on_a_moved_base_sends_the_candidate_back_for_uncharged_rework(self):
+        build = self.controller.step('u')
+        job = self.job(build)
+        candidate = Candidate(10, job['branch'], HEAD, BASE, job['input_manifest']['policy_hash'],
+                              manifest_hash('github-requirements'), manifest_hash(job['input_manifest']))
+        self.life.finish_job(Command('finish', 'test', 'u', job['unit_version']), job['id'],
+            execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
+            evidence={'head_oid': HEAD, 'base_oid': BASE, 'pull_number': 10}, candidate=candidate)
+        self.now += 1
+        self.life.verify_cleanup(self.command(), job['id'], execution_fence=job['execution_fence'],
+                                 evidence={'process_stopped': True, 'resources_released': True})
+        # The target branch moved while the candidate waited for review.
+        self.github.head = 'c' * 40
+        self.assertEqual(self.controller.step('u')['reason'], 'base_changed')
+        with self.store.read_snapshot() as db:
+            unit = db.execute("SELECT state,current_candidate_id FROM units WHERE id='u'").fetchone()
+            charged = db.execute("SELECT COUNT(*) FROM budget_entries b JOIN attempts a ON a.id=b.attempt_id WHERE a.unit_id='u'").fetchone()[0]
+        self.assertEqual(unit[0], 'building')
+        self.assertIsNone(unit[1])
+        self.assertEqual(charged, 0)
+        rebuilt = self.job(self.controller.step('u'))
+        self.assertEqual(rebuilt['role'], 'build')
+        self.assertEqual(rebuilt['input_manifest']['base_oid'], 'c' * 40)
 
     def test_existing_draft_resumes_branch_and_pr(self):
         self.github.draft = {'branch': 'forge/issue-1-existing', 'pr': 9}
