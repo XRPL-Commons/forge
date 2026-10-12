@@ -8,6 +8,10 @@ import runpy
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+# The worker image ships this file alone (deploy/runner/Dockerfile), so it cannot
+# import the forge package. Kept equal to delegation_contracts.PLANNING_OUTCOMES by tests.
+PLANNING_OUTCOMES = ('delegate', 'needs_decision', 'waiting_on_issues', 'blocked_environment', 'unable', 'wait', 'reject')
+
 
 class PreparationError(RuntimeError):
     pass
@@ -187,9 +191,9 @@ def schema(note):
             plan_schema(note.get('input_manifest', {}).get('manifest_version', 1))]}
         props['output_commit'] = {'type': ['string', 'null']}
         if note.get('builder_stage') == 'planning':
-            from .delegation_contracts import PLANNING_OUTCOMES
             props['outcome']['enum'] = list(PLANNING_OUTCOMES)
     return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
+
 
 
 def checkout_recovery(note, directory, git):
