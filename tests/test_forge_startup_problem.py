@@ -189,7 +189,7 @@ class StartupResultTests(unittest.TestCase):
         self.assertTrue(self.controller.step(job)['charged']); self.assertEqual(self.charges(),1)
 
 class GroupedStartupTests(unittest.TestCase):
-    def test_concurrent_task_faults_share_gate_but_preserve_both_immutable_results(self):
+    def faults(self, *, full_second=False, only_first=False):
         from tests import test_delivery_pipeline as delivery
         fixture=delivery.DeliveryPipelineTests('runTest')
         fixture.setUp(); self.addCleanup(fixture.doCleanups)
@@ -199,18 +199,31 @@ class GroupedStartupTests(unittest.TestCase):
         tasks=[dict(key='task-'+str(index),executor='child',member_ids=[pin['member_id']],
                     scope='Implement member',depends_on=[],internalizes=[]) for index,pin in enumerate(members)]
         self.assertTrue(f.capture(parent,outcome='delegate',delegation_plan=f.plan_value(tasks))['accepted'])
-        jobs=[f.dispatch.step('batch')['job_id'],f.dispatch.step('batch')['job_id']]
+        jobs=[f.dispatch.step('batch')['job_id']]
+        if full_second:
+            from forge.factory.dispatch_controller import PreparedDispatch
+            f.dispatch.prepare=lambda snapshot,role: PreparedDispatch(f.base,role+'[bot]',
+                {**f.config,'image':'sha256:'+'c'*64,'environment_tier':'full'})
+        jobs.append(f.dispatch.step('batch')['job_id'])
         for identifier in jobs:
             job=f.jobs.job(identifier)
             f.executions.progress(f.command(),identifier,execution_fence=job['execution_fence'],phase='running',container_id=identifier)
-        for identifier in jobs:
+        failed=jobs[:1] if only_first else jobs
+        if only_first:
+            commit,bundle=f.child_bundle(2)
+            self.assertTrue(f.capture(jobs[1],output_commit=commit,bundle=bundle)['accepted'])
+        for identifier in failed:
             job=f.jobs.job(identifier)
             capture={'forge_startup':receipt(identifier),'execution':{'id':identifier,'image_id':IMAGE,
                 'startup_protocol':'1','exit_code':78,'running':False,'oom_killed':False}}
             f.executions.collect(f.command(),identifier,execution_fence=job['execution_fence'],capture=capture)
             f.life.verify_cleanup(f.command(),identifier,execution_fence=job['execution_fence'],
                                   evidence={'process_stopped':True,'resources_released':True})
-        outcomes=[f.results.step(identifier) for identifier in jobs]
+        outcomes=[f.results.step(identifier) for identifier in failed]
+        return f,jobs,outcomes
+
+    def test_concurrent_task_faults_share_gate_but_preserve_both_immutable_results(self):
+        f,jobs,outcomes=self.faults()
         self.assertTrue(all(row['accepted'] and not row['charged'] for row in outcomes))
         self.assertEqual(outcomes[0]['gate_id'],outcomes[1]['gate_id'])
         for identifier in jobs:
@@ -222,6 +235,155 @@ class GroupedStartupTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM attempt_failures').fetchone()[0],0)
         for identifier in jobs:
             self.assertEqual(f.results.queries.capture(identifier)['forge_startup'],receipt(identifier))
+
+    def qualified(self,f, *, full=None):
+        from forge.store.configuration import Configuration
+        config=Configuration(f.store,clock=lambda:110)
+        for domain,value in [('runtime.json',{'image':'sha256:'+'b'*64,
+                            'environment_tiers':{'full':{'image':full}} if full else {}}),
+                            ('host.json',{'image':'sha256:'+'b'*64,'full_image':full,'updated_at':90})]:
+            row=config.get(domain)
+            config.replace(domain,value,expected_revision=row['revision'] if row else 0)
+
+    def test_both_standard_and_full_faults_need_their_qualified_replacements_then_dispatch_resumes(self):
+        from forge.factory.wait_controller import WaitController
+        f,jobs,outcomes=self.faults(full_second=True); gate=outcomes[0]['gate_id']
+        waits=WaitController(f.store,clock=lambda:110)
+        self.qualified(f,full='sha256:'+'c'*64)
+        self.assertIn('pending',waits.step(gate))
+        self.qualified(f,full='sha256:'+'d'*64)
+        self.assertTrue(waits.step(gate)['resolved'])
+        f.config={**f.config,'image':'sha256:'+'b'*64}
+        f.dispatch=f.dispatcher()
+        self.assertTrue(f.dispatch.step('batch')['reserved'])
+
+    def test_dropped_standard_fault_does_not_block_original_units_full_image_repair(self):
+        from forge.factory.wait_controller import WaitController
+        from forge.store.configuration import Configuration
+        f,jobs,outcomes=self.faults(full_second=True)
+        pin=f.jobs.job(jobs[0])['members'][0]['member_id']
+        successor=f.delivery.drop_member(f.command(),pin,membership_generation=1,
+            dependent_decisions={},evidence={'approved':True})['released']
+        config=Configuration(f.store,clock=lambda:110)
+        config.replace('runtime.json',{'image':IMAGE,'environment_tiers':{'full':{'image':'sha256:'+'d'*64}}},expected_revision=0)
+        config.replace('host.json',{'image':IMAGE,'full_image':'sha256:'+'d'*64,'updated_at':90},expected_revision=0)
+        waits=WaitController(f.store,clock=lambda:110)
+        self.assertTrue(waits.step(outcomes[0]['gate_id'])['resolved'])
+        with f.store.read_snapshot() as db:
+            inherited=db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem'",(successor['unit_id'],)).fetchone()[0]
+        self.assertIn('pending',waits.step(inherited))
+        self.qualified(f,full='sha256:'+'d'*64)
+        self.assertTrue(waits.step(inherited)['resolved'])
+
+    def test_drop_of_only_affected_member_moves_obligation_off_original_unit(self):
+        from forge.factory.wait_controller import WaitController
+        f,jobs,outcomes=self.faults(only_first=True)
+        pin=f.jobs.job(jobs[0])['members'][0]['member_id']
+        successor=f.delivery.drop_member(f.command(),pin,membership_generation=1,
+            dependent_decisions={},evidence={'approved':True})['released']
+        with f.store.read_snapshot() as db:
+            source=db.execute('SELECT resolved_at,resolution FROM unit_gates WHERE id=?',(outcomes[0]['gate_id'],)).fetchone()
+            self.assertIsNotNone(source['resolved_at']); self.assertEqual(source['resolution'],'superseded')
+            inherited=db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL",(successor['unit_id'],)).fetchone()[0]
+            self.assertEqual([r[0] for r in db.execute('SELECT job_id FROM forge_problem_jobs WHERE gate_id=?',(inherited,))],[jobs[0]])
+        waits=WaitController(f.store,clock=lambda:110)
+        self.assertIn('pending',waits.step(inherited))
+        self.qualified(f)
+        self.assertTrue(waits.step(inherited)['resolved'])
+
+    def test_dissolve_and_drop_keep_only_scoped_faults_and_their_repair_exit(self):
+        from forge.factory.wait_controller import WaitController
+        for operation in ('dissolve','drop'):
+            with self.subTest(operation=operation):
+                f,jobs,outcomes=self.faults()
+                pins={job:f.jobs.job(job)['members'][0]['member_id'] for job in jobs}
+                f.life.pause(f.command())
+                if operation=='dissolve':
+                    units=f.life.dissolve(f.command(),evidence={'approved':True})['released']
+                else:
+                    released=f.delivery.drop_member(f.command(),pins[jobs[0]],membership_generation=1,
+                        dependent_decisions={},evidence={'approved':True})['released']
+                    units=[released,{'unit_id':'batch','member_id':pins[jobs[1]]}]
+                with f.store.read_snapshot() as db:
+                    gates=[dict(row) for row in db.execute("SELECT g.id,g.unit_id FROM unit_gates g JOIN units u ON u.id=g.unit_id WHERE g.code='forge_problem' AND g.resolved_at IS NULL AND u.state!='dissolved'")]
+                    self.assertEqual(len(gates),2)
+                    for unit in units:
+                        linked={row[0] for row in db.execute('SELECT f.job_id FROM forge_problem_jobs f JOIN unit_gates g ON g.id=f.gate_id WHERE g.unit_id=? AND g.resolved_at IS NULL AND f.member_id=?',(unit['unit_id'],unit['member_id']))}
+                        issue=db.execute('SELECT issue_id FROM unit_issues WHERE id=?',(unit['member_id'],)).fetchone()[0]
+                        self.assertEqual(linked,{job for job in jobs if db.execute('SELECT issue_id FROM unit_issues WHERE id=?',(pins[job],)).fetchone()[0]==issue})
+                self.qualified(f)
+                waits=WaitController(f.store,clock=lambda:110)
+                for gate in gates: self.assertTrue(waits.step(gate['id'])['resolved'])
+                with f.store.read_snapshot() as db:
+                    for unit in units:
+                        self.assertEqual([r[0] for r in db.execute('SELECT code FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL',(unit['unit_id'],))],['operator_pause'])
+                    self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0],0)
+
+
+class StartupRepairTests(unittest.TestCase):
+    setUp=fixtures.ResultControllerTests.setUp
+    view=fixtures.ResultControllerTests.view
+    command=fixtures.ResultControllerTests.command
+    capture=fixtures.ResultControllerTests.capture
+    charges=fixtures.ResultControllerTests.charges
+    launch=StartupResultTests.launch
+    evidence=StartupResultTests.evidence
+
+    def reserve(self):
+        from forge.store.executions import Launch
+        return self.life.reserve_job(self.command(),'build',slot='slot',execution_fence='fence-'+str(self.serial),
+            input_manifest=self.manifest,member_id=self.member,
+            launch=Launch('forge/issue-1','builder[bot]','codex',200,{'image':IMAGE},self.policy))['job_id']
+
+    def save(self,domain,settings):
+        from forge.store.configuration import Configuration
+        config=Configuration(self.store,clock=lambda:101)
+        row=config.get(domain)
+        config.replace(domain,settings,expected_revision=row['revision'] if row else 0)
+
+    def fault(self):
+        identifier=self.launch(); self.capture(identifier,**self.evidence(identifier))
+        return self.controller.step(identifier)['gate_id']
+
+    def test_only_qualified_changed_image_releases_and_late_capture_does_not_strand(self):
+        from forge.factory.wait_controller import WaitController
+        gate=self.fault(); waits=WaitController(self.store,clock=lambda:110)
+        version=self.view()['version']
+        for _ in range(2): self.assertEqual(waits.step(gate)['pending'],'qualified_runner_update')
+        self.assertEqual(self.view()['version'],version)
+        self.save('runtime.json',{'image':IMAGE})
+        self.save('host.json',{'image':IMAGE,'updated_at':105})
+        self.assertIn('pending',waits.step(gate))
+        new='sha256:'+'b'*64
+        self.save('runtime.json',{'image':new})
+        self.assertIn('pending',waits.step(gate))  # configuration alone is not qualification
+        self.life.open_gate(self.command(),'label_hold',details={'label':'hold'})
+        self.save('host.json',{'image':new,'updated_at':90})  # qualified before the old job's late capture
+        self.save('runtime.json',{'image':new,'environment_tiers':{'standard':{'image':IMAGE}}})
+        self.assertIn('pending',waits.step(gate))  # explicit standard image wins over runtime default
+        self.save('runtime.json',{'image':new})
+        self.assertTrue(waits.cycle()['items'][0]['resolved'])
+        self.assertTrue(waits.step(gate)['resolved'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual([r[0] for r in db.execute('SELECT code FROM unit_gates WHERE resolved_at IS NULL')],['label_hold'])
+            self.assertEqual(db.execute('SELECT count(*) FROM forge_problem_jobs').fetchone()[0],1)
+        self.assertEqual(self.charges(),0)
+
+    def test_writer_rechecks_configuration_and_generic_resolution_cannot_bypass(self):
+        from forge.store.forge_problems import ForgeProblems
+        from forge.store.models import TransitionError,VersionConflict
+        gate=self.fault(); new='sha256:'+'b'*64
+        self.save('runtime.json',{'image':new}); self.save('host.json',{'image':new,'updated_at':105})
+        with self.assertRaises(TransitionError):
+            self.life.resolve_gate(self.command(),gate,release='observation',evidence={'verified':True,'observed_at':110})
+        commands=ForgeProblems(self.store,clock=lambda:110); apply=commands._apply
+        def raced(*args,**kwargs):
+            self.save('runtime.json',{'image':IMAGE})
+            return apply(*args,**kwargs)
+        with patch.object(commands,'_apply',side_effect=raced),self.assertRaises(VersionConflict):
+            commands.recheck(self.command(),gate)
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute('SELECT resolved_at FROM unit_gates WHERE id=?',(gate,)).fetchone()[0])
 
 
 class RunnerStartupCaptureTests(unittest.TestCase):
