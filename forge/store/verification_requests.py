@@ -70,7 +70,7 @@ def gate_details_in(db, gate):
     if job_id is None:
         return value  # Existing inline verification gates retain their contract.
     row = db.execute("SELECT a.input_manifest_json,c.input_manifest_hash FROM jobs j "
-        "JOIN attempts a ON a.id=j.attempt_id JOIN builder_assignments b ON b.job_id=j.id AND b.stage='integration' "
+        "JOIN attempts a ON a.id=j.attempt_id "
         "JOIN candidate_evidence e ON e.attempt_id=a.id AND e.kind='publication' AND e.verdict='pass' "
         'JOIN candidates c ON c.id=e.candidate_id AND c.unit_id=j.unit_id '
         'WHERE j.id=? AND j.unit_id=? AND c.id=?', (job_id, gate['unit_id'], gate['candidate_id'])).fetchone()
@@ -80,11 +80,23 @@ def gate_details_in(db, gate):
     manifest = json.loads(row['input_manifest_json'])
     if manifest_hash(manifest) != row['input_manifest_hash']:
         raise TransitionError('verification candidate input identity changed')
-    requests = expand_in(db, manifest, unit_id=gate['unit_id'])
+    requests = expand_in(db, manifest, unit_id=gate['unit_id']) if 'verification_requests' in manifest else []
     evidence, _ = result_in(db, job_id)
     final = requested_in(evidence)
     values = [item['verification'] for item in requests] + ([final] if final is not None else [])
+    recovery_id = value.get('verification_recovery_job_id')
+    if recovery_id is not None:
+        if not db.execute('SELECT 1 FROM recovery_assignments r JOIN jobs j ON j.id=r.job_id '
+                          "WHERE r.job_id=? AND r.failed_job_id=? AND j.unit_id=? AND j.outcome='investigated'",
+                          (recovery_id, job_id, gate['unit_id'])).fetchone():
+            raise TransitionError('verification recovery does not belong to this publication')
+        evidence, _ = result_in(db, recovery_id)
+        request = requested_in({'report': evidence['findings']})
+        if request is None:
+            raise TransitionError('recovery did not request verification')
+        values.append(request)
     return {**value, 'requests': requests, **({'final_verification': final} if final else {}),
+            **({'recovery_verification': request} if recovery_id is not None else {}),
             'what': '\n\n'.join(item['what'] for item in values),
             'why': '\n\n'.join(item['why'] for item in values),
             'checks': sorted({check for item in values for check in item['checks']})}

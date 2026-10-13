@@ -113,7 +113,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         return {'version': 2, 'retained_task_ids': [], 'tasks': tasks,
                 'owner_final': {'member_ids': [], 'scope': '', 'internalizes': []}}
 
-    def integrate(self):
+    def integrate(self, verification=None):
         parent = self.dispatch.step('batch')['job_id']
         planning = self.jobs.job(parent)
         self.assertIsNone(planning['issue_number'])
@@ -130,7 +130,8 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertFalse(self.dispatch.step('batch')['reserved'])
         for index, identifier in enumerate((first, second)):
             head, bundle = self.child_bundle(index)
-            self.assertTrue(self.capture(identifier, output_commit=head, bundle=bundle)['accepted'])
+            extra = dict(outcome='needs_human_verification', verification=verification) if verification else {}
+            self.assertTrue(self.capture(identifier, output_commit=head, bundle=bundle, **extra)['accepted'])
         resumed = self.dispatch.step('batch')['job_id']; integration = self.jobs.job(resumed)
         self.assertEqual(integration['builder_id'], planning['builder_id'])
         self.assertEqual(integration['builder_stage'], 'integration')
@@ -282,7 +283,7 @@ class DeliveryPipelineTests(unittest.TestCase):
 
     def test_late_combined_publication_corrects_only_its_parent_failure(self):
         integration = self.integrate()
-        failed = self.capture(integration['id'], outcome='unable')
+        failed = self.capture(integration['id'], outcome='pass')
         self.assertTrue(failed['charged'])
         recovery = RecoveryController(self.store, self.runner, self.github, config=self.config,
                                       admission=lambda _: True, clock=lambda: 100)
@@ -294,6 +295,47 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertEqual(DeliveryQueries(self.store).tree('batch')['charged_failures'], 0)
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT state FROM units WHERE id='batch'").fetchone()[0], 'reviewing')
+
+    def test_unable_integration_is_not_promoted_by_matching_or_late_publication(self):
+        integration = self.integrate()
+        self.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': self.base}
+        self.assertTrue(self.capture(integration['id'], outcome='unable')['charged'])
+        self.github.publication.assert_not_called()
+        recovery = RecoveryController(self.store, self.runner, self.github, config=self.config,
+                                      admission=lambda _: True, clock=lambda: 100)
+        investigation = recovery.schedule(integration['id'])['job_id']
+        self.capture(investigation, classifier=recovery.finish,
+                     pattern='Matching publication exists', evidence=[], uncertainty='', alternative=None)
+        self.github.publication.assert_not_called()
+        self.assertEqual(DeliveryQueries(self.store).tree('batch')['charged_failures'], 1)
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute("SELECT current_candidate_id FROM units WHERE id='batch'").fetchone()[0])
+
+    def test_late_integration_retains_task_owner_and_investigator_verification(self):
+        from forge.store.verification_requests import gate_details_in
+        task_check = {'what': 'Check task behavior', 'why': 'Needs a device', 'checks': []}
+        owner_check = {'what': 'Check integrated behavior', 'why': 'Needs staging', 'checks': []}
+        recovery_check = {'what': 'Check publication behavior', 'why': 'Needs deployment', 'checks': []}
+        integration = self.integrate(verification=task_check)
+        self.assertTrue(self.capture(integration['id'], outcome='needs_human_verification', verification=owner_check)['charged'])
+        recovery = RecoveryController(self.store, self.runner, self.github, config=self.config,
+                                      admission=lambda _: True, clock=lambda: 100)
+        investigation = recovery.schedule(integration['id'])['job_id']
+        self.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': self.base}
+        receipt = self.capture(investigation, classifier=recovery.finish, outcome='needs_human_verification',
+                              verification=recovery_check, pattern='Publication delayed', evidence=[], uncertainty='', alternative=None)
+        self.assertTrue(receipt['corrected'])
+        with self.store.read_snapshot() as db:
+            gate = dict(db.execute("SELECT * FROM unit_gates WHERE code='verification_human' AND resolved_at IS NULL").fetchone())
+            details = gate_details_in(db, gate)
+        self.assertEqual(len(details['requests']), 2)
+        self.assertEqual(details['final_verification'], owner_check)
+        self.assertEqual(details['recovery_verification'], recovery_check)
+        for request in (task_check, owner_check, recovery_check):
+            self.assertIn(request['what'], details['what'])
+            self.assertIn(request['why'], details['why'])
+        self.assertLess(len(gate['details_json']), 1000)
+        self.assertFalse(self.dispatch.step('batch')['reserved'])
 
     def test_malformed_child_plan_charges_shared_budget_once(self):
         parent = self.dispatch.step('batch')['job_id']
