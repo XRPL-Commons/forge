@@ -85,6 +85,18 @@ class ObservationController:
             self.commands.open_gate(self._command(unit), 'external_change', details={'reason': detail})
         return {'unit_id': unit['id'], 'observed': True, 'pending': 'external_change'}
 
+    def _release_external_change(self, unit, issue, member_id):
+        # Called only after the complete observation accepts current issue and
+        # candidate facts. A divergent PR returns earlier and retains its gate.
+        with self.store.read_snapshot() as db:
+            gates=db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='external_change' "
+                'AND resolved_at IS NULL AND (member_id IS NULL OR member_id=?)', (unit['id'],member_id)).fetchall()
+        for gate in gates:
+            resolved=self.commands.resolve_gate(self._command(unit),gate['id'],release='observation',
+                evidence={'verified':True,'observed_at':self.clock(),'issue_id':issue['id'],
+                          'issue_version':issue['version'],'candidate_id':unit['current_candidate_id']})
+            unit={**unit,'version':resolved['version']}
+
     def step(self, unit_id):
         unit=self.queries.unit(unit_id)
         if unit['state'] in TERMINAL:
@@ -163,6 +175,7 @@ class ObservationController:
         unit, issue, selected, item = current
         # A requirements change may already have superseded the candidate.
         if candidate and (not selected or selected['id'] != candidate['id']):
+            self._release_external_change(unit,issue,member_id)
             return {'unit_id': unit_id, 'observed': True, 'invalidated': 'requirements'}
         proof = {'issue_version': issue['version']}
         if selected:
@@ -211,6 +224,7 @@ class ObservationController:
                 return {'unit_id':unit_id,'observed':True,'pending':'membership_decision'}
             return {'unit_id': unit_id, 'observed': True, **self.commands.close_unit(self._command(unit),
                 close_code='github_' + remote['state_reason'], evidence=proof)}
+        self._release_external_change(unit,issue,member_id)
         return {'unit_id': unit_id, 'observed': True}
 
     def cycle(self, *, after=None, limit=50):

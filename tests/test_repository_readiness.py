@@ -258,7 +258,9 @@ class DiagnosticReadinessTests(unittest.TestCase):
         self.assertEqual(self.budget(), 1)
 
     def test_diagnosis_can_finish_without_correcting_publication_charge(self):
-        failed = self.failed_build(); self.readiness()
+        # Content completed, but publication was initially missing. A late PR
+        # is eligible for correction only if repository readiness also permits it.
+        failed = self.failed_build('pass'); self.readiness()
         investigation = self.reserve_recovery(failed)
         self.github.publish(self.jobs.job(failed))
         answer = self.finish_recovery(investigation)

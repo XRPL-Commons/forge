@@ -206,6 +206,20 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(self.view()['reason_code'],'external_change')
         self.assertEqual(self.view()['current_candidate_id'],selected)
 
+    def test_exact_repaired_candidate_observation_releases_only_external_change(self):
+        github=GitHub()
+        build=self.reserve();self.accept_build(build);self.cleanup(build)
+        self.lifecycle.open_gate(self.command(),'external_change',details={'reason':'candidate_unavailable'})
+        self.lifecycle.open_gate(self.command(),'environment',details={'reason':'database'})
+        github.pr=lambda item,number: {'number':1,'merged':False,'state':'open','draft':False,
+            'head':{'sha':'head','repo':{'id':1}},'base':{'sha':'base','ref':'main','repo':{'id':1}}}
+        self.assertTrue(self.controller(github).step('unit-1')['observed'])
+        self.assertEqual(self.view()['reason_code'],'environment')
+        self.assertIsNotNone(self.view()['current_candidate_id'])
+        with self.store.read_snapshot() as db:
+            gate=db.execute("SELECT resolution FROM unit_gates WHERE code='external_change'").fetchone()
+            self.assertEqual(gate[0],'observation')
+
     def test_policy_change_invalidates_candidate_and_preserves_operator_pause(self):
         github = GitHub()
         build = self.reserve()

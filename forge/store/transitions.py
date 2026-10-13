@@ -408,7 +408,7 @@ class Lifecycle:
             rule = codes.GATES[gate["code"]]
             if release != rule.release:
                 raise TransitionError("release rule does not match this gate")
-            if gate["code"] in {"operator_pause", "budget_exhausted", "verification_human", "verification_ci", "legacy_reconciliation"} or rule.release == "transition":
+            if gate["code"] in {"forge_problem", "operator_pause", "budget_exhausted", "verification_human", "verification_ci", "legacy_reconciliation"} or rule.release == "transition":
                 raise TransitionError("this gate requires its dedicated lifecycle command")
             self._release_evidence(gate, release, evidence)
             if gate["candidate_id"] and gate["candidate_id"] != unit["current_candidate_id"]:
@@ -682,10 +682,15 @@ class Lifecycle:
         A wait is not a successful review/audit. Releasing the gate retries that
         phase; any existing candidate and failure history stay intact.
         """
-        if code not in {'environment', 'provider_unavailable', 'decision_required', 'dependency', 'verification_human', 'verification_ci'}:
+        if code not in {'forge_problem', 'environment', 'provider_unavailable', 'decision_required', 'dependency', 'verification_human', 'verification_ci'}:
             raise TransitionError('unsupported worker deferral gate')
         if not isinstance(evidence, dict) or not evidence or not isinstance(details, dict) or not details:
             raise TransitionError('deferral requires structured evidence and gate details')
+        if code == 'forge_problem':
+            from ..factory.startup_problems import validated_receipt
+            receipt = {key:details.get(key) for key in ('version','phase','exception','file','line','signature')}
+            if details.get('owner') != 'forge' or validated_receipt({**receipt,'attempt':job_id}, job_id) is None:
+                raise TransitionError('Forge problem requires trusted startup evidence')
         if code == 'provider_unavailable':
             retry_at = details.get('retry_at')
             if type(retry_at) not in (int, float) or not math.isfinite(retry_at) or retry_at <= self.clock():
@@ -697,7 +702,19 @@ class Lifecycle:
             self._result(db, command, job, evidence, 'deferred' if current else 'stale_deferred')
             if not current:
                 return {'accepted': False, 'charged': False}
-            member_id = job['member_id'] if code not in {'provider_unavailable', 'verification_human', 'verification_ci'} else None
+            if code == 'forge_problem':
+                previous = db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL", (unit['id'],)).fetchone()
+                gate_id = previous['id'] if previous else self._open_gate(db, command, code, {**details, 'job_id': job_id})
+                # Every result keeps its own immutable evidence. Sharing a unit
+                # blocker must not discard a simultaneous task's capture or grow
+                # an unbounded JSON list inside that blocker.
+                pins = list(db.execute('SELECT member_id FROM job_members WHERE job_id=?', (job_id,)))
+                if not pins:
+                    raise TransitionError('Forge startup failure has no immutable assigned scope')
+                db.executemany('INSERT INTO forge_problem_jobs(job_id,gate_id,member_id,details_json) VALUES(?,?,?,?)',
+                    [(job_id,gate_id,pin[0],_json(details)) for pin in pins])
+                return {'accepted': True, 'charged': False, 'gate_id': gate_id, 'gate_ids': [gate_id]}
+            member_id = job['member_id'] if code not in {'forge_problem', 'provider_unavailable', 'verification_human', 'verification_ci'} else None
             candidate_id = job['candidate_id'] if code in {'verification_human', 'verification_ci'} else None
             if code in {'verification_human', 'verification_ci'} and candidate_id is None:
                 raise TransitionError('verification deferral requires an existing exact candidate')
@@ -1294,6 +1311,8 @@ class Lifecycle:
         if any(issue["github_state"] != "open" for issue in issues):
             raise TransitionError("closed members require an explicit membership decision before dissolve")
         retained_intent = [gate for gate in _gates(db, unit["id"]) if gate["code"] in {"operator_pause", "operator_backlog"}]
+        from .forge_problems import member_faults_in, inherit_faults_in
+        retained_faults = {member["id"]: member_faults_in(db,unit["id"],member["id"]) for member in members}
         # The approved graph remains a prerequisite after the work is split.
         # Revision-bound issue dependencies are the existing external authority.
         from .delivery_inputs import dependencies_in
@@ -1313,6 +1332,7 @@ class Lifecycle:
             member_intent=[gate for gate in retained_intent if gate['member_id'] in {None,member['id']}]
             for code in sorted({gate['code'] for gate in member_intent}):
                 self._open_gate(db,child_command,code,{'source_unit_id':unit['id'],'source_gate_ids':[gate['id'] for gate in member_intent if gate['code']==code]})
+            inherit_faults_in(self,db,child_command,child_member,retained_faults[member["id"]])
             self._event(db, Command(command.request_id, command.actor_id, child_id, 1), "membership_changed", {"source_unit_id": unit["id"], "source_member_id": member["id"], "member_id": child_member}, issue_id=issue["id"])
             released.append({"unit_id": child_id, "member_id": child_member, "issue_id": issue["id"]})
         return {"released": released}

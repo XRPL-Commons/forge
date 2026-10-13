@@ -85,17 +85,22 @@ def existing_candidates_in(db, unit_id):
 
 
 def previous_publication_in(db, unit_id):
-    """Latest accepted or base-invalidated integration publication, by event order."""
+    """Exact accepted, base-invalidated, or operator-reloaded publication."""
     event = db.execute("SELECT e.kind,e.job_id,e.payload_json FROM events e "
         "WHERE e.unit_id=? AND (e.kind='candidate_selected' OR e.kind='attempt_fenced' "
         "AND json_extract(e.payload_json,'$.reason')='base_changed' "
-        "AND EXISTS(SELECT 1 FROM builder_assignments b WHERE b.job_id=e.job_id AND b.stage='integration')) "
+        "AND EXISTS(SELECT 1 FROM builder_assignments b WHERE b.job_id=e.job_id AND b.stage='integration') "
+        "OR e.kind='candidate_superseded' AND json_extract(e.payload_json,'$.reason')='candidate_changed' "
+        "AND json_type(e.payload_json,'$.evidence.operator_request')='text' "
+        "AND json_type(e.payload_json,'$.evidence.publication')='object') "
         "ORDER BY e.sequence DESC LIMIT 1", (unit_id,)).fetchone()
     if event is None:
         return None
     payload = json.loads(event['payload_json'])
     if event['kind'] == 'candidate_selected':
         return dict(db.execute('SELECT * FROM candidates WHERE id=?', (payload['candidate_id'],)).fetchone())
+    if event['kind']=='candidate_superseded':
+        return {**payload['evidence']['publication'],'source_job_id':payload['evidence']['source_job_id']}
     return {**payload['publication'], 'source_job_id': event['job_id']}
 
 

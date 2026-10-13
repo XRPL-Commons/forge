@@ -229,6 +229,9 @@ class OperatorActions(Lifecycle):
             if action=='environment':remove=[v for v in issue['labels'] if v.startswith('env:')]
             plan=dict(membership=membership,member_id=member['id'],scope_member_id=scoped_member,baseline=self._baseline(db,unit_id),requirements=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(issue['current_revision_id'],)).fetchone()[0]),
                 labels=issue['labels'],assignees=issue['assignees'],add=add,remove=remove,reviewers=reviewers)
+            if action=='recheck' and issue['lifecycle']['reason_code']=='external_change':
+                plan['external_change_gates']=[gate['id'] for gate in _gates(db,unit_id)
+                    if gate['code']=='external_change' and gate['id'] and gate['member_id'] in {None,member['id']}]
             if action=='queue' and set(config['hold_labels']).intersection(issue['labels']):
                 raise TransitionError('Remove the hold before queueing this issue')
             self._save(db,command,'request_operator_action',payload,{'request_id':identifier,'gate_id':gate},initial=created,before=before)
@@ -523,6 +526,41 @@ class OperatorActions(Lifecycle):
         self._receipt(row,'reviewers',{'logins':names,'candidate_id':candidate['id']})
         return self._remote(row)
 
+    def _recheck_publication(self,row):
+        candidate=row['candidate']
+        if candidate is None:return
+        pull=self.github.pr(row['item'],candidate['pull_number'])
+        head,base=pull.get('head') or {},pull.get('base') or {}
+        if (pull.get('number')!=candidate['pull_number'] or head.get('repo',{}).get('id')!=row['item']['repo_id']
+                or base.get('repo',{}).get('id')!=row['item']['repo_id'] or head.get('ref')!=candidate['branch']):
+            raise TransitionError('Pull request identity changed; restore the original repository and branch before reloading')
+        if pull.get('merged') is not False:
+            raise TransitionError('Pull request is merged or unverified; its merge must be reconciled before continuing')
+        if pull.get('state')!='open':raise TransitionError('Reopen the pull request on GitHub, then reload and continue')
+        if pull.get('draft') is not False:raise TransitionError('Mark the pull request ready for review on GitHub, then reload and continue')
+        if base.get('ref')!=row['unit']['base_branch']:
+            raise TransitionError('Restore the pull request target branch on GitHub, then reload and continue')
+        from .contracts import SHA
+        if not all(isinstance(value,str) and SHA.fullmatch(value) for value in (head.get('sha'),base.get('sha'))):
+            raise GitHubUnavailable('Pull request commits could not be verified')
+        if head['sha']==candidate['head_oid']:return
+        author={key:(pull.get('user') or {}).get(key) for key in ('id','login','type')}
+        with self.store.read_snapshot() as db:
+            source=db.execute("SELECT j.id,l.publisher FROM candidate_evidence e JOIN jobs j ON j.attempt_id=e.attempt_id "
+                "JOIN job_launches l ON l.job_id=j.id WHERE e.candidate_id=? AND e.kind='publication' AND j.role='build'",
+                (candidate['id'],)).fetchone()
+            target=db.execute('SELECT target_json FROM unit_publication_targets WHERE unit_id=?',(row['unit_id'],)).fetchone()
+        target=json.loads(target[0]) if target else None
+        if source is None:raise TransitionError('Original publication ownership needs reconciliation before rebuilding')
+        if target and target.get('kind')=='existing':
+            owned=(target['pull_number']==candidate['pull_number'] and target.get('ownership_transfer') is True
+                   and target.get('author')==author)
+        else:owned=(type(author['id']) is int and author['id']>0 and author['type']=='Bot' and author['login']==source['publisher'])
+        if not owned:raise TransitionError('Pull request author differs from the approved publisher; ownership needs reconciliation')
+        row['publication_job_id']=source['id']
+        row['reloaded_publication']=dict(pull_number=candidate['pull_number'],branch=candidate['branch'],
+            head_oid=head['sha'],base_oid=base['sha'],author=author)
+
     def _complete(self,row,issue):
         command=Command(row['id']+':complete:'+str(row['unit']['version']),row['actor_id'],row['unit_id'],row['unit']['version'])
         def change(db,unit):
@@ -545,6 +583,13 @@ class OperatorActions(Lifecycle):
             if action=='start_anyway':requirements._clear_declared_dependencies_in(db,command,unit,revision,{'reason':row['reason'],'actor_id':row['actor_id']})
             if action=='assign_reviewer':
                 db.execute('INSERT INTO candidate_reviewer_requests VALUES(?,?,?,?,?,0)',(unit['current_candidate_id'],row['id'],row['actor_id'],_json(row['plan']['reviewers']),self.clock()))
+            if row.get('reloaded_publication'):
+                self._scope_quiet(db,unit,None)
+                self._invalidate(db,command,unit,'candidate_changed',{'verified':True,'operator_request':row['id'],
+                    'publication':row['reloaded_publication'],'source_job_id':row['publication_job_id']})
+                for gate in gates:
+                    if gate['id'] in row['plan']['external_change_gates']:
+                        self._resolve(db,command,gate['id'],{'operator_request':row['id'],'candidate_invalidated':row['candidate']['id']})
             resolve={'operator_sync'}
             if action=='resume_delivery':resolve|={'operator_pause','operator_backlog'}
             if action in {'queue','resume'}:resolve|={'operator_pause','operator_backlog','label_hold'}
@@ -577,6 +622,8 @@ class OperatorActions(Lifecycle):
             if action=='close':result['closed_issue_version']=db.execute('SELECT version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()[0]
             db.execute("UPDATE issue_action_requests SET status='applied',message='Operator decision applied' WHERE id=?",(row['id'],))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'applied':True,**result}),self.clock(),row['id']))
+            if action=='recheck':
+                db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
             return {'request_id':row['id'],'applied':True,**result}
         return self._apply(command,'complete_operator_action',{'request_id':row['id']},change)
 
@@ -586,17 +633,12 @@ class OperatorActions(Lifecycle):
             gate=db.execute('SELECT * FROM unit_gates WHERE id=? AND resolved_at IS NULL',(row['gate_id'],)).fetchone()
             if gate:
                 self._resolve(db,command,gate['id'],{'rejected':True})
-                if _unit(db,row['unit_id'])['state'] not in {'merged','closed','dissolved'}:
-                    scope=row['plan'].get('scope_member_id')
-                    if not any(g['code']=='external_change' and g['member_id']==scope for g in _gates(db,row['unit_id'])):
-                        self._open_gate(db,command,'external_change',{'request_id':row['id'],'reason':message},scope)
-                    if scope:self.fence_member_in(db,command,scope,reason='operator_decision_changed')
-                    else:self._fence(db,command)
                 self._save(db,command,'reject_operator_action',{'request_id':row['id']},{'rejected':True})
             if row['action']=='reopen':
                 self._event(db,command,'lifecycle_changed',{'operator_request':row['id'],'action':'reopen','status':'rejected','reason':message},issue_id=row['issue_id'])
             db.execute("UPDATE issue_action_requests SET status='rejected',message=? WHERE id=?",(message,row['id']))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'rejected':True,'reason':message}),self.clock(),row['id']))
+            db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
         return {'request_id':row['id'],'rejected':True}
 
     def step(self,identifier):
@@ -629,6 +671,8 @@ class OperatorActions(Lifecycle):
             if row['action'] in {'close','close_member'}:issue=self._close(row)
             if row['action']=='assign_reviewer':issue=self._reviewers(row)
             row=self._request(identifier)
+            if row['plan'].get('external_change_gates'):
+                self._recheck_publication(row)
             if row['action'] in DELIVERY_ACTIONS:row['membership_evidence']=self._membership_evidence(row)
             result=self._complete(row,issue)
             if row['action'] in {'recheck','environment','start_anyway'} and self.requirements:

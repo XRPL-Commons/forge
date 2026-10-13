@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { actionLabel } from '~/utils/issues'
 const {
   verificationRequest, verificationStatement, poll, detail, actions, pending, busy, decision,
   message, summary, look, blocking, plainOpen, plainLong, holds, issueUrl, canAssign, decisions,
@@ -188,7 +189,7 @@ const {
                 <UButton v-else-if="primary === 'assign_reviewer'" color="primary" :disabled="busy" @click="askReviewer">{{ ACTION_LABELS.assign_reviewer }}</UButton>
                 <UButton v-else-if="primary === 'setup'" :to="detail.setup_url" color="primary">Repository setup →</UButton>
                 <UButton v-else-if="primary === 'discuss'" color="primary" icon="i-lucide-messages-square" @click="tab = 'discussion'">{{ plan?.ask }}</UButton>
-                <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ ACTION_LABELS[primary] }}</UButton>
+                <UButton v-else-if="primary" color="primary" :disabled="busy" @click="ask(primary)">{{ actionLabel(primary, detail) }}</UButton>
                 <span v-else-if="detail.status === 'blocked'" id="issue-nothing-needed" data-blocked class="mr-1 inline-flex min-h-8 flex-wrap items-center gap-x-1 gap-y-0.5 text-sm text-muted">
                   <UIcon name="i-lucide-link-2" class="mr-1 size-4 shrink-0" aria-hidden="true" />
                   <span>Nothing needed from you.</span>
@@ -218,7 +219,7 @@ const {
                   size="sm"
                   :disabled="busy"
                   @click="ask(action)"
-                >{{ ACTION_LABELS[action] }}</UButton>
+                >{{ actionLabel(action, detail) }}</UButton>
                 <UButton
                   v-if="canAssign && primary !== 'assign_reviewer'"
                   size="sm"

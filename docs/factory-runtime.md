@@ -152,3 +152,19 @@ An approved delivery shares three charged failures across its builder and childr
 Changing membership does not silently reset that budget. After exhaustion, read the findings and record a new approach before choosing an explicit retry. **Discuss blocker** is available for understanding the problem without spending another failure attempt.
 
 See [How an issue moves](issue-state-machine.md) for status meanings. Technical settings, deadlines, storage retention and pre-cutover behavior are in the [runtime reference](factory-runtime-reference.md); a selected SQLite installation uses forward updates and has no JSON switch-back.
+
+### Forge startup problems
+
+**Forge needs a repair** means an image-owned harness failed before the agent
+started. These verified import, name and syntax errors consume no issue attempts.
+Forge retains the failure evidence and waits for a qualified replacement image.
+
+The normal updater qualifies each replacement before activating it. Once every
+affected worker image has changed, Forge releases this blocker and checks whether
+work can resume. Other holds still apply. A configuration-only or same-image
+update does not retry the fault.
+
+This handling currently covers ordinary build, review and audit assignments.
+The broader failure envelope and **Report to Forge** action are still planned.
+See the [startup protocol and scope](factory-runtime-reference.md#forge-startup-problems)
+for technical details.

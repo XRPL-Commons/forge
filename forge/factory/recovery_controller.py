@@ -17,7 +17,7 @@ from ..store.queries import Queries
 from ..store.recovery import Recovery, RecoveryQueries
 from ..store.transitions import manifest_hash
 from .config import policy, validate
-from .contracts import digest, result
+from .contracts import BUILD_CANDIDATE_OUTCOMES, digest, result
 from .github import GitHubUnavailable
 from .ownership import ownership, publication_context
 from .result_controller import ResultController
@@ -161,13 +161,19 @@ class RecoveryController:
             # authority needed to correct charges or accept a publication.
             answer=self.commands.finish(self._command(job),recovery_job_id,**args,incomplete=incomplete)
             return {'job_id':recovery_job_id,**answer}
-        # A late publication is controller evidence, independent of any claims
-        # in the investigation. Exact original assignment contracts still apply.
+        # Publication proof cannot turn unfinished work into a candidate. The
+        # original build's immutable result must establish content completion.
+        original_report = None
+        if original['role'] == 'build':
+            try:
+                original_report = result(self.jobs.capture(original['id']).get('result'), original)
+            except (ValueError, KeyError, TypeError):
+                pass
         verification = (report is not None and report['outcome'] == 'needs_human_verification'
                         and len(json.dumps(report).encode()) <= 60000)
         policy_current = original['input_manifest'].get('policy_hash') == digest(policy(self.config, original['repo_id'], repository_name=original['repo']))
         from .delegation_contracts import read_only_build
-        if (original['role'] == 'build' and not read_only_build(original)
+        if (original_report and original_report['outcome'] in BUILD_CANDIDATE_OUTCOMES and not read_only_build(original)
                 and policy_current and job['unit_state'] in {'building', 'integrating'}
                 and job['current_candidate_id'] is None
                 and (original.get('builder_stage') == 'integration' or
@@ -184,7 +190,8 @@ class RecoveryController:
                                     pull_number=identity.pull_number, failed_job_id=original['id'], observed_at=self.clock(),
                                     policy_hash=identity.policy_hash, requirements_hash=identity.requirements_hash,
                                     input_manifest_hash=identity.input_manifest_hash)
-                    inherited = ResultController._verification(original, report if verification else None)
+                    inherited = ResultController._verification(original, original_report,
+                                                               recovery=report if verification else None)
                     gates = [inherited] if inherited else []
                     if verification:
                         args['findings'] = report

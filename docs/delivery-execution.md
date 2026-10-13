@@ -159,8 +159,13 @@ inside the runner before the provider starts, including its approved author and
 previous head. For updates, the builder marks the PR draft, records its exact
 final-head marker before pushing that commit, then marks it ready last. There is
 no null-head exemption from ownership checks. A changed target returns an operator decision and preserves the
-existing work. GitHub publication is an external effect; exact late-publication
-recovery handles a completed push whose original execution did not return.
+existing work. A build or integration becomes a review candidate only with a
+valid `pass` or `needs_human_verification` result and independently verified
+publication. An `unable`, unsuccessful or missing result follows normal failure
+handling even when a matching PR exists. Late-publication recovery applies the
+same rule to the original captured result; it can correct a publication failure
+for completed work, preserving verification requests from both the builder and
+the investigator.
 
 ## Operator progress
 

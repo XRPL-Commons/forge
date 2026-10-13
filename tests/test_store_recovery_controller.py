@@ -45,6 +45,8 @@ class Runner(PipelineRunner):
                                           'evidence': 'Failing test diagnostic'})
         self.recovery_valid = True
         self.recovery_outcome = 'pass'
+        self.build_outcome = 'unable'
+        self.build_verification = {'what': 'Confirm browser behavior', 'why': 'Requires a browser', 'checks': []}
         self.verification = {'what': 'Test staging', 'why': 'Needs deployed access', 'checks': []}
         self.notes = []
 
@@ -54,8 +56,10 @@ class Runner(PipelineRunner):
 
     def capture(self, job):
         if job['role'] != 'recovery':
-            return {'result': dict(version=1, attempt=job['id'], role=job['role'], outcome='unable',
-                                   summary='Build failed: assertion mismatch'),
+            return {'result': dict(version=1, attempt=job['id'], role=job['role'], outcome=self.build_outcome if job['role'] == 'build' else 'unable',
+                                   summary='Build failed: assertion mismatch',
+                                   **({'verification': deepcopy(self.build_verification)}
+                                      if job['role'] == 'build' and self.build_outcome == 'needs_human_verification' else {})),
                     'logs': 'Failing test diagnostic', 'execution': {'exit_code': 1}}
         report = None
         if self.recovery_valid:
@@ -101,7 +105,8 @@ class RecoveryControllerTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             return db.execute("SELECT COALESCE(SUM(CASE kind WHEN 'charge' THEN 1 ELSE -1 END),0) FROM budget_entries").fetchone()[0]
 
-    def failed_build(self):
+    def failed_build(self, outcome='unable'):
+        self.runner.build_outcome = outcome
         reservation = self.dispatch.step('u')
         self.assertTrue(reservation['reserved'], reservation)
         job = reservation['job_id']
@@ -182,7 +187,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertTrue(self.dispatch.step('u')['reserved'])
 
     def test_delayed_publication_is_verified_independently_and_corrects_charge_once(self):
-        failed = self.failed_build()
+        failed = self.failed_build('pass')
         investigation = self.reserve_recovery(failed)
         self.runner.recovery_valid = False
         self.github.publish(self.jobs.job(failed))
@@ -203,8 +208,53 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.view()['state'], 'building')
         self.assertIsNone(self.view()['current_candidate_id'])
 
+    def test_late_matching_publication_does_not_override_unable_build(self):
+        failed = self.failed_build('unable')
+        investigation = self.reserve_recovery(failed)
+        self.github.publish(self.jobs.job(failed))
+        self.runner.findings['pattern'] = 'The PR exists; promote it'
+        self.assertTrue(self.finish_recovery(investigation)['accepted'])
+        self.assertEqual(self.budget(), 1)
+        self.assertIsNone(self.view()['current_candidate_id'])
+        self.assertEqual(self.view()['state'], 'building')
+        self.recovery.finish(investigation)
+        self.assertEqual(self.budget(), 1)
+
+    def test_late_candidate_preserves_builder_and_investigator_verification(self):
+        from forge.store.verification_requests import gate_details_in
+        failed = self.failed_build('needs_human_verification')
+        investigation = self.reserve_recovery(failed)
+        self.github.publish(self.jobs.job(failed))
+        self.runner.recovery_outcome = 'needs_human_verification'
+        self.assertTrue(self.finish_recovery(investigation)['corrected'])
+        self.assertEqual(self.budget(), 0)
+        self.assertEqual(self.view()['reason_code'], 'verification_human')
+        self.assertFalse(self.dispatch.step('u')['reserved'])
+        with self.store.read_snapshot() as db:
+            gate = dict(db.execute("SELECT * FROM unit_gates WHERE code='verification_human' AND resolved_at IS NULL").fetchone())
+            details = gate_details_in(db, gate)
+            self.assertIn(self.runner.build_verification['what'], details['what'])
+            self.assertIn(self.runner.verification['what'], details['what'])
+            tampered = json.loads(gate['details_json'])
+            tampered['verification_recovery_job_id'] = failed
+            from forge.store.models import TransitionError
+            with self.assertRaisesRegex(TransitionError, 'does not belong'):
+                gate_details_in(db, {**gate, 'details_json': json.dumps(tampered)})
+
+    def test_passing_investigator_cannot_remove_original_builder_human_hold(self):
+        failed = self.failed_build('needs_human_verification')
+        investigation = self.reserve_recovery(failed)
+        self.github.publish(self.jobs.job(failed))
+        self.assertTrue(self.finish_recovery(investigation)['corrected'])
+        self.assertEqual(self.view()['reason_code'], 'verification_human')
+        self.assertFalse(self.dispatch.step('u')['reserved'])
+        with self.store.read_snapshot() as db:
+            details = json.loads(db.execute("SELECT details_json FROM unit_gates WHERE code='verification_human' AND resolved_at IS NULL").fetchone()[0])
+        self.assertEqual(details['what'], self.runner.build_verification['what'])
+        self.assertEqual(details['why'], self.runner.build_verification['why'])
+
     def test_github_outage_leaves_recovery_capture_pending_and_retries_without_charge(self):
-        failed = self.failed_build()
+        failed = self.failed_build('pass')
         investigation = self.reserve_recovery(failed)
         self.execution.step(investigation)
         self.github.issue_error = True
@@ -244,7 +294,7 @@ class RecoveryControllerTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM recovery_assignments').fetchone()[0], 0)
 
     def test_pause_after_capture_consumes_stale_findings_even_if_publication_exists_and_github_is_down(self):
-        failed = self.failed_build()
+        failed = self.failed_build('pass')
         investigation = self.reserve_recovery(failed)
         self.execution.step(investigation)
         self.github.publish(self.jobs.job(failed))
@@ -303,7 +353,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.budget(), 1)
 
     def test_review_execution_failure_retries_same_verified_candidate_after_investigation(self):
-        failed_build = self.failed_build()
+        failed_build = self.failed_build('pass')
         recovery = self.reserve_recovery(failed_build)
         self.github.publish(self.jobs.job(failed_build))
         self.finish_recovery(recovery)
@@ -321,7 +371,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.jobs.job(next_review['job_id'])['candidate_id'], selected)
 
     def test_advanced_base_does_not_strand_findings_or_refund_original_failure(self):
-        failed = self.failed_build()
+        failed = self.failed_build('pass')
         investigation = self.reserve_recovery(failed)
         self.github.publish(self.jobs.job(failed))
         self.github.pull['base']['sha'] = 'd' * 40
@@ -332,7 +382,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.recovery.cycle()['items'], [])
 
     def test_recovered_publication_can_request_verification_without_passing_review(self):
-        failed = self.failed_build()
+        failed = self.failed_build('pass')
         investigation = self.reserve_recovery(failed)
         self.github.publish(self.jobs.job(failed))
         self.runner.recovery_outcome = 'needs_human_verification'
@@ -349,7 +399,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.dispatch.config = validate(self.config)
         self.dispatch.prepare = GitHubPrepare(self.github, self.config)
         self.recovery = self.driver()
-        failed_build = self.failed_build()
+        failed_build = self.failed_build('pass')
         recovery = self.reserve_recovery(failed_build)
         self.github.publish(self.jobs.job(failed_build))
         self.finish_recovery(recovery)
@@ -372,7 +422,7 @@ class RecoveryControllerTests(unittest.TestCase):
         for reason in ('hold', 'custom-hold', 'wip', 'human-assignee'):
             with self.subTest(reason=reason):
                 self.setUp()
-                failed = self.failed_build()
+                failed = self.failed_build('pass')
                 investigation = self.reserve_recovery(failed)
                 self.github.publish(self.jobs.job(failed))
                 self.recovery.config['hold_labels'].append('custom-hold')

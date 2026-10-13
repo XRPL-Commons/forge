@@ -82,6 +82,82 @@ class OperatorTests(unittest.TestCase):
         self.assertTrue(self.actions.step(request)['rejected'])
         self.assertEqual(self.github.calls,[])
         self.assertEqual(self.view()['current_blocker']['code'],'operator_pause')
+    def test_rejected_recheck_does_not_create_a_dead_end_or_clear_independent_hold(self):
+        self.life.open_gate(self.command(),'environment',details={'reason':'database'})
+        request=self.request('recheck');self.github.requirements='changed'
+        self.assertTrue(self.actions.step(request)['rejected'])
+        with self.store.read_snapshot() as db:
+            codes=[r[0] for r in db.execute("SELECT code FROM unit_gates WHERE resolved_at IS NULL")]
+            self.assertEqual(codes,['environment'])
+            self.assertIsNotNone(db.execute("SELECT 1 FROM operator_observation_requests WHERE issue_id='i'").fetchone())
+        self.assertEqual(self.github.calls,[])
+        # A fresh canonical observation changes the revision; retry uses that
+        # revision and the new requirements, never the rejected request's pins.
+        old_revision=self.revision()
+        self.life.observe_issue(self.command(),'i',state='open',title='Issue',body='Body',requirements='changed',
+            remote_updated_at='2026-10-13T12:00:00Z',generation=1)
+        self.assertNotEqual(self.revision(),old_revision)
+        with self.assertRaises(VersionConflict):self.actions.request('i','recheck',old_revision,'Old decision')
+        self.assertTrue(self.actions.step(self.request('recheck'))['applied'])
+        self.assertEqual(self.view()['reason_code'],'environment')
+        self.assertEqual(self.view()['charged_failures'],0)
+
+    def candidate_recheck(self):
+        self.controller.github=self.github
+        job=self.reserve()
+        helpers.ResultControllerTests.publish(self,job)
+        helpers.ResultControllerTests.capture(self,job,helpers.ResultControllerTests.report(self,job))
+        self.assertTrue(self.controller.step(job)['accepted'])
+        selected=self.view()['current_candidate_id']
+        self.life.open_gate(self.command(),'external_change',details={'reason':'candidate_head_changed'})
+        return job,selected
+
+    def test_reload_changed_head_invalidates_candidate_and_retains_exact_owned_publication(self):
+        from forge.store.delivery_inputs import previous_publication_in
+        job,selected=self.candidate_recheck()
+        self.life.open_gate(self.command(),'environment',details={'reason':'database'})
+        self.github.pr_value['head']['sha']='c'*40
+        request=self.request('recheck')
+        self.assertTrue(self.actions.step(request)['applied'])
+        self.assertIsNone(self.view()['current_candidate_id'])
+        self.assertEqual(self.view()['state'],'building')
+        self.assertEqual(self.view()['reason_code'],'environment')
+        self.assertEqual(self.view()['charged_failures'],0)
+        with self.store.read_snapshot() as db:
+            publication=previous_publication_in(db,'u')
+            self.assertEqual(publication['source_job_id'],job)
+            self.assertEqual(publication['head_oid'],'c'*40)
+            self.assertEqual(publication['author'],self.github.pr_value['user'])
+            self.assertIsNotNone(db.execute('SELECT id FROM candidates WHERE id=?',(selected,)).fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='external_change' AND resolved_at IS NULL").fetchone()[0],0)
+        self.assertEqual(self.github.calls,[])
+        self.assertEqual(self.actions.step(request)['status'],'applied')
+
+    def test_reload_does_not_adopt_a_different_author_branch_or_repository(self):
+        self.candidate_recheck()
+        original=deepcopy(self.github.pr_value)
+        for part in ('author','branch','repository'):
+            with self.subTest(part=part):
+                self.github.pr_value=deepcopy(original)
+                self.github.pr_value['head']['sha']='c'*40
+                if part=='author':self.github.pr_value['user']['login']='someone'
+                elif part=='branch':self.github.pr_value['head']['ref']='another-branch'
+                else:self.github.pr_value['head']['repo']['id']=2
+                self.assertTrue(self.actions.step(self.request('recheck'))['rejected'])
+                self.assertIsNotNone(self.view()['current_candidate_id'])
+                self.assertEqual(self.view()['reason_code'],'external_change')
+        self.assertEqual(self.github.calls,[])
+
+    def test_unavailable_candidate_recheck_explains_the_required_remote_repair(self):
+        self.candidate_recheck();original=deepcopy(self.github.pr_value)
+        for field,value,message in (('draft',True,'ready for review'),('state','closed','Reopen'),('merged',True,'reconciled')):
+            with self.subTest(field=field):
+                self.github.pr_value=deepcopy(original);self.github.pr_value[field]=value
+                request=self.request('recheck')
+                self.assertTrue(self.actions.step(request)['rejected'])
+                self.assertIn(message,self.status(request)['message'])
+                self.assertEqual(self.view()['reason_code'],'external_change')
+
     def test_resume_clears_only_intent_and_verified_hold(self):
         self.actions.step(self.request('pause'))
         self.life.open_gate(self.command(),'environment',details={'reason':'database'})

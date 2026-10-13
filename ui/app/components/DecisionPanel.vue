@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  ACTION_EFFECTS, ACTION_LABELS, ACTION_PENDING_LABELS, decisionNeedsReason, defaultReason,
+  actionEffect, actionLabel, ACTION_PENDING_LABELS, decisionNeedsReason, defaultReason,
   type IssueAction, type IssueDetail,
 } from '~/utils/issues'
 
@@ -26,9 +26,9 @@ function confirm(reason: string) {
   <ConfirmDialog
     :key="`${detail.key}:${action}`"
     :open="open"
-    :title="batchRetry ? 'Retry whole delivery?' : `${ACTION_LABELS[action]}?`"
-    :text="batchRetry ? 'This resets the shared three-failure budget for every member of this delivery. Accepted work and history remain recorded.' : ACTION_EFFECTS[action]"
-    :confirm-label="batchRetry ? 'Retry whole delivery' : ACTION_LABELS[action]"
+    :title="batchRetry ? 'Retry whole delivery?' : `${actionLabel(action, detail)}?`"
+    :text="batchRetry ? 'This resets the shared three-failure budget for every member of this delivery. Accepted work and history remain recorded.' : actionEffect(action, detail)"
+    :confirm-label="batchRetry ? 'Retry whole delivery' : actionLabel(action, detail)"
     reason-label="What changed?"
     :require-reason="needsReason"
     :initial-reason="reason ?? ''"

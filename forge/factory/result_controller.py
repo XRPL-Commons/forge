@@ -15,7 +15,7 @@ from ..store.db import StoreError
 from ..store.executions import Executions, ExecutionQueries
 from ..store.models import Candidate, Command, TransitionError, InvalidDelegationPlan
 from ..store.transitions import Lifecycle, manifest_hash
-from .contracts import digest, result
+from .contracts import BUILD_CANDIDATE_OUTCOMES, digest, result
 from .github import GitHubUnavailable
 from .ownership import ownership, publication_context
 
@@ -81,19 +81,22 @@ class ResultController:
                 and pr.get('head', {}).get('repo', {}).get('id') == job['repo_id'])
 
     @staticmethod
-    def _verification(job, report):
+    def _verification(job, report, *, recovery=None):
         inherited = job.get('input_manifest', {}).get('verification_requests', [])
         requests = [row['verification'] for row in job['verification_requests']] if inherited else []
         if report and report.get('outcome') == 'needs_human_verification':
             requests.append(report['verification'])
+        if recovery is not None:
+            requests.append(recovery['verification'])
         if not requests:
             return None
         wanted = sorted({name for row in requests for name in row.get('checks', [])})
         allowed = {row['name']: row for row in job.get('verification_checks', [])}
         checks = [allowed[name] for name in wanted] if all(row.get('checks') for row in requests) and all(name in allowed for name in wanted) else []
-        if inherited:
+        if inherited or recovery is not None:
             return {'code': 'verification_ci' if checks else 'verification_human',
-                    'details': {'verification_job_id': job['id'], 'job_id': job['id'], 'ci': checks}}
+                    'details': {'verification_job_id': job['id'], 'job_id': job['id'], 'ci': checks,
+                                **({'verification_recovery_job_id': recovery['attempt']} if recovery is not None else {})}}
         return {'code': 'verification_ci' if checks else 'verification_human',
                 'details': {**requests[0], 'checks': wanted, 'ci': checks, 'job_id': job['id']}}
 
@@ -117,6 +120,11 @@ class ResultController:
                  or job['candidate_id'] is not None and job['candidate_id'] != job['current_candidate_id'])
         if stale:
             return {'job_id': job_id, **self._failure(job, {'reason': 'assignment_superseded'}, charge=False)}
+        from .startup_problems import problem
+        startup = problem(job, capture)
+        if startup is not None:
+            return {'job_id': job_id, **self._defer(job,
+                {'reason': 'forge_problem', 'capture_job_id': job_id, 'startup': startup}, 'forge_problem', startup)}
         try:
             report = result(capture.get('result'), job)
         except (ValueError, TypeError, KeyError):
@@ -166,7 +174,7 @@ class ResultController:
                     return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'invalid_delegation_plan'})}
                 return {'job_id': job_id, **planned}
             from .delegation_contracts import task_assignment, read_only_build
-            if report and report['outcome'] in {'pass', 'needs_human_verification'} and task_assignment(job):
+            if report and report['outcome'] in BUILD_CANDIDATE_OUTCOMES and task_assignment(job):
                 from .delegation_artifacts import verify_bundle
                 from ..store.delivery import Delivery
                 try:
@@ -200,7 +208,7 @@ class ResultController:
                 return {'job_id': job_id, **self._defer(job, evidence, 'dependency',
                     {'issues': sorted(report['issues']), 'blocked': blocked, 'evidence': quote,
                      **({'requirements': requirements} if len(members) == 1 else {}), 'job_id': job_id})}
-            publication = (None if read_only_build(job) else
+            publication = (None if read_only_build(job) or not report or report['outcome'] not in BUILD_CANDIDATE_OUTCOMES else
                            self.github.publication(job, requirements, job['input_manifest']['policy_hash']))
             if publication:
                 if publication['base'] != job['input_manifest']['base_oid']:

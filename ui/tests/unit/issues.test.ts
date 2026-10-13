@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
+  actionEffect, ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
@@ -29,6 +29,12 @@ describe('copy maps', () => {
     expect(ACTION_LABELS.retry).toBe('Retry attempt')
     expect(ACTION_LABELS.recheck).toBe('Recheck readiness')
     expect(ACTION_LABELS.stop).toBe('Stop attempt')
+  })
+  it('offers a distinct safe exit for an external change', () => {
+    const changed = row({ status: 'attention', actions: ['recheck'], reason_code: 'external_change' })
+    expect(rowAction(changed, null)).toBe('Reload and continue')
+    expect(actionEffect('recheck', changed)).toContain('repeats review and audit')
+    expect(actionEffect('recheck', changed)).toContain('Other holds remain')
   })
   it('explains the effect of every decision', () => {
     expect(Object.keys(ACTION_EFFECTS).sort()).toEqual(Object.keys(ACTION_LABELS).sort())

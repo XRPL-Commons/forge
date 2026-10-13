@@ -24,10 +24,10 @@ COPY --chmod=0755 forge/harnesses /opt/forge/harnesses
 RUN node /opt/forge/harnesses/install.cjs --links-only \
     && python3 /opt/forge/harnesses/claude/prepare_launch.py
 # Updates run with a private umask; image permissions must not inherit it.
-COPY --chmod=0644 forge/factory/job.py forge/factory/harness.py forge/factory/probe.py /opt/forge/
+COPY --chmod=0644 forge/factory/job.py forge/factory/harness.py forge/factory/startup.py forge/factory/probe.py /opt/forge/
 COPY --chmod=0755 forge/factory/build_environment.py /opt/forge/build_environment.py
 COPY --chmod=0644 deploy/runner/browser-canary.cjs /opt/forge/browser-canary.cjs
 RUN ln -s /opt/forge/build_environment.py /usr/local/bin/safe-build
-LABEL org.forge.build-environment="1"
+LABEL org.forge.build-environment="1" org.forge.startup-protocol="1"
 USER 1000:1000
 WORKDIR /work

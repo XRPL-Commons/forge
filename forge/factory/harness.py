@@ -21,6 +21,22 @@ class AssignmentChanged(PreparationError):
     pass
 
 
+def begin_agent(env):
+    """Wait until the image parent irreversibly records the phase boundary."""
+    descriptor = os.environ.pop('FORGE_STARTUP_FD', None)
+    if descriptor is not None:
+        os.write(int(descriptor), b'agent_started\n')
+        os.close(int(descriptor))
+        acknowledgement = int(os.environ.pop('FORGE_STARTUP_ACK_FD'))
+        try:
+            if os.read(acknowledgement, 1) != b'1':
+                raise RuntimeError('Runner did not acknowledge the agent boundary')
+        finally:
+            os.close(acknowledgement)
+    env.pop('FORGE_STARTUP_FD', None)
+    env.pop('FORGE_STARTUP_ACK_FD', None)
+
+
 def check_publication_target(note, env):
     if note.get('builder_stage') != 'integration' or not note.get('resume_pr'):
         return
@@ -287,7 +303,10 @@ def main():
             break
     env.update(prepare_environment(directory, (note.get('environment') or {}).get('services', [])))
     registry = runpy.run_path('/opt/forge/harnesses/registry.py')
-    code = registry['adapter'](note.get('provider', 'codex'))['run'](note, directory, env, schema(note))
+    adapter = registry['adapter'](note.get('provider', 'codex'))
+    contract = schema(note)
+    begin_agent(env)
+    code = adapter['run'](note, directory, env, contract)
     if (note.get('task') or note.get('delegation')) and Path('/work/result.json').is_file():
         # Export belongs to the completed implementation, not environment setup.
         # A bad claimed commit must charge a failed attempt rather than pause for

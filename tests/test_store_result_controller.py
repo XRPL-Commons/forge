@@ -140,13 +140,19 @@ class ResultControllerTests(unittest.TestCase):
         self.assertEqual(self.charges(), 1)
         self.assertEqual(self.view()['state'], 'building')
 
-    def test_verified_publication_succeeds_even_when_worker_report_is_missing(self):
-        job = self.reserve()
-        self.publish(job)
-        self.capture(job)
-        self.assertTrue(self.controller.step(job)['accepted'])
-        self.assertEqual(self.view()['state'], 'reviewing')
-        self.assertEqual(self.charges(), 0)
+    def test_matching_publication_cannot_promote_unsuccessful_or_invalid_report(self):
+        for outcome in ('unable', 'reject', 'wait', 'failed', None):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                job = self.reserve()
+                self.publish(job)
+                self.capture(job, self.report(job, outcome) if outcome else None)
+                self.github.after_publication = lambda: self.fail('Nonpassing work must not be considered for publication')
+                self.assertTrue(self.controller.step(job)['charged'])
+                self.assertEqual(self.controller.step(job)['outcome'], 'failure')
+                self.assertEqual(self.view()['state'], 'building')
+                self.assertIsNone(self.view()['current_candidate_id'])
+                self.assertEqual(self.charges(), 1)
 
     def test_capture_requires_verified_cleanup_before_any_github_evidence(self):
         job = self.reserve()

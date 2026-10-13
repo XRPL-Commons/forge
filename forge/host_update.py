@@ -42,7 +42,7 @@ UI_PORT, API_PORT = 8787, 8788
 # only costs a rebuild; the image is tagged by this digest, so an unchanged
 # source never rebuilds and never needs requalification.
 RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses', 'forge/factory/job.py',
-                 'forge/factory/harness.py', 'forge/factory/probe.py', 'forge/factory/build_environment.py',
+                 'forge/factory/harness.py', 'forge/factory/startup.py', 'forge/factory/probe.py', 'forge/factory/build_environment.py',
                  'deploy/runner/browser-canary.cjs')
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
 SERVICES = ('forge-status', 'forge-ui', 'forge-supervisor')
@@ -449,7 +449,7 @@ def install_full_environment(root):
     image = full_runner_image(base)
     qualify_runner(image, Path(root) / 'runner-seccomp.json', APPARMOR_PROFILE, full=True)
     switch_full_environment(root, image)
-    record.save(full_image=image)
+    record.save(full_image=image, updated_at=time.time())
     print('Full environment qualified. The supervisor can now assign databases per issue.')
 
 
