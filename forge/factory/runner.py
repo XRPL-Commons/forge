@@ -183,6 +183,8 @@ class ContainerRunner:
             current = {'id': value['Id'], 'status': value['State']['Status'],
                     'exit_code': value['State']['ExitCode'], 'running': value['State']['Running'],
                     'oom_killed': value['State'].get('OOMKilled', False),
+                    'image_id': value.get('Image'),
+                    'startup_protocol': value['Config']['Labels'].get('org.forge.startup-protocol'),
                     'started_at': engine_time(value['State'].get('StartedAt')),
                     'finished_at': engine_time(value['State'].get('FinishedAt'))}
             if resources:
@@ -451,6 +453,22 @@ class ContainerRunner:
                     captured['worktree_bundle'] = archive.extractfile(entries[0]).read()
             except (RunnerError, ValueError, tarfile.TarError):
                 captured['missing'].append('delegated output bundle')
+        # Reserved entrypoint exit + image-owned protocol are independent of
+        # worker report/log contents. The parent emits this only before an agent.
+        if (current.get('startup_protocol') == '1' and current.get('exit_code') == 78
+                and current.get('running') is False and not current.get('oom_killed')):
+            try:
+                raw = self.call(['cp', current['id'] + ':/work/forge-startup.json', '-'], max_output=16384).stdout
+                with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                    entries = archive.getmembers()
+                    if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 4096:
+                        raise ValueError('Invalid startup receipt')
+                    receipt = json.loads(archive.extractfile(entries[0]).read(), object_pairs_hook=unique)
+                from .startup_problems import validated_receipt
+                if validated_receipt(receipt, job['id']) is not None:
+                    captured['forge_startup'] = receipt
+            except (RunnerError, ValueError, tarfile.TarError, UnicodeError):
+                captured['missing'].append('valid startup receipt')
         captured['execution'] = current
         return captured
 
