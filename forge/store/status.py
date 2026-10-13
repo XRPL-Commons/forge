@@ -43,6 +43,7 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'budget_exhausted': ('Stopped after three failed attempts; choose how to continue', None),
     'approach_required': ('The same failure keeps recurring; a new approach is needed', None),
     'decision_required': ('Waiting for an operator decision', 'Waiting for an operator decision: {question}'),
+    'forge_problem': ('Forge failed before the agent started; waiting for a Forge repair. No issue attempt was charged', None),
     'repository_setup': ('Waiting for repository setup; work resumes once it is ready', None),
     'environment': ('Waiting for the build environment to be repaired', None),
     'observation_unavailable': ('GitHub could not be read; waiting to confirm the current state', None),

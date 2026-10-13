@@ -13,7 +13,7 @@ LABELS = {
     'attention': 'Needs attention', 'waiting': 'Waiting', 'blocked': 'Blocked',
     'completed': 'Completed', 'dropped': 'No longer needed',
 }
-ATTENTION = {'budget_exhausted', 'approach_required', 'decision_required', 'repository_setup', 'environment',
+ATTENTION = {'forge_problem', 'budget_exhausted', 'approach_required', 'decision_required', 'repository_setup', 'environment',
              'legacy_reconciliation', 'membership_decision', 'external_change', 'verification_human',
              'approval_required', 'observation_unavailable'}
 
@@ -58,4 +58,4 @@ def operator_status(issue, active=False):
             if github_rule(details.get('value', details)): reason_code = 'github_permission'
     else:
         reason = describe(reason_code) if reason_code else 'Not queued for Forge'
-    return {'code':code, 'label':LABELS[code], 'reason_code':reason_code, 'reason':reason}
+    return {'code':code, 'label':LABELS[code], 'reason_code':reason_code, 'reason':reason, **({'owner':'forge'} if reason_code=='forge_problem' else {})}

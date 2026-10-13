@@ -682,10 +682,15 @@ class Lifecycle:
         A wait is not a successful review/audit. Releasing the gate retries that
         phase; any existing candidate and failure history stay intact.
         """
-        if code not in {'environment', 'provider_unavailable', 'decision_required', 'dependency', 'verification_human', 'verification_ci'}:
+        if code not in {'forge_problem', 'environment', 'provider_unavailable', 'decision_required', 'dependency', 'verification_human', 'verification_ci'}:
             raise TransitionError('unsupported worker deferral gate')
         if not isinstance(evidence, dict) or not evidence or not isinstance(details, dict) or not details:
             raise TransitionError('deferral requires structured evidence and gate details')
+        if code == 'forge_problem':
+            from ..factory.startup_problems import validated_receipt
+            receipt = {key:details.get(key) for key in ('version','phase','exception','file','line','signature')}
+            if details.get('owner') != 'forge' or validated_receipt({**receipt,'attempt':job_id}, job_id) is None:
+                raise TransitionError('Forge problem requires trusted startup evidence')
         if code == 'provider_unavailable':
             retry_at = details.get('retry_at')
             if type(retry_at) not in (int, float) or not math.isfinite(retry_at) or retry_at <= self.clock():
@@ -697,7 +702,15 @@ class Lifecycle:
             self._result(db, command, job, evidence, 'deferred' if current else 'stale_deferred')
             if not current:
                 return {'accepted': False, 'charged': False}
-            member_id = job['member_id'] if code not in {'provider_unavailable', 'verification_human', 'verification_ci'} else None
+            if code == 'forge_problem':
+                previous = db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL", (unit['id'],)).fetchone()
+                gate_id = previous['id'] if previous else self._open_gate(db, command, code, {**details, 'job_id': job_id})
+                # Every result keeps its own immutable evidence. Sharing a unit
+                # blocker must not discard a simultaneous task's capture or grow
+                # an unbounded JSON list inside that blocker.
+                db.execute('INSERT INTO forge_problem_jobs(job_id,gate_id) VALUES(?,?)', (job_id, gate_id))
+                return {'accepted': True, 'charged': False, 'gate_id': gate_id, 'gate_ids': [gate_id]}
+            member_id = job['member_id'] if code not in {'forge_problem', 'provider_unavailable', 'verification_human', 'verification_ci'} else None
             candidate_id = job['candidate_id'] if code in {'verification_human', 'verification_ci'} else None
             if code in {'verification_human', 'verification_ci'} and candidate_id is None:
                 raise TransitionError('verification deferral requires an existing exact candidate')

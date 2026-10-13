@@ -117,6 +117,11 @@ class ResultController:
                  or job['candidate_id'] is not None and job['candidate_id'] != job['current_candidate_id'])
         if stale:
             return {'job_id': job_id, **self._failure(job, {'reason': 'assignment_superseded'}, charge=False)}
+        from .startup_problems import problem
+        startup = problem(job, capture)
+        if startup is not None:
+            return {'job_id': job_id, **self._defer(job,
+                {'reason': 'forge_problem', 'capture_job_id': job_id, 'startup': startup}, 'forge_problem', startup)}
         try:
             report = result(capture.get('result'), job)
         except (ValueError, TypeError, KeyError):

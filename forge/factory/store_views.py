@@ -255,6 +255,8 @@ class PipelineViews:
         written=environment_block.get('summary') or (json.loads(context['summary_json']) if context and context['summary_json'] and (decision or reason=='budget_exhausted') else None)
         if isinstance(written,dict) and written.get('headline'):
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
+        if reason=='forge_problem':
+            summary={'headline':'Forge needs a repair', 'plain':wording}
         if reason=='environment' and (rule:=github_rule(environment_block)):
             summary={'headline':rule['headline'],'plain':rule['plain']}
         delivery_approved = bool(unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone())
@@ -268,6 +270,7 @@ class PipelineViews:
             delivery_approved=delivery_approved,
             setup_needed=reason=='repository_setup', environment_blocker=environment_block.get('detail') or environment_block.get('summary'),
             decision_request=decision,
+            **({'forge_problem':details} if reason=='forge_problem' else {}),
             approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
             verification_request={**verification_view,'can_confirm':fresh and reason=='verification_human'} if verification_view else None,
             approvals=approvals, last_checked=checked, merge_blocker={'reason':merge_block.get('reason') or wording} if merge_block else None,
