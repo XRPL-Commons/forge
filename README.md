@@ -93,6 +93,9 @@ bin/forge update
 See [installation](docs/installation.md), [guided onboarding](docs/onboarding.md),
 the [issue state machine and blockers](docs/issue-state-machine.md) and the
 [workflow contract](docs/software-factory-spec.md).
+The [current architecture target](docs/target-architecture.md) records the agreed
+move to one GitHub App, tokenless workers and Tailscale identity, including the
+proofs and migration steps still required.
 
 **Status: experimental.** The durable factory has synthetic workflow/restart tests
 and real credential-free runner canaries. The guided setup verifies access, provider
