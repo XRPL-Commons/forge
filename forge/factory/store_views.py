@@ -61,13 +61,13 @@ def available_actions(issue, unit, *, cleanup=False, pending=False):
         return [] if cleanup else ['resume'] if reason != 'operator_backlog' else ['queue']
     if reason in {'budget_exhausted', 'approach_required', 'decision_required'}:
         return [] if cleanup else ['retry']
-    if reason in {'environment', 'repository_setup', 'observation_unavailable'}:
+    if reason in {'environment', 'repository_setup', 'observation_unavailable', 'external_change'}:
         return [] if cleanup else ['recheck']
     if reason == 'approval_required':
         return ['assign_reviewer', 'pause']
     if reason == 'verification_human':
         return ['pause']  # Explicit verification has its own attributed endpoint.
-    if reason in {'membership_decision', 'legacy_reconciliation', 'external_change'}:
+    if reason in {'membership_decision', 'legacy_reconciliation'}:
         return []
     return ['pause'] if cleanup else ['pause', 'backlog']
 

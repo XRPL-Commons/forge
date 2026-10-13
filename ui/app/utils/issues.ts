@@ -147,6 +147,16 @@ export const ACTION_LABELS: Record<IssueAction, string> = {
   close: 'Close issue',
 }
 
+export function actionLabel(action: IssueAction, issue?: Pick<IssueRow, 'reason_code'>): string {
+  return action === 'recheck' && issue?.reason_code === 'external_change' ? 'Reload and continue' : ACTION_LABELS[action]
+}
+
+export function actionEffect(action: IssueAction, issue?: Pick<IssueRow, 'reason_code'>): string {
+  return action === 'recheck' && issue?.reason_code === 'external_change'
+    ? 'Forge reloads the issue and pull request. If an open pull request has changed, Forge rebuilds it and repeats review and audit. Other holds remain. Reopen a closed pull request, mark a draft ready, or restore its target branch on GitHub before continuing.'
+    : ACTION_EFFECTS[action]
+}
+
 // What a decision's confirm button says while Forge is answering it.
 export const ACTION_PENDING_LABELS: Record<IssueAction, string> = {
   queue: 'Queuing…',
@@ -525,18 +535,18 @@ const PRIMARY_DECISIONS: IssueAction[] = ['assign_reviewer', 'retry', 'recheck',
 export interface RowAction { label: string; decision: boolean }
 
 export function rowPrimary(
-  row: Pick<IssueRow, 'status' | 'actions' | 'approval'>, pending: IssueActionStatus | null | undefined,
+  row: Pick<IssueRow, 'status' | 'actions' | 'approval' | 'reason_code'>, pending: IssueActionStatus | null | undefined,
 ): RowAction {
   if (pending) return { label: 'Applying…', decision: false }
   if (row.approval) return { label: 'Approve…', decision: true }
   const decision = PRIMARY_DECISIONS.find(action => (row.actions ?? []).includes(action as IssueRow['actions'][number]))
-  if (decision) return { label: ACTION_LABELS[decision], decision: true }
+  if (decision) return { label: actionLabel(decision, row), decision: true }
   if (row.status === 'working') return { label: 'View progress', decision: false }
   if (row.status === 'attention') return { label: 'Review', decision: false }
   return { label: 'Open', decision: false }
 }
 
-export function rowAction(row: Pick<IssueRow, 'status' | 'actions' | 'approval'>, pending: IssueActionStatus | null | undefined): string {
+export function rowAction(row: Pick<IssueRow, 'status' | 'actions' | 'approval' | 'reason_code'>, pending: IssueActionStatus | null | undefined): string {
   return rowPrimary(row, pending).label
 }
 

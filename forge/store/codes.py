@@ -119,7 +119,7 @@ GATES: dict[str, Gate] = {
     'membership_decision': Gate('intent', 'operator', EITHER),
     'operator_sync': Gate('intent', 'observation', EITHER),
     'triage_sync': Gate('intent', 'observation', frozenset({'member'})),
-    'external_change': Gate('intent', 'operator', EITHER),
+    'external_change': Gate('intent', 'observation', EITHER),
     'ownership_conflict': Gate('intent', 'observation', EITHER),
     'budget_exhausted': Gate('decision', 'operator', UNIT),
     'approach_required': Gate('decision', 'operator', EITHER),

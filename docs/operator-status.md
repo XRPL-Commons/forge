@@ -39,3 +39,21 @@ creates its cases with typed lifecycle commands and checks public projections,
 SQL filters, scoped client reads and CLI output. The UI test uses the same
 fixture for Activity cards/line, issue cards/detail labels and pipeline reasons,
 including contradictory legacy fields that must not override canonical values.
+
+## Reloading after a changed issue or pull request
+
+A rejected stale decision remains visible as a rejected request; it does not add
+an execution hold. Refresh the issue and submit a new decision with its current
+revision. Forge also schedules a fresh observation after rejection.
+
+A genuine external-change hold offers **Reload and continue**. Forge rereads the
+issue and PR. An exact, restored candidate can resume after observation. For an
+open PR with changed commits, the operator action invalidates the old candidate
+and its reviews, retains only the exact owned PR as rebuild input, and repeats
+Review and Audit. Other holds and the failure budget remain intact.
+
+A draft must be marked ready, a closed PR reopened, or a changed target branch
+restored on GitHub before continuing. A changed PR already merged needs merge
+reconciliation; this action cannot certify different merged commits. Migration
+035 removes only historical rejection-created holds with a `request_id`, leaving
+actual external-change holds and their evidence untouched.

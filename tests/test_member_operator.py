@@ -213,6 +213,43 @@ class MemberOperatorTests(unittest.TestCase):
             self.membership_request('issue-0','resume_delivery')
         self.assertEqual(self.remote.calls,[])
 
+    def test_group_reload_retains_exact_continuation_and_another_members_environment_hold(self):
+        from forge.store.models import Candidate
+        from forge.store.executions import Launch
+        from forge.store.transitions import manifest_hash,project_unit
+        from forge.store.delivery_inputs import previous_publication_in
+        from forge.factory.ownership import publication_context,owned_publication_matches
+        _,plan,_=self.setup_actions()
+        for key in ('0','1'):
+            child,manifest=self.child(plan,key);self.accept(child,manifest,key)
+        manifest=self.manifest('integration')
+        owner=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='integration',
+            input_manifest=manifest,launch=Launch('forge/batch','builder[bot]','codex',200,{},{}))
+        candidate=Candidate(7,'forge/batch','c'*40,'base','policy',manifest['requirements_hash'],manifest_hash(manifest))
+        self.delivery.publish_candidate(self.command(),owner['job_id'],execution_fence='integration',input_manifest=manifest,
+            candidate=candidate,evidence={'verified':True,'pull_number':7,'head_oid':candidate.head_oid,'base_oid':'base'})
+        self.clean(owner,'integration')
+        self.life.open_gate(self.command(),'environment',member_id=self.members['issue-1'],details={'reason':'database'})
+        self.life.open_gate(self.command(),'external_change',details={'reason':'candidate_head_changed'})
+        self.remote.pull={'number':7,'state':'open','draft':False,'merged':False,
+            'user':{'id':42,'login':'builder[bot]','type':'Bot'},
+            'head':{'sha':'d'*40,'ref':'forge/batch','repo':{'id':1}},
+            'base':{'sha':'b'*40,'ref':'main','repo':{'id':1}}}
+        self.assertTrue(self.actions.step(self.request('issue-0','recheck'))['applied'])
+        with self.store.read_snapshot() as db:
+            previous=previous_publication_in(db,'batch')
+            self.assertEqual(previous['source_job_id'],owner['job_id'])
+            self.assertEqual(previous['head_oid'],'d'*40)
+            self.assertIsNone(project_unit(db,'batch')['current_candidate_id'])
+            self.assertEqual(project_unit(db,'batch')['reason_code'],'environment')
+            self.assertEqual([r[0] for r in db.execute("SELECT member_id FROM unit_gates WHERE code='environment' AND resolved_at IS NULL")],[self.members['issue-1']])
+        self.assertEqual(self.manifest('planning')['previous_publication'],previous)
+        context=publication_context(self.store,'batch',{})
+        self.assertTrue(owned_publication_matches(self.remote.pull,context))
+        changed=deepcopy(self.remote.pull);changed['user']['id']=99
+        self.assertFalse(owned_publication_matches(changed,context))
+        self.assertEqual(self.query.tree('batch')['charged_failures'],0)
+
     def test_member_closure_verifies_candidate_and_keeps_shared_pr_open(self):
         from forge.store.models import Candidate
         from forge.store.transitions import manifest_hash
