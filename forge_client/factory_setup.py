@@ -267,14 +267,27 @@ def _wizard(workflow, *, ask, tell, open_browser):
         owner = ((factory.state.get('factory_owner') or {}).get('login')
                  or ask('GitHub organization or user that will own the four Apps: ').strip()) if pending_roles else None
         for role in pending_roles:
-            result = factory.apps(role=role, owner=owner, apply=True)
-            link = result.get('url') or result.get('install_url')
-            if link:
-                tell(role.title() + ': sign in to Forge as ' + factory.state['factory_actor']['login']
-                     + ', register the App on GitHub, and install it on your chosen repository.')
-                tell(link); open_browser(link)
-                if ask('App registered and installed? [y/N] ').strip().lower() not in ('y', 'yes'):
-                    return result
+            if view['roles'][role]['registered'] and view['roles'][role]['status'] == 'ok':
+                continue
+            _open_app_step(factory, role, owner, tell=tell, open_browser=open_browser)
+            while True:
+                choice = ask(role.title() + ' App: [c]heck, [r]eopen browser, [s]ave and exit [c]: ').strip().lower()
+                if choice in ('s', 'save', 'exit'):
+                    tell('Progress is saved. Resume with forge setup continue --ssh ' + shlex.quote(workflow.ssh))
+                    return view
+                if choice in ('r', 'reopen'):
+                    _open_app_step(factory, role, owner, tell=tell, open_browser=open_browser)
+                elif choice in ('', 'c', 'check'):
+                    view = factory.call('refresh')
+                    observed = view['roles'][role]
+                    if observed['registered'] and observed['status'] == 'ok':
+                        tell(role.title() + ' App registration and installation access verified.')
+                        break
+                    tell(role.title() + ' App is not ready yet. '
+                         + ('Registration is saved; complete installation on your chosen repository.'
+                            if observed['registered'] else 'Registration has not completed.'))
+                else:
+                    tell('Choose check, reopen browser, or save and exit.')
         view = factory.call('refresh')
         if not all(r['status'] == 'ok' for r in view['roles'].values()):
             tell('Some Apps are missing installation access. Complete their GitHub installation, then resume.')
@@ -304,6 +317,22 @@ def _wizard(workflow, *, ask, tell, open_browser):
     if not prior and ask('Mark this issue ready for Forge? [y/N] ').strip().lower() not in ('y', 'yes'):
         return view
     return factory.pilot(name=name, number=number, apply=not bool(prior), wait=120)
+
+
+def _open_app_step(factory, role, owner, *, tell, open_browser):
+    result = factory.apps(role=role, owner=owner, apply=True)
+    if result.get('install_url'):
+        tell(role.title() + ': registration is saved. Install this existing App on your chosen repository.')
+    else:
+        tell(role.title() + ': sign in to Forge as ' + factory.state['factory_actor']['login']
+             + ', approve App registration on GitHub, and install it on your chosen repository.')
+        tell('If passkey verification leaves a blank GitHub registration form, finish verification, '
+             'then choose reopen browser here. Do not fill in the blank form manually.')
+    tell('The CLI handles setup and verification; you complete the browser approvals. '
+         'Return here and choose check when finished.')
+    link = result.get('url') or result.get('install_url')
+    if link:
+        tell(link); open_browser(link)
 
 
 def schemas():

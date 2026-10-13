@@ -61,6 +61,14 @@ def run_bounded(argv, *, payload=None, input_bytes=None, input_limit=65536, outp
                         output.extend(chunk)
             code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if code not in allowed_codes:
+            try:
+                failure = json.loads(output)
+            except (ValueError, UnicodeError):
+                failure = None
+            if (isinstance(failure, dict) and failure.get('status') in (403, '403')
+                    and failure.get('message') == 'Upgrade to GitHub Pro or make this repository public to enable this feature.'):
+                raise SetupError('github_plan_required',
+                                 'GitHub reports that this repository\'s plan does not support the requested feature.')
             raise SetupError('github_request_failed', 'GitHub request failed; check local login, permissions and the requested operation.')
         return bytes(output)
     except (OSError, subprocess.SubprocessError):
