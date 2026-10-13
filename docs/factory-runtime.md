@@ -155,35 +155,16 @@ See [How an issue moves](issue-state-machine.md) for status meanings. Technical 
 
 ### Forge startup problems
 
-The runner recognizes a narrow, trusted class of Forge failures before an agent
-starts: import, name and syntax errors in image-owned harness code. A private pipe
-connects the startup wrapper to the image entrypoint. The parent consumes and
-irrevocably records the agent-start marker, closes that channel, then acknowledges
-it before the harness can call the provider. Expected configuration and checkout-preparation failures,
-application test failures, provider errors, timeouts and worker-written logs do
-not establish this classification.
+**Forge needs a repair** means an image-owned harness failed before the agent
+started. These verified import, name and syntax errors consume no issue attempts.
+Forge retains the failure evidence and waits for a qualified replacement image.
 
-After verified capture and cleanup, a current assignment receives a
-`forge_problem` gate owned by Forge. It does not consume an issue failure charge
-or create a recovery investigation. The gate retains the attempt, actual image,
-exception class, image file/line and stable signature; the existing scrubbed log
-artifact retains diagnostics. Replayed results do not create another gate or
-charge. Concurrent failed tasks share one unit blocker; immutable job, member and
-gate associations retain each separate captured result, including after an
-operator splits the delivery. Other holds and assignment
-fences remain effective.
+The normal updater qualifies each replacement before activating it. Once every
+affected worker image has changed, Forge releases this blocker and checks whether
+work can resume. Other holds still apply. A configuration-only or same-image
+update does not retry the fault.
 
-The normal supervisor wait recheck releases this blocker when every affected
-standard/full image has a different active immutable pin matching the updater's
-successful qualified host record. Changing configuration alone does not release
-it. Independent holds, stored work and the failure budget remain unchanged; the
-ordinary scheduler then decides whether work can resume. The qualified image may
-already be installed when an older job finishes. Source-only or same-image
-updates do not retry the same startup fault.
-
-This first step does not file GitHub issues, correct historical charges without
-trusted receipts, or classify all runner/store failures. The full #262 exit envelope, provider retry and report-drafting contract remains
-unimplemented. This receipt is consumed by ordinary ResultController jobs;
-recovery and auxiliary planning/discussion controllers do not yet classify it.
-Those parts of #258/#262 remain separate work. Images predating the startup
-protocol cannot supply this proof.
+This handling currently covers ordinary build, review and audit assignments.
+The broader failure envelope and **Report to Forge** action are still planned.
+See the [startup protocol and scope](factory-runtime-reference.md#forge-startup-problems)
+for technical details.
