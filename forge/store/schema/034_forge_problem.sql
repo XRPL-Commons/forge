@@ -5,8 +5,11 @@ VALUES('forge_problem','readiness',4,'observation',1,0,0,0);
 CREATE TRIGGER gate_codes_no_insert BEFORE INSERT ON gate_codes BEGIN SELECT RAISE(ABORT,'registry changes require a migration'); END;
 
 CREATE TABLE forge_problem_jobs (
- job_id TEXT PRIMARY KEY REFERENCES jobs(id),
- gate_id TEXT NOT NULL REFERENCES unit_gates(id)
+ job_id TEXT NOT NULL REFERENCES jobs(id),
+ gate_id TEXT NOT NULL REFERENCES unit_gates(id),
+ member_id TEXT NOT NULL REFERENCES unit_issues(id),
+ details_json TEXT NOT NULL CHECK(json_valid(details_json) AND length(details_json)<=65536),
+ PRIMARY KEY(job_id,gate_id,member_id)
 ) STRICT;
 CREATE INDEX forge_problem_jobs_gate ON forge_problem_jobs(gate_id,job_id);
 CREATE TRIGGER forge_problem_jobs_no_update BEFORE UPDATE ON forge_problem_jobs

@@ -449,7 +449,7 @@ def install_full_environment(root):
     image = full_runner_image(base)
     qualify_runner(image, Path(root) / 'runner-seccomp.json', APPARMOR_PROFILE, full=True)
     switch_full_environment(root, image)
-    record.save(full_image=image)
+    record.save(full_image=image, updated_at=time.time())
     print('Full environment qualified. The supervisor can now assign databases per issue.')
 
 
