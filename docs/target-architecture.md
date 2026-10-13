@@ -1,10 +1,19 @@
 # Current architecture target and delivery order
 
-Decision: 13 October 2026, [#259](https://github.com/XRPL-Commons/forge/issues/259).
+Decision: 13 October 2026, [#269](https://github.com/XRPL-Commons/forge/issues/269),
+with the publication and identity target in
+[#259](https://github.com/XRPL-Commons/forge/issues/259).
 This document distinguishes the agreed target from the implementation on `main`
-at `06c6351`. It supplements dated decisions; it does not rewrite their evidence.
+at `e38e367`. It supplements dated decisions; it does not rewrite their evidence.
 
 ## Agreed target
+
+Forge has a deterministic core and one mover agent, the steward. The core owns
+state, gates, budgets, fencing, observation and external effects. The steward
+receives a dossier and proposes a move from a typed menu; the core validates and
+applies it. Coding harnesses execute assignments without authority over flow.
+Every effect follows intent, apply and read-back. Every wait has an owner and an
+exit, and every open unit is running, scheduled or owned.
 
 - **One Forge GitHub App.** The supervisor holds its private key and owns GitHub
   writes: commits, refs, PRs, comments, labels, checks and merges. The intended
@@ -46,6 +55,34 @@ header to the allowlist is not an identity implementation.
 
 ## Delivery phases
 
+### 0. Observable waits and bounded recovery — #260–#264
+
+These small changes ship before the architecture migration:
+
+- **#260:** reject stale operator requests without opening a gate. Give remaining
+  `external_change` waits a reload/observation exit, and repair the specifically
+  identified old request-created gates.
+- **#261:** persist each dispatch/result/merge decline with its next action or
+  owned gate. Detect otherwise unowned stalls; queued work must have a real
+  schedule. Rebuild stale-base assignments rather than silently declining.
+- **#262:** introduce the image-owned exit envelope and distinguish Forge faults,
+  provider errors, timeouts and OOM. Forge faults and provider cooldowns do not
+  charge the issue; timeouts charge once; OOM follows deterministic escalation.
+  Provide a deduplicated Report to Forge draft and retry affected work on deploy.
+  A trusted pre-agent fault receipt is an initial slice, not the complete envelope.
+- **#263:** let Recheck release worker-claimed environment/permission waits for a
+  new attempt. Re-test on relevant version, repository, environment or login
+  changes and bounded backoff. Charge an unchanged repeated claim once and invoke
+  the steward. Keep unrelated gates intact.
+- **#264:** apply effect backoff and attempt caps. Resolve bounded uncertainty from
+  fresh evidence: confirm a merged PR, refuse a closed-unmerged or changed-head
+  PR regardless of send count, or escalate unresolved ambiguity to a Forge gate.
+  Long-lived unmergeability returns work for rebuilding. Never infer an outcome
+  merely because time elapsed.
+
+Recheck and outbox changes can ship independently of supervisor publication and
+one-App setup. Their later steward/publication integrations remain explicit work.
+
 ### 1. Supervisor publication — #255
 
 Build this around retained verified bundles and durable external effects:
@@ -85,7 +122,7 @@ Per-file/file-count/bundle limits are transport/resource bounds; do not introduc
 an arbitrary total-diff-size quality gate. Pin the actual bounds and LFS refusal
 contract before implementation.
 
-### 2. Tokenless input and output for every worker role
+### 2. Tokenless workers and sandbox hardening — #259 phase 2, #265
 
 Add a supervisor-owned mirror and immutable job input selection. Pin repository,
 base/head and exact dependency outputs; never mount supervisor credentials or a
@@ -104,7 +141,39 @@ contract or be explicitly drained before deleting the old path.
 repository-scoped read exception. A credential-bearing exception must be described
 as an exception; it cannot count as full tokenless-worker acceptance.
 
-### 3. One App and check-based verdicts
+#265 also covers provider credential isolation, removing GitHub credentials from
+Codex shells and updating canaries, a bounded `/work` volume, worker network
+isolation, and read-only npm/PyPI pull-through proxies. Verify provider support for
+access-only snapshots or the preferred host-side model proxy; reject refresh-token
+write-back that did not come from the host refresher. This work is part of Phase 2,
+not deferred merely because #259 separately lists provider credentials later.
+
+### 3. Steward v1, starting with recovery — #258
+
+Use a typed move menu, an exact input revision, ranked choices and one recommended
+move. Keep durable decision/effect replay and a single decision per failure. The
+three steward cycles are distinct from the delivery's three-failure budget;
+automatic retries do not reset exhausted budgets or clear independent holds.
+
+### 4. Consolidation and typed fields — #267, #266
+
+Unify triage, recovery and discussion as steward modes sharing dossier/decision v1,
+guards, autonomy levels and choices UI; add stall and brief modes. Review and Audit
+remain independent executors. Consolidate the gate registry into four classes,
+reshape unit states and the separate running/scheduled/owned axis, and merge the
+operator-action outbox into the external-effects outbox. Build result v2 uses
+`done | cannot_complete` plus typed claims.
+
+Replace each prose-driven decision only when its typed replacement exists:
+dependencies, environment tier, worker/provider errors, recovery approach,
+PR-linked issues and dependency claims. Keep the structured operator dependency
+override. Verify GitHub's typed linked-issue/ownership fit before replacing that
+reader. Each replacement can be a small change; the current rule remains the
+single authority until its replacement lands.
+
+### 5. One App, identity and provider credentials — #259 phases 3–5
+
+#### One App and check-based verdicts
 
 Collapse connection/onboarding configuration only after publication and input
 boundaries no longer depend on separate role credentials. Record an explicit,
@@ -133,7 +202,7 @@ A single-App manifest replaces the four-App wizard. Keep resumable browser
 handoffs, exact repository selection, local administrator credentials and explicit
 Start. Reduced operator steps are a target, not measured acceptance yet.
 
-### 4. Tailscale identity and same-App GitHub fallback
+#### Tailscale identity and same-App GitHub fallback
 
 Choose and test the full trusted path: Tailscale Serve → UI proxy → status API.
 A loopback bind alone does not prove the forwarded identity came from Serve; the
@@ -153,34 +222,29 @@ to the same operator without an accidental account-linking grant.
 an installation, with the required minimal scopes. Preserve current OAuth sessions
 until a verified migration is available; deleting the old wizard is the final step.
 
-### 5. Provider credential reduction — optional
+#### Provider credentials
 
-Extend proven access-only provider credential handling where a provider supports
-it. This is separate from removing GitHub credentials. Claude/Grok refresh-token
-and concurrent-login behavior need their own conformance proof. Do not gate the
-first four phases on this optional work or enable an unqualified provider.
+Complete #259's provider credential work alongside the #265 boundary established
+in Phase 2. Provider-specific capabilities need conformance proof; do not call an
+unverified credential path complete or introduce another authority for refreshes.
 
-## Independent work that can ship first
+### 6. Delete the legacy JSON runtime — #268
 
-- Reject unsuccessful build reports before candidate promotion, with regressions
-  covering ordinary and integration paths and no weakened late-capture authority.
-- Preserve canonical dispatch reasons and next scheduling opportunity; expose an
-  honest owner when no worker/schedule/gate explains an open unit. This is the
-  first step of [#258](https://github.com/XRPL-Commons/forge/issues/258).
-- Classify trusted pre-agent runner/harness failures separately from issue failures.
-  Never infer a Forge fault solely from worker-authored prose. Retain one immutable
-  failure identity, do not double-charge, and expose the existing evidence.
-- Improve current setup resumption and specific prerequisite explanations. These
-  changes remain useful during migration and must not fabricate readiness.
+Confirm every known installation selects SQLite first. Move shared helpers into
+neutral modules, make startup refuse an unselected store with a migration message,
+then remove the legacy supervisor, ledger and operational JSON branches and their
+tests. Retain the importer for old installations. The absence of a selection marker
+must no longer silently choose a second runtime.
 
-#258's broader steward requires a typed move menu, exact input revision, ranked
-choices, one recommendation and durable decision/effect replay. Its three steward
-cycles are distinct from the delivery's three-failure budget: automatic retries
-must not silently reset an exhausted budget or clear independent human/hold gates.
-Specify the stall interval, retry adjustments/caps and relevant-change bindings.
-A new Forge release is a reason to recheck a recorded Forge fault, not permission
-for an unlimited retry loop. Reporting an issue is an operator-approved external
-effect; deduplicate by a safe signature without publishing private source or logs.
+## Work that remains useful during the sequence
+
+Reject unsuccessful build reports before candidate promotion without weakening
+late-capture authority. Improve current setup resumption and prerequisite wording
+without fabricating readiness. Neither change requires the one-App migration.
+
+Reporting an issue remains an operator-approved external effect. Deduplicate by a
+safe signature without publishing private source or logs. A new release rechecks
+a recorded fault; it does not establish an unlimited retry loop.
 
 ## Acceptance carried forward
 
@@ -195,5 +259,6 @@ effect; deduplicate by a safe signature without publishing private source or log
 The north star remains time from recorded CLI installation to the first normal
 GitHub-confirmed merge, including approvals and retries. Missing installation
 start remains unknown. A functioning service or a target touch-count estimate does
-not establish that measurement. Optional providers and observer work stay deferred
-under the existing core-completion priority.
+not establish that measurement. Optional new providers and observer work stay
+deferred under the existing core-completion priority; this does not defer #265
+credential isolation for supported providers.
