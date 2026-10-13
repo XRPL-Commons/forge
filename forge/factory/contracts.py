@@ -14,6 +14,7 @@ RETRY_STATE = {'build': 'ready', 'review': 'built', 'audit': 'reviewed', 'merge'
 SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?\Z')
 MARKER = re.compile(r'<!-- forge-submission\s+(.*?)\s+-->', re.S)
 MAX_FAILURES = 3
+BUILD_CANDIDATE_OUTCOMES = frozenset({'pass', 'needs_human_verification'})
 ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services', 'github_permission')
 # Plain-language limits, shared with harness.schema(). result() truncates, never rejects.
 HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES = 90, 360, 3
