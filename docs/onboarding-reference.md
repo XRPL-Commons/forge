@@ -251,31 +251,29 @@ confirmed merge or closed state. Worker exit alone never counts as completion.
 ## Reset and restart
 
 Settings → Reset Forge opens the single confirmation screen. Stop and reset Forge
-fences scheduling first. The supervisor stops each recorded container and verifies
-its removal, archives lifecycle history, and clears active configuration and
-Forge-owned credential copies. It preserves GitHub issues, commits, branches,
-PRs and App registrations, shared external credentials, and unrelated host work.
+fences scheduling first. The supervisor pauses open work, stops each recorded
+container and verifies its removal, waits for pending GitHub effects, then retires
+the active configuration, disables repositories, revokes agent connections and
+clears Forge-owned credential copies. Lifecycle history stays in the SQLite store.
+It preserves GitHub issues, commits, branches, PRs and App registrations, shared
+external credentials, and unrelated host work.
 
-The reset journal is outside the archived lifecycle. It survives service restarts;
-an unverified teardown keeps reset pending and scheduling closed. The dashboard
-remains available throughout. Old reset intents cannot target a newer setup.
-Archives remain private under archives/reset-<operation-id>/; they do not feed the
-new queue or failure budget. Remove old App registrations on GitHub separately.
+The reset journal survives service restarts; an unverified teardown keeps reset
+pending and scheduling closed. The dashboard remains available throughout. Old
+reset intents cannot target a newer setup. Retained history does not feed the new
+queue or failure budget. Remove old App registrations on GitHub separately.
 
 Reset stops only Forge's own runner containers and discussion jobs. It does not
 look for or stop tmux sessions or other processes, and it does not touch
-checkouts that Forge did not provision as disposable runner workspaces. A setup
-state recorded by the retired tmux fleet mode (phase `legacy`) is read as a fresh
-setup.
+checkouts that Forge did not provision as disposable runner workspaces.
 
 ## Configuration and recovery
 
-setup/factory.json and setup/runtime.json are draft configuration. factory.json
-and runtime.json become active only when the supervisor applies Start. Settings
-for repositories and worker capacity are available in /settings. Other runtime
-configuration remains in the corresponding JSON files.
-state/onboarding/ holds the setup and reset journal. Do not delete ownership
-records to bypass an unsuccessful cleanup.
+setup/factory.json and setup/runtime.json are draft configuration domains in the
+SQLite store. factory.json and runtime.json become active only when the supervisor
+applies Start. Settings for repositories and worker capacity are available in
+/settings. The store's setup instance holds the setup and reset journal. Do not
+delete ownership records to bypass an unsuccessful cleanup.
 
 If App registration succeeds but its one-use key exchange is lost, remove that
 unused App on GitHub and reconnect the role. A stale callback cannot install an

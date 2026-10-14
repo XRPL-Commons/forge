@@ -1,152 +1,17 @@
-import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from forge.factory import build_environment as build
 from forge.factory.contracts import result
 from forge.factory.harness import schema
-from forge.factory.github import GitHubUnavailable, GitHubBudgetExhausted
-from tests.test_factory_cycle import CycleTest
 
 
-class EnvironmentLifecycleTests(CycleTest):
-    def test_environment_block_preserves_review_stage_candidate_and_budget_across_restart(self):
-        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
-        job = self.active()
-        candidate = job['candidate']
-        report = {'version': 1, 'attempt': job['id'], 'role': 'review', 'outcome': 'blocked_environment',
-                  'blocker': 'resources', 'summary': 'Dependency storage unavailable', 'candidate': candidate['key'],
-                  'headline': 'Stopped: the worker could not reach its dependencies',
-                  'plain': 'The worker could not download what it needs. Nothing was changed.'}
-        self.engine.finish(job, report)
-        self.assertFalse(self.cycle()['errors'])
-        for _ in range(3):
-            self.assertFalse(self.cycle()['errors'])
-        item = self.ledger.read()['issues'][self.key]
-        self.assertEqual(item['state'], 'hold')
-        self.assertEqual(item['environment_hold']['state'], 'built')
-        self.assertEqual(item['candidate'], candidate)
-        self.assertEqual(item['failures'], [])
-        self.assertEqual(len(self.ledger.read()['jobs']), 2)
-        self.assertFalse(self.ledger.read()['slots'])
-        self.config['image'] = 'sha256:' + 'b' * 64
-        self.assertFalse(self.cycle()['errors'])
-        self.assertEqual(self.active()['role'], 'review')
-        self.assertEqual(self.active()['candidate'], candidate)
-
-    def test_ci_unavailable_blocks_before_container_launch_without_spending_attempts(self):
-        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
-        self.assertFalse(self.cycle()['errors'])
-        self.cycle()
-        self.assertFalse(self.engine.jobs)
-        self.assertFalse(self.ledger.read()['slots'])
-        item = self.ledger.read()['issues'][self.key]
-        self.assertEqual(item['environment_hold']['blocker'], 'ci_evidence')
-        self.assertEqual(item['failures'], [])
-
-    def test_environment_repair_preserves_build_branch_without_accepted_candidate(self):
-        self.cycle(); old = self.active()
-        report = {'version': 1, 'attempt': old['id'], 'role': 'build', 'outcome': 'blocked_environment',
-                  'blocker': 'sandbox', 'summary': 'Published work but package install was read-only',
-                  'headline': 'Install blocked', 'plain': 'Published the work before stopping.'}
-        self.engine.finish(old, report); self.cycle()
-        self.config['image'] = 'sha256:' + 'b' * 64
-        self.cycle()
-        job = self.active()
-        self.assertEqual(job['branch'], old['branch'])
-        self.assertEqual(job['resume_branch'], old['branch'])
-        self.ledger.wait(job['id'], 'Role credentials unavailable', 0)
-        self.ledger.job_update(job['id'], fenced=True, phase='stopping')
-        self.cycle()
-        self.assertEqual(self.active()['resume_branch'], old['branch'])
-        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
-
-    def test_failed_partial_build_keeps_its_branch_after_investigation(self):
-        self.cycle(); old = self.active()
-        self.finish('build', 'reject'); self.cycle()
-        self.finish('recovery'); self.cycle()
-        job = self.active()
-        self.assertEqual(job['role'], 'build')
-        self.assertEqual(job['branch'], old['branch'])
-        self.assertEqual(job['resume_branch'], old['branch'])
-        self.assertIsNone(job['candidate'])
-        self.assertEqual(self.state(), 'ready')
-
-    def test_a_retry_continues_the_open_forge_draft_even_when_the_last_attempt_used_another_branch(self):
-        self.cycle(); old = self.active()
-        self.finish('build', 'reject'); self.cycle()
-        self.finish('recovery')
-        # An earlier attempt published the draft GitHub still has open.
-        self.github.draft = {'pr': 22, 'branch': 'forge/issue-1-earlier00', 'superseded': []}
-        self.cycle()
-        job = self.active()
-        self.assertEqual(job['role'], 'build')
-        self.assertEqual(job['branch'], 'forge/issue-1-earlier00')
-        self.assertEqual(job['resume_branch'], 'forge/issue-1-earlier00')
-        self.assertNotEqual(job['branch'], old['branch'])
-
-    def test_ci_budget_defers_same_launch_without_fencing_or_failure(self):
-        self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
-        self.assertFalse(self.cycle()['errors'])
-        job = self.active()
-        self.assertEqual(job['phase'], 'reserved')
-        self.assertFalse(job['fenced'])
-        self.assertFalse(self.engine.jobs)
-        self.assertNotIn('environment_hold', self.ledger.read()['issues'][self.key])
-        self.github.ci_evidence = Mock(return_value=None)
-        self.assertFalse(self.cycle()['errors'])
-        self.assertEqual(self.active()['id'], job['id'])
-        self.assertEqual(self.active()['phase'], 'running')
-
-    def test_ci_hold_recovers_without_image_change_and_backs_off_while_unavailable(self):
-        from forge.factory.supervisor import Supervisor
-        from tests.test_factory_cycle import Settings
-        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
-        self.cycle()
-        # Teardown first. A failed recheck sets a bounded retry time.
-        self.cycle()
-        held = self.ledger.read()['issues'][self.key]
-        retry_at = held['environment_hold']['recheck_after']
-        calls = self.github.ci_evidence.call_count
-        self.cycle()
-        self.assertEqual(self.github.ci_evidence.call_count, calls)
-        self.github.ci_evidence = Mock(return_value=None)
-        controller = Supervisor(self.ledger, self.engine, self.github, Settings(), self.config,
-                                clock=lambda: retry_at + 1)
-        self.assertFalse(controller.cycle()['errors'])
-        self.assertEqual(self.active()['phase'], 'running')
-        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
-
-    def test_budget_during_ci_hold_recheck_does_not_set_backoff_or_release_hold(self):
-        self.github.ci_evidence = Mock(side_effect=GitHubUnavailable('Forbidden'))
-        self.cycle()
-        self.github.ci_evidence = Mock(side_effect=GitHubBudgetExhausted('Cycle ended'))
-        self.assertFalse(self.cycle()['errors'])
-        held = self.ledger.read()['issues'][self.key]['environment_hold']
-        self.assertNotIn('recheck_after', held)
-        self.assertFalse(self.engine.jobs)
-
-    def test_code_rejection_still_consumes_budget(self):
-        self.cycle(); self.github.publish(self.active()); self.finish('build'); self.cycle()
-        self.finish('review', 'reject'); self.cycle()
-        item = self.ledger.read()['issues'][self.key]
-        self.assertEqual(self.ledger.failure_count(item), 1)
-        self.assertNotIn('environment_hold', item)
-
-    def test_container_oom_is_resource_blocker_not_code_rejection(self):
-        self.cycle(); job = self.active()
-        self.engine.capture = lambda _: {'result': None, 'execution': {'oom_killed': True}, 'logs': '', 'missing': []}
-        self.engine.finish(job)
-        self.assertFalse(self.cycle()['errors'])
-        item = self.ledger.read()['issues'][self.key]
-        self.assertEqual(item['environment_hold']['blocker'], 'resources')
-        self.assertEqual(item['failures'], [])
-
+class BlockerContractTests(unittest.TestCase):
     def test_untyped_blocker_is_not_accepted(self):
-        self.cycle(); job = self.active()
+        job = {'id': 'attempt-1', 'role': 'build'}
         report = {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'blocked_environment', 'summary': 'Missing',
                   'headline': 'Stopped: a tool is missing', 'plain': 'The worker cannot run without it.'}
         with self.assertRaises(ValueError):

@@ -1,20 +1,18 @@
 """Exercise the local administrator/remote App boundary without network access."""
 from copy import deepcopy
 import json
-from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest.mock import Mock
 
 from forge.repository_requirements import describe
 from forge.repository_setup import RepositorySetup, ruleset
-from forge.settings import digest, write_json
+from forge.settings import digest
 from forge_client.contracts import SetupError, baseline, connection_identity, requirements
 from forge_client.github import GitHub, run_bounded
 from forge_client.preparation import Preparation
-from tests import test_settings as settings_tests
+from tests.test_repository_setup import settings_setup
 from forge.settings import ROLES
 
 SECRET = 'synthetic-operator-credential-not-for-forge'
@@ -22,7 +20,7 @@ SECRET = 'synthetic-operator-credential-not-for-forge'
 
 class BoundaryTests(unittest.TestCase):
     def setUp(self):
-        settings_tests.SettingsTests.setUp(self)
+        settings_setup(self)
         self.repo = {'id': 10, 'full_name': 'example/project', 'owner': {'id': 50, 'type': 'Organization'},
                      'default_branch': 'main', 'archived': False, 'disabled': False, 'permissions': {'admin': True},
                      'unused_credential_field': SECRET}
@@ -212,7 +210,7 @@ class BoundaryTests(unittest.TestCase):
         config = self.settings.load()
         config['connections']['build'].pop('installation_id')
         config['connections']['build']['installation_ids'] = [101, 201]
-        write_json(self.settings.path, config)
+        self.settings.save_config(config)
         self.preparation.apps = connection_identity(describe(self.settings, self.target))
         plan = self.preparation.plan('example/project')
         self.assertEqual(plan['blockers'], [{'code': 'app_access_unverified', 'role': 'build'}])
@@ -246,7 +244,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps([initial, plan, result, repeated]))
         for path in self.root.rglob('*'):
             if path.is_file():
-                self.assertNotIn(SECRET, path.read_text())
+                self.assertNotIn(SECRET.encode(), path.read_bytes())
 
     def test_preparation_requires_explicit_enable(self):
         self.prepare_access()
@@ -262,7 +260,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(set(view['roles']), set(ROLES))
 
     def test_unconfigured_apps_cannot_be_planned_as_access_grants(self):
-        config = self.settings.load(); config['connections'].pop('build'); write_json(self.settings.path, config)
+        config = self.settings.load(); config['connections'].pop('build'); self.settings.save_config(config)
         value = describe(self.settings, self.target)
         self.assertEqual(value['roles']['build'], {'app_id': None, 'installation_ids': [], 'access': 'not_configured'})
 
@@ -276,7 +274,7 @@ class BoundaryTests(unittest.TestCase):
     def test_changed_app_identity_cannot_receive_admin_grants(self):
         plan = self.preparation.plan('example/project')
         config = self.settings.load(); config['connections']['build']['app_id'] = 99
-        write_json(self.settings.path, config)
+        self.settings.save_config(config)
         with self.assertRaisesRegex(SetupError, 'App identities changed'):
             self.preparation.apply(plan)
         self.assertEqual(self.writes, [])
@@ -347,7 +345,11 @@ class BoundaryTests(unittest.TestCase):
         before = self.settings.load()
         describe(self.settings, self.target)
         self.assertEqual(self.settings.load(), before)
-        self.assertFalse((self.root / 'state' / 'factory-v2.json').exists())
+        from forge.configuration_authority import ConfigurationAuthority
+        self.assertFalse(ConfigurationAuthority(self.root).active())
+        with self.database.read_snapshot() as db:
+            self.assertFalse(db.execute('SELECT count(*) FROM units').fetchone()[0])
+            self.assertFalse(db.execute('SELECT count(*) FROM repositories WHERE enabled=1').fetchone()[0])
 
 
 class ContractTests(unittest.TestCase):

@@ -8,7 +8,9 @@ from unittest.mock import Mock, patch
 
 from forge.app_access import (AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERMISSIONS,
                               missing_permissions, recommended_permissions)
-from forge.settings import Settings, DEFAULT, ROLES, digest, validate, write_json
+from forge.settings import Settings, DEFAULT, ROLES, digest, read_json, validate
+from forge.store.configuration import ConfigurationConflict
+from tests.test_sqlite_identity import selected_store
 
 
 def configured():
@@ -23,11 +25,12 @@ class SettingsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.database = selected_store(self.root)
         self.client = Mock()
         self.now = 1000
         self.settings = Settings(self.root, client=self.client, clock=lambda: self.now)
         self.config = configured()
-        write_json(self.settings.path, self.config)
+        self.settings.save_config(self.config)
         def discover(connection):
             role = ROLES[connection['app_id'] - 1]
             return {'repositories': [{'id': 10, 'name': 'example/project', 'archived': False}],
@@ -55,10 +58,10 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(self.client.discover.call_count, 8)
 
     def prepare(self, identifier=10, name='example/project'):
-        from forge.repository_setup import observation_key
+        from forge.repository_setup import RepositorySetup, observation_key
         row={'id':identifier,'name':name}
-        write_json(self.settings.state/'repositories.json', {'repositories':{str(identifier):{
-            'revision':observation_key(self.settings.load(),row),'name':name,'status':'ready',
+        RepositorySetup(self.settings).save_observation(identifier, {'repositories':{str(identifier):{
+            'revision':observation_key(self.settings.load(),row),'name':name,'status':'ready','started_at':self.now,
             'report':{'observed_at':self.now,'available':True,'branch':'main',
                       'requirements':[{'id':'reviews','passed':True},{'id':'stale','passed':True}]}}}})
 
@@ -83,7 +86,7 @@ class SettingsTests(unittest.TestCase):
         self.settings.refresh()
         observed = self.settings.observation()
         observed['roles']['audit']['permissions'] = {'contents': 'read'}
-        write_json(self.settings.state / 'access.json', observed)
+        self.settings.save_observation(observed)
         with self.assertRaisesRegex(ValueError, 'verify access'):
             self.enable()
         self.assertEqual(self.settings.view()['repositories'][0]['access']['audit'], 'missing_permissions')
@@ -110,7 +113,7 @@ class SettingsTests(unittest.TestCase):
         self.settings.refresh(); self.prepare(); self.enable()
         observed = self.settings.observation()
         observed['roles']['build']['repositories'][0]['archived'] = True
-        write_json(self.settings.state/'access.json', observed)
+        self.settings.save_observation(observed)
         self.assertEqual(self.settings.view()['repositories'][0]['access']['build'], 'archived')
         self.assertFalse(self.settings.admission('example/project')['allowed'])
 
@@ -134,7 +137,7 @@ class SettingsTests(unittest.TestCase):
             if connection['app_id'] == 1:
                 changed = copy.deepcopy(self.config)
                 changed['connections']['build']['app_id'] = 90
-                write_json(self.settings.path, changed)
+                self.settings.save_config(changed)
             return previous(connection)
         self.client.discover.side_effect = discover
         self.settings.refresh()
@@ -145,23 +148,30 @@ class SettingsTests(unittest.TestCase):
         self.settings.refresh(); self.prepare(); self.enable()
         observed = self.settings.observation()
         for row in observed['roles'].values(): row['repositories'][0]['name'] = 'example/renamed'
-        write_json(self.settings.state / 'access.json', observed)
+        self.settings.save_observation(observed)
         self.assertEqual(self.settings.view()['repositories'][0]['access']['build'], 'name_changed')
         self.assertFalse(self.settings.admission('example/project')['allowed'])
 
     def test_agent_edit_conflicts_are_not_overwritten(self):
         revision = digest(self.config)
         changed = copy.deepcopy(self.config); changed['sync_interval_seconds'] = 600
-        write_json(self.settings.path, changed)
+        self.settings.save_config(changed)  # A concurrent edit lands first.
         with self.assertRaisesRegex(ValueError, 'changed'):
             self.settings.save(self.config, revision)
         self.assertEqual(self.settings.load(), changed)
 
     def test_invalid_config_and_duplicate_json_fail_closed(self):
-        self.settings.path.write_text('{"version":1,"version":1}')
+        document = self.root / 'operator-input.json'
+        document.write_text('{"version":1,"version":1}')
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
-            self.settings.load()
-        self.assertFalse(self.settings.admission('example/project')['allowed'])
+            read_json(document)
+        with self.assertRaises(ValueError):
+            self.settings.save_config({**configured(), 'secret': 'private'})
+        self.assertEqual(self.settings.load(), self.config)
+        with self.database.write() as db:
+            db.execute("DELETE FROM configuration WHERE domain=?", (self.settings.domain,))
+        self.assertEqual(self.settings.admission('example/project'),
+                         {'allowed': False, 'reason': 'settings_unavailable'})
         for mutate in (lambda c: c.update(secret='private'),
                        lambda c: c['connections']['build'].update(private_key_env='-----BEGIN KEY-----'),
                        lambda c: c['connections']['review'].update(app_id=1)):
@@ -172,7 +182,7 @@ class SettingsTests(unittest.TestCase):
         with self.settings.locked('sync'):
             self.assertFalse(self.settings.refresh())
         self.client.discover.assert_not_called()
-        write_json(self.settings.state / 'sync.json', {'status': 'running', 'started_at': 900})
+        self.settings.save_sync({'status': 'running', 'started_at': 900})
         self.assertEqual(self.settings.view()['sync']['status'], 'interrupted')
         self.assertTrue(self.settings.refresh())
         self.assertEqual(self.settings.view()['sync']['status'], 'complete')
@@ -181,7 +191,11 @@ class SettingsTests(unittest.TestCase):
         self.client.discover.side_effect = RuntimeError('a-secret-that-must-not-be-persisted')
         self.settings.refresh()
         self.assertNotIn('a-secret-that-must-not-be-persisted', json.dumps(self.settings.view()))
-        self.assertNotIn('a-secret-that-must-not-be-persisted', (self.settings.state/'access.json').read_text())
+        with self.database.read_snapshot() as db:
+            stored = [list(row) for table in ('access_role_observations', 'access_repository_observations', 'runtime_controls')
+                      for row in db.execute('SELECT * FROM ' + table)]
+        self.assertTrue(stored)
+        self.assertNotIn('a-secret-that-must-not-be-persisted', json.dumps(stored))
 
     def test_sync_cli_returns_failure_when_access_is_unknown(self):
         from contextlib import redirect_stdout
@@ -233,6 +247,69 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(role['missing_recommended'], ['deployments: read'])
         self.assertEqual(self.settings.view()['roles']['build']['recommended_permissions'], {})
         self.assertEqual(self.settings.view()['roles']['build']['missing_recommended'], [])
+
+    def control(self, name, enabled, details='{}'):
+        with self.database.write() as db:
+            db.execute('INSERT INTO runtime_controls(name,enabled,updated_at,details_json) VALUES(?,?,?,?) '
+                       'ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled,details_json=excluded.details_json',
+                       (name, int(enabled), self.now, details))
+
+    def test_saved_configuration_mirrors_enabled_repositories(self):
+        self.settings.refresh(); self.prepare(); self.enable()
+        with self.database.read_snapshot() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT id,full_name,enabled FROM repositories')],
+                             [(10, 'example/project', 1)])
+        config = self.settings.load(); config['repositories'] = []
+        self.settings.save(config, digest(self.settings.load()))
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT enabled FROM repositories WHERE id=10').fetchone()[0], 0)
+        self.assertEqual(Settings(self.root).load(), config)
+
+    def test_stale_storage_revision_cannot_replace_configuration(self):
+        _, revision = self.settings.config_snapshot()
+        changed = copy.deepcopy(self.config); changed['sync_interval_seconds'] = 600
+        self.settings.save_config(changed, expected_revision=revision)
+        with self.assertRaisesRegex(ConfigurationConflict, 'changed'):
+            self.settings.save_config(self.config, expected_revision=revision)
+        self.assertEqual(self.settings.load(), changed)
+
+    def test_observation_round_trips_repository_flags_and_order(self):
+        self.settings.refresh()
+        observed = self.settings.observation()
+        observed['roles']['build']['repositories'] = [
+            {'id': 11, 'name': 'example/second', 'archived': False, 'disabled': True},
+            {'id': 10, 'name': 'example/project', 'archived': True, 'disabled': False}]
+        self.settings.save_observation(observed)
+        self.assertEqual(Settings(self.root).observation(), observed)
+        self.assertEqual(self.settings.sync()['status'], 'complete')
+
+    def test_reset_fence_blocks_saves_sync_and_dispatch(self):
+        self.settings.refresh(); self.prepare(); self.enable()
+        self.control('factory_paused', True)
+        self.assertTrue(self.settings.paused())
+        self.assertFalse(self.settings.refresh())
+        with self.assertRaisesRegex(ValueError, 'reset'):
+            self.settings.save(self.settings.load(), digest(self.settings.load()))
+        self.assertEqual(self.settings.admission('example/project'), {'allowed': False, 'reason': 'factory_paused'})
+        self.control('factory_paused', False)
+        self.assertTrue(self.settings.admission('example/project')['allowed'])
+
+    def test_onboarding_without_activation_blocks_dispatch(self):
+        self.settings.refresh(); self.prepare(); self.enable()
+        self.control('onboarding_active', True)
+        self.assertEqual(self.settings.admission('example/project'), {'allowed': False, 'reason': 'setup_not_started'})
+        self.control('factory_active', True)
+        self.assertTrue(self.settings.admission('example/project')['allowed'])
+
+    def test_generation_guard_rejects_writes_for_a_replaced_setup(self):
+        with self.database.write() as db:
+            db.execute("INSERT INTO setup_instances VALUES('live','generation-two','setup','','','{}',1)")
+        self.assertEqual(self.settings.generation(), 'generation-two')
+        with self.assertRaisesRegex(ValueError, 'setup changed'):
+            self.settings.save_config(self.config, expected_generation='generation-one')
+        with self.assertRaisesRegex(ValueError, 'setup changed'):
+            self.settings.save_observation({'roles': {}}, expected_generation='generation-one')
+        self.settings.save_observation({'roles': {}}, expected_generation='generation-two')
 
     def test_repository_names_cannot_address_parent_checkout(self):
         for name in ('example/..', 'example/.', '../project', 'example/a/b'):

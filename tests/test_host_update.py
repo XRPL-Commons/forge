@@ -1,6 +1,5 @@
 from contextlib import ExitStack
 import io
-import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -8,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge import host_update, host_setup
+from tests.sqlite_fixture import selected_store
 
 
 class FakeHost:
@@ -16,6 +16,7 @@ class FakeHost:
     def __init__(self, directory):
         self.base = Path(directory)
         self.root = self.base / 'root'; self.root.mkdir(mode=0o700)
+        selected_store(self.root)
         self.home = self.base / 'home'; self.home.mkdir()
         self.apparmor = self.base / 'apparmor/forge-runner-private-proc'; self.apparmor.parent.mkdir()
         self.images, self.calls, self.revision, self.builds = {}, [], 'a' * 40, 0
@@ -69,6 +70,13 @@ class FakeHost:
                 changed = host_update.reconcile(self.root, **kwargs)
             return changed, out.getvalue()
 
+    def document(self, name):
+        return host_update.runtime_document(self.root, name)
+
+    def seed(self, name, value):
+        snapshot = host_update.runtime_snapshot(self.root, name)
+        host_update.save_runtime_document(self.root, name, value, expected_revision=snapshot['revision'] if snapshot else 0)
+
     def restarted(self):
         return [argv[3:] for argv in self.calls if argv[:3] == ['systemctl', '--user', 'restart']]
 
@@ -105,10 +113,11 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('"FORGE_ROOT=/app"', ui)
         self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-ui.service', 'forge-supervisor.service']])
         self.host.qualify.assert_called_once()
-        runtime = json.loads((self.host.root / 'host-runtime.json').read_text())
+        runtime = self.host.document('host-runtime.json')
         self.assertEqual(runtime['image'], 'sha256:' + '1' * 64)
         self.assertEqual(runtime['apparmor_profile'], 'forge-runner-private-proc')
-        self.assertEqual(json.loads((self.host.root / 'host.json').read_text())['source'], 'a' * 40)
+        self.assertEqual(self.host.document('host.json')['source'], 'a' * 40)
+        self.assertFalse((self.host.root / 'host-runtime.json').exists())
 
     def test_mirror_unit_runs_the_qualified_launcher_before_supervisor(self):
         self.host.reconcile()
@@ -138,7 +147,7 @@ class ReconcileTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Browser unavailable'):
             self.host.reconcile()
         self.assertFalse((self.host.home / '.config/systemd/user/forge-ui.service').exists())
-        self.assertFalse((self.host.root / 'host-runtime.json').exists())
+        self.assertIsNone(self.host.document('host-runtime.json'))
         self.assertEqual(self.host.restarted(), [])
 
     def test_repeating_an_unchanged_update_touches_nothing(self):
@@ -199,7 +208,7 @@ class ReconcileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'egress proxy did not become healthy'):
             self.host.reconcile()
         self.assertFalse((self.host.home / '.config/systemd/user/forge-ui.service').exists())
-        self.assertFalse((self.host.root / 'host-runtime.json').exists())
+        self.assertIsNone(self.host.document('host-runtime.json'))
 
     def test_a_source_change_restarts_the_python_services_only(self):
         self.host.reconcile()
@@ -211,23 +220,22 @@ class ReconcileTests(unittest.TestCase):
 
     def test_a_new_runner_is_qualified_before_every_runtime_switches_to_it(self):
         self.host.reconcile()
-        (self.host.root / 'setup').mkdir()
         for name in ('setup/runtime.json', 'runtime.json'):
-            (self.host.root / name).write_text(json.dumps({'image': 'sha256:' + '1' * 64, 'slots': {'build': 3}}))
+            self.host.seed(name, {'image': 'sha256:' + '1' * 64, 'slots': {'build': 3}})
         with patch.object(host_update, 'RUNNER_INPUTS', host_update.RUNNER_INPUTS + ('README.md',)):
             self.host.qualify.side_effect = RuntimeError('Browser unavailable')
             with self.assertRaisesRegex(RuntimeError, 'Browser unavailable'):
                 self.host.reconcile()
             for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
-                self.assertEqual(json.loads((self.host.root / name).read_text())['image'], 'sha256:' + '1' * 64)
+                self.assertEqual(self.host.document(name)['image'], 'sha256:' + '1' * 64)
             self.host.qualify.side_effect = None
             changed, output = self.host.reconcile()
         self.assertTrue(changed)
         self.assertIn('runner image', output)
         self.assertEqual(self.host.builds, 2)  # The failed attempt's image is reused, not rebuilt.
         for name in ('host-runtime.json', 'setup/runtime.json', 'runtime.json'):
-            self.assertEqual(json.loads((self.host.root / name).read_text())['image'], 'sha256:' + '2' * 64)
-        self.assertEqual(json.loads((self.host.root / 'runtime.json').read_text())['slots'], {'build': 3})
+            self.assertEqual(self.host.document(name)['image'], 'sha256:' + '2' * 64)
+        self.assertEqual(self.host.document('runtime.json')['slots'], {'build': 3})
 
     def test_an_update_interrupted_after_switching_still_requalifies_when_rerun(self):
         self.host.reconcile()
@@ -235,7 +243,7 @@ class ReconcileTests(unittest.TestCase):
             with patch.object(host_update, 'switch_ui', side_effect=OSError('interrupted')):
                 with self.assertRaises(OSError):
                     self.host.reconcile()
-            self.assertEqual(json.loads((self.host.root / 'host-runtime.json').read_text())['image'], 'sha256:' + '2' * 64)
+            self.assertEqual(self.host.document('host-runtime.json')['image'], 'sha256:' + '2' * 64)
             changed, _ = self.host.reconcile()
         self.assertTrue(changed)
 
@@ -247,14 +255,14 @@ class ReconcileTests(unittest.TestCase):
             self.host.qualify.side_effect = RuntimeError('MongoDB round trip failed')
             with self.assertRaisesRegex(RuntimeError, 'MongoDB'):
                 host_update.install_full_environment(self.host.root)
-            runtime = json.loads((self.host.root / 'host-runtime.json').read_text())
+            runtime = self.host.document('host-runtime.json')
             self.assertEqual(runtime.get('environment_tiers', {}), {})
             self.host.qualify.side_effect = None
             host_update.install_full_environment(self.host.root)
-        full = json.loads((self.host.root / 'host-runtime.json').read_text())['environment_tiers']['full']
+        full = self.host.document('host-runtime.json')['environment_tiers']['full']
         self.assertEqual(full['image'], 'sha256:' + '2' * 64)
         self.assertEqual(self.host.qualify.call_args.kwargs, {'full': True})
-        self.assertEqual(json.loads((self.host.root / 'host.json').read_text())['full_image'], full['image'])
+        self.assertEqual(self.host.document('host.json')['full_image'], full['image'])
 
     def test_update_rebuilds_and_qualifies_the_opted_in_full_tier(self):
         self.host.reconcile()
@@ -268,22 +276,23 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(self.host.qualify.call_count, 2)
         self.assertTrue(self.host.qualify.call_args.kwargs['full'])
-        runtime = json.loads((self.host.root / 'host-runtime.json').read_text())
+        runtime = self.host.document('host-runtime.json')
         self.assertEqual(runtime['environment_tiers']['full']['image'], 'sha256:' + '4' * 64)
 
-    def test_a_source_update_prints_how_to_roll_back(self):
+    def test_a_source_update_points_to_a_forward_update_for_recovery(self):
         self.host.reconcile()
         self.host.revision = 'b' * 40
         _, output = self.host.reconcile()
-        self.assertIn('git checkout aaaaaaaaaaaa && bin/forge update --no-pull', output)
+        self.assertIn('Updated to bbbbbbbbbbbb. SQLite history is retained; use a compatible forward update for recovery.', output)
+        self.assertNotIn('git checkout', output)
 
     def test_rolling_back_the_source_reuses_the_earlier_image_and_ui(self):
         self.host.reconcile()
-        first = json.loads((self.host.root / 'host.json').read_text())
+        first = self.host.document('host.json')
         with patch.object(host_update, 'RUNNER_INPUTS', host_update.RUNNER_INPUTS + ('README.md',)):
             self.host.reconcile()
         self.assertTrue(self.host.reconcile()[0])
-        record = json.loads((self.host.root / 'host.json').read_text())
+        record = self.host.document('host.json')
         self.assertEqual(record['image'], first['image'])
         self.assertEqual(self.host.builds, 2)
 
@@ -350,19 +359,22 @@ class ReconcileTests(unittest.TestCase):
                                  ('Environment=MAX_SESSIONS=6', False), ('MemoryMax=2G', False)]:
             self.assertEqual(bool(host_update.OVERRIDING.search('[Service]\n' + line + '\n')), overriding, line)
 
-    def test_units_from_the_previous_installer_upgrade_without_a_prompt_and_keep_their_bind(self):
-        units = self.host.home / '.config/systemd/user'; units.mkdir(parents=True)
-        for name in ('forge-status', 'forge-supervisor'):
-            (units / (name + '.service')).write_text(host_update.legacy_unit(name, self.host.root, '100.64.0.7'))
-        (self.host.root / 'host-runtime.json').write_text(json.dumps({'image': 'sha256:' + '9' * 64}))
-        with patch.object(host_update.sys.stdin, 'isatty', return_value=False):
-            self.host.reconcile()
-        self.assertIn('"HOST=100.64.0.7"', self.host.unit('forge-ui'))
-        self.assertIn('FORGE_BIND_ADDRESS=127.0.0.1', self.host.unit('forge-status'))
-
     def test_the_operator_ui_only_binds_loopback_or_tailnet(self):
         with self.assertRaisesRegex(ValueError, 'loopback or a private tailnet'):
             self.host.reconcile(bind='0.0.0.0')
+
+
+class BindTests(unittest.TestCase):
+    def test_an_install_without_a_recorded_bind_keeps_the_old_status_address(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, units = Path(directory) / 'root', Path(directory) / 'units'
+            root.mkdir(mode=0o700); units.mkdir()
+            selected_store(root)
+            (units / 'forge-status.service').write_text('[Service]\nEnvironment="FORGE_BIND_ADDRESS=100.64.0.7"\n')
+            self.assertEqual(host_update.resolve_bind(root, None, units), '100.64.0.7')
+            self.assertEqual(host_update.resolve_bind(root, '127.0.0.1', units), '127.0.0.1')
+            (units / 'forge-status.service').unlink()
+            self.assertEqual(host_update.resolve_bind(root, None, units), '127.0.0.1')
 
 
 class PullTests(unittest.TestCase):
@@ -444,12 +456,14 @@ class SetupCommandTests(unittest.TestCase):
 
     def test_update_requires_an_installed_host(self):
         with tempfile.TemporaryDirectory() as directory:
+            selected_store(Path(directory))
             with self.assertRaisesRegex(ValueError, 'run bin/forge setup first'):
                 host_setup.update(Path(directory))
 
     def test_update_verifies_connected_accounts_when_the_runner_changed(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); (root / 'host-runtime.json').write_text('{}')
+            root = Path(directory); selected_store(root)
+            host_update.save_runtime_document(root, 'host-runtime.json', {}, expected_revision=0)
             with patch.object(host_setup, 'preflight'), \
                     patch.object(host_update, 'reconcile', return_value=True), \
                     patch.object(host_setup, 'Onboarding') as onboarding, \

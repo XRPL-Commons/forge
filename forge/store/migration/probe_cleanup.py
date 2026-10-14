@@ -16,7 +16,7 @@ def cleanup_fenced_probe(root, store):
     from ..db import Store
     from ...sqlite_identity import identity_effect_lock
     from ...factory.control import controller_lock
-    from ...sqlite_onboarding import SetupState
+    from ...onboarding import SetupState
     from ...factory.probe_runner import ProbeRunner
     from ...credentials import Credentials
     database=Store.open(store.root)

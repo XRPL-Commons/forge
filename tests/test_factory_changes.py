@@ -165,14 +165,15 @@ class FactoryChangesHTTPTests(unittest.TestCase):
             self.assertTrue(callable(read.call_args.kwargs['cancelled']))
             handler._send.assert_not_called()
 
-    def test_invalid_query_and_missing_sqlite_have_explicit_errors(self):
+    def test_invalid_query_and_unavailable_store_have_explicit_errors(self):
         from tests.test_dashboard import dashboard
         with patch.object(dashboard, 'runtime_control', return_value=False), \
-                patch('forge.factory.control.public_views', return_value=None):
+                patch('forge.factory.control.public_views', side_effect=OSError('store unavailable')) as views:
             for query in ('?wait=0&unknown=yes', '?since=', '?wait=0&wait=1'):
                 handler = self.handler('/api/factory/changes'+query)
                 handler.do_GET()
                 self.assertEqual(handler._send.call_args.kwargs['status'], 400)
+            views.assert_not_called()
             handler = self.handler()
             handler.do_GET()
-            self.assertEqual(handler._send.call_args.kwargs['status'], 409)
+            self.assertEqual(handler._send.call_args.kwargs['status'], 503)

@@ -1,7 +1,6 @@
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import threading
-import json
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -109,13 +108,12 @@ class PlanningServiceTests(unittest.TestCase):
 
 
 from tests import test_client_connections as connections
-from tests import test_sqlite_identity as identity
 from forge.client_connections import ConnectionError
 
 
 class PlanningClientAuthorityTests(connections.Fixture):
     def setUp(self):
-        identity.SqliteConnectionTests.setUp(self)
+        super().setUp()
         Lifecycle(self.database,clock=lambda:self.now).admit_issue(request_id='admit',actor_id='operator',unit_id='unit',issue_id='321:1',
             repository_id=321,repository_name='example/project',issue_number=1,title='Work',body='Details',requirements='digest',observed_at=self.now)
         self.credentials=self.token()

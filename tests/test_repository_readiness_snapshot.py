@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 from forge.factory.config import load, save
 from forge.factory.store_views import PipelineViews
 from tests import test_sqlite_runtime_support as fixture
-from tests.test_environment_tiers import FULL
+from tests.test_sqlite_runtime_support import FULL
 
 
 class RepositoryReadinessSnapshotTests(fixture.RuntimeFixture):
@@ -19,7 +19,7 @@ class RepositoryReadinessSnapshotTests(fixture.RuntimeFixture):
             self.now = at
             expected = self.settings.view()['repositories']
             with patch('forge.factory.config.load', side_effect=AssertionError('runtime reread')), \
-                    patch('forge.sqlite_environments.validate', side_effect=AssertionError('runtime revalidation')), \
+                    patch('forge.repository_environments.validate', side_effect=AssertionError('runtime revalidation')), \
                     patch.object(self.settings, 'sync', side_effect=AssertionError('unused sync read')), \
                     patch.object(self.settings, 'configured', side_effect=AssertionError('unused settings header')):
                 actual = self.settings.repository_views(runtime=runtime)

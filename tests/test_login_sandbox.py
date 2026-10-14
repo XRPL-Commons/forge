@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from forge.host_setup import login, login_sandbox
 from forge.harnesses.registry import manifest, adapter
 from forge.onboarding import Onboarding
-from forge.settings import write_json
+from tests.sqlite_fixture import selected_store
 
 
 class LoginSandboxTests(unittest.TestCase):
@@ -17,10 +17,11 @@ class LoginSandboxTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        selected_store(self.root)
         self.setup = Onboarding(self.root)
         self.config = {**self.setup.runtime(), 'image': 'sha256:' + 'a' * 64,
                        'apparmor_profile': 'forge-runner-private-proc'}
-        write_json(self.root / 'setup/runtime.json', self.config)
+        self.setup.save_runtime(self.config, active=False)
         (self.root / 'runner-seccomp.json').write_text('{}')
 
     def test_grok_checks_the_image_then_uses_the_same_isolation_for_sign_in(self):

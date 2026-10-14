@@ -4,17 +4,19 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from tests.test_dashboard import dashboard, signed_in, OPERATOR_CSRF
+from tests.sqlite_fixture import selected_store
 
 
 class SettingsHTTPTests(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        selected_store(temporary.name)
         root=patch.object(dashboard,'WD',temporary.name);root.start();self.addCleanup(root.stop)
         self.session_headers=signed_in(self)
 
     def handler(self, path, body=None, **headers):
         handler = object.__new__(dashboard.H)
-        handler.server = Mock(server_address=('127.0.0.1',8787))
+        handler.server = Mock(server_address=('127.0.0.1',8787),read_handles=None)
         handler.headers = {'Host':'127.0.0.1:8787', 'Origin':'http://127.0.0.1:8787',
                            'X-Forge-Action':OPERATOR_CSRF, 'Content-Type':'application/json',
                            **getattr(self,'session_headers',{}), **headers}
@@ -138,12 +140,15 @@ class SettingsHTTPTests(unittest.TestCase):
             handler._redirect.assert_called_once_with('/onboarding?connection_error=1')
 
     def test_issue_decision_returns_updated_issue_and_validates_schema(self):
-        with patch('forge.factory.issue_actions.decide', return_value='intent') as request, \
+        with patch('forge.factory.store_operator.selected_service') as selected, \
                 patch('forge.factory.issues.IssueInventory') as inventory:
+            request = selected.return_value.request
+            request.return_value = 'intent'
             inventory.return_value.view.return_value = {'issue': {'status': 'queued'}, 'actions': [], 'repositories': []}
             value={'key':'1:1','action':'queue','revision':'current','reason':'Operator decision'}
             handler=self.handler('/api/issues/action', value); handler.do_POST()
-            request.assert_called_once_with(dashboard.WD, **value, actor_id='github:7')
+            selected.assert_called_once_with(dashboard.WD, actor_id='github:7')
+            request.assert_called_once_with('1:1', 'queue', 'current', 'Operator decision', request_id=None)
             self.assertEqual(json.loads(handler._send.call_args.args[0])['issue']['status'], 'queued')
             request.reset_mock()
             handler=self.handler('/api/issues/action', {**value,'force':True}); handler.do_POST()

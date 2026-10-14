@@ -10,7 +10,7 @@ from forge.configuration_authority import ConfigurationAuthority
 from forge.factory.config import load
 from forge.host_update import runtime_document, save_runtime_document, Record
 from forge.onboarding import Onboarding
-from forge.settings import Settings, DEFAULT, digest, write_json
+from forge.settings import Settings, DEFAULT, digest
 from forge.store.configuration import Configuration, ConfigurationConflict
 from tests.test_sqlite_identity import selected_store
 
@@ -21,8 +21,9 @@ class ConfigurationAuthorityTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
-    def test_existing_json_install_and_explicit_scope_use_same_domain(self):
-        write_json(self.root / 'host-runtime.json', {'cycle_seconds': 60})
+    def test_explicit_setup_scope_and_setup_root_use_same_domain(self):
+        store = selected_store(self.root)
+        Configuration(store).replace('host-runtime.json', {'cycle_seconds': 60}, expected_revision=0)
         setup = Onboarding(self.root, client=Mock())
         self.assertEqual(setup.runtime()['cycle_seconds'], 60)
         staged = setup.runtime()
@@ -30,10 +31,8 @@ class ConfigurationAuthorityTests(unittest.TestCase):
         setup.save_runtime(staged, active=False)
         self.assertEqual(load(self.root, scope='setup')['cycle_seconds'], 90)
         self.assertEqual(load(self.root / 'setup')['cycle_seconds'], 90)
-        write_json(self.root / 'runtime.json', {'cycle_seconds': 120})
-        write_json(self.root / 'state/factory-v2.enabled', {})
-        self.assertEqual(setup.runtime()['cycle_seconds'], 120)
-        self.assertEqual(Settings(self.root, scope='active', client=Mock()).scope, 'live')
+        self.assertEqual(ConfigurationAuthority(self.root, scope='setup').runtime()['settings']['cycle_seconds'], 90)
+        self.assertEqual(ConfigurationAuthority(self.root / 'setup').scope, 'setup')
 
     def test_selected_authority_ignores_stale_json_markers_and_defaults(self):
         store = selected_store(self.root)
@@ -87,9 +86,10 @@ class ConfigurationAuthorityTests(unittest.TestCase):
             with self.assertRaises(ConfigurationConflict):
                 settings.save({**initial, 'access_max_age_seconds': 1000}, digest(initial))
         self.assertEqual(settings.load(), changed)
-        self.assertFalse(settings.path.exists())
+        self.assertFalse((self.root / 'factory.json').exists())
 
     def test_interrupted_legacy_host_update_resumes_with_latest_revision(self):
+        selected_store(self.root)
         first = Record(self.root)
         first.save(source='one')
         stale = Record(self.root)
@@ -101,6 +101,7 @@ class ConfigurationAuthorityTests(unittest.TestCase):
         self.assertEqual(runtime_document(self.root, 'host.json')['image'], 'two')
 
     def test_document_names_are_bounded_before_read_or_write(self):
+        selected_store(self.root)
         authority = ConfigurationAuthority(self.root)
         for domain in ('../outside.json', '/tmp/outside.json', 'setup/../runtime.json', 'unknown.json'):
             with self.subTest(domain=domain):

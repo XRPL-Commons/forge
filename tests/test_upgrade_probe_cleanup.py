@@ -7,7 +7,7 @@ from unittest.mock import patch
 from forge.factory.probe_runner import ProbeRunner, PROVIDER
 from forge.factory.runner import ContainerRunner, RunnerError
 from forge.setup_service import Service
-from forge.sqlite_onboarding import SetupState
+from forge.onboarding import SetupState
 from forge.store.db import Store
 from forge.store.migration.probe_cleanup import cleanup_fenced_probe
 from tests.test_worker_boundary import Engine

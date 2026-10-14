@@ -15,16 +15,14 @@ from urllib.parse import parse_qs, urlsplit
 
 from .onboarding import Onboarding, ROLES
 from .operator_auth import OperatorAuth
-from .store.runtime import selected
+from .store.runtime import required
 
 
 class RoleAppHandoff:
     def __init__(self, root, *, setup=None, auth=None, clock=time.time):
         self.setup = setup or Onboarding(root)
         self.auth = auth or OperatorAuth(root)
-        self.store = selected(root)
-        if self.store is None:
-            raise ValueError('Fresh setup requires the selected SQLite runtime')
+        self.store = required(root)
         self.clock = clock
 
     def operator(self, actor_id):

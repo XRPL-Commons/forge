@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from forge.credentials import Credentials
 from tests.test_dashboard import dashboard, signed_in, OPERATOR_CSRF
+from tests.sqlite_fixture import selected_store
 
 
 def secrets(store):
@@ -112,9 +113,10 @@ class CredentialStoreTests(unittest.TestCase):
 
 class BrowserSecretTests(unittest.TestCase):
     def test_onboarding_api_no_longer_accepts_provider_keys(self):
-        session = signed_in(self)
         with tempfile.TemporaryDirectory() as directory, patch.object(dashboard, 'WD', directory), \
                 patch('forge.onboarding.Onboarding') as setup:
+            selected_store(directory)
+            session = signed_in(self)
             handler = object.__new__(dashboard.H)
             handler.server = Mock(server_address=('127.0.0.1', 8787))
             payload = json.dumps({'action': 'provider', 'api_key': 'synthetic'}).encode()

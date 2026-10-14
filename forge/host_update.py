@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 
 from .onboarding import Onboarding
-from .settings import read_json, write_json
+from .settings import write_json
 from .factory.control import controller_lock, ControllerBusy
 from .configuration_authority import RUNTIME_DOMAINS
 
@@ -230,8 +230,7 @@ def desired_units(root, bind):
           NODE_IMAGE, 'node', '/app/server/index.mjs']
     # Only the public address reaches the UI container. Identity credentials
     # and session state stay in the controller's private state directory.
-    auth_root = root / 'state/operator-auth'
-    if (root / 'state/storage').exists() or (auth_root / 'auth.json').exists() or (auth_root / 'auth.initialized').exists():
+    if (root / 'state/storage').exists():
         from forge.operator_auth import OperatorAuth
         identity = OperatorAuth(root).config()
         if identity:
@@ -251,21 +250,6 @@ def desired_units(root, bind):
         'forge-supervisor': unit('Forge supervisor', unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root), python,
                                  after='network-online.target forge-mirror.service', requires='forge-mirror.service'),
     }
-
-
-def legacy_unit(name, root, bind):
-    """The units `bin/forge setup` wrote before this reconciler; recognised as ours."""
-    commands = {'forge-status': '/usr/bin/python3 ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
-                'forge-supervisor': unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root)}
-    if name not in commands:
-        return None
-    return ('[Unit]\nDescription=Forge ' + name + '\nAfter=network-online.target\n\n[Service]\n'
-            'Type=simple\nExecStart=' + commands[name] + '\n'
-            'Environment=' + unit_quote('PYTHONPATH=' + str(SOURCE)) + '\n'
-            'Environment=' + unit_quote('FORGE_ROOT=' + str(root)) + '\n'
-            'Environment=' + unit_quote('FORGE_BIND_ADDRESS=' + bind) + '\n'
-            'Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nUMask=0077\n\n'
-            '[Install]\nWantedBy=default.target\n')
 
 
 def runner_image():
@@ -533,7 +517,7 @@ def reconcile(root, bind=None, assume_yes=False):
         if current == content:
             continue
         unit_changes.append(name)
-        if current is not None and not record.owns(path, current.encode()) and current != legacy_unit(name, root, bind):
+        if current is not None and not record.owns(path, current.encode()):
             foreign.append((path, current, content))
     if installed_apparmor is not None and installed_apparmor != apparmor and not record.owns(APPARMOR_TARGET, installed_apparmor):
         foreign.append((APPARMOR_TARGET, installed_apparmor.decode(errors='replace'), apparmor.decode()))
@@ -643,10 +627,5 @@ def reconcile(root, bind=None, assume_yes=False):
         config.update(image=image, apparmor_profile=APPARMOR_PROFILE)
         save_runtime_document(root, 'host-runtime.json', config, expected_revision=0)
     elif record.data['previous'].get('source') not in (None, source):
-        from .store.runtime import selected
-        if selected(root) is not None:
-            print('Updated to ' + (source or 'unknown')[:12] + '. SQLite history is retained; use a compatible forward update for recovery.')
-        else:
-            print('Updated to ' + (source or 'unknown')[:12] + '. To roll back: git checkout '
-                  + record.data['previous']['source'][:12] + ' && bin/forge update --no-pull')
+        print('Updated to ' + (source or 'unknown')[:12] + '. SQLite history is retained; use a compatible forward update for recovery.')
     return runtime_changed and not fresh

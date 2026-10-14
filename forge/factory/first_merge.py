@@ -2,7 +2,7 @@
 import math
 import time
 
-from ..store.runtime import selected
+from ..store.runtime import required
 from ..store.queries import Queries
 from .status_projection import operator_status
 
@@ -17,9 +17,7 @@ def proof(root, *, repository, number, started_at, clock=time.time):
         raise ValueError('Installation start time is in the future')
     result = dict(status='waiting', observed_at=now, repository=repository, number=number,
                   candidate=None, evidence=None, attempts={'total':0,'charged_failures':0})
-    store = selected(root)
-    if store is None:
-        return result
+    store = required(root)
     with store.read_snapshot() as db:
         repo = db.execute('SELECT full_name FROM repositories WHERE id=?', (repository['id'],)).fetchone()
         if repo is None:

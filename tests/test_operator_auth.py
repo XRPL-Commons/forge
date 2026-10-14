@@ -8,7 +8,9 @@ from urllib.parse import urlsplit, parse_qs
 
 from forge.operator_auth import (OperatorAuth, AuthError, SESSION_COOKIE, FLOW_COOKIE,
                                  read_cookie, digest, SESSION_SECONDS, github_identity, failure_reason)
+from forge.store.db import StoreError
 from forge.store.files import StateError
+from tests.sqlite_fixture import selected_store
 from tests import test_settings_http
 from tests.test_dashboard import dashboard
 
@@ -17,6 +19,7 @@ class OperatorAuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        self.database = selected_store(Path(self.temp.name))
         self.now = 1000
         self.identity = Mock(return_value={'id': 123, 'login': 'operator'})
         self.auth = OperatorAuth(self.temp.name, clock=lambda: self.now, identity=self.identity)
@@ -42,8 +45,10 @@ class OperatorAuthTests(unittest.TestCase):
     def test_sessions_are_hashed_expire_and_logout_revokes(self):
         token = self.login()
         self.assertEqual(self.auth.session(token)['operator']['id'], 123)
-        self.assertNotIn(token, self.auth.store.path.read_text())
-        self.assertIn(digest(token), self.auth.store.path.read_text())
+        with self.database.read_snapshot() as db:
+            rows = json.dumps([list(row) for row in db.execute('SELECT * FROM operator_sessions')])
+        self.assertNotIn(token, rows)
+        self.assertIn(digest(token), rows)
         self.auth.logout(token)
         self.assertIsNone(self.auth.session(token))
         token = self.login()
@@ -71,7 +76,7 @@ class OperatorAuthTests(unittest.TestCase):
         self.identity.return_value = {'id': 999, 'login': 'operator'}
         with self.assertRaises(AuthError):
             self.login()
-        self.assertEqual(self.auth.store.read()['sessions'], {})
+        self.assertEqual(self.sessions(), 0)
 
     def test_reconfiguration_revokes_sessions_and_pending_flows(self):
         token = self.login()
@@ -81,15 +86,6 @@ class OperatorAuthTests(unittest.TestCase):
         with self.assertRaises(AuthError):
             self.auth.callback(state, 'code', browser)
 
-    def test_reconfiguration_during_exchange_fails_closed(self):
-        def changed(*args):
-            self.configure(operators=[456])
-            return {'id': 123, 'login': 'operator'}
-        self.identity.side_effect = changed
-        with self.assertRaises(AuthError):
-            self.login()
-        self.assertEqual(self.auth.store.read()['sessions'], {})
-
     def test_consumed_state_stays_consumed_when_identity_lookup_fails(self):
         self.identity.side_effect = AuthError('offline')
         state, browser = self.begin()
@@ -98,25 +94,11 @@ class OperatorAuthTests(unittest.TestCase):
                 self.auth.callback(state, 'code', browser)
         self.identity.assert_called_once()
 
-    def test_private_state_cannot_be_readable_by_other_accounts(self):
-        self.auth.store.path.chmod(0o644)
-        with self.assertRaises(StateError):
-            self.auth.config()
-
-    def test_missing_corrupt_or_emptied_initialized_state_fails_closed(self):
-        for value in ('broken', '{}'):
-            self.auth.store.path.write_text(value)
-            with self.assertRaises((StateError, ValueError)):
-                self.auth.config()
-        self.auth.store.path.unlink()
-        with self.assertRaises(StateError):
-            OperatorAuth(self.temp.name).config()
-
-    def test_new_installation_remains_legacy_until_explicitly_configured(self):
+    def test_new_installation_is_unconfigured_until_explicitly_configured(self):
         with tempfile.TemporaryDirectory() as root:
+            selected_store(Path(root))
             auth = OperatorAuth(root)
             self.assertIsNone(auth.config())
-            self.assertFalse(auth.store.marker.exists())
             with self.assertRaises(AuthError):
                 auth.begin()
             self.assertIsNone(auth.config())
@@ -134,16 +116,8 @@ class OperatorAuthTests(unittest.TestCase):
             self.auth.begin()
         self.now += 601
         self.auth.begin()
-        self.assertEqual(len(self.auth.store.read()['flows']), 1)
-
-    def test_audit_attributes_request_without_credentials(self):
-        token = self.login()
-        self.auth.audit(self.auth.session(token), '/api/repositories/enable')
-        text = (self.auth.store.root / 'requests.jsonl').read_text()
-        self.assertEqual(json.loads(text)['operator'], {'id': 123, 'login': 'operator'})
-        self.assertNotIn(token, text)
-        self.assertNotIn(self.auth.session(token)['csrf'], text)
-        self.assertEqual(self.auth.store.path.stat().st_mode & 0o777, 0o600)
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM operator_flows WHERE expires_at>?', (self.now,)).fetchone()[0], 1)
 
     def test_ui_unit_receives_only_public_auth_configuration(self):
         from forge.host_update import desired_units
@@ -178,6 +152,56 @@ class OperatorAuthTests(unittest.TestCase):
         self.assertEqual(failure_reason(AuthError('Missing or invalid sign-in cookie')), 'missing_flow_cookie')
         self.assertEqual(failure_reason(RuntimeError('credential-in-upstream-error')), 'internal_error')
 
+    def sessions(self):
+        with self.database.read_snapshot() as db:
+            return db.execute('SELECT count(*) FROM operator_sessions').fetchone()[0]
+
+    def test_reconfiguration_during_exchange_fails_closed_without_network_transaction(self):
+        def change(*args):
+            with self.database.write() as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM operator_flows WHERE consumed_at IS NOT NULL').fetchone()[0], 1)
+            self.configure(operators=[456])
+            return {'id': 123, 'login': 'operator'}
+        self.identity.side_effect = change
+        with self.assertRaises(AuthError):
+            self.login()
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM operator_sessions').fetchone()[0], 0)
+
+    def test_session_csrf_and_audit_survive_restart_without_raw_credentials_in_rows(self):
+        token = self.login()
+        session = self.auth.session(token)
+        other = OperatorAuth(self.temp.name, clock=lambda: self.now)
+        self.assertEqual(other.session(token), session)
+        self.assertEqual(len(session['csrf']), 43)
+        other.audit(session, '/api/repositories/enable')
+        with self.database.read_snapshot() as db:
+            row = db.execute('SELECT * FROM operator_sessions WHERE token_hash=?', (digest(token),)).fetchone()
+            self.assertIsNotNone(row)
+            audit = dict(db.execute("SELECT * FROM operator_audit WHERE action='/api/repositories/enable'").fetchone())
+        self.assertEqual(audit['operator_id'], '123')
+        self.assertNotIn(token, json.dumps(audit))
+        self.assertNotIn(session['csrf'], json.dumps(audit))
+
+    def test_missing_or_changed_credential_fails_closed(self):
+        with self.database.read_snapshot() as db:
+            reference = db.execute('SELECT credential_ref FROM operator_auth_configuration').fetchone()[0]
+        path = self.database.root / reference
+        path.write_text('t' * 40)
+        with self.assertRaises(StateError):
+            self.auth.config()
+        path.unlink()
+        with self.assertRaises(StoreError):
+            self.auth.config()
+
+    def test_import_staging_cannot_mutate_identity(self):
+        with self.database.write() as db:
+            db.execute("INSERT INTO store_metadata VALUES('import_only','true')")
+        with self.assertRaises(StateError):
+            self.auth.configure('https://forge.example', 'client-id', 'x' * 40, [123])
+        with self.assertRaises(StateError):
+            self.auth.begin()
+
 
 class OperatorHTTPTests(unittest.TestCase):
     handler = test_settings_http.SettingsHTTPTests.handler
@@ -185,6 +209,7 @@ class OperatorHTTPTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        self.database = selected_store(Path(temp.name))
         patcher = patch.object(dashboard, 'WD', temp.name)
         patcher.start(); self.addCleanup(patcher.stop)
         self.auth = OperatorAuth(temp.name, identity=lambda *args: {'id': 123, 'login': 'operator'})
@@ -209,7 +234,8 @@ class OperatorHTTPTests(unittest.TestCase):
     def test_signed_out_reads_and_mutations_are_protected_before_services(self):
         with patch.object(dashboard, 'settings_service') as service:
             for path in ('/api/settings', '/api/factory', '/api/factory/output?id=x', '/api/onboarding', '/onboarding/github/callback', '/api/issues'):
-                self.request(path).send_error.assert_called_once_with(401)
+                with self.subTest(path=path):
+                    self.request(path).send_error.assert_called_once_with(401)
             for path in ('/api/settings/sync', '/api/onboarding', '/api/repositories/enable', '/api/factory/action', '/api/runtime'):
                 self.request(path, {}).send_error.assert_called_once_with(401)
             service.assert_not_called()
@@ -268,7 +294,8 @@ class OperatorHTTPTests(unittest.TestCase):
             service.return_value.start_refresh.assert_called_once()
 
     def test_failed_audit_prevents_dispatch(self):
-        with patch.object(OperatorAuth, 'audit', side_effect=OSError('disk full')), patch.object(dashboard, 'settings_service') as service:
+        with patch('forge.mutation_audit.MutationAudit.start', side_effect=OSError('disk full')), \
+                patch.object(dashboard, 'settings_service') as service:
             handler = self.request('/api/settings/sync', {}, signed=True)
             service.assert_not_called()
             self.assertFalse(json.loads(handler._send.call_args.args[0])['ok'])

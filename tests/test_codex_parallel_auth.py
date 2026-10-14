@@ -9,11 +9,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge.credentials import Credentials
-from forge.factory.codex_auth import snapshot, expires_at, MARGIN, renew_in_container, renewable
+from forge.factory.codex_auth import snapshot, expires_at, renew_in_container, renewable
 from forge.factory.config import validate
-from forge.factory.providers import available
 from forge.factory.runner import ContainerRunner
-from forge.factory.ledger import Ledger
 from forge.settings import write_json
 
 
@@ -156,41 +154,6 @@ class SharedAuthTests(unittest.TestCase):
         self.assertEqual(renewable({'auth_mode': 'chatgptAuthTokens', 'tokens': login()['tokens']}), 'access_only')
         self.assertEqual(renewable({'auth_mode': 'chatgpt', 'tokens': {**login()['tokens'], 'refresh_token': ''}}), 'access_only')
         self.assertEqual(renewable(None), 'unreadable')
-
-    def test_a_login_that_cannot_renew_stops_dispatch_and_says_why(self):
-        from forge.factory.supervisor import Supervisor
-        self.credentials.put(REF, json.dumps({'auth_mode': 'chatgptAuthTokens', 'tokens': {**login()['tokens'], 'refresh_token': ''}}), file=True)
-        ledger = Ledger(self.root / 'state/factory')
-        settings = Mock(); settings.root = self.root
-        config = validate({'provider': 'codex', 'provider_auth_file_env': REF, 'provider_environment': []})
-        Supervisor(ledger, Mock(), Mock(), settings, config, clock=lambda: 1000).check_logins()
-        cooldown = ledger.read()['provider_cooldowns']['codex']
-        self.assertEqual((cooldown['reason'], cooldown['detail']), ('blocked_auth', 'login_access_only'))
-        self.assertGreater(cooldown['until'], 1000)
-
-    def test_new_jobs_wait_for_legacy_writer_then_run_in_parallel(self):
-        entry = {'id': 'codex', 'provider': 'codex', 'model': None,
-                 'provider_environment': [], 'provider_auth_file_env': REF}
-        data = {'jobs': {'one': {'cleanup': False, 'runner_config': dict(entry)}}}
-        self.assertFalse(available(entry, data, 0, codex_parallel_auth=True))
-        data['jobs']['one']['runner_config']['codex_parallel_auth'] = True
-        self.assertTrue(available(entry, data, 0, codex_parallel_auth=True))
-        self.assertFalse(available(entry, data, 0))
-        data['provider_cooldowns'] = {'codex': {'until': 100}}
-        self.assertFalse(available(entry, data, 0, codex_parallel_auth=True))
-
-    def test_reservations_allow_multiple_codex_roles_and_keep_auth_policy(self):
-        entry = {'id': 'codex', 'provider': 'codex', 'model': None,
-                 'provider_environment': [], 'provider_auth_file_env': REF}
-        config = validate({'provider_pool': [entry], 'codex_parallel_auth': True})
-        ledger = Ledger(self.root)
-        for number in (1, 2, 3):
-            key = ledger.discover({'id': 1, 'name': 'example/project'}, number, 'requirements')
-            job = ledger.reserve(key, 'build', 'build-' + str(number), publisher='builder',
-                                 policy='p', timeout=60, runner_config=config)
-            self.assertEqual(job['provider'], 'codex')
-            self.assertTrue(job['runner_config']['codex_parallel_auth'])
-        self.assertEqual(len(ledger.read()['slots']), 3)
 
     def test_refresh_container_uses_no_repository_or_secret_arguments(self):
         runner = Mock()

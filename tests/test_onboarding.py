@@ -1,5 +1,4 @@
-"""Setup state and failure boundaries, with explicit external-system fixtures."""
-import copy
+"""Setup state and failure boundaries on a selected store, with explicit external-system fixtures."""
 import json
 import os
 from pathlib import Path
@@ -9,12 +8,23 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 from forge.app_access import ROLE_PERMISSIONS
+from forge.configuration_authority import ConfigurationAuthority
 from forge.credentials import Credentials
-from forge.onboarding import Onboarding, ROLES
-from forge.settings import Settings, write_json, digest
-from forge.setup_service import Service
+from forge.factory.config import load as runtime_load
 from forge.factory.runner import RunnerError
+from forge.onboarding import Onboarding, ROLES
+from forge.settings import Settings, digest, read_json
+from forge.setup_service import Service
+from forge.store.configuration import Configuration
 from forge.store.files import StateError
+from tests.test_sqlite_identity import selected_store
+
+
+def control(db, name, enabled, now, details=None):
+    db.execute('INSERT INTO runtime_controls(name,enabled,updated_at,details_json) VALUES(?,?,?,?) '
+               'ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled,generation=generation+1,'
+               'updated_at=excluded.updated_at,details_json=excluded.details_json',
+               (name, int(enabled), now, json.dumps(details or {})))
 
 
 class SetupTests(unittest.TestCase):
@@ -33,6 +43,7 @@ class SetupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.database = selected_store(self.root)
         self.api = Mock()
         self.api.jwt.return_value = 'synthetic-app-jwt'
         self.setup = Onboarding(self.root, client=self.api)
@@ -59,10 +70,11 @@ class SetupTests(unittest.TestCase):
         return parse_qs(urlparse(value['action']).query)['state'][0]
 
     def connected(self):
-        config = self.setup.settings().load()
+        settings = self.setup.settings()
+        config = settings.load()
         config['connections'] = {r: {'app_id': i, 'installation_id': 100+i, 'private_key_env': 'FORGE_SETUP_'+r.upper()+'_KEY'} for i,r in enumerate(ROLES, 1)}
-        write_json(self.setup.settings().path, config)
-        self.setup.settings().refresh()
+        settings.save(config, digest(settings.load()))
+        settings.refresh()
         with self.setup.store.transaction() as data:
             data['apps'] = {r: {'connection': config['connections'][r], 'install_url': 'https://github.com/apps/fixture/installations/new'} for r in ROLES}
             data['owner'] = 'example'
@@ -96,21 +108,26 @@ class SetupTests(unittest.TestCase):
         service.setup = self.setup
         return service, engine, resets
 
-    def test_retired_legacy_phase_is_read_as_setup(self):
-        with self.setup.store.transaction() as data:
-            data['phase'] = 'legacy'
-        self.assertEqual(self.setup.read()['phase'], 'setup')
-        (self.root / 'fresh/repos.d').mkdir(parents=True)
-        (self.root / 'fresh/repos.d/example.repo').write_text('REPO=example/project\n')
-        fresh = Onboarding(self.root / 'fresh', client=self.api)
-        self.assertEqual(fresh.read()['phase'], 'setup')
-
-    def test_draft_does_not_change_legacy_admission(self):
+    def test_draft_does_not_admit_live_dispatch(self):
         self.connected()
-        self.assertFalse((self.root/'factory.json').exists())
-        self.assertTrue(Settings(self.root).admission('example/project')['allowed'])
         self.assertTrue(self.setup.settings().load()['repositories'][0]['enabled'])
+        self.assertFalse(Settings(self.root).configured())
+        self.assertFalse(ConfigurationAuthority(self.root).active())
+        self.assertEqual(Settings(self.root).admission('example/project'),
+                         {'allowed': False, 'reason': 'setup_not_started'})
         self.assertFalse(self.setup.view()['can_start'])
+
+    def test_selected_configuration_and_setup_are_normalized(self):
+        self.connected()
+        self.assertEqual(self.setup.database.path, self.database.path)
+        self.assertEqual(Onboarding(self.root).read()['selected']['id'], 10)
+        self.assertTrue(Configuration(self.database).get('setup/runtime.json'))
+        self.assertTrue(Configuration(self.database).get('setup/factory.json'))
+        with self.database.read_snapshot() as db:
+            row = db.execute("SELECT settings_json FROM setup_instances WHERE scope='live'").fetchone()
+        self.assertNotIn('test-provider-value', row[0])
+        self.assertFalse((self.root / 'setup/runtime.json').exists())
+        self.assertFalse((self.root / 'setup/factory.json').exists())
 
     def test_failed_repository_verification_stops_checking_without_starting_workers(self):
         self.connected()
@@ -120,12 +137,19 @@ class SetupTests(unittest.TestCase):
         for _ in range(4): service.tick()
         view = self.setup.view()
         self.assertIsNone(view['operation'])
-        self.assertEqual(view['checks']['github'], 'failed')
         self.assertIn('Repository protection needs attention', view['error'])
         self.assertEqual(view['repository_check']['requirements'][0]['id'], 'stale')
         self.assertFalse(view['can_start'])
         self.assertFalse(engine)
         self.assertFalse(resets)
+
+    def test_failed_repository_verification_marks_the_github_check_failed(self):
+        self.connected()
+        service, _, _ = self.service()
+        service.github_class.return_value.protection_report.return_value = {'branch':'main','available':True,'requirements':[{'id':'stale','label':'Dismiss approvals when code changes','passed':False,'detail':'Enable stale-approval dismissal.'}]}
+        self.setup.queue('check', self.setup.view()['revision'])
+        for _ in range(4): service.tick()
+        self.assertEqual(self.setup.view()['checks']['github'], 'failed')
 
     def test_manifest_role_permissions_and_no_admin_token(self):
         origin = 'http://127.0.0.1:8787'
@@ -155,6 +179,16 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn('PRIVATE KEY', view)
         self.assertNotIn('private_key_env', view)
 
+    def test_callback_network_runs_without_sql_transaction(self):
+        state = self.begin()
+        request = self.api.request.side_effect
+        def network(*args, **kwargs):
+            with self.database.write() as db:
+                db.execute("INSERT OR REPLACE INTO store_metadata VALUES('parallel','ok')")
+            return request(*args, **kwargs)
+        self.api.request.side_effect = network
+        self.setup.callback(state, 'code', self.browser)
+
     def test_expired_or_reset_callback_is_rejected(self):
         nonce = self.begin()
         with self.setup.store.transaction() as data: data['challenge']['expires'] = 0
@@ -181,11 +215,39 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.setup.settings().load()['connections']['build']['installation_id'],101)
         self.assertEqual(self.setup.view()['roles']['build']['status'],'ok')
 
+    def test_bounded_setup_cas_rejects_lost_update(self):
+        with self.assertRaises(StateError):
+            with self.setup.store.transaction() as data:
+                data['owner'] = 'stale'
+                with self.database.write() as db:
+                    db.execute("UPDATE setup_instances SET revision=revision+1 WHERE scope='live'")
+        self.assertNotEqual(self.setup.read()['owner'], 'stale')
+
+    def test_probe_launch_and_cleanup_are_separate_from_setup_json(self):
+        service, engine, resets = self.service()
+        job = service.new_probe(self.setup.runtime(), 'provider')
+        with self.setup.store.transaction() as data:
+            data['probe_jobs'] = [job]
+        recovered = self.setup.read()['probe_jobs'][0]
+        self.assertEqual(recovered['id'], job['id'])
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_leases').fetchone()[0], 1)
+            self.assertNotIn('runner_config', db.execute('SELECT settings_json FROM setup_instances').fetchone()[0])
+        recovered.update(fenced=True, cleanup=True)
+        with self.setup.store.transaction() as data:
+            data['probe_jobs'] = [recovered]
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_leases').fetchone()[0], 0)
+        with self.setup.store.transaction() as data:
+            data['probe_jobs'] = []
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_executions').fetchone()[0], 1)
+
     def test_readiness_runs_cleanup_reuse_and_start_rechecks_github(self):
         self.connected()
         # Enabling uses a real digest in production; fixture supplies an image identity.
         config = self.setup.runtime(); config['image'] = 'sha256:'+'a'*64
-        write_json(self.root/'setup/runtime.json',config)
+        self.setup.save_runtime(config, active=False)
         service,engine,resets = self.service()
         revision = self.setup.view()['revision']
         identifier = self.setup.queue('check',revision)
@@ -198,9 +260,10 @@ class SetupTests(unittest.TestCase):
         self.setup.queue('start',revision)
         service.tick()
         self.assertEqual(self.setup.read()['phase'],'active')
-        self.assertTrue((self.root/'factory.json').exists())
-        self.assertTrue((self.root/'state/factory-v2.enabled').exists())
-        self.assertTrue(json.loads((self.root/'runtime.json').read_text())['merge_enabled'])
+        self.assertTrue(Settings(self.root).configured())
+        self.assertTrue(ConfigurationAuthority(self.root).active())
+        self.assertTrue(runtime_load(self.root)['merge_enabled'])
+        self.assertTrue(Settings(self.root).admission('example/project')['allowed'])
         self.assertEqual(service.github_class.return_value.protection_report.call_count,2)
         self.assertEqual(self.setup.queue('start',revision),self.setup.read()['activation_request'])
 
@@ -208,7 +271,7 @@ class SetupTests(unittest.TestCase):
         from forge.factory.runner import RunnerCapacity
         self.connected()
         config = self.setup.runtime(); config['image'] = 'sha256:'+'a'*64
-        write_json(self.root/'setup/runtime.json', config)
+        self.setup.save_runtime(config, active=False)
         service, engine, resets = self.service()
         self.setup.queue('check', self.setup.view()['revision'])
         service.tick(); service.tick()
@@ -231,7 +294,7 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.setup.queue('start',revision)
         with self.assertRaises(ValueError): self.setup.queue('check','old-revision')
 
-    def test_reset_fences_before_cleanup_and_archives_without_credentials(self):
+    def test_reset_fences_before_cleanup_and_retires_credentials(self):
         self.connected()
         service,engine,resets = self.service()
         config = self.setup.runtime()
@@ -239,36 +302,128 @@ class SetupTests(unittest.TestCase):
         service.runner(config).create(job)
         with self.setup.store.transaction() as data: data['probe_jobs']=[job]
         outside = self.root/'external-login'; outside.write_text('shared')
-        write_json(self.root/'factory.json',self.setup.settings().load())
+        Settings(self.root).save_config(self.setup.settings().load())
         generation = self.setup.read()['generation']
         request = self.setup.queue('reset',generation=self.setup.read()['generation'])
+        self.assertTrue(Settings(self.root).paused())
         self.assertFalse(Settings(self.root).admission('example/project')['allowed'])
-        self.assertTrue((self.root/'factory.json').exists())
+        self.assertTrue(Settings(self.root).configured())
         self.assertTrue(engine)
         for _ in range(3): service.tick()
         data = self.setup.read()
         self.assertEqual(data['phase'],'setup')
         self.assertNotEqual(data['generation'],generation)
+        self.assertEqual(data['reset_receipt']['id'], request)
+        self.assertEqual(data['reset_receipt']['generation'], generation)
         self.assertFalse(engine)
-        self.assertFalse((self.root/'factory.json').exists())
-        self.assertFalse((self.root/'credentials').exists())
+        self.assertEqual(resets, [job['id']])
+        self.assertFalse(Settings(self.root).configured())
+        self.assertFalse(Settings(self.root).paused())
+        self.assertEqual(read_json(self.setup.credentials.root/'index.json'), {})
+        self.assertNotIn('test-provider-value', ''.join(
+            p.read_text(errors='replace') for p in self.setup.credentials.root.rglob('*') if p.is_file()))
         self.assertTrue(outside.exists())
-        archive=self.root/'archives'/('reset-'+request)
-        self.assertTrue((archive/'receipt.json').exists())
-        self.assertNotIn('test-provider-value', ''.join(p.read_text() for p in archive.rglob('*') if p.is_file()))
         self.assertFalse(Settings(self.root).admission('example/project')['allowed'])
+
+    def test_reset_fence_is_sql_and_generation_fences_agents(self):
+        previous = self.setup.read()['generation']
+        self.setup.queue('reset', generation=previous)
+        self.assertTrue(Settings(self.root).paused())
+        with self.database.read_snapshot() as db:
+            fence = db.execute("SELECT enabled,details_json FROM runtime_controls WHERE name='factory_paused'").fetchone()
+        self.assertEqual((fence[0], json.loads(fence[1])), (1, {'generation': previous}))
+        self.assertEqual(self.setup.read()['phase'], 'resetting')
+
+    def test_readiness_probe_cycle_start_and_reset_keep_database_and_evidence(self):
+        from forge.operator_auth import OperatorAuth
+        auth = OperatorAuth(self.root)
+        auth.configure('https://forge.example', 'identity-client', 's' * 40, [123])
+        self.connected()
+        config = self.setup.runtime()
+        config['image'] = 'sha256:' + 'a' * 64
+        self.setup.save_runtime(config, active=False)
+        service, engine, resets = self.service()
+        self.setup.queue('check', self.setup.view()['revision'])
+        for _ in range(30):
+            state = self.setup.read()
+            if not state['operation']:
+                break
+            service.tick()
+        self.assertIsNone(self.setup.read()['operation'])
+        self.assertFalse(engine)
+        self.assertTrue(self.setup.view()['can_start'])
+        self.setup.queue('start', self.setup.view()['revision'])
+        service.tick()
+        self.assertEqual(self.setup.read()['phase'], 'active')
+        self.assertTrue(Settings(self.root).load()['repositories'][0]['enabled'])
+        from forge.client_connections import active_generation
+        old_generation = active_generation(self.root)
+        with self.database.write() as db:
+            db.execute("INSERT INTO environment_scans(id,repository_id,source_revision,status,created_at) VALUES('pre-reset',10,'old','running',1)")
+        from forge.mutation_audit import MutationAudit
+        audit = MutationAudit(self.database, '/api/runtime')
+        audit.result({'ok': True, 'private': 'never-store-this-response'})
+        audit.finish()
+        with self.database.read_snapshot() as db:
+            saved_audit = dict(db.execute('SELECT * FROM operator_audit WHERE request_id=?', (audit.request_id,)).fetchone())
+        self.setup.queue('reset', generation=old_generation)
+        service.tick()
+        self.assertEqual(self.setup.read()['phase'], 'setup')
+        self.assertNotEqual(self.setup.read()['generation'], old_generation)
+        self.assertFalse(Settings(self.root).paused())
+        self.assertFalse(ConfigurationAuthority(self.root).active())
+        self.assertTrue(self.database.path.exists())
+        self.assertTrue((self.root / 'state/storage').exists())
+        self.assertEqual(OperatorAuth(self.root).config()['client_secret'], 's' * 40)
+        self.assertEqual(read_json(self.setup.credentials.root / 'index.json'), {})
+        with self.database.read_snapshot() as db:
+            retained_audit = dict(db.execute('SELECT * FROM operator_audit WHERE request_id=?', (audit.request_id,)).fetchone())
+            self.assertEqual(retained_audit, saved_audit)
+            self.assertNotIn('never-store-this-response', str(retained_audit))
+            self.assertNotIn('s' * 40, str(list(db.execute('SELECT * FROM operator_audit'))))
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_executions').fetchone()[0], 3)
+            self.assertGreater(db.execute('SELECT COUNT(*) FROM auxiliary_artifacts').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_leases').fetchone()[0], 0)
+            self.assertGreater(db.execute('SELECT COUNT(*) FROM configuration WHERE active=0').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM repositories WHERE enabled=1').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT status FROM environment_scans WHERE id='pre-reset'").fetchone()[0], 'failed')
+        self.connected()
+        with self.database.read_snapshot() as db:
+            row = db.execute("SELECT revision FROM configuration WHERE domain='setup/factory.json' AND active=1").fetchone()
+            self.assertGreater(row[0], 1)
+
+    def test_reset_waits_for_uncertain_effect_preserves_history_and_pauses_units(self):
+        from forge.store.transitions import Lifecycle
+        Lifecycle(self.database).admit_issue(request_id='admit', actor_id='operator', unit_id='old-unit',
+            issue_id='old-issue', repository_id=10, repository_name='example/project', issue_number=1,
+            title='Old work', body='Do it', requirements={'acceptance': ['done']}, observed_at=1)
+        with self.database.write() as db:
+            db.execute("INSERT INTO external_effects(id,request_id,unit_id,kind,status,payload_json,created_at,updated_at) "
+                       "VALUES('uncertain','uncertain','old-unit','test','uncertain','{}',1,1)")
+        service, _, _ = self.service()
+        self.setup.queue('reset', generation=self.setup.read()['generation'])
+        with patch('forge.factory.sqlite_runtime.cleanup', return_value={'pending': 0}):
+            service.reset(self.setup.read())  # first page pauses old units
+            service.reset(self.setup.read())
+        self.assertEqual(self.setup.read()['phase'], 'resetting')
+        self.assertIn('GitHub effect', self.setup.read()['error'])
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM unit_gates WHERE code='operator_pause' AND resolved_at IS NULL").fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM issues').fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT status FROM external_effects WHERE id='uncertain'").fetchone()[0], 'uncertain')
 
     def test_unverified_teardown_keeps_reset_pending_and_config_intact(self):
         self.connected()
         service,engine,_ = self.service()
         job = service.new_probe(self.setup.runtime(),'termination')
         with self.setup.store.transaction() as data: data['probe_jobs']=[job]
-        self.setup.queue('reset',generation=self.setup.read()['generation']); service.tick()
+        self.setup.queue('reset',generation=self.setup.read()['generation'])
         with patch.object(service,'runner') as runner:
             runner.return_value.reset.side_effect=RunnerError('Engine unavailable')
-            service.tick()
+            service.tick(); service.tick()
         self.assertEqual(self.setup.read()['phase'],'resetting')
-        self.assertTrue(self.setup.settings().path.exists())
+        self.assertTrue(Settings(self.root).paused())
+        self.assertTrue(self.setup.settings().configured())
         self.assertTrue((self.root/'credentials').exists())
         with self.assertRaises(ValueError): self.setup.connect('codex', api_key='another-value-no-real-secret')
         service.tick(); service.tick()
@@ -289,18 +444,30 @@ class SetupTests(unittest.TestCase):
         old=self.setup.read()['generation']
         self.setup.queue('reset',generation=self.setup.read()['generation'])
         for _ in range(3): service.tick()
-        write_json(self.root/'state/factory-paused.json',{'generation':old})
+        with self.database.write() as db:
+            control(db, 'factory_paused', True, 1, {'generation': old})
         service.tick()
-        self.assertFalse((self.root/'state/factory-paused.json').exists())
-        write_json(self.root/'state/factory-paused.json',{'generation':self.setup.read()['generation']})
+        self.assertFalse(Settings(self.root).paused())
+        with self.database.write() as db:
+            control(db, 'factory_paused', True, 1, {'generation': self.setup.read()['generation']})
         service.tick()
-        self.assertTrue((self.root/'state/factory-paused.json').exists())
+        self.assertTrue(Settings(self.root).paused())
 
-    def test_reset_read_does_not_recreate_archived_setup(self):
+    def test_reset_same_generation_fence_is_not_cleared_by_old_receipt(self):
+        with self.setup.store.transaction() as data:
+            data['reset_receipt'] = {'id': 'old', 'generation': 'old-generation'}
+        with self.database.write() as db:
+            control(db, 'factory_paused', True, 1, {'generation': self.setup.read()['generation']})
+        service, _, _ = self.service()
+        service.tick()
+        self.assertTrue(Settings(self.root).paused())
+
+    def test_reset_read_does_not_create_setup_files(self):
         import shutil
         self.connected(); self.setup.queue('reset',generation=self.setup.read()['generation'])
-        shutil.rmtree(self.root/'setup')
+        shutil.rmtree(self.root/'setup')  # Only sync locks for the setup-scope settings live here.
         self.assertEqual(self.setup.view()['phase'],'resetting')
+        self.assertEqual(Onboarding(self.root).view()['phase'],'resetting')
         self.assertFalse((self.root/'setup').exists())
 
     def test_secret_files_private_and_external_login_preserved(self):
@@ -315,25 +482,27 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError): store.environment()
 
 
-if __name__=='__main__': unittest.main()
-
-
 class ServiceLoopTests(unittest.TestCase):
     """The loop that keeps the factory cycling, and what it says when it cannot."""
 
     def test_a_failing_cycle_names_its_reason_in_the_log(self):
         import io
-        from unittest.mock import patch
         from forge.setup_service import main
         with tempfile.TemporaryDirectory() as directory:
+            selected_store(directory)
             output = io.StringIO()
             def once(_seconds):
                 raise KeyboardInterrupt
+            service_class = type(Service(directory))
             with patch('sys.argv', ['forge service', '--root', directory]), \
-                    patch('forge.setup_service.Service.tick', side_effect=ValueError('Unknown runtime settings')), \
+                    patch.object(service_class, 'tick', side_effect=ValueError('Unknown runtime settings')), \
                     patch('forge.setup_service.time.sleep', side_effect=once), \
                     patch('sys.stdout', new=output):
                 main()
         printed = output.getvalue()
         self.assertIn('Supervisor enquiry failed', printed)
         self.assertIn('ValueError: Unknown runtime settings', printed)
+
+
+if __name__ == '__main__':
+    unittest.main()

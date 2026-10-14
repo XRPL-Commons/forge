@@ -1,6 +1,5 @@
 """Public supporting services run against selected normalized state."""
 from copy import deepcopy
-import json
 from pathlib import Path
 import tempfile
 import threading
@@ -10,14 +9,15 @@ from unittest.mock import Mock, patch
 from tests.test_sqlite_identity import selected_store
 from tests import test_settings as settings_fixture
 from tests import test_deployments as deployment_fixture
-from tests.test_environment_tiers import FULL
 from forge.settings import Settings, digest
 from forge.app_access import ROLE_PERMISSIONS
 from forge.onboarding import Onboarding
 from forge.repository_setup import RepositorySetup, observation_key
 from forge.repository_environments import RepositoryEnvironments
 from forge.factory.config import load, save, validate
-from forge.store.configuration import Configuration
+
+
+FULL = {'image': 'sha256:' + 'b' * 64, 'memory': '6g', 'cpus': 3}
 
 
 class RuntimeFixture(unittest.TestCase):
@@ -112,8 +112,8 @@ class SettingsEnvironmentTests(RuntimeFixture):
         service = RepositoryEnvironments(self.settings, github_class=Mock())
         proposal = {**self.repo, 'head': 'a' * 40, 'services': ['mongodb'], 'evidence': ['package.json: mongoose'], 'revision': 'proposal-1'}
         revision = digest(self.settings.load())
-        with patch('forge.sqlite_environments.probe', return_value=proposal) as probe, \
-                patch('forge.sqlite_environments.uuid.uuid4', return_value=Mock(hex='f' * 32)):
+        with patch('forge.repository_environments.probe', return_value=proposal) as probe, \
+                patch('forge.repository_environments.uuid.uuid4', return_value=Mock(hex='f' * 32)):
             service.start_scan(self.repo, revision, service.view(10)['revision'], background=False)
         self.assertEqual(probe.call_count, 1)
         self.assertEqual(load(self.root)['repository_environments'], {})
@@ -123,19 +123,19 @@ class SettingsEnvironmentTests(RuntimeFixture):
         self.assertEqual(reloaded.view(10)['profile']['services'], ['mongodb'])
         with self.assertRaisesRegex(ValueError, 'changed'):
             service.confirm(self.repo, revision, environment_revision)
-        with patch('forge.sqlite_environments.threading.Thread'), \
-                patch('forge.sqlite_environments.uuid.uuid4', return_value=Mock(hex='0' * 32)):
+        with patch('forge.repository_environments.threading.Thread'), \
+                patch('forge.repository_environments.uuid.uuid4', return_value=Mock(hex='0' * 32)):
             service.start_scan(self.repo, revision, service.view(10)['revision'])
         self.assertEqual(service.view(10)['status'], 'running')
         self.assertEqual(service.snapshot()[1]['10'], proposal)
-        with patch('forge.sqlite_environments.probe', return_value={**proposal, 'services': ['redis']}):
+        with patch('forge.repository_environments.probe', return_value={**proposal, 'services': ['redis']}):
             service.scan(self.repo, revision, 'f' * 32)
         self.assertEqual(service.view(10)['status'], 'running')
         self.assertEqual(service.snapshot()[1]['10'], proposal)
         with self.database.write() as db:
             row = db.execute("SELECT id FROM environment_scans WHERE status='running'").fetchone()
             db.execute("UPDATE environment_scans SET status='failed',error='reset' WHERE id=?", (row[0],))
-        with patch('forge.sqlite_environments.probe', return_value={**proposal, 'services': ['redis']}):
+        with patch('forge.repository_environments.probe', return_value={**proposal, 'services': ['redis']}):
             service.scan(self.repo, revision, row[0])
         self.assertEqual(service.view(10)['profile']['services'], ['mongodb'])
         self.assertEqual(service.view(10)['error'], 'reset')
@@ -147,8 +147,7 @@ class SettingsEnvironmentTests(RuntimeFixture):
 
 class DeploymentAuxiliaryTests(unittest.TestCase):
     def setUp(self):
-        deployment_fixture.DeploymentTests.setUp(self)
-        self.database = selected_store(self.root)
+        deployment_fixture.DeploymentTests.setUp(self)  # Selects the store as self.database.
         self.config['enabled'] = True
     deployments = deployment_fixture.DeploymentTests.deployments
     entry = deployment_fixture.DeploymentTests.entry

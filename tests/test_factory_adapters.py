@@ -1,15 +1,11 @@
-import copy
 import importlib.util
-import io
 import json
 from pathlib import Path
-import subprocess
-import tarfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 import uuid
 
-from forge.app_access import AppClient, AccessError, ROLE_PERMISSIONS, OPTIONAL_PERMISSIONS
+from forge.app_access import AppClient, AccessError, OPTIONAL_PERMISSIONS
 from forge.factory.config import validate
 from forge.factory.github import GitHub, GitHubUnavailable, GitHubBudgetExhausted
 from forge.factory.runner import ContainerRunner, RunnerError, process_isolation
@@ -173,20 +169,6 @@ class AdapterTests(unittest.TestCase):
         github.call.assert_not_called()
         github.runtime['human_reviewers'] = ['maintainer']
         self.assertTrue(github.human({}, pr)[0])
-
-    def test_settling_checks_cancels_only_forges_own_unfinished_runs(self):
-        github, _, _ = self.github()
-        github.connection = lambda role: {'app_id': {'review': 2, 'audit': 3, 'controller': 4}[role]}
-        github.pages = Mock(return_value=[
-            {'id': 1, 'name': 'forge/audit', 'status': 'in_progress', 'app': {'id': 3}},
-            {'id': 2, 'name': 'forge/merge-policy', 'status': 'in_progress', 'app': {'id': 4}},
-            {'id': 3, 'name': 'forge/review', 'status': 'completed', 'app': {'id': 2}},
-            {'id': 4, 'name': 'ci', 'status': 'in_progress', 'app': {'id': 99}},
-            {'id': 5, 'name': 'forge/audit', 'status': 'in_progress', 'app': {'id': 77}}])
-        github.call = Mock()
-        self.assertEqual(github.settle_checks({}, {'head': 'a' * 40}, 'Paused'), 2)
-        calls = [(c.args[0], c.args[2], c.args[3], c.args[4]['conclusion']) for c in github.call.call_args_list]
-        self.assertEqual(calls, [('audit', 'PATCH', '/check-runs/1', 'cancelled'), ('controller', 'PATCH', '/check-runs/2', 'cancelled')])
 
     def test_shared_repository_allows_human_access_and_owner_chosen_checks(self):
         github, _, _ = self.github()

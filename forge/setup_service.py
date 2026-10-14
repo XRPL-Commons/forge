@@ -4,24 +4,25 @@ from copy import deepcopy
 import fcntl
 import json
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import time
 import uuid
 
-from .onboarding import Onboarding
+from .onboarding import Onboarding, control_in
 from .repository_policy import protection_ready
 from .credentials import Credentials
-from .deployments import Deployments
-from .settings import Settings, read_json, write_json
+from .settings import Settings, write_json
+from .sqlite_identity import identity_effect_lock, audit_in
+from .store.auxiliary import active, save_in
 from .store.files import StateError
+from .store.models import Command
+from .store.runtime import writable
+from .store.transitions import Lifecycle
 from .factory.config import load
-from .factory.control import controller_lock, requests
+from .factory.control import controller_lock
 from .factory.github import GitHub, GitHubUnavailable
-from .factory.ledger import Ledger
 from .factory.runner import ContainerRunner, RunnerError, RunnerCapacity
-from .factory.supervisor import Supervisor
 
 # How often a queued or running conversation is driven between cycles.
 DISCUSSION_POLL_SECONDS = 4
@@ -64,14 +65,6 @@ def probe_failure_message(capture, provider, *, timed_out=False):
 
 
 class Service:
-    def __new__(cls, root, **kwargs):
-        if cls is Service:
-            from .store.runtime import selected
-            if selected(root) is not None:
-                from .sqlite_setup_service import SqliteService
-                return object.__new__(SqliteService)
-        return object.__new__(cls)
-
     def __init__(self, root, *, runner=ContainerRunner, github=GitHub):
         self.root = Path(root)
         self.setup = Onboarding(root)
@@ -82,6 +75,10 @@ class Service:
         # Names this process: a discussion worker an earlier one started and
         # that is gone without an answer was orphaned by a restart.
         self.boot = uuid.uuid4().hex
+
+    @property
+    def database(self):
+        return self.setup.database
 
     def runner(self, config, *, probe=False):
         # The runner finds <root>/runner-seccomp.json through FORGE_CREDENTIAL_ROOT.
@@ -124,30 +121,19 @@ class Service:
                 'branch': 'setup-probe', 'candidate': None, 'history': {}, 'deadline': time.time() + 180,
                 'fenced': False, 'runner_config': config, 'kind': kind, 'cleanup': False}
 
-    @staticmethod
-    def draining(scope, config, records):
-        """A rotating login has one writer, as in factory.providers.available.
-
-        An unscoped check waits for every worker; a scoped one waits only while a
-        worker still holds one of the checked logins. API-key accounts run in
-        parallel, so they are never waited for.
-        """
-        if not scope:
-            return bool(records['slots'])
-        references = {entry['provider_auth_file_env'] for entry in config['provider_pool']
-                      if entry['id'] in scope and entry.get('provider_auth_file_env')}
-        return any(not job['cleanup'] and (job.get('runner_config') or {}).get('provider_auth_file_env') in references
-                   for job in records['jobs'].values())
-
     def drain(self, scope):
+        from .factory.sqlite_runtime import cycle
         config = load(self.root)
-        ledger = Ledger(self.root / 'state/factory')
-        with controller_lock(self.root):
-            supervisor = Supervisor(ledger, self.runner(config), self.github_class(Settings(self.root), config), Settings(self.root), config)
-            for job in ledger.read()['jobs'].values():
-                if not job['cleanup'] and job['role'] != 'merge':
-                    supervisor.execution(job)
-            return self.draining(scope, config, ledger.read())
+        if scope:
+            identifiers = [e['id'] for e in config['provider_pool']]
+            ready = identifiers if config['provider_ready'] is None else config['provider_ready']
+            config['provider_ready'] = [key for key in ready if key not in scope]
+        cycle(self.root, config=config, runner=self.runner(config), github=self.github_class(Settings(self.root), config), dispatch=bool(scope))
+        with self.database.read_snapshot() as db:
+            rows = db.execute('SELECT l.runner_config_json FROM job_leases lease JOIN job_launches l ON l.job_id=lease.job_id LIMIT 101').fetchall()
+        references = {e['provider_auth_file_env'] for e in config['provider_pool']
+                      if e['id'] in (scope or []) and e.get('provider_auth_file_env')}
+        return bool(rows) if not scope else any(json.loads(row[0]).get('provider_auth_file_env') in references for row in rows)
 
     def runner_verified(self, op):
         """Worker isolation is a property of the image the last qualification covered."""
@@ -282,147 +268,156 @@ class Service:
 
     def start(self, data):
         op = data['operation']
-        if self.setup.revision(data) != op['revision']:
-            raise ValueError('Setup changed; run readiness checks again')
-        if not self.setup.qualified(data):
-            raise ValueError('Coding account verification expired. Verify setup again before starting.')
-        config = self.access(data)
-        self.runner(config).ready()
-        if (self.root / 'state/factory-paused.json').exists():
-            raise ValueError('Reset is in progress; finish it before starting')
-        with controller_lock(self.root):
-            # The mode marker is committed last. Interrupted publication is replayable.
-            if self.setup.revision(self.setup.read()) != op['revision']:
-                raise ValueError('Setup changed during verification; check again before starting')
+        with identity_effect_lock(self.database), controller_lock(self.root):
+            if self.setup.revision(data) != op['revision'] or not self.setup.qualified(data):
+                raise ValueError('Setup changed or verification expired; run readiness checks again')
+            config = self.access(data)
+            self.runner(config).ready()
+            if Settings(self.root).paused():
+                raise ValueError('Reset is in progress; finish it before starting')
+            current = self.setup.read()
+            if self.setup.revision(current) != op['revision'] or (current.get('operation') or {}).get('id') != op['id']:
+                raise StateError('Setup changed during verification')
+            settings = Settings(self.root)
+            settings.save_config(self.setup.settings().load())
+            settings.save_observation(self.setup.settings().observation())
             config.update(enabled=True, merge_enabled=True)
-            write_json(self.root / 'factory.json', self.setup.settings().load())
-            write_json(self.root / 'runtime.json', config)
-            write_json(self.root / 'state/github-access/access.json', self.setup.settings().observation())
-            Ledger(self.root / 'state/factory').read()
-            write_json(self.root / 'state/factory-onboarding.enabled', {'generation': data['generation']})
-            write_json(self.root / 'state/factory-v2.enabled', {'generation': data['generation'], 'activated_at': time.time()})
+            self.setup.save_runtime(config, active=True)
             self.update(op, phase='active', operation=None, error=None,
                         activation_request=op['id'], activation_revision=op['revision'])
 
+    def _pause_units(self, op):
+        with self.database.read_snapshot() as db:
+            rows = db.execute("SELECT id,version FROM units u WHERE state NOT IN ('merged','closed','dissolved') "
+                              "AND NOT EXISTS (SELECT 1 FROM unit_gates g WHERE g.unit_id=u.id AND g.code='operator_pause' AND g.resolved_at IS NULL) "
+                              'ORDER BY id LIMIT 50').fetchall()
+        for row in rows:
+            Lifecycle(self.database).pause(Command('setup-reset:' + op['id'] + ':' + row['id'], 'setup:reset', row['id'], row['version']))
+        return len(rows)
+
     def reset(self, data):
+        from .factory.sqlite_runtime import cleanup
         op = data['operation']
-        current = self.setup.read()
-        if current['generation'] != op['generation'] or (current.get('operation') or {}).get('id') != op['id']:
-            raise StateError('Reset belongs to an earlier setup generation')
-        with controller_lock(self.root):
-            if op['step'] == 'queued':
-                jobs = []
-                path = self.root / 'state/factory/factory-ledger.json'
-                if path.exists() or path.with_suffix('.initialized').exists():
-                    ledger = Ledger(path.parent)
-                    with ledger.transaction() as records:
-                        for job in records['jobs'].values():
-                            job['fenced'] = True
-                            if not job['cleanup'] and job['role'] != 'merge':
-                                jobs.append(deepcopy(job))
-                for job in data['probe_jobs']:
-                    job['fenced'] = True
-                self.update(op, probe_jobs=data['probe_jobs'],
-                            operation={**op, 'step': 'stop_workers', 'jobs': jobs})
+        with identity_effect_lock(self.database), controller_lock(self.root):
+            current = self.setup.read()
+            if current['generation'] != op['generation'] or (current.get('operation') or {}).get('id') != op['id']:
+                raise StateError('Reset belongs to an earlier setup generation')
+            if self._pause_units(op):
                 return
-            if op['step'] == 'stop_workers':
-                from .harnesses.accounts import reset_logins
-                reset_logins(self.root)
-                for job in [*op['jobs'], *data['probe_jobs']]:
-                    self.runner(job['runner_config'], probe=any(row['id'] == job['id'] for row in data['probe_jobs'])).reset(job)
-                self.update(op, operation={**op, 'step': 'clear_setup'})
+            config = load(self.root)
+            pending = cleanup(self.root, runner=self.runner(config), github=self.github_class(Settings(self.root), config))['pending']
+            for job in active(self.database):
+                domain, owner = self._domain(job['id'])
+                job['fenced'] = True
+                with self.database.write() as db:
+                    save_in(db, domain, owner, job, self.setup.clock())
+                self.runner(job['runner_config'], probe=domain == 'setup').reset(job)
+                job['cleanup'] = True
+                with self.database.write() as db:
+                    save_in(db, domain, owner, job, self.setup.clock())
+            with self.database.read_snapshot() as db:
+                unresolved = db.execute("SELECT 1 FROM external_effects WHERE status IN ('pending','running','uncertain') LIMIT 1").fetchone()
+                leases = db.execute('SELECT 1 FROM job_leases UNION ALL SELECT 1 FROM auxiliary_leases UNION ALL SELECT 1 FROM discussion_leases LIMIT 1').fetchone()
+            if pending or leases:
                 return
-            if op['step'] != 'clear_setup':
-                raise ValueError('Unrecognized reset step')
-            with Settings(self.root).locked('sync'), self.setup.settings().locked('sync'):
-                archive = self.root / 'archives' / ('reset-' + op['id'])
-                archive.parent.mkdir(mode=0o700, exist_ok=True)
-                archive.mkdir(parents=True, mode=0o700, exist_ok=True)
-                # Keep the journal and fences outside the archive. Never archive credential values.
-                paths = [self.root / name for name in ('factory.json', 'runtime.json', 'setup')]
-                paths += [p for p in (self.root / 'state').iterdir()
-                          if p.name not in {'onboarding', 'factory-paused.json', 'factory-onboarding.enabled'}]
-                for source in paths:
-                    if not source.exists():
-                        continue
-                    if source.is_symlink():
-                        raise ValueError('Reset refuses a symlink in active configuration')
-                    target = archive / source.relative_to(self.root)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if target.exists():
-                        raise ValueError('Archive destination already exists; reconcile interrupted cleanup')
-                    source.rename(target)
-                credentials = self.root / 'credentials'
-                if credentials.is_symlink():
-                    raise ValueError('Reset refuses a symlink credential directory')
-                if credentials.exists():
-                    shutil.rmtree(credentials)
-                generation = str(uuid.uuid4())
-                write_json(self.root / 'state/factory-onboarding.enabled', {'generation': generation})
-                write_json(archive / 'receipt.json', {'operation': op['id'], 'generation': data['generation'],
-                                                   'at': time.time(), 'resources_verified_absent': True})
-                self.update(op, generation=generation, phase='setup', operation=None, apps={}, checks={}, repository_check=None, probe_jobs=[],
-                            selected=None, provider_revision=None, provider_checks={}, provider_errors={}, probe_plan=[], probe_ids=[], readiness=None, error=None, owner='', account_type=None,
-                            challenge=None, activation_request=None, activation_revision=None,
-                            reset_receipt={'id': op['id'], 'generation': op['generation'], 'at': time.time()})
-                (self.root / 'state/factory-paused.json').unlink(missing_ok=True)
+            if unresolved:
+                self.update(op, error='Reset is waiting for GitHub effect reconciliation; history and credentials are retained.')
+                return
+            from .harnesses.accounts import reset_logins
+            reset_logins(self.root)
+            credentials = self.setup.credentials
+            with credentials.locked():
+                write_json(credentials.root / 'index.json', {})
+                credentials._prune({})
+                for pending in credentials.root.glob('pending-login-*.json'):
+                    pending.unlink()
+            now = self.setup.clock()
+            # One commit retires operational config and grants, preserving identity,
+            # lifecycle history, artifacts, and the selected database itself.
+            with self.database.write() as db:
+                writable(db)
+                db.execute("UPDATE configuration SET active=0 WHERE active=1 AND domain IN ('factory.json','runtime.json','setup/factory.json','setup/runtime.json')")
+                db.execute('UPDATE repositories SET enabled=0')
+                db.execute("UPDATE environment_scans SET status='failed',error='Setup was reset; scan requirements again.' WHERE status='running'")
+                db.execute("UPDATE environment_proposals SET status='superseded' WHERE status IN ('proposed','approved','applied')")
+                db.execute("UPDATE client_connections SET revoked_at=?,revocation_reason='setup_reset' WHERE revoked_at IS NULL", (now,))
+                db.execute("UPDATE client_pairings SET status='denied' WHERE status IN ('pending','approved')")
+                control_in(db, 'factory_active', False, now)
+                # Keep the reset fence until the new generation is durably saved.
+                audit_in(db, self.setup.clock, 'setup_reset_retired', request_id=op['id'])
+            jobs = []
+            self.update(op, generation=str(uuid.uuid4()), phase='setup', operation=None, apps={}, checks={}, repository_check=None,
+                        probe_jobs=jobs, selected=None, provider_revision=None, provider_checks={}, provider_errors={},
+                        probe_plan=[], probe_ids=[], readiness=None, qualification=None, error=None, owner='', account_type=None,
+                        challenge=None, activation_request=None, activation_revision=None,
+                        reset_receipt={'id': op['id'], 'generation': op['generation'], 'at': now})
+            with self.database.write() as db:
+                control_in(db, 'factory_paused', False, now)
+
+    def _domain(self, identifier):
+        with self.database.read_snapshot() as db:
+            row = db.execute('SELECT domain,owner_id FROM auxiliary_executions WHERE id=?', (identifier,)).fetchone()
+            return tuple(row)
 
     def tick(self):
-        write_json(self.root / 'state/setup-service.json', {'at': self.setup.clock()})
+        from .factory.discussions import Discussions
+        from .factory.sqlite_runtime import cycle
+        with self.database.write() as db:
+            writable(db)
+            now = self.setup.clock()
+            db.execute("INSERT INTO runtime_controls(name,heartbeat_at,updated_at,details_json) VALUES('setup_service',?,?,'{}') "
+                       'ON CONFLICT(name) DO UPDATE SET heartbeat_at=excluded.heartbeat_at,updated_at=excluded.updated_at', (now, now))
         data = self.setup.read()
         op = data.get('operation')
-        from .factory.discussions import Discussions
+        scoped = bool(op and op['action'] == 'harness_check' and op.get('providers') and data['phase'] == 'active')
         discussions = Discussions(self.root, runner=self.runner, boot=self.boot)
         if op:
-            # Setup/reset must not race a discussion's rotating provider login.
             with controller_lock(self.root):
                 discussions.cancel_all()
                 jobs = discussions.active_jobs()
                 if jobs:
-                    discussions.drive(jobs[0], None)  # fenced: cleanup needs no GitHub credential
+                    discussions.drive(jobs[0], None)
                     return
-        scoped = bool(op and op['action'] == 'harness_check' and op.get('providers') and data['phase'] == 'active')
-        if op:
             try:
                 if op['action'] == 'reset':
                     self.reset(data)
                 elif op['action'] == 'start':
                     self.start(data)
                 else:
-                    self.check(data)
+                    with identity_effect_lock(self.database):
+                        self.check(data)
             except RunnerCapacity:
                 if data.get('probe_jobs'):
                     data['probe_jobs'][-1].setdefault('capacity_wait_since', time.time())
                     self.update(op, probe_jobs=data['probe_jobs'])
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-                # No provider output/credentials in errors. Reset stays pending until cleanup succeeds.
-                message = str(error) if isinstance(error, (ValueError, RunnerError, StateError)) else 'Operation failed; inspect the supervisor service and retry'
+            except (OSError, ValueError, RuntimeError) as error:
+                message = str(error) if isinstance(error, (ValueError, RunnerError, StateError)) else 'Setup operation failed; retry after checking service health'
                 try:
-                    if op['action'] in ('check', 'harness_check') and any(not j['cleanup'] for j in data['probe_jobs']):
-                        for job in data['probe_jobs']:
+                    changes = {} if op['action'] == 'reset' else {'operation': None}
+                    latest = self.setup.read()
+                    if op['action'] in ('check', 'harness_check') and any(not j['cleanup'] for j in latest['probe_jobs']):
+                        for job in latest['probe_jobs']:
                             job['fenced'] = True
-                        self.update(op, error=message, probe_error=message, probe_jobs=data['probe_jobs'])
-                    else:
-                        finished = {'operation': None} if op['action'] != 'reset' else {}
-                        if op['action'] in ('check', 'harness_check'):
-                            finished['checks'] = {key: 'failed' if value == 'checking' else value
-                                                  for key, value in data['checks'].items()}
-                        self.update(op, error=message, **finished)
+                        changes = {'probe_jobs': latest['probe_jobs'], 'probe_error': message}
+                    elif op['action'] in ('check', 'harness_check'):
+                        changes['checks'] = {key: 'failed' if value == 'checking' else value
+                                             for key, value in latest['checks'].items()}
+                    self.update(op, error=message, **changes)
                 except StateError:
-                    pass  # Reset superseded this check/activation.
+                    pass
             if not scoped:
                 return
-            # A scoped check only holds back its own accounts. Every other
-            # harness keeps dispatching while this login is verified.
-        if (self.root / 'state/factory-paused.json').exists():
-            marker = self.root / 'state/factory-onboarding.enabled'
-            fence = read_json(self.root / 'state/factory-paused.json')
-            if (data['phase'] == 'setup' and data.get('reset_receipt') and marker.exists()
-                    and read_json(marker).get('generation') == data['generation']
-                    and fence.get('generation') != data['generation']):
-                (self.root / 'state/factory-paused.json').unlink()
-                return
-            # A crash between fencing and recording reset requires an explicit retry.
+        settings, config = Settings(self.root), load(self.root)
+        if scoped:
+            identifiers = [e['id'] for e in config['provider_pool']]
+            ready = identifiers if config['provider_ready'] is None else config['provider_ready']
+            config['provider_ready'] = [key for key in ready if key not in op['providers']]
+        if settings.paused():
+            if data['phase'] == 'setup' and data.get('reset_receipt'):
+                with self.database.write() as db:
+                    fence = db.execute("SELECT details_json FROM runtime_controls WHERE name='factory_paused'").fetchone()
+                    if fence and json.loads(fence[0]).get('generation') != data['generation']:
+                        control_in(db, 'factory_paused', False, self.setup.clock())
             return
         if data['phase'] != 'active':
             return
@@ -431,49 +426,30 @@ class Service:
                 self.converse(discussions)
             return
         with controller_lock(self.root):
-            settings, config = Settings(self.root), load(self.root)
-            if scoped:
-                identifiers = [entry['id'] for entry in config['provider_pool']]
-                ready = identifiers if config['provider_ready'] is None else config['provider_ready']
-                config['provider_ready'] = [i for i in ready if i in identifiers and i not in op['providers']]
             if time.monotonic() >= self.next_sync:
                 settings.start_refresh()
                 self.next_sync = time.monotonic() + settings.load()['sync_interval_seconds']
-            ledger = Ledger(self.root / 'state/factory')
-            requests(self.root, ledger)
-            # Discussions clean up first; productive jobs get first choice of new capacity.
-            github = self.github_class(settings, config)
-            try:
-                discussions.tick(config, github, settings, launch=False)
-            except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
-                pass  # Durable intent/lease remains; cleanup is retried next cycle.
-            observation = Supervisor(ledger, self.runner(config), self.github_class(settings, config), settings, config).cycle()
-            write_json(self.root / 'state/factory/supervisor.json', observation)
+            cycle(self.root, config=config, runner=self.runner(config), github=self.github_class(settings, config), settings=settings)
             if not op:
-                # Deployment tracking is an observation; it never holds up a cycle,
-                # and it gets a quarter of the remaining observation budget.
-                deployments = None
-                try:
-                    github = self.github_class(settings, config)
-                    github.deadline = time.monotonic() + config['cycle_budget_seconds'] / 4
-                    deployments = Deployments(self.root, runner=self.runner, github=github, settings=settings)
-                    deployments.tick(config)
-                except Exception as error:
-                    message = str(error) if isinstance(error, (ValueError, RunnerError, StateError, GitHubUnavailable)) else \
-                        'Deployment tracking failed (' + type(error).__name__ + '); it will be retried next cycle'
-                    try:
-                        (deployments or Deployments(self.root, runner=self.runner, github=None, settings=settings)).fail(message)
-                    except Exception:
-                        pass
-            if not op:
-                try:
-                    github = self.github_class(settings, config)
-                    github.deadline = time.monotonic() + 10
-                    discussions.tick(config, github, settings)
-                except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
-                    pass  # Durable discussion intent is retried; never corrupt deployment state.
+                self.auxiliary_cycles(discussions, settings, config)
             self.next_cycle = time.monotonic() + config['cycle_seconds']
             self.next_discussion = time.monotonic() + DISCUSSION_POLL_SECONDS
+
+    def auxiliary_cycles(self, discussions, settings, config):
+        from .deployments import Deployments
+        github = self.github_class(settings, config)
+        github.deadline = time.monotonic() + config['cycle_budget_seconds'] / 4
+        deployments = Deployments(self.root, runner=self.runner, github=github, settings=settings)
+        try:
+            deployments.tick(config)
+        except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError) as error:
+            deployments.fail(str(error))
+        github = self.github_class(settings, config)
+        github.deadline = time.monotonic() + 10
+        try:
+            discussions.tick(config, github, settings)
+        except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError):
+            pass
 
     def converse(self, discussions):
         """Between cycles, keep a live conversation moving.
@@ -523,7 +499,6 @@ def main():
 
 
 if __name__ == '__main__':
-    # Runtime adapters subclass the canonical module's classes. Running the
-    # local __main__ copy would skip initialization of that returned subclass.
+    # Use the canonical module's classes, the ones every other module imports.
     from forge.setup_service import main as canonical_main
     canonical_main()

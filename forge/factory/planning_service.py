@@ -4,15 +4,14 @@ import json
 
 from ..store.models import TransitionError, VersionConflict
 from ..store.repository_planning import RepositoryPlanning
-from ..store.runtime import selected
+from ..store.runtime import required
 from .config import load
 
 
 class PlanningService:
     def __init__(self,root,*,actor_id,clock=time.time,parts=None):
         self.root,self.actor_id,self.clock=root,actor_id,clock
-        self.store=selected(root) if parts is None else parts['store']
-        if self.store is None:raise TransitionError('Repository planning requires the selected SQLite runtime')
+        self.store=required(root) if parts is None else parts['store']
         self.plans=RepositoryPlanning(self.store,clock=clock)
         self._parts=parts
 

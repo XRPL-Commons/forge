@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import tempfile
 from forge.view_cache import ViewCache
 from tests.test_dashboard import dashboard
+from tests.sqlite_fixture import selected_store
 
 
 class ConditionalHTTPTests(unittest.TestCase):
@@ -45,9 +46,12 @@ class ConditionalHTTPTests(unittest.TestCase):
                 setattr(value, method, Mock(return_value=True))
             value._auth_get = Mock(return_value=False)
             return value
-        with tempfile.TemporaryDirectory() as root, patch.object(dashboard, 'WD', root), \
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        selected_store(root.name)
+        with patch.object(dashboard, 'WD', root.name), \
                 patch.object(dashboard, 'VIEWS', ViewCache(clock=lambda: 1)), \
-                patch('forge.factory.control.view', return_value={'issues': [], 'jobs': [], 'repositories': []}) as build:
+                patch('forge.factory.control.factory_view', return_value={'issues': [], 'jobs': [], 'repositories': []}) as build:
             first = handler(); first.do_GET()
             tag = next(c.args[1] for c in first.send_header.call_args_list if c.args[0] == 'ETag')
             dashboard.VIEWS.entries.clear()
