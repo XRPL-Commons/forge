@@ -54,6 +54,57 @@ class ExecutionProblems(Lifecycle):
         return self._apply(command, 'execution_problem', dict(job_id=job_id, execution_fence=execution_fence,
             input_manifest=input_manifest, details=details), change)
 
+    def retry_recovery_memory(self, command, job_id, *, execution_fence, input_manifest, tiers):
+        from ..factory.execution_problems import classify
+        from .runtime_requirements import _memory
+        query = ExecutionQueries(self.store)
+        job = query.job(job_id)
+        decision = classify(job, query.capture(job_id), self.clock())
+        if job['role'] != 'recovery' or not decision or decision['kind'] != 'oom':
+            raise TransitionError('Recovery memory retry requires observed container OOM')
+        if not tiers or [_memory(t) for t in tiers] != sorted(set(_memory(t) for t in tiers)):
+            raise TransitionError('Memory retry requires ordered bounded tiers')
+        used = _memory(job['runner_config']['memory'])
+        wanted = next((tier for tier in tiers if _memory(tier) > used), None)
+        if wanted is None:
+            return None
+        def change(db, unit):
+            job, current = self._job(db, unit, job_id, execution_fence, input_manifest)
+            self._result(db, command, job, decision['details'], 'deferred' if current else 'stale_deferred')
+            if current:
+                db.execute('INSERT INTO recovery_memory_retries VALUES(?,?,?)', (job_id,wanted,self.clock()))
+            return {'accepted':current, 'charged':False, 'memory_retry':wanted if current else None}
+        return self._apply(command,'recovery_memory_retry',dict(job_id=job_id,execution_fence=execution_fence,
+            input_manifest=input_manifest,tiers=tiers),change)
+
+    def recheck_recovery_memory(self, command, failed_job_id, tiers):
+        from ..factory.execution_problems import classify
+        from .runtime_requirements import _memory
+        query=ExecutionQueries(self.store)
+        with self.store.read_snapshot() as db:
+            gates=[dict(row) for row in db.execute("SELECT g.* FROM unit_gates g JOIN recovery_assignments r "
+                "ON r.job_id=json_extract(g.details_json,'$.job_id') WHERE r.failed_job_id=? "
+                "AND g.code='environment' AND g.resolved_at IS NULL",(failed_job_id,))]
+        allocations={}
+        for gate in gates:
+            detail=json.loads(gate['details_json'])
+            if detail.get('source')!='execution' or detail.get('oom_killed') is not True:continue
+            job=query.job(detail['job_id']);decision=classify(job,query.capture(job['id']),self.clock())
+            if not decision or decision['kind']!='oom':continue
+            wanted=next((tier for tier in tiers if _memory(tier)>_memory(job['runner_config']['memory'])),None)
+            if wanted:allocations[gate['id']]=(job['id'],wanted)
+        if not allocations:return {'resolved':False}
+        def change(db,unit):
+            resolved=[]
+            for gate_id,(job_id,wanted) in allocations.items():
+                gate=db.execute('SELECT * FROM unit_gates WHERE id=? AND unit_id=? AND resolved_at IS NULL',(gate_id,unit['id'])).fetchone()
+                if gate is None:continue
+                db.execute('INSERT OR IGNORE INTO recovery_memory_retries VALUES(?,?,?)',(job_id,wanted,self.clock()))
+                self._resolve(db,command,gate_id,{'memory':wanted,'job_id':job_id})
+                resolved.append(gate_id)
+            return {'resolved':bool(resolved),'gate_ids':resolved}
+        return self._apply(command,'recovery_memory_recheck',dict(failed_job_id=failed_job_id,tiers=tiers),change)
+
     def recheck(self, command, gate_id):
         # Same qualified immutable replacement evidence as the startup path.
         # Generic resolves are forbidden; this rechecks the configuration inside
@@ -88,6 +139,8 @@ def report_in(db, signature):
     details = json.loads(row['details_json'])
     affected = [dict(item) for item in db.execute('SELECT DISTINCT j.unit_id,p.job_id FROM forge_problem_report_jobs p '
         'JOIN jobs j ON j.id=p.job_id WHERE p.signature=? ORDER BY j.unit_id,p.job_id', (signature,))]
+    affected.extend(dict(unit_id=':'.join((item['domain'],item['owner_id'])),job_id=item['execution_id']) for item in db.execute(
+        'SELECT w.domain,w.owner_id,w.execution_id FROM forge_problem_report_auxiliary a JOIN auxiliary_execution_waits w ON w.execution_id=a.execution_id WHERE a.signature=? ORDER BY w.domain,w.owner_id,w.execution_id',(signature,)))
     lines = ['Forge execution failure', '', 'Signature: ' + signature, '', 'Diagnostic excerpt (safe image fields only):',
              f"{details['exception']} at {details['file']}:{details['line']} ({details['phase']})", '', 'Affected units and attempts:']
     lines += [f"- {item['unit_id']} / {item['job_id']}" for item in affected]

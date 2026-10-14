@@ -59,6 +59,10 @@ def provider_available(db, provider, provider_id, config, now):
                               (account, provider)).fetchone()
         if cooldown and cooldown[0] > now:
             return False
+        auxiliary = db.execute("SELECT 1 FROM auxiliary_execution_waits WHERE kind='provider_error' "
+            "AND json_extract(details_json,'$.account_ref')=? AND json_extract(runner_config_json,'$.provider')=? "
+            "AND json_extract(details_json,'$.retry_at')>? LIMIT 1",(account,provider,now)).fetchone()
+        if auxiliary:return False
         observed = db.execute('SELECT readiness FROM provider_observations WHERE account_ref=? AND provider=? '
                               'ORDER BY observed_at DESC,id DESC LIMIT 1', (account, provider)).fetchone()
         if observed and observed[0] != 'ready':
