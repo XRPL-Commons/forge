@@ -217,35 +217,14 @@ def main():
     git('-C', str(directory), 'config', 'user.name', note['publisher'])
     git('-C', str(directory), 'config', 'user.email', note['publisher'] + '@users.noreply.github.com')
     selected = note.get('candidate')
-    if note['role'] == 'recovery':
-        checkout_recovery(note, directory, git)
-    elif note['role'] == 'build' and note.get('resume_branch'):
-        # A memory retry may have pushed newer work than the last accepted
-        # candidate. Resume that branch, preserving the PR and published commits.
-        ref = 'refs/heads/' + note['resume_branch']
-        published = git('-C', str(directory), 'ls-remote', '--heads', 'origin', ref).stdout.strip()
-        if published:
-            if note.get('resume_head') and published.split()[0] != note['resume_head']:
-                raise AssignmentChanged('The approved branch changed before work started')
-            git('-C', str(directory), 'fetch', 'origin', ref)
-            git('-C', str(directory), 'checkout', '--detach', 'FETCH_HEAD')
-        elif selected:
-            git('-C', str(directory), 'fetch', 'origin', selected['head'])
-            git('-C', str(directory), 'checkout', '--detach', selected['head'])
-        else:
-            git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
-    elif selected:
-        git('-C', str(directory), 'fetch', 'origin', selected['head'])
-        git('-C', str(directory), 'checkout', '--detach', selected['head'])
-    elif note.get('input_manifest', {}).get('base_oid'):
-        git('-C', str(directory), 'fetch', 'origin', note['input_manifest']['base_oid'])
-        git('-C', str(directory), 'checkout', '--detach', note['input_manifest']['base_oid'])
-    elif note['role'] in ('strategist','triage'):
-        # Read-only assignment: detach at the given head, never create a branch.
-        git('-C', str(directory), 'fetch', 'origin', note['head'])
-        git('-C', str(directory), 'checkout', '--detach', note['head'])
-    else:
-        git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
+    source = note['source_input']
+    revision = ((note.get('failure') or {}).get('input_manifest') or {}).get('head_oid') if note['role'] == 'recovery' else None
+    revision = revision or note.get('resume_head') or (selected or {}).get('head') or source['base_oid']
+    if revision not in {source['base_oid'], *source['input_oids']}:
+        raise PreparationError('Checkout revision is outside the frozen source inputs')
+    for pinned in {source['base_oid'], *source['input_oids']}:
+        git('-C', str(directory), 'fetch', 'origin', pinned)
+    git('-C', str(directory), 'checkout', '--detach', revision)
     if note['role'] == 'build':
         git('-C', str(directory), 'checkout', '-B', note['branch'])
     inputs = note.get('bundle_inputs', [])
@@ -322,7 +301,7 @@ def export_child(note, directory, inputs, git, *, result_path=Path('/work/result
             path.write_text(json.dumps(receipt, sort_keys=True))
             path.chmod(0o600)
     except PreparationError:
-        report.update(outcome='unable', output_commit=None,
+        report.update(outcome='unable', output_commit=None, **({'pr_title': None, 'pr_body': None} if note.get('source_input') else {}),
                       summary='Task output could not be verified and retained as the assigned commit.',
                       headline='The task output could not be retained',
                       plain='The implementation did not produce a verifiable commit containing its assigned inputs.')

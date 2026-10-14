@@ -159,14 +159,18 @@ class WorkerBoundary:
              'type=volume,source='+volume+',target=/retained-work,readonly,volume-nocopy'], ['forge-git'],
             user=f'{os.geteuid()}:{os.getegid()}')
         self.endpoint(gateway, labels, network, ['/opt/forge/gateway.py'], [], ['forge-egress','forge-registry'], uplink=True)
-        environment = {'HTTP_PROXY':'http://forge-egress:3128','HTTPS_PROXY':'http://forge-egress:3128',
+        environment = self.environment()
+        return BoundarySpec(network,volume,frontend,gateway,('--network',network,'--dns','127.0.0.1',
+            '--mount','type=volume,source='+volume+',target=/work,volume-nocopy',
+            '--mount','type=bind,source='+input_directory+',target=/run/forge-input,readonly'),environment)
+
+    @staticmethod
+    def environment():
+        return {'HTTP_PROXY':'http://forge-egress:3128','HTTPS_PROXY':'http://forge-egress:3128',
             'http_proxy':'http://forge-egress:3128','https_proxy':'http://forge-egress:3128',
             'NO_PROXY':'forge-git,forge-registry','no_proxy':'forge-git,forge-registry',
             'npm_config_registry':'http://forge-registry:8081/registry.npmjs.org/',
             'PIP_INDEX_URL':'http://forge-registry:8081/pypi.org/simple/', 'PIP_TRUSTED_HOST':'forge-registry'}
-        return BoundarySpec(network,volume,frontend,gateway,('--network',network,'--dns','127.0.0.1',
-            '--mount','type=volume,source='+volume+',target=/work,volume-nocopy',
-            '--mount','type=bind,source='+input_directory+',target=/run/forge-input,readonly'),environment)
 
     def cleanup(self, job):
         name, labels = self.identity(job)

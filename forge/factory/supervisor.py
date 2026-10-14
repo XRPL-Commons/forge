@@ -236,8 +236,7 @@ class Supervisor:
                         job = self.ledger.read()['jobs'][job['id']]
                     current = runner.inspect(job)
                     if current and current['status'] == 'created':
-                        token = self.github.token(job['role'], job['repo_id'], worker=True)
-                        runner.prepare(job, token)
+                        runner.prepare(job)
                         self.ledger.job_update(job['id'], phase='launching')
                         runner.start(job)
                     self.ledger.job_update(job['id'], phase='running')

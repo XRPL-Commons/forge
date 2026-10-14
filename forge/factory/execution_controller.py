@@ -70,7 +70,7 @@ class ExecutionController:
         job = self.queries.job(job_id)
         if job['cleanup']:
             return {'job_id': job_id, 'cleanup': True}
-        runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ)
+        runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ, source=self.runner.source_preparation)
                   if isinstance(self.runner, ContainerRunner) else self.runner)
         if not job['fenced'] and job['phase'] in {'reserved', 'starting'}:
             if not self._can_launch(job) or self.clock() >= job['deadline'] or not self.admission(job):
@@ -89,21 +89,12 @@ class ExecutionController:
                 elif job['container_id'] is None:
                     job = self._progress(job, 'starting', current['id'])
                 if current and current['status'] == 'created' and self._can_launch(job):
-                    # Token exists only in memory and the runner's private IPC.
-                    from .delegation_contracts import read_only_build
-                    restricted = read_only_build(job)
-                    token = self.github.token(job['role'], job['repo_id'], worker=True, **({'read_only': True} if restricted else {}))
                     job = self.queries.job(job_id)
                     if self._can_launch(job):
-                        job['bundle_inputs'] = self.queries.input_refs(job)
-                        if job['bundle_inputs']:
-                            runner.prepare(job, token, bundles=self.queries.input_bundles(job['bundle_inputs']))
-                        else:
-                            runner.prepare(job, token)
+                        runner.prepare(job)
                         job = self.queries.job(job_id)
                         if self._can_launch(job):
                             runner.start(job)
-                    del token
                 job = self.queries.job(job_id)
                 current = runner.inspect(job)
                 if self._can_launch(job) and current and current['status'] != 'created':

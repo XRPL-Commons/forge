@@ -31,8 +31,7 @@ class Engine:
             self.after_create()
         return 'container'
 
-    def prepare(self, job, token):
-        assert token == 'ephemeral-token'
+    def prepare(self, job):
         assert assignment_note(job)['id'] == job['id']
 
     def start(self, job):

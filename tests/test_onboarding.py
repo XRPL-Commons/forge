@@ -82,7 +82,7 @@ class SetupTests(unittest.TestCase):
             def create(self, job):
                 engine[job['id']] = {'id':job['id'], 'status':'created', 'running':False, 'exit_code':0}
                 return job['id']
-            def prepare(self, job, token): pass
+            def prepare(self, job): pass
             def start(self, job): engine[job['id']].update(status='exited' if job.get('kind')=='provider' else 'running', running=job.get('kind')!='provider')
             def capture(self, job): return {'result':{'ready':True,'attempt':job['id']}, 'logs':'', 'missing':[]}
             def reset(self, job):

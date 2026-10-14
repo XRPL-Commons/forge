@@ -164,18 +164,15 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(Path(store.environment()[ref]).read_text(), newer)
         self.assertFalse(store.refresh('EXTERNAL_AUTH', digest, original))
 
-    def test_repository_access_probe_rejects_missing_token_and_network_failure(self):
-        with patch.dict('os.environ', {}, clear=True), patch('urllib.request.urlopen') as request:
-            with self.assertRaisesRegex(SystemExit, 'token was removed'):
+    def test_repository_access_probe_requires_mirror_and_no_github_credentials(self):
+        with patch.dict('os.environ', {}, clear=True), patch('pathlib.Path.read_text', return_value='http://forge-git/github/'):
+            check_repository_access()
+        with patch.dict('os.environ', {'GH_TOKEN': 'synthetic'}):
+            with self.assertRaisesRegex(SystemExit, 'Unexpected GitHub credential'):
                 check_repository_access()
-            request.assert_not_called()
-        with patch.dict('os.environ', {'GH_TOKEN': 'forge-synthetic-repository-token'}):
-            with patch('urllib.request.urlopen', side_effect=OSError('unreachable')):
-                with self.assertRaisesRegex(SystemExit, 'connectivity check failed'):
-                    check_repository_access()
-            with patch('urllib.request.urlopen') as request:
+        with patch.dict('os.environ', {}, clear=True), patch('pathlib.Path.read_text', return_value=''):
+            with self.assertRaisesRegex(SystemExit, 'mirror routing'):
                 check_repository_access()
-                request.assert_called_once_with('https://api.github.com/meta', timeout=15)
 
     def test_terminal_import_preserves_source_and_connects_both_harnesses(self):
         source = self.root / 'source.json'; source.write_text('{"synthetic":"login"}')

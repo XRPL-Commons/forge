@@ -379,7 +379,7 @@ class Deployments:
                     raise RunnerError('The strategist container is not observable; reconcile before replacement')
                 if current['status'] == 'created':
                     # The recovery role is the controller App's read-only worker credential.
-                    runner.prepare(job, self.github.token('recovery', job['repo_id'], worker=True))
+                    runner.prepare(job)
                     runner.start(job)
                     if job.get('capacity_wait_since') is not None:
                         job['deadline'] += max(0, self.clock() - job.pop('capacity_wait_since'))

@@ -64,9 +64,9 @@ class DiscussionTests(unittest.TestCase):
         with self.assertRaises(TransitionError):
             self.service.send('1:2','Another question',str(uuid.uuid4()))
 
-    def test_discussion_uses_read_only_token_and_immutable_lease(self):
+    def test_discussion_uses_no_worker_token_and_immutable_lease(self):
         job=self.start()
-        self.github.token.assert_called_once_with('recovery',1,worker=True)
+        self.github.token.assert_not_called()
         self.assertEqual(note(job)['role'],'discussion')
         self.assertEqual(self.service.view('1:2')['status'],'running')
         with self.store.read_snapshot() as db:
@@ -97,9 +97,9 @@ class DiscussionTests(unittest.TestCase):
         self.assertFalse(self.service.active_jobs())
         self.assertEqual(self.service.view('1:2')['status'],'cancelled')
 
-    def test_cancel_during_token_lookup_never_starts(self):
+    def test_cancel_during_preparation_never_starts(self):
         self.send()
-        self.github.token.side_effect=lambda *a,**k: self.service.cancel('1:2') or 'token'
+        self.runner.prepare.side_effect=lambda *a,**k: self.service.cancel('1:2')
         self.service.tick(self.config,self.github,self.settings)
         self.runner.start.assert_not_called()
         self.assertTrue(self.service.active_jobs()[0]['fenced'])

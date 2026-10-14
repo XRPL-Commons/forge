@@ -129,8 +129,8 @@ class Runner:
         self.containers[job['id']] = container
         return container['id']
 
-    def prepare(self, job, token):
-        assert token == 'ephemeral-token'
+    def prepare(self, job):
+        pass
 
     def start(self, job):
         self.launched.append(job['role'])

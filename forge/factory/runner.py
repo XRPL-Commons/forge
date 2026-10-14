@@ -1,7 +1,7 @@
 """External reset of disposable containers. No terminal or PID heuristics.
 
 The controller owns the engine socket; it is never mounted into a job. Every
-execution gets a new container, PID namespace, filesystem and anonymous volume.
+execution gets a new container, PID namespace, filesystem and bounded job volume.
 The engine's namespace teardown kills detached children as well as the harness.
 """
 import io
@@ -91,9 +91,72 @@ def revoke_token(token):
 
 
 class ContainerRunner:
-    def __init__(self, config, *, run=subprocess.run, environ=None, revoke=revoke_token):
+    def __init__(self, config, *, run=subprocess.run, environ=None, revoke=revoke_token, source=None):
         self.config, self.run, self.revoke = config, run, revoke
         self.environ = os.environ if environ is None else environ
+        self.source_preparation = source
+
+    def source(self):
+        if self.source_preparation is None:
+            from ..store.runtime import selected
+            from ..settings import Settings
+            from .github import GitHub
+            from .source_preparation import SourcePreparation
+            root = self.environ.get('FORGE_CREDENTIAL_ROOT')
+            store = selected(root) if root else None
+            if store is None:
+                raise RunnerError('Immutable worker inputs require the selected installation store')
+            settings = Settings(root)
+            self.source_preparation = SourcePreparation(root, store, github=GitHub(settings, self.config), settings=settings)
+        return self.source_preparation
+
+    def boundary(self):
+        from .worker_boundary import WorkerBoundary
+        return WorkerBoundary(self.call, image=self.config['image'])
+
+    def source_record(self, job):
+        if self.source_preparation is None and not self.environ.get('FORGE_CREDENTIAL_ROOT'):
+            return None  # Teardown of older workers needs no new source authority.
+        record = self.source().mirror.prepared(job['id'])
+        if record:
+            job.update(source_input=record['source_input'], execution_fence=record['execution_fence'],
+                       publication_authorization=record['publication_authorization'])
+        return record
+
+    def prepare_source(self, job):
+        from .publisher_runtime import publication_authorization
+        from ..mirror.policy import MirrorError
+        from .worker_boundary import BoundaryError
+        try:
+            source = self.source()
+            if job.get('unit_id'):
+                from ..store.executions import ExecutionQueries
+                queries = ExecutionQueries(source.store)
+                job['bundle_inputs'] = queries.input_refs(job)
+                bundles = queries.input_bundles(job['bundle_inputs'])
+            else:
+                bundles = []
+            role = job.get('role')
+            if role == 'triage':
+                from .contracts import triage_note
+                note = triage_note(job)
+            elif role == 'discussion':
+                from .discussions import note as discussion_note
+                note = discussion_note(job)
+            else:
+                note = strategist_note(job) if role == 'strategist' else assignment_note(job)
+            note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
+                        proxy='http://forge-egress:3128', provider=self.config.get('provider', 'codex'),
+                        model=self.config.get('model'), boundary_environment=self.boundary().environment())
+            previous = source.mirror.prepared(job['id'])
+            authorization = previous['publication_authorization'] if previous else publication_authorization(job, source.github)
+            prepared = source.prepare(job, note, publication_authorization=authorization, bundle_inputs=bundles)
+            self.source_record(job)
+            boundary = self.boundary().prepare(job, input_directory=prepared.input_directory,
+                                               broker_socket_directory=prepared.socket_directory)
+            return boundary
+        except (MirrorError, BoundaryError) as error:
+            raise RunnerError('Worker source preparation: ' + getattr(error, 'reason', 'boundary_unavailable')) from None
 
     def _secrets_path(self, job):
         root = self.environ.get('FORGE_CREDENTIAL_ROOT')
@@ -236,14 +299,15 @@ class ContainerRunner:
         if old:
             return old['id']
         config = self.config
+        boundary = self.prepare_source(job)
         args = ['create', '--pull=never', '--name', self.name(job), '--label', 'forge.execution=' + job['id'],
                 '--label', 'forge.slot=' + job['slot'], '--init', '--read-only',
                 '--user', '1000:1000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                 '--pids-limit', str(config['pids_limit']), '--memory', config['memory'],
                 '--memory-swap', config['memory'], '--cpus', str(config['cpus']),
                 '--log-driver', 'json-file', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=2',
-                '--network', config['network'], '--ipc', 'private', '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
-                '--mount', 'type=volume,destination=/work', '--workdir', '/work',
+                *boundary.worker_args, '--ipc', 'private', '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
+                '--workdir', '/work',
                 '--env', 'HOME=/work/home', '--entrypoint', '/usr/local/bin/python3',
                 config['image'], '-I', '/opt/forge/job.py']
         args[1:1] = process_isolation(config)
@@ -265,7 +329,19 @@ class ContainerRunner:
             value = str(Path(self.environ['FORGE_CREDENTIAL_ROOT']) / 'runner-seccomp.json')
         return Path(value or '')
 
-    def prepare(self, job, token, *, bundles=()):
+    def prepare(self, job, *, bundles=()):
+        record = self.source_record(job)
+        if not record or record['revoked_at'] is not None or not self.source().mirror.live_authority({
+                **record, 'job_id': job['id']}):
+            raise RunnerError('Immutable assignment authority was revoked')
+        if job.get('unit_id'):
+            from ..store.executions import ExecutionQueries
+            queries = ExecutionQueries(self.source().store)
+            bundles = queries.input_bundles(queries.input_refs(job))
+        return self._prepare_credentials(job, bundles=bundles)
+
+    def _prepare_credentials(self, job, *, bundles=()):
+        """Provider-only IPC shared with the separately owned setup probes."""
         current = self.inspect(job)
         if not current or current['status'] != 'created' or job['fenced']:
             raise RunnerError('Only an unstarted owned execution can receive an assignment')
@@ -292,30 +368,17 @@ class ContainerRunner:
                 credentials['FORGE_AUTH_DIGEST'] = hashlib.sha256(raw).hexdigest()
             except (RunnerError, OSError, ValueError, KeyError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded or renewed') from None
-        credentials['GH_TOKEN'] = token
         path = self._secrets_path(job)
         if path:
             # Written before the worker can see them: capture scrubs these exact
-            # values and reset revokes the token, in whichever cycle they run.
+            # values, in whichever cycle they run.
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'w') as stream:
-                json.dump({'github_token': token, 'values': secret_values(credentials.get('FORGE_HARNESS_AUTH'))}, stream)
-        # A job built by a caller that predates roles still gets an assignment.
-        role = job.get('role')
-        if role == 'triage':
-            from .contracts import triage_note
-            note = triage_note(job)
-        elif role == 'discussion':
-            from .discussions import note as discussion_note
-            note = discussion_note(job)
-        else:
-            note = strategist_note(job) if role == 'strategist' else assignment_note(job)
-        note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
-                    proxy=self.config['proxy'], provider=self.config.get('provider', 'codex'), model=self.config.get('model'))
+                json.dump({'values': secret_values(credentials.get('FORGE_HARNESS_AUTH'))}, stream)
         content = io.BytesIO()
         with tarfile.open(fileobj=content, mode='w') as archive:
-            for name, value in [('assignment.json', note), ('credentials.json', credentials)]:
+            for name, value in [('credentials.json', credentials)]:
                 raw = json.dumps(value).encode()
                 member = tarfile.TarInfo(name)
                 member.size, member.mode, member.uid, member.gid = len(raw), 0o600, 1000, 1000
@@ -372,7 +435,7 @@ class ContainerRunner:
             containers = json.loads(self.call(['container', 'inspect', *ids]).stdout) if ids else []
             if len(containers) != len(ids) or {c['Id'] for c in containers} != set(ids):
                 raise ValueError('Incomplete worker inventory')
-            requested = memory_bytes(self.config['memory'])
+            requested = memory_bytes(self.config['memory']) + 512 * 1024**2
             if job:
                 own = [c for c in containers if c['Name'] == '/' + self.name(job)]
                 if own:
@@ -501,6 +564,9 @@ class ContainerRunner:
     def reset(self, job):
         if not job['fenced']:
             raise RunnerError('Persist fencing before external reset')
+        record = self.source_record(job)
+        if record:
+            self.source().mirror.revoke(record['session_id'])
         current = self.inspect(job)
         auth_refresh = 'not_available'
         if current:
@@ -518,6 +584,8 @@ class ContainerRunner:
             self.call(['rm', '--force', '--volumes', current['id']], timeout=30)
         if self.inspect(job) is not None:
             raise RunnerError('Teardown remains unverified')
+        if record:
+            self.boundary().cleanup(job)
         self.call(['info', '--format', '{{.ServerVersion}}'])
         token = self.job_secrets(job).get('github_token')
         # Installation tokens are ghs_…; anything else was never minted by GitHub.

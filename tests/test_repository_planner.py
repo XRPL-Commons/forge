@@ -31,7 +31,7 @@ class RepositoryPlannerTests(unittest.TestCase):
         from forge.factory.github import GitHubBudgetExhausted
         self.plans.reserve(self.request['proposal_id'],self.job,self.context)
         self.runner.inspect.return_value={'status':'created','running':False}
-        self.github.token.side_effect=GitHubBudgetExhausted('later')
+        self.runner.prepare.side_effect=GitHubBudgetExhausted('later')
         with self.assertRaises(GitHubBudgetExhausted):
             self.controller.drive(self.job)
         saved=self.plans.job('triage')
@@ -48,7 +48,7 @@ class RepositoryPlannerTests(unittest.TestCase):
         self.runner.inspect.return_value={'status':'created','running':False}
         self.github.token.return_value='private-token'
         self.controller.drive(self.job)
-        self.github.token.assert_called_once_with('recovery',1,worker=True)
+        self.github.token.assert_not_called()
         prepared=self.runner.prepare.call_args.args[0]
         self.assertEqual(prepared['context'],self.context)
         self.runner.inspect.return_value={'status':'exited','running':False}
@@ -291,7 +291,7 @@ class RepositoryPlannerTests(unittest.TestCase):
         prepared=self.runner.prepare.call_args.args[0]
         self.assertEqual({row['issue_id'] for row in prepared['context']['issues']},{'1:1','1:2'})
         self.assertEqual(self.github.pages.call_args.args[2],'/issues?state=open')
-        self.github.token.assert_called_once_with('recovery',1,worker=True)
+        self.github.token.assert_not_called()
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM units').fetchone()[0],1)  # discovery did not enqueue #2
             self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)

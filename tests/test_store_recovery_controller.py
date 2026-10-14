@@ -50,8 +50,8 @@ class Runner(PipelineRunner):
         self.verification = {'what': 'Test staging', 'why': 'Needs deployed access', 'checks': []}
         self.notes = []
 
-    def prepare(self, job, token):
-        super().prepare(job, token)
+    def prepare(self, job):
+        super().prepare(job)
         self.notes.append(assignment_note(job))
 
     def capture(self, job):

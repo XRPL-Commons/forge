@@ -383,18 +383,14 @@ class WorkerContractTests(unittest.TestCase):
         instructions = contracts.assignment_note({**self.note('build'), 'review_policy': {}, 'ci_evidence': None})['instructions']
         self.assertIn('operator_summary is one or two complete sentences', instructions)
         self.assertIn('abbreviations such as CI, PR or GH013', instructions)
-        self.assertIn('blocker github_permission', instructions)
+        self.assertIn('read-only mirror', instructions)
 
-    def test_builders_publish_signed_commits_through_the_api(self):
-        from forge.factory.contracts import assignment_note
+    def test_builders_export_local_commits_for_host_publication(self):
+        from forge.factory.contracts import assignment_note, publication
         build = assignment_note({**self.note('build'), 'review_policy': {}, 'ci_evidence': None})['instructions']
-        self.assertIn('createCommitOnBranch', build)
-        self.assertIn('never with git push', build)
-        # Integration publishes the members' exact merge commits, which the API cannot create.
-        from forge.factory.contracts import publication
-        self.assertEqual(publication({'role': 'build', 'builder_stage': 'integration'}), '')
-        for role in ('review', 'audit', 'recovery'):
-            self.assertEqual(publication({'role': role}), '')
+        self.assertIn('output_commit', build)
+        self.assertIn('no GitHub credential', build)
+        self.assertIn('Forge verifies and publishes', publication({'role': 'build', 'builder_stage': 'integration'}))
 
     def test_assignment_instructions_teach_the_tone_with_examples(self):
         from forge.factory.contracts import assignment_note

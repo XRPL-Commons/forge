@@ -436,6 +436,11 @@ class ExecutionQueries:
             if job['role'] == 'recovery':
                 from .recovery import failure_context
                 job['failure'] = failure_context(self.store, db, job['id'])
+            prepared = db.execute('SELECT p.source_json,i.publication_authorization_json FROM mirror_job_inputs i '
+                'JOIN mirror_policies p ON p.digest=i.policy_digest WHERE i.job_id=?', (job_id,)).fetchone()
+            if prepared:
+                job['source_input'] = json.loads(prepared['source_json'])
+                job['publication_authorization'] = json.loads(prepared['publication_authorization_json'])
             return job
 
     def capture(self, job_id):

@@ -33,6 +33,9 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         config = {**config, 'enabled': False, 'merge_enabled': False}
     runner = runner or ContainerRunner(config, environ=Credentials(root).environment())
     github = github or GitHub(settings, config, clock=clock)
+    if isinstance(runner, ContainerRunner):
+        from .source_preparation import SourcePreparation
+        runner.source_preparation = SourcePreparation(root, store, github=github, settings=settings, clock=clock)
 
     def admission(item):
         repo = item.get('repo') or (item.get('issue') or {}).get('repository')
@@ -78,7 +81,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     def planner_runner(worker):
         # The setup service supplies a real runner configured for the default
         # provider. Each owned planner must use its immutable selected config.
-        return ContainerRunner(worker, environ=runner.environ) if isinstance(runner, ContainerRunner) else runner
+        return ContainerRunner(worker, environ=runner.environ, source=runner.source_preparation) if isinstance(runner, ContainerRunner) else runner
 
     parts['planning'] = RepositoryPlanner(store, github, config=config, settings=settings,
         observations=parts['observations'], runner=planner_runner, clock=clock)

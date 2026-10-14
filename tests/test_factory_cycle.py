@@ -21,7 +21,7 @@ class Engine:
         self.jobs[job['id']] = {'status': 'created', 'running': False, 'result': None}
         return job['id']
     def inspect(self, job, *, resources=False): return self.jobs.get(job['id'])
-    def prepare(self, job, token): pass
+    def prepare(self, job): pass
     def start(self, job): self.jobs[job['id']].update(status='running', running=True)
     def observe(self, job, current=None): return {'logs': 'running output', 'at': 1}
     def capture(self, job): return {'result': self.jobs[job['id']]['result'], 'logs': 'retained evidence', 'missing': []}

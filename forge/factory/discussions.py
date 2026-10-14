@@ -519,7 +519,7 @@ class Discussions:
                 job["boot"] = self.boot  # Still working after the restart: carry on.
                 self.save(key, job=job)
             if current["status"] == "created":
-                runner.prepare(job, github.token("recovery", job["repo_id"], worker=True))
+                runner.prepare(job)
                 runner.start(job)
                 now = self.clock()
                 job["joined_at"] = now
