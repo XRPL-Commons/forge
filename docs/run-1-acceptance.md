@@ -46,6 +46,21 @@ not evidence that every incident scenario has succeeded in production. Continue
 checking ownership, bounded retries, cleanup and user-visible exits. Any release
 change or discovered failure must be recorded with its effect on acceptance.
 
+## Subsequent releases
+
+The initial release did not remain unchanged for 24 hours. Production later
+advanced through the runtime cleanup and Run 2. The supported upgrade completed
+on `d6113d390a22d1223f0854f25cb5f1813d41235d`, schema 040, at
+**2026-10-14 12:09:29 UTC**. The release receipt matches the source, all four
+managed services are active, and the updater exited. This is the new completion
+baseline; the original Run 1 window cannot be claimed complete.
+
+Before that upgrade, source had advanced while the database remained at schema
+038. The mismatch was observed explicitly, admission was drained through the
+supported upgrade path, and the subsequent deployment completed reconciliation.
+The last ownership sweep before completion found 13 owned members and no
+orphans. That sweep does not replace observation of the new release.
+
 ## Failure encountered during deployment
 
 The first apply failed before writing a new upgrade journal. Source and schema

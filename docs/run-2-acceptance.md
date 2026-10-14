@@ -84,7 +84,12 @@ shards, UI unit/type/build/browser checks and source audit passed in
   correction gives only the disposable canary an explicit policy for that
   selection; configured deny rules and actual App access remain authoritative.
   Its fresh-store regression and all seven source/broker paths passed focused
-  tests and independent review. Live role qualification remains pending.
+  tests and independent review. The correction merged in #282, passed full CI,
+  and Anvil upgraded successfully to `fd0fb78` at schema 040. The next live canary
+  reached capture and failed with `result_schema_invalid`; this does not prove
+  malformed model output because schema validation preceded execution checks.
+  Diagnostic ordering and CLI failure-report retention are being corrected;
+  no role is marked qualified by that failed attempt.
 - The native boundary canary also passed on `e430a9c` and its rebuilt image
   `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
   All nine checks passed and disposable cleanup was confirmed.
@@ -96,9 +101,11 @@ shards, UI unit/type/build/browser checks and source audit passed in
   signing qualification requires a host-recorded API operation and exact
   independent read-back. No fixture result certifies a real PR or merge.
 
-Forge remains on Run 1 during its separate 24-hour observation. The latest
-ownership sweep found 13 current memberships, all owned, with no orphans. See
-[Run 1 acceptance](run-1-acceptance.md) for the release and observation window.
+Production completed the merged Run 2 upgrade plus the launcher correction at
+`d6113d3`, schema 040, at 2026-10-14 12:09:29 UTC. All four services are active.
+Live role and target-bound publication qualification are still incomplete; a
+successful deployment does not establish them. The new production observation
+baseline is recorded in [Run 1 acceptance](run-1-acceptance.md).
 
 ## Explicit limits
 
