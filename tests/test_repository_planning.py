@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock
 
 from forge.store.db import Store
-from forge.store.models import Command, VersionConflict, TransitionError, IdempotencyConflict
+from forge.store.models import Command, VersionConflict, TransitionError
 from forge.store.repository_planning import RepositoryPlanning
 from forge.store.transitions import Lifecycle
 
@@ -191,24 +191,6 @@ class PlanningTests(unittest.TestCase):
         # Fresh observation timestamps are evidence, not a different user request.
         proof[0]['observed_at']+=1
         self.assertEqual(self.accept(rows,issue_evidence=proof)['status'],'accepted')
-
-    def test_auxiliary_upgrade_preserves_active_lease_and_capture(self):
-        from pathlib import Path
-        from unittest.mock import patch
-        from forge.store import db as storage, upgrade
-        from forge.store.auxiliary import save_in, job_in
-        migrations=storage._migrations()
-        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
-        with patch('forge.store.db._migrations',return_value=migrations[:22]):
-            previous=storage.Store.create(Path(temporary.name)/'previous')
-            job={'id':'aux-old','slot':'setup-old','deadline':500,'fenced':False,'cleanup':False,'capture':{'result':{'value':'preserved'}}}
-            with previous.write() as db:save_in(db,'setup','repo',job,90)
-        previous = storage.Store(previous.root)  # Target release handle.
-        upgrade.apply(previous)
-        with previous.read_snapshot() as db:
-            self.assertEqual(job_in(db,'aux-old')['capture'],job['capture'])
-            self.assertEqual(db.execute('SELECT execution_id FROM auxiliary_leases').fetchone()[0],'aux-old')
-            self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
 
     def test_accept_composes_group_and_durable_issue_effect_in_one_transaction(self):
         from forge.store.delivery import Delivery

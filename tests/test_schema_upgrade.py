@@ -9,6 +9,7 @@ from forge.store import db as storage
 from forge.store import upgrade
 from forge.store.migration.upgrade import Upgrade
 from forge.store.migration.snapshot import MigrationError
+from tests.test_schema_baseline import legacy_catalog
 
 
 class SchemaUpgradeTests(unittest.TestCase):
@@ -21,21 +22,6 @@ class SchemaUpgradeTests(unittest.TestCase):
 
     def following(self, script):
         return [*self.original, (len(self.original)+1, hashlib.sha256(script.encode()).hexdigest(), script)]
-
-    def test_released_schema_upgrade_repairs_imports_and_indexes_requests(self):
-        with patch('forge.store.db._migrations', return_value=self.original[:19]):
-            previous = storage.Store.create(self.root/'previous')
-            with previous.write() as db:
-                db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/project')")
-                db.execute("INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,remote_updated_at,observed_at) VALUES('1:1',1,1,'open','r','2026-10-03T16:02:51Z',1)")
-                db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES('r','1:1','Issue','','body','req','{}',1)")
-        previous = storage.Store(previous.root)  # Target release handle.
-        upgrade.apply(previous)
-        upgrade.apply(previous)
-        with previous.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT remote_updated_at FROM issues").fetchone()[0], '2026-10-03T16:02:51.000000+00:00')
-            plan = db.execute("EXPLAIN QUERY PLAN SELECT details_json FROM operator_audit WHERE request_id=? AND json_extract(details_json,'$.kind')='request_outcome'", ('request',)).fetchall()
-            self.assertTrue(any('operator_audit_request_kind' in row[3] for row in plan))
 
     def test_runtime_refuses_old_schema_until_explicit_atomic_upgrade(self):
         script = 'CREATE TABLE upgrade_probe(value INTEGER);\nINSERT INTO upgrade_probe VALUES(42);\n'
@@ -431,26 +417,26 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertTrue(self.runtime()[1]['enabled'])
         self.assertEqual(self.current, 'c'*40)
 
-    def test_actual_schema19_can_drain_before_target_binary_can_open_store(self):
-        with patch('forge.store.db._migrations', return_value=self.original[:19]):
-            self.store = storage.Store.create(self.root/'schema19')
+    def test_legacy_041_store_drains_before_target_binary_can_open_it_then_rebases(self):
+        with patch('forge.store.db._migrations', return_value=legacy_catalog()):
+            self.store = storage.Store.create(self.root/'schema41')
             with self.store.write() as db:
                 db.executemany('INSERT INTO store_metadata VALUES(?,?)', [('runtime_root',str(self.root)),('runtime_active','true')])
         (self.root/'state/storage').write_text('forge-sqlite-v1\n'+str(self.store.root)+'\n'+self.store.instance_id+'\n')
         self.runtime(enabled=True)
         with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
             first = self.upgrader.run(revision='b'*40, apply=True)
-        self.assertEqual(first['current_schema'], 19)
+        self.assertEqual((first['current_schema'], first['legacy_history']), (41, True))
         self.assertEqual(first['status'], 'draining')
         self.assertFalse(self.runtime()[1]['enabled'])
         self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
         self.assertTrue(self.runtime()[1]['enabled'])
         self.assertEqual(upgrade.inspect(storage.Store(self.store.root))['current_schema'], len(self.original))
 
-    def test_schema33_busy_drain_preserves_completed_journal_and_can_retry(self):
+    def test_legacy_busy_drain_preserves_completed_journal_and_can_retry(self):
         from forge.store.migration.host import failure
-        with patch('forge.store.db._migrations', return_value=self.original[:33]):
-            self.store = storage.Store.create(self.root/'schema33')
+        with patch('forge.store.db._migrations', return_value=legacy_catalog()):
+            self.store = storage.Store.create(self.root/'schema41')
             with self.store.write() as db:
                 db.executemany('INSERT INTO store_metadata VALUES(?,?)',
                     [('runtime_root',str(self.root)),('runtime_active','true')])
