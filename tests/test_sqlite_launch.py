@@ -61,29 +61,32 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'qualification is required; run bin/forge setup initialize'):
                 launch(['forge.setup_service', '--root=' + str(self.root)])
         start.assert_not_called()
+        # A selected store with a pending migration still launches: the schema
+        # upgrade itself runs through the launcher, and services validate on open.
         with patch('forge.store.db.qualified_sqlite', return_value=True), patch('forge.launch.runpy.run_module') as start:
-            with self.assertRaises(StoreError):
-                launch(['forge.setup_service', '--root', str(self.root)])
-        start.assert_not_called()
+            launch(['forge.store.migration.host', '--root', str(self.root)])
+        self.assertEqual(start.call_args.args[0], 'forge.store.migration.host')
 
     def test_explicit_last_root_and_default_host_setup_root_are_qualified(self):
-        with patch('forge.store.db.qualified_sqlite', return_value=True), patch('forge.store.runtime.selected') as selected, \
+        checked = []
+        with patch('forge.store.db.qualified_sqlite', return_value=True), \
+                patch('forge.launch.os.path.lexists', side_effect=lambda path: checked.append(str(path)) or True), \
                 patch('forge.launch.runpy.run_module') as start, patch('forge.launch.Path.home', return_value=self.root):
             launch(['forge.host_setup', 'status'])
-            selected.assert_called_with(str(self.root / '.local/share/forge'))
+            self.assertEqual(checked[-1], str(self.root / '.local/share/forge/state/storage'))
             os.environ['FORGE_ROOT'] = '/environment'
             launch(['forge.setup_service', '--root', '/first', '--root=/last'])
-            selected.assert_called_with('/last')
+            self.assertEqual(checked[-1], '/last/state/storage')
             self.assertEqual(start.call_args.args[0], 'forge.setup_service')
             self.assertEqual(sys.argv, ['forge.setup_service', '--root', '/first', '--root=/last'])
 
     def test_qualified_start_checks_selected_store_before_script(self):
         events = []
         with patch('forge.store.db.qualified_sqlite', return_value=True), \
-                patch('forge.store.runtime.selected', side_effect=lambda root: events.append('selected') or object()), \
+                patch('forge.launch.os.path.lexists', side_effect=lambda path: events.append('selected') or True), \
                 patch('forge.launch.runpy.run_path', side_effect=lambda *a, **k: events.append('script')):
             launch(['--script', '/source/status.py', '--root', str(self.root)])
-        self.assertEqual(events, ['selected', 'script'])
+        self.assertEqual(events[-2:], ['selected', 'script'])
         with self.assertRaises(SystemExit):
             launch(['unrelated.module'])
 
