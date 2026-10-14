@@ -42,12 +42,16 @@ class IssueBlockerLookupTests(unittest.TestCase):
                     self.assertEqual(self.data(boundary), data)
                     self.assertEqual(upgrade.apply(boundary), result)
                 # Today's schema intentionally adds tables and normalizes process
-                # gates. It must preserve history and the same canonical status.
+                # gates. Legacy idle rows have no genuine schedule to migrate.
                 store = storage.Store(root)
                 result = upgrade.apply(store)
                 self.assertEqual(result['current_schema'], len(migrations))
                 expected = [{**row, 'public_status': 'working'} if codes.transitional(row['reason_code']) else row
                             for row in before]
+                if case['name'] == 'queued':
+                    expected = [{**row, 'public_status': 'waiting'} for row in expected]
+                    with store.read_snapshot() as db:
+                        self.assertEqual(db.execute('SELECT count(*) FROM next_actions').fetchone()[0], 0)
                 self.assertEqual(self.rows(store), expected)
                 self.assertEqual(upgrade.apply(store), result)
                 self.assertEqual(self.rows(store), expected)
@@ -58,7 +62,7 @@ class IssueBlockerLookupTests(unittest.TestCase):
                 from forge.factory.store_views import PipelineViews
                 from forge.factory.config import validate
                 view = PipelineViews(store, runtime=validate({}), clock=lambda:100)
-                self.assertEqual(view.issues(key='1:1')['issue']['status'], case['expected']['code'])
+                self.assertEqual(view.issues(key='1:1')['issue']['status'], 'waiting' if case['name'] == 'queued' else case['expected']['code'])
 
     def test_issue_lookup_uses_its_indexed_gates_and_retains_precedence(self):
         with tempfile.TemporaryDirectory() as root:
