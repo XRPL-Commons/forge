@@ -9,6 +9,12 @@ from forge.store.configuration import Configuration
 
 
 class RetiredRuntimeCapacityTests(unittest.TestCase):
+    def setUp(self):
+        # Exercise this migration's exact target; later migrations may add roles.
+        catalog = patch('forge.store.db._migrations', return_value=storage._migrations()[:42])
+        catalog.start()
+        self.addCleanup(catalog.stop)
+
     def test_existing_setup_view_recovers_after_explicit_upgrade(self):
         from forge.onboarding import Onboarding
         from tests.sqlite_fixture import selected_store
