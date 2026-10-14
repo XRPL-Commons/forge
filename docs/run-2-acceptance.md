@@ -60,18 +60,19 @@ shards, UI unit/type/build/browser checks and source audit passed in
   Real Git clone/fetch, denied push, provider TLS, npm/pip downloads, GitHub/host/
   cross-job denial, external DNS denial, immutable inputs, disk quota, session
   revocation and stopped capture passed. Disposable cleanup was confirmed.
-- Anvil reached schema 040 and its services are active, but its upgrade watcher
-  timed out during setup verification. Probe identity calculation mutated an
-  immutable saved input, so cleanup could not be saved. The fix preserves that
-  input and lets the CLI finish verified teardown of already-fenced setup probes
-  before ordinary drain checks. Forty-two focused tests and independent review
-  passed. The next live retry exposed a missing shared contract in the standalone
-  migration bundle before any checkout change. The bundle now carries exactly
-  the two client contract files it imports, bound to the target revision; an
-  isolated Python process exercises the actual bundle and fenced cleanup.
-  The corrected release must pass combined CI and finish the resumable upgrade.
-  Main's subsequent runtime cleanup changes the runner image input digest, so
-  qualify the resulting image before claiming acceptance for that release.
+- Anvil installed `e430a9c` at schema 040 after the standalone CLI completed
+  verified cleanup of the formerly stuck probe. All four services are active,
+  and both runtime configurations still have automation and merging disabled.
+  Final updater verification exposed a separate bug: fixed termination/reuse
+  probes inherited an API-key requirement despite making no provider calls.
+  The stored Codex browser login is present. Fixed termination/reuse probes now
+  send only an empty credentials envelope after normal owned-created checks;
+  provider probes retain credential loading. Forty-one focused tests and
+  independent review passed. Upgrade completion and role qualification remain
+  pending the corrected release.
+- The native boundary canary also passed on `e430a9c` and its rebuilt image
+  `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
+  All nine checks passed and disposable cleanup was confirmed.
 - Complete the signed-publication and every-role canaries before claiming the
   boundary accepted or deploying it to the active Forge factory. The boundary
   canary uses direct fixture workers, so it does not establish production role
@@ -118,6 +119,7 @@ Codex login admission now checks the stored account locally before dispatch,
 with an account-scoped auth block that preserves independent provider limits.
 Deployment regressions passed 69 tests, fresh pairing passed 28 tests, login
 admission passed 43 tests, and the standalone migration bundle passed 53 tests
-before this integration. Independent
-review covered the merge and these changes. The final combined revision still
-needs CI and live upgrade completion.
+before this integration. Independent review covered the merge and these changes.
+The full combined CI gate passed on `e430a9c`
+([run](https://github.com/XRPL-Commons/forge/actions/runs/38555781186)). The final
+probe correction still needs its gate and live upgrade completion.
