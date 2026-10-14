@@ -13,8 +13,8 @@ import type { StageId } from './pipeline'
 // Worker output
 // ---------------------------------------------------------------------------
 
-export interface OutputActivity { text: string; tool: string | null; at: number | null }
-export type OutputUnavailable = 'not_started' | 'container_missing' | 'runner_unavailable'
+interface OutputActivity { text: string; tool: string | null; at: number | null }
+type OutputUnavailable = 'not_started' | 'container_missing' | 'runner_unavailable'
 export interface OutputView {
   ok: true
   // Raw text: captured logs once collected, else the container's live tail.
@@ -43,7 +43,7 @@ export function outputText(view: Pick<OutputView, 'logs' | 'text'> | null | unde
   return (view.logs ?? '').split('\n').filter(line => !isHeartbeat(line)).join('\n')
 }
 
-export const UNAVAILABLE_TEXT: Record<OutputUnavailable, string> = {
+const UNAVAILABLE_TEXT: Record<OutputUnavailable, string> = {
   not_started: 'The worker is starting. Its output appears here once its container runs.',
   container_missing: 'The worker’s container is gone. Its output appears here once Forge records it.',
   runner_unavailable: 'Forge could not read the worker’s output just now. It tries again on the next refresh.',
@@ -71,8 +71,8 @@ export function serverAge(eventAt: number | null | undefined, view: Pick<OutputV
 
 // The entrypoint prints a heartbeat every five seconds; a minute of silence
 // is twelve missed beats.
-export const STALLED_AFTER = 60
-export interface Liveness { state: 'alive' | 'stalled' | 'unknown'; text: string }
+const STALLED_AFTER = 60
+interface Liveness { state: 'alive' | 'stalled' | 'unknown'; text: string }
 
 export function liveness(heartbeatAge: number | null): Liveness {
   if (heartbeatAge === null) return { state: 'unknown', text: '' }
@@ -86,7 +86,7 @@ export function liveness(heartbeatAge: number | null): Liveness {
 
 // "Running pnpm build" → Running `pnpm build`: the part the worker typed is
 // code, the verb is prose. Lines already quoted keep their quotes.
-export interface Segment { text: string; code: boolean }
+interface Segment { text: string; code: boolean }
 const CODE_AFTER = /^(Running|Editing|Reading|Opening) (.+)$/
 export function activitySegments(line: string): Segment[] {
   if (line.includes('`')) {
@@ -107,7 +107,7 @@ const ROLE_DOING: Record<JobRole, string> = {
 }
 const STAGE_ROLE: Partial<Record<StageId, JobRole>> = { build: 'build', review: 'review', audit: 'audit', approval: 'merge' }
 
-export interface Bubble {
+interface Bubble {
   // The line the cube says. `segments` carries the live activity, quoted.
   headline: string
   segments: Segment[] | null
@@ -172,7 +172,7 @@ export function bubbleFor(input: BubbleInput): Bubble {
 // Facts while a worker runs
 // ---------------------------------------------------------------------------
 
-export interface WorkFacts {
+interface WorkFacts {
   who: string
   model: string
   provider: string | null
@@ -234,8 +234,8 @@ export function stageTimes(jobs: Pick<JobView, 'role' | 'created_at' | 'started_
 // Actions
 // ---------------------------------------------------------------------------
 
-export type PrimaryAction = 'approve' | 'setup' | 'discuss' | IssueAction
-export interface ActionPlan {
+type PrimaryAction = 'approve' | 'setup' | 'discuss' | IssueAction
+interface ActionPlan {
   primary: PrimaryAction | null
   // Reversible decisions, in a row next to the primary.
   secondary: IssueAction[]

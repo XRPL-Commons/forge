@@ -9,9 +9,9 @@ import type { IssueState, JobRole } from './factory'
 
 export type WorkbenchRow = PipelineRow & Pick<IssueRow, 'number' | 'dependencies'> & Partial<Pick<IssueRow, 'held_by'>>
 
-export type BadgeState = 'done' | 'current' | 'future'
-export interface StageBadge { id: StageId; label: string; state: BadgeState }
-export interface AttemptLives { lost: number; left: number; limit: number; text: string }
+type BadgeState = 'done' | 'current' | 'future'
+interface StageBadge { id: StageId; label: string; state: BadgeState }
+interface AttemptLives { lost: number; left: number; limit: number; text: string }
 
 export interface WorkbenchLook {
   stage: StageId
@@ -26,9 +26,9 @@ export interface WorkbenchLook {
   attempts: AttemptLives | null
 }
 
-export const ACCESSORY: Partial<Record<StageId, CubeAccessory>> = { build: 'hat', review: 'magnifier', approval: 'badge', merged: 'bow' }
+const ACCESSORY: Partial<Record<StageId, CubeAccessory>> = { build: 'hat', review: 'magnifier', approval: 'badge', merged: 'bow' }
 // The stage names the operator reads on the badges and in the label.
-export const STAGE_SHORT: Record<StageId, string> = Object.fromEntries(STAGES.map(stage => [stage.id, stage.short])) as Record<StageId, string>
+const STAGE_SHORT: Record<StageId, string> = Object.fromEntries(STAGES.map(stage => [stage.id, stage.short])) as Record<StageId, string>
 // The badges a cube earns: every stage after the queue.
 const EARNED: StageId[] = ['build', 'review', 'audit', 'approval', 'merged']
 
@@ -110,7 +110,7 @@ const STATE_STAGE: Partial<Record<IssueState, StageId>> = {
   ready: 'queued', built: 'review', reviewed: 'audit', audited: 'approval', approval_needed: 'approval', merged: 'merged', cancelled: 'queued',
 }
 
-export interface LedgerLookIssue {
+interface LedgerLookIssue {
   state: IssueState; failure_count?: number; candidate?: { pr?: number } | null; blocked_dependencies?: number[]
   closed_as?: ClosedAs | null
 }

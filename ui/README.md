@@ -176,8 +176,7 @@ Path segments after `/api/` join with `-`: `/api/factory/output` →
 appends `.<param>`: `/api/issues?issue=` → `issues.issue.json`,
 `/api/repositories?repo_id=` → `repositories.repo_id.json`. A POST body
 override appends `.post`: `/api/runtime` → `runtime.post.json`,
-`/api/repositories/enable` → `repositories-enable.post.json`. See
-`tests/e2e/fixtures/README.md` for what each fixture/scenario covers.
+`/api/repositories/enable` → `repositories-enable.post.json`.
 
 ## Runtime config
 

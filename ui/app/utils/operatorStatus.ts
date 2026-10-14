@@ -1,6 +1,6 @@
 // Native labels and finer reasons come from one server projection. The fallback
 // supports pre-cutover servers; it is shared by all issue surfaces too.
-export type OperatorStatusCode = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'blocked' | 'completed' | 'dropped'
+type OperatorStatusCode = 'backlog' | 'queued' | 'working' | 'attention' | 'waiting' | 'blocked' | 'completed' | 'dropped'
 export interface CanonicalIssueStatus {
   code: OperatorStatusCode
   label: string
@@ -21,7 +21,7 @@ const LEGACY_STATES: Record<string, OperatorStatusCode> = {
   approval_needed: 'attention', failed: 'attention', investigating: 'waiting', hold: 'blocked',
   merged: 'completed', cancelled: 'dropped',
 }
-export type StatusSource = OperatorStatusSource & {
+type StatusSource = OperatorStatusSource & {
   status?: string; state?: string; closed_as?: string | null; active?: string | null
   blocked_dependencies?: number[]; ownership_wait?: unknown
 }

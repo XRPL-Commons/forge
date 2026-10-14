@@ -12,7 +12,7 @@ from forge.installation_setup import InstallationSetup
 from forge_client.contracts import SetupError
 from forge_client.factory_setup import FactorySetup, execute
 from forge_client.install import Installation
-from forge_client.metrics import client_installation, first_merge_timing
+from forge_client.metrics import first_merge_timing
 from forge_client.workflow import Journal
 from tests import test_sqlite_onboarding as sql_setup
 
@@ -104,7 +104,7 @@ class PilotTests(unittest.TestCase):
         self.target = {'id':10,'name':'example/project'}
         self.journal.save({'version':1,'ssh':'anvil','intent':{'id':'a'*32,'name':'Anvil','revision':'b'*40},
             'started_at':100,'origin':'https://forge.example','milestones':{}, 'factory_actor':{'id':7,'login':'operator'},
-            'first_repository':self.target, 'cli_installation':{'id':'c'*32,'started_at':50,'installed_at':90,'revision':'b'*40}})
+            'first_repository':self.target})
         self.workflow = Installation('anvil',host=Mock(),storage=self.journal,clock=lambda:1000)
         self.github = Mock()
         self.factory = FactorySetup(self.workflow,github=self.github)
@@ -129,33 +129,14 @@ class PilotTests(unittest.TestCase):
         self.github.merged_pull.return_value['head_sha'] = 'a'*40
         result = self.factory.pilot()
         self.assertEqual(result['status'],'first_merge_complete')
-        self.assertEqual(result['timing']['time_to_first_merge_seconds'],850)
         self.assertEqual(result['timing']['setup_to_first_merge_seconds'],800)
         self.assertEqual(result['attempts']['charged_failures'],1)
         self.assertEqual(self.journal.read()['milestones']['first_merge'],900)
 
-    def test_unknown_cli_install_start_is_explicit_not_fabricated(self):
-        result = first_merge_timing({'started_at':100},900)
-        self.assertIsNone(result['time_to_first_merge_seconds'])
-        self.assertEqual(result['setup_to_first_merge_seconds'],800)
-        self.assertEqual(result['timing_source'],'setup_only_cli_start_unknown')
-
     def test_invalid_timer_order_is_reported_instead_of_zero_duration(self):
         with self.assertRaises(SetupError) as error:
-            first_merge_timing({'started_at':100,'cli_installation':{'started_at':200,'installed_at':210}},900)
+            first_merge_timing({'started_at':100},90)
         self.assertEqual(error.exception.code,'timing_unavailable')
-        with self.assertRaises(SetupError): first_merge_timing({'started_at':100},90)
-
-    def test_installer_receipt_is_bound_to_running_release(self):
-        identifier, revision = 'a'*32, 'b'*40
-        value = {'version':1,'id':identifier,'revision':revision,'status':'installed','started_at':50,'installed_at':90}
-        path = self.journal.root / ('cli-install-'+identifier+'.json')
-        path.write_text(json.dumps(value));path.chmod(0o600)
-        prefix = '/versions/'+revision+'-'+identifier
-        self.assertEqual(client_installation(self.journal.root,prefix=prefix)['started_at'],50)
-        self.assertIsNone(client_installation(self.journal.root,prefix='/unrecorded-venv'))
-        path.chmod(0o644)
-        self.assertIsNone(client_installation(self.journal.root,prefix=prefix))
 
 
 class WizardResumeTests(unittest.TestCase):

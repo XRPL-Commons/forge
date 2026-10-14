@@ -11,7 +11,7 @@ from .github import GitHub
 
 def repository_commands():
     commands = {}
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'policy'):
         properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
                       'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
         required = ['repository', 'server']
@@ -150,7 +150,7 @@ def parser():
     requirements = sub.add_parser('requirements', help='Show what a repository needs before Forge can work on it')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'policy'):
         command = repo.add_parser(action)
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
@@ -244,7 +244,7 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         from .delivery import commands as delivery_commands
-        from .planning import commands as planning_commands
+        from forge.planning_contract import commands as planning_commands
         from .install import schemas
         return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
@@ -304,9 +304,6 @@ def execute(args):
             if args.repo_command == 'policy':
                 from .merge_policy import execute as merge_policy
                 return merge_policy(client,target,args.mode,revision=args.revision,request_id=args.request_id)
-            if args.repo_command == 'fix-rules':
-                from .rule_fixes import fixes
-                return fixes(client.read(target, 'repository'))
             if args.repo_command == 'delivery':
                 return client.read(target, 'delivery', args.number, after=args.after, task_after=args.task_after)
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
@@ -328,14 +325,6 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         result = execute(args)
-        if args.command == 'repo' and args.repo_command == 'fix-rules' and not args.json:
-            print(result['instruction'])
-            for fix in result['fixes']:
-                print('\n' + fix['title'])
-                print(fix['command'] or '\n'.join(str(i + 1) + '. ' + step for i, step in enumerate(fix['steps'])))
-            if not result['fixes']:
-                print('No failing review rules in the latest Forge observation.')
-            return 0
         if args.command == 'skill' and not args.json:
             print(result['skill'])
             return 0

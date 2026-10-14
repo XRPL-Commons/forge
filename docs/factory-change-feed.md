@@ -161,9 +161,7 @@ state, and a different query can also cause one. Record cold-process evidence
 separately. While normally signed in, inspect these headers in browser DevTools
 Network for the board and completed-history requests. Keep browser/network
 measurements separate from these server durations. No cookie export or extra
-agent grant is needed. The existing `ui/tools/measure-pages.mjs` starts a fresh
-unauthenticated context; its results do not qualify authenticated production
-requests.
+agent grant is needed.
 
 For bounded page diagnostics, add `?timings=1` to the signed-in page URL
 (or `&timings=1` if it already has a query). Ordinary UI reads then write up to

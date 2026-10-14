@@ -1,8 +1,8 @@
-export interface AgentScope {
+interface AgentScope {
   repositories: { id: number; name: string }[]
   owners: { id: number; login: string }[]
 }
-export interface AgentConnection {
+interface AgentConnection {
   id: string; name: string; operator: { id: number; login: string }
   capabilities: string[]; scope: AgentScope; created: number; expires: number
   idle_expires: number; last_used: number | null; status: string

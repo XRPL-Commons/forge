@@ -1,6 +1,6 @@
 import type { IssueDetail } from '~/utils/issues'
 
-export interface DeliveryPreview {
+interface DeliveryPreview {
   revision: string
   delivery: null | {
     unit_id: string

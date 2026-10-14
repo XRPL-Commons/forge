@@ -46,7 +46,7 @@ def run(note, directory, env, result_schema):
         # Raw diagnostics can include registry credentials from repository config.
         # A fixed report is safe; installation's credential-free canary provides
         # full diagnostics for repairing the image.
-        build['blocked'](note, 'Forge native toolchain readiness failed before work started. Run deploy/test_build_environment.py against the configured image; the candidate PR was not changed.')
+        build['blocked'](note, 'Forge native toolchain readiness failed before work started. Run deploy/build_environment_check.py against the configured image; the candidate PR was not changed.')
         return 125
     # The native sandbox stays enabled. Image provisioning must prove it works;
     # an unavailable sandbox fails the attempt instead of disabling protection.

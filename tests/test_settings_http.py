@@ -3,19 +3,21 @@ import json
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
-from tests.test_dashboard import dashboard
+from tests.test_dashboard import dashboard, signed_in, OPERATOR_CSRF
 
 
 class SettingsHTTPTests(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         root=patch.object(dashboard,'WD',temporary.name);root.start();self.addCleanup(root.stop)
+        self.session_headers=signed_in(self)
 
     def handler(self, path, body=None, **headers):
         handler = object.__new__(dashboard.H)
         handler.server = Mock(server_address=('127.0.0.1',8787))
         handler.headers = {'Host':'127.0.0.1:8787', 'Origin':'http://127.0.0.1:8787',
-                           'X-Forge-Action':dashboard.CONTROLS_TOKEN, 'Content-Type':'application/json', **headers}
+                           'X-Forge-Action':OPERATOR_CSRF, 'Content-Type':'application/json',
+                           **getattr(self,'session_headers',{}), **headers}
         handler.path = path
         handler._send = Mock(); handler.send_error = Mock()
         payload = json.dumps(body).encode()
@@ -32,7 +34,7 @@ class SettingsHTTPTests(unittest.TestCase):
         with patch.object(dashboard,'settings_service',return_value=service):
             handler = self.handler('/api/settings'); handler.do_GET()
         result = json.loads(handler._send.call_args.args[0])
-        self.assertEqual(result['controls_token'],dashboard.CONTROLS_TOKEN)
+        self.assertEqual(result['controls_token'],OPERATOR_CSRF)
         service.start_refresh.assert_not_called(); service.refresh.assert_not_called()
 
     def test_settings_summary_retains_access_counts_without_heavy_repository_evidence(self):
@@ -100,17 +102,18 @@ class SettingsHTTPTests(unittest.TestCase):
             os.chmod(path,0o644)
             with self.assertRaises(SystemExit): dashboard.upstream_secret(path)
 
-    def test_app_manifest_returns_through_the_name_the_browser_used(self):
-        cases=[({}, 'http://127.0.0.1:8787'),
-               ({'X-Forwarded-Host':'100.64.0.7:8787'}, 'http://100.64.0.7:8787'),
-               ({'X-Forwarded-Host':'forge.example.ts.net:8787'}, 'http://forge.example.ts.net:8787'),
-               ({'X-Forwarded-Host':'evil/path'}, 'http://127.0.0.1:8787')]
-        for headers,origin in cases:
-            with patch('forge.onboarding.Onboarding') as setup, patch.object(dashboard.H,'_browser',return_value='b'*32):
-                setup.return_value.begin.return_value={}
-                handler=self.handler('/api/onboarding',{'action':'github','role':'builder','owner':'o','account_type':'personal'},**headers)
-                handler.do_POST()
-                self.assertEqual(setup.return_value.begin.call_args.kwargs['origin'],origin)
+    def test_app_manifest_returns_through_the_configured_sign_in_origin(self):
+        with patch('forge.onboarding.Onboarding') as setup, patch.object(dashboard.H,'_browser',return_value='b'*32):
+            setup.return_value.begin.return_value={}
+            handler=self.handler('/api/onboarding',{'action':'github','role':'builder','owner':'o','account_type':'personal'})
+            handler.do_POST()
+            self.assertEqual(setup.return_value.begin.call_args.kwargs['origin'],'http://127.0.0.1:8787')
+        with patch('forge.onboarding.Onboarding') as setup:
+            handler=self.handler('/api/onboarding',{'action':'github','role':'builder','owner':'o','account_type':'personal'},
+                                 **{'X-Forwarded-Host':'100.64.0.7:8787'})
+            handler.do_POST()
+            handler.send_error.assert_called_once_with(403)
+            setup.return_value.begin.assert_not_called()
 
     def test_onboarding_start_and_reset_queue_supervisor_intent(self):
         for action,fields in [('start',{'revision':'verified'}),('reset',{'generation':'current'})]:
@@ -140,7 +143,7 @@ class SettingsHTTPTests(unittest.TestCase):
             inventory.return_value.view.return_value = {'issue': {'status': 'queued'}, 'actions': [], 'repositories': []}
             value={'key':'1:1','action':'queue','revision':'current','reason':'Operator decision'}
             handler=self.handler('/api/issues/action', value); handler.do_POST()
-            request.assert_called_once_with(dashboard.WD, **value, actor_id='local:control-capability')
+            request.assert_called_once_with(dashboard.WD, **value, actor_id='github:7')
             self.assertEqual(json.loads(handler._send.call_args.args[0])['issue']['status'], 'queued')
             request.reset_mock()
             handler=self.handler('/api/issues/action', {**value,'force':True}); handler.do_POST()

@@ -4,7 +4,7 @@ import type { IssueDetailResponse, IssueRow } from './issues'
 import type { Resources } from './resources'
 
 export const BOARD_PATH = '/api/factory?section=board'
-export interface FactoryEvent { sequence: number; unit_id: string | null; issue_id: string | null; job_id: string | null; kind: string; at: number }
+interface FactoryEvent { sequence: number; unit_id: string | null; issue_id: string | null; job_id: string | null; kind: string; at: number }
 export interface FactoryChanges { ok: true; cursor: string; at: number; events: FactoryEvent[]; issues: Record<string, IssueRow>; board: FactoryView; resync: boolean }
 export interface FactoryTransition { cursor: string; at: number; receivedAt: number; events: FactoryEvent[]; resync: boolean }
 export type FactoryPayload = FactoryView | { ok: false; reason: string }

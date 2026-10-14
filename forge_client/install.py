@@ -15,7 +15,6 @@ from .github import run_bounded
 from .workflow import Journal
 from .ssh_host import discover, environment, pinned_options
 from .source import export as export_source
-from .metrics import client_installation
 
 SOURCE = '/home/forge/forge'
 ROOT = '/home/forge/.local/share/forge'
@@ -222,8 +221,7 @@ class Installation:
                         'invalid_host_key', 'Use a verified ED25519 SHA256 fingerprint.')
                 state = {'version': 1, 'ssh': self.ssh, 'started_at': self.clock(), 'host_key': fingerprint,
                          'intent': {'id': uuid.uuid4().hex, 'name': name, 'revision': revision(commit)},
-                         'milestones': {}, 'last_status': None,
-                         'cli_installation': client_installation(self.journal.root)}
+                         'milestones': {}, 'last_status': None}
                 if previous:
                     # Refuse to detach the current local run from an existing host.
                     # A new run is allowed only after read-only confirmation that

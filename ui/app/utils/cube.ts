@@ -7,7 +7,7 @@ import { LINE_LOOKS, LINE_RESERVED } from './factoryLine'
 import type { StageId } from './pipeline'
 
 export const CUBE_INK = '#0a0c0f'
-export const CUBE_AMBER = LINE_RESERVED.amber
+const CUBE_AMBER = LINE_RESERVED.amber
 const TAU = Math.PI * 2
 const SANS = 'system-ui, -apple-system, sans-serif'
 const MONO = 'ui-monospace, "SF Mono", Menlo, monospace'
@@ -23,8 +23,8 @@ export const STAGE_FILL: Record<StageId, string> = {
 }
 
 // `puzzled`: one brow up; `grumpy`: brows knitted down toward the middle.
-export type CubeEyes = 'open' | 'closed' | 'worried' | 'happy' | 'puzzled' | 'grumpy' | 'none'
-export type CubeMouth = 'smile' | 'flat' | 'wobble' | 'o'
+type CubeEyes = 'open' | 'closed' | 'worried' | 'happy' | 'puzzled' | 'grumpy' | 'none'
+type CubeMouth = 'smile' | 'flat' | 'wobble' | 'o'
 // Earned along the way: a hard hat while building, a magnifier in review, a
 // rosette once the security review passed, a bow when merged.
 export type CubeAccessory = 'hat' | 'magnifier' | 'badge' | 'bow'
@@ -81,7 +81,7 @@ export function drawCube(ctx: CanvasRenderingContext2D, x: number, y: number, c:
 
 // Eyes, brows and mouth, in the coordinates of a cube of side c standing on
 // (0, 0): the issue cube and the agent worker share one face.
-export function drawFace(ctx: CanvasRenderingContext2D, c: number, o: Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'eyeCol' | 'blink' | 'mouth'> = {}, mouthFrom = 22) {
+function drawFace(ctx: CanvasRenderingContext2D, c: number, o: Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'eyeCol' | 'blink' | 'mouth'> = {}, mouthFrom = 22) {
   const ex = c * 0.19, ey = -c * 0.46, er = Math.max(1.2, c * 0.075), look = o.look || 0, lookY = o.lookY || 0
   const ink = o.eyeCol || '#12151a'
   ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, c * 0.07); ctx.lineCap = 'round'
@@ -127,7 +127,7 @@ export function drawFace(ctx: CanvasRenderingContext2D, c: number, o: Pick<CubeO
 }
 
 // Drawn in the cube's own coordinates: (0, 0) is the middle of its base.
-export function drawAccessory(ctx: CanvasRenderingContext2D, kind: CubeAccessory, c: number, lw: number) {
+function drawAccessory(ctx: CanvasRenderingContext2D, kind: CubeAccessory, c: number, lw: number) {
   ctx.lineWidth = lw; ctx.strokeStyle = CUBE_INK; ctx.lineCap = 'round'
   if (kind === 'hat') {
     const hy = -c + c * 0.03
@@ -167,7 +167,7 @@ export function drawAccessory(ctx: CanvasRenderingContext2D, kind: CubeAccessory
 }
 
 // How a mood sets the face.
-export function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth'> {
+function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth'> {
   switch (mood) {
     case 'busy': return { eyes: 'open', look: 0, lookY: c * 0.07, mouth: 'flat' }
     case 'worried': return { eyes: 'worried', look: 0, lookY: -c * 0.02, mouth: 'wobble' }
@@ -183,7 +183,7 @@ export function moodFace(mood: CubeMood, c: number): Pick<CubeOptions, 'eyes' | 
 export interface Motion { dx: number; dy: number; sx: number; sy: number; blink: boolean }
 // Idle motion at time t (ms): a hop that started at `hop`, then a blink every
 // few seconds and a small per-mood bob. `still` gives the resting pose.
-export function cubeMotion(t: number, hop: number, seed: number, c: number, mood: CubeMood, still: boolean): Motion {
+function cubeMotion(t: number, hop: number, seed: number, c: number, mood: CubeMood, still: boolean): Motion {
   let dx = 0, dy = 0, sx = 1, sy = 1
   if (still) return { dx, dy, sx, sy, blink: false }
   const k = (t - hop) / 560
@@ -203,7 +203,7 @@ export function cubeMotion(t: number, hop: number, seed: number, c: number, mood
 // ---------------------------------------------------------------------------
 // Props around the character. `still` draws the reduced-motion frame.
 // ---------------------------------------------------------------------------
-export function drawScorch(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, seed: number) {
+function drawScorch(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, seed: number) {
   ctx.beginPath()
   for (let i = 0; i < 12; i++) {
     const a = i / 12 * TAU, k = (i % 2 ? 0.5 : 1) * (0.8 + 0.35 * Math.abs(Math.sin(seed * 7.1 + i * 2.3)))
@@ -214,7 +214,7 @@ export function drawScorch(ctx: CanvasRenderingContext2D, x: number, y: number, 
   ctx.beginPath(); ctx.ellipse(x, y, r * 0.45, r * 0.3, 0, 0, TAU); ctx.fillStyle = '#3a2c25'; ctx.fill()
 }
 
-export function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean, col = '#7d858f') {
+function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean, col = '#7d858f') {
   for (let i = 0; i < 3; i++) {
     const ph = still ? i / 3 + 0.15 : ((t / 1600) + i / 3) % 1
     ctx.globalAlpha = (1 - ph) * 0.55; ctx.beginPath()
@@ -223,7 +223,7 @@ export function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, s
   ctx.globalAlpha = 1
 }
 
-export function drawZzz(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean) {
+function drawZzz(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean) {
   ctx.fillStyle = '#8b929c'; ctx.textAlign = 'left'
   for (let i = 0; i < 2; i++) {
     const ph = still ? 0.35 + i * 0.4 : ((t / 1900) + i * 0.5) % 1
@@ -233,7 +233,7 @@ export function drawZzz(ctx: CanvasRenderingContext2D, x: number, y: number, s: 
   ctx.globalAlpha = 1
 }
 
-export function drawAmberGlow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, t: number, still: boolean) {
+function drawAmberGlow(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, t: number, still: boolean) {
   const p = still ? 0.5 : 0.5 + 0.5 * Math.sin(t / 420)
   const g = ctx.createRadialGradient(x, y, 2, x, y, r)
   g.addColorStop(0, `rgba(240,180,76,${0.16 + 0.1 * p})`); g.addColorStop(1, 'rgba(240,180,76,0)')
@@ -241,7 +241,7 @@ export function drawAmberGlow(ctx: CanvasRenderingContext2D, x: number, y: numbe
 }
 
 // The amber "needs you" light, standing on (x, y).
-export function drawBeacon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean) {
+function drawBeacon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, t: number, still: boolean) {
   const pulse = still ? 1 : 0.5 + 0.5 * Math.sin(t / 300)
   if (!still) {
     const ang = t / 320
@@ -254,18 +254,18 @@ export function drawBeacon(ctx: CanvasRenderingContext2D, x: number, y: number, 
   roundRect(ctx, x - 6.5 * s, y, 13 * s, 3.5 * s, 1.5); ctx.fillStyle = '#4a4f57'; ctx.fill(); ctx.stroke()
 }
 
-export function drawTether(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, lift: number) {
+function drawTether(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, lift: number) {
   ctx.save(); ctx.setLineDash([2, 3]); ctx.strokeStyle = 'rgba(160,168,178,.7)'; ctx.lineWidth = 1.2
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo((x1 + x2) / 2, Math.min(y1, y2) - lift, x2, y2); ctx.stroke(); ctx.restore()
 }
 
 // A dependency: a grey cube with its issue number above it.
-export function drawGhost(ctx: CanvasRenderingContext2D, x: number, y: number, c: number, label: string) {
+function drawGhost(ctx: CanvasRenderingContext2D, x: number, y: number, c: number, label: string) {
   drawCube(ctx, x, y, c, '#59606b', { eyes: 'open', look: c * 0.08, eyeCol: '#14171b', alpha: 0.85 })
   ctx.font = `500 10px ${MONO}`; ctx.fillStyle = '#b3b9c1'; ctx.textAlign = 'center'; ctx.fillText(label, x, y - c - 4); ctx.textAlign = 'left'
 }
 
-export function drawConfetti(ctx: CanvasRenderingContext2D, W: number, floor: number, t: number, still: boolean) {
+function drawConfetti(ctx: CanvasRenderingContext2D, W: number, floor: number, t: number, still: boolean) {
   const cols = [STAGE_FILL.merged, STAGE_FILL.approval, STAGE_FILL.build, STAGE_FILL.audit, '#f08bb0']
   for (let i = 0; i < 14; i++) {
     const x = (i * 53.7 + 17) % (W - 20) + 10, speed = 18 + (i % 5) * 4
@@ -399,7 +399,7 @@ export function drawPortrait(ctx: CanvasRenderingContext2D, S: number, look: Por
 // eyes shut once it has left. `t` animates; `still` is the reduced-motion frame.
 // ---------------------------------------------------------------------------
 export type AgentMood = 'looking' | 'busy' | 'happy' | 'left'
-export type AgentMark = 'spark' | 'bolt' | 'star' | null
+type AgentMark = 'spark' | 'bolt' | 'star' | null
 
 export function agentFace(mood: AgentMood, c: number, t: number, still: boolean): Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth'> & { dx: number; dy: number } {
   switch (mood) {
@@ -411,7 +411,7 @@ export function agentFace(mood: AgentMood, c: number, t: number, still: boolean)
   }
 }
 
-export function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
+function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: number, y: number, s: number, fill: string) {
   if (!mark) return
   ctx.save(); ctx.translate(x, y)
   ctx.lineWidth = Math.max(1, s * 0.14); ctx.strokeStyle = CUBE_INK; ctx.lineJoin = 'round'
@@ -437,7 +437,7 @@ export function drawMark(ctx: CanvasRenderingContext2D, mark: AgentMark, x: numb
 // with feet, like the machines on the factory floor, its face on the body and
 // its persona's mark above. Issues stay rounded-square cube heads. Everything
 // is laid out in an S×S square; `workerShape` is the geometry, for tests.
-export interface WorkerShape {
+interface WorkerShape {
   body: { x: number; y: number; w: number; h: number; r: number }
   legs: { x: number; y: number; w: number; h: number }[]
   feet: { x: number; y: number; w: number; h: number }[]
@@ -474,11 +474,11 @@ export function drawAgent(ctx: CanvasRenderingContext2D, S: number, fill: string
   drawWorker(ctx, S, fill, mark, face, workerSteps(mood, S, t, still), mood === 'left' ? 0.7 : 1)
 }
 
-export type WorkerFace = Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth' | 'blink'> & { dx: number; dy: number }
+type WorkerFace = Pick<CubeOptions, 'eyes' | 'look' | 'lookY' | 'mouth' | 'blink'> & { dx: number; dy: number }
 
 // A worker in its S×S square at the origin; callers translate to place it
 // elsewhere (the sign-in scene's shop floor). `lift` raises each foot.
-export function drawWorker(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, face: WorkerFace, lift: [number, number] = [0, 0], alpha = 1) {
+function drawWorker(ctx: CanvasRenderingContext2D, S: number, fill: string, mark: AgentMark, face: WorkerFace, lift: [number, number] = [0, 0], alpha = 1) {
   const shape = workerShape(S)
   // A hop lifts the whole worker; a step lifts one foot and the body a little.
   const bob = face.dy - Math.max(lift[0], lift[1]) * 0.5

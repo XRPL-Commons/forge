@@ -11,8 +11,8 @@ const PASS_RESPONSE = ['content-type', 'content-disposition', 'set-cookie', 'loc
   'referrer-policy', 'x-content-type-options', 'etag', 'x-forge-request-id', 'server-timing']
 
 type Headers = Record<string, string | undefined>
-export interface GuardInput { method: string; headers: Headers; contentLength?: number; publicOrigin?: string }
-export type GuardResult = { ok: true } | { ok: false; status: number; reason: string }
+interface GuardInput { method: string; headers: Headers; contentLength?: number; publicOrigin?: string }
+type GuardResult = { ok: true } | { ok: false; status: number; reason: string }
 
 export function proxyPaths(path: string): boolean {
   const clean = path.split('?')[0] ?? ''
@@ -41,7 +41,7 @@ function hostLabel(address: string): string {
   return plain.includes(':') ? `[${plain}]` : plain
 }
 
-export interface ListenAddress { address?: string | null; port?: number | null }
+interface ListenAddress { address?: string | null; port?: number | null }
 
 // The allowed `Host` values: `NITRO_ALLOWED_HOSTS` verbatim when set
 // (comma-separated, for deployments reached under another name or port),
@@ -157,7 +157,7 @@ export function guardClient({ method, headers, contentLength }: GuardInput): Gua
 }
 
 
-export function guardBodyLength(length: number | undefined, maximum: number): GuardResult {
+function guardBodyLength(length: number | undefined, maximum: number): GuardResult {
   // A missing length is a bounded stream, not an oversized request.
   if (length === undefined) return { ok: true }
   if (!Number.isSafeInteger(length) || length < 0) return { ok: false, status: 400, reason: 'Invalid request length' }

@@ -3,8 +3,19 @@ import json
 from forge.store.migration.importer import Importer
 from forge.store.migration.identity import AUTH, CREDENTIAL
 from forge.store.migration.snapshot import MigrationError
-from forge.store.identity import IdentityQueries
+from forge.store.identity import session_in, valid_connection_in
 from tests import test_store_import as fixtures
+
+
+def session(store, hashed, now):
+    with store.read_snapshot() as db:
+        return session_in(db, hashed, now)
+
+
+def bearer(store, hashed, *, generation, now):
+    with store.read_snapshot() as db:
+        row = db.execute('SELECT * FROM client_connections WHERE access_hash=?', (hashed,)).fetchone()
+        return row['id'] if valid_connection_in(db, row, generation, now) and row['access_expires'] > now else None
 
 
 class IdentityImportTests(unittest.TestCase):
@@ -39,12 +50,11 @@ class IdentityImportTests(unittest.TestCase):
     def test_import_keeps_revocations_epochs_and_refresh_replay_fences(self):
         self.auth()
         importer=Importer(self.snapshot(),self.base/'staging');report=importer.run()
-        reader=IdentityQueries(importer.store)
-        self.assertEqual(reader.session('session',100),self.source['sessions']['session'])
-        self.assertEqual(reader.bearer('access-active',generation='generation',now=100)['id'],'active')
+        self.assertEqual(session(importer.store,'session',100),self.source['sessions']['session'])
+        self.assertEqual(bearer(importer.store,'access-active',generation='generation',now=100),'active')
         for identifier in ('revoked','old-epoch','old-generation','expired'):
-            self.assertIsNone(reader.bearer('access-'+identifier,generation='generation',now=100))
-        self.assertIsNone(reader.bearer('',generation='generation',now=100))
+            self.assertIsNone(bearer(importer.store,'access-'+identifier,generation='generation',now=100))
+        self.assertIsNone(bearer(importer.store,'',generation='generation',now=100))
         self.assertEqual(report['supporting_checks']['consumed_refresh_tokens'],5)
         with importer.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT status FROM client_pairings').fetchone()[0],'consumed')

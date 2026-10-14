@@ -522,7 +522,7 @@ def confirm(changes, assume_yes, overrides=()):
 
 def qualify_runner(image, seccomp, profile, *, full=False):
     """Offline canary: tools, memory limits, browser and credential protection in the real sandbox."""
-    runpy.run_path(str(SOURCE / 'deploy/test_build_environment.py'))['validate'](image, seccomp, profile, services=full)
+    runpy.run_path(str(SOURCE / 'deploy/build_environment_check.py'))['validate'](image, seccomp, profile, services=full)
 
 
 def reconcile(root, bind=None, assume_yes=False):

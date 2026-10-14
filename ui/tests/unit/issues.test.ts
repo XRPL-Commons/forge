@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   forgeReportUrl, actionEffect, ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
-  attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
-  activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
+  attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, summaryBlock,
+  activityAge, rowFacts, rowPrimary, rowStory, blockingIssues, statusLabel,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -382,14 +382,6 @@ describe('summaryBlock', () => {
   })
 })
 
-describe('rowNote', () => {
-  it('prefers the headline and falls back to the explanation', () => {
-    expect(rowNote(row({ summary: { headline: 'Built and waiting for review', plain: 'x' } }))).toBe('Built and waiting for review')
-    expect(rowNote(row())).toBe('Not queued for Forge.')
-    expect(rowNote(row({ summary: { headline: 'w'.repeat(200), plain: '' } })).length).toBeLessThanOrEqual(97)
-  })
-})
-
 describe('list filters in the URL', () => {
   it('reads only valid filters', () => {
     expect(filtersFromQuery({ show: 'completed', repo: '3', q: ' nav ', page: '2' })).toEqual({ show: 'completed', repo: '3', q: 'nav', page: 2 })
@@ -419,9 +411,6 @@ describe('waiting on other issues', () => {
     expect(statusLabel(blocked)).toBe('Blocked')
     expect(statusLabel({ ...blocked, explanation: '', dependencies: [] })).toBe('Blocked')
     expect(statusLabel({ status: 'waiting', explanation: 'Waiting for #9.', dependencies: [9] })).toBe('Waiting')
-  })
-  it('sorts after other waits and before queued work, as the server does', () => {
-    expect(STATUS_ORDER).toEqual(['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped'])
   })
   it('is only opened, never asked to decide anything', () => {
     expect(rowAction({ status: 'blocked', actions: [], approval: null } as any, null)).toBe('Open')

@@ -36,9 +36,6 @@ stage, then `forge setup continue --ssh HOST` for role Apps, coding account and
 repository setup. These commands resume the saved installation. GitHub,
 Tailscale and provider browser approvals remain explicit operator handoffs.
 
-For an existing custom reverse proxy, use the
-[host configuration instructions](operator-sign-in.md#manual-host-configuration).
-
 ## Inspect the plan
 
 Use explicit paths on the selected SSH host:

@@ -8,6 +8,66 @@ spec = importlib.util.spec_from_file_location("forge_dashboard", Path(__file__).
 dashboard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dashboard)
 
+OPERATOR_CSRF = 'synthetic-operator-csrf'
+
+
+def signed_in(test, origin='http://127.0.0.1:8787'):
+    """Configure operator sign-in and sign every request in, for one test.
+
+    The status API offers control only to a signed-in operator; tests of the
+    routes behind it start from that state."""
+    from forge.operator_auth import SESSION_COOKIE
+    auth = Mock()
+    auth.config.return_value = {'origin': origin}
+    auth.session.return_value = {'operator': {'id': 7, 'login': 'operator'}, 'csrf': OPERATOR_CSRF, 'expires': 4102444800}
+    patcher = patch('forge.operator_auth.OperatorAuth', return_value=auth)
+    patcher.start(); test.addCleanup(patcher.stop)
+    return {'Cookie': SESSION_COOKIE + '=synthetic-session'}
+
+
+class NoSignInTests(unittest.TestCase):
+    """Without configured operator sign-in the API offers no control at all."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        patcher = patch.object(dashboard, 'WD', temporary.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def handler(self, path, body=b''):
+        import io
+        handler = object.__new__(dashboard.H)
+        handler.server = Mock(server_address=('127.0.0.1', 8787))
+        handler.path = path
+        handler.headers = {'Host': '127.0.0.1:8787', 'Origin': 'http://127.0.0.1:8787', 'X-Forge-Action': '',
+                           'Content-Type': 'application/json', 'Content-Length': str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler._send = Mock(); handler.send_error = Mock()
+        return handler
+
+    def test_mutations_are_refused_without_configured_sign_in(self):
+        for path in ('/api/settings/sync', '/api/factory/action', '/api/onboarding', '/api/issues/action'):
+            with self.subTest(path=path), patch.object(dashboard, 'settings_service') as service:
+                handler = self.handler(path, b'{}')
+                handler.do_POST()
+                handler.send_error.assert_called_once_with(401)
+                handler._send.assert_not_called()
+                service.assert_not_called()
+
+    def test_reads_carry_no_controls_token_without_sign_in(self):
+        import json
+        handler = self.handler('/api/auth/session')
+        handler.do_GET()
+        session = json.loads(handler._send.call_args.args[0])
+        self.assertFalse(session['enabled'])
+        self.assertNotIn('controls_token', session)
+        with patch('forge.onboarding.Onboarding') as setup:
+            setup.return_value.view.return_value = {}
+            handler = self.handler('/api/onboarding')
+            handler.do_GET()
+        self.assertIsNone(json.loads(handler._send.call_args.args[0])['controls_token'])
+
 
 class HostTests(unittest.TestCase):
     def setUp(self):
@@ -23,7 +83,7 @@ class HostTests(unittest.TestCase):
         handler.server = Mock(server_address=('127.0.0.1', 8787))
         handler.path = '/api/settings'
         handler.headers = {'Host': 'attacker.example:8787', 'Origin': 'http://attacker.example:8787',
-                           'X-Forge-Action': dashboard.CONTROLS_TOKEN, 'Content-Type': 'application/json', 'Content-Length': '2'}
+                           'X-Forge-Action': OPERATOR_CSRF, 'Content-Type': 'application/json', 'Content-Length': '2'}
         handler.rfile = io.BytesIO(b'{}')
         handler._send = Mock(); handler.send_error = Mock()
         handler.do_POST()

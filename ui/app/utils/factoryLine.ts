@@ -55,7 +55,7 @@ export interface LineState {
   repos: number
 }
 
-export interface Bottleneck { stage: ColumnRole; waiting: number }
+interface Bottleneck { stage: ColumnRole; waiting: number }
 export interface LineInfo {
   necks: Bottleneck[]
   neck: Bottleneck | null
@@ -95,7 +95,7 @@ export const LINE_REASON_TEXT: Record<AttentionReason, string> = {
 // step of that evolution; later ones (accessories, size, expression) belong
 // in the same per-stage look. Amber is kept for attention and coral for the
 // bottleneck flag, so the progression avoids reds and oranges.
-export interface StageLook {
+interface StageLook {
   fill: string
   // A cube at a machine that is not running right now: done, or starting.
   ready: string
@@ -265,8 +265,8 @@ export function lineStation(item: Pick<LineItem, 'stage' | 'next'>): string {
   return item.stage === 'queued' ? `queued:${item.next ?? 'build'}` : item.stage
 }
 
-export interface LineMove { id: string; from: string; to: string }
-export interface LineDiff {
+interface LineMove { id: string; from: string; to: string }
+interface LineDiff {
   entered: string[]
   moved: LineMove[]
   left: string[]

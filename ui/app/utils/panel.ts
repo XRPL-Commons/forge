@@ -8,7 +8,7 @@ import type { CardModel } from './factory'
 export type QueryValue = string | null | undefined | (string | null)[]
 export type PanelQuery = Record<string, QueryValue>
 
-export interface PanelState { key: string | null; job: string | null }
+interface PanelState { key: string | null; job: string | null }
 
 // Vue Router hands a repeated parameter over as an array; the first value wins.
 function first(value: QueryValue): string | null {

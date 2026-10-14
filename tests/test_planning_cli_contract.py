@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from forge_client.cli import parser,execute
 from forge_client.connection import Client, Transport, connection_lock
 from tests.test_client_connections import MemoryVault
-from forge_client.planning import action_schemas
+from forge.planning_contract import action_schemas
 from forge.factory.planning_service import PlanningService
 from forge.store.repository_planning import ACTIONS,NOTE_KINDS,RepositoryPlanning
 from forge.store.models import TransitionError

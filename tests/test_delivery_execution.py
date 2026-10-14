@@ -8,10 +8,39 @@ import json
 import unittest
 
 from forge.store.db import Store
-from forge.store.delivery import Delivery, DeliveryQueries
+from forge.store.delivery import Delivery, DeliveryQueries, _unit
 from forge.store.executions import Executions, Launch
 from forge.store.models import Command, Candidate, TransitionError, VersionConflict, InvalidDelegationPlan
 from forge.store.transitions import Lifecycle, manifest_hash, project_unit
+
+
+class ManifestQueries(DeliveryQueries):
+    """Test-only readers of the manifests and next assignment the controllers build."""
+
+    def builder_manifest(self,unit_id,stage,*,base_oid,policy_hash):
+        with self.store.read_snapshot() as db:
+            return Delivery._builder_manifest_in(db,_unit(db,unit_id),stage,base_oid,policy_hash)
+
+    def child_manifest(self,plan_id,key):
+        with self.store.read_snapshot() as db:
+            row = db.execute('SELECT b.unit_id FROM delegation_plans p JOIN unit_builders b ON b.id=p.builder_id WHERE p.id=?',(plan_id,)).fetchone()
+            if row is None:
+                raise KeyError(plan_id)
+            unit = _unit(db,row[0])
+            return Delivery._child_manifest_in(db,unit,Delivery._plan_in(db,unit,plan_id),key)
+
+    def task_manifest(self,plan_id,task_id):
+        from forge.store.task_inputs import task_manifest_in,current_plan_in
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT b.unit_id FROM delegation_plans p JOIN unit_builders b ON b.id=p.builder_id WHERE p.id=?',(plan_id,)).fetchone()
+            if row is None: raise KeyError(plan_id)
+            unit=_unit(db,row[0]); plan=current_plan_in(db,unit['id'])
+            if not plan or plan['id']!=plan_id: raise TransitionError('task plan has changed')
+            return task_manifest_in(db,unit,plan,task_id)
+
+    def next_assignment(self,unit_id,*,base_oid,policy_hash,allowed_members=None):
+        result = self.assignments(unit_id,base_oid=base_oid,policy_hash=policy_hash,limit=1,allowed_members=allowed_members)
+        return {key:value for key,value in result.items() if key!='items'} | {'assignment':result['items'][0] if result['items'] else None}
 
 
 def task_plan(tasks, retained=()):
@@ -25,7 +54,7 @@ class DeliveryExecutionTests(unittest.TestCase):
         self.store=Store.create(self.temporary.name)
         self.life=Lifecycle(self.store,clock=lambda:100.0)
         self.delivery=Delivery(self.store,clock=lambda:100.0)
-        self.query=DeliveryQueries(self.store)
+        self.query=ManifestQueries(self.store)
         self.sequence=0
 
     def command(self,unit='batch'):

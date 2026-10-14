@@ -112,10 +112,12 @@ class Credentials:
                                          expected_revision=row['revision'] if row else 0)
 
     def environment(self, only=None):
-        """The process environment plus stored credentials, which take precedence.
+        """The process environment plus stored credentials.
 
-        `only` limits the stored credentials read to the named references."""
-        env = dict(os.environ)
+        Role App keys and terminal logins (`FORGE_SETUP_*`) come from the store only;
+        the process environment never supplies them. `only` limits the stored
+        credentials read to the named references."""
+        env = {name: value for name, value in os.environ.items() if not name.startswith('FORGE_SETUP_')}
         env['FORGE_CREDENTIAL_ROOT'] = str(self.root.parent.resolve())
         if not self.root.exists():
             return env
