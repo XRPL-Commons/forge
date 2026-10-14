@@ -93,12 +93,12 @@ class SharedAuthTests(unittest.TestCase):
         job = {'id': 'job', 'fenced': False, 'deadline': 5000}
         with patch('forge.factory.runner.assignment_note', return_value={}), \
                 patch('forge.factory.codex_auth.renew_in_container'):
-            runner.prepare(job, 'synthetic-github-token')
+            runner._prepare_credentials(job)
         raw = runner.call.call_args.kwargs['input']
         with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
             delivered = json.load(archive.extractfile('credentials.json'))
         self.assertEqual(delivered['FORGE_HARNESS_AUTH']['tokens']['refresh_token'], '')
-        self.assertEqual(delivered['GH_TOKEN'], 'synthetic-github-token')
+        self.assertNotIn('GH_TOKEN', delivered)
         self.assertNotIn(b'synthetic-refresh', raw)
 
     def test_reconnect_does_not_restore_old_staged_credentials(self):

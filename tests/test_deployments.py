@@ -68,7 +68,7 @@ class DeploymentTests(unittest.TestCase):
                 test.engine[job['id']] = {'id': job['id'], 'status': 'created', 'running': False,
                                           'exit_code': 0, 'oom_killed': False}
                 return job['id']
-            def prepare(self, job, token): test.prepared.append((job['id'], job['role'], token))
+            def prepare(self, job): test.prepared.append((job['id'], job['role']))
             def start(self, job):
                 if test.capacity:
                     raise test.capacity
@@ -139,10 +139,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(entry['job']['publisher'], 'forge-strategist')
         self.assertEqual(entry['job']['head'], 'a' * 40)
         self.assertEqual(entry['job']['runner_config']['harness_argv'], self.config['harness_argv'])
-        self.assertEqual(self.prepared, [(entry['job']['id'], 'strategist',
-                                          'synthetic-worker-token-not-a-real-credential')])
+        self.assertEqual(self.prepared, [(entry['job']['id'], 'strategist')])
         # The recovery role is the controller App's read-only worker credential.
-        self.assertEqual(self.github.tokens, [('recovery', 7, True)])
+        self.assertEqual(self.github.tokens, [])
         job = self.finish()
         self.deployments().tick(self.config)
         entry = self.entry()
@@ -402,7 +401,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual((path.stat().st_mtime_ns, path.read_bytes()), before)
 
 class ContractTests(unittest.TestCase):
-    def test_prepare_writes_the_read_only_strategist_note(self):
+    def test_strategist_note_is_separate_from_provider_credential_ipc(self):
         config = {'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'engine': '/usr/bin/docker',
                   'engine_socket': '/var/run/docker.sock', 'provider_environment': ['OPENAI_API_KEY'],
                   'provider_auth_file_env': None, 'harness_argv': ['/usr/local/bin/python3'],
@@ -414,15 +413,17 @@ class ContractTests(unittest.TestCase):
         run = Mock(return_value=subprocess.CompletedProcess([], 0, b'', b''))
         runner = ContainerRunner(config, run=run, environ={'OPENAI_API_KEY': 'synthetic-provider-value'})
         with patch.object(ContainerRunner, 'inspect', return_value={'id': 'abc', 'status': 'created'}):
-            runner.prepare(job, 'synthetic-token-not-a-real-credential')
+            runner._prepare_credentials(job)
         with tarfile.open(fileobj=BytesIO(run.call_args.kwargs['input'])) as archive:
-            note = json.loads(archive.extractfile('assignment.json').read())
+            self.assertEqual(archive.getnames(), ['credentials.json'])
+            self.assertNotIn('GH_TOKEN', json.load(archive.extractfile('credentials.json')))
+        from forge.factory.contracts import strategist_note
+        note = strategist_note(job)
         self.assertEqual(note['role'], 'strategist')
         self.assertEqual(note['head'], 'c' * 40)
         self.assertIsNone(note['candidate'])
         self.assertIn('Read only', note['instructions'])
         self.assertNotIn('issue_number', note)
-        self.assertEqual(note['harness_argv'], config['harness_argv'])
 
     def github(self, contents):
         github = GitHub(Mock(), {}, client=Mock())
@@ -575,7 +576,7 @@ class ServiceHookTests(unittest.TestCase):
             def create(self, job):
                 engine[job['id']] = {'id': job['id'], 'status': 'created', 'running': False, 'exit_code': 0}
                 return job['id']
-            def prepare(self, job, token): pass
+            def prepare(self, job): pass
             def start(self, job):
                 engine[job['id']].update(status='exited' if job.get('kind') == 'provider' else 'running',
                                          running=job.get('kind') != 'provider')

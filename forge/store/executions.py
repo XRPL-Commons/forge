@@ -329,6 +329,14 @@ class Executions(Lifecycle):
             expected_author = target['author'] if grouped and target.get('kind') == 'existing' else None
             author_matches = (publication['author'] == expected_author if expected_author is not None else
                               publication['author']['type'] == 'Bot' and publication['author']['login'] == launch['publisher'])
+            if db.execute('SELECT 1 FROM mirror_job_inputs WHERE job_id=?', (job_id,)).fetchone():
+                receipt = db.execute("SELECT r.receipt_json FROM publication_receipts r JOIN publication_intents p "
+                    "ON p.id=r.intent_id WHERE p.job_id=? AND p.status='confirmed'", (job_id,)).fetchone()
+                proven = json.loads(receipt[0]) if receipt else {}
+                author_matches = (proven.get('pr_author') == publication['author']
+                    and proven.get('branch') == publication['branch'] and proven.get('head_oid') == publication['head_oid']
+                    and proven.get('pull_number') == publication['pull_number']
+                    and proven.get('repository_id') == publication['repository_id'])
             if not author_matches:
                 raise TransitionError('publication author differs from the assigned publisher')
             db.execute('UPDATE jobs SET fenced=1 WHERE id=?', (job_id,))
