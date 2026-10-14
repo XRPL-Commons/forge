@@ -196,3 +196,31 @@ identity/App installations can prepare multiple repositories independently;
 an uncertain write on one does not block preparation of another. Real repositories
 are never enabled by this command. Continue to use the existing `forge setup`
 building blocks where available.
+
+## Native worker boundary qualification
+
+After the matching server source and worker image have been staged through the
+supported upgrade, run:
+
+```sh
+forge setup qualify-boundary --ssh anvil --image sha256:IMAGE_ID
+forge setup qualify-boundary --ssh anvil --image sha256:IMAGE_ID --apply
+```
+
+The first command prints the checks. The second uses the saved SSH host identity
+and runs disposable canaries as the Forge service account. It requires a native
+Linux host with Docker Engine 28 or newer and the exact worker-boundary v2 image.
+It creates its own networks, volumes, endpoints and local Git fixture; it does
+not change installation settings, services, repository permissions or jobs.
+
+The receipt verifies real Git clone/fetch and denied push, live session revocation,
+provider TLS without credentials, public npm/pip downloads, blocked GitHub/host/
+cross-job access, immutable assignment inputs, the work-volume limit, capture
+after worker exit, and confirmed cleanup. All checks must pass. A network outage
+fails qualification. Local Docker Desktop 23 cannot qualify native isolation;
+the separate local volume canary provides only its stated partial checks.
+
+The work volume is bounded tmpfs. Its pages count against the writing worker's
+memory limit; the quota is a ceiling, not a memory reservation. The trusted
+frontend keeps it mounted through stopped-worker capture. A full host restart
+loses these temporary bytes, so recovery must retry the physical job.

@@ -121,6 +121,11 @@ def parser():
     login.add_argument('--secret-stdin', action='store_true', help='Read the provider credential privately from stdin')
     login.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
+    qualification = verb(fresh, 'qualify-boundary', help='Run disposable native worker isolation canaries on the selected host')
+    qualification.add_argument('--ssh', required=True)
+    qualification.add_argument('--image', required=True, help='Exact sha256 image ID built on the host')
+    qualification.add_argument('--apply', action='store_true', help='Create and remove disposable qualification resources')
+    qualification.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
         command = verb(fresh, action, aliases=['sign-in'] if action == 'identity' else [],
                                    help={'new':'Walk through installation on a fresh VM', 'plan':'Observe the host and save a pinned installation plan', 'apply':'Apply the saved host installation plan', 'status':'Read saved installation progress', 'resume':'Resume the saved installation without repeating completed stages', 'host-key':'Discover an SSH fingerprint for you to verify', 'network':'Configure private Tailscale HTTPS access', 'identity':'Configure GitHub operator sign-in'}[action])
@@ -255,6 +260,9 @@ def execute(args):
         args.apply = True
         return account_login(args)
     if args.command == 'setup':
+        if args.setup_command == 'qualify-boundary':
+            from .boundary_qualification import execute as qualify_boundary
+            return qualify_boundary(args)
         if args.setup_command in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
             from .factory_setup import execute as setup_stage, wizard as finish_setup
             from .install import Installation
@@ -289,7 +297,7 @@ def execute(args):
         from .planning import commands as planning_commands
         from .install import schemas
         from .installation import schemas as installation_schemas
-        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),
