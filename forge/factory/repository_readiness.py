@@ -48,16 +48,24 @@ class RepositoryReadiness:
         result['valid_until'] = min(access_observation[role]['observed_at'] + config['access_max_age_seconds']
                                     for role in ROLES)
         saved = self.setup.read()['repositories'].get(str(row['id']), {})
-        report = saved.get('report') or {}
+        report, status = saved.get('report') or {}, saved.get('status')
+        known = saved.get('last_known') or {}
+        # The periodic Settings check first marks the row 'checking', then may
+        # record a failed read (no branch, unavailable). Neither is evidence that
+        # protection changed: keep the last verified report of this same revision
+        # while it is fresh, instead of opening and resolving the gate each sync.
+        if (status == 'checking' or not report.get('available')) and known.get('available'):
+            report, status = known, 'ready' if protection_ready(known) else 'needs_setup'
         if saved.get('revision') != revision or saved.get('name') != row['name']:
             result['reason'] = 'protection_unchecked'
         elif not 0 <= self.clock() - report.get('observed_at', 0) < MAX_AGE:
             result['reason'] = 'protection_stale'
-        elif branch is not None and report.get('branch') != branch:
+        elif branch is not None and report.get('branch') is not None and report.get('branch') != branch:
+            # A report without a branch is a failed read, not a branch change.
             result['reason'] = 'protection_branch_changed'
         elif report.get('repo_id', row['id']) != row['id']:
             result['reason'] = 'protection_identity_changed'
-        elif saved.get('status') != 'ready' or not protection_ready(report):
+        elif status != 'ready' or not protection_ready(report) or branch is not None and report.get('branch') != branch:
             result['reason'] = 'protection_unavailable' if not report.get('available') else 'protection_needs_setup'
         else:
             result.update(allowed=True, reason='implementation_ready', valid_until=min(result['valid_until'], report['observed_at'] + MAX_AGE))

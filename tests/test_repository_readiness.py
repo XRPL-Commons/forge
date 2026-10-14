@@ -137,6 +137,66 @@ class RepositoryReadinessTests(unittest.TestCase):
         self.now += 1; self.life.resume(self.command())
         self.assertTrue(self.dispatch.step('u1')['reserved'])
 
+    def journal(self):
+        with self.store.read_snapshot() as db:
+            return (db.execute('SELECT count(*) FROM decisions').fetchone()[0],
+                    db.execute('SELECT count(*) FROM events').fetchone()[0])
+
+    def test_equivalent_reads_do_not_flap_the_setup_gate(self):
+        """#281: thegame's gate opened and resolved every sync as protection_branch_changed.
+
+        The periodic Settings check marks the row 'checking' and, when its own
+        GitHub read fails, records a branchless unavailable report. Both are
+        equivalent to the last verified report, not a branch change.
+        """
+        from forge.factory.github import GitHubUnavailable
+
+        class Failing:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def target(self, item):
+                raise GitHubUnavailable('timed out')
+
+        self.readiness.observe('u1')
+        self.assertEqual(self.gates(), [])
+        before = self.journal()
+        reads = []
+        # 1. A real failed periodic check, exactly as RepositorySetup writes it.
+        self.now += 10
+        self.assertTrue(RepositorySetup(self.settings, github_class=Failing).check())
+        saved = RepositorySetup(self.settings).read()['repositories']['1']
+        self.assertIsNone(saved['report']['branch']); self.assertFalse(saved['report']['available'])
+        reads.append(self.readiness.observe('u1'))
+        # 2. The in-progress 'checking' row of the next sync.
+        RepositorySetup(self.settings).save_observation(1, {'repositories': {'1': dict(name=self.repo['name'],
+            revision=observation_key(self.settings.load(), self.repo), started_at=self.now, status='checking',
+            report=deepcopy(self.report), last_known=deepcopy(self.report))}})
+        reads.append(self.readiness.observe('u1'))
+        # 3. A fresh read of the same protection, listed in a different order.
+        self.now += 10
+        self.report.update(observed_at=self.now, requirements=list(reversed(self.report['requirements'])))
+        self.save_report()
+        reads.append(self.readiness.observe('u1'))
+        for result in reads:
+            self.assertTrue(result['allowed']); self.assertTrue(result['unchanged'])
+        self.assertEqual(self.gates(), [])
+        self.assertEqual(self.journal(), before)
+        # A real change still opens the gate once, and repeating it adds nothing.
+        self.report['branch'] = 'other'; self.save_report()
+        self.assertFalse(self.readiness.observe('u1')['unchanged'])
+        self.assertEqual([json.loads(g['details_json'])['reason'] for g in self.gates()], ['protection_branch_changed'])
+        opened = self.journal()
+        self.assertTrue(self.readiness.observe('u1')['unchanged'])
+        self.assertEqual(self.journal(), opened)
+
+    def test_failed_check_without_verified_report_is_unavailable_not_branch_changed(self):
+        self.report = {'repo_id': 1, 'branch': None, 'available': False, 'observed_at': self.now,
+                       'requirements': [], 'errors': [{'detail': 'Could not check this repository.'}]}
+        self.save_report()
+        result = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
+        self.assertFalse(result['allowed']); self.assertEqual(result['reason'], 'protection_unavailable')
+
     def test_stale_unavailable_wrong_revision_and_wrong_branch_fail_closed(self):
         original = deepcopy(self.report)
         for field, value, reason in [('observed_at', -201, 'protection_stale'), ('available', False, 'protection_unavailable'),

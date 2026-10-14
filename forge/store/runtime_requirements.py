@@ -173,9 +173,12 @@ class RuntimeRequirements(Executions):
                 if not worker_wait:
                     self._open_gate(db,command,'dependency',{'source':'runtime_dependencies','requirements_revision_id':requirements_revision_id,
                         'blocked':blocked},member['id'])
-            self._event(db,command,'lifecycle_changed',{'dependency_generation':generation,'clear':clear})
+            # The check row above renews freshness; an unchanged result is not journalled.
+            if authority_changed:
+                self._event(db,command,'lifecycle_changed',{'dependency_generation':generation,'clear':clear})
             return {'clear':clear,'generation':generation}
-        return self._apply(command,'observe_dependencies',payload,change,version_changed=lambda: authority_changed)
+        return self._apply(command,'observe_dependencies',payload,change,version_changed=lambda: authority_changed,
+                           journal=lambda: authority_changed)
 
     def select_environment(self,command,*,requirements_revision_id,choice,labels,config_hash):
         if (not isinstance(choice,dict) or choice.get('tier') not in {'standard','full'} or type(choice.get('automatic')) is not bool
