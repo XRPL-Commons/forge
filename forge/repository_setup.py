@@ -8,6 +8,7 @@ from .factory.github import GitHub, GitHubUnavailable
 from .repository_policy import protection_ready
 
 MAX_AGE = 300
+CHECK_TIMEOUT = 120
 RULESET_NAME = 'Forge review baseline'
 DEPLOYMENT_LABEL = 'forge:deployment'
 
@@ -100,7 +101,7 @@ class RepositorySetup:
             report = previous.get('report') if current else None
             fresh = report and 0 <= now - report.get('observed_at', 0) < MAX_AGE
             status = previous.get('status', 'unchecked') if current else 'unchecked'
-            if status == 'checking' and now - previous.get('started_at', 0) > 120:
+            if status == 'checking' and now - previous.get('started_at', 0) >= CHECK_TIMEOUT:
                 status = 'unknown'
             elif status != 'checking' and not fresh:
                 status = 'stale' if report else 'unchecked'
@@ -275,7 +276,9 @@ class RepositorySetup:
                     prior = data['repositories'].get(str(row['id']), {})
                     same = prior.get('revision') == observation_key(config, row)
                     known = (prior.get('report') if (prior.get('report') or {}).get('available') else prior.get('last_known')) if same else None
-                    data['repositories'][str(row['id'])] = {'report': known, 'last_known': known,
+                    # A last-known success is display history, not current
+                    # admission evidence after a completed failed check.
+                    data['repositories'][str(row['id'])] = {'report': prior.get('report') if same else None, 'last_known': known,
                         'previous_status': ('ready' if protection_ready(known) else 'needs_setup') if known else None, 'revision': observation_key(config, row), 'name': row['name'],
                         'status': 'checking', 'started_at': self.settings.clock()}
                     self.save_observation(row['id'], data, expected_generation=generation)
