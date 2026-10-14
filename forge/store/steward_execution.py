@@ -224,8 +224,9 @@ def task_retry_in(db, unit, plan_id, task_id):
     target = {'stage': 'task', 'plan_id': plan_id, 'task_id': task_id}
     if not plan or plan.get('target') != target:
         return None
-    used = db.execute("SELECT 1 FROM job_launches WHERE json_extract(context_json, '$.steward_retry.decision_id')=?",
-                      (plan['decision_id'],)).fetchone()
+    used = db.execute("SELECT 1 FROM job_tasks t JOIN job_launches l ON l.job_id=t.job_id "
+                      "WHERE t.task_id=? AND t.plan_id=? AND json_extract(l.context_json, '$.steward_retry.decision_id')=?",
+                      (task_id, plan_id, plan['decision_id'])).fetchone()
     return None if used else plan
 
 

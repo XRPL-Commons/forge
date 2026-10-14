@@ -104,7 +104,13 @@ class StewardEffectController(Lifecycle):
     def _defer(self,row,reason):
         with self.store.write() as db:
             current=db.execute('SELECT * FROM external_effects WHERE id=?',(row['id'],)).fetchone()
-            defer_effect_in(db,current,self.clock(),reliability=self.reliability())
+            if current['status']=='confirmed':
+                # Remote confirmation is final. A blocked local completion
+                # retains that receipt and yields to other outbox work.
+                db.execute('UPDATE external_effects SET retry_at=? WHERE id=?',
+                    (self.clock()+retry_policy(self.reliability())['retry_cap'],row['id']))
+            else:
+                defer_effect_in(db,current,self.clock(),reliability=self.reliability())
         Effects(self.store,clock=self.clock,**retry_policy(self.reliability())).bounded(row['id'])
         return {'effect_id':row['id'],'status':'pending','reason':reason}
 
@@ -159,10 +165,13 @@ class StewardEffectController(Lifecycle):
 
     def step(self,identifier):
         row=self._row(identifier)
-        if row['status']=='confirmed':
-            self._finish_group(row['decision_id']);return {'effect_id':identifier,'status':'confirmed'}
         if row['status'] in {'failed','superseded'}:return {'effect_id':identifier,'status':row['status']}
         if not effect_due(row,self.clock()):return {'effect_id':identifier,'status':'pending','reason':'retry_delay','retry_at':row['retry_at']}
+        if row['status']=='confirmed':
+            try:
+                self._finish_group(row['decision_id']);return {'effect_id':identifier,'status':'confirmed'}
+            except (GitHubUnavailable,TransitionError) as error:
+                return self._defer(row,str(error))
         with self.store.read_snapshot() as db:
             pending=db.execute("SELECT 1 FROM steward_issue_effects s JOIN external_effects e ON e.id=s.effect_id WHERE s.decision_id=? AND s.position<? AND e.status!='confirmed'",(row['decision_id'],row['position'])).fetchone()
             if pending:return {'effect_id':identifier,'status':'pending','reason':'earlier_step'}

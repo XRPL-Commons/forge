@@ -64,6 +64,21 @@ class StewardEffectsTests(unittest.TestCase):
         self.assertEqual(self.driver.step(effects[0])['status'],'confirmed')
         self.assertEqual(len(self.writes),1)
 
+    def test_confirmed_remote_step_keeps_receipt_and_backs_off_blocked_local_completion(self):
+        _,effects=self.queue()
+        def held(*args):
+            value=self.call(*args)
+            self.f.open_gate('operator_pause',{'reason':'pause during reply'})
+            return value
+        self.github.call.side_effect=held
+        self.assertEqual(self.driver.step(effects[0])['status'],'pending')
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT status,receipt_json FROM external_effects WHERE id=?',(effects[0],)).fetchone()
+            self.assertEqual(row[0],'confirmed');self.assertTrue(json.loads(row[1])['verified'])
+        self.assertEqual(self.driver.step(effects[0])['reason'],'retry_delay')
+        self.assertEqual(self.driver.cycle()['items'],[])
+        self.assertEqual(len(self.writes),1)
+
     def test_unobserved_post_is_never_blindly_repeated(self):
         _,effects=self.queue()
         self.github.call.side_effect=GitHubUnavailable('no response')
