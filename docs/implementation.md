@@ -82,8 +82,8 @@ The one-way migration selects one private SQLite database for lifecycle,
 configuration, identity and supporting state. The database uses WAL and FULL
 durability; transactions, revisions and constraints protect local state. Managed
 launchers qualify the SQLite runtime and reject missing or incompatible selected
-state. JSON readers and writers are fenced after selection; the original capture
-is diagnostic only. See [migration and recovery](store-migration.md).
+state. JSON readers and writers are fenced after selection. See
+[schema upgrades](store-migration.md).
 
 This is not a distributed claim service. Do not operate separate controller roots
 against the same repositories. Long-lived App/provider credentials remain

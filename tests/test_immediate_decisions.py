@@ -6,7 +6,7 @@ from unittest.mock import patch
 from forge.factory.issue_actions import decide
 from forge.factory.ledger import DecisionChanged
 from forge.factory.supervisor import Supervisor
-from forge.state import StateError
+from forge.store.files import StateError
 from tests import test_issue_worklist as worklist
 from tests.test_factory_cycle import Engine
 

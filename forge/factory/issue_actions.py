@@ -1,7 +1,6 @@
 """Immediate local decisions, with GitHub side effects owned by the supervisor."""
 from copy import deepcopy
 from pathlib import Path
-import re
 import time
 from urllib.parse import quote
 import uuid
@@ -13,10 +12,9 @@ from .contracts import claims_issue, issue_dependencies, digest
 from .github import GitHub, GitHubUnavailable, own_build_pr
 from .issues import IssueInventory, facts, labels, revision as issue_revision, decision_labels, dependencies, LEGACY_SETUP_REASON
 from .ledger import APPROACH_HOLD, Ledger
+from .store_operator import IMMEDIATE, reviewer_logins
 
 ACTIONS = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway', 'assign_reviewer', 'environment', 'close'}
-IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway'}
-LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
 def decide(root, *, key, action, revision: str, reason, request_id=None, actor_id=None):
@@ -107,22 +105,6 @@ def decide(root, *, key, action, revision: str, reason, request_id=None, actor_i
                      reason=reason.strip(), request=identifier, decision=decision,
                      **({'issues': cleared_dependencies} if action == 'start_anyway' else {}))
     return identifier
-
-
-def reviewer_logins(reason):
-    """The decision for assign_reviewer is the chosen logins, nothing else."""
-    logins = []
-    for value in re.split(r'[\s,;]+', (reason or '').strip()):
-        name = value.lstrip('@')
-        if not name:
-            continue
-        if not LOGIN.fullmatch(name):
-            raise ValueError('Choose GitHub logins for the reviewers.')
-        if name.lower() not in [l.lower() for l in logins]:
-            logins.append(name)
-    if not 1 <= len(logins) <= 10:
-        raise ValueError('Choose between one and ten reviewers.')
-    return logins
 
 
 def request(root, *, key, action, revision: str, reason, request_id=None, environment=None, actor_id=None):

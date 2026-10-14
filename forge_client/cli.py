@@ -47,44 +47,18 @@ def repository_commands():
 
 
 def migration_commands():
-    result = {}
-    for action in ('plan', 'prepare', 'capture', 'resume', 'import', 'verify', 'activate', 'upgrade'):
-        remote = action in ('plan', 'prepare', 'capture', 'resume', 'activate', 'upgrade')
-        names = ('ssh', 'source', 'root') if remote else ('snapshot', 'destination')
-        properties = {name: {'type': 'string'} for name in names}
-        required = list(names)
-        if remote:
-            from .migration import SERVICE_USER_PATTERN
-            properties['service_user'] = {'type': 'string', 'pattern': '^'+SERVICE_USER_PATTERN+'$',
-                'description': 'Existing Unix account owning Forge; default is the SSH account'}
-        if action == 'capture':
-            properties.update(snapshot={'type': 'string'}, apply={'type': 'boolean', 'const': True})
-            required += ['snapshot', 'apply']
-        if action in ('prepare','activate'):
-            properties['apply'] = {'type':'boolean','const':True}
-            required.append('apply')
-        if action == 'activate':
-            properties['source_revision']={'type':'string','pattern':'^[0-9a-f]{40}$',
-                'description':'Required to upgrade a never-started legacy setup; pin the same release as this CLI. plan must report initial_setup=true.'}
-            properties['replace_initial_source']={'type':'boolean','const':True,
-                'description':'Explicitly replace divergent source only for a never-started setup (initial_setup=true), preserving settings and identity. Requires apply and source_revision; ordinary updates remain forward-only.'}
-        if action == 'upgrade':
-            properties.update(apply={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
-        if action == 'resume':
-            properties.update(accept_tool_update={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
-        if not remote:
-            properties['batch'] = {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'default': 100}
-        result[action] = {
-            'usage': 'forge migrate ' + action + ' --json',
-            'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
-            'maintenance': action in ('capture', 'resume', 'activate', 'upgrade'),
-            'installs_private_runtime': action == 'prepare',
-            'activation_supported': action in ('activate','resume'),
-            'initial_source_upgrade': action == 'activate',
-            'target': 'selected SSH host' if remote else 'private local staging',
-        }
-    result['activate']['input_schema']['dependentRequired']={'replace_initial_source':['source_revision']}
-    return result
+    from .migration import SERVICE_USER_PATTERN
+    properties = {name: {'type': 'string'} for name in ('ssh', 'source', 'root')}
+    properties['service_user'] = {'type': 'string', 'pattern': '^'+SERVICE_USER_PATTERN+'$',
+        'description': 'Existing Unix account owning Forge; default is the SSH account'}
+    properties.update(apply={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
+    return {'upgrade': {
+        'usage': 'forge migrate upgrade --json',
+        'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties,
+                         'required': ['ssh', 'source', 'root']},
+        'maintenance': True,
+        'target': 'selected SSH host',
+    }}
 
 
 def parser():
@@ -195,16 +169,13 @@ def parser():
     mode.add_argument('--apply', action='store_true', help='Configure the selected host')
     mode.add_argument('--resume', action='store_true', help='Finish an interrupted setup without another secret')
     setup.add_argument('--secret-stdin', action='store_true', help='Read the identity-app secret from stdin; never a command argument')
-    migration = sub.add_parser('migrate', help='Plan, verify and activate SQLite with a resumable one-way migration')
-    migration.add_argument('migration_command', choices=('plan','prepare','capture','resume','import','verify','activate','upgrade'))
-    for name in ('ssh','source','root','snapshot','destination'):
+    migration = sub.add_parser('migrate', help='Apply a schema upgrade to an installation that already uses SQLite')
+    migration.add_argument('migration_command', choices=('upgrade',))
+    for name in ('ssh','source','root'):
         migration.add_argument('--'+name)
-    migration.add_argument('--apply', action='store_true', help='Authorize runtime preparation, capture, or one-way SQLite activation')
-    migration.add_argument('--accept-tool-update', action='store_true', help='resume: authorize a pinned source-only repair and reimport the same frozen snapshot before selection')
+    migration.add_argument('--apply', action='store_true', help='Authorize the maintenance window and schema upgrade')
     migration.add_argument('--service-user', help='Run remote maintenance as this existing Unix service account; default is the SSH account')
-    migration.add_argument('--source-revision', help='Full commit SHA for an upgrade, initial-setup activation source bridge, or explicitly authorized resume repair')
-    migration.add_argument('--replace-initial-source', action='store_true', help='activate --apply --source-revision: explicitly replace divergent source of a never-started setup, preserving settings and identity')
-    migration.add_argument('--batch', type=int, default=100)
+    migration.add_argument('--source-revision', help='Full commit SHA of the release to upgrade to')
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     sub.add_parser('commands', help='List every command as JSON for agents')
     sub.add_parser('skill', help='Print the bundled Forge repository agent skill')
@@ -246,7 +217,7 @@ def execute(args):
         from .delivery import commands as delivery_commands
         from forge.planning_contract import commands as planning_commands
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),
                 'migration_commands': migration_commands(),

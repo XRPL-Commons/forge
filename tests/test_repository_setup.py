@@ -6,7 +6,7 @@ from forge.repository_setup import RepositorySetup, ruleset, RULESET_NAME, obser
 from forge.factory.config import validate as runtime_config
 from forge.deployments import Deployments
 from forge.factory.github import GitHubUnavailable
-from forge.state import StateError
+from forge.store.files import StateError
 from forge.settings import digest, write_json
 from tests import test_settings as settings_tests
 from tests import test_settings_http as http_tests

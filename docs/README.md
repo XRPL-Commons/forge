@@ -36,7 +36,7 @@ The four operator Help guides (shown in the UI) are marked **Help**.
 ## Storage
 
 - [SQLite store foundation](store-foundation.md)
-- [One-way SQLite migration and upgrades](store-migration.md)
+- [SQLite schema upgrades](store-migration.md)
 
 ## Status and direction
 

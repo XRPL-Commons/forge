@@ -6,37 +6,14 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import tempfile
 
-
-class StateError(RuntimeError):
-    pass
+from .store.files import StateError, atomic_json as _atomic_json
 
 
 def atomic_json(path: Path, value: object) -> None:
     from .legacy_writers import mutation
     with mutation(path):
         _atomic_json(path, value)
-
-
-def _atomic_json(path: Path, value: object) -> None:
-    """Persist replacement and directory entry; interruption leaves old or new JSON."""
-    fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, sort_keys=True, allow_nan=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
 
 
 class AtomicStore:

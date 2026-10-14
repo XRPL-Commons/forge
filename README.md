@@ -16,8 +16,8 @@ the CLI on your computer or your external agent's computer, then use
 
 ### Local CLI
 
-The CLI includes SQLite migration commands. See [the migration guide](docs/store-migration.md)
-for an offline rehearsal or a resumable, one-way `forge migrate activate --apply`.
+The CLI applies schema changes to an installed host with a resumable
+`forge migrate upgrade`. See [the upgrade guide](docs/store-migration.md).
 
 On macOS or Linux with Python 3.10+, Git and
 [uv](https://docs.astral.sh/uv/getting-started/installation/) installed:

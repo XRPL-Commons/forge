@@ -189,8 +189,8 @@ second backend or a generic state setter that bypasses candidate evidence.
 
 The linked standard-library SQLite must contain the WAL reset fix: upstream
 3.51.3 or later, or the qualified 3.44.6/3.50.7 patch series. Installation of the
-runtime library is available through `forge migrate prepare`; managed launchers
-still need to select it during cutover. CI builds checksum-pinned
+runtime library is prepared by `bin/forge setup initialize`, and managed launchers
+select it. CI builds checksum-pinned
 SQLite 3.51.3 and verifies the Python module actually links it.
 
 ```sh
@@ -217,7 +217,7 @@ ordered observations, stale commands and results, rejection replay, concurrent
 failure accounting, cleanup, retention, transaction crashes, disk-full rollback
 and consistent backups. No test copies live state.
 
-The capture/core-import work is described in [the migration guide](store-migration.md).
+Schema upgrades are described in [the upgrade guide](store-migration.md).
 
 ## Remaining #209 work
 

@@ -53,8 +53,7 @@ The plan shows the host, source commit, and effects:
   GitHub administrator token to obtain the private source.
 - Install the matching runner AppArmor policy.
 - Qualify the private SQLite runtime and initialize a selected empty store before
-  starting services. Existing legacy data requires the separate
-  [migration workflow](store-migration.md).
+  starting services.
 - Invoke `bin/forge setup install`, which builds the UI and worker
   image, runs runner qualification, and starts loopback services.
 

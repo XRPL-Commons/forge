@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from forge.operator_auth import (OperatorAuth, AuthError, SESSION_COOKIE, FLOW_COOKIE,
                                  read_cookie, digest, SESSION_SECONDS, github_identity, failure_reason)
-from forge.state import StateError
+from forge.store.files import StateError
 from tests import test_settings_http
 from tests.test_dashboard import dashboard
 

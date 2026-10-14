@@ -714,7 +714,7 @@ class WorklistTests(unittest.TestCase):
         self.assertFalse(any(c[0] != 'GET' for c in self.github.calls))
 
     def test_reviewer_decision_records_github_logins_only(self):
-        from forge.factory.issue_actions import reviewer_logins
+        from forge.factory.store_operator import reviewer_logins
         self.assertEqual(reviewer_logins(' @Maintainer, second-pair  maintainer '), ['Maintainer', 'second-pair'])
         for value in ('', '   ', '@@', 'not a login!', ',', 'a' * 40, ' '.join(str(n) for n in range(11))):
             with self.subTest(value=value), self.assertRaises(ValueError): reviewer_logins(value)

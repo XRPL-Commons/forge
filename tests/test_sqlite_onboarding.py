@@ -10,7 +10,7 @@ from forge.setup_service import Service
 from forge.settings import Settings, digest
 from forge.store.configuration import Configuration
 from forge.sqlite_onboarding import SqliteOnboarding
-from forge.state import StateError
+from forge.store.files import StateError
 
 
 class SqliteSetupTests(unittest.TestCase):

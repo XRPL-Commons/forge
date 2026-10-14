@@ -1,8 +1,7 @@
 """Cross-process writer barrier for the one-way legacy storage cutover.
 
-Operational JSON writers take a shared lease before changing state. Maintenance
-owns the exclusive lease from source capture through SQLite marker publication.
-The durable journal keeps writers fenced if maintenance crashes between stages.
+Operational JSON writers take a shared lease before changing state. The durable
+cutover journal keeps writers fenced while a cutover is incomplete.
 """
 from contextlib import contextmanager
 import fcntl
@@ -73,20 +72,5 @@ def mutation(path, *, allow_drain=None):
             yield
         finally:
             _held.roots = held
-    finally:
-        os.close(fd)
-
-
-@contextmanager
-def exclusive(root):
-    from .store.migration.snapshot import MigrationError
-    root = Path(root).absolute()
-    fd = os.open(root / '.runtime-writers.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise MigrationError('cutover_writers_busy') from None
-        yield
     finally:
         os.close(fd)

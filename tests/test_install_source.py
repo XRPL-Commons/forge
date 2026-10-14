@@ -84,7 +84,7 @@ class SourceTransferTests(unittest.TestCase):
 
     def test_upgrade_transfers_forward_ancestry_without_remote_credentials_or_fetch(self):
         from forge.store.migration.host import Host
-        from forge.store.migration.cutover import package_version
+        from forge.store.migration.upgrade import package_version
         module=self.original/'forge';module.mkdir()
         (module/'__init__.py').write_text('# public source fixture\n')
         self.git(self.original,'add','forge')
@@ -117,83 +117,6 @@ class SourceTransferTests(unittest.TestCase):
         self.assertTrue(any('merge' in argv for argv in started))
         children=[event['argv'] for event in events if event['event']=='child_start']
         self.assertFalse(any('maintenance' in argv or 'gc' in argv for argv in children), children)
-
-    def divergent_initial(self):
-        from forge.store.migration.host import Host
-        from forge.store.migration.cutover import package_version
-        module=self.original/'forge';module.mkdir()
-        (module/'__init__.py').write_text('version="draft"\n')
-        self.git(self.original,'add','forge');self.commit('installed draft')
-        previous=self.git(self.original,'rev-parse','HEAD')
-        installed=self.directory/'draft';installed.mkdir()
-        self.git(installed,'init','--quiet')
-        old=export(previous,run=self.local_run)
-        subprocess.run(['git','-C',str(installed),'index-pack','--stdin'],input=base64.b64decode(old['data']),check=True,capture_output=True)
-        (installed/'.git/shallow').write_text(previous+'\n')
-        self.git(installed,'checkout','--detach',previous)
-        self.git(self.original,'checkout','--detach',self.revision)
-        module.mkdir();(module/'__init__.py').write_text('version="release"\n')
-        (self.original/'release-file').write_text('release content\n')
-        self.git(self.original,'add','.');self.commit('released on main')
-        target=self.git(self.original,'rev-parse','HEAD')
-        root=self.directory/'runtime';(root/'state/onboarding').mkdir(parents=True)
-        (root/'state/onboarding/setup.json').write_text(json.dumps(dict(version=1,generation='initial',phase='setup',operation=None,probe_jobs=[])))
-        host=Host(root,installed);host.identity=lambda:self.git(installed,'rev-parse','HEAD')
-        pack=export(target,previous=previous,replace_initial_source=True,run=self.local_run)
-        journal=dict(authorized=True,stage='source_preparing',manifest='sealed-fixture',initial_source=dict(from_revision=previous,to_revision=target,mode='replace'))
-        (root/'.migration-cutover.json').write_text(json.dumps(journal))
-        return host,previous,target,pack,package_version(self.original)
-
-    def test_explicit_initial_replacement_transfers_full_release_history_and_preserves_local_files(self):
-        from forge_client.contracts import SetupError
-        from forge.store.migration.snapshot import MigrationError
-        host,previous,target,pack,version=self.divergent_initial()
-        with self.assertRaisesRegex(SetupError,'not a verified ancestor'):
-            export(target,previous=previous,run=self.local_run)
-        with self.assertRaisesRegex(MigrationError,'repair_requires_forward_revision'):
-            host.prepare_source_update(previous,target,version,source_pack=pack)
-        (host.source/'private-diagnostic').write_text('retain me')
-        host.prepare_source_update(previous,target,version,source_pack=pack,replace_initial_source=True)
-        self.assertEqual(host.identity(),previous)
-        host.install_source_update(previous,target,replace_initial_source=True)
-        self.assertEqual(host.identity(),target)
-        self.assertEqual(self.git(host.source,'rev-list','HEAD').splitlines(),[target,self.revision,self.parent])
-        self.assertEqual((host.source/'private-diagnostic').read_text(),'retain me')
-        self.assertNotIn('synthetic-github-admin-only-local',(host.source/'.git/config').read_text())
-        self.assertNotIn('fixture.operator-secret',base64.b64decode(pack['data']).decode('latin1'))
-        host.install_source_update(previous,target,replace_initial_source=True)
-
-    def test_initial_replacement_refuses_dirty_checkout_and_untracked_or_ignored_collisions(self):
-        from forge.store.migration.snapshot import MigrationError
-        host,previous,target,pack,version=self.divergent_initial()
-        host.prepare_source_update(previous,target,version,source_pack=pack,replace_initial_source=True)
-        original=(host.source/'README').read_text()
-        (host.source/'README').write_text('local tracked change')
-        with self.assertRaisesRegex(MigrationError,'repair_source_not_clean'):
-            host.install_source_update(previous,target,replace_initial_source=True)
-        (host.source/'README').write_text(original)
-        (host.source/'release-file').write_text('local untracked data')
-        for ignored in (False,True):
-            with self.subTest(ignored=ignored):
-                if ignored:(host.source/'.git/info/exclude').write_text('release-file\n')
-                with self.assertRaises(MigrationError):host.install_source_update(previous,target,replace_initial_source=True)
-                self.assertEqual(host.identity(),previous)
-                self.assertEqual((host.source/'release-file').read_text(),'local untracked data')
-
-    def test_initial_replacement_cannot_bypass_started_or_changed_authority(self):
-        from forge.store.migration.snapshot import MigrationError
-        host,previous,target,pack,version=self.divergent_initial()
-        host.prepare_source_update(previous,target,version,source_pack=pack,replace_initial_source=True)
-        journal=json.loads((host.root/'.migration-cutover.json').read_text())
-        journal['initial_source']['to_revision']='f'*40
-        (host.root/'.migration-cutover.json').write_text(json.dumps(journal))
-        with self.assertRaisesRegex(MigrationError,'initial_source_authority_mismatch'):
-            host.install_source_update(previous,target,replace_initial_source=True)
-        (host.root/'state/storage').write_text('selected')
-        for operation in (lambda:host.prepare_source_update(previous,target,version,source_pack=pack,replace_initial_source=True),
-                          lambda:host.install_source_update(previous,target,replace_initial_source=True)):
-            with self.assertRaisesRegex(MigrationError,'initial_source_requires_never_started_setup'):operation()
-        self.assertEqual(host.identity(),previous)
 
     def test_upgrade_export_rejects_unrelated_source_history(self):
         from forge_client.contracts import SetupError

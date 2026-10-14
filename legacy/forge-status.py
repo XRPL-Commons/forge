@@ -454,7 +454,8 @@ class H(BaseHTTPRequestHandler):
                 result=delivery_request(service,value)
                 self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/action':
-                from forge.factory.issue_actions import decide, IMMEDIATE
+                from forge.factory.issue_actions import decide
+                from forge.factory.store_operator import IMMEDIATE
                 from forge.factory.issues import IssueInventory
                 if not isinstance(value,dict) or set(value) not in ({'key','action','revision','reason'}, {'key','action','revision','reason','request_id'}):
                     raise ValueError('Expected issue, action, current revision, and decision')

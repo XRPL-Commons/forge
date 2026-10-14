@@ -18,7 +18,8 @@ import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
-from forge.state import AtomicStore, StateError
+from forge.state import AtomicStore
+from forge.store.files import StateError
 
 SESSION_COOKIE = '__Host-forge_session'
 FLOW_COOKIE = '__Host-forge_oauth'

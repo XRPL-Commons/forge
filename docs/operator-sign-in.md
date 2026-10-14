@@ -31,7 +31,7 @@ approved by that operator; automatic browser-session expiry does not. The host a
 boundary. On the selected SQLite runtime, identity, sessions, grants and audit
 history live in the private database. The identity client secret is a private,
 digest-checked file under its `credentials/` directory. Follow the
-[store backup procedure](store-migration.md); copying an active WAL database as
+[store backup procedure](factory-runtime-reference.md); copying an active WAL database as
 one ordinary file is not a consistent backup. Missing or invalid initialized
 state fails closed. Reconfigure through the CLI to recover access; do not delete
 the database. Before SQLite selection, the legacy private `state/operator-auth`

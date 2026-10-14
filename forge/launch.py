@@ -36,12 +36,12 @@ def launch(argv=None):
             if prepared:
                 library = prepared['library_directory']
                 if os.environ.get('LD_LIBRARY_PATH') == library:
-                    raise SystemExit('The prepared SQLite runtime did not load; run forge migrate prepare again')
+                    raise SystemExit('The prepared SQLite runtime did not load; run bin/forge setup initialize again')
                 environment = {**os.environ, 'LD_LIBRARY_PATH': library}
                 command = [sys.executable, '-m', 'forge.launch', *(['--script'] if script else []), target, *arguments]
                 os.execve(sys.executable, command, environment)
             elif os.path.lexists(Path(root) / 'state/storage'):
-                raise SystemExit('SQLite runtime qualification is required; run forge migrate prepare')
+                raise SystemExit('SQLite runtime qualification is required; run bin/forge setup initialize')
         from .store.runtime import selected
         selected(root)  # Refuse missing, mismatched or inactive selected state before startup.
     sys.argv = [target, *arguments]
