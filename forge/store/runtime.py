@@ -1,8 +1,8 @@
-"""Explicit runtime selection; an activated instance never falls back to JSON.
+"""Explicit runtime selection: every installation runs on its selected SQLite store.
 
 The private, write-once storage marker locates the database and binds its instance
 identity. Mutable configuration, progress and authorization live in SQLite.
-Only the qualified maintenance cutover may publish this marker.
+Only `bin/forge setup initialize` publishes this marker.
 """
 import os
 from pathlib import Path
@@ -54,12 +54,15 @@ def selected(root):
         return store
 
 
-def require_legacy(path):
-    """Refuse legacy store access below a selected installation, even from old adapters."""
-    path = Path(path).absolute()
-    for parent in (path, *path.parents):
-        if os.path.lexists(parent / 'state/storage'):
-            raise StoreError('legacy_runtime_disabled', 'This installation uses SQLite; legacy state access is disabled')
+SETUP_REQUIRED = 'No SQLite store is selected for this installation; run bin/forge setup initialize'
+
+
+def required(root):
+    """The selected store; an installation without one has not been initialized."""
+    store = selected(root)
+    if store is None:
+        raise StoreError('runtime_unselected', SETUP_REQUIRED)
+    return store
 
 
 def writable(db):
@@ -68,13 +71,8 @@ def writable(db):
 
 
 def control_enabled(root, name):
-    markers = {'factory_active': 'factory-v2.enabled', 'onboarding_active': 'factory-onboarding.enabled',
-               'factory_paused': 'factory-paused.json', 'harness_login_enabled': 'harness-login-enabled.json'}
-    if name not in markers:
+    if name not in {'factory_active', 'onboarding_active', 'factory_paused', 'harness_login_enabled'}:
         raise ValueError('Unknown runtime activation control')
-    store = selected(root)
-    if store is not None:
-        with store.read_snapshot() as db:
-            row = db.execute('SELECT enabled FROM runtime_controls WHERE name=?', (name,)).fetchone()
-            return bool(row and row[0])
-    return (instance_root(root) / 'state' / markers[name]).exists()
+    with required(root).read_snapshot() as db:
+        row = db.execute('SELECT enabled FROM runtime_controls WHERE name=?', (name,)).fetchone()
+        return bool(row and row[0])

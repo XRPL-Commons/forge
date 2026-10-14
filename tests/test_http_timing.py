@@ -52,6 +52,7 @@ class HTTPServerTimingTests(unittest.TestCase):
                     patch.object(dashboard, 'VIEWS', ViewCache(clock=lambda: 1)), \
                     patch('forge.factory.control.factory_view', return_value={'issues': []}) as factory, \
                     patch('forge.factory.control.public_views') as views:
+                selected_store(Path(root))
                 views.return_value.delivery.return_value = {'jobs': []}
                 build = views.return_value.delivery if path.startswith('/api/delivery') else factory
                 first = self.handler(path); first.do_GET()

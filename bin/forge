@@ -10,7 +10,7 @@ Commands:
   setup     Install or configure this host (services, logins, UI)
   update    Update the installed runtime from this checkout
   service   Run the setup supervisor and factory cycle (systemd entry point)
-  factory   Inspect or operate the factory controller
+  factory   verification-configure: opt a repository into CI verification
   settings  Inspect or synchronize GitHub App settings
 USAGE
 }

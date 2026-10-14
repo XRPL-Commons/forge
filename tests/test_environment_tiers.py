@@ -1,19 +1,9 @@
-import copy
-import base64
-import io
-import json
-from pathlib import Path
-import tempfile
 import unittest
-from contextlib import redirect_stdout, redirect_stderr
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from forge.factory.config import validate
 from forge.factory.contracts import result
 from forge.factory.environments import choose, inspect_files, probe, worker_config
-from forge.factory.github import GitHubUnavailable
-from tests import test_factory_cycle as cycle
-from tests.test_issue_worklist import Settings
 
 FULL = {'image': 'sha256:' + 'b' * 64, 'memory': '6g', 'cpus': 3}
 PROFILE = {'services': ['mongodb'], 'evidence': ['api/package.json: mongoose'],
@@ -21,29 +11,6 @@ PROFILE = {'services': ['mongodb'], 'evidence': ['api/package.json: mongoose'],
 
 
 class SelectionTests(unittest.TestCase):
-    def test_probe_has_no_effect_until_its_exact_revision_is_confirmed(self):
-        from forge.factory import control
-        github = Mock()
-        github.target.return_value = 'main'
-        github.call.side_effect = [
-            {'sha': 'a' * 40},
-            {'tree': [{'path': 'package.json', 'type': 'blob', 'size': 50}], 'truncated': False},
-            {'encoding': 'base64', 'size': 50, 'content': base64.b64encode(b'{"dependencies":{"mongoose":"8"}}').decode()},
-        ]
-        with tempfile.TemporaryDirectory() as directory, patch.object(control, 'Settings', return_value=Settings()), \
-                patch.object(control, 'GitHub', return_value=github), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            args = ['--root', directory, '--target', '1']
-            self.assertEqual(control.main(['environment-probe', *args]), 0)
-            self.assertFalse((Path(directory) / 'runtime.json').exists())
-            proposal = json.loads((Path(directory) / 'state/environment-proposals.json').read_text())['1']
-            self.assertEqual(proposal['services'], ['mongodb'])
-            with self.assertRaises(SystemExit):
-                control.main(['environment-confirm', *args, '--revision', 'stale'])
-            self.assertFalse((Path(directory) / 'runtime.json').exists())
-            self.assertEqual(control.main(['environment-confirm', *args, '--revision', proposal['revision']]), 0)
-            config = validate(json.loads((Path(directory) / 'runtime.json').read_text()))
-            self.assertEqual(config['repository_environments']['1']['services'], ['mongodb'])
-
     def test_confirmation_limits_services_and_explicit_labels_win(self):
         item = {'repo_id': 1}
         config = validate({'environment_tiers': {'full': FULL}})
@@ -127,122 +94,9 @@ class SelectionTests(unittest.TestCase):
             probe(github, {'repo': 'example/project', 'repo_id': 1})
 
 
-class ServiceCycleTests(cycle.CycleTest):
-    def setup_services(self, title='Copy-only: update wording', confirmed=True):
-        self.config.update(environment_tiers={'full': FULL}, repository_environments={'1': copy.deepcopy(PROFILE)} if confirmed else {})
-        self.labels = []
-        issue = self.github.issue
-        self.github.issue = lambda item: ({**issue(item)[0], 'title': title, 'labels': [{'name': l} for l in self.labels]}, 'requirements')
-        self.github.environment_label = lambda item, value, label: setattr(self, 'labels', [label])
-
-    def block_services(self, role='build', required=None):
-        job = self.active()
-        report = {'version': 1, 'attempt': job['id'], 'role': role, 'outcome': 'blocked_environment',
-                  'blocker': 'services', 'required_services': required or ['mongodb'], 'summary': 'MongoDB is unavailable'}
-        if role in ('review', 'audit'):
-            report['candidate'] = job['candidate']['key']
-        self.engine.finish(job, report)
-
-    def test_one_escalation_keeps_branch_and_budget_then_holds_on_full(self):
-        self.setup_services()
-        self.assertFalse(self.cycle()['errors'])
-        first = self.active()
-        self.assertEqual(first['runner_config']['environment_tier'], 'standard')
-        self.block_services()
-        self.assertFalse(self.cycle()['errors'])
-        second = self.active()
-        self.assertEqual(second['branch'], first['branch'])
-        self.assertEqual(second['runner_config']['image'], FULL['image'])
-        self.assertEqual(second['runner_config']['memory'], '6g')
-        self.assertEqual(second['runner_config']['services'], ['mongodb'])
-        self.assertEqual(self.labels, ['env:full'])
-        self.block_services()
-        for _ in range(3):
-            self.assertFalse(self.cycle()['errors'])
-        data = self.ledger.read()
-        self.assertEqual(len(data['jobs']), 2)
-        self.assertEqual(data['issues'][self.key]['failures'], [])
-        self.assertEqual(self.state(), 'hold')
-        self.assertEqual(data['issues'][self.key]['environment_hold']['required_services'], ['mongodb'])
-
-    def test_worker_can_request_services_without_repository_confirmation(self):
-        self.setup_services(confirmed=False)
-        self.cycle(); self.block_services(); self.cycle()
-        self.assertEqual(self.state(), 'ready')
-        self.assertEqual(self.active()['runner_config']['services'], ['mongodb'])
-        self.assertEqual(len(self.ledger.read()['jobs']), 2)
-
-    def test_supervisor_assigns_different_environments_in_the_same_repository(self):
-        from forge.factory.supervisor import Supervisor
-        self.setup_services(confirmed=False)
-        second = self.ledger.discover({'id': 1, 'name': 'example/project'}, 2, 'requirements')
-        titles = {1: 'Docs: update README', 2: 'Run API integration tests'}
-        observed = {1: [], 2: []}
-        self.github.issue = lambda item: ({'state': 'open', 'title': titles[item['number']],
-            'labels': [{'name': name} for name in observed[item['number']]]}, 'requirements')
-        self.github.environment_label = lambda item, issue, label: observed.update({item['number']: [label]})
-        supervisor = Supervisor(self.ledger, self.engine, self.github, cycle.Settings(), self.config)
-        with patch.object(supervisor, 'factory_root', return_value=Path(self.temp.name)), \
-                patch('forge.repository_environments.RepositoryEnvironments') as scan:
-            scan.return_value.automatic.return_value = {'services': ['mongodb'], 'head': 'a' * 40, 'evidence': ['package.json: mongodb']}
-            first = supervisor.select_environment(self.ledger.read()['issues'][self.key])
-            other = supervisor.select_environment(self.ledger.read()['issues'][second])
-            scan.return_value.automatic.assert_called_once()
-        self.assertEqual(first['environment_choice']['tier'], 'standard')
-        self.assertEqual(other['environment_choice']['services'], ['mongodb'])
-        self.assertIn('test work', other['environment_choice']['reason'])
-        self.assertEqual(self.config['repository_environments'], {})
-
-    def test_full_worker_can_add_a_missing_service_once(self):
-        self.setup_services(title='Fix MongoDB query', confirmed=False)
-        self.cycle()
-        first = self.active()
-        self.assertEqual(first['runner_config']['services'], ['mongodb'])
-        self.block_services(required=['redis']); self.cycle()
-        self.assertEqual(self.active()['runner_config']['services'], ['mongodb', 'redis'])
-        self.assertEqual(self.active()['branch'], first['branch'])
-        self.block_services(required=['postgres']); self.cycle()
-        self.assertEqual(self.state(), 'hold')
-        self.assertEqual(self.ledger.read()['issues'][self.key]['failures'], [])
-
-    def test_legacy_service_hold_resumes_once_without_approval(self):
-        self.setup_services(confirmed=False)
-        self.cycle()
-        first = self.active()
-        self.ledger.block_environment(first['id'], 'services', 'MongoDB missing', required_services=['mongodb'])
-        with self.ledger.transaction() as data:
-            data['jobs'][first['id']].update(cleanup=True, fenced=True)
-            data['slots'].clear()
-        self.engine.jobs.clear()
-        self.cycle()
-        self.assertEqual(self.active()['runner_config']['services'], ['mongodb'])
-        self.assertEqual(self.active()['branch'], first['branch'])
-
-    def test_explicit_standard_label_prevents_automatic_escalation(self):
-        self.setup_services(title='Run API tests')
-        self.labels = ['env:standard']
-        self.cycle(); self.block_services(); self.cycle()
-        self.assertEqual(self.state(), 'hold')
-        self.assertEqual(self.labels, ['env:standard'])
-
-    def test_a_lost_label_write_resumes_before_reserving_any_job(self):
-        self.setup_services(title='Run API tests')
-        def lost(item, issue, label):
-            self.labels = [label]
-            raise GitHubUnavailable('Lost response after label was written')
-        self.github.environment_label = lost
-        self.cycle()
-        self.assertFalse(self.ledger.read()['jobs'])
-        self.github.environment_label = lambda item, issue, label: setattr(self, 'labels', [label])
-        with self.ledger.transaction() as data:
-            data['issues'][self.key]['retry_after'] = 0
-        self.assertFalse(self.cycle()['errors'])
-        self.assertEqual(self.active()['runner_config']['environment_tier'], 'full')
-        self.assertTrue(self.ledger.read()['issues'][self.key]['environment_choice']['automatic'])
-
+class ServiceResultTests(unittest.TestCase):
     def test_services_result_requires_a_nonempty_supported_list(self):
-        self.cycle()
-        job = self.active()
+        job = {'id': 'attempt-1', 'role': 'build'}
         report = {'version': 1, 'attempt': job['id'], 'role': 'build', 'outcome': 'blocked_environment',
                   'blocker': 'services', 'summary': 'Database missing'}
         for value in [None, [], ['unknown'], ['mongodb', 'mongodb']]:

@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,17 +9,25 @@ from unittest.mock import Mock, patch
 
 from forge.factory.config import validate
 from forge.factory.discussions import Discussions, note
-from forge.factory.sqlite_discussions import SQLiteDiscussions
 from forge.factory.runner import RunnerError
-from forge.store.db import Store
 from forge.store.executions import Executions, provider_available
 from forge.store.models import IdempotencyConflict, TransitionError
+from tests.sqlite_fixture import selected_store
+
+
+@contextmanager
+def requesting(**values):
+    """Replace the selected operator service; yields its request mock (selection on `.selected`)."""
+    service=Mock(); service.request=Mock(**values)
+    with patch('forge.factory.store_operator.selected_service',return_value=service) as selected:
+        service.request.selected=selected
+        yield service.request
 
 
 class DiscussionTests(unittest.TestCase):
     def setUp(self):
         directory=TemporaryDirectory(); self.addCleanup(directory.cleanup)
-        self.root=Path(directory.name); self.store=Store.create(self.root)
+        self.root=Path(directory.name); self.store=selected_store(self.root)
         self.now=1000.0
         Executions(self.store).admit_issue(request_id='admit',actor_id='operator',unit_id='u',issue_id='i',
             repository_id=1,repository_name='example/app',issue_number=2,title='Fix tests',body='Required evidence',requirements='req',observed_at=90)
@@ -45,9 +54,7 @@ class DiscussionTests(unittest.TestCase):
         self.service.drive(job,self.github)
 
     def test_explicit_and_selected_routing_use_normalized_rows(self):
-        self.assertIsInstance(self.service,SQLiteDiscussions)
-        with patch('forge.store.runtime.selected',return_value=self.store):
-            self.assertIsInstance(Discussions(self.root,inventory=self.inventory),SQLiteDiscussions)
+        self.assertEqual(Discussions(self.root,inventory=self.inventory).db.instance_id,self.store.instance_id)
         identifier=self.send()
         with self.store.read_snapshot() as db:
             message=db.execute('SELECT * FROM messages').fetchone()
@@ -109,10 +116,10 @@ class DiscussionTests(unittest.TestCase):
     def test_stale_proposal_action_is_not_applied_by_agent(self):
         job=self.start(); self.finish(job)
         self.assertEqual(self.runner.prepare.call_count,1)
-        with patch('forge.factory.issue_actions.request',return_value='receipt') as request:
+        with requesting(return_value='receipt') as request:
             self.assertEqual(self.service.apply('1:2',job['id'],actor_id='github:999'),'receipt')
-            self.assertEqual(request.call_args.kwargs['revision'],'revision-a')
-            self.assertEqual(request.call_args.kwargs['actor_id'],'github:999')
+            self.assertEqual(request.call_args.args[1:3],('retry','revision-a'))
+            self.assertEqual(request.selected.call_args.kwargs['actor_id'],'github:999')
             self.assertEqual(request.call_args.kwargs['request_id'],job['id'])
             with self.assertRaises(IdempotencyConflict):self.service.apply('1:2',job['id'])
             self.assertEqual(request.call_count,1)
@@ -127,7 +134,7 @@ class DiscussionTests(unittest.TestCase):
     def closing(self,text,close_now=True,closable=True):
         self.row.update(closable=closable)
         job=self.start(text)
-        with patch('forge.factory.issue_actions.request',return_value='close-receipt') as request:
+        with requesting(return_value='close-receipt') as request:
             self.finish(job,summary='Closed. You can undo it.',proposal={'action':'close','reason':'Blocked by workflow permissions.'},close_now=close_now)
         return job,request,self.service.view('1:2')['messages'][-1]
 
@@ -162,9 +169,9 @@ class DiscussionTests(unittest.TestCase):
             self.assertEqual(metadata['action_intent']['actor_id'],'github:123')
             self.assertEqual(db.execute('SELECT completed FROM discussion_runtime WHERE execution_id=?',(job['id'],)).fetchone()[0],1)
         self.assertEqual(self.service.view('1:2')['messages'][-1]['action_state']['status'],'preparing')
-        with patch('forge.factory.issue_actions.request',return_value=job['id']) as request:
+        with requesting(return_value=job['id']) as request:
             self.service.tick(self.config,self.github,self.settings,launch=False)
-        self.assertEqual(request.call_args.kwargs['actor_id'],'github:123')
+        self.assertEqual(request.selected.call_args.kwargs['actor_id'],'github:123')
         self.assertEqual(request.call_args.kwargs['request_id'],job['id'])
         self.assertFalse(self.service.active_jobs())
 
@@ -212,7 +219,7 @@ class DiscussionTests(unittest.TestCase):
     def test_failed_close_keeps_the_card_with_why(self):
         self.row.update(closable=True)
         job=self.start('close this issue')
-        with patch('forge.factory.issue_actions.request',side_effect=TransitionError('A fresh open issue observation is required')):
+        with requesting(side_effect=TransitionError('A fresh open issue observation is required')):
             self.finish(job,proposal={'action':'close','reason':'No longer needed.'},close_now=True)
         reply=self.service.view('1:2')['messages'][-1]
         self.assertEqual((reply['proposal']['action'],reply['action_state']['status'],reply['action_state']['message']),('close','rejected','A fresh open issue observation is required'))

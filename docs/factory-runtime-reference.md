@@ -1,6 +1,6 @@
 # Running the durable factory — reference
 
-Technical runtime reference, including selected SQLite operation and pre-cutover compatibility. Start with [Workers, accounts and merging](factory-runtime.md).
+Technical runtime reference for the selected SQLite runtime. Start with [Workers, accounts and merging](factory-runtime.md).
 
 For lifecycle diagrams, waiting reasons and operator actions, see the
 [issue state machine and blockers](issue-state-machine.md).
@@ -9,8 +9,8 @@ The implementation lives in `forge/factory`; it is Forge's only operating mode. 
 `forge-ui` service on the tailnet address, and `forge-status` serves only the JSON
 API on localhost; see [UI deployment](ui-deployment.md). Settings edits versioned
 configuration through the selected storage authority, with validation and conflict
-detection. On migrated instances, `factory.json` and `runtime.json` are logical
-configuration domain names in SQLite, not mutable files.
+detection. `factory.json` and `runtime.json` are logical configuration domain
+names in SQLite, not mutable files.
 
 Queue, Pause, Return to backlog, Release hold, Retry and Recheck readiness apply
 through durable, revision-checked decisions in the selected store. The API returns
@@ -75,8 +75,7 @@ waiting does not consume the issue failure budget or its execution timeout.
 
 An 8 GiB host with 4 GiB workers can normally admit only one worker. Increasing
 role limits cannot override available memory. Larger hosts can admit more workers.
-The legacy `max_running` value is accepted for compatibility but ignored and omitted
-from normalized runtime settings. Operators configure only the per-role limits.
+Operators configure only the per-role limits; a `max_running` total is refused.
 This is admission control, not a reservation against unrelated host processes:
 external processes may still grow after the check. Per-container hard limits remain.
 
@@ -315,19 +314,15 @@ python3 -m unittest discover -s tests -v
 Run the real App/authenticated workflow on a selected pilot repository before
 expanding access.
 
-Guided setup's Start activates the factory. For a CLI-only installation, the commands
-below do the same. The setup supervisor and the CLI share `state-supervisor.lock`, and
-the selected store's `factory_active` runtime control records activation. The
-`state/factory-v2.enabled` marker applies only before SQLite selection. Do not
-operate two separate runtime roots against the same repositories: the file lock
-is local, not a distributed claim.
+Guided setup's Start activates the factory; the selected store's `factory_active`
+runtime control records activation. The setup supervisor (`bin/forge service`) runs
+the factory cycle and holds `state-supervisor.lock`. Do not operate two separate
+runtime roots against the same repositories: the file lock is local, not a
+distributed claim.
 
 ```sh
-bin/forge factory validate --root /var/lib/forge
+bin/forge settings validate --root /var/lib/forge
 bin/forge settings sync --root /var/lib/forge
-bin/forge factory activate --root /var/lib/forge
-bin/forge factory once --root /var/lib/forge
-bin/forge factory run --root /var/lib/forge
 ```
 
 Keep `enabled` and `merge_enabled` false until the image, access and pilot are
@@ -341,13 +336,7 @@ It does not delete or guess ownership of an existing PR.
 
 Use the card's Stop/Reset control for an execution and Retry for a held/failed
 issue. Each action has an explanatory confirmation and records a reason. Reset
-never deletes GitHub publications. CLI equivalents queue the same durable requests:
-
-```sh
-bin/forge factory stop --root /var/lib/forge --target EXECUTION_UUID --reason 'Operator cancellation'
-bin/forge factory reset --root /var/lib/forge --target EXECUTION_UUID --reason 'Reset failed execution'
-bin/forge factory retry --root /var/lib/forge --target REPOSITORY_ID:ISSUE_NUMBER --reason 'Describe the correction'
-```
+never deletes GitHub publications.
 
 Three failures across the issue stop automatic work. Investigations still run
 when the third failure is reached. Two matching failure patterns require a concrete,

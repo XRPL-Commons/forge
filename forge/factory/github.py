@@ -1,12 +1,11 @@
 """Role-scoped GitHub effects and authoritative evidence, never terminal inference."""
 import json
-import base64
 import re
 from datetime import datetime
 import time
 from urllib.parse import quote
 
-from ..app_access import AppClient, AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
+from ..app_access import AccessError, OPTIONAL_PERMISSIONS, ROLE_PERMISSIONS
 from .contracts import SHA, candidate, digest, submission
 from ..repository_policy import protection_ready
 from ..request_metrics import RequestBudgetExhausted, deadline as request_deadline
@@ -431,25 +430,6 @@ class GitHub:
             raise GitHubUnavailable('Published check has not been verified')
         return verified[0]['id']
 
-    def settle_checks(self, item, candidate_value, summary):
-        """Conclude Forge's still-running checks on a candidate that stopped moving.
-
-        A held or failed issue otherwise left forge/audit and forge/merge-policy
-        'in progress' for weeks (tokenlab PR #28). 'cancelled' still blocks a
-        required check, unlike 'neutral'; a resumed attempt publishes afresh."""
-        roles = {'forge/review': 'review', 'forge/audit': 'audit', 'forge/merge-policy': 'controller'}
-        runs = self.pages('controller', item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
-        settled = 0
-        for run in runs:
-            role = roles.get(run.get('name'))
-            if not role or run.get('status') == 'completed' or run.get('app', {}).get('id') != self.connection(role)['app_id']:
-                continue
-            self.call(role, item, 'PATCH', '/check-runs/' + str(run['id']), {
-                'status': 'completed', 'conclusion': 'cancelled',
-                'output': {'title': run['name'] + ': stopped', 'summary': summary[:60000]}})
-            settled += 1
-        return settled
-
     def verdict(self, job, report, *, observe_only=False):
         candidate_value = job['candidate']
         marker = '<!-- forge-verdict ' + job['id'] + ' -->'
@@ -694,15 +674,6 @@ class GitHub:
             raise GitHubUnavailable(f"GitHub refused to merge {item['repo']}#{candidate_value['pr']}: {why}",
                                     status=error.status) from None
         return value.get('merged') is True
-
-    def close_merged_issue(self, item, issue):
-        """Only called after independently observing the assigned PR as merged."""
-        if issue['state'] == 'open':
-            self.call('controller', item, 'PATCH', f"/issues/{item['number']}",
-                      {'state': 'closed', 'state_reason': 'completed'})
-            current = self.call('controller', item, 'GET', f"/issues/{item['number']}")
-            if current.get('state') != 'closed':
-                raise GitHubUnavailable('Merged issue closure has not been verified')
 
     def labels(self, item):
         wanted = 'forge:' + item['state']

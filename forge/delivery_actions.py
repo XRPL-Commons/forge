@@ -28,7 +28,6 @@ class ClientDelivery:
         fields(value,common|({'key','action'} if value.get('action')=='inspect' else {'key','action','revision','reason','membership','request_id'}))
         grant=self.clients.authorize(token,value['repository'],capability,value['instance'],value['generation'])
         service=selected_service(self.root,actor_id=f"github:{grant['operator']['id']}:client:{grant['id']}")
-        need(service is not None,'setup_required','Select the SQLite runtime before changing deliveries.',409)
         with self.clients.effect_guard(token,value['instance'],value['generation']):
             with service.store.read_snapshot() as db:
                 issue=Queries._issue(db,value['key'])

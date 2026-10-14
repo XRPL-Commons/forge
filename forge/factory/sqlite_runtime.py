@@ -6,7 +6,7 @@ from ..credentials import Credentials
 from ..settings import Settings
 from ..store.executions import Executions, ExecutionQueries
 from ..store.models import Command
-from ..store.runtime import selected
+from ..store.runtime import required
 from ..store.transitions import manifest_hash
 from .config import load, policy, validate
 from .github import GitHub
@@ -24,9 +24,7 @@ from .sqlite_supervisor import SqliteSupervisor
 
 
 def components(root, *, config=None, runner=None, github=None, settings=None, clock=time.time, dispatch=True):
-    store = selected(root)
-    if store is None:
-        raise ValueError('SQLite runtime has not been selected')
+    store = required(root)
     settings = settings or Settings(root, clock=clock)
     config = validate(config if config is not None else load(root))
     if not dispatch or settings.paused():
@@ -108,7 +106,7 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
             from ..deployments import Deployments
             from .live import read_commit
             adapter = Deployments(root, runner=None, github=parts['github'], settings=parts['settings'], clock=clock)
-            errors = adapter.observe(parts['github'], None, read_commit)
+            errors = adapter.observe(parts['github'], read_commit)
             return {'items': [{'repo': row['repo'], 'error': 'deployment_observation_unavailable'} for row in errors], 'next_cursor': None}
     supervisor = SqliteSupervisor(parts['store'], **{key: parts[key] for key in
         ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'reconciliation', 'planning', 'triage_effects')},

@@ -80,12 +80,25 @@ class LauncherTests(unittest.TestCase):
     def test_qualified_start_checks_selected_store_before_script(self):
         events = []
         with patch('forge.store.db.qualified_sqlite', return_value=True), \
-                patch('forge.store.runtime.selected', side_effect=lambda root: events.append('selected')), \
+                patch('forge.store.runtime.selected', side_effect=lambda root: events.append('selected') or object()), \
                 patch('forge.launch.runpy.run_path', side_effect=lambda *a, **k: events.append('script')):
             launch(['--script', '/source/status.py', '--root', str(self.root)])
         self.assertEqual(events, ['selected', 'script'])
         with self.assertRaises(SystemExit):
             launch(['unrelated.module'])
+
+    def test_unselected_root_starts_only_host_setup(self):
+        with patch('forge.store.db.qualified_sqlite', return_value=True), \
+                patch('forge.launch.runpy.run_path') as script, patch('forge.launch.runpy.run_module') as start:
+            for arguments in (['--script', '/source/status.py', '--root', str(self.root)],
+                              ['forge.setup_service', '--root', str(self.root)]):
+                with self.subTest(arguments=arguments), \
+                        self.assertRaisesRegex(SystemExit, 'No SQLite store is selected'):
+                    launch(arguments)
+            script.assert_not_called()
+            start.assert_not_called()
+            launch(['forge.host_setup', '--root', str(self.root)])
+            self.assertEqual(start.call_args.args[0], 'forge.host_setup')
 
 
 

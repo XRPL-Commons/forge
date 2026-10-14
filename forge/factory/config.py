@@ -1,11 +1,9 @@
 """Operator-editable runtime policy, separate from credentials and GitHub discovery."""
-import json
 from copy import deepcopy
 from pathlib import Path
 import re
 
 from .contracts import ROLES
-from ..settings import read_json
 from ..harnesses.registry import manifests
 
 # The single source of runtime defaults: guided setup, examples and docs follow it
@@ -49,10 +47,9 @@ def validate(value):
 
 
 def _validate(value, installed):
-    if not isinstance(value, dict) or set(value) - (set(DEFAULT) | {'max_running'}):
+    if not isinstance(value, dict) or set(value) - set(DEFAULT):
         raise ValueError('Unknown runtime settings')
-    # Older installations carry a manual total. Memory admission replaces it.
-    config = deepcopy({**DEFAULT, **{key: item for key, item in value.items() if key != 'max_running'}})
+    config = deepcopy({**DEFAULT, **value})
     if type(config['version']) is not int or config['version'] != 1:
         raise ValueError('Expected runtime version 1')
     if config['provider'] not in installed:

@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from forge.configuration_authority import ConfigurationAuthority
 from tests import test_onboarding as setup_tests
 
 
@@ -25,7 +26,7 @@ class QualificationReuseTests(unittest.TestCase):
         service.github_class.return_value.protection_report.return_value['bypass'] = {'status': 'missing'}
         self.setup.queue('start', self.setup.view()['revision'])
         service.tick()
-        self.assertFalse((self.root / 'state/factory-v2.enabled').exists())
+        self.assertFalse(ConfigurationAuthority(self.root).active())
         self.assertIn('protection needs attention', self.setup.view()['error'])
 
     def test_fresh_repository_recheck_does_not_run_paid_probes(self):
@@ -45,7 +46,7 @@ class QualificationReuseTests(unittest.TestCase):
         with self.setup.store.transaction() as data:data['qualification']['at']-=901
         self.setup.queue('start',self.setup.view()['revision'])
         service.tick()
-        self.assertFalse((self.root/'state/factory-v2.enabled').exists())
+        self.assertFalse(ConfigurationAuthority(self.root).active())
         self.assertIn('expired',self.setup.view()['error'])
 
     def test_explicit_account_requalification_invalidates_old_evidence(self):

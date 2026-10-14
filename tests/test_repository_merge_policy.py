@@ -5,14 +5,13 @@ import tempfile
 import unittest
 from unittest.mock import Mock,patch
 
-from forge.factory.config import DEFAULT,validate,policy,merge_mode,legacy_merge_policies,load
+from forge.factory.config import validate,policy,merge_mode,legacy_merge_policies,load
 from forge.repository_merge_policy import ClientMergePolicy
 from forge.settings import Settings,DEFAULT as SETTINGS_DEFAULT,digest
 from forge.store.configuration import Configuration
 from forge.store import db as storage,upgrade
 from forge_client.merge_policy import execute
 from tests import test_client_connections as connections
-from tests import test_sqlite_identity as identity_tests
 
 
 class PolicyModelTests(unittest.TestCase):
@@ -65,7 +64,7 @@ class PolicyModelTests(unittest.TestCase):
 
 class PolicyAuthorityTests(connections.Fixture):
     def setUp(self):
-        identity_tests.SqliteConnectionTests.setUp(self)
+        super().setUp()
         self.settings=Settings(self.root,clock=lambda:self.now)
         self.settings.save_config({**deepcopy(SETTINGS_DEFAULT),'repositories':[{**self.target,'enabled':False}]})
         self.policy=ClientMergePolicy(self.settings,self.service)

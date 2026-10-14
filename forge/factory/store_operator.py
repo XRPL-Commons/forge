@@ -794,9 +794,8 @@ class OperatorActions(Lifecycle):
 
 
 def selected_service(root, *, actor_id=None):
-    """Build HTTP/CLI services only after explicit runtime selection."""
-    from ..store.runtime import selected
-    store=selected(root)
-    if store is None:return None
+    """Build HTTP/CLI services over the selected store."""
+    from ..store.runtime import required
+    required(root)
     from .sqlite_runtime import operator_actions
     return operator_actions(root,actor_id)

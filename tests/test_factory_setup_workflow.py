@@ -10,17 +10,17 @@ from unittest.mock import Mock, patch
 from forge.installation_apps import RoleAppHandoff
 from forge.installation_setup import InstallationSetup
 from forge_client.contracts import SetupError
-from forge_client.factory_setup import FactorySetup, execute
+from forge_client.factory_setup import FactorySetup
 from forge_client.install import Installation
 from forge_client.metrics import first_merge_timing
 from forge_client.workflow import Journal
-from tests import test_sqlite_onboarding as sql_setup
+from tests import test_onboarding as sql_setup
 
 
 class SetupStageTests(unittest.TestCase):
     def setUp(self):
-        sql_setup.SqliteSetupTests.setUp(self)
-        sql_setup.SqliteSetupTests.connected(self)
+        sql_setup.SetupTests.setUp(self)
+        sql_setup.SetupTests.connected(self)
         config = self.setup.runtime(); config['image'] = 'sha256:'+'a'*64
         self.setup.save_runtime(config, active=False)
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
@@ -41,7 +41,7 @@ class SetupStageTests(unittest.TestCase):
         with self.assertRaises(SetupError): self.factory.check(start=True, apply=True)
         checking = self.factory.check(apply=True)
         self.assertEqual(checking['status'], 'checking')
-        service, engine, resets = sql_setup.SqliteSetupTests.service(self)
+        service, engine, resets = sql_setup.SetupTests.service(self)
         for _ in range(30):
             if not self.setup.read()['operation']: break
             service.tick()

@@ -17,11 +17,12 @@ from contextlib import contextmanager
 
 from . import host_update
 from .onboarding import Onboarding
-from .settings import read_json, write_json
+from .settings import write_json
 from .setup_service import Service
 from .factory.control import controller_lock, ControllerBusy
 from .harnesses.registry import manifests, manifest
 from .harnesses.accounts import owner as login_owner
+from .store.db import StoreError
 from .store.files import StateError
 
 SOURCE = Path(__file__).resolve().parent.parent
@@ -288,17 +289,10 @@ def connect_login(root, provider, *, api_key=False, token=False, import_login=No
                 raise ValueError('Forge was reset during login; reconnect from the current setup')
             setup.connect(provider, api_key=secret if kind == 'api_key' else None, token=secret if kind == 'token' else None,
                           auth_value=value, models=models)
-            from .store.runtime import selected, writable
-            database = selected(root)
-            ledger = root / 'state/factory/factory-ledger.json'
-            if database is not None:
-                with database.write() as db:
-                    writable(db)
-                    db.execute('DELETE FROM provider_cooldowns WHERE provider=?', (provider,))
-            elif ledger.exists():
-                from .factory.ledger import Ledger
-                with Ledger(ledger.parent).transaction() as data:
-                    data.get('provider_cooldowns', {}).pop(provider, None)
+            from .store.runtime import required, writable
+            with required(root).write() as db:
+                writable(db)
+                db.execute('DELETE FROM provider_cooldowns WHERE provider=?', (provider,))
             (setup.credentials.root / ('pending-login-' + provider + '.json')).unlink(missing_ok=True)
     except ControllerBusy:
         raise ValueError('Sign-in is saved, but the supervisor is still busy. Rerun the same login command to finish; you will not need to sign in again.') from None
@@ -425,8 +419,8 @@ def main():
             print('Continue GitHub setup at http://' + host_update.Record(root).data['bind'] + ':8787/onboarding')
             print('For a remote VM, forward port 8787 over SSH to reach the loopback dashboard.')
         return 0
-    except (OSError, ValueError, StateError, subprocess.SubprocessError) as error:
-        print('Setup did not finish: ' + (str(error) if isinstance(error, (ValueError, StateError)) else 'Host command failed; correct it and rerun setup.'), file=sys.stderr)
+    except (OSError, ValueError, StateError, StoreError, subprocess.SubprocessError) as error:
+        print('Setup did not finish: ' + (str(error) if isinstance(error, (ValueError, StateError, StoreError)) else 'Host command failed; correct it and rerun setup.'), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print('\nSetup interrupted. Saved connections are retained; rerun setup to continue.', file=sys.stderr)

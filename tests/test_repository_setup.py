@@ -7,19 +7,49 @@ from forge.factory.config import validate as runtime_config
 from forge.deployments import Deployments
 from forge.factory.github import GitHubUnavailable
 from forge.store.files import StateError
-from forge.settings import digest, write_json
+from forge.settings import digest
 from tests import test_settings as settings_tests
 from tests import test_settings_http as http_tests
-from tests.test_dashboard import dashboard
-from tests import test_factory_cycle as cycle_tests
+from tests.test_dashboard import dashboard, signed_in
+from tests.sqlite_fixture import selected_store
+
+
+def settings_setup(test):
+    """Live settings on a selected store with every role discovering one repository."""
+    import tempfile
+    from pathlib import Path
+    from forge.app_access import ROLE_PERMISSIONS
+    from forge.settings import Settings, ROLES
+    test.temp = tempfile.TemporaryDirectory(); test.addCleanup(test.temp.cleanup)
+    test.root = Path(test.temp.name)
+    test.database = selected_store(test.root, getattr(test, 'instance_id', None))
+    test.client = Mock()
+    test.now = 1000
+    test.settings = Settings(test.root, client=test.client, clock=lambda: test.now)
+    test.config = settings_tests.configured()
+    test.settings.save_config(test.config)
+    def discover(connection):
+        role = ROLES[connection['app_id'] - 1]
+        return {'repositories': [{'id': 10, 'name': 'example/project', 'archived': False}],
+                'permissions': ROLE_PERMISSIONS[role], 'account': 'example',
+                'app_slug': 'example-' + role,
+                'installation_url': 'https://github.com/settings/installations/101'}
+    test.client.discover.side_effect = discover
+
+
+def pause(database):
+    """Fence the factory the way a reset does."""
+    from forge.onboarding import control_in
+    with database.write() as db:
+        control_in(db, 'factory_paused', True, 1)
 
 
 class RepositorySetupTests(unittest.TestCase):
     def setUp(self):
-        settings_tests.SettingsTests.setUp(self)
+        settings_setup(self)
         self.settings.refresh()
         config=self.settings.load();config['repositories']=[{'id':10,'name':'example/project','enabled':True}]
-        write_json(self.settings.path,config)  # Existing enabled installation, before checks.
+        self.settings.save_config(config)  # Existing enabled installation, before checks.
         self.github = Mock()
         self.github.return_value.target.return_value = 'release/v2'
         self.github.return_value.pages.return_value = []
@@ -66,7 +96,7 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertEqual(row['protection_last_known'], original)
         self.assertFalse(row['protection_ready'])
         config = self.settings.load();config['connections']['build']['app_id'] = 99
-        write_json(self.settings.path, config)
+        self.settings.save_config(config)
         self.assertIsNone(self.service.view(10)['repositories'][0]['protection_last_known'])
 
     def test_stale_wrong_identity_and_config_changes_cannot_download(self):
@@ -79,7 +109,7 @@ class RepositorySetupTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.service.download(10, revision)
         self.now-=301
         config=self.settings.load();config['connections']['build']['app_id']=99
-        write_json(self.settings.path,config)
+        self.settings.save_config(config)
         with self.assertRaises(ValueError): self.service.download(10,revision)
 
     def test_existing_ruleset_links_to_edit_and_missing_requirements_download(self):
@@ -104,17 +134,17 @@ class RepositorySetupTests(unittest.TestCase):
         with self.settings.locked('repository-check'):
             self.assertFalse(self.service.check(10))
         config=self.settings.load()
-        write_json(self.service.path,{'repositories':{'10':{'revision':observation_key(config,{'id':10,'name':'example/project'}),'name':'example/project','status':'checking','started_at':self.now-121}}})
+        self.service.save_observation(10,{'repositories':{'10':{'revision':observation_key(config,{'id':10,'name':'example/project'}),'name':'example/project','status':'checking','started_at':self.now-121}}})
         self.assertEqual(self.service.view(10)['repositories'][0]['protection_status'],'unknown')
 
     def test_batch_failure_does_not_hide_other_repository_or_branch_change(self):
         observed=self.settings.observation()
         for role in observed['roles'].values():
             role['repositories'].append({'id':11,'name':'example/second','archived':False})
-        write_json(self.settings.state/'access.json',observed)
+        self.settings.save_observation(observed)
         config=self.settings.load()
         config['repositories'].append({'id':11,'name':'example/second','enabled':True})
-        write_json(self.settings.path,config)  # Simulate a second pre-existing enabled repository.
+        self.settings.save_config(config)  # Simulate a second pre-existing enabled repository.
         self.github.return_value.target.side_effect=[ValueError('Unavailable'),'release/v2']
         self.service.check()
         rows=self.service.view()['repositories']
@@ -130,11 +160,11 @@ class RepositorySetupTests(unittest.TestCase):
         self.service.check(10)
         config=self.settings.load()
         config['repositories'].append({'id':11,'name':'example/other','enabled':False})
-        write_json(self.settings.path,config)
+        self.settings.save_config(config)
         self.assertTrue(self.service.view(10)['repositories'][0]['protection_ready'])
 
     def test_enable_requires_fresh_setup_and_preserves_config_on_failure(self):
-        config=self.settings.load();config['repositories']=[];write_json(self.settings.path,config)
+        config=self.settings.load();config['repositories']=[];self.settings.save_config(config)
         revision=digest(config)
         with self.assertRaisesRegex(ValueError,'finish repository setup'):
             self.service.enable(10,revision)
@@ -153,8 +183,10 @@ class RepositorySetupTests(unittest.TestCase):
     def test_disable_preserves_other_settings_even_without_access_or_rules(self):
         config = self.settings.load()
         config['repositories'].append({'id': 11, 'name': 'example/other', 'enabled': False})
-        write_json(self.settings.path, config)
-        write_json(self.settings.state / 'access.json', {'roles': {}})
+        self.settings.save_config(config)
+        with self.database.write() as db:  # No role can see any repository.
+            db.execute('DELETE FROM access_repository_observations')
+            db.execute('DELETE FROM access_role_observations')
         result = self.service.disable(10, digest(config))
         config['repositories'][0]['enabled'] = False
         self.assertEqual(self.settings.load(), config)
@@ -169,7 +201,7 @@ class RepositorySetupTests(unittest.TestCase):
     def test_disable_records_a_discovered_repository_without_a_config_row(self):
         config = self.settings.load()
         config['repositories'] = []
-        write_json(self.settings.path, config)
+        self.settings.save_config(config)
         self.service.disable(10, digest(config))
         config['repositories'] = [{'id': 10, 'name': 'example/project', 'enabled': False}]
         self.assertEqual(self.settings.load(), config)
@@ -187,7 +219,7 @@ class RepositorySetupTests(unittest.TestCase):
         config['repositories'].append({'id': 11, 'name': 'example/other', 'enabled': False})
         save = self.settings.save
         def concurrent_save(candidate, expected):
-            write_json(self.settings.path, config)
+            self.settings.save_config(config)
             return save(candidate, expected)
         with patch.object(self.settings, 'save', side_effect=concurrent_save):
             with self.assertRaisesRegex(ValueError, 'changed'):
@@ -199,13 +231,13 @@ class RepositorySetupTests(unittest.TestCase):
         with patch.object(self.settings, 'scope', 'setup'):
             with self.assertRaisesRegex(ValueError, 'Finish initial Forge setup'):
                 self.service.disable(10, digest(config))
-        write_json(self.settings.root / 'state/factory-paused.json', {})
+        pause(self.database)
         with self.assertRaisesRegex(ValueError, 'reset is in progress'):
             self.service.disable(10, digest(config))
         self.assertEqual(self.settings.load(), config)
 
     def test_unknown_missing_rules_and_access_cannot_enable(self):
-        config=self.settings.load();config['repositories']=[];write_json(self.settings.path,config)
+        config=self.settings.load();config['repositories']=[];self.settings.save_config(config)
         revision=digest(config)
         for available, passed in [(False,True),(True,False)]:
             self.github.return_value.protection_report.return_value.update(available=available, requirements=[{'id':'reviews','passed':passed}])
@@ -215,7 +247,7 @@ class RepositorySetupTests(unittest.TestCase):
         self.github.return_value.protection_report.return_value.update(available=True,requirements=[{'id':'reviews','passed':True}])
         self.service.check(10)
         observed=self.settings.observation();observed['roles']['audit']['repositories']=[]
-        write_json(self.settings.state/'access.json',observed)
+        self.settings.save_observation(observed)
         with self.assertRaisesRegex(ValueError,'verify access'):self.service.enable(10,revision)
         self.assertEqual(self.settings.load(),config)
 
@@ -228,16 +260,17 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertFalse(self.settings.load()['repositories'][0]['enabled'])
 
     def test_view_exposes_app_actions_without_credentials(self):
-        write_json(self.settings.root/'state/onboarding/setup.json',{'apps':{'audit':{
-            'install_url':'https://github.com/apps/forge-audit/installations/new',
-            'connection':{'app_id':3,'private_key':'never expose'}}}})
+        registration={'apps':{'audit':{'install_url':'https://github.com/apps/forge-audit/installations/new',
+                                       'connection':{'app_id':3,'private_key':'never expose'}}}}
+        with self.database.write() as db:
+            db.execute("INSERT INTO setup_instances VALUES('live','g1','active','','',?,1)",(json.dumps(registration),))
         view=self.service.view(10)
         self.assertEqual(view['connections']['audit']['install_url'],'https://github.com/apps/forge-audit/installations/new')
         self.assertEqual(view['connections']['build']['installation_url'],'https://github.com/settings/installations/101')
         self.assertNotIn('connection',view['connections']['audit'])
         self.assertTrue(view['activation_available'])
         config=self.settings.load();config['connections']['audit']['app_id']=90
-        write_json(self.settings.path,config)
+        self.settings.save_config(config)
         self.assertIsNone(self.service.view(10)['connections']['audit']['install_url'])
 
     def proposal(self, **overrides):
@@ -394,16 +427,6 @@ class RepositorySetupTests(unittest.TestCase):
         self.github.return_value.file_issue.assert_called_once()
         self.assertEqual(self.settings.load()['repositories'][0]['deployment']['exposure_issue'], 41)
 
-    def test_a_malformed_deployment_store_does_not_take_down_the_settings_page(self):
-        path = self.settings.root / 'state' / 'deployments.json'
-        path.parent.mkdir(parents=True, exist_ok=True)
-        for text in ('{"repositories": []}', '[]', 'not json', '{"repositories": {"10": "broken"}}', '{}'):
-            path.write_text(text)
-            row = self.settings.view()['repositories'][0]
-            self.assertEqual(row['deployment']['status'], 'idle')
-            self.assertIsNone(row['deployment']['proposal'])
-            self.assertFalse(row['deployment']['reread_requested'])
-
     def test_a_disabled_repository_cannot_confirm_a_deployment_profile(self):
         self.propose()
         config = self.settings.load(); config['repositories'][0]['enabled'] = False
@@ -415,16 +438,14 @@ class RepositorySetupTests(unittest.TestCase):
         self.github.return_value.file_issue.assert_not_called()
 
     def test_reading_proposals_never_creates_deployment_state(self):
-        from forge.settings import Settings
-        root = self.settings.root / 'fresh'
-        service = RepositorySetup(Settings(root, client=self.client, clock=self.settings.clock))
-        self.assertEqual(service.proposals(), {})
-        self.assertFalse((root / 'state').exists())
+        self.assertEqual(self.service.proposals(), {})
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM deployment_profiles').fetchone()[0], 0)
 
     def test_guided_setup_cannot_confirm_a_deployment_profile(self):
         from forge.settings import Settings
         setup = Settings(self.settings.root / 'setup', client=self.client, clock=self.settings.clock)
-        write_json(setup.path, self.settings.load())
+        setup.save_config(self.settings.load())
         self.propose()
         with self.assertRaisesRegex(ValueError, 'Finish initial Forge setup'):
             RepositorySetup(setup, github_class=self.github).deployment(
@@ -444,7 +465,7 @@ class RepositorySetupTests(unittest.TestCase):
         # Evidence from before this release cannot keep a known blocker ready.
         data = self.service.read()
         data['repositories']['10']['status'] = 'ready'
-        write_json(self.service.path, data)
+        self.service.save_observation(10, data)
         self.assertEqual(self.service.view(10)['repositories'][0]['protection_status'], 'needs_setup')
         self.service.disable(10, digest(self.settings.load()))
         with self.assertRaisesRegex(ValueError, 'finish repository setup'):
@@ -469,8 +490,15 @@ class RepositorySetupTests(unittest.TestCase):
 
 
 class RepositoryHTTPTests(unittest.TestCase):
-    setUp=http_tests.SettingsHTTPTests.setUp
     handler=http_tests.SettingsHTTPTests.handler
+
+    def setUp(self):
+        import tempfile
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        selected_store(temporary.name)
+        root=patch.object(dashboard,'WD',temporary.name);root.start();self.addCleanup(root.stop)
+        # signed_in also records the operator and session rows the mutation audit needs.
+        self.session_headers=signed_in(self)
 
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
@@ -480,11 +508,13 @@ class RepositoryHTTPTests(unittest.TestCase):
             h.do_POST();h.send_error.assert_called_once_with(403)
 
     def test_issue_environment_endpoint_validates_services_and_queues_a_decision(self):
-        with patch('forge.factory.issue_actions.request', return_value='request-1') as request:
+        with patch('forge.factory.store_operator.selected_service') as service:
+            request = service.return_value.request
+            request.return_value = 'request-1'
             value = {'key': '10:1', 'revision': 'r', 'environment': {'mode': 'full', 'services': ['mongodb']}}
             h = self.handler('/api/issues/environment', value); h.do_POST()
             self.assertTrue(json.loads(h._send.call_args.args[0])['ok'])
-            self.assertEqual(request.call_args.kwargs['action'], 'environment')
+            self.assertEqual(request.call_args.args[:3], ('10:1', 'environment', 'r'))
             self.assertEqual(request.call_args.kwargs['environment'], value['environment'])
             for selected in ({'mode': 'full', 'services': ['docker']}, {'mode': 'full', 'services': []},
                              {'mode': 'automatic', 'services': ['mongodb']}, {'mode': 'standard'}, None):
@@ -571,26 +601,3 @@ class RepositoryHTTPTests(unittest.TestCase):
                 cls.return_value.enable.reset_mock()
                 h=self.handler('/api/repositories/enable',value);h.do_POST()
                 cls.return_value.enable.assert_not_called()
-
-
-class ProtectionRecoveryTests(unittest.TestCase):
-    setUp=cycle_tests.CycleTest.setUp
-    cycle=cycle_tests.CycleTest.cycle
-
-    def test_only_prerequisite_hold_resumes_without_resetting_budget(self):
-        self.github.protections=Mock(return_value=False)
-        self.cycle()
-        item=self.ledger.read()['issues'][self.key]
-        self.assertEqual(item['state'],'hold')
-        self.assertEqual(item['prerequisite_hold']['state'],'ready')
-        self.assertEqual(self.ledger.failure_count(item),0)
-        self.github.protections.return_value=True
-        self.cycle()
-        self.assertIsNotNone(self.ledger.read()['issues'][self.key]['active'])
-
-    def test_manual_hold_cannot_be_resumed_by_rule_repair(self):
-        self.ledger.pause_for_protection(self.key)
-        self.ledger.hold(self.key,'Wait for operator')
-        self.cycle()
-        self.assertEqual(self.ledger.read()['issues'][self.key]['state'],'hold')
-        self.assertFalse(self.ledger.read()['slots'])

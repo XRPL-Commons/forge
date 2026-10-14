@@ -3,7 +3,7 @@ import threading
 import time
 import json
 
-from .settings import digest, read_json, write_json
+from .settings import digest
 from .factory.github import GitHub, GitHubUnavailable
 from .repository_policy import protection_ready
 
@@ -31,10 +31,9 @@ class RepositorySetup:
     def __init__(self, settings, *, github_class=GitHub):
         self.settings = settings
         self.github_class = github_class
-        self.path = settings.state / 'repositories.json'
         # Deployment state belongs to the live factory, never to the setup copy.
         self.root = settings.authority.root
-        self.database = getattr(settings, 'database', None)
+        self.database = settings.database
 
     def deployments(self):
         from .deployments import Deployments
@@ -42,34 +41,19 @@ class RepositorySetup:
                            settings=self.settings, clock=self.settings.clock)
 
     def proposals(self):
-        """A read for the UI: it never fails the page and never creates factory state."""
-        if self.database is not None:
-            from .store.operations import deployment_views
-            return deployment_views(self.database)
-        try:
-            rows = read_json(self.root / 'state/deployments.json')['repositories']
-            return {key: row for key, row in rows.items() if isinstance(row, dict)}
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
-            return {}
+        """A read for the UI: it never creates factory state."""
+        from .store.operations import deployment_views
+        return deployment_views(self.database)
 
     def read(self):
-        if self.database is not None:
-            with self.database.read_snapshot() as db:
-                rows = db.execute('SELECT s.*,r.full_name FROM repository_setup_observations s JOIN repositories r ON r.id=s.repository_id').fetchall()
-                return {'repositories': {str(row['repository_id']): dict(name=row['full_name'], status=row['status'],
-                    revision=row['source_revision'], started_at=row['started_at'], previous_status=row['previous_status'],
-                    report=json.loads(row['report_json']) if row['report_json'] else None,
-                    last_known=json.loads(row['last_known_json']) if row['last_known_json'] else None) for row in rows}}
-        try:
-            value = read_json(self.path)
-            return value if isinstance(value, dict) and isinstance(value.get('repositories'), dict) else {'repositories': {}}
-        except (OSError, ValueError):
-            return {'repositories': {}}
+        with self.database.read_snapshot() as db:
+            rows = db.execute('SELECT s.*,r.full_name FROM repository_setup_observations s JOIN repositories r ON r.id=s.repository_id').fetchall()
+            return {'repositories': {str(row['repository_id']): dict(name=row['full_name'], status=row['status'],
+                revision=row['source_revision'], started_at=row['started_at'], previous_status=row['previous_status'],
+                report=json.loads(row['report_json']) if row['report_json'] else None,
+                last_known=json.loads(row['last_known_json']) if row['last_known_json'] else None) for row in rows}}
 
     def save_observation(self, repo_id, data, *, expected_generation=None, expected_config=None):
-        if self.database is None:
-            write_json(self.path, data)
-            return
         from .store.runtime import writable
         value = data['repositories'][str(repo_id)]
         with self.database.write() as db:
@@ -95,12 +79,9 @@ class RepositorySetup:
                  json.dumps(sorted(value))))
 
     def registration(self):
-        if self.database is not None:
-            with self.database.read_snapshot() as db:
-                row = db.execute("SELECT settings_json FROM setup_instances WHERE scope='live'").fetchone()
-                return json.loads(row[0]) if row else {}
-        path = self.root / 'state/onboarding/setup.json'
-        return read_json(path) if path.exists() else {}
+        with self.database.read_snapshot() as db:
+            row = db.execute("SELECT settings_json FROM setup_instances WHERE scope='live'").fetchone()
+            return json.loads(row[0]) if row else {}
 
     def views(self, rows, config, *, runtime=None):
         from .repository_environments import RepositoryEnvironments

@@ -41,7 +41,8 @@ Example opt-in (replace the example App ID with the verified publisher):
 }
 ```
 
-Use `bin/forge factory status --root <runtime-root>` to read `runtime_revision`, then:
+Run `bin/forge factory verification-configure --root <runtime-root>` without
+`--revision` to print the current `runtime_revision`, then:
 
 ```sh
 bin/forge factory verification-configure --root <runtime-root> --target <repository-id> \

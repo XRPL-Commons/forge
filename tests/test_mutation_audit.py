@@ -200,11 +200,11 @@ class MutationHTTPTests(MutationAuditTests):
         self.session = self.auth.session(self.token)
         self.assertNotEqual(digest(self.token), saved_claim['session_id'])
 
-        with patch('forge.factory.issue_actions.decide') as decide:
+        with patch('forge.factory.store_operator.selected_service') as service:
             handler = self.request('/api/issues/action',
                 {'key': '123:789', 'revision': 'b' * 64, 'action': 'resume', 'reason': 'different'},
                 **{'X-Forge-Request-ID': REQUEST})
-        decide.assert_not_called()
+        service.assert_not_called()
         handler.send_response.assert_called_once_with(409)
         self.assertEqual(json.loads(handler.wfile.getvalue())['receipt']['outcome'], 'unknown')
         rows = self.rows()
