@@ -219,8 +219,23 @@ class Lifecycle:
             return None
         result = json.loads(row["result_json"])
         target = row["unit_id"] if row["unit_id"] is not None else result.get("unit_id")
-        if (target, row["actor_id"], row["expected_version"], row["command"], row["payload_json"]) != (
-            command.unit_id, command.actor_id, command.expected_version, operation, _json(payload)
+        stored_payload = row["payload_json"]
+        requested_payload = payload
+        if operation == 'observe_issue':
+            saved = json.loads(stored_payload)
+            if {'title', 'body', 'requirements'} <= saved.keys():
+                # Retained full-text decisions still replay exactly. Their
+                # immutable text becomes the same command hashes; no row changes.
+                saved['content_hash'] = manifest_hash([saved.pop('title'), saved.pop('body')])
+                saved['requirements_hash'] = manifest_hash(saved.pop('requirements'))
+            # Revision IDs are derived journal references, not command inputs.
+            # A rejected observation may acquire a revision through a later
+            # command; its original rejection must still replay unchanged.
+            saved.pop('revision_id', None)
+            requested_payload = {key:value for key,value in payload.items() if key != 'revision_id'}
+            stored_payload = _json(saved)
+        if (target, row["actor_id"], row["expected_version"], row["command"], stored_payload) != (
+            command.unit_id, command.actor_id, command.expected_version, operation, _json(requested_payload)
         ):
             raise IdempotencyConflict("request identity already belongs to a different command")
         if row["status"] == "rejected":
@@ -304,10 +319,12 @@ class Lifecycle:
         self._event(db, command, "decision_applied", {"command": operation, "version": result["version"], "before": before, "after": after})
         return result
 
-    def _apply(self, command, operation, payload, change, *, version_changed=None):
+    def _apply(self, command, operation, payload, change, *, version_changed=None, journal_changed=None, prepare_payload=None):
         if not command.request_id or not command.actor_id or type(command.expected_version) is not int or command.expected_version < 1:
             raise TransitionError("request, actor and positive expected version are required")
         with self._command_transaction(command, operation, payload) as db:
+            if prepare_payload is not None:
+                prepare_payload(db)
             previous = self._replay(db, command, operation, payload)
             if previous is not None:
                 return previous
@@ -316,6 +333,8 @@ class Lifecycle:
                 raise VersionConflict("unit changed; read its current version before retrying")
             before = self._lifecycle_summary(project_unit(db, command.unit_id))
             values = change(db, unit)
+            if journal_changed is not None and not journal_changed():
+                return {'unit_id': command.unit_id, 'version': unit['version'], **values}
             return self._save(db, command, operation, payload, values, before=before,
                               advance_version=version_changed() if version_changed is not None else True)
 
@@ -1039,7 +1058,7 @@ class Lifecycle:
             return {'allowed': allowed, 'unchanged': not changed}
         return self._apply(command, 'observe_repository_readiness', {**details, 'allowed': allowed,
                            'read_authority': read_authority, 'valid_until': valid_until}, change,
-                           version_changed=lambda: changed)
+                           version_changed=lambda: changed, journal_changed=lambda: changed)
 
     def observe_issue(self, command, issue_id, *, state, title, body, requirements,
                       remote_updated_at, generation, state_reason=None, labels=(), assignees=(),
@@ -1070,7 +1089,8 @@ class Lifecycle:
                 or any(login not in assignees or kind not in {'User', 'Bot', 'Organization', 'Mannequin'}
                        for login, kind in assignee_types.items())):
             raise TransitionError('assignee types must identify the observed GitHub assignees')
-        payload = dict(issue_id=issue_id, state=state, title=title, body=body, requirements=requirements,
+        content_hash, requirements_hash = manifest_hash([title, body]), manifest_hash(requirements)
+        payload = dict(issue_id=issue_id, state=state, content_hash=content_hash, requirements_hash=requirements_hash,
                        remote_updated_at=remote_updated_at, generation=generation, state_reason=state_reason,
                        labels=sorted(set(labels)), assignees=sorted(set(assignees)))
         if tuple(hold_labels) != ('hold', 'blocked') or admission is not None or ownership_conflict is not None:
@@ -1080,6 +1100,11 @@ class Lifecycle:
         # Observation ordering/freshness is distinct from the facts and gates
         # authorized by an operator proposal. Other commands keep their CAS bump.
         authority_changed = False
+        def prepare_payload(db):
+            existing = db.execute('SELECT id FROM issue_revisions WHERE issue_id=? AND content_hash=? AND requirements_hash=?',
+                                  (issue_id, content_hash, requirements_hash)).fetchone()
+            payload['revision_id'] = existing[0] if existing else _id(command.request_id, 'revision')
+
         def change(db, unit):
             nonlocal authority_changed
             old = db.execute("SELECT * FROM issues WHERE id = ?", (issue_id,)).fetchone()
@@ -1091,7 +1116,6 @@ class Lifecycle:
             new_order = (remote_order(remote_updated_at), generation)
             if new_order < old_order:
                 return {"issue_id": issue_id, "stale": True, "revision_id": old["current_revision_id"]}
-            content_hash, requirements_hash = manifest_hash([title, body]), manifest_hash(requirements)
             revision = db.execute("SELECT * FROM issue_revisions WHERE id = ?", (old["current_revision_id"],)).fetchone()
             changed = (state != old["github_state"] or state_reason != old["state_reason"] or content_hash != revision["content_hash"]
                        or requirements_hash != revision["requirements_hash"] or payload["labels"] != json.loads(old["labels_json"])
@@ -1162,9 +1186,11 @@ class Lifecycle:
                             if json.loads(gate['details_json']).get('source') == 'controller_observation':
                                 authority_changed = True
                                 self._resolve(db, command, gate['id'], {'verified': True, 'observed_at': self.clock()})
-            self._event(db, command, "issue_observed", {**payload, "planning_changed": authority_changed}, issue_id=issue_id)
+            if authority_changed:
+                self._event(db, command, "issue_observed", {**payload, "planning_changed": True}, issue_id=issue_id)
             return {"issue_id": issue_id, "stale": False, "revision_id": revision_id, "unchanged": not authority_changed}
-        return self._apply(command, "observe_issue", payload, change, version_changed=lambda: authority_changed)
+        return self._apply(command, "observe_issue", payload, change, version_changed=lambda: authority_changed,
+                           journal_changed=lambda: authority_changed, prepare_payload=prepare_payload)
 
     def admit_known_issue(self, *, request_id, actor_id, unit_id, issue_id, expected_issue_version, base_branch="main"):
         """Admit a reopened or previously released issue without reusing its old unit."""

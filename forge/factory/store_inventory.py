@@ -173,9 +173,10 @@ class StoreInventory:
             db.execute('UPDATE issues SET github_state=?,state_reason=?,current_revision_id=?,remote_updated_at=?,collection_generation=collection_generation+1,'
                        'labels_json=?,assignees_json=?,assignee_types_json=?,observed_at=?,reopened_version=?,version=version+? WHERE id=?',
                        (state, facts['state_reason'], revision, updated, json.dumps(labels), json.dumps(people), json.dumps(types), observed_at, reopened, int(changed), key))
-            if before != observed:
-                self._observed(db, key, revision_id=revision,
-                    planning_changed=changed)
+            if changed:
+                self._observed(db, key, revision_id=revision, content_hash=content_hash,
+                    requirements_hash=req_hash, labels=sorted(labels), state=state,
+                    state_reason=facts['state_reason'], planning_changed=True)
         self._label_display(repo,key,labels)
         if not partial and complete_requirements(requirements):self.clear_failure(key)
         return key
