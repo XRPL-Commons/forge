@@ -225,13 +225,15 @@ class Publications(Lifecycle):
         return {'status':'blocked','claim':claim}
 
     def recheck(self,command,identifier,*,evidence):
-        """Explicit fresh access repair resumes only a definite refused request."""
+        """Fresh capability repair preserves every uncertain mutation receipt."""
         def change(db,unit):
             row=db.execute('SELECT * FROM publication_intents WHERE id=? AND unit_id=?',(identifier,unit['id'])).fetchone()
             if row is None:raise TransitionError('Publication belongs to another unit')
             self._ready(db,row)
             target=json.loads(row['target_json']);output=json.loads(row['output_json']);claim=json.loads(row['claim_json'] or 'null') or {}
-            if row['status']!='blocked' or claim.get('code')!='publication_refused' or claim.get('http_status') not in (401,403,404):
+            access_refusal=claim.get('code')=='publication_refused' and claim.get('http_status') in (401,403,404)
+            capability_fault=claim.get('code') in ('publication_signing_unqualified','publication_capability_changed','publication_app_changed')
+            if row['status']!='blocked' or not (access_refusal or capability_fault):
                 raise TransitionError('Publication requires a content or uncertainty decision')
             required={'contents':'write','pull_requests':'write'}
             if any(path.startswith('.github/workflows/') for path in output['facts'].get('protected_paths',[])):required['workflows']='write'
@@ -242,14 +244,16 @@ class Publications(Lifecycle):
                     or any((evidence.get('permissions') or {}).get(k)!=v for k,v in required.items())
                     or type(evidence.get('observed_at')) not in (int,float) or not self.clock()-60<=evidence['observed_at']<=self.clock()):
                 raise TransitionError('Publication repair requires fresh matching App access')
-            step=db.execute('SELECT * FROM publication_steps WHERE intent_id=? AND key=?',(identifier,claim['step'])).fetchone()
-            if step is None or step['status']=='confirmed' or step['attempts']>=self.policy['max_attempts']:
-                raise TransitionError('Publication request is not retryable')
+            if access_refusal:
+                step=db.execute('SELECT * FROM publication_steps WHERE intent_id=? AND key=?',(identifier,claim['step'])).fetchone()
+                if step is None or step['status']=='confirmed' or step['attempts']>=self.policy['max_attempts']:
+                    raise TransitionError('Publication request is not retryable')
             key='repair:'+command.request_id
             db.execute("INSERT INTO publication_steps(intent_id,key,request_digest,status,receipt_json,created_at,updated_at) VALUES(?,?,?,'confirmed',?,?,?)",
                        (identifier,key,source_inputs.digest(evidence),_json(evidence),self.clock(),self.clock()))
-            db.execute("UPDATE publication_steps SET status='refused',retry_at=NULL,uncertain_since=NULL,escalation_at=NULL,updated_at=? WHERE intent_id=? AND key=?",
-                       (self.clock(),identifier,claim['step']))
+            if access_refusal:
+                db.execute("UPDATE publication_steps SET status='refused',retry_at=NULL,uncertain_since=NULL,escalation_at=NULL,updated_at=? WHERE intent_id=? AND key=?",
+                           (self.clock(),identifier,claim['step']))
             db.execute("UPDATE publication_intents SET status='pending',claim_json=NULL,version=version+1,updated_at=? WHERE id=?",(self.clock(),identifier))
             return {'intent_id':identifier,'status':'pending'}
         return self._apply(command,'recheck_publication',{'intent_id':identifier,'evidence':evidence},change)

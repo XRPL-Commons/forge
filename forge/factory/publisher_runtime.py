@@ -123,7 +123,8 @@ class PublicationRuntime:
                 row=db.execute('SELECT id FROM publication_intents WHERE job_id=?',(job_id,)).fetchone()
             if row is None:return {'status':'pending','reason':'publication_not_queued'}
             intent=self.publisher.commands.get(row[0]);claim=intent['claim'] or {}
-            if claim.get('code')!='publication_refused' or claim.get('http_status') not in (401,403,404):
+            if not (claim.get('code')=='publication_refused' and claim.get('http_status') in (401,403,404)
+                    or claim.get('code') in ('publication_signing_unqualified','publication_capability_changed','publication_app_changed')):
                 return {'status':'blocked','claim':claim,'intent_id':intent['id']}
             # Reissue this repository's cached token only after a deliberate
             # repair request. Personal credentials are never involved.

@@ -172,3 +172,13 @@ class RepairTests(unittest.TestCase):
         with f.store.read_snapshot() as db:
             rows=list(db.execute("SELECT payload_json FROM decisions WHERE command='publication_claim'"))
             self.assertEqual(len(rows),1);self.assertIn('git_lfs_unsupported',rows[0][0])
+
+    def test_capability_repair_does_not_clear_unknown_commit_write(self):
+        f=self.fixture;identifier=f.queue();commands=f.commands
+        commands.prepare_step(identifier,'commit',{'tree':'d'*40});commands.claim_step(identifier,'commit')
+        commands.block(identifier,{'code':'publication_signing_unqualified'})
+        proof=dict(source='host_app_installation',repository_id=1,app_id=42,source_input_digest=f.output.identity()['source_input_digest'],
+            output_digest=f.output.digest(),strategy='rest',signing_qualified=True,permissions={'contents':'write','pull_requests':'write'},observed_at=100)
+        commands.recheck(f.fixture.command(),identifier,evidence=proof)
+        self.assertEqual(commands.get(identifier)['steps']['commit']['status'],'sending')
+        with self.assertRaises(TransitionError):commands.claim_step(identifier,'commit')
