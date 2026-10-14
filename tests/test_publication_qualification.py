@@ -1,9 +1,12 @@
 from copy import deepcopy
+import io
+import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from forge.app_access import AccessError
 from forge.factory.publisher_runtime import SigningCapabilities
@@ -11,7 +14,8 @@ from forge.publication_qualification import Qualification, QualificationError, s
 from forge.store.configuration import Configuration
 from forge.store.db import Store
 from forge_client.cli import parser
-from forge_client.publication_qualification import execute
+from forge_client.publication_qualification import execute, HOST
+from forge_client.contracts import SetupError
 
 
 class Access:
@@ -267,14 +271,58 @@ class QualificationTests(unittest.TestCase):
 
     def test_cli_has_plan_apply_and_receipt_without_secret_arguments(self):
         args = parser().parse_args(['setup','qualify-publication','--ssh','anvil','--repo','owner/target','--probe-repo','owner/scratch'])
-        installation = Mock(); installation.journal.read.return_value = {'host_key': 'verified'}
-        installation.host.rpc.return_value = {'result': {'status':'planned'}}
-        self.assertEqual(execute(args, installation=installation)['status'], 'planned')
-        payload = installation.host.rpc.call_args.args[1]
-        self.assertEqual(set(payload), {'repo','probe_repo','target_branch','probe_ref','apply','receipt','check_workflow'})
+        run = Mock(return_value=SimpleNamespace(returncode=0,stdout=b'{"status":"planned"}'))
+        self.assertEqual(execute(args, run=run)['status'], 'planned')
+        payload = json.loads(run.call_args.kwargs['input'])
+        self.assertEqual(set(payload), {'repo','probe_repo','target_branch','probe_ref','apply','receipt','check_workflow','service_user','source','root'})
         self.assertFalse(payload['apply'])
-        self.assertEqual(installation.host.fingerprint, 'verified')
-        self.assertIn("'forge.launch','forge.publication_qualification'", installation.host.rpc.call_args.args[0])
+        self.assertEqual(payload['service_user'], 'forge')
+        self.assertEqual(payload['source'], '/home/forge/forge')
+        command = run.call_args.args[0]
+        self.assertIn('StrictHostKeyChecking=yes', command)
+        self.assertIn("forge.launch", command[-1])
+
+    def test_cli_accepts_existing_forge_account_and_explicit_paths(self):
+        args = parser().parse_args(['setup','qualify-publication','--ssh','forge','--repo','owner/target','--probe-repo','owner/scratch',
+            '--service-user','luc','--source','/home/luc/forger-remote','--root','/home/luc/ops/forge-watchdog'])
+        run = Mock(return_value=SimpleNamespace(returncode=0,stdout=b'{"status":"planned"}'))
+        execute(args, run=run)
+        payload = json.loads(run.call_args.kwargs['input'])
+        self.assertEqual(payload['service_user'], 'luc')
+        self.assertEqual(payload['source'], '/home/luc/forger-remote')
+        self.assertEqual(payload['root'], '/home/luc/ops/forge-watchdog')
+        command = run.call_args.args[0]
+        self.assertIn('luc', command[-1])
+        for key,value in [('service_user','luc; command'),('source','relative'),('root','/tmp/../etc')]:
+            original = getattr(args,key);setattr(args,key,value)
+            with self.assertRaises(SetupError):execute(args,run=run)
+            setattr(args,key,original)
+        self.assertEqual(run.call_count, 1)
+
+    def test_host_runs_selected_checkout_as_current_service_account_and_requires_module(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory).resolve();source=base/'source';root=base/'runtime'
+            source.mkdir();root.mkdir()
+            payload=dict(source=str(source),root=str(root),service_user='luc',repo='owner/target',probe_repo='owner/scratch')
+            account=SimpleNamespace(pw_uid=os.geteuid(),pw_name='luc',pw_dir=str(base))
+            def host():
+                stdout=io.StringIO()
+                with patch('sys.stdin',SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))),patch('sys.stdout',stdout),patch('pwd.getpwuid',return_value=account):
+                    with self.assertRaises(SystemExit) as stopped:exec(compile(HOST,'<host>','exec'),{})
+                    self.assertEqual(stopped.exception.code,0)
+                return json.loads(stdout.getvalue())
+            with patch('subprocess.run') as child:
+                self.assertEqual(host()['reason'],'qualification_module_not_installed')
+                child.assert_not_called()
+            (source/'forge').mkdir()
+            for name in ('launch.py','publication_qualification.py'):(source/'forge'/name).touch()
+            with patch('subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=b'{"status":"planned"}')) as child:
+                self.assertEqual(host()['status'],'planned')
+                self.assertEqual(child.call_args.args[0],['/usr/bin/python3','-m','forge.launch','forge.publication_qualification','--root',str(root)])
+                self.assertEqual(child.call_args.kwargs['cwd'],source)
+                self.assertEqual(child.call_args.kwargs['env']['HOME'],str(base))
+                self.assertNotIn('source',json.loads(child.call_args.kwargs['input']))
+
 
 
 class TokenScopeTests(unittest.TestCase):

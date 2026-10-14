@@ -321,6 +321,26 @@ forge --json setup qualify-publication --ssh anvil \
   --repo OWNER/TARGET --probe-repo OWNER/SCRATCH
 ```
 
+The defaults select service user `forge`, source `/home/forge/forge` and runtime
+`/home/forge/.local/share/forge`. For an existing installation with a different
+layout, select all three explicitly. For example, the existing Forge host uses:
+
+```sh
+forge --json setup qualify-publication --ssh forge \
+  --service-user luc --source /home/luc/forger-remote \
+  --root /home/luc/ops/forge-watchdog \
+  --repo OWNER/TARGET --probe-repo OWNER/SCRATCH
+```
+
+The CLI uses the same account-switching transport and path validation as
+`forge migrate upgrade`. It needs the existing account's SSH access, or root or
+noninteractive sudo authority to switch to that account. The selected checkout
+must already contain `forge.publication_qualification`; the command returns
+`qualification_module_not_installed` otherwise. It does not install, update or
+copy the module. These examples do not establish live acceptance on an older
+production release; deploy the reviewed release during its authorized upgrade
+window before running its qualification command.
+
 The default is a read-only plan. Add `--apply` to create a small text-file commit
 and update the scratch branch. Use `--target-branch` and `--probe-ref` to select
 branches explicitly; otherwise each repository's default branch is used.

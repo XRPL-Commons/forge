@@ -101,6 +101,9 @@ def parser():
     qualification.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     signing = verb(fresh, 'qualify-publication', help='Verify signed publication using an explicitly selected scratch repository')
     signing.add_argument('--ssh', required=True)
+    signing.add_argument('--service-user', default='forge', help='Existing Unix service account; defaults to forge')
+    signing.add_argument('--source', default='/home/forge/forge', help='Installed Forge checkout on the selected host')
+    signing.add_argument('--root', default='/home/forge/.local/share/forge', help='Existing Forge runtime directory on the selected host')
     signing.add_argument('--repo', required=True, help='Connected target owner/repository')
     signing.add_argument('--probe-repo', required=True, help='Existing private scratch repository in the same Controller installation')
     signing.add_argument('--target-branch', help='Target branch; defaults to the repository default')
@@ -286,7 +289,7 @@ def execute(args):
                 'planning_commands': planning_commands(),
                 'migration_commands': migration_commands(),
                 'publication_qualification': {'command':'setup qualify-publication', 'authority':'explicit SSH host',
-                    'required':['ssh','repo','probe_repo'], 'optional':['target_branch','probe_ref','receipt','check_workflow'],
+                    'required':['ssh','repo','probe_repo'], 'optional':['target_branch','probe_ref','receipt','check_workflow','service_user','source','root'],
                     'default':'read-only plan', 'apply':'scratch-only probe or read-only receipt import',
                     'repository_creation':False, 'permission_grants':False, 'automation_activation':False},
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
