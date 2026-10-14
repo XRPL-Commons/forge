@@ -87,6 +87,26 @@ describe('steward decision submission', () => {
     wrapper.unmount()
   })
 
+  it('explicitly retries a lost selection with the exact original request identity', async () => {
+    const decision = fixture(), key = `1:${sequence}`
+    get.mockResolvedValue({ ok: true, repositories: [], decision })
+    act.mockRejectedValueOnce(new ForgeApiError(0, 'Connection lost'))
+    const wrapper = await mountSuspended(StewardDecision, { props: { issueKey: key } })
+    await flushPromises()
+    await choose(wrapper).trigger('click'); await flushPromises()
+    const original = act.mock.calls[0]![1]
+    await refresh(wrapper).trigger('click'); await flushPromises()
+    act.mockResolvedValueOnce({ ok: true, repositories: [], decision: { ...decision, status: 'selected',
+      application: { request_id: original.request_id, choice_id: 'retry', status: 'pending', message: null } } })
+    const retry = wrapper.findAll('button').find(button => button.text() === 'Retry recording this choice')!
+    await retry.trigger('click'); await flushPromises()
+    expect(act.mock.calls[1]![1]).toEqual(original)
+    expect(act).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('Your choice is recorded.')
+    expect(wrapper.text()).not.toContain('Retry recording this choice')
+    wrapper.unmount()
+  })
+
   it('restores a lost request lock from session storage after a page reload', async () => {
     const decision = fixture(), key = `1:${sequence}`
     get.mockResolvedValue({ ok: true, repositories: [], decision })

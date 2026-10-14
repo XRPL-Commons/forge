@@ -12,6 +12,7 @@ from ..store.artifacts import Artifacts, ArtifactExpired
 from ..store.codes import transitional
 from ..store.queries import Queries
 from ..store.operator_views import reviewer_request_in
+from ..store.steward_views import marker_in
 from ..store.transitions import manifest_hash
 from .config import validate, merge_mode
 from .live_output import summarize
@@ -272,7 +273,7 @@ class PipelineViews:
             actions=actions, closable=fresh and issue['github_state']=='open' and not pending and not delivery_approved,
             delivery_approved=delivery_approved,
             setup_needed=reason=='repository_setup', environment_blocker=environment_block.get('detail') or environment_block.get('summary'),
-            decision_request=decision,
+            decision_request=decision, steward_decision=marker_in(db,unit_id),
             **({'forge_problem':details} if reason=='forge_problem' else {}),
             **({'forge_problem_report': report_draft} if report_draft is not None else {}),
             approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
@@ -334,6 +335,7 @@ class PipelineViews:
                     active=active['id'] if active else None, status=operator['code'], operator_status=operator,
                     reason_code=life['reason_code'], stage_code=life['stage_code'], ledger_state=_legacy_stage(life),
                     explanation=life['display_status'], last_checked=checked, attempts={'failed': charges} if charges else None,
+                    steward_decision=reads.steward_decisions.get(unit_id) if reads is not None else marker_in(db,unit_id),
                     _unit=unit, _jobs=[dict(job) for job in jobs], _blocked_dependencies=blocked,
                     _last_summary=json.loads(context['summary_json']) if context and context['summary_json'] else None)
 
@@ -370,6 +372,7 @@ class PipelineViews:
             'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,
             'last_summary':row['_last_summary'],'history':history,'created_at':unit['created_at'],'last_observed':row['last_checked'],
             'hold_kind':None if transitional(reason) else reason,'transition':transition,'merge_gate_kind':reason if reason in {'approval_required','verification_ci','verification_human'} else None,
+            'steward_decision':row.get('steward_decision'),
             'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
             'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
             'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':completed_at or None}

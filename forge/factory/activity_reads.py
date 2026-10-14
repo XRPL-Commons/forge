@@ -61,6 +61,8 @@ class ActivityReads:
                 self.imported.setdefault(row['unit_id'], []).append(row)
         self.unit_contexts = {row['unit_id']: row for row in db.execute(
             'SELECT unit_id,summary_json,last_observed_at FROM unit_context WHERE unit_id IN (SELECT value FROM json_each(?))', (unit_ids,))}
+        from ..store.steward_views import markers_in
+        self.steward_decisions = markers_in(db, units)
         self.charges = {row['unit_id']: row['charges'] for row in db.execute(
             "SELECT a.unit_id,SUM(CASE b.kind WHEN 'charge' THEN 1 ELSE -1 END) AS charges "
             'FROM units u JOIN attempts a ON a.unit_id=u.id AND a.budget_generation=u.budget_generation '

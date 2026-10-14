@@ -32,6 +32,8 @@ export function useStewardDecision(issueKey: MaybeRefOrGetter<string>, options: 
   })
   const disabled = computed(() => !mounted.value || !(options.allowed?.() ?? true) || stale.value
     || !decision.value || decision.value.status !== 'proposed' || !!decision.value.application || !!operation.value)
+  const canRetry = computed(() => mounted.value && (options.allowed?.() ?? true) && !stale.value
+    && decision.value?.status === 'proposed' && !decision.value.application && operation.value?.state === 'uncertain')
   const message = computed(() => {
     const current = decision.value
     if (current?.status === 'applied' || current?.application?.status === 'applied') return 'This choice has been applied.'
@@ -74,8 +76,17 @@ export function useStewardDecision(issueKey: MaybeRefOrGetter<string>, options: 
     const current = decision.value
     if (disabled.value || !current || identity(current) !== identity(selection)
         || !current.choices.some(choice => choice.id === selection.choice_id)) return false
+    return submit(selection, crypto.randomUUID())
+  }
+  async function retry() {
+    const current = operation.value
+    if (!canRetry.value || !current) return false
+    return submit(current, current.request_id)
+  }
+  async function submit(selection: StewardSelection, requestId: string) {
     const key = identity(selection)
-    const operation: ChoiceOperation = { ...selection, request_id: crypto.randomUUID(), state: 'submitting' }
+    const operation: ChoiceOperation = { decision_id: selection.decision_id, choice_id: selection.choice_id,
+      digest: selection.digest, request_id: requestId, state: 'submitting' }
     delete errors.value[key]
     try { remember(operation) }
     catch {
@@ -84,7 +95,8 @@ export function useStewardDecision(issueKey: MaybeRefOrGetter<string>, options: 
     }
     try {
       const response = await api.act<StewardDecisionResponse>('/api/issues/steward', {
-        key: toValue(issueKey), ...selection, request_id: operation.request_id,
+        key: toValue(issueKey), decision_id: operation.decision_id, choice_id: operation.choice_id,
+        digest: operation.digest, request_id: operation.request_id,
       })
       operations.value[key] = { ...operation, state: 'selected' }
       // The response belongs to the issue that was submitted, even if the
@@ -115,5 +127,5 @@ export function useStewardDecision(issueKey: MaybeRefOrGetter<string>, options: 
     if (mounted.value && (options.allowed?.() ?? true)) void resource.refresh()
   })
   onMounted(() => { mounted.value = true; resource.start() })
-  return { decision, resource, disabled, pending, operation, message, select, refresh: () => resource.refresh() }
+  return { decision, resource, disabled, pending, operation, message, select, canRetry, retry, refresh: () => resource.refresh() }
 }
