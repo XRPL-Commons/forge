@@ -333,6 +333,32 @@ class Effects(Lifecycle):
             return {'effect_id':effect_id,'reconciled':True}
         return self._apply(command,'observe_unmerged_effect',{'effect_id':effect_id,'evidence':evidence},change)
 
+    def resume_unsent_merge(self, effect_id, *, evidence):
+        """A fresh mergeable PR can release an observation-only wait, never a sent PUT."""
+        with self.store.read_snapshot() as db:
+            row=db.execute('SELECT e.unit_id,u.version,e.escalation_at FROM external_effects e JOIN units u ON u.id=e.unit_id WHERE e.id=?',(effect_id,)).fetchone()
+        if row is None or row['escalation_at'] is None:
+            return False
+        command=Command(str(uuid.uuid4()),'supervisor:effects',row['unit_id'],row['version'])
+        def change(db,unit):
+            row=db.execute('SELECT e.*,m.send_count,m.candidate_id,c.pull_number,c.head_oid,c.base_oid FROM external_effects e '
+                "JOIN merge_requests m ON m.effect_id=e.id JOIN candidates c ON c.id=m.candidate_id WHERE e.id=? AND m.status='pending'",(effect_id,)).fetchone()
+            if (row is None or row['send_count']!=0 or row['candidate_id']!=unit['current_candidate_id']
+                or not isinstance(evidence,dict) or evidence.get('verified') is not True or evidence.get('mergeable') is not True
+                or evidence.get('merged') is not False or evidence.get('state')!='open'
+                or any(evidence.get(key)!=row[key] for key in ('candidate_id','pull_number','head_oid','base_oid'))
+                or evidence.get('repository_id')!=unit['repository_id'] or evidence.get('base_branch')!=unit['base_branch']
+                or type(evidence.get('observed_at')) not in (int,float) or not self.clock()-60<=evidence['observed_at']<=self.clock()):
+                raise TransitionError('only fresh exact mergeability may resume an unsent intent')
+            for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL "
+                "AND json_extract(details_json,'$.source')='scheduling' AND json_extract(details_json,'$.effect_id')=?",(unit['id'],effect_id)).fetchall():
+                self._resolve(db,command,gate['id'],evidence)
+            db.execute('UPDATE external_effects SET escalation_at=NULL,uncertain_since=NULL,conflict_since=NULL,retry_at=NULL,updated_at=? WHERE id=?',
+                (self.clock(),effect_id))
+            self._effect_event(db,effect_id)
+            return {'effect_id':effect_id,'resumed':True}
+        return self._apply(command,'resume_unsent_merge',{'effect_id':effect_id,'evidence':evidence},change)
+
     def rebuild_conflict(self, effect_id):
         """Atomically withdraw an unsent intent and rebuild a sustained conflict."""
         with self.store.read_snapshot() as db:
