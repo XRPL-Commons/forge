@@ -323,12 +323,12 @@ forge --json setup qualify-publication --ssh anvil \
 
 The defaults select service user `forge`, source `/home/forge/forge` and runtime
 `/home/forge/.local/share/forge`. For an existing installation with a different
-layout, select all three explicitly. For example, the existing Forge host uses:
+layout, select all three explicitly. For example:
 
 ```sh
 forge --json setup qualify-publication --ssh forge \
-  --service-user luc --source /home/luc/forger-remote \
-  --root /home/luc/ops/forge-watchdog \
+  --service-user operator --source /srv/forge/source \
+  --root /var/lib/forge \
   --repo OWNER/TARGET --probe-repo OWNER/SCRATCH
 ```
 

@@ -284,16 +284,16 @@ class QualificationTests(unittest.TestCase):
 
     def test_cli_accepts_existing_forge_account_and_explicit_paths(self):
         args = parser().parse_args(['setup','qualify-publication','--ssh','forge','--repo','owner/target','--probe-repo','owner/scratch',
-            '--service-user','luc','--source','/home/luc/forger-remote','--root','/home/luc/ops/forge-watchdog'])
+            '--service-user','operator','--source','/srv/forge/source','--root','/var/lib/forge'])
         run = Mock(return_value=SimpleNamespace(returncode=0,stdout=b'{"status":"planned"}'))
         execute(args, run=run)
         payload = json.loads(run.call_args.kwargs['input'])
-        self.assertEqual(payload['service_user'], 'luc')
-        self.assertEqual(payload['source'], '/home/luc/forger-remote')
-        self.assertEqual(payload['root'], '/home/luc/ops/forge-watchdog')
+        self.assertEqual(payload['service_user'], 'operator')
+        self.assertEqual(payload['source'], '/srv/forge/source')
+        self.assertEqual(payload['root'], '/var/lib/forge')
         command = run.call_args.args[0]
-        self.assertIn('luc', command[-1])
-        for key,value in [('service_user','luc; command'),('source','relative'),('root','/tmp/../etc')]:
+        self.assertIn('operator', command[-1])
+        for key,value in [('service_user','operator; command'),('source','relative'),('root','/tmp/../etc')]:
             original = getattr(args,key);setattr(args,key,value)
             with self.assertRaises(SetupError):execute(args,run=run)
             setattr(args,key,original)
@@ -303,8 +303,8 @@ class QualificationTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             base = Path(directory).resolve();source=base/'source';root=base/'runtime'
             source.mkdir();root.mkdir()
-            payload=dict(source=str(source),root=str(root),service_user='luc',repo='owner/target',probe_repo='owner/scratch')
-            account=SimpleNamespace(pw_uid=os.geteuid(),pw_name='luc',pw_dir=str(base))
+            payload=dict(source=str(source),root=str(root),service_user='operator',repo='owner/target',probe_repo='owner/scratch')
+            account=SimpleNamespace(pw_uid=os.geteuid(),pw_name='operator',pw_dir=str(base))
             def host():
                 stdout=io.StringIO()
                 with patch('sys.stdin',SimpleNamespace(buffer=io.BytesIO(json.dumps(payload).encode()))),patch('sys.stdout',stdout),patch('pwd.getpwuid',return_value=account):
