@@ -57,7 +57,7 @@ class MigrationCLITests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(bundle())) as archive:
             names=archive.namelist()
             self.assertIn('forge/store/migration/host.py',names)
-            self.assertIn('forge/store/schema/002_import_archive.sql',names)
+            self.assertIn('forge/store/schema/001_baseline.sql',names)
             self.assertIn('forge/harnesses/codex/manifest.json', names)
             self.assertEqual({n for n in names if n.startswith('forge_client/')},{'forge_client/__init__.py','forge_client/contracts.py'})
             self.assertTrue(all(n in {'forge_client/__init__.py','forge_client/contracts.py'} or n.startswith('forge/') and (n.endswith(('.py','.sql')) or

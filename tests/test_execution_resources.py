@@ -1,7 +1,6 @@
 """Exact-container, bounded engine sampling and durable numeric provenance."""
 from contextlib import contextmanager
 import json
-import math
 import socket
 import tempfile
 import threading
@@ -237,40 +236,3 @@ class ResourcePersistenceTests(unittest.TestCase):
             self.life.observe(job,execution_fence='fence',observation=dict(id='b'*64,status='running',resources=observed()))
         with self.store.read_snapshot() as db:self.assertIsNone(read_in(db,job)['sample'])
 
-class ResourceMigrationTests(unittest.TestCase):
-    def test_upgrade_preserves_records_without_manufacturing_historical_usage(self):
-        import tempfile
-        from pathlib import Path
-        from forge.store import db as storage, upgrade
-        from tests.historical_store_fixtures import reservation
-        with tempfile.TemporaryDirectory() as temporary:
-            catalog=storage._migrations()
-            with patch('forge.store.db._migrations',return_value=catalog[:31]):
-                store=storage.Store.create(Path(temporary)/'store')
-                job_id=reservation(store,config={},policy={},base_oid='base')
-                with store.read_snapshot() as db:
-                    tables=[row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('schema_migrations','store_metadata')")]
-                    before={table:[tuple(row) for row in db.execute('SELECT * FROM '+table)] for table in tables}
-            # This migration is additive; later topology migrations intentionally
-            # rebuild existing records and have their own populated parity tests.
-            with patch('forge.store.db._migrations',return_value=catalog[:32]):
-                store=storage.Store(store.root)
-            self.assertEqual(upgrade.apply(store)['current_schema'],32)
-            upgrade.apply(store)
-            with store.read_snapshot() as db:
-                self.assertEqual(before,{table:[tuple(row) for row in db.execute('SELECT * FROM '+table)] for table in tables})
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM job_resource_observations').fetchone()[0],0)
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM job_resource_receipts').fetchone()[0],0)
-                self.assertIsNone(read_in(db,job_id)['sample'])
-                self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
-                self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
-            # Later migrations must not turn absence of historical measurements
-            # into a zero-valued sample or lose the physical job identity.
-            current=storage.Store(store.root)
-            upgrade.apply(current)
-            with current.read_snapshot() as db:
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM job_resource_observations').fetchone()[0],0)
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM job_resource_receipts').fetchone()[0],0)
-                self.assertIsNone(read_in(db,job_id)['sample'])
-                self.assertEqual(db.execute('SELECT job_id FROM job_launches').fetchone()[0],job_id)
-                self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())

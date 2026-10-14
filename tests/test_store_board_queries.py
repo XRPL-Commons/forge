@@ -10,8 +10,19 @@ from forge.factory.store_inventory import StoreInventory
 from forge.factory.store_views import PipelineViews
 from forge.store.configuration import Configuration
 from forge.store.db import Store
-from tests.historical_store_fixtures import member
+from forge.store.transitions import manifest_hash
 from tests.test_sqlite_runtime_support import RuntimeFixture
+
+
+def member(db, *, unit='u', issue='1:1', number=1, identifier='member', requirements=None):
+    requirements = {'acceptance': ['works']} if requirements is None else requirements
+    revision = 'revision-' + identifier
+    db.execute("INSERT OR IGNORE INTO repositories(id,full_name) VALUES(1,'owner/repo')")
+    db.execute("INSERT OR IGNORE INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,1,'main','queued',90,100)", (unit,))
+    db.execute("INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,observed_at) VALUES(?,1,?,'open',?,90)", (issue, number, revision))
+    db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES(?,?,'Issue','Body','body',?,?,90)", (revision, issue, manifest_hash(requirements), json.dumps(requirements)))
+    db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES(?,?,?,1,'main',?,'pending',90)", (identifier, unit, issue, revision))
+    return revision
 
 
 class BoardCompletionTests(TestCase):

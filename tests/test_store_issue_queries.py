@@ -96,7 +96,7 @@ class IssueQueryTests(unittest.TestCase):
             Queries(self.store).issues()
             Queries(self.store).jobs('unit-1')
         reads = [sql.lower() for sql in statements if sql.lstrip().upper().startswith('SELECT')]
-        for word in ('requirements_json', 'r.body', 'job_artifacts', 'import_records'):
+        for word in ('requirements_json', 'r.body', 'job_artifacts'):
             self.assertFalse(any(word in sql for sql in reads), word)
 
     def test_invalid_page_and_cursor_rejected(self):

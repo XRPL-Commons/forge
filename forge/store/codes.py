@@ -4,7 +4,9 @@ Wording lives in `status.describe()`; nothing compares prose. The schema seeds
 the full registry (including unit transitions, job phases and event kinds) into
 reference tables so the database rejects an unknown code, and
 `tests/test_store_codes.py` checks that the codes here agree with it. Changing a
-code needs a new migration.
+code needs a new migration. `legacy_reconciliation`, `retry_delay` and
+`merge_checks` are no longer opened; they stay because stores keep resolved
+imported gates that reference them.
 """
 from __future__ import annotations
 
@@ -97,14 +99,11 @@ GATES: dict[str, Gate] = {
     'cleanup_pending': Gate('automatic', 'transition', ANY_SCOPE | frozenset({'job'})),
     'result_pending': Gate('automatic', 'transition', ANY_SCOPE | frozenset({'job'})),
     'provider_unavailable': Gate('automatic', 'time', UNIT),
-    'capacity': Gate('automatic', 'transition', UNIT),
     'retry_delay': Gate('automatic', 'time', EITHER),
     'verification_human': Gate('candidate', 'evidence', CANDIDATE),
     'verification_ci': Gate('candidate', 'evidence', CANDIDATE),
     'approval_required': Gate('candidate', 'evidence', CANDIDATE),
-    'changes_requested': Gate('candidate', 'transition', CANDIDATE),
     'merge_checks': Gate('candidate', 'observation', CANDIDATE),
-    'merge_conflict': Gate('candidate', 'transition', CANDIDATE),
 }
 
 # How an open gate reads to the operator (#241). A transitional gate is the
@@ -120,9 +119,9 @@ GATE_PRESENTATION: dict[str, str] = {
     'forge_problem': BLOCKING, 'environment': BLOCKING, 'observation_unavailable': BLOCKING, 'legacy_reconciliation': BLOCKING,
     'dependency': BLOCKING,
     'recovery_pending': TRANSITIONAL, 'cleanup_pending': TRANSITIONAL, 'result_pending': TRANSITIONAL,
-    'provider_unavailable': BLOCKING, 'capacity': BLOCKING, 'retry_delay': BLOCKING,
+    'provider_unavailable': BLOCKING, 'retry_delay': BLOCKING,
     'verification_human': BLOCKING, 'verification_ci': BLOCKING, 'approval_required': BLOCKING,
-    'changes_requested': BLOCKING, 'merge_checks': BLOCKING, 'merge_conflict': BLOCKING,
+    'merge_checks': BLOCKING,
 }
 
 

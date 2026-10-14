@@ -1,15 +1,10 @@
 from copy import deepcopy
-import json
-from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import Mock,patch
 
 from forge.factory.config import validate,policy,merge_mode,legacy_merge_policies,load
 from forge.repository_merge_policy import ClientMergePolicy
 from forge.settings import Settings,DEFAULT as SETTINGS_DEFAULT,digest
-from forge.store.configuration import Configuration
-from forge.store import db as storage,upgrade
 from forge_client.merge_policy import execute
 from tests import test_client_connections as connections
 
@@ -113,22 +108,3 @@ class PolicyAuthorityTests(connections.Fixture):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM configuration WHERE domain='runtime.json'").fetchone()[0],1)
 
 
-class PolicyMigrationTests(unittest.TestCase):
-    def test_schema_25_matches_import_model_and_keeps_previous_revision(self):
-        with tempfile.TemporaryDirectory() as directory:
-            migrations=storage._migrations()
-            source={'merge_enabled':True,'human_required':False,'repository_merge_policies':{'2':'human'}}
-            repos=[{'id':1,'name':'one/repo','enabled':True},{'id':2,'name':'two/repo','enabled':False}]
-            with patch('forge.store.db._migrations',return_value=migrations[:24]):
-                store=storage.Store.create(Path(directory)/'store')
-                config=Configuration(store)
-                config.replace('factory.json',{'repositories':repos},expected_revision=0)
-                config.replace('runtime.json',source,expected_revision=0,credential_ref='private-ref')
-            store = storage.Store(store.root)  # Target release handle.
-            upgrade.apply(store);upgrade.apply(store)
-            migrated=Configuration(store).get('runtime.json')
-            self.assertEqual(migrated['settings'],legacy_merge_policies(source,repos))
-            self.assertEqual(migrated['revision'],2);self.assertEqual(migrated['credential_ref'],'private-ref')
-            with store.read_snapshot() as db:
-                previous=db.execute("SELECT active,settings_json FROM configuration WHERE domain='runtime.json' AND revision=1").fetchone()
-                self.assertEqual(previous[0],0);self.assertEqual(json.loads(previous[1]),source)
