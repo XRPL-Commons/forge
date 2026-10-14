@@ -3,6 +3,7 @@ import argparse
 from copy import deepcopy
 import fcntl
 import json
+import logging
 from pathlib import Path
 import signal
 import subprocess
@@ -442,8 +443,10 @@ class Service:
         deployments = Deployments(self.root, runner=self.runner, github=github, settings=settings)
         try:
             deployments.tick(config)
-        except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError) as error:
-            deployments.fail(str(error))
+        except Exception as error:
+            reason = 'Deployment tick failed (' + type(error).__name__ + '); retry pending'
+            logging.getLogger(__name__).warning(reason)
+            deployments.fail(reason)
         github = self.github_class(settings, config)
         github.deadline = time.monotonic() + 10
         try:

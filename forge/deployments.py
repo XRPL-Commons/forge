@@ -7,6 +7,7 @@ operator confirms the proposal.
 from copy import deepcopy
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 import re
@@ -19,7 +20,7 @@ from .store.operations import deployment_views
 from .store.runtime import required, writable
 from .factory.github import GitHubUnavailable
 from .factory.live import LiveUnavailable
-from .factory.runner import RunnerCapacity, RunnerError
+from .factory.runner import RunnerCapacity, RunnerError, scrub
 
 STRATEGIES = ('github_deployments', 'health', 'header', 'unobservable')
 OUTCOMES = ('pass', 'reject', 'unable', 'wait', 'blocked_environment')
@@ -167,7 +168,9 @@ class Deployments:
                 "WHERE json_extract(j.runner_config_json,'$.provider_auth_file_env')=? UNION ALL "
                 "SELECT 1 FROM auxiliary_leases l JOIN auxiliary_runtime r ON r.execution_id=l.execution_id "
                 "WHERE json_extract(r.manifest_json,'$.runner_config.provider_auth_file_env')=? LIMIT 1", (reference, reference)).fetchone()
-                or db.execute('SELECT 1 FROM discussion_leases LIMIT 1').fetchone())
+                or db.execute("SELECT 1 FROM discussion_leases l LEFT JOIN discussion_runtime r ON r.execution_id=l.execution_id "
+                    "WHERE r.manifest_json IS NULL OR json_extract(r.manifest_json,'$.runner_config.provider_auth_file_env')=? LIMIT 1",
+                    (reference,)).fetchone())
 
     def new_job(self, config, repo, head, deadline):
         """A probe-shaped internal job: no issue, no candidate, no publication."""
@@ -232,9 +235,14 @@ class Deployments:
     def memory_draining(self, config):
         if not config.get('memory_tiers'):
             return False
+        admitted = {row['id'] for row in self.settings.view()['repositories'] if row['dispatch_allowed']}
         with self.database.read_snapshot() as db:
-            return db.execute("SELECT 1 FROM unit_environment_observations e JOIN units u ON u.id=e.unit_id "
-                              "WHERE e.memory_retry_json IS NOT NULL AND e.memory_retry_json!='null' AND u.state NOT IN ('merged','closed','dissolved') LIMIT 1").fetchone() is not None
+            rows = db.execute("SELECT u.repository_id FROM unit_environment_observations e JOIN units u ON u.id=e.unit_id "
+                              "WHERE e.memory_retry_json IS NOT NULL AND e.memory_retry_json!='null' "
+                              "AND u.state IN ('queued','building','integrating','reviewing','auditing') "
+                              "AND NOT EXISTS(SELECT 1 FROM unit_gates g WHERE g.unit_id=u.id "
+                              "AND g.code='operator_pause' AND g.resolved_at IS NULL)")
+            return any(row['repository_id'] in admitted for row in rows)
 
     def observe(self, github, reader):
         errors, view = [], self.settings.view()
@@ -259,27 +267,30 @@ class Deployments:
             for candidate in candidates:
                 if time.monotonic() >= getattr(github, 'deadline', float('inf')):
                     break
-                merge = json.loads(candidate['details_json']).get('merge_sha')
-                if not merge:
-                    continue
-                item = dict(repo=row['name'], repo_id=row['id'], number=candidate['github_number'])
-                live, deploy = (observed.get('live') or {}).get('commit'), observed.get('deploy') or {}
-                verdict, commit, via = None, None, None
                 try:
+                    merge = json.loads(candidate['details_json']).get('merge_sha')
+                    if not merge:
+                        continue
+                    item = dict(repo=row['name'], repo_id=row['id'], number=candidate['github_number'])
+                    live, deploy = (observed.get('live') or {}).get('commit'), observed.get('deploy') or {}
+                    verdict, commit, via = None, None, None
                     if live and (merge.startswith(live) or github.contains(item, merge, live)):
                         verdict, commit, via = 'success', live, 'live'
                     elif deploy.get('state') in ('success', 'failure') and deploy.get('sha') and github.contains(item, merge, deploy['sha']):
                         verdict, commit, via = deploy['state'], deploy['sha'], 'github'
-                except GitHubUnavailable as error:
-                    errors.append({'repo': row['name'], 'reason': str(error)})
-                    continue
-                if verdict:
-                    identifier = hashlib.sha256((candidate['id'] + commit + verdict + via).encode()).hexdigest()
-                    with self.database.write() as db:
-                        writable(db)
-                        db.execute('INSERT INTO deployment_observations VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
-                                   (identifier, row['id'], candidate['id'], (profile.get('deploy') or {}).get('environment') or '',
-                                    verdict, commit, self.clock(), json.dumps({'via': via, 'run_url': deploy.get('run_url')})))
+                    if verdict:
+                        identifier = hashlib.sha256((candidate['id'] + commit + verdict + via).encode()).hexdigest()
+                        with self.database.write() as db:
+                            writable(db)
+                            db.execute('INSERT INTO deployment_observations VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
+                                       (identifier, row['id'], candidate['id'], (profile.get('deploy') or {}).get('environment') or '',
+                                        verdict, commit, self.clock(), json.dumps({'via': via, 'run_url': deploy.get('run_url')})))
+                except Exception as error:
+                    reason = scrub(str(error))[:500] if isinstance(error, GitHubUnavailable) else ('Deployment observation failed (' + type(error).__name__ + '); retry pending')
+                    logging.getLogger(__name__).warning('%s: candidate %s', reason, candidate['id'])
+                    observed['error'] = '; '.join(filter(None, (observed['error'], reason)))[:500]
+                    errors.append({'repo': row['name'], 'reason': reason})
+            self.save(row['id'], observed=observed)
         return errors
 
     def read_live(self, github, reader, row, profile, previous, ungranted):

@@ -56,7 +56,7 @@ class SetupStageTests(unittest.TestCase):
 
     def test_account_can_be_renewed_after_start_without_reopening_setup_authority(self):
         self.factory.check(apply=True)
-        service, _, _ = sql_setup.SqliteSetupTests.service(self)
+        service, _, _ = sql_setup.SetupTests.service(self)
         for _ in range(30):
             if not self.setup.read()['operation']: break
             service.tick()

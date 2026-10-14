@@ -146,7 +146,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,sys.argv[1])
 from forge.store.fresh import initialize
-from forge.sqlite_onboarding import SetupState
+from forge.onboarding import SetupState
 from forge.setup_service import Service
 from forge.factory.probe_runner import ProbeRunner,PROVIDER
 from forge.factory.runner import ContainerRunner

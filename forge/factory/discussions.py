@@ -1,4 +1,4 @@
-"""Durable issue conversations. Discussion runs have read-only repository tokens.
+"""Durable issue conversations. Discussion runs read repositories through the credential-free mirror.
 
 The service drives one disposable discussion at a time under controller_lock.
 An explicit operator Apply or the exact documented close command enters the decision queue.
