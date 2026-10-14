@@ -359,6 +359,7 @@ class ResultControllerTests(unittest.TestCase):
         self.assertEqual(self.view()['state'], 'reviewing')
         self.verdicts.receipt = {'check_id': 42}
         self.verdicts.after = lambda: self.github.pr_value['head'].update(sha='c' * 40)
+        self.controller.clock = lambda: 130
         self.assertEqual(self.controller.step(job)['pending'], 'candidate_reconciliation')
         self.assertEqual(self.charges(), 0)
         self.assertIsNone(self.queries.job(job)['outcome'])
@@ -501,3 +502,22 @@ class ResultControllerTests(unittest.TestCase):
         self.assertEqual(page['items'][0]['error'], 'GitHubUnavailable')
         self.assertIsNone(self.queries.job(job)['outcome'])
         self.assertEqual(self.charges(), 0)
+
+    def test_saved_result_retry_survives_controller_restart_without_extending_deadline(self):
+        job = self.reserve()
+        self.capture(job)
+        self.github.issue_error = True
+        with self.assertRaises(GitHubUnavailable):
+            self.controller.step(job)
+        now = [110]
+        restarted = ResultController(self.store, self.github, policy=lambda job: self.policy,
+            verdicts=self.verdicts, clock=lambda: now[0])
+        self.assertEqual(restarted.step(job),
+            {'job_id': job, 'pending': 'GitHubUnavailable', 'retry_at': 130})
+        now[0] = 129
+        self.assertEqual(restarted.step(job)['retry_at'], 130)
+        now[0] = 130
+        self.github.issue_error = False
+        self.assertTrue(restarted.step(job)['charged'])
+        self.assertEqual(restarted.step(job)['outcome'], 'failure')
+        self.assertEqual(self.charges(), 1)

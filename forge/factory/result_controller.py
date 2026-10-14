@@ -80,6 +80,9 @@ class ResultController:
         from ..store.scheduling import Scheduling
         scheduling = self.scheduling or Scheduling(self.store, clock=self.clock)
         job = self.queries.job(job_id)
+        pending = scheduling.pending(job['unit_id'], 'results', job_id=job_id)
+        if pending:
+            return {'job_id': job_id, 'pending': pending['reason'], 'retry_at': pending['due_at']}
         try:
             value = self._step(job_id)
         except (RequestBudgetExhausted, GitHubUnavailable, TransitionError, StoreError, ArtifactCorrupt, OSError) as error:
@@ -101,7 +104,13 @@ class ResultController:
             return {'job_id': job_id, 'outcome': job['outcome']}
         if job['captured_at'] is None or not job['cleanup']:
             return {'job_id': job_id, 'pending': 'cleanup'}
-        capture = self.queries.capture(job_id)
+        try:
+            capture = self.queries.capture(job_id)
+        except ArtifactCorrupt:
+            from ..store.capture_problems import CaptureProblems
+            return {'job_id': job_id, **CaptureProblems(self.store, clock=self.clock).defer(
+                self._command(job), job_id, execution_fence=job['execution_fence'],
+                input_manifest=job['input_manifest'])}
         stale = (not job['capture_authorized'] or job.get('result_revoked')
                  or job['unit_state'] in {'merged', 'closed', 'dissolved'}
                  or job['assignment_generation'] != job['fencing_generation']
