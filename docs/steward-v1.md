@@ -6,7 +6,7 @@ The steward handles failed work, detected stalls and preparation of a retry brie
 
 The dossier pins issue membership and requirements, the candidate, independent holds, runtime configuration and repository autonomy. It includes references to retained attempt evidence and durable repository notes. A later change makes an unselected decision stale.
 
-The default autonomy is `reversible`. An obvious recommended retry, wait or rebuild can proceed automatically. A `manual` repository policy requires operator selection for every choice. Split, drop, fold, escalation and questions always require an authenticated operator choice. The core stores policy revisions under the repository's immutable ID; an operator-facing policy editor remains a release prerequisite.
+The default autonomy is `reversible`. An obvious recommended retry, wait or rebuild can proceed automatically. A `manual` repository policy requires operator selection for every choice. Split, drop, fold, escalation and questions always require an authenticated operator choice. Change this policy in Settings → Repositories → Steward autonomy. The core stores policy revisions under the repository's immutable ID. A change invalidates older recommendations.
 
 Selection records the exact stored choice. The browser sends identifiers and a request ID; it cannot alter the proposed parameters. Interrupted replies keep the choice locked until a fresh read, with an explicit retry using the same request ID.
 
@@ -21,7 +21,7 @@ There are at most three logical steward cycles per delivery. A separate brief co
 - **Drop:** records the intent on every source issue before closing it.
 - **Fold:** records the intent on the destination and every source before closing the sources.
 - **Question:** posts the question while keeping the original obligation open.
-- **Escalation:** requires an existing trusted fault signature. Until a Forge report destination is configured, the choice remains an explicit operator-owned wait; it cannot invent a destination or publish a report.
+- **Escalation:** requires an existing trusted fault signature. The UI offers the existing prepared Forge report for that signature. The choice remains an operator-owned wait until a person files or resolves the report; preparing a draft never claims it was published.
 
 GitHub mutations use the existing external-effects outbox. Each step has an immutable identity, retry state and confirmation. A lost POST reply is reconciled by an exact bot-authored marker and payload. If the outcome remains unknown, Forge waits instead of repeating the POST. Comments and child creation precede closures. New writes check current local authority, remote issue state, runtime enablement and repository admission.
 
@@ -31,7 +31,6 @@ The UI displays the complete original issue scope. A recorded choice stays pendi
 
 Before deployment:
 
-- Complete the operator-facing autonomy policy control and the report-draft handoff.
 - Review the combined core, executor, outbox and UI change independently.
 - Pass full CI and qualify the new steward schema on the installed provider image.
 - Exercise the captured stuck-work cases through automatic application or one operator choice, including a grouped delivery and an interrupted remote reply.

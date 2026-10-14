@@ -62,6 +62,10 @@ def view_in(db, key):
         "JOIN unit_issues m ON m.id=p.value->>'member_id' JOIN issues i ON i.id=m.issue_id "
         "JOIN issue_revisions r ON r.id=p.value->>'requirements_revision_id' ORDER BY i.github_number",
         (json.dumps(dossier['authority']['members']),))]}
-    return {'scope': scope, 'decision': {**marker, 'status': status,
+    report = None
+    if selected['choice'] and selected['choice']['action'] == 'escalate_forge':
+        from .execution_problems import report_in
+        report = report_in(db, selected['choice']['parameters']['signature'])
+    return {'scope': scope, 'report_draft': report, 'decision': {**marker, 'status': status,
         **{field: output[field] for field in ('version','choices','recommended_choice_id','confidence')},
         'brief': selected['brief'], 'application': application}, 'repositories': repositories}

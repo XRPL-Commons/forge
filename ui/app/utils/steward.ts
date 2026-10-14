@@ -69,4 +69,4 @@ export interface StewardDecisionMarker { decision_id: string; digest: string; st
 export interface StewardDecision extends StewardDecisionContent, StewardDecisionMarker {
   application: null | { request_id: string; choice_id: string; status: 'pending' | 'applied' | 'failed'; message: string | null }
 }
-export interface StewardDecisionResponse { ok: true; controls_token?: string; decision: StewardDecision | null; repositories: StewardRepository[]; scope?: StewardScope | null }
+export interface StewardDecisionResponse { ok: true; controls_token?: string; decision: StewardDecision | null; repositories: StewardRepository[]; scope?: StewardScope | null; report_draft?: import('./issues').IssueRow['forge_problem_report'] }

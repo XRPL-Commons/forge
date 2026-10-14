@@ -168,9 +168,9 @@ class StewardEffectController(Lifecycle):
             if pending:return {'effect_id':identifier,'status':'pending','reason':'earlier_step'}
         if row['payload']['operation']=='report_wait':
             with self.store.write() as db:
-                writable(db);db.execute("UPDATE external_effects SET status='failed',receipt_json=?,updated_at=? WHERE id=?",
-                    (_json({'reason':'report_target_unconfigured','signature':row['payload']['signature']}),self.clock(),identifier))
-            return {'effect_id':identifier,'status':'failed','reason':'report_target_unconfigured'}
+                writable(db);db.execute("UPDATE external_effects SET retry_at=?,updated_at=? WHERE id=?",
+                    (self.clock()+retry_policy(self.reliability())['retry_cap'],self.clock(),identifier))
+            return {'effect_id':identifier,'status':'pending','reason':'operator_report_draft'}
         try:
             item,method,path,payload,marker=self._requests(row)
             found=self._readback(row,item,method,path,payload,marker)

@@ -142,3 +142,23 @@ class StewardEffectsTests(unittest.TestCase):
         self.assertEqual([write[1] for write in self.writes],['/issues/2/comments','/issues/1/comments','/issues/1'])
         self.assertEqual(self.issues[2]['state'],'open')
         self.assertEqual(self.f.view()['state'],'closed')
+
+    def test_escalation_exposes_trusted_report_draft_without_publishing(self):
+        _,_,job=self.f.accepted()
+        from forge.harnesses.execution import fault
+        details=fault('SchemaError');signature=details['signature']
+        with self.store.write() as db:
+            db.execute('INSERT INTO forge_problem_reports VALUES(?,?,?)',(signature,json.dumps(details),self.f.now))
+            db.execute('INSERT INTO forge_problem_report_jobs VALUES(?,?)',(signature,job['id']))
+        self.f.now+=1
+        command=self.f.command()
+        self.f.life._apply(command,'test_repaired_stall',{},lambda db,u:
+            self.f.life._resolve(db,command,self.f.gate,{'repaired':True}) or {})
+        self.f.gate=self.f.open_gate('forge_problem',{'source':'scheduling','reason':'stalled','owner':'dispatch'})
+        _,effects=self.queue('escalate_forge',{'signature':signature})
+        self.assertEqual(self.driver.step(effects[0])['reason'],'operator_report_draft')
+        view=self.service.view('i')
+        self.assertEqual(view['report_draft']['signature'],signature)
+        self.assertEqual(view['report_draft']['status'],'draft')
+        self.assertEqual(view['decision']['application']['status'],'pending')
+        self.github.call.assert_not_called()
