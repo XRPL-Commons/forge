@@ -487,6 +487,13 @@ class ExecutionQueries:
             if job['role'] == 'recovery':
                 from .recovery import failure_context
                 job['failure'] = failure_context(self.store, db, job['id'])
+            if job['role'] == 'steward':
+                from .steward import dossier_in, decision_in
+                from ..steward_contract import decision_schema
+                dossier = dossier_in(db,job['id'])
+                accepted = decision_in(db,dossier['trigger']['decision_id'])[1] if dossier['mode']=='brief' else None
+                job['steward'] = {'dossier':dossier,'accepted_decision':accepted,
+                                  'decision_schema':decision_schema(dossier,accepted=accepted)}
             prepared = db.execute('SELECT p.source_json,i.publication_authorization_json FROM mirror_job_inputs i '
                 'JOIN mirror_sources p ON p.digest=i.source_digest AND p.policy_digest=i.policy_digest WHERE i.job_id=?', (job_id,)).fetchone()
             if prepared:

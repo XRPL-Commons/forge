@@ -15,7 +15,7 @@ from .dispatch_controller import DispatchController, GitHubPrepare
 from .execution_controller import ExecutionController
 from .observation_controller import ObservationController
 from .result_controller import ResultController
-from .recovery_controller import RecoveryController
+from .steward_controller import StewardController
 from .verification_controller import VerificationController
 from .requirements_controller import RuntimeRequirementsController
 from .merge_controller import MergeAdmission, MergeController
@@ -44,7 +44,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     readiness = RepositoryReadiness(store, settings, clock=clock)
 
     def execution_admission(item):
-        return admission(item) if item['role'] == 'recovery' else readiness.allowed(item)
+        return admission(item) if item['role'] in {'recovery','steward'} else readiness.allowed(item)
 
     def current_config():
         current = load(root)
@@ -75,7 +75,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         results=ResultController(store, github, policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), verdicts=effects,
             requirements=requirements, clock=clock, hold_labels=config['hold_labels'],
             availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling, publisher=publisher),
-        recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
+        recovery=StewardController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
                                       admission=readiness.allowed, readiness=readiness, clock=clock))

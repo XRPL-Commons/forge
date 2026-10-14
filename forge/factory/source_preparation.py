@@ -96,23 +96,52 @@ class SourcePreparation:
         return PreparedSource(path, record['source_input'], record['session_id'], socket_directory,
                               record['network_generation'], record['publication_authorization'])
 
+    def _failed_notes(self, job, failed_id):
+        frozen = self.mirror.prepared(failed_id) if failed_id else None
+        if frozen:
+            return {'job_id':failed_id,'source_input':frozen['source_input'],'notes':frozen['notes']}
+        return {'job_id':failed_id,'issue_snapshots':[
+            {key:member.get(key) for key in ('issue_number','title','body','requirements_hash')}
+            for member in job.get('members',[])], 'comments_unavailable':True}
+
     def _notes(self, job, notes, publication_authorization):
         result = deepcopy(notes)
         result['publication_authorization'] = deepcopy(publication_authorization)
-        if job.get('role') == 'recovery':
+        if job.get('role') == 'steward':
+            from ..store.artifacts import read_in, ArtifactExpired
+            dossier = job['steward']['dossier']
+            # References were pinned at reservation. Never refresh diagnostic
+            # evidence or issue requirements from a later GitHub observation.
+            evidence, notes, remaining = [], [], 262144
+            with self.store.read_snapshot() as db:
+                for ref in dossier['facts']['artifact_refs']:
+                    if ref['kind'] not in {'failure_evidence','result','summary','steward_decision'}:
+                        continue
+                    if remaining <= 0:break
+                    try:
+                        artifact = read_in(db,ref['job_id'],ref['kind'],ref['sequence'])
+                    except (KeyError,ArtifactExpired):
+                        evidence.append({'reference':ref,'unavailable':True});continue
+                    if artifact.digest != ref['digest']:raise MirrorError('assignment_changed')
+                    limit=min(16384,remaining)
+                    excerpt=artifact.content[:limit].decode('utf-8',errors='replace')
+                    evidence.append({'reference':ref,'excerpt':excerpt,'truncated':len(artifact.content)>limit})
+                    remaining-=len(excerpt.encode())
+                for ref in dossier['facts']['note_revision_refs']:
+                    row=db.execute('SELECT content,sources_json FROM repository_note_revisions WHERE note_id=? AND revision=?',
+                                   (ref['note_id'],ref['revision'])).fetchone()
+                    if row is None:raise MirrorError('assignment_changed')
+                    notes.append({**ref,'content':row['content'],'sources':json.loads(row['sources_json'])})
+            result['steward_evidence']={'artifacts':evidence,'notes':notes,'truncated':remaining<=0}
+            failed_id=dossier['trigger'].get('failed_job_id')
+            if failed_id:
+                result['failed_assignment']=self._failed_notes(job,failed_id)
+        elif job.get('role') == 'recovery':
             # Recovery diagnoses the failed assignment, including requirements
             # that have since changed or closed. Never refresh its authority.
             with self.store.read_snapshot() as db:
                 row = db.execute('SELECT failed_job_id FROM recovery_assignments WHERE job_id=?', (job['id'],)).fetchone()
-            frozen = self.mirror.prepared(row['failed_job_id']) if row else None
-            if frozen:
-                result['failed_assignment'] = dict(job_id=row['failed_job_id'], source_input=frozen['source_input'],
-                    notes=frozen['notes'])
-            else:
-                result['failed_assignment'] = dict(job_id=row['failed_job_id'] if row else None,
-                    issue_snapshots=[{key: member.get(key) for key in
-                        ('issue_number', 'title', 'body', 'requirements_hash')} for member in job.get('members', [])],
-                    comments_unavailable=True)
+            result['failed_assignment']=self._failed_notes(job,row['failed_job_id'] if row else None)
         elif self.github is not None and job.get('members'):
             observations = []
             for member in job['members']:
@@ -152,8 +181,16 @@ class SourcePreparation:
         return base, sorted(set(inputs))
 
     def _source_pins(self, job, manifest):
-        failed_id = (job.get('failure') or {}).get('attempt') if job.get('role') == 'recovery' else None
+        steward = job.get('role') == 'steward'
+        failed_id = ((job['steward']['dossier']['trigger'].get('failed_job_id') if steward else None)
+                     or ((job.get('failure') or {}).get('attempt') if job.get('role') == 'recovery' else None))
         frozen = self.mirror.prepared(failed_id) if failed_id else None
+        if steward:
+            base,inputs=self._pins(job,manifest)
+            if frozen:
+                source=frozen['source_input']
+                inputs=sorted(set(inputs+[source['base_oid'],*source['input_oids']]))
+            return base,inputs
         if frozen:
             source = frozen['source_input']
             return source['base_oid'], list(source['input_oids'])

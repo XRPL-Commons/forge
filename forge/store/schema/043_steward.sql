@@ -83,3 +83,4 @@ UPDATE configuration SET active=0 WHERE (domain,subject,revision) IN
 INSERT INTO configuration(domain,subject,revision,active,settings_json,credential_ref,created_at)
 SELECT domain,subject,revision,1,settings_json,credential_ref,unixepoch('now') FROM steward_role_configs;
 DROP TABLE steward_role_configs;
+CREATE INDEX steward_decisions_unit_page ON steward_decisions(unit_id,accepted_at DESC,decision_id DESC);

@@ -3,8 +3,6 @@ from copy import deepcopy
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
-from forge.store.codes import ARTIFACT_KINDS
 
 from forge.steward_contract import decision, decision_schema, digest
 from forge.store.db import Store
@@ -17,9 +15,6 @@ from forge.store.transitions import _id, _json, _unit, project_unit
 
 class StewardCoreTests(unittest.TestCase):
     def setUp(self):
-        # The integrator owns the Python role registry; SQL043 supplies the same kinds.
-        registry=patch('forge.store.artifacts.ARTIFACT_KINDS',{**ARTIFACT_KINDS,'steward_dossier':'durable','steward_decision':'durable'})
-        registry.start();self.addCleanup(registry.stop)
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.store = Store.create(temp.name)
         self.now, self.serial = 100., 0

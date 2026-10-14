@@ -145,6 +145,8 @@ def plan_schema():
 
 
 def schema(note):
+    if note['role'] == 'steward':
+        return note['steward']['decision_schema']
     props = {'version': {'type': 'integer', 'enum': [1]},
              'attempt': {'type': 'string', 'enum': [note['id']]},
              'role': {'type': 'string', 'enum': [note['role']]},
