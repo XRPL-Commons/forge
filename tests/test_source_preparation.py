@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import tempfile
 import shutil
@@ -90,6 +91,23 @@ class SourcePreparationTests(unittest.TestCase):
         self.assertEqual(retry.source_input, prepared.source_input)
         self.assertEqual(calls, self.access.calls)
         self.assertEqual(assignment, json.loads((prepared.input_directory / 'assignment.json').read_text()))
+
+    def test_assignment_mode_is_independent_of_setup_umask_and_repaired_on_replay(self):
+        job = self.reserve()
+        previous_mask = os.umask(0o077)
+        try:
+            prepared = self.preparation.prepare(job, {'purpose':'immutable worker input'})
+            path = prepared.input_directory / 'assignment.json'
+            original = path.read_bytes()
+            self.assertEqual(path.stat().st_mode & 0o777, 0o444)
+            # A previously materialized file may carry the old umask-dependent
+            # mode. Replay restores readability without replacing its contents.
+            path.chmod(0o400)
+            self.preparation.prepare(job, {'purpose':'cannot replace original notes'})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(path.read_bytes(), original)
+        finally:
+            os.umask(previous_mask)
 
     def test_stale_execution_cannot_prepare_or_keep_its_mirror(self):
         job = self.reserve()

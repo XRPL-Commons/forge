@@ -87,6 +87,9 @@ class SourcePreparation:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
+        # The setup CLI intentionally uses umask 077. The mounted assignment
+        # must still be readable by the worker UID, including on replay.
+        target.chmod(0o444)
         path.chmod(0o555)
         socket_directory = session_directory(self.root, record['session_id'])
         socket_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
