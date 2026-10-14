@@ -1,16 +1,16 @@
 """Approved ownership transfer never becomes a general publication exemption."""
 from copy import deepcopy
-import io
 import json
 import unittest
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import uuid
-from unittest.mock import patch
 
 from forge.factory.contracts import candidate
-from forge.factory.harness import check_publication_target, AssignmentChanged, export_child
+from forge.factory.harness import export_child
+from forge.factory.publisher_runtime import publication_authorization
+from forge.publication_artifacts import PublicationClaim
 from forge.factory.ownership import publication_transfer_matches
 
 
@@ -48,14 +48,21 @@ class DeliveryPublicationTests(unittest.TestCase):
         self.assertFalse(publication_transfer_matches({**self.pr, 'number': 8}, context))
         self.assertFalse(publication_transfer_matches({**self.pr, 'user': {**self.author, 'id': 92}}, context))
 
-    def test_image_checks_target_again_before_running_the_provider(self):
-        note = {**self.job, 'resume_pr': 7, 'resume_branch': 'topic', 'resume_head': 'a' * 40,
-                'publication_author': self.author}
-        with patch('forge.factory.harness.urlopen', return_value=io.BytesIO(json.dumps(self.pr).encode())):
-            check_publication_target(note, {'GH_TOKEN': 'synthetic-private-token'})
-        changed = deepcopy(self.pr); changed['head']['sha'] = 'd' * 40
-        with patch('forge.factory.harness.urlopen', return_value=io.BytesIO(json.dumps(changed).encode())):
-            with self.assertRaises(AssignmentChanged): check_publication_target(note, {'GH_TOKEN': 'synthetic-private-token'})
+    def test_host_checks_exact_transferred_target_before_source_preparation(self):
+        note = {**self.job, 'role': 'build', 'resume_pr': 7, 'resume_branch': 'topic',
+                'resume_head': 'a' * 40, 'publication_author': self.author,
+                'input_manifest': {**self.job['input_manifest'], 'base_oid': 'b' * 40,
+                    'publication_target': {**self.target, 'candidate_id': 'approved'},
+                    'existing_candidates': [{'candidate_id': 'approved', 'head_oid': 'a' * 40,
+                        'pull_number': 7, 'branch': 'topic', 'author': self.author}]}}
+        github = SimpleNamespace(pr=lambda *_: self.pr, publisher=lambda role: role + '[bot]')
+        authorization = publication_authorization(note, github)
+        self.assertEqual(authorization['kind'], 'ownership_transfer')
+        self.assertEqual(authorization['expected_head_oid'], 'a' * 40)
+        self.pr['head']['sha'] = 'd' * 40
+        with self.assertRaises(PublicationClaim) as raised:
+            publication_authorization(note, github)
+        self.assertEqual(raised.exception.code, 'publication_target_changed')
 
     def test_bad_child_output_is_failure_not_an_environment_hold(self):
         with tempfile.TemporaryDirectory() as root:

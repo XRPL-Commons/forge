@@ -135,19 +135,18 @@ class OriginalOutputRecoveryTests(unittest.TestCase):
         self.life.observe_issue(self.command(),'issue-1',state='open',title='Issue',body='Changed scope',requirements='changed',
             remote_updated_at='2026-10-10T00:00:00Z',generation=1)
         self.github.token.return_value='ephemeral-token'
-        class BundleRunner(runner_fixture.Runner):
-            def prepare(runner,job,token,*,bundles=()):
-                runner.received=list(bundles)
-                super().prepare(job,token)
-        runner=BundleRunner(self.github)
+        runner=runner_fixture.Runner(self.github)
         recovery=RecoveryController(self.store,runner,self.github,config=self.config,admission=lambda _:True,clock=lambda:100)
         identifier=recovery.schedule(failed_id)['job_id']
         self.assertTrue(self.jobs.job(identifier)['launch_allowed'])
         execution=ExecutionController(self.store,runner,self.github,enabled=lambda:True,admission=lambda _:True,clock=lambda:100)
         self.assertTrue(execution.step(identifier)['cleanup'])
-        self.assertEqual(len(runner.received),1)
-        self.assertEqual(runner.received[0]['commit_oid'],head)
-        self.assertEqual(runner.received[0]['content'],bundle)
+        # Source preparation owns bundle loading now; recovery must retain the
+        # exact archived references even after predecessor membership changes.
+        received=list(self.jobs.input_bundles(self.jobs.input_refs(self.jobs.job(identifier))))
+        self.assertEqual(len(received),1)
+        self.assertEqual(received[0]['commit_oid'],head)
+        self.assertEqual(received[0]['content'],bundle)
         self.assertEqual(runner.notes[0]['failure']['input_manifest'],failed['input_manifest'])
         self.assertTrue(recovery.finish(identifier)['accepted'])
         with self.store.read_snapshot() as db:
