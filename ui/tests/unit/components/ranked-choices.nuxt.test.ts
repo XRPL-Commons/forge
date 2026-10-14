@@ -58,4 +58,16 @@ describe('shared ranked steward choices', () => {
     expect(wrapper.get('[aria-label="Acceptance criteria"]').text()).toContain('Existing users can sign in.')
     wrapper.unmount()
   })
+  it('shows every source issue before a group choice is submitted', async () => {
+    const wrapper = await mountSuspended(RankedChoices, { props: { decision, scope: { unit_id: 'u', issues: [
+      { key: '1:10', repository_id: 1, number: 10, title: 'First intent' },
+      { key: '1:11', repository_id: 1, number: 11, title: 'Second intent' },
+    ] } } })
+    const scope = wrapper.get('[aria-label="Issues affected by this choice"]')
+    expect(scope.text()).toContain('all 2 issues')
+    expect(scope.text()).toContain('#10 — First intent')
+    expect(scope.text()).toContain('#11 — Second intent')
+    wrapper.unmount()
+  })
+
 })

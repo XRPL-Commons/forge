@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { choiceDetails, rankedChoices, STEWARD_LABELS, type StewardDecisionContent, type StewardSelection, type StewardRepository } from '~/utils/steward'
+import { choiceDetails, rankedChoices, STEWARD_LABELS, type StewardDecisionContent, type StewardSelection, type StewardRepository, type StewardScope } from '~/utils/steward'
 
 const props = withDefaults(defineProps<{
   decision: StewardDecisionContent & { decision_id: string; digest: string }
   repositories?: StewardRepository[]
+  scope?: StewardScope | null
   disabled?: boolean
   pendingChoice?: string | null
   selectedChoice?: string | null
@@ -21,6 +22,12 @@ function choose(choiceId: string) {
     <div class="flex flex-wrap items-baseline justify-between gap-2">
       <h3 class="text-sm font-semibold text-white">Choose the next step</h3>
       <p class="text-xs text-muted">Steward confidence: {{ Math.round(decision.confidence * 100) }}%</p>
+    </div>
+    <div v-if="scope?.issues.length" class="rounded-lg border border-line bg-panel p-3 text-sm" aria-label="Issues affected by this choice">
+      <p class="font-medium text-white">This choice applies to all {{ scope.issues.length }} {{ scope.issues.length === 1 ? 'issue' : 'issues' }} in this delivery.</p>
+      <ul class="mt-1 space-y-1 text-muted">
+        <li v-for="issue in scope.issues" :key="issue.key">#{{ issue.number }} — {{ issue.title }}</li>
+      </ul>
     </div>
     <ol class="space-y-2.5" aria-label="Ranked choices">
       <li v-for="(choice, index) in choices" :key="choice.id" class="rounded-xl border p-3 sm:p-4"

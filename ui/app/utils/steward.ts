@@ -14,12 +14,14 @@ export interface StewardParameters {
 export type StewardChoice = { [Action in StewardAction]: {
   id: string; action: Action; parameters: StewardParameters[Action]; reason: string; judgement: 'obvious' | 'judgement'
 } }[StewardAction]
+export interface StewardEvidenceReference { job_id: string; kind: string; sequence: number; digest: string }
+export interface StewardScope { unit_id: string; issues: { key: string; repository_id: number; number: number; title: string }[] }
 export interface StewardDecisionContent {
   version: 1
   choices: StewardChoice[]
   recommended_choice_id: string
   confidence: number
-  brief: null | { instructions: string; evidence_refs: string[]; choice_id: string }
+  brief: null | { instructions: string; evidence_refs: StewardEvidenceReference[]; choice_id: string }
 }
 export interface StewardSelection { decision_id: string; choice_id: string; digest: string }
 
@@ -67,4 +69,4 @@ export interface StewardDecisionMarker { decision_id: string; digest: string; st
 export interface StewardDecision extends StewardDecisionContent, StewardDecisionMarker {
   application: null | { request_id: string; choice_id: string; status: 'pending' | 'applied' | 'failed'; message: string | null }
 }
-export interface StewardDecisionResponse { ok: true; controls_token?: string; decision: StewardDecision | null; repositories: StewardRepository[] }
+export interface StewardDecisionResponse { ok: true; controls_token?: string; decision: StewardDecision | null; repositories: StewardRepository[]; scope?: StewardScope | null }
