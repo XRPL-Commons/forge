@@ -69,7 +69,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
             requirements=requirements, clock=clock, hold_labels=config['hold_labels'],
             availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling),
         recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
-        merges=MergeController(store, admission=merge_admission, clock=clock),
+        merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
                                       admission=readiness.allowed, readiness=readiness, clock=clock))
 

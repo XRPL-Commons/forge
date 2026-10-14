@@ -132,6 +132,20 @@ class MergeControllerTests(unittest.TestCase):
         self.config_reads += 1
         return deepcopy(self.config)
 
+    def test_merge_retry_uses_configured_schedule(self):
+        from forge.store.scheduling import Scheduling
+        self.prepare_candidate()
+        self.ready = False
+        self.controller.scheduling = Scheduling(self.store, clock=lambda: self.now, retry_seconds=75)
+        self.assertEqual(self.controller.step('u')['pending'], 'authorization')
+        before = self.admission_reads
+        self.now += 74
+        self.assertEqual(self.controller.step('u')['retry_at'], self.now + 1)
+        self.assertEqual(self.admission_reads, before)
+        self.now += 1
+        self.controller.step('u')
+        self.assertEqual(self.admission_reads, before + 1)
+
     def authorize(self, effect):
         self.admission_reads += 1
         return self.admission(effect)

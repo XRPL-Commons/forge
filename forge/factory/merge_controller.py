@@ -157,15 +157,16 @@ class MergeAdmission:
 
 
 class MergeController:
-    def __init__(self, store, *, admission, clock=time.time):
+    def __init__(self, store, *, admission, clock=time.time, scheduling=None):
         self.store, self.admission, self.clock = store, admission, clock
+        self.scheduling = scheduling
         self.effects = Effects(store, clock=clock)
         self.queries = Queries(store)
         self.commands = Lifecycle(store, clock=clock)
 
     def step(self, unit_id):
         from ..store.scheduling import Scheduling
-        schedules = Scheduling(self.store, clock=self.clock)
+        schedules = self.scheduling or Scheduling(self.store, clock=self.clock)
         pending=schedules.pending(unit_id, 'merges')
         if pending:
             return {'unit_id':unit_id,'pending':pending['reason'],'retry_at':pending['due_at']}
