@@ -98,7 +98,9 @@ const nextActionTime = computed(() => {
             </dl>
 
             <div id="issue-action-block" class="flex flex-col gap-2.5">
-              <section v-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
+              <LazyStewardDecision v-if="detail.steward_decision" :key="detail.key" :issue-key="detail.key"
+                :expected="detail.steward_decision" :disabled="busy" @selected="poll.refresh()" />
+              <section v-else-if="detail.decision_request" id="issue-decision" class="space-y-2 text-sm" aria-labelledby="decision-question">
                 <h3 id="decision-question" class="font-semibold">{{ detail.decision_request.question }}</h3>
                 <ul class="list-disc space-y-1 pl-5">
                   <li v-for="option in detail.decision_request.options" :key="option">{{ option }}</li>
@@ -189,7 +191,7 @@ const nextActionTime = computed(() => {
                   >Reopen it on GitHub to bring it back ↗</a>
                 </span>
               </div>
-              <div v-else id="issue-actions" class="flex flex-wrap items-center gap-2">
+              <div v-else-if="!detail.steward_decision" id="issue-actions" class="flex flex-wrap items-center gap-2">
                 <span v-if="detail.status === 'attention' && (primary === 'discuss' || !primary)" id="issue-needs-person" class="inline-flex min-h-8 basis-full items-center gap-2 text-sm text-amber-200">
                   <span aria-hidden="true" class="size-2 shrink-0 rounded-full bg-amber-200" />
                   {{ attentionNote(detail) }}
