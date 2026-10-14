@@ -62,11 +62,17 @@ export default async function (page, { base, scenario, requests }) {
   // The sign-in service is down: a way to retry.
   await scenario('down')
   await page.goto(base + '/login')
+  // The unavailable alert is server rendered. Keep the service down until the
+  // client middleware has also checked the session and installed the handler;
+  // otherwise hydration can recover before this test clicks the retry button.
+  await page.waitForFunction(() => document.querySelector('#__nuxt')?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false)
   await page.getByRole('alert').filter({ hasText: 'The sign-in desk is napping' }).waitFor()
   await page.getByRole('button', { name: 'Try again' }).waitFor()
   assert.equal(await page.getByRole('link', { name: 'Continue with GitHub' }).count(), 0)
   await scenario('auth-required')
+  const retried = page.waitForResponse(response => response.url() === base + '/api/auth/session' && response.ok())
   await page.getByRole('button', { name: 'Try again' }).click()
+  assert.equal((await (await retried).json()).operator, null)
   await page.getByRole('link', { name: 'Continue with GitHub' }).waitFor()
 
   await page.context().addCookies([{ name: 'synthetic_operator', value: 'yes', url: base }])
