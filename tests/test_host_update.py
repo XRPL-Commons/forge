@@ -1,4 +1,4 @@
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import io
 from pathlib import Path
 import subprocess
@@ -65,7 +65,7 @@ class FakeHost:
                 patch.object(host_update.urllib.request, 'urlopen', side_effect=lambda *a, **k: io.BytesIO(b'{}')),
                 patch.object(host_update.runpy, 'run_path', return_value={'generate': lambda *a: policy}),
                 patch.object(host_update, 'qualify_runner', self.qualify),
-                patch.object(host_update, 'wait_healthy', side_effect=self.healthy),
+                patch.object(host_update, 'wait_healthy', side_effect=lambda bind, **kw: self.healthy(bind)),
                 patch.object(host_update, 'Onboarding', return_value=Mock(runtime=Mock(return_value={'slots': {}})))]
 
     def healthy(self, bind):
@@ -130,6 +130,51 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(runtime['apparmor_profile'], 'forge-runner-private-proc')
         self.assertEqual(self.host.document('host.json')['source'], 'a' * 40)
         self.assertFalse((self.host.root / 'host-runtime.json').exists())
+
+    def test_an_update_after_a_maintenance_stop_starts_unchanged_services_too(self):
+        # The schema upgrade stops every Forge unit, then runs this update.
+        # A source-only change restarts the Python services; the unchanged UI
+        # must still come back or the health wait fails the whole update.
+        self.host.reconcile()
+        active = set()
+        run = self.host.run
+        def systemd(argv, check=False, **kwargs):
+            if argv[:3] in (['systemctl', '--user', 'restart'], ['systemctl', '--user', 'start']):
+                active.update(argv[3:])
+            return run(argv, check=check, **kwargs)
+        self.host.run = systemd
+        self.host.revision = 'b' * 40
+        def healthy(bind):
+            self.assertEqual(active, {name + '.service' for name in host_update.SERVICES})
+        self.host.healthy = healthy
+        self.host.reconcile()
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-supervisor.service']])
+        self.assertIn(['systemctl', '--user', 'start', 'forge-ui.service'], self.host.calls)
+        self.assertEqual(self.host.document('host.json')['source'], 'b' * 40)
+        _, output = self.host.reconcile()
+        self.assertIn('Forge host is up to date', output)
+
+    def test_stopping_or_replacing_an_already_removed_ui_container_succeeds(self):
+        import os
+        import shlex
+        self.host.reconcile()
+        unit = self.host.unit('forge-ui')
+        name = host_update.ui_container(self.host.root)
+        # `docker run --rm` already removed the container: Docker refuses both.
+        docker = self.host.base / 'docker'
+        docker.write_text('#!/bin/sh\nfor last; do :; done\ncase "$1" in stop|rm)\n'
+                          '  echo "Error response from daemon: No such container: $last" >&2; exit 1;;\nesac\n')
+        os.chmod(docker, 0o755)
+        def execute(directive):
+            lines = [line.split('=', 1)[1] for line in unit.splitlines() if line.startswith(directive + '=')]
+            self.assertEqual(len(lines), 1, directive)
+            ignore_failure = lines[0].startswith('-')  # systemd's "-" prefix
+            argv = shlex.split(lines[0].lstrip('-').replace('/usr/bin/docker', str(docker)))
+            result = subprocess.run(argv, capture_output=True, text=True)
+            self.assertIn('No such container: ' + name, result.stderr)
+            return 'done' if ignore_failure or not result.returncode else 'failed'
+        # Stop (including a restart's stop), then the replacement's start.
+        self.assertEqual([execute(d) for d in ('ExecStop', 'ExecStopPost', 'ExecStartPre')], ['done'] * 3)
 
     def test_mirror_unit_runs_the_qualified_launcher_before_supervisor(self):
         self.host.reconcile()
@@ -338,6 +383,25 @@ class ReconcileTests(unittest.TestCase):
         record = self.host.document('host.json')
         self.assertEqual(record['image'], first['image'])
         self.assertEqual(self.host.builds, 2)
+
+    def test_automated_confirmation_does_not_emit_opaque_unit_credentials(self):
+        from forge.store.migration.upgrade import output_tail
+        secret = 'opaque-private-value-without-token-prefix'
+        override = self.host.base / 'credential-override.conf'
+        override.write_text('[Service]\nExecStart=/worker --credential ' + secret + '\n')
+        changes = [(self.host.base / 'foreign.service',
+                    '[Service]\nEnvironment=CLIENT_SECRET=' + secret + '\n', '[Service]\n')]
+        for yes in (False, True):
+            output = io.StringIO()
+            with self.subTest(assume_yes=yes), redirect_stdout(output), patch.object(host_update.sys.stdin, 'isatty', return_value=False):
+                if yes:
+                    host_update.confirm(changes, True, [('forge-ui', override, True)])
+                else:
+                    with self.assertRaisesRegex(ValueError, 'rerun with --yes') as error:
+                        host_update.confirm(changes, False, [('forge-ui', override, True)])
+                    output.write(str(error.exception))
+            self.assertNotIn(secret, output.getvalue())
+            self.assertNotIn(secret, output_tail(output.getvalue()))
 
     def test_files_edited_outside_forge_are_only_replaced_after_confirmation(self):
         self.host.reconcile()

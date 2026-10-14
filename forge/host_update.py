@@ -245,8 +245,12 @@ def desired_units(root, bind):
                                        'FORGE_UPSTREAM_SECRET_FILE=' + str(root / UPSTREAM_SECRET)]),
         'forge-ui': unit('Forge operator UI', ' '.join(unit_quote(part) for part in ui),
                          after='network-online.target forge-status.service',
+                         # `docker run --rm` removes the container as soon as it
+                         # exits, so stopping or replacing it must accept that it
+                         # is already gone ("No such container") as done.
                          extra='ExecStartPre=-' + docker + ' rm --force ' + name + '\n'
-                               'ExecStop=' + docker + ' stop --time 10 ' + name + '\n'),
+                               'ExecStop=-' + docker + ' stop --time 10 ' + name + '\n'
+                               'ExecStopPost=-' + docker + ' rm --force ' + name + '\n'),
         'forge-supervisor': unit('Forge supervisor', unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root), python,
                                  after='network-online.target forge-mirror.service', requires='forge-mirror.service'),
     }
@@ -444,6 +448,12 @@ def dropins(units):
 def confirm(changes, assume_yes, overrides=()):
     if not changes and not overrides:
         return
+    if not sys.stdin.isatty():
+        if assume_yes:
+            return
+        # Unit contents can contain opaque credentials. Automated diagnostics
+        # retain fixed guidance; interactive operators can review the full diff.
+        raise ValueError('Files changed outside Forge would be replaced; inspect the service files and rerun with --yes')
     for path, current, desired in changes:
         print('\n' + str(path) + ' was changed outside Forge and will be replaced:')
         sys.stdout.writelines(difflib.unified_diff(current.splitlines(True), desired.splitlines(True), 'installed', 'update'))
@@ -452,8 +462,6 @@ def confirm(changes, assume_yes, overrides=()):
         print(path.read_text().rstrip())
     if assume_yes:
         return
-    if not sys.stdin.isatty():
-        raise ValueError('Files changed outside Forge would be replaced; review the differences above and rerun with --yes')
     if input('\nReplace them? [y/N] ').strip().lower() not in ('y', 'yes'):
         raise ValueError('Update cancelled; nothing was replaced')
 

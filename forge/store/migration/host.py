@@ -136,6 +136,12 @@ def failure(error, request):
     name=type(error).__name__
     result = dict(ok=False,error=error.code if isinstance(error,(MigrationError,StoreError)) else 'unexpected_migration_failure',
                   exception_type=name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',name) else 'Exception',stage=stage)
+    if isinstance(error, MigrationError):
+        if error.code == 'controller_busy':
+            result['retryable'] = True
+        if isinstance(error.detail, str) and error.detail:
+            # Already bounded and scrubbed by the raiser (the updater's tail).
+            result['detail'] = error.detail[-4000:]
     import sqlite3
     if isinstance(error, sqlite3.Error):
         # SQLite's structured identifiers contain no SQL, paths or stored data.
