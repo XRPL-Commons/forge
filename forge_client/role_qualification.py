@@ -70,9 +70,9 @@ def failure_report(value):
     enums = {'status': {'failed', 'qualified', 'planned'}, 'current_role': roles,
              'cleanup': {'confirmed', 'unconfirmed', 'pending'},
              'automation': {'disabled'}, 'automation_after': {'disabled', 'changed'},
-             'role': roles, 'provider': {'codex', 'claude', 'grok'},
+             'diagnostic_status': {'unavailable'}, 'role': roles, 'provider': {'codex', 'claude', 'grok'},
              'outcome': {'pass', 'reject', 'unable', 'wait', 'blocked_environment'}}
-    patterns = {'source_revision': r'[0-9a-f]{40}', 'image': r'sha256:[0-9a-f]{64}',
+    patterns = {'diagnostic_id': r'[0-9a-f]{32}', 'source_revision': r'[0-9a-f]{40}', 'image': r'sha256:[0-9a-f]{64}',
                 'source_digest': r'[0-9a-f]{64}', 'base_oid': r'(?:[0-9a-f]{40}|[0-9a-f]{64})',
                 'job_id': r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',
                 'reason': r'[a-z][a-z_]{0,79}'}
@@ -90,7 +90,7 @@ def failure_report(value):
                 result[key] = item
         return result
     report = project(value, ('status', 'reason', 'current_role', 'cleanup', 'source_revision', 'image',
-                             'automation', 'automation_after'))
+                             'automation', 'automation_after', 'diagnostic_id', 'diagnostic_status'))
     rows = value.get('results')
     if isinstance(rows, list):
         report['results'] = [project(row, ('role', 'status', 'job_id', 'provider', 'base_oid', 'source_digest',

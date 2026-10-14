@@ -118,6 +118,11 @@ def parser():
     roles.add_argument('--issue', required=True, type=int)
     roles.add_argument('--apply', action='store_true', help='Run seven bounded provider invocations with disposable work')
     roles.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    diagnostic = verb(fresh, 'qualification-diagnostic', help='Export one private qualification diagnostic to a new local file')
+    diagnostic.add_argument('--ssh', required=True)
+    diagnostic.add_argument('--id', required=True, help='Opaque diagnostic_id from a failed qualification report')
+    diagnostic.add_argument('--output', required=True, help='New local file; created with permissions 0600, never printed')
+    diagnostic.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
         command = verb(fresh, action, aliases=['sign-in'] if action == 'identity' else [],
                                    help={'new':'Walk through installation on a fresh VM', 'plan':'Observe the host and save a pinned installation plan', 'apply':'Apply the saved host installation plan', 'status':'Read saved installation progress', 'resume':'Resume the saved installation without repeating completed stages', 'host-key':'Discover an SSH fingerprint for you to verify', 'network':'Configure private Tailscale HTTPS access', 'identity':'Configure GitHub operator sign-in'}[action])
@@ -249,6 +254,9 @@ def execute(args):
         args.apply = True
         return account_login(args)
     if args.command == 'setup':
+        if args.setup_command == 'qualification-diagnostic':
+            from .qualification_diagnostics import execute as export_diagnostic
+            return export_diagnostic(args)
         if args.setup_command == 'qualify-roles':
             from .role_qualification import execute
             return execute(args)
@@ -292,7 +300,7 @@ def execute(args):
         from forge.planning_contract import commands as planning_commands
         from .install import schemas
         from .installation import schemas as installation_schemas
-        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup qualify-roles', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup qualify-roles', 'setup qualification-diagnostic', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),

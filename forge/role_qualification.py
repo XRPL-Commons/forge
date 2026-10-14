@@ -152,7 +152,7 @@ class CanarySource(SourcePreparation):
 
 
 def capture_evidence(capture, job):
-    """Bounded host facts survive cleanup; worker prose and logs never do."""
+    """Only bounded host facts enter the public report; private evidence is separate."""
     from .harnesses.execution import valid
     execution = capture.get('execution') or {}
     facts = {key: execution[key] for key in ('running', 'oom_killed') if type(execution.get(key)) is bool}
@@ -341,6 +341,16 @@ def qualify(root, repository, number, *, apply=False, image=None):
                         reports.append(validate_capture(captured,job,notes,source))
                     except Exception:
                         report['failure']=capture_evidence(captured,job)
+                        from .qualification_diagnostics import retain
+                        try:
+                            diagnostic = retain(root, captured, job, notes,
+                                source_revision=report['source_revision'], image=report['image'],
+                                secrets=runner._scrub_values(job))
+                            if diagnostic:
+                                report['diagnostic_id'] = diagnostic
+                        except (OSError, ValueError, RuntimeError):
+                            # Evidence storage cannot replace the original failure or skip teardown.
+                            report['diagnostic_status'] = 'unavailable'
                         raise
                 finally:
                     try:
