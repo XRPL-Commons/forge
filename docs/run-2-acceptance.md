@@ -47,11 +47,22 @@ shards, UI unit/type/build/browser checks and source audit passed in
 
 ## Live qualification
 
-- The approved GitHub signing probe is waiting at GitHub's passkey confirmation.
-  Its scratch repository exists, but installation selection, commit/signature
-  checks, signing-rule acceptance, workflow check and deletion are unfinished.
-  No signing strategy is marked qualified. An absent or mismatched qualification
-  record keeps host publication pending.
+- The approved scratch signing experiment completed on 2026-10-14. Controller
+  App `4959034` created REST commit `a914efb78a0e5e12f66dbbfe6261cd3a86a7359f`
+  without custom author/committer fields; GitHub reported a valid verified
+  signature and the exact ref update succeeded. Rule suite `4518978971` passed
+  organization signing rule `20606309`. Unsigned control commit
+  `ad57f6617be3fc2df67428721d471ec72fcb743f` was refused with the ref unchanged;
+  suite `4518979811` explicitly failed the same required-signatures rule. The
+  active rule had no bypass actors. REST therefore works for this installation;
+  the conditional GraphQL fallback was not needed.
+- The workflow-file attempt was refused with HTTP 403 and an unchanged ref.
+  The installation lacks Workflows write, so positive workflow support remains
+  unproven. The temporary token was revoked. Scratch repository `1418653585`
+  was deleted and an independent authenticated read returned 404.
+- This experiment does not synthesize a production qualification record. The
+  supported qualification CLI must still record its own operation bound to the
+  target repository, branch and current rules before enabling host publication.
 - The Controller's current installation lacks Workflows write permission. Test
   that limitation and report it; do not expand permission as part of the probe.
 - Anvil's native boundary canary passed on Ubuntu 24.04 and Docker 29.1.3,
@@ -60,16 +71,20 @@ shards, UI unit/type/build/browser checks and source audit passed in
   Real Git clone/fetch, denied push, provider TLS, npm/pip downloads, GitHub/host/
   cross-job denial, external DNS denial, immutable inputs, disk quota, session
   revocation and stopped capture passed. Disposable cleanup was confirmed.
-- Anvil installed `e430a9c` at schema 040 after the standalone CLI completed
-  verified cleanup of the formerly stuck probe. All four services are active,
-  and both runtime configurations still have automation and merging disabled.
-  Final updater verification exposed a separate bug: fixed termination/reuse
-  probes inherited an API-key requirement despite making no provider calls.
-  The stored Codex browser login is present. Fixed termination/reuse probes now
-  send only an empty credentials envelope after normal owned-created checks;
-  provider probes retain credential loading. Forty-one focused tests and
-  independent review passed. Upgrade completion and role qualification remain
-  pending the corrected release.
+- Anvil's supported upgrade completed successfully at `936859b`, schema 040.
+  All four services are active; automation and merging remain disabled. Verified
+  cleanup removed the formerly stuck probes. Fixed termination/reuse probes now
+  send an empty credentials envelope because their fixed programs make no
+  provider calls; provider probes retain normal authentication. Forty-one
+  focused tests, independent review and
+  [full CI](https://github.com/XRPL-Commons/forge/actions/runs/38557722035) passed.
+- The seven-role canary stopped before worker launch because fresh setup had no
+  configured repository policy row. Live read-only checks confirmed all four
+  Anvil Apps and successful access to the selected private repository. The
+  correction gives only the disposable canary an explicit policy for that
+  selection; configured deny rules and actual App access remain authoritative.
+  Its fresh-store regression and all seven source/broker paths passed focused
+  tests and independent review. Live role qualification remains pending.
 - The native boundary canary also passed on `e430a9c` and its rebuilt image
   `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
   All nine checks passed and disposable cleanup was confirmed.
@@ -122,4 +137,4 @@ admission passed 43 tests, and the standalone migration bundle passed 53 tests
 before this integration. Independent review covered the merge and these changes.
 The full combined CI gate passed on `e430a9c`
 ([run](https://github.com/XRPL-Commons/forge/actions/runs/38555781186)). The final
-probe correction still needs its gate and live upgrade completion.
+probe correction passed its full CI gate and completed Anvil's upgrade.
