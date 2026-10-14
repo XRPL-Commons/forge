@@ -21,7 +21,7 @@ CREATE TABLE mirror_sessions (
 ) STRICT;
 CREATE TABLE mirror_receipts (
  id TEXT PRIMARY KEY,
- session_id TEXT NOT NULL REFERENCES mirror_sessions(id),
+ session_id TEXT REFERENCES mirror_sessions(id),
  job_id TEXT NOT NULL,
  details_json TEXT NOT NULL CHECK(json_valid(details_json) AND length(details_json)<=65536),
  created_at REAL NOT NULL
@@ -56,3 +56,17 @@ CREATE TRIGGER mirror_claims_immutable BEFORE UPDATE ON mirror_claims
  BEGIN SELECT RAISE(ABORT,'mirror claim is immutable'); END;
 CREATE TRIGGER mirror_claims_retained BEFORE DELETE ON mirror_claims
  BEGIN SELECT RAISE(ABORT,'mirror claim is retained'); END;
+CREATE TABLE mirror_job_inputs (
+ job_id TEXT PRIMARY KEY,
+ execution_fence TEXT NOT NULL,
+ source_digest TEXT NOT NULL CHECK(length(source_digest)=64),
+ policy_digest TEXT NOT NULL REFERENCES mirror_policies(digest),
+ session_id TEXT NOT NULL UNIQUE REFERENCES mirror_sessions(id),
+ notes_json TEXT NOT NULL CHECK(json_valid(notes_json) AND length(notes_json)<=1048576),
+ publication_authorization_json TEXT NOT NULL CHECK(json_valid(publication_authorization_json) AND length(publication_authorization_json)<=65536),
+ created_at REAL NOT NULL
+) STRICT;
+CREATE TRIGGER mirror_job_inputs_immutable BEFORE UPDATE ON mirror_job_inputs
+ BEGIN SELECT RAISE(ABORT,'prepared job inputs are immutable'); END;
+CREATE TRIGGER mirror_job_inputs_retained BEFORE DELETE ON mirror_job_inputs
+ BEGIN SELECT RAISE(ABORT,'prepared job inputs are retained'); END;

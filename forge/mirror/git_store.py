@@ -44,7 +44,15 @@ def environment():
 
 
 def _disk_size(path):
-    return sum(item.stat().st_size for item in path.rglob('*') if item.is_file())
+    size = 0
+    for item in path.rglob('*'):
+        try:
+            if item.is_file():
+                size += item.stat().st_size
+        except FileNotFoundError:
+            # Git atomically renames temporary pack/ref files while monitored.
+            continue
+    return size
 
 
 def run_git(args, *, env=None, data=b'', limit=MAX_RESPONSE, timeout=120, alive=lambda: True, disk=None):
@@ -82,7 +90,10 @@ def run_git(args, *, env=None, data=b'', limit=MAX_RESPONSE, timeout=120, alive=
             return result
         finally:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             process.wait()
 
 
@@ -218,6 +229,21 @@ class GitStore:
         with self.locked(repository.repository_id, alive=alive) as path:
             object_format = run_git(['--git-dir', str(path), 'rev-parse', '--show-object-format']).decode().strip()
             yield BaseObjects(repository.repository_id, source_input_digest, object_format, tuple(pinned_oids), path)
+
+    def import_bundle(self, repository, content, head, base_oid, input_oids=(), *, alive=lambda: True):
+        # Exact retained bytes are inspected before they enter the shared host
+        # object cache. No worker object path or configuration is consulted.
+        from ..publication_artifacts import inspect_preparation_bundle, PublicationClaim
+        with self.locked(repository.repository_id, alive=alive) as path:
+            base = BaseObjects(repository.repository_id, '', 'sha1', tuple([base_oid, *input_oids]), path)
+            try:
+                pack = inspect_preparation_bundle(content, head, repository.repository_id, base_oid, input_oids, base)
+            except PublicationClaim:
+                raise MirrorError('source_bundle_invalid') from None
+            run_git(['--git-dir', str(path), 'index-pack', '--stdin', '--fix-thin', '--max-input-size=16777216'],
+                    data=pack, alive=alive, disk=path)
+            run_git(['--git-dir', str(path), 'cat-file', '-e', head + '^{commit}'], alive=alive)
+            run_git(['--git-dir', str(path), 'update-ref', 'refs/forge/pins/' + head, head], alive=alive)
 
     def reader(self, repository_id):
         return TreeReader(self.path(repository_id))

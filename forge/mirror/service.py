@@ -73,9 +73,10 @@ def wants(body):
 
 
 class Broker:
-    def __init__(self, session_id, store, git_store, *, resolve, live_authority, live_policy, clock=time.time):
+    def __init__(self, session_id, store, git_store, *, resolve, live_authority, live_policy, clock=time.time, revalidate=None):
         self.session_id, self.store, self.git_store = session_id, store, git_store
         self.resolve, self.live_authority, self.live_policy, self.clock = resolve, live_authority, live_policy, clock
+        self.revalidate = revalidate or (lambda repository: repository)
 
     def _session(self):
         session = self.store.session(self.session_id)
@@ -121,17 +122,17 @@ class Broker:
             def alive():
                 try:
                     current = self._session()
-                    self._authorize(current, repository)
+                    self._authorize(current, self.revalidate(repository))
                     return True
                 except MirrorError:
                     return False
 
             cache = self.git_store.ensure(repository, alive=alive)
             details.update(cache)
-            self._authorize(self._session(), repository)
+            self._authorize(self._session(), self.revalidate(repository))
             headers, response = self.git_store.http(repository, kind, body=body, protocol=metadata['protocol'], alive=alive)
             # No stream is handed back after a revoked execution or deny change.
-            self._authorize(self._session(), repository)
+            self._authorize(self._session(), self.revalidate(repository))
             details.update(outcome='served', response_bytes=len(response), finished_at=self.clock())
             if kind == 'advertisement':
                 details['refs_digest'] = hashlib.sha256(response).hexdigest()
