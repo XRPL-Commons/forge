@@ -16,7 +16,7 @@ class PreparationTests(unittest.TestCase):
         self.addCleanup(self.f.doCleanups)
 
     def refuse(self, transient=False):
-        raise RunnerPreparationError('project_denied', gate='dependency', transient=transient)
+        raise RunnerPreparationError('project_denied', gate='decision_required', transient=transient)
 
     def test_denial_is_cleaned_and_deferred_without_charging_or_retry(self):
         f = self.f; job = f.reserve()
@@ -30,8 +30,11 @@ class PreparationTests(unittest.TestCase):
         result = ResultController(f.store, object(), policy=lambda _: {}, clock=lambda: f.now).step(job)
         self.assertFalse(result['charged'])
         self.assertEqual(f.queries.job(job)['outcome'], 'deferred')
+        from forge.store.runtime_requirements import RuntimeRequirements
+        RuntimeRequirements(f.store, clock=lambda: f.now).dependencies(f.command(),
+            requirements_revision_id=f.manifest['requirements_revision_id'], generation=1, facts=[])
         with f.store.read_snapshot() as db:
-            gate = db.execute("SELECT details_json FROM unit_gates WHERE code='dependency' AND resolved_at IS NULL").fetchone()
+            gate = db.execute("SELECT details_json FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()
             self.assertIn('steward', gate[0])
             self.assertEqual(db.execute('SELECT count(*) FROM attempt_failures').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)

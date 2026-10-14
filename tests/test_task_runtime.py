@@ -99,8 +99,9 @@ class TaskContractTests(unittest.TestCase):
 
     def test_task_prompt_and_owner_only_planning_have_distinct_authority(self):
         job = self.job()
-        note = assignment({'instructions': 'Builders must publish the candidate using the normal submission procedure before requesting verification.'}, job)
-        self.assertIn('This assignment cannot publish a candidate.', note['instructions'])
+        note = assignment({'instructions': 'Builders must commit their complete local implementation before requesting verification.'}, job)
+        self.assertIn('this task cannot publish.', note['instructions'])
+        self.assertIn('Do not push, open or edit a pull request', note['instructions'])
         self.assertIn('every pinned member', note['instructions'])
         self.assertIn('read-only', note['instructions'])
         planning = assignment({'instructions': ''}, {**job, 'task': None, 'builder_stage': 'planning'})
@@ -127,7 +128,7 @@ class TaskContractTests(unittest.TestCase):
         self.assertEqual(capture['worktree_bundle'], bundle)
         self.assertEqual(runner.call.call_args.args[0], ['cp', 'owned-container:/work/output.bundle', '-'])
 
-    def test_real_execution_driver_mints_readonly_tokens_for_both_task_executors(self):
+    def test_real_execution_driver_keeps_github_credentials_out_of_both_task_executors(self):
         for executor in ('owner', 'child'):
             runner, github = Mock(), Mock()
             job = {**self.job(executor), 'cleanup': False, 'fenced': False, 'phase': 'starting',
@@ -142,7 +143,8 @@ class TaskContractTests(unittest.TestCase):
             runner.inspect.side_effect = [{'id': 'owned', 'status': 'created'},
                 {'id': 'owned', 'status': 'running'}, {'id': 'owned', 'status': 'running'}]
             self.assertFalse(driver._step(job['id'])['cleanup'])
-            github.token.assert_called_once_with('build', 1, worker=True, read_only=True)
+            github.token.assert_not_called()
+            runner.prepare.assert_called_once_with(job)
             runner.start.assert_called_once()
 
     def test_image_schema_remains_standalone_under_isolated_python(self):

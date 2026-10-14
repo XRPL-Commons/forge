@@ -164,7 +164,7 @@ class ContainerRunner:
                                                broker_socket_directory=prepared.socket_directory)
             return boundary
         except MirrorError as error:
-            raise RunnerPreparationError(error.reason, gate='dependency', transient=error.transient) from None
+            raise RunnerPreparationError(error.reason, gate='decision_required', transient=error.transient) from None
         except PublicationClaim as error:
             raise RunnerPreparationError(error.code, gate='decision_required') from None
         except BoundaryError:

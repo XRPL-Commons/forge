@@ -54,9 +54,9 @@ class DiscussionsTest(unittest.TestCase):
         self.assertEqual(before, Ledger(self.root / 'state/factory').read())
         with self.assertRaises(ValueError): self.service.send('1:2', 'A different question', str(uuid.uuid4()))
 
-    def test_read_only_token_and_reconstructed_assignment(self):
+    def test_credential_free_reconstructed_assignment(self):
         job = self.start()
-        self.github.token.assert_called_once_with('recovery', 1, worker=True)
+        self.github.token.assert_not_called()
         self.assertEqual(note(job)['role'], 'discussion')
         self.assertIn('NOT a resumed', note(job)['instructions'])
         self.assertEqual(self.service.view('1:2')['status'], 'running')
