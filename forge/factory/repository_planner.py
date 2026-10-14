@@ -19,6 +19,8 @@ class RepositoryPlanner:
         self.store,self.github,self.config,self.settings,self.observations=store,github,config,settings,observations
         self.runner,self.clock=runner,clock
         self.plans=RepositoryPlanning(store,clock=clock)
+        from ..store.auxiliary_problems import AuxiliaryProblems
+        self.problems=AuxiliaryProblems(store,clock=clock)
         self.inventory=StoreInventory(store,settings,github,config=config,clock=clock)
 
     def _repo(self,repo_id):
@@ -73,6 +75,7 @@ class RepositoryPlanner:
                 pr=self.github.call('controller',item,'GET',f"/pulls/{issue['pull_number']}")
                 issue['candidate_author']={k:(pr.get('user') or {}).get(k) for k in ('id','type','login')}
         worker={**self.config,**{k:v for k,v in entry.items() if k!='id'}}
+        worker=self.problems.memory('triage',run['id'],worker)
         job=dict(id=str(uuid.uuid4()),slot='repository-triage',role='triage',proposal_id=run['id'],repo=repo['name'],repo_id=repo['id'],
             candidate=None,head=head,base_branch=branch,deadline=now+1800,fenced=False,cleanup=False,created_at=now,
             provider_id=entry['id'],runner_config=worker,context_hash=manifest_hash(context))
@@ -122,6 +125,10 @@ class RepositoryPlanner:
         valid=(isinstance(result,dict) and result.get('attempt')==job['id'] and result.get('role')=='triage'
             and result.get('outcome') in ('pass','reject','unable','wait','blocked_environment')
             and isinstance(result.get('rows'),list))
+        waiting=self.problems.recheck('triage',job['proposal_id'],self.config)
+        if waiting:return {'phase':'queued' if waiting.get('resolved') else 'waiting',**waiting}
+        fault=self.problems.record('triage',job['proposal_id'],job,capture,invalid=not valid)
+        if fault:return {'phase':'waiting','reason':fault.get('kind')}
         error=None
         if result is None:error='triage_result_missing'
         elif not valid:error='triage_result_invalid'
@@ -139,16 +146,15 @@ class RepositoryPlanner:
         if owned:return {'items':[self.drive(job) for job in owned],'next_cursor':None}
         # Cleaned captures survive interruption between cleanup and publication.
         pending=self.plans.runs(active=True)
-        if pending:return {'items':[self._finish(self.plans.job(row['execution_id'])) for row in pending],'next_cursor':None}
-        if not launch or not self.config.get('enabled') or self.settings.paused():return {'items':[],'next_cursor':None}
+        results=[self._finish(self.plans.job(row['execution_id'])) for row in pending]
+        if not launch or not self.config.get('enabled') or self.settings.paused():return {'items':results,'next_cursor':None}
         queued=self.plans.runs()
         if not queued:
             due=next((row for row in self.plans.due() if self.settings.admission(row['full_name'])['allowed']),None)
             if due:
                 self.request(due['repository_id'],request_id=str(uuid.uuid4()),actor_id='supervisor:'+due['reason']+'-triage')
                 queued=self.plans.runs()
-        if not queued:return {'items':[],'next_cursor':None}
-        results=[]
+        if not queued:return {'items':results,'next_cursor':None}
         for run in queued:
             try:result=self._start(run)
             except GitHubUnavailable:

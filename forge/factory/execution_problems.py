@@ -4,6 +4,10 @@ from ..harnesses.execution import fault, valid
 
 
 def classify(job, capture, now):
+    from .startup_problems import problem
+    startup = problem(job, capture)
+    if startup is not None:
+        return dict(kind='forge_problem', details={**startup, 'source':'execution'})
     execution = capture.get('execution') or {}
     # Existing images keep their startup proof; protocol v1 is activated only
     # by a qualified new image, never retroactively inferred from a report.

@@ -67,6 +67,9 @@ class RecoveryController:
             from ..store.migration_recovery import original_job
             try:original=original_job(self.store,failed_job_id)
             except KeyError:return {'failed_job_id': failed_job_id, 'pending': 'legacy_reconciliation'}
+        from ..store.execution_problems import ExecutionProblems
+        repaired=ExecutionProblems(self.store,clock=self.clock).recheck_recovery_memory(self._command(original),failed_job_id,self.config['memory_tiers'])
+        if repaired.get('resolved'):original=self.jobs.job(failed_job_id)
         if not original['cleanup']:
             return {'failed_job_id': failed_job_id, 'pending': 'cleanup'}
         if self.admission(original) is not True:
@@ -82,6 +85,15 @@ class RecoveryController:
         entry, config = self._provider()
         if entry is None:
             return {'failed_job_id': failed_job_id, 'pending': 'provider_unavailable'}
+        from ..store.runtime_requirements import _memory
+        with self.store.read_snapshot() as db:
+            retries = db.execute('SELECT m.allocation FROM recovery_memory_retries m JOIN recovery_assignments r ON r.job_id=m.job_id '
+                'WHERE r.failed_job_id=?',(failed_job_id,)).fetchall()
+        if retries:
+            minimum=max(_memory(row[0]) for row in retries)
+            chosen = next((tier for tier in config['memory_tiers'] if _memory(tier)>=minimum),None)
+            if chosen is None:return {'failed_job_id':failed_job_id,'pending':'memory_configuration'}
+            config['memory'] = chosen
         runner = ContainerRunner(config, environ=self.runner.environ) if isinstance(self.runner, ContainerRunner) else self.runner
         runner.ready()
         if runner.capacity().get('allowed') is not True:
@@ -144,10 +156,38 @@ class RecoveryController:
                 execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
                 findings=self._incomplete('Investigation assignment was superseded'), incomplete=True)
             return {'job_id': recovery_job_id, **answer}
+        from .execution_problems import classify, contract_problem
+        from ..store.execution_problems import ExecutionProblems
+        execution = classify(job, capture, self.clock())
+        if execution and execution['kind'] in {'forge_problem','provider_error','oom'}:
+            detail = execution['details']
+            args = dict(execution_fence=job['execution_fence'], input_manifest=job['input_manifest'])
+            if execution['kind'] == 'oom':
+                retried = ExecutionProblems(self.store, clock=self.clock).retry_recovery_memory(self._command(job),
+                    recovery_job_id, **args, tiers=self.config['memory_tiers'])
+                if retried is not None:return {'job_id':recovery_job_id, **retried}
+            if execution['kind'] == 'forge_problem':
+                answer = ExecutionProblems(self.store, clock=self.clock).defer(self._command(job), recovery_job_id,
+                    **args, details=detail)
+            else:
+                code = 'provider_unavailable' if execution['kind'] == 'provider_error' else 'environment'
+                answer = self.commands.defer_job(self._command(job), recovery_job_id,
+                    **args, evidence=detail, code=code, details=detail)
+            return {'job_id':recovery_job_id, **answer}
+        if execution and execution['kind']=='timeout':
+            return {'job_id':recovery_job_id,**self.commands.finish(self._command(job),recovery_job_id,
+                execution_fence=job['execution_fence'],input_manifest=job['input_manifest'],
+                findings=self._incomplete('Investigation exceeded its execution deadline'),incomplete=True,timeout=True)}
         try:
             report = result(capture.get('result'), job)
         except (ValueError, KeyError, TypeError):
             report = None
+        if report is None:
+            fault = contract_problem(job, capture)
+            if fault is not None:
+                return {'job_id':recovery_job_id, **ExecutionProblems(self.store, clock=self.clock).defer(
+                    self._command(job), recovery_job_id, execution_fence=job['execution_fence'],
+                    input_manifest=job['input_manifest'], details=fault)}
         incomplete = report is None or report['outcome'] != 'pass' or len(json.dumps(report).encode()) > 60000
         findings = report if not incomplete else self._incomplete(
             'Investigation exceeded its execution deadline' if capture.get('timed_out')
