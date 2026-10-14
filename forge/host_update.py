@@ -484,6 +484,22 @@ def qualify_runner(image, seccomp, profile, *, full=False):
     runpy.run_path(str(SOURCE / 'deploy/build_environment_check.py'))['validate'](image, seccomp, profile, services=full)
 
 
+def reconcile_services(root, bind, restart=()):
+    """Start every managed service; restart only those whose inputs changed."""
+    # Migration can stop unchanged units too. Artifact equality does not imply
+    # that a service is running; systemctl start leaves active units untouched.
+    mirror_action = 'restart' if 'forge-mirror' in restart else 'start'
+    command(['systemctl', '--user', mirror_action, 'forge-mirror.service'])
+    wait_mirror(root)
+    # The mirror must be healthy before dispatch can start.
+    for action in ('restart', 'start'):
+        ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror'
+                   and (name in restart) == (action == 'restart')]
+        if ordered:
+            command(['systemctl', '--user', action, *ordered])
+    wait_healthy(bind)
+
+
 def reconcile(root, bind=None, assume_yes=False):
     """Install or update the host. Returns True when running workers need requalification."""
     root = Path(root)
@@ -544,6 +560,7 @@ def reconcile(root, bind=None, assume_yes=False):
     stale = stale_units(units)
     plan += ['remove stale unit ' + path.name for path in stale]
     if not fresh and not plan and not restart:
+        reconcile_services(root, bind)
         print('Forge host is up to date' + (' at ' + source[:12] if source else '') + '.')
         return False
     if not fresh:
@@ -608,15 +625,7 @@ def reconcile(root, bind=None, assume_yes=False):
     remove_stale_units(stale)
     command(['systemctl', '--user', 'daemon-reload'])
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
-    # The mirror must pass a read-only health probe before dispatch can restart.
-    if fresh or 'forge-mirror' in restart:
-        command(['systemctl', '--user', 'restart', 'forge-mirror.service'])
-    wait_mirror(root)
-    # The API first: the UI and supervisor depend on it.
-    ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror' and (fresh or name in restart)]
-    if ordered:
-        command(['systemctl', '--user', 'restart', *ordered])
-    wait_healthy(bind)
+    reconcile_services(root, bind, SERVICES if fresh else restart)
     prune_ui(root, {release, record.data.get('ui_release')})
     record.save(bind=bind, source=source, image=image, ui_release=release, updated_at=time.time(),
                 full_image=full_image,
