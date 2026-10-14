@@ -601,6 +601,9 @@ class Lifecycle:
             if display:
                 db.execute('INSERT INTO unit_context(unit_id,summary_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET summary_json=excluded.summary_json',
                            (command.unit_id,_json(display)))
+        if job['role'] == 'recovery' and outcome in {'deferred', 'memory_retry'}:
+            db.execute("UPDATE attempt_failures SET investigation='pending' WHERE attempt_id="
+                       '(SELECT failed_attempt_id FROM recovery_assignments WHERE job_id=?)', (job['id'],))
         self._event(db, command, "attempt_finished", {"outcome": outcome}, job_id=job["id"])
         if not job['cleanup'] and _unit(db, command.unit_id)['state'] not in TERMINAL:
             self._ensure_cleanup_gate(db, command, job["id"], job["member_id"])

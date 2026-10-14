@@ -13,6 +13,7 @@ from ..store.artifacts import ArtifactCorrupt
 from ..store.db import StoreError
 from ..store.executions import Executions, ExecutionQueries
 from ..store.models import Candidate, Command, TransitionError, InvalidDelegationPlan
+from ..request_metrics import RequestBudgetExhausted
 from ..store.transitions import Lifecycle, manifest_hash
 from .contracts import BUILD_CANDIDATE_OUTCOMES, digest, result
 from .github import GitHubUnavailable
@@ -81,8 +82,9 @@ class ResultController:
         job = self.queries.job(job_id)
         try:
             value = self._step(job_id)
-        except (GitHubUnavailable, TransitionError, StoreError, ArtifactCorrupt, OSError) as error:
-            scheduling.record(job['unit_id'], owner='results', reason=getattr(error, 'code', type(error).__name__),
+        except (RequestBudgetExhausted, GitHubUnavailable, TransitionError, StoreError, ArtifactCorrupt, OSError) as error:
+            scheduling.record(job['unit_id'], owner='results',
+                              reason='github_budget' if isinstance(error, RequestBudgetExhausted) else getattr(error, 'code', type(error).__name__),
                               job_id=job_id)
             raise
         scheduling.outcome(job['unit_id'], 'results', value, job_id=job_id)

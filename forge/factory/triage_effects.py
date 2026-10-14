@@ -87,9 +87,12 @@ class TriageEffects(Lifecycle):
                     raise EffectRetryPending() from None
             # A relabel action may need several confirmed HTTP writes. They form
             # one attempt; a later step resumes from fresh readback before retry.
+            policy = retry_policy(self._reliability())
+            retry_at = (self.clock() + min(policy['retry_cap'], policy['retry_seconds'] * 2 ** min(current['attempts'], 20))
+                        if first_send else current['retry_at'])
             db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+?,"
-                       'uncertain_since=COALESCE(uncertain_since,?),updated_at=? WHERE id=?',
-                       (int(first_send), self.clock(), self.clock(), row['id']))
+                       'uncertain_since=COALESCE(uncertain_since,?),retry_at=?,updated_at=? WHERE id=?',
+                       (int(first_send), self.clock(), retry_at, self.clock(), row['id']))
             row['_attempt_started'] = True
         self.github.call('controller',row['item'],method,path,payload)
 
