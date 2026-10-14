@@ -24,6 +24,8 @@ MARGIN = 300
 def expires_at(auth):
     try:
         token = auth['tokens']['access_token']
+        if not isinstance(token, str):
+            raise ValueError()
         payload = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '==='))
         expiry = payload['exp']
         if type(expiry) not in (int, float) or not 0 < expiry < 10**11:
@@ -56,6 +58,13 @@ def renewable(auth):
     refresh = tokens.get('refresh_token')
     if auth.get('auth_mode') == 'chatgptAuthTokens' or not isinstance(refresh, str) or not refresh.strip():
         return 'access_only'
+    # Admission and snapshot preparation must agree on the stored login's
+    # prerequisites. Expired access is fine: snapshot renews it under the lock.
+    try:
+        account(auth)
+        expires_at(auth)
+    except ValueError:
+        return 'unreadable'
     return None
 
 

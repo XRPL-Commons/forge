@@ -98,6 +98,30 @@ class ProviderLoginTests(unittest.TestCase):
         with patch.object(Credentials, 'locked', side_effect=AssertionError('unneeded credential read')):
             self.assertEqual(check_logins(self.root, self.store, validate({})), [])
 
+    def test_incomplete_managed_login_is_blocked_before_worker_preparation(self):
+        from copy import deepcopy
+        incomplete = []
+        for field in ('account_id', 'id_token', 'access_token'):
+            value = deepcopy(login())
+            del value['tokens'][field]
+            incomplete.append(value)
+        incomplete.append({**login(), 'auth_mode': 'unsupported'})
+        for token in ('malformed', None, 123, []):
+            value = deepcopy(login()); value['tokens']['access_token'] = token
+            incomplete.append(value)
+        for value in incomplete:
+            with self.subTest(value=list(value['tokens'])):
+                self.credentials.put(BAD, json.dumps(value), file=True)
+                self.assertEqual(self.check(), [{'account_ref': BAD, 'reason': 'login_unreadable'}])
+                self.assertFalse(self.available(BAD))
+                self.assertTrue(self.available(GOOD))
+                with self.store.read_snapshot() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
+                    self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
+        self.credentials.put(BAD, json.dumps(login(expiry=1)), file=True)
+        self.assertEqual(self.check(), [])
+        self.assertTrue(self.available(BAD))
+
     def test_production_cycle_checks_login_before_any_supervisor_dispatch(self):
         from forge.factory.sqlite_runtime import cycle
         from types import SimpleNamespace
