@@ -38,9 +38,10 @@ with external GitHub HTTP refused and no GitHub credential. The pip subprocess
 used Python 3.12 because the local Python 3.14 installation's pyexpat module could
 not load; this is an environment limitation, not a skipped compatibility check.
 
-Combined UI unit tests (585), typecheck and production build passed. The combined
-backend shards and browser suite are still being completed; this document does
-not claim they have passed yet.
+Combined UI unit tests (585), typecheck, production build and browser suite
+passed. The initial backend batch exposed old contract fixtures and the source
+file-mode/canary-receipt bugs described above. Their fixes are being checked
+together before the final GitHub CI gate; that gate is not claimed complete.
 
 ## Live qualification still required
 
