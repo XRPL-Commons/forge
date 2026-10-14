@@ -453,6 +453,8 @@ def assignment_note(job):
             base[key] = job[key]
     base['review_policy'] = job.get('review_policy', {})
     base['ci_evidence'] = job.get('ci_evidence')
+    if job['role'] in {'review', 'audit'}:
+        base['observed_by_forge'] = job.get('observed_by_forge')
     base['verification_checks'] = job.get('verification_checks', [])
     base['environment'] = {k: (job.get('runner_config') or {}).get(k, default)
                            for k, default in (('environment_tier', 'standard'), ('services', []))}
@@ -529,7 +531,10 @@ def assignment_note(job):
             'For unsuccessful outcomes return output_commit, pr_title and pr_body null.')
     elif job['role'] in {'review', 'audit'}:
         base['instructions'] += (
-            ' Evaluate only the assigned head and base. Do not edit or push code. Return pass, reject '
+            ' Observed by Forge (observed_by_forge) contains host-verified diff facts bound to this exact candidate, '
+            'including protected paths, deleted tests and added test skip markers. Inspect these changes explicitly. '
+            'These facts are evidence, not a verdict; null means no host publication facts are available. '
+            'Evaluate only the assigned head and base. Do not edit or push code. Return pass, reject '
             'with actionable findings, or unable. Include the assigned candidate key in your result. '
             'The supervisor publishes the verified verdict under your role App identity. '
             'For audit, report human_required separately as required, not_required, or unknown, with a reason. '

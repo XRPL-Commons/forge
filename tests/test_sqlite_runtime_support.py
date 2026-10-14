@@ -284,6 +284,8 @@ class InventoryRuntimeTests(RuntimeFixture):
         parts = components(self.root, config=config, runner=runner, github=github, settings=self.settings,
                            clock=lambda: self.now, dispatch=False)
         self.assertEqual(parts['store'].instance_id, self.database.instance_id)
+        self.assertIs(parts['results'].publisher, parts['publisher'])
+        self.assertEqual(parts['publisher'].sources.store.instance_id, self.database.instance_id)
         for name in ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch'):
             self.assertEqual(parts[name].store.instance_id, self.database.instance_id)
         report = cycle(self.root, config=config, runner=runner, github=github, settings=self.settings,

@@ -33,9 +33,10 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         config = {**config, 'enabled': False, 'merge_enabled': False}
     runner = runner or ContainerRunner(config, environ=Credentials(root).environment())
     github = github or GitHub(settings, config, clock=clock)
+    from .source_preparation import SourcePreparation
+    sources = SourcePreparation(root, store, github=github, settings=settings, clock=clock)
     if isinstance(runner, ContainerRunner):
-        from .source_preparation import SourcePreparation
-        runner.source_preparation = SourcePreparation(root, store, github=github, settings=settings, clock=clock)
+        runner.source_preparation = sources
 
     def admission(item):
         repo = item.get('repo') or (item.get('issue') or {}).get('repository')
@@ -63,14 +64,19 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     scheduling = Scheduling(store, clock=clock, retry_seconds=reliability['retry_seconds'],
                             stall_seconds=reliability['stall_seconds'])
     effects = EffectController(store, github, admission=merge_admission, clock=clock, reliability=reliability)
-    parts = dict(store=store, settings=settings, config=config, runner=runner, github=github,
+    from .publisher_runtime import PublicationRuntime, SigningCapabilities
+    publisher = PublicationRuntime(store, github, sources,
+        signing_capability=SigningCapabilities(store, github),
+        admission=lambda job: current_config()['enabled'] and execution_admission(job),
+        clock=clock, reliability=reliability)
+    parts = dict(store=store, settings=settings, config=config, runner=runner, github=github, publisher=publisher,
         requirements=requirements, verification=verification, effects=effects, admission=admission, scheduling=scheduling,
         execution=ExecutionController(store, runner, github, admission=execution_admission, clock=clock, enabled=lambda: current_config()['enabled']),
         observations=ObservationController(store, github, admission=admission, readiness=readiness, policy=lambda item: manifest_hash(policy(current_config(),item['repo_id'],repository_name=item['repo'])),
                                             hold_labels=config['hold_labels'], clock=clock),
         results=ResultController(store, github, policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), verdicts=effects,
             requirements=requirements, clock=clock, hold_labels=config['hold_labels'],
-            availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling),
+            availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling, publisher=publisher),
         recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),

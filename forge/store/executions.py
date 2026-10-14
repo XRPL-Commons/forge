@@ -360,6 +360,35 @@ class Executions(Lifecycle):
         return self._apply(command, 'revoke_captured_base', payload, change)
 
 
+def observed_facts_in(db, job, candidate):
+    """Project only facts attached to this candidate's confirmed publication."""
+    from ..factory.source_inputs import digest
+    rows = db.execute("SELECT p.id,p.job_id,p.output_digest,p.output_json,r.receipt_json "
+        "FROM candidate_evidence e JOIN publication_intents p ON p.id=json_extract(e.details_json,'$.publication_receipt_id') "
+        "JOIN publication_receipts r ON r.intent_id=p.id JOIN jobs j ON j.id=p.job_id "
+        "WHERE e.candidate_id=? AND e.unit_id=? AND e.kind='publication' AND e.verdict='pass' "
+        "AND p.unit_id=e.unit_id AND p.status='confirmed' AND j.attempt_id=e.attempt_id LIMIT 2",
+        (candidate['id'], job['unit_id'])).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise TransitionError('Candidate publication evidence is ambiguous')
+    row = rows[0]
+    receipt, output = json.loads(row['receipt_json']), json.loads(row['output_json'])
+    facts = output.get('facts')
+    if (not isinstance(facts, dict) or receipt.get('intent_id') != row['id']
+            or receipt.get('job_id') != row['job_id'] or receipt.get('repository_id') != job['repo_id']
+            or any(receipt.get(key) != candidate[key] for key in ('pull_number', 'branch', 'head_oid', 'base_oid'))
+            or any(receipt.get(key) is not True for key in ('verified', 'exact_ref', 'exact_pr'))
+            or receipt.get('output_digest') != row['output_digest'] or digest(output) != row['output_digest']
+            or receipt.get('tree_oid') != output.get('tree_oid')
+            or receipt.get('facts_digest') != digest(facts) or output.get('facts_digest') != digest(facts)):
+        raise TransitionError('Candidate publication facts do not match its receipt')
+    return dict(candidate_id=candidate['id'], publication_receipt_id=row['id'],
+                repository_id=job['repo_id'], head_oid=receipt['head_oid'], base_oid=receipt['base_oid'],
+                tree_oid=receipt['tree_oid'], facts_digest=receipt['facts_digest'], facts=facts)
+
+
 class ExecutionQueries:
     def __init__(self, store):
         self.store = store
@@ -407,6 +436,8 @@ class ExecutionQueries:
                 identity = dict(db.execute('SELECT * FROM candidates WHERE id=?', (job['candidate_id'],)).fetchone())
                 job['candidate'] = dict(key=identity['id'], pr=identity['pull_number'], branch=identity['branch'],
                                         head=identity['head_oid'], base=identity['base_oid'], requirements=identity['requirements_hash'])
+            if job['role'] in ('review', 'audit') and job['candidate_id']:
+                job['observed_by_forge'] = observed_facts_in(db, job, identity)
             from .operator_views import reviewer_request_in
             job['reviewers_requested']=reviewer_request_in(db,job['candidate_id']) if job['candidate_id']==job['current_candidate_id'] else None
             # Every assignment reads its immutable scope; later membership edits

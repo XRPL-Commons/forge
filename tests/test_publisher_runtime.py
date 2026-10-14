@@ -182,3 +182,75 @@ class RepairTests(unittest.TestCase):
         commands.recheck(f.fixture.command(),identifier,evidence=proof)
         self.assertEqual(commands.get(identifier)['steps']['commit']['status'],'sending')
         with self.assertRaises(TransitionError):commands.claim_step(identifier,'commit')
+
+
+class SigningCapabilityTests(unittest.TestCase):
+    def setUp(self):
+        from forge.store.db import Store
+        from forge.store.configuration import Configuration
+        from forge.factory.publisher_runtime import SigningCapabilities
+        import tempfile
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        self.store=Store.create(directory.name);self.configuration=Configuration(self.store)
+        self.connection={'app_id':42,'installation_id':43}
+        self.reader=SigningCapabilities(self.store,SimpleNamespace(connection=lambda *args:self.connection))
+        self.job={'repo_id':1}
+        self.proof=dict(version=1,repository_id=1,app_id=42,installation_id=43,probe_repository_id=2,strategy='graphql',
+            commit_oid='a'*40,tree_oid='b'*40,verified=True,exact_ref=True,signing_rule_accepted=True,observed_at=100)
+    def save(self,proof):
+        row=self.configuration.get('publication_signing','1')
+        self.configuration.replace('publication_signing',proof,subject='1',expected_revision=row['revision'] if row else 0)
+    def test_absent_or_incomplete_proof_cannot_select_strategy(self):
+        self.assertFalse(self.reader(self.job)['qualified'])
+        for field,value in [('verified',False),('exact_ref',False),('signing_rule_accepted',False),('tree_oid',''),('repository_id',2)]:
+            self.save({**self.proof,field:value})
+            self.assertFalse(self.reader(self.job)['qualified'],field)
+    def test_matching_proof_survives_restart_but_not_app_installation_change(self):
+        self.save(self.proof)
+        self.assertEqual(self.reader(self.job)['strategy'],'graphql')
+        self.assertTrue(self.reader(self.job)['qualified'])
+        self.connection['installation_id']=99
+        self.assertFalse(self.reader(self.job)['qualified'])
+
+
+class DraftAuthorizationTests(AuthorizationTests):
+    def test_exact_owned_draft_has_explicit_repair_claim(self):
+        pr=self.existing();pr['draft']=True
+        with self.assertRaises(PublicationClaim) as raised:publication_authorization(self.job,self.github)
+        self.assertEqual(raised.exception.code,'publication_draft_requires_ready')
+        pr['head']['sha']='f'*40
+        with self.assertRaises(PublicationClaim) as raised:publication_authorization(self.job,self.github)
+        self.assertEqual(raised.exception.code,'publication_target_changed')
+
+
+class ObservedFactsTests(ResultPublicationTests):
+    def test_review_receives_only_exact_confirmed_publication_facts(self):
+        from dataclasses import replace
+        from forge.factory.contracts import assignment_note
+        f=self.fixture
+        facts={'protected_paths':['.github/workflows/check.yml'],'deleted_tests':['tests/test_login.py'],
+               'added_test_markers':[{'path':'tests/test_api.py','markers':['skip']}]}
+        f.output=replace(f.output,facts=facts)
+        accepted=self.controller.step(f.job);self.assertTrue(accepted['accepted'],accepted)
+        review=f.fixture.reserve('review');job=f.fixture.queries.job(review)
+        observed=job['observed_by_forge']
+        candidate_id=f.fixture.view()['current_candidate_id']
+        self.assertEqual(observed['candidate_id'],candidate_id)
+        self.assertEqual(observed['facts'],facts)
+        note=assignment_note(job)
+        self.assertEqual(note['observed_by_forge'],observed)
+        self.assertIn('Observed by Forge',note['instructions'])
+        # A caller cannot apply this receipt to a changed head.
+        from forge.store.executions import observed_facts_in
+        with f.store.read_snapshot() as db:
+            candidate=dict(db.execute('SELECT * FROM candidates WHERE id=?',(candidate_id,)).fetchone())
+            with self.assertRaisesRegex(TransitionError,'do not match'):
+                observed_facts_in(db,job,{**candidate,'head_oid':'f'*40})
+    def test_legacy_candidate_has_no_invented_host_facts(self):
+        from tests.test_store_result_controller import ResultControllerTests
+        self.fixture.patch.stop()
+        f=ResultControllerTests();f.setUp();self.addCleanup(f.doCleanups)
+        build=f.reserve();f.publish(build);f.capture(build,f.report(build))
+        self.assertTrue(f.controller.step(build)['accepted'])
+        review=f.reserve('review')
+        self.assertIsNone(f.queries.job(review)['observed_by_forge'])

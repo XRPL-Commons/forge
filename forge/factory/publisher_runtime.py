@@ -1,5 +1,7 @@
 """Connect immutable source preparation, retained artifacts and publication."""
 import time
+import math
+import re
 import uuid
 
 from ..app_access import AccessError
@@ -35,7 +37,7 @@ def publication_authorization(job,github):
     pr=github.pr(job,number);author={key:(pr.get('user') or {}).get(key) for key in ('id','login','type')}
     expected_branch=job.get('resume_branch') or previous.get('branch') or source.get('branch') or candidate.get('branch') or branch
     if (branch!=expected_branch or pr.get('number')!=number or pr.get('state')!='open' or pr.get('merged')
-            or pr.get('draft') is not False or (pr.get('head') or {}).get('sha')!=expected
+            or type(pr.get('draft')) is not bool or (pr.get('head') or {}).get('sha')!=expected
             or (pr.get('head') or {}).get('ref')!=branch or ((pr.get('head') or {}).get('repo') or {}).get('id')!=job['repo_id']
             or (pr.get('base') or {}).get('ref')!=job['target_branch'] or ((pr.get('base') or {}).get('repo') or {}).get('id')!=job['repo_id']
             or (pr.get('base') or {}).get('sha')!=manifest['base_oid'] or pinned_author is not None and pinned_author!=author):
@@ -43,6 +45,10 @@ def publication_authorization(job,github):
     transfer=target.get('kind')=='existing' and target.get('ownership_transfer') is True and target.get('author')==author
     forge_owned=author['type']=='Bot' and author['login'] in (github.publisher('build'),github.publisher('controller'))
     if not (transfer or forge_owned):raise PublicationClaim('publication_target_not_owned')
+    # The legacy Build App may own this draft while the Controller publishes.
+    # Do not assume the Controller can mark another App's draft ready. Retain
+    # the exact target and ask for that explicit transition before launch.
+    if pr['draft']:raise PublicationClaim('publication_draft_requires_ready')
     return dict(kind='ownership_transfer' if transfer else 'forge_owned',branch=branch,expected_head_oid=expected,
                 pull_number=number,author=author,replace_ref=True)
 
@@ -62,6 +68,40 @@ def publication_access(job,github):
     if repository.get('id')!=job['repo_id']:raise PublicationClaim('publication_repository_changed')
     return dict(app_id=connection['app_id'],installation_id=connection['installation_id'],repository_id=job['repo_id'],
                 permissions=installation.get('permissions') or {})
+
+
+class SigningCapabilities:
+    """Read host qualification evidence bound to the current repository and App.
+
+    A CLI/host signing probe writes versioned Configuration domain
+    publication_signing, subject=str(repository_id), after successful read-back.
+    There is no default strategy and worker output cannot populate this record.
+    """
+    def __init__(self, store, github):
+        from ..store.configuration import Configuration
+        self.configuration, self.github = Configuration(store), github
+
+    def __call__(self, job):
+        connection = self.github.connection('controller', job['repo_id'])
+        pending = dict(app_id=connection['app_id'], strategy='pending', qualified=False)
+        record = self.configuration.get('publication_signing', str(job['repo_id']))
+        if record is None:
+            return pending
+        proof = record['settings']
+        fields = {'version', 'repository_id', 'app_id', 'installation_id', 'strategy',
+                  'probe_repository_id', 'commit_oid', 'tree_oid', 'verified', 'exact_ref', 'signing_rule_accepted', 'observed_at'}
+        if (not isinstance(proof, dict) or set(proof) != fields or type(proof['version']) is not int or proof['version'] != 1
+                or any(type(proof[k]) is not int or proof[k] <= 0 for k in ('repository_id', 'app_id', 'installation_id', 'probe_repository_id'))
+                or proof['repository_id'] != job['repo_id'] or proof['app_id'] != connection['app_id']
+                or proof['installation_id'] != connection['installation_id']
+                or proof['strategy'] not in ('rest', 'graphql')
+                or any(not isinstance(proof[k], str) or not re.fullmatch('[0-9a-f]{40}', proof[k]) for k in ('commit_oid', 'tree_oid'))
+                or any(proof[k] is not True for k in ('verified', 'exact_ref', 'signing_rule_accepted'))
+                or type(proof['observed_at']) not in (int, float) or not math.isfinite(proof['observed_at'])
+                or proof['observed_at'] <= 0):
+            return pending
+        return dict(app_id=proof['app_id'], strategy=proof['strategy'], qualified=True,
+                    qualification_revision=record['revision'])
 
 
 class PublicationRuntime:
