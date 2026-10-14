@@ -23,7 +23,7 @@ class TaskTopologyTests(unittest.TestCase):
         parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='parent',input_manifest=manifest)
         rows=[{'key':key,'executor':executor,'member_ids':members,'scope':'Implement '+key,'depends_on':dependencies,'internalizes':edges}
               for key,executor,members,dependencies,edges in tasks]
-        saved=self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='parent',input_manifest=manifest,
+        saved=self.delivery.save_task_plan(self.command(),parent['job_id'],execution_fence='parent',input_manifest=manifest,
             plan={'version':2,'retained_task_ids':[],'tasks':rows,'owner_final':{'member_ids':list(final),'scope':'Finish owner work','internalizes':list(internalizes)}},evidence={'verified':True})
         self.fixture.clean(parent,'parent')
         return saved
@@ -141,7 +141,7 @@ class TaskTopologyTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             job=dict(db.execute("SELECT j.id,a.input_manifest_json FROM jobs j JOIN attempts a ON a.id=j.attempt_id WHERE j.unit_id='batch' AND j.outcome IS NULL").fetchone())
         manifest=json.loads(job['input_manifest_json'])
-        saved=self.delivery.save_plan(self.command(),job['id'],execution_fence='parent',input_manifest=manifest,
+        saved=self.delivery.save_task_plan(self.command(),job['id'],execution_fence='parent',input_manifest=manifest,
             plan={'version':2,'retained_task_ids':[],'tasks':[{'key':'joint','executor':'child','member_ids':[a,b],'scope':'Joint change','depends_on':[],'internalizes':[edge]}],
                   'owner_final':{'member_ids':[],'scope':'','internalizes':[]}},evidence={'verified':True})
         self.fixture.clean({'job_id':job['id']},'parent')
@@ -170,7 +170,7 @@ class TaskTopologyTests(unittest.TestCase):
         job,manifest=self.reserve(plan,'shared');self.accept(job,manifest,'shared')
         changed=self.query.builder_manifest('batch','planning',base_oid='new-base',policy_hash='new-policy')
         parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='new',input_manifest=changed)
-        self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='new',input_manifest=changed,
+        self.delivery.save_task_plan(self.command(),parent['job_id'],execution_fence='new',input_manifest=changed,
             plan={'version':2,'retained_task_ids':[plan['task_ids']['shared']],'tasks':[],
                   'owner_final':{'member_ids':[],'scope':'','internalizes':[]}},evidence={'verified':True})
         self.fixture.clean(parent,'new')
@@ -294,49 +294,6 @@ class TaskTopologyTests(unittest.TestCase):
             self.assertEqual(rows[a]['indexed_reason_code'],'cleanup_pending')
             self.assertEqual(rows[b]['indexed_status'],'queued')
 
-    def test_pending_v1_planning_and_integration_keep_original_manifest_contract(self):
-        from unittest.mock import patch
-        from forge.store.models import Candidate
-        # Recreate a pre-upgrade planning assignment, then consume its late result
-        # after the normal reader has switched to v2. No manifest is rewritten.
-        with patch.object(Delivery,'_builder_manifest_in',staticmethod(Delivery._builder_manifest_v1_in)):
-            old=self.fixture.manifest()
-            parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='old-owner',execution_fence='old-plan',input_manifest=old)
-        children=[{'key':str(index),'member_id':member,'scope':'Implement member','dependencies':[]} for index,member in enumerate(self.members)]
-        saved=self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='old-plan',input_manifest=old,plan={'children':children},evidence={'verified':True})
-        self.fixture.clean(parent,'old-plan')
-        self.assertNotIn('manifest_version',old)
-        self.assertTrue(all(item['input_manifest']['manifest_version']==2 for item in self.query.assignments('batch',base_oid='base',policy_hash='policy')['items']))
-        # Exact v1 child captures and integration assignments can still finish.
-        from forge.store.executions import Executions, Launch
-        for index in range(2):
-            key=str(index); fence='legacy-'+key
-            manifest=self.query.child_manifest(saved['plan_id'],key)
-            job=self.delivery.delegate(self.command(),saved['plan_id'],key,slot='legacy-slot-'+key,
-                execution_fence=fence,input_manifest=manifest,worktree_key='legacy-tree-'+key,
-                launch=Launch('forge/legacy-'+key,'builder[bot]','codex',1000,{},{}))
-            bundle=b'verified historical bundle'; digest=hashlib.sha256(bundle).hexdigest(); commit=('a' if index==0 else 'b')*40
-            Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence=fence,
-                capture={'logs':'','worktree_bundle':bundle})
-            self.fixture.clean(job,fence)
-            self.delivery.accept_part(self.command(),job['job_id'],execution_fence=fence,input_manifest=manifest,commit_oid=commit,
-                evidence={'verified':True,'commit_oid':commit,'base_oid':'base','input_manifest_hash':manifest_hash(manifest),'bundle_digest':digest})
-        with self.store.read_snapshot() as db:
-            unit=dict(db.execute("SELECT * FROM units WHERE id='batch'").fetchone())
-            original=Delivery._builder_manifest_v1_in(db,unit,'integration','base','policy')
-        with patch.object(Delivery,'_builder_manifest_in',staticmethod(Delivery._builder_manifest_v1_in)):
-            integration=self.delivery.reserve_builder(self.command(),stage='integration',slot='owner',execution_fence='old-integration',input_manifest=original)
-        candidate=Candidate(12,'forge/old','c'*40,'base','policy',original['requirements_hash'],manifest_hash(original))
-        command=self.command();args=dict(execution_fence='old-integration',input_manifest=original,candidate=candidate,
-            evidence={'verified':True,'pull_number':12,'head_oid':candidate.head_oid,'base_oid':'base'})
-        receipt=self.delivery.publish_candidate(command,integration['job_id'],**args)
-        self.assertTrue(receipt['accepted'])
-        self.assertEqual(Delivery(Store(self.store.root),clock=lambda:101).publish_candidate(command,integration['job_id'],**args),receipt)
-        with self.store.read_snapshot() as db:
-            stored=db.execute('SELECT input_manifest_json FROM attempts WHERE id=?',(integration['attempt_id'],)).fetchone()[0]
-            self.assertEqual(json.loads(stored),original)
-            self.assertEqual(db.execute('SELECT input_manifest_hash FROM candidates WHERE id=?',(receipt['candidate_id'],)).fetchone()[0],manifest_hash(original))
-
     def test_overlapping_captured_deferrals_preserve_both_results_and_gate_lineage(self):
         from forge.store.executions import Executions
         a,b=self.members
@@ -372,7 +329,7 @@ class TaskTopologyTests(unittest.TestCase):
         job=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='plan',input_manifest=manifest)
         legacy={'children':[{'key':str(i),'member_id':member,'scope':'Implement','dependencies':[]} for i,member in enumerate(self.members)]}
         with self.assertRaises(InvalidDelegationPlan):
-            self.delivery.save_plan(self.command(),job['job_id'],execution_fence='plan',input_manifest=manifest,plan=legacy,evidence={'verified':True})
+            self.delivery.save_task_plan(self.command(),job['job_id'],execution_fence='plan',input_manifest=manifest,plan=legacy,evidence={'verified':True})
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM delegation_plans').fetchone()[0],0)
             self.assertIsNone(db.execute('SELECT outcome FROM jobs WHERE id=?',(job['job_id'],)).fetchone()[0])

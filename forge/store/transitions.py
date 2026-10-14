@@ -427,7 +427,7 @@ class Lifecycle:
             rule = codes.GATES[gate["code"]]
             if release != rule.release:
                 raise TransitionError("release rule does not match this gate")
-            if gate["code"] in {"forge_problem", "operator_pause", "budget_exhausted", "verification_human", "verification_ci", "legacy_reconciliation"} or rule.release == "transition":
+            if gate["code"] in {"forge_problem", "operator_pause", "budget_exhausted", "verification_human", "verification_ci"} or rule.release == "transition":
                 raise TransitionError("this gate requires its dedicated lifecycle command")
             self._release_evidence(gate, release, evidence)
             if gate["candidate_id"] and gate["candidate_id"] != unit["current_candidate_id"]:
@@ -1066,9 +1066,7 @@ class Lifecycle:
         """Apply an ordered authoritative observation to a current or historical member.
 
         Reopening updates GitHub facts only. A terminal unit stays terminal; the
-        operator may subsequently admit the issue into a new unit. Imported units
-        keep their pinned execution inputs and gates until reconciliation accepts
-        them; their GitHub facts remain observable throughout that process.
+        operator may subsequently admit the issue into a new unit.
         """
         remote_updated_at = self._remote_time(remote_updated_at)
         if state not in {"open", "closed"} or type(generation) is not int or generation < 1:
@@ -1139,10 +1137,7 @@ class Lifecycle:
             db.execute("UPDATE issues SET github_state = ?, state_reason = ?, current_revision_id = ?, remote_updated_at = ?, collection_generation = ?, labels_json = ?, assignees_json = ?, observed_at = ?, reopened_version = ?, version = version + ? WHERE id = ?", (state, state_reason, revision_id, remote_updated_at, generation, _json(payload["labels"]), _json(payload["assignees"]), observed_at, reopened_version, int(changed), issue_id))
             if assignee_types is not None:
                 db.execute('UPDATE issues SET assignee_types_json=? WHERE id=?', (_json(assignee_types), issue_id))
-            reconciliation_pending = db.execute(
-                "SELECT 1 FROM unit_gates WHERE unit_id=? AND code='legacy_reconciliation' AND resolved_at IS NULL",
-                (unit['id'],)).fetchone() is not None
-            if member["left_at"] is None and unit["state"] not in TERMINAL and not reconciliation_pending:
+            if member["left_at"] is None and unit["state"] not in TERMINAL:
                 if requirements_hash != revision["requirements_hash"]:
                     ambiguous = db.execute("SELECT 1 FROM merge_requests WHERE unit_id = ? AND status IN ('pending','uncertain')", (unit["id"],)).fetchone()
                     from .delivery_inputs import approved_in
@@ -1307,7 +1302,7 @@ class Lifecycle:
 
     def close_unit(self, command, *, close_code, evidence):
         """End a singleton after cleanup, with a confirmed cause; stop uses pause."""
-        if close_code not in codes.CLOSE_CODES or close_code == "combined" or not isinstance(evidence, dict) or not evidence:
+        if close_code not in codes.CLOSE_CODES or close_code in {"combined", "import_superseded"} or not isinstance(evidence, dict) or not evidence:
             raise TransitionError("unsupported singleton closure or missing evidence")
         def change(db, unit):
             self._live(unit)

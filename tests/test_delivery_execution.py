@@ -21,14 +21,6 @@ class ManifestQueries(DeliveryQueries):
         with self.store.read_snapshot() as db:
             return Delivery._builder_manifest_in(db,_unit(db,unit_id),stage,base_oid,policy_hash)
 
-    def child_manifest(self,plan_id,key):
-        with self.store.read_snapshot() as db:
-            row = db.execute('SELECT b.unit_id FROM delegation_plans p JOIN unit_builders b ON b.id=p.builder_id WHERE p.id=?',(plan_id,)).fetchone()
-            if row is None:
-                raise KeyError(plan_id)
-            unit = _unit(db,row[0])
-            return Delivery._child_manifest_in(db,unit,Delivery._plan_in(db,unit,plan_id),key)
-
     def task_manifest(self,plan_id,task_id):
         from forge.store.task_inputs import task_manifest_in,current_plan_in
         with self.store.read_snapshot() as db:
@@ -95,7 +87,7 @@ class DeliveryExecutionTests(unittest.TestCase):
             children=[dict(key=keys[member],executor='child',member_ids=[member],scope='Implement member',
                 depends_on=[keys[predecessor] for predecessor in dependencies_in(db,unit,member)],internalizes=[])
                       for member in self.members.values()]
-        saved=self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='parent-fence',input_manifest=manifest,
+        saved=self.delivery.save_task_plan(self.command(),parent['job_id'],execution_fence='parent-fence',input_manifest=manifest,
                                       plan=task_plan(children),evidence={'verified':True})
         self.clean(parent,'parent-fence')
         return parent,saved,children
@@ -217,11 +209,11 @@ class DeliveryExecutionTests(unittest.TestCase):
         from unittest.mock import patch
         with patch.object(self.delivery,'_save',side_effect=RuntimeError('simulated commit interruption')):
             with self.assertRaises(RuntimeError):
-                self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan=task_plan(children),evidence={'verified':True})
+                self.delivery.save_task_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan=task_plan(children),evidence={'verified':True})
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM delegation_plans').fetchone()[0],0)
             self.assertIsNone(db.execute('SELECT outcome FROM jobs WHERE id=?',(parent['job_id'],)).fetchone()[0])
-        self.assertTrue(self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan=task_plan(children),evidence={'verified':True})['accepted'])
+        self.assertTrue(self.delivery.save_task_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,plan=task_plan(children),evidence={'verified':True})['accepted'])
 
     def test_drop_prerequisite_invalidates_descendants_and_preserves_unrelated_outputs(self):
         self.compose(3,[{'issue_id':'issue-1','prerequisite_issue_id':'issue-0'}]); parent,plan,children=self.plan()
@@ -257,7 +249,7 @@ class DeliveryExecutionTests(unittest.TestCase):
         command=self.command()
         for _ in range(2):
             with self.assertRaises(InvalidDelegationPlan):
-                self.delivery.save_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,
+                self.delivery.save_task_plan(command,parent['job_id'],execution_fence='parent',input_manifest=manifest,
                     plan={'children':[]},evidence={'verified':True})
         with self.store.read_snapshot() as db:
             self.assertIsNone(db.execute('SELECT outcome FROM jobs WHERE id=?',(parent['job_id'],)).fetchone()[0])
@@ -334,7 +326,7 @@ class DeliveryExecutionTests(unittest.TestCase):
         retained=[task['id'] for task in assignment['input_manifest']['available_tasks']]
         self.assertEqual(retained,[plan['task_ids']['1']])
         replanning=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='owner-replan',input_manifest=assignment['input_manifest'])
-        self.delivery.save_plan(self.command(),replanning['job_id'],execution_fence='owner-replan',input_manifest=assignment['input_manifest'],
+        self.delivery.save_task_plan(self.command(),replanning['job_id'],execution_fence='owner-replan',input_manifest=assignment['input_manifest'],
             plan=task_plan([],retained),evidence={'verified':True})
         self.clean(replanning,'owner-replan')
         assignment=self.query.next_assignment('batch',base_oid='base',policy_hash='policy')['assignment']
@@ -360,7 +352,7 @@ class DeliveryExecutionTests(unittest.TestCase):
         first,manifest=self.child(plan,'0');self.accept(first,manifest,'0')
         fresh=self.query.builder_manifest('batch','planning',base_oid='new-base',policy_hash='policy')
         parent=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='new-parent',input_manifest=fresh)
-        self.delivery.save_plan(self.command(),parent['job_id'],execution_fence='new-parent',input_manifest=fresh,
+        self.delivery.save_task_plan(self.command(),parent['job_id'],execution_fence='new-parent',input_manifest=fresh,
                                 plan=task_plan(children),evidence={'verified':True})
         self.clean(parent,'new-parent')
         choices=self.query.assignments('batch',base_oid='new-base',policy_hash='policy')['items']

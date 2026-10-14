@@ -12,27 +12,27 @@ from tests import test_activity_reads as fixtures
 
 
 class EventMetadataTests(unittest.TestCase):
-    def test_current_and_imported_events_preserve_missing_null_and_json_value_types(self):
+    def test_events_preserve_missing_null_and_json_value_types(self):
         with closing(sqlite3.connect(':memory:')) as db:
             db.row_factory = sqlite3.Row
             db.execute('CREATE TABLE events(kind TEXT,at REAL,payload_json TEXT)')
             fields = ('at', 'kind', 'provider', 'model')
             values = (None, False, True, 0, 1.5, 2**99, '', 'quote" slash\\ café',
                       [False, None, 'value'], {'value': True})
-            for legacy in (False, True):
+            # Retained imported rows (legacy_event) render like any other kind.
+            for kind in ('issue_observed', 'legacy_event'):
                 for mask in range(16):
                     for value in values:
                         metadata = {key: value for index, key in enumerate(fields) if mask & (1 << index)}
-                        payload = {'legacy': metadata} if legacy else metadata
-                        payload = {**payload, 'discarded': [{'large': 'x'*12000}]}
-                        kind = 'legacy_event' if legacy else 'issue_observed'
+                        payload = {**metadata, 'discarded': [{'large': 'x'*12000}]}
                         db.execute('DELETE FROM events')
                         db.execute('INSERT INTO events VALUES(?,?,?)', (kind, 3.5, json.dumps(payload)))
                         reference = _event(db.execute('SELECT * FROM events').fetchone(), fields)
                         row = db.execute('SELECT '+EVENT_METADATA_SQL+' FROM events e').fetchone()
-                        with self.subTest(legacy=legacy, mask=mask, value=value):
+                        with self.subTest(kind=kind, mask=mask, value=value):
                             actual = event_metadata(row)
                             self.assertEqual(actual, reference)
+                            self.assertEqual((actual['at'], actual['kind']), (3.5, kind))
                             for field in actual:
                                 self.assertIs(type(actual[field]), type(reference[field]))
                             self.assertNotIn('payload_json', row.keys())

@@ -199,7 +199,7 @@ class ResultController:
             if report and report['outcome'] == 'delegate' and job.get('builder_stage') == 'planning':
                 from ..store.delivery import Delivery
                 try:
-                    planned = Delivery(self.store, clock=self.clock).save_plan(self._command(job), job_id,
+                    planned = Delivery(self.store, clock=self.clock).save_task_plan(self._command(job), job_id,
                         **self._args(job, evidence), plan=report['delegation_plan'])
                 except InvalidDelegationPlan:
                     return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'invalid_delegation_plan'})}
@@ -216,9 +216,7 @@ class ResultController:
                     return {'job_id': job_id, **self._failure(job, {**evidence, 'reason': 'invalid_task_output'})}
                 evidence.update(verified=True, commit_oid=report['output_commit'], base_oid=job['input_manifest']['base_oid'],
                                 input_manifest_hash=manifest_hash(job['input_manifest']), bundle_digest=verified['digest'])
-                delivery = Delivery(self.store, clock=self.clock)
-                accept = delivery.accept_task_output if job['input_manifest'].get('manifest_version', 1) == 2 else delivery.accept_part
-                return {'job_id': job_id, **accept(self._command(job), job_id,
+                return {'job_id': job_id, **Delivery(self.store, clock=self.clock).accept_task_output(self._command(job), job_id,
                     **self._args(job, evidence), commit_oid=report['output_commit'])}
             if report and report['outcome'] == 'needs_decision':
                 return {'job_id': job_id, **self._defer(job, evidence, 'decision_required',

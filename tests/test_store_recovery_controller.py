@@ -277,18 +277,18 @@ class RecoveryControllerTests(unittest.TestCase):
 
     def test_unknown_or_historical_job_without_launch_stays_unassigned(self):
         from forge.factory.contracts import digest
-        self.assertEqual(self.recovery.schedule('imported-job-without-launch')['pending'], 'legacy_reconciliation')
+        self.assertEqual(self.recovery.schedule('unknown-job-without-launch')['pending'], 'launch_unavailable')
         member = self.view()['members'][0]
         manifest = dict(requirements_revision_id=member['requirements_revision_id'], base_oid='b' * 40,
                         policy_hash=digest(policy(self.config,1,repository_name='owner/repo')))
-        # Historical/imported jobs have lifecycle facts without typed launches.
+        # Historical jobs have lifecycle facts without typed launches.
         old = self.life.reserve_job(self.command(), 'build', slot='old-slot', execution_fence='old-fence',
                                    input_manifest=manifest, member_id=member['id'])['job_id']
         self.life.record_failure(self.command(), old, execution_fence='old-fence', input_manifest=manifest,
                                  evidence={'reason': 'historical failure'})
         self.life.verify_cleanup(self.command(), old, execution_fence='old-fence',
                                  evidence={'process_stopped': True, 'resources_released': True})
-        self.assertEqual(self.recovery.schedule(old)['pending'], 'legacy_reconciliation')
+        self.assertEqual(self.recovery.schedule(old)['pending'], 'launch_unavailable')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM job_launches').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM recovery_assignments').fetchone()[0], 0)

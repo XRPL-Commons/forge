@@ -87,10 +87,7 @@ class GitHubPrepare:
             if key in snapshot:
                 item[key] = snapshot[key]
         remote, requirements = self.github.issue(item)
-        pinned = issue['requirements']
-        # Imported legacy requirement records need explicit reconciliation.
-        expected = pinned if isinstance(pinned, str) else None
-        if remote.get('state') != 'open' or requirements != expected:
+        if remote.get('state') != 'open' or requirements != issue['requirements']:
             return None
         labels = {label['name'] if isinstance(label, dict) else label for label in remote.get('labels', [])}
         if labels.intersection(self.config['hold_labels']) or ownership(remote, item, item['repo'], self.github.pulls(item)):

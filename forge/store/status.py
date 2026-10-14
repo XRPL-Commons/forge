@@ -31,6 +31,7 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'github_duplicate': ('Closed on GitHub as a duplicate', 'Closed on GitHub as a duplicate of #{duplicate_of}'),
     'operator_closed': ('Stopped by the operator', None),
     'combined': ('Combined into another unit', 'Combined into unit {into}'),
+    'import_superseded': ('Imported delivery retired; the issue can start again as a new delivery', None),
     # Gates
     'operator_pause': ('Paused by the operator', None),
     'operator_backlog': ('Moved to the backlog by the operator', None),

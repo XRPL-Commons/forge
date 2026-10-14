@@ -106,9 +106,11 @@ SQL or data export is required.
 
 ## Units imported from the JSON runtime
 
-Units imported during the migration keep a `legacy_reconciliation` gate until the
-supervisor reconciles them against GitHub. Their history stays in the store as
-`legacy_event` rows. Backups follow the store rules in
+Migration 041 retires what is left of the JSON import. A delivery still waiting
+on its `legacy_reconciliation` gate closes as `import_superseded`; its GitHub
+issue and labels are left as they are, and discovery admits the open issue again
+as a new delivery. Imported history stays in the store as `legacy_event` rows
+and shows like any other event. Backups follow the store rules in
 [the runtime reference](factory-runtime-reference.md): copy the database
 coherently with its instance metadata and referenced credentials, never just the
 live main file.
