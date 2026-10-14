@@ -37,6 +37,33 @@ class RoleQualificationFailed(SetupError):
         self.report = failure_report(report)
 
 
+def provider_diagnostic(value):
+    """Project a fixed vocabulary without importing the host runtime package."""
+    if (not isinstance(value, dict) or value.get('kind') != 'unclassified_terminal_error'
+            or value.get('event_scope') != 'retained_tail'):
+        return None
+    events = {'thread.started', 'turn.started', 'error', 'command_execution', 'agent_message',
+              'reasoning', 'file_change', 'mcp_tool_call'}
+    fields = {'message', 'code', 'type', 'status', 'param'}
+    types = {'null', 'boolean', 'number', 'string', 'array', 'object'}
+    codes = {'invalid_json_schema', 'invalid_request_error', 'context_length_exceeded', 'invalid_api_key',
+             'rate_limit_exceeded', 'insufficient_quota', 'model_not_found', 'server_error', 'authentication_error'}
+    observed, error_fields = value.get('observed'), value.get('error_fields')
+    if (not isinstance(observed, list) or not isinstance(error_fields, dict)
+            or type(value.get('extra_error_fields')) is not bool):
+        return None
+    result = dict(kind='unclassified_terminal_error', event_scope='retained_tail',
+                  observed=sorted({item for item in observed[:8] if isinstance(item, str) and item in events}),
+                  error_fields={key: error_fields[key] for key in fields if isinstance(error_fields.get(key), str)
+                                and error_fields[key] in types}, extra_error_fields=value['extra_error_fields'])
+    code, status = value.get('structured_code'), value.get('http_status')
+    if isinstance(code, str) and code in codes:
+        result['structured_code'] = code
+    if type(status) is int and 400 <= status <= 599:
+        result['http_status'] = status
+    return result
+
+
 def failure_report(value):
     """Keep bounded execution identities and outcomes, never capture contents."""
     roles = {'build', 'review', 'audit', 'recovery', 'strategist', 'triage', 'discussion'}
@@ -96,6 +123,9 @@ def failure_report(value):
                     safe['provider_error']['status'] = status
                 if type(retry) in (int, float) and math.isfinite(retry) and 1 <= retry <= 3600:
                     safe['provider_error']['retry_after'] = retry
+                provider_detail = provider_diagnostic(provider.get('diagnostic'))
+                if provider_detail is not None:
+                    safe['provider_error']['diagnostic'] = provider_detail
             harness = envelope.get('harness_error')
             if isinstance(harness, dict) and harness.get('phase') in ('harness', 'runner', 'before_agent', 'contract'):
                 safe['harness_error'] = {'phase': harness['phase']}

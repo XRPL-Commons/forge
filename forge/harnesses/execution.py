@@ -13,6 +13,62 @@ RECEIPT = Path('/work/home/forge-harness-exit.json')
 ENVELOPE = Path('/work/home/forge-exit.json')
 CODES = frozenset(('quota', 'auth', 'rate_limit', 'overloaded', 'unknown'))
 
+# Diagnostic observations do not select execution/retry policy. Only fixed
+# protocol vocabulary leaves the private provider event stream.
+DIAGNOSTIC_EVENTS = frozenset(('thread.started', 'turn.started', 'error',
+                             'command_execution', 'agent_message', 'reasoning', 'file_change', 'mcp_tool_call'))
+DIAGNOSTIC_FIELDS = frozenset(('message', 'code', 'type', 'status', 'param'))
+JSON_TYPES = frozenset(('null', 'boolean', 'number', 'string', 'array', 'object'))
+DIAGNOSTIC_CODES = frozenset(('invalid_json_schema', 'invalid_request_error', 'context_length_exceeded',
+                            'invalid_api_key', 'rate_limit_exceeded', 'insufficient_quota', 'model_not_found',
+                            'server_error', 'authentication_error'))
+
+
+def valid_provider_diagnostic(value):
+    required = {'kind', 'event_scope', 'observed', 'error_fields', 'extra_error_fields'}
+    if (not isinstance(value, dict) or not required <= set(value)
+            or set(value) - required - {'structured_code', 'http_status'}
+            or value['kind'] != 'unclassified_terminal_error' or value['event_scope'] != 'retained_tail'
+            or type(value['extra_error_fields']) is not bool):
+        return False
+    observed, fields = value['observed'], value['error_fields']
+    if (not isinstance(observed, list) or len(observed) > len(DIAGNOSTIC_EVENTS)
+            or any(not isinstance(item, str) or item not in DIAGNOSTIC_EVENTS for item in observed)
+            or len(set(observed)) != len(observed)
+            or not isinstance(fields, dict) or set(fields) - DIAGNOSTIC_FIELDS
+            or any(not isinstance(item, str) or item not in JSON_TYPES for item in fields.values())):
+        return False
+    if 'structured_code' in value and (not isinstance(value['structured_code'], str)
+            or value['structured_code'] not in DIAGNOSTIC_CODES):
+        return False
+    return ('http_status' not in value or type(value['http_status']) is int and 400 <= value['http_status'] <= 599)
+
+
+def codex_diagnostic(events, error):
+    observed = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get('type')
+        if isinstance(kind, str) and kind in ('thread.started', 'turn.started', 'error'):
+            observed.add(kind)
+        if kind in ('item.started', 'item.completed', 'item.updated') and isinstance(event.get('item'), dict):
+            item = event['item'].get('type')
+            if isinstance(item, str) and item in DIAGNOSTIC_EVENTS - {'thread.started', 'turn.started', 'error'}:
+                observed.add(item)
+    types = {type(None): 'null', bool: 'boolean', int: 'number', float: 'number',
+             str: 'string', list: 'array', dict: 'object'}
+    value = dict(kind='unclassified_terminal_error', event_scope='retained_tail', observed=sorted(observed),
+                 error_fields={key: types[type(error[key])] for key in DIAGNOSTIC_FIELDS
+                               if key in error and type(error[key]) in types},
+                 extra_error_fields=bool(set(error) - DIAGNOSTIC_FIELDS))
+    code, status = error.get('code'), error.get('status')
+    if isinstance(code, str) and code in DIAGNOSTIC_CODES:
+        value['structured_code'] = code
+    if type(status) is int and 400 <= status <= 599:
+        value['http_status'] = status
+    return value
+
 
 def fault(reason, *, phase='harness', file='/opt/forge/harness.py', line=1):
     value = dict(phase=phase, exception=reason, file=file, line=line)
@@ -90,9 +146,11 @@ def valid(value, attempt, *, final=False):
     elif status == 'provider_error':
         allowed.add('provider_error')
         detail = value.get('provider_error')
-        if (not isinstance(detail, dict) or set(detail) - {'code', 'status', 'retry_after'}
+        if (not isinstance(detail, dict) or set(detail) - {'code', 'status', 'retry_after', 'diagnostic'}
                 or detail.get('code') not in CODES
                 or 'status' in detail and (type(detail['status']) is not int or not 400 <= detail['status'] <= 599)):
+            return False
+        if 'diagnostic' in detail and not valid_provider_diagnostic(detail['diagnostic']):
             return False
         if 'retry_after' in detail and (type(detail['retry_after']) not in (int, float)
                 or not math.isfinite(detail['retry_after']) or not 1 <= detail['retry_after'] <= 3600):
@@ -128,7 +186,7 @@ def codex_provider_error(events):
     terminals = [event for event in events if isinstance(event, dict)
                  and event.get('type') in ('turn.failed', 'turn.completed')]
     if terminals and terminals[-1].get('type') == 'turn.failed' and isinstance(terminals[-1].get('error'), dict):
-        return {'code': 'unknown'}
+        return {'code': 'unknown', 'diagnostic': codex_diagnostic(events, terminals[-1]['error'])}
     return None
 
 

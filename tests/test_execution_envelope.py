@@ -34,7 +34,7 @@ class ExecutionEnvelopeTests(unittest.TestCase):
         event={'type':'result','is_error':True,'errors':['quota exhausted']}
         self.assertEqual(provider_error(event),{'code':'unknown'})
         from forge.harnesses.execution import codex_provider_error
-        self.assertEqual(codex_provider_error([{'type':'turn.failed','error':{'message':'anything'}}]),{'code':'unknown'})
+        self.assertEqual(codex_provider_error([{'type':'turn.failed','error':{'message':'anything'}}])['code'],'unknown')
         self.assertIsNone(codex_provider_error([{'type':'turn.failed','error':{}},{'type':'turn.completed'}]))
         self.assertIsNone(codex_provider_error([{'type':'item.completed','item':{'type':'agent_message','text':'turn.failed'}}]))
 
