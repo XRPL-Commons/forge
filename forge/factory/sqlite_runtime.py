@@ -55,16 +55,21 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), clock=clock, hold_labels=config['hold_labels'])
     merge_admission = MergeAdmission(store, github, config=current_config,
                                      repository_ready=lambda repo: readiness.allowed({'repo': repo}), clock=clock)
-    effects = EffectController(store, github, admission=merge_admission, clock=clock)
+    from ..store.scheduling import Scheduling
+    reliability = config['reliability']
+    scheduling = Scheduling(store, clock=clock, retry_seconds=reliability['retry_seconds'],
+                            stall_seconds=reliability['stall_seconds'])
+    effects = EffectController(store, github, admission=merge_admission, clock=clock, reliability=reliability)
     parts = dict(store=store, settings=settings, config=config, runner=runner, github=github,
-        requirements=requirements, verification=verification, effects=effects, admission=admission,
+        requirements=requirements, verification=verification, effects=effects, admission=admission, scheduling=scheduling,
         execution=ExecutionController(store, runner, github, admission=execution_admission, clock=clock, enabled=lambda: current_config()['enabled']),
         observations=ObservationController(store, github, admission=admission, readiness=readiness, policy=lambda item: manifest_hash(policy(current_config(),item['repo_id'],repository_name=item['repo'])),
                                             hold_labels=config['hold_labels'], clock=clock),
         results=ResultController(store, github, policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), verdicts=effects,
-            requirements=requirements, clock=clock, hold_labels=config['hold_labels'], availability_retry_seconds=config['availability_retry_seconds']),
+            requirements=requirements, clock=clock, hold_labels=config['hold_labels'],
+            availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling),
         recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
-        merges=MergeController(store, admission=merge_admission, clock=clock),
+        merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
                                       admission=readiness.allowed, readiness=readiness, clock=clock))
 
@@ -94,6 +99,7 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
     from .store_operator import OperatorActions
     from .store_inventory import DiscoveryController
     parts = components(root, config=config, runner=runner, github=github, settings=settings, clock=clock, dispatch=dispatch)
+    Credentials(root).publish_login_generations(parts['store'], parts['config'])
     actions = OperatorActions(parts['store'], parts['github'], config=lambda: load(root),
                               requirements=parts['requirements'], verification=parts['verification'], clock=clock)
     discovery = DiscoveryController(parts['store'], parts['settings'], parts['github'], config=parts['config'], clock=clock)
@@ -106,7 +112,8 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
             return {'items': [{'repo': row['repo'], 'error': 'deployment_observation_unavailable'} for row in errors], 'next_cursor': None}
     supervisor = SqliteSupervisor(parts['store'], **{key: parts[key] for key in
         ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'reconciliation', 'planning', 'triage_effects')},
-        requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(), clock=clock, cycle_budget_seconds=parts['config']['cycle_budget_seconds'])
+        requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(),
+        scheduling=parts['scheduling'], clock=clock, cycle_budget_seconds=parts['config']['cycle_budget_seconds'])
     return supervisor.cycle()
 
 

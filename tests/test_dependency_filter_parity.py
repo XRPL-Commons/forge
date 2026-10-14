@@ -8,6 +8,7 @@ from forge.factory.issue_selection import IssueSelection
 from forge.factory.config import validate
 from forge.factory.store_views import PipelineViews
 from forge.store.delivery_inputs import current_output_in
+from forge.store.scheduling import Scheduling
 from tests import test_delivery_execution as fixtures
 
 
@@ -17,9 +18,26 @@ class DependencyFilterParityTests(unittest.TestCase):
     compose = fixtures.DeliveryExecutionTests.compose
     manifest = fixtures.DeliveryExecutionTests.manifest
     clean = fixtures.DeliveryExecutionTests.clean
-    plan = fixtures.DeliveryExecutionTests.plan
-    child = fixtures.DeliveryExecutionTests.child
-    accept = fixtures.DeliveryExecutionTests.accept
+    def schedule(self):
+        # Store transitions invalidate the previous assignment's schedule. These
+        # fixtures exercise queued filtering after the controller has recorded
+        # its next scan, as the production dispatch loop does after a decline.
+        Scheduling(self.store, clock=lambda:100).record('batch', owner='dispatch', reason='role_capacity')
+
+    def plan(self):
+        result = fixtures.DeliveryExecutionTests.plan(self)
+        self.schedule()
+        return result
+
+    def child(self, *args):
+        result = fixtures.DeliveryExecutionTests.child(self, *args)
+        self.schedule()
+        return result
+
+    def accept(self, *args):
+        result = fixtures.DeliveryExecutionTests.accept(self, *args)
+        self.schedule()
+        return result
 
     def prepare(self):
         self.compose(3, [dict(issue_id='issue-1', prerequisite_issue_id='issue-0'),
@@ -37,7 +55,7 @@ class DependencyFilterParityTests(unittest.TestCase):
                 self.assertEqual(canonical, status)
             with self.subTest(phase=phase, issue=identifier, source='SQL filter'):
                 self.assertEqual(index[identifier], canonical)
-        for status in ('queued', 'blocked'):
+        for status in ('queued', 'blocked', 'waiting'):
             page = self.views.issues(state=status)
             with self.subTest(phase=phase, filter=status):
                 self.assertTrue(all(row['status'] == status for row in page['issues']),
@@ -58,6 +76,13 @@ class DependencyFilterParityTests(unittest.TestCase):
             self.assertIsNone(current_output_in(db, unit, self.members['issue-1']))
             self.assertEqual(db.execute('SELECT COUNT(*) FROM part_output_invalidations').fetchone()[0], 2)
         self.check('ancestor removed and outputs invalidated', {'issue-0':'queued', 'issue-1':'blocked', 'issue-2':'blocked'})
+
+    def test_unscheduled_members_are_waiting_in_both_projections(self):
+        self.prepare()
+        Scheduling(self.store).clear('batch', owner='dispatch')
+        self.check('no scheduled controller', {'issue-0':'waiting', 'issue-1':'blocked', 'issue-2':'blocked'})
+        self.assertEqual(self.views.issues(state='queued')['total'], 0)
+        self.assertEqual(self.views.issues(state='waiting')['total'], 1)
 
     def test_accepted_dependencies_are_counted_before_page_limit(self):
         plan = self.prepare()
@@ -96,6 +121,7 @@ class DependencyFilterParityTests(unittest.TestCase):
         self.life.record_failure(self.command(), failed['job_id'], execution_fence='fence-1',
             input_manifest=inputs, evidence={'reason':'checks failed'})
         self.clean(failed, 'fence-1')
+        self.schedule()
         self.check('accepted dependency reveals recovery', {'issue-0':'queued', 'issue-1':'working', 'issue-2':'blocked'})
         runners = self.views.factory(section='runners')['issues']
         self.assertIn('issue-1', [row['key'] for row in runners])

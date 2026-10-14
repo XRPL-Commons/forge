@@ -58,6 +58,12 @@ def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recove
             identity = (gate['id'], gate['code'], gate.get('member_id'), gate.get('job_id'), gate['details_json'])
             if identity not in seen:
                 seen.add(identity); gates.append(gate)
+    # A replacement investigation inherits unresolved execution faults from its
+    # earlier physical workers, even though those gates retain their job scope.
+    for row in db.execute("SELECT g.* FROM unit_gates g JOIN recovery_assignments r ON r.job_id=g.job_id "
+                          "WHERE r.failed_job_id=? AND g.code='forge_problem' AND g.resolved_at IS NULL", (failed_job_id,)):
+        gate=dict(row)
+        if not any(item['id']==gate['id'] for item in gates):gates.append(gate)
     blocked = []
     for gate in gates:
         details = json.loads(gate['details_json'])
@@ -169,7 +175,7 @@ class Recovery(Executions):
             if (failed is None or failed['role'] == 'recovery' or not failed['cleanup'] or (failed['outcome'] not in {'failure', 'rejected'} and not (failed['outcome']=='failed' and db.execute("SELECT 1 FROM migration_recovery_adoptions WHERE failed_job_id=? AND disposition='investigate'",(failed['id'],)).fetchone()))
                     or failure is None or not failure['recovery_required'] or failure['investigation'] != 'pending'):
                 raise TransitionError('recovery requires an uninvestigated cleaned confirmed failure')
-            if db.execute('SELECT 1 FROM recovery_assignments WHERE failed_job_id=?', (failed_job_id,)).fetchone():
+            if db.execute("SELECT 1 FROM recovery_assignments r JOIN jobs j ON j.id=r.job_id WHERE r.failed_job_id=? AND (j.outcome IS NULL OR j.outcome!='deferred')", (failed_job_id,)).fetchone():
                 raise TransitionError('failed assignment already has its investigation')
             # The failed physical execution is already cleaned above. Its
             # diagnostic reader does not wait for unrelated task processes,
@@ -261,13 +267,30 @@ class Recovery(Executions):
         advance_in(self,db,command,unit)
         return {'accepted': current, 'investigated_job_id': failed['id'], 'approach_required': approach}
 
-    def finish(self, command, job_id, *, execution_fence, input_manifest, findings, incomplete=False, gates=()):
+    def finish(self, command, job_id, *, execution_fence, input_manifest, findings, incomplete=False, gates=(), timeout=False):
         findings = _findings(findings, incomplete)
         gates = _verification_gates(gates)
         payload = dict(job_id=job_id, execution_fence=execution_fence, input_manifest=input_manifest, findings=findings, gates=gates)
+        if timeout:
+            from ..factory.execution_problems import classify
+            query=ExecutionQueries(self.store)
+            decision=classify(query.job(job_id),query.capture(job_id),self.clock())
+            if not decision or decision['kind']!='timeout':raise TransitionError('Timeout requires trusted execution evidence')
+            payload['timeout']=True
         def change(db, unit):
             job, failed, current = self._owned_recovery(db, unit, job_id, execution_fence, input_manifest)
+            if current and timeout:
+                charge_id=_id(command.request_id,'charge')
+                db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','execution_failure',?)",(charge_id,job['attempt_id'],self.clock()))
+                self._event(db,command,'budget_charged',{'charge_id':charge_id},job_id=job_id)
             answer = self._finish(db, command, unit, job, failed, current, findings)
+            if current and timeout:
+                from .transitions import _charges
+                if _charges(db,unit)>=3:
+                    if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='budget_exhausted' AND resolved_at IS NULL",(unit['id'],)).fetchone():
+                        self._open_gate(db,command,'budget_exhausted',{'limit':3})
+                    self._fence(db,command)
+                answer['charged']=True
             if current and gates and not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
                 if unit['current_candidate_id'] is None:
                     raise TransitionError('verification requires an exact current candidate')
@@ -353,7 +376,7 @@ class RecoveryQueries:
         with self.store.read_snapshot() as db:
             rows = db.execute("SELECT j.id FROM jobs j JOIN attempt_failures f ON f.attempt_id=j.attempt_id "
                 "WHERE j.id>? AND j.cleanup=1 AND f.recovery_required=1 AND f.investigation='pending' "
-                'AND NOT EXISTS(SELECT 1 FROM recovery_assignments r WHERE r.failed_job_id=j.id) ORDER BY j.id LIMIT ?',
+                "AND NOT EXISTS(SELECT 1 FROM recovery_assignments r JOIN jobs prior ON prior.id=r.job_id WHERE r.failed_job_id=j.id AND (prior.outcome IS NULL OR prior.outcome!='deferred')) ORDER BY j.id LIMIT ?",
                 (after,limit+1)).fetchall()
         return {'items':[row[0] for row in rows[:limit]],'next_cursor':rows[limit-1][0] if len(rows)>limit else None}
 

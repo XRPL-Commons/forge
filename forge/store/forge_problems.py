@@ -52,6 +52,15 @@ class ForgeProblems(Lifecycle):
             gate = self._gate(db, command, gate_id)
             if gate['resolved_at'] is not None:
                 return {'gate_id': gate_id, 'resolved': True}
+            source = json.loads(gate['details_json']).get('source')
+        if source == 'scheduling':
+            from .scheduling import Scheduling
+            return Scheduling(self.store, clock=self.clock).recheck(command, gate_id)
+        if source == 'execution':
+            from .execution_problems import ExecutionProblems
+            return ExecutionProblems(self.store, clock=self.clock).recheck(command, gate_id)
+        with self.store.read_snapshot() as db:
+            gate = self._gate(db, command, gate_id)
             if repair_in(db, gate, self.clock()) is None:
                 # An ordinary wait observation creates no new event/version.
                 return {'gate_id': gate_id, 'pending': 'qualified_runner_update'}

@@ -18,6 +18,9 @@ DEFAULT = {
     'cycle_seconds': 30,
     'timeout_seconds': {'build': 2700, 'review': 1200, 'audit': 1200, 'recovery': 600},
     'grace_seconds': 10, 'availability_retry_seconds': 300,
+    'reliability': {'retry_seconds': 30, 'stall_seconds': 300,
+                    'effect_retry_cap_seconds': 900, 'effect_max_attempts': 8,
+                    'effect_uncertainty_seconds': 900, 'claim_retest_seconds': [300, 1800, 7200]},
     'image': '', 'engine': '/usr/bin/docker', 'engine_socket': '/var/run/docker.sock',
     'apparmor_profile': 'forge-runner-private-proc', 'seccomp_profile_env': 'FORGE_RUNNER_SECCOMP',
     'network': 'forge-workers', 'proxy': 'http://forge-egress:3128',
@@ -92,6 +95,22 @@ def _validate(value, installed):
             raise ValueError('Invalid role limits in ' + key)
     if config['slots']['recovery'] < 1:
         raise ValueError('Mandatory investigations need at least one recovery slot')
+    reliability = config['reliability']
+    if not isinstance(reliability, dict) or set(reliability) - set(DEFAULT['reliability']):
+        raise ValueError('Unknown reliability settings')
+    reliability = config['reliability'] = {**deepcopy(DEFAULT['reliability']), **reliability}
+    for name, low, high in [('retry_seconds', 1, 3600), ('stall_seconds', 30, 86400),
+                          ('effect_retry_cap_seconds', 1, 86400), ('effect_max_attempts', 1, 100),
+                          ('effect_uncertainty_seconds', 30, 86400)]:
+        if type(reliability[name]) is not int or not low <= reliability[name] <= high:
+            raise ValueError('Invalid reliability ' + name)
+    if reliability['effect_retry_cap_seconds'] < reliability['retry_seconds']:
+        raise ValueError('Effect retry cap must be at least the initial delay')
+    delays = reliability['claim_retest_seconds']
+    if (not isinstance(delays, list) or not 1 <= len(delays) <= 8
+            or any(type(delay) is not int or not 30 <= delay <= 7200 for delay in delays)
+            or delays != sorted(set(delays))):
+        raise ValueError('Claim re-test delays must increase, between 30 and 7200 seconds')
     if config['image'] and not re.fullmatch(r'(?:[A-Za-z0-9._:/-]+@)?sha256:[0-9a-f]{64}', config['image']):
         raise ValueError('Pin the runner image by SHA256 digest or image ID')
     for key in ('engine', 'engine_socket'):

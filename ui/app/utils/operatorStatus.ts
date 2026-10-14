@@ -6,6 +6,8 @@ export interface CanonicalIssueStatus {
   label: string
   reason_code: string | null
   reason: string
+  owner?: string
+  next_action?: { owner: string; reason: string; due_at: number }
 }
 export interface OperatorStatusSource { operator_status?: CanonicalIssueStatus }
 

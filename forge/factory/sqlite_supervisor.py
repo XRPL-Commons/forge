@@ -24,13 +24,15 @@ from .runner import RunnerError
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
                  dispatch, recovery=None, verification=None, waits=None, requirements=None, operators=None,
-                 discovery=None, deployments=None, reconciliation=None, planning=None, triage_effects=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
+                 discovery=None, deployments=None, reconciliation=None, planning=None, triage_effects=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
         if type(cycle_budget_seconds) not in (int, float) or not math.isfinite(cycle_budget_seconds) or cycle_budget_seconds <= 0:
             raise ValueError('cycle budget must be finite and positive')
         self.cycle_budget_seconds, self.monotonic = cycle_budget_seconds, monotonic
         self.store, self.clock, self.retention_interval = store, clock, retention_interval
+        from ..store.scheduling import Scheduling
+        self.scheduling = scheduling if scheduling is not None else Scheduling(store, clock=clock)
         self.execution, self.observations, self.results = execution, observations, results
         self.merges, self.effects, self.dispatch = merges, effects, dispatch
         self.recovery, self.verification = recovery, verification
@@ -169,6 +171,15 @@ class SqliteSupervisor:
                         self._put('next_phase', next_phase)
                     # Local work in later phases still runs. Their first remote
                     # request defers at the same transport boundary.
+            # This local ownership pass still runs after remote budget exhaustion.
+            # Disabled maintenance has an explicit owner and is never an orphan.
+            maintenance = getattr(self.dispatch, 'config', {}).get('enabled') is False
+            try:
+                report['stages']['scheduling'] = self.scheduling.cycle(
+                    after=self._get('scheduling:cursor'),limit=limit,maintenance=maintenance)
+                self._put('scheduling:cursor',report['stages']['scheduling']['next_cursor'])
+            except (TransitionError, StoreError, OSError) as error:
+                report['stages']['scheduling'] = {'error':getattr(error,'code',type(error).__name__)}
             started = self.monotonic()
             try:
                 report['stages']['retention'] = self._retention()

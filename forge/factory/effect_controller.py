@@ -20,11 +20,14 @@ from .github import GitHubUnavailable
 
 
 class EffectController:
-    def __init__(self, store, github, *, admission=None, clock=time.time):
+    def __init__(self, store, github, *, admission=None, clock=time.time, reliability=None):
         self.store, self.github, self.clock = store, github, clock
         self.admission = admission
-        self.commands = Effects(store, clock=clock)
-        self.queries = EffectQueries(store)
+        reliability = reliability or {}
+        self.commands = Effects(store, clock=clock, retry_seconds=reliability.get('retry_seconds',30),
+            retry_cap=reliability.get('effect_retry_cap_seconds',900),max_attempts=reliability.get('effect_max_attempts',8),
+            uncertainty_seconds=reliability.get('effect_uncertainty_seconds',900))
+        self.queries = EffectQueries(store, clock=clock)
         self.jobs = ExecutionQueries(store)
 
     @contextmanager
@@ -94,6 +97,33 @@ class EffectController:
                                      merge_sha=receipt['merge_sha'], evidence=receipt)
         return True
 
+    def _observe_unmerged(self, effect, pr):
+        if effect['merge_status']!='uncertain':
+            return False
+        if (pr.get('number')!=effect['identity']['pull_number'] or pr.get('merged') is not False
+            or ((pr.get('head') or {}).get('repo') or {}).get('id')!=effect['repo_id']
+            or ((pr.get('base') or {}).get('repo') or {}).get('id')!=effect['repo_id']
+            or (pr.get('base') or {}).get('ref')!=effect['target_branch']
+            or not (pr.get('state')=='closed' or (pr.get('head') or {}).get('sha')!=effect['identity']['head_oid'])):
+            return False
+        evidence=dict(verified=True,merged=False,candidate_id=effect['candidate_id'],
+            pull_number=effect['identity']['pull_number'],head_oid=effect['identity']['head_oid'],
+            observed_head=(pr.get('head') or {}).get('sha'),repository_id=effect['repo_id'],
+            base_branch=effect['target_branch'],state=pr.get('state'),observed_at=self.clock())
+        self.commands.observe_unmerged(effect['id'],evidence=evidence)
+        self._resolve_fault(effect)
+        return True
+
+    def _resolve_fault(self,effect):
+        from ..store.scheduling import Scheduling
+        with self.store.read_snapshot() as db:
+            ids=[row[0] for row in db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' "
+                "AND resolved_at IS NULL AND json_extract(details_json,'$.source')='scheduling' "
+                "AND json_extract(details_json,'$.effect_id')=?",(effect['unit_id'],effect['id']))]
+        for gate_id in ids:
+            current=self.queries.get(effect['id'])
+            Scheduling(self.store,clock=self.clock).recheck(Command(str(uuid.uuid4()),'supervisor:effects',current['unit_id'],current['unit_version']),gate_id)
+
     def step(self, effect_id):
         with self._lock():
             return self._step(effect_id)
@@ -101,27 +131,54 @@ class EffectController:
     def _withdraw(self, effect, reason):
         status = 'uncertain' if effect['merge_status'] == 'uncertain' else 'superseded'
         self.commands.record(effect['id'], status, receipt={'reason': reason})
+        if status=='uncertain':
+            self.commands.bounded(effect['id'])
         return self.queries.get(effect['id'])
 
     def _step(self, effect_id):
         effect = self.queries.get(effect_id)
         if effect['status'] in {'confirmed', 'failed', 'superseded'}:
             return effect
+        if effect['retry_at'] is not None and effect['retry_at'] > self.clock():
+            return effect
         try:
             if effect['kind'] == 'github_settle_checks':
+                if self.commands.bounded(effect_id):
+                    self._settle_checks(effect, observe_only=True)
+                    return self.queries.get(effect_id)
                 self.commands.claim(effect_id, expected_version=effect['unit_version'])
                 self._settle_checks(effect)
                 return self.queries.get(effect_id)
             pr = self.github.pr(effect, effect['candidate']['pr'])
             if effect['kind'] == 'github_merge' and self.observe_merged(effect, pr):
                 return self.queries.get(effect_id)
+            if effect['kind']=='github_merge' and self._observe_unmerged(effect,pr):
+                return self.queries.get(effect_id)
             if not self._matches(effect, pr) or pr.get('state') != 'open' or pr.get('merged'):
                 return self._withdraw(effect, 'candidate_changed')
+            if (effect['kind']=='github_merge' and effect['escalation_at'] is not None
+                    and effect['merge_send_count']==0 and pr.get('mergeable') is True):
+                self.commands.resume_unsent_merge(effect_id,evidence=dict(verified=True,merged=False,mergeable=True,state='open',
+                    candidate_id=effect['candidate_id'],pull_number=effect['identity']['pull_number'],head_oid=effect['identity']['head_oid'],
+                    base_oid=effect['identity']['base_oid'],repository_id=effect['repo_id'],base_branch=effect['target_branch'],observed_at=self.clock()))
+                effect=self.queries.get(effect_id)
             authorization = None
             if effect['kind'] == 'github_merge':
                 authorization = self.admission(effect) if self.admission else None
                 if pr.get('mergeable') is not True:
-                    return effect  # Unknown mergeability is an observation wait.
+                    self.commands.observe_wait(effect_id, conflict=pr.get('mergeable') is False)
+                    current=self.queries.get(effect_id)
+                    # Elapsed unknown state is never evidence of a conflict.
+                    if (pr.get('mergeable') is False and current['conflict_since'] is not None
+                            and self.clock()-current['conflict_since']>=self.commands.uncertainty_seconds
+                            and current['merge_send_count']==0):
+                        self.commands.rebuild_conflict(effect_id)
+                    else:
+                        self.commands.bounded(effect_id)
+                    return self.queries.get(effect_id)
+            if self.commands.bounded(effect_id):
+                self._observe_publication(effect)
+                return self.queries.get(effect_id)
             try:
                 self.commands.claim(effect_id, expected_version=effect['unit_version'], authorization=authorization)
             except TransitionError:
@@ -147,8 +204,13 @@ class EffectController:
                 fresh = self.github.pr(effect, effect['candidate']['pr'])
                 if self.observe_merged(effect, fresh):
                     return self.queries.get(effect_id)
-                if not self._matches(effect, fresh) or fresh.get('state') != 'open' or fresh.get('mergeable') is not True:
+                if self._observe_unmerged(self.queries.get(effect_id),fresh):
+                    return self.queries.get(effect_id)
+                if not self._matches(effect, fresh) or fresh.get('state') != 'open':
                     return self._withdraw(self.queries.get(effect_id), 'candidate_changed')
+                if fresh.get('mergeable') is not True:
+                    self.commands.observe_wait(effect_id,conflict=fresh.get('mergeable') is False)
+                    return self.queries.get(effect_id)
                 current = self.queries.get(effect_id)
                 authorization = self.admission(current) if self.admission else None
                 try:
@@ -184,10 +246,23 @@ class EffectController:
                 raise TransitionError('unsupported candidate effect kind')
         except GitHubUnavailable:
             self.commands.record(effect_id, 'uncertain', receipt={'reason': 'github_unavailable'})
+            self.commands.bounded(effect_id)
             raise
         return self.queries.get(effect_id)
 
-    def _settle_checks(self, effect):
+    def _observe_publication(self, effect):
+        """After escalation only independent read-back can finish a publication."""
+        check_id=None
+        if effect['kind']=='github_verdict':
+            check_id=self.github.verdict(self.jobs.job(effect['job_id']),effect['payload']['report'],observe_only=True)
+        elif effect['kind']=='github_check':
+            payload=effect['payload']
+            check_id=self.github.check(effect,payload['role'],effect['candidate'],effect['id'],payload['conclusion'],payload['summary'],observe_only=True)
+        if type(check_id) is int and check_id>0:
+            self.commands.record(effect['id'],'confirmed',receipt={'check_id':check_id})
+            self._resolve_fault(effect)
+
+    def _settle_checks(self, effect, *, observe_only=False):
         """Recover interrupted cancellation by reading every original check back."""
         path = f"/commits/{effect['candidate']['head']}/check-runs?filter=all"
         roles = {'forge/review': 'review', 'forge/audit': 'audit', 'forge/merge-policy': 'controller'}
@@ -208,6 +283,8 @@ class EffectController:
                 raise GitHubUnavailable('Check settlement observed another head')
             expected.add(run['id'])
             if run.get('status') != 'completed':
+                if observe_only:
+                    return
                 self.github.call(role, effect, 'PATCH', '/check-runs/' + str(run['id']), {
                     'status': 'completed', 'conclusion': 'cancelled',
                     'output': {'title': run['name'] + ': stopped', 'summary': effect['payload']['summary']}})
@@ -218,6 +295,7 @@ class EffectController:
         if verified != expected:
             raise GitHubUnavailable('Check settlement has not been independently verified')
         self.commands.record(effect['id'], 'confirmed', receipt={'check_ids': sorted(verified)})
+        self._resolve_fault(effect)
 
     def cycle(self, *, limit=20):
         results = []

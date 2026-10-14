@@ -601,6 +601,9 @@ class Lifecycle:
             if display:
                 db.execute('INSERT INTO unit_context(unit_id,summary_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET summary_json=excluded.summary_json',
                            (command.unit_id,_json(display)))
+        if job['role'] == 'recovery' and outcome in {'deferred', 'memory_retry'}:
+            db.execute("UPDATE attempt_failures SET investigation='pending' WHERE attempt_id="
+                       '(SELECT failed_attempt_id FROM recovery_assignments WHERE job_id=?)', (job['id'],))
         self._event(db, command, "attempt_finished", {"outcome": outcome}, job_id=job["id"])
         if not job['cleanup'] and _unit(db, command.unit_id)['state'] not in TERMINAL:
             self._ensure_cleanup_gate(db, command, job["id"], job["member_id"])
@@ -703,7 +706,8 @@ class Lifecycle:
             if not current:
                 return {'accepted': False, 'charged': False}
             if code == 'forge_problem':
-                previous = db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL", (unit['id'],)).fetchone()
+                previous = db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL "
+                    "AND json_extract(details_json,'$.reason')='harness_startup'", (unit['id'],)).fetchone()
                 gate_id = previous['id'] if previous else self._open_gate(db, command, code, {**details, 'job_id': job_id})
                 # Every result keeps its own immutable evidence. Sharing a unit
                 # blocker must not discard a simultaneous task's capture or grow
@@ -713,6 +717,8 @@ class Lifecycle:
                     raise TransitionError('Forge startup failure has no immutable assigned scope')
                 db.executemany('INSERT INTO forge_problem_jobs(job_id,gate_id,member_id,details_json) VALUES(?,?,?,?)',
                     [(job_id,gate_id,pin[0],_json(details)) for pin in pins])
+                from .execution_problems import draft_in
+                draft_in(db, job_id, details, self.clock())
                 return {'accepted': True, 'charged': False, 'gate_id': gate_id, 'gate_ids': [gate_id]}
             member_id = job['member_id'] if code not in {'forge_problem', 'provider_unavailable', 'verification_human', 'verification_ci'} else None
             candidate_id = job['candidate_id'] if code in {'verification_human', 'verification_ci'} else None
@@ -1313,6 +1319,8 @@ class Lifecycle:
         retained_intent = [gate for gate in _gates(db, unit["id"]) if gate["code"] in {"operator_pause", "operator_backlog"}]
         from .forge_problems import member_faults_in, inherit_faults_in
         retained_faults = {member["id"]: member_faults_in(db,unit["id"],member["id"]) for member in members}
+        from .worker_claims import member_claims_in, inherit_claims_in
+        retained_claims = {member['id']: member_claims_in(db, unit['id'], member['id'], self.clock()) for member in members}
         # The approved graph remains a prerequisite after the work is split.
         # Revision-bound issue dependencies are the existing external authority.
         from .delivery_inputs import dependencies_in
@@ -1333,6 +1341,7 @@ class Lifecycle:
             for code in sorted({gate['code'] for gate in member_intent}):
                 self._open_gate(db,child_command,code,{'source_unit_id':unit['id'],'source_gate_ids':[gate['id'] for gate in member_intent if gate['code']==code]})
             inherit_faults_in(self,db,child_command,child_member,retained_faults[member["id"]])
+            inherit_claims_in(self, db, child_command, child_member, retained_claims[member['id']])
             self._event(db, Command(command.request_id, command.actor_id, child_id, 1), "membership_changed", {"source_unit_id": unit["id"], "source_member_id": member["id"], "member_id": child_member}, issue_id=issue["id"])
             released.append({"unit_id": child_id, "member_id": child_member, "issue_id": issue["id"]})
         return {"released": released}

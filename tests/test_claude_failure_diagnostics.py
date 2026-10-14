@@ -30,10 +30,13 @@ class ClaudeFailureDiagnosticTests(unittest.TestCase):
             program = 'import sys; sys.stdout.write(' + repr(raw) + '); raise SystemExit(' + str(code) + ')'
             collect = lambda *args, **kwargs: original([sys.executable, '-c', program], 'private prompt', self.root, dict(os.environ))
         original_tempfile = tempfile.TemporaryFile
+        original_receipt = self.module['EXECUTION']['write_receipt']
+        receipt = lambda note, status, **fields: original_receipt(note, status, path=self.root / 'private-receipt.json', **fields)
         with patch.dict(self.module['invoke'].__globals__, {'collect': collect, 'Path': lambda path: self.root / Path(path).name}), \
              patch('tempfile.TemporaryFile', side_effect=lambda **kw: original_tempfile(mode=kw['mode'], dir=self.root)), \
+             patch.dict(self.module['EXECUTION'], {'write_receipt': receipt}), \
              patch('sys.stdout', emitted):
-            result = self.module['invoke']({'role': 'triage'}, self.root, {}, {}, 'private prompt')
+            result = self.module['invoke']({'id':'diagnostic','role': 'triage'}, self.root, {}, {}, 'private prompt')
         lines = [json.loads(line) for line in emitted.getvalue().splitlines()]
         return result, lines, emitted.getvalue()
 

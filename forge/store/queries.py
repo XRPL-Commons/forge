@@ -139,6 +139,8 @@ class Queries:
             if failed:
                 lifecycle.update(reason_code=failed['reason_code'], display_status=status.describe(failed['reason_code']))
                 issue['discovery_observation'] = dict(failed)
+        from .scheduling import current_in
+        lifecycle['next_action'] = current_in(connection, unit, member['id']) if current else None
         if include_gates:
             lifecycle['gates'] = gates
         issue['lifecycle'] = lifecycle

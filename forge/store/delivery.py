@@ -495,6 +495,8 @@ class Delivery(TaskCommands, Lifecycle):
         retained_intent=[gate for gate in _gates(db,unit['id']) if gate['code'] in {'operator_pause','operator_backlog'} and gate['member_id'] in {None,member_id}]
         from .forge_problems import member_faults_in, inherit_faults_in
         retained_faults = member_faults_in(db,unit['id'],member_id)
+        from .worker_claims import member_claims_in, inherit_claims_in
+        retained_claims = member_claims_in(db, unit['id'], member_id, self.clock())
         if len(members)==1:
             self._settle(db,command,unit,'closed',close_code='operator_closed')
             return {'released':None,'closed_issue_id':removed['issue_id'],'affected_member_ids':[member_id],'membership_generation':unit['membership_generation']}
@@ -528,13 +530,21 @@ class Delivery(TaskCommands, Lifecycle):
             for code in sorted({gate['code'] for gate in retained_intent}):
                 self._open_gate(db,released_command,code,{'source_unit_id':unit['id'],'source_gate_ids':[gate['id'] for gate in retained_intent if gate['code']==code]})
             inherit_faults_in(self,db,released_command,released_member,retained_faults)
+            inherit_claims_in(self, db, released_command, released_member, retained_claims)
             # Moving failed work is not permission to reset its original shared budget.
             if _charges(db,_unit(db,released_id))>=3:
                 self._open_gate(db,released_command,'budget_exhausted',{'limit':3,'source':'member_drop'})
             released={'unit_id':released_id,'member_id':released_member,'issue_id':removed['issue_id']}
-        for gate in db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL",(unit['id'],)).fetchall():
+        for gate in db.execute("SELECT id FROM unit_gates g WHERE unit_id=? AND code='forge_problem' AND resolved_at IS NULL "
+                              'AND EXISTS(SELECT 1 FROM forge_problem_jobs f WHERE f.gate_id=g.id)',(unit['id'],)).fetchall():
             if not db.execute('SELECT 1 FROM forge_problem_jobs f JOIN unit_issues m ON m.id=f.member_id WHERE f.gate_id=? AND m.left_at IS NULL LIMIT 1',(gate['id'],)).fetchone():
                 self._resolve(db,command,gate['id'],{'removed_member_id':member_id},resolution='superseded')
+        for gate in db.execute("SELECT id FROM unit_gates g WHERE unit_id=? AND code='environment' AND resolved_at IS NULL "
+                              'AND EXISTS(SELECT 1 FROM worker_claim_obligations o WHERE o.gate_id=g.id)', (unit['id'],)).fetchall():
+            if not db.execute('SELECT 1 FROM worker_claim_obligations o JOIN unit_issues m ON m.id=o.member_id '
+                              'WHERE o.gate_id=? AND o.released_at IS NULL AND m.left_at IS NULL LIMIT 1',
+                              (gate['id'],)).fetchone():
+                self._resolve(db, command, gate['id'], {'removed_member_id': member_id}, resolution='superseded')
         if old_candidate:
             self._event(db,command,'candidate_superseded',{'candidate_id':old_candidate,'reason':'member_dropped'})
         self._event(db,command,'membership_changed',{'member_id':member_id,'released_unit_id':released_id,'affected_member_ids':sorted(affected)},issue_id=removed['issue_id'])

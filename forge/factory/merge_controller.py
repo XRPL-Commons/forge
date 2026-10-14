@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 
+from ..request_metrics import RequestBudgetExhausted
 from ..store.db import StoreError
 from ..store.effects import Effects
 from ..store.models import Command, TransitionError
@@ -64,8 +65,9 @@ class MergeAdmission:
     def evaluate_observation(self, effect):
         """Return authorization and display evidence without writing the store."""
         observation = None
+        mergeability = None
         def result(authorization):
-            return {'authorization': authorization, 'approval_observation': observation}
+            return {'authorization': authorization, 'approval_observation': observation, 'mergeability_observation': mergeability}
 
         item = candidate_snapshot(self.store, effect['unit_id'])
         if item is None or item['candidate_id'] != effect['candidate_id']:
@@ -100,13 +102,18 @@ class MergeAdmission:
                 return result(None)
         pr = self.github.pr(item, identity['pull_number'])
         if (pr.get('number') != identity['pull_number'] or pr.get('state') != 'open'
-                or pr.get('draft') is not False or pr.get('merged') is not False or pr.get('mergeable') is not True
+                or pr.get('draft') is not False or pr.get('merged') is not False
                 or (pr.get('head') or {}).get('sha') != identity['head_oid']
                 or (pr.get('base') or {}).get('sha') != identity['base_oid']
                 or (pr.get('base') or {}).get('ref') != item['candidate']['base_ref']
                 or (pr.get('head') or {}).get('repo', {}).get('id') != item['repo_id']
                 or (pr.get('base') or {}).get('repo', {}).get('id') != item['repo_id']
                 or self.github.target(item) != item['candidate']['base_ref']):
+            return result(None)
+        mergeability=dict(verified=True,state='open',merged=False,draft=False,mergeable=pr.get('mergeable'),
+            head_oid=identity['head_oid'],base_oid=identity['base_oid'],pull_number=identity['pull_number'],
+            repository_id=item['repo_id'],base_branch=item['candidate']['base_ref'],observed_at=self.clock())
+        if pr.get('mergeable') is not True:
             return result(None)
         audit = item['evidence'].get('audit', {})
         if (audit.get('human_required') not in {'required', 'not_required'}
@@ -150,13 +157,27 @@ class MergeAdmission:
 
 
 class MergeController:
-    def __init__(self, store, *, admission, clock=time.time):
+    def __init__(self, store, *, admission, clock=time.time, scheduling=None):
         self.store, self.admission, self.clock = store, admission, clock
+        self.scheduling = scheduling
         self.effects = Effects(store, clock=clock)
         self.queries = Queries(store)
         self.commands = Lifecycle(store, clock=clock)
 
     def step(self, unit_id):
+        from ..store.scheduling import Scheduling
+        schedules = self.scheduling or Scheduling(self.store, clock=self.clock)
+        pending=schedules.pending(unit_id, 'merges')
+        if pending:
+            return {'unit_id':unit_id,'pending':pending['reason'],'retry_at':pending['due_at']}
+        try:
+            result = self._step(unit_id)
+        except (RequestBudgetExhausted, GitHubUnavailable, TransitionError, StoreError, OSError) as error:
+            schedules.record(unit_id, owner='merges', reason='github_budget' if isinstance(error,RequestBudgetExhausted) else getattr(error, 'code', type(error).__name__))
+            raise
+        return schedules.outcome(unit_id, 'merges', result)
+
+    def _step(self, unit_id):
         item = candidate_snapshot(self.store, unit_id)
         if item is None or item['state'] != 'merging':
             return {'unit_id': unit_id, 'pending': 'technical_evidence'}
@@ -170,6 +191,16 @@ class MergeController:
         if isinstance(self.admission, MergeAdmission):
             evaluated = self.admission.evaluate_observation(item)
             authorization = evaluated['authorization']
+            mergeability=evaluated.get('mergeability_observation')
+            if mergeability is not None:
+                from ..store.merge_observations import MergeObservations
+                reliability=self.admission.config().get('reliability',{})
+                reconciled=MergeObservations(self.store,clock=self.clock,
+                    uncertainty_seconds=reliability.get('effect_uncertainty_seconds',900)).observe(unit_id,item['candidate_id'],mergeability)
+                if reconciled.get('rebuilding'):
+                    return {'unit_id':unit_id,'rebuilding':True}
+                if reconciled.get('pending'):
+                    return {'unit_id':unit_id,'pending':reconciled['pending']}
             observation = evaluated['approval_observation']
             if observation is not None:
                 from ..store.presentation import record_approval_display

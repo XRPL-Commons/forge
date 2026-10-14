@@ -125,7 +125,7 @@ GATES: dict[str, Gate] = {
     'approach_required': Gate('decision', 'operator', EITHER),
     'decision_required': Gate('decision', 'operator', EITHER),
     # Operator decision (2026-10-05): work resumes when repository setup is ready.
-    'forge_problem': Gate('readiness', 'observation', UNIT),
+    'forge_problem': Gate('readiness', 'observation', ANY_SCOPE | frozenset({'job'})),
     'repository_setup': Gate('readiness', 'observation', UNIT),
     'environment': Gate('readiness', 'recheck', EITHER),
     'observation_unavailable': Gate('readiness', 'observation', ANY_SCOPE),

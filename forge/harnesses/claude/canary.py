@@ -93,6 +93,15 @@ def check_isolation():
     for key in ('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'FORGE_PROBE_SECRET'):
         if os.environ.get(key):
             raise SystemExit('Provider environment was not isolated')
+    envelope = Path('/work/home/forge-exit.json')
+    for operation in (lambda: envelope.read_bytes(), lambda: envelope.write_text('forged'),
+                      lambda: envelope.rename('/work/repository/stolen-envelope')):
+        try:
+            operation()
+        except (PermissionError, FileNotFoundError):
+            pass
+        else:
+            raise SystemExit('Private execution envelope was accessible')
     for name in ('/work/home/probe-private', '/work/home/.claude/.credentials.json', '/work/home/.codex/auth.json'):
         try:
             Path(name).read_bytes()

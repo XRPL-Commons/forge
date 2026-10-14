@@ -60,5 +60,19 @@ class DiscussionModelTests(unittest.TestCase):
                 validate({'discussion_model': bad})
 
 
+class ReliabilityPolicyTests(unittest.TestCase):
+    def test_partial_override_preserves_other_bounds(self):
+        config = validate({'reliability': {'stall_seconds': 600}})
+        self.assertEqual(config['reliability'], {**DEFAULT['reliability'], 'stall_seconds': 600})
+
+    def test_retry_policies_reject_unbounded_or_inconsistent_values(self):
+        for value in ({'claim_retest_seconds': []}, {'claim_retest_seconds': [300, 300]},
+                      {'claim_retest_seconds': [300, 30]}, {'claim_retest_seconds': [True]},
+                      {'effect_max_attempts': 0}, {'effect_uncertainty_seconds': 0},
+                      {'retry_seconds': 100, 'effect_retry_cap_seconds': 99}, {'unknown': 1}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate({'reliability': value})
+
+
 if __name__ == '__main__':
     unittest.main()

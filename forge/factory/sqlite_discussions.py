@@ -23,6 +23,8 @@ class SQLiteDiscussions:
         self.root, self.db, self.runner, self.clock, self.boot = Path(root), store, runner, clock, boot
         self.actor_id = actor_id
         self.commands = DiscussionStore(store, clock=clock)
+        from ..store.auxiliary_problems import AuxiliaryProblems
+        self.problems = AuxiliaryProblems(store,clock=clock)
         self.inventory = inventory or IssueInventory(root)
 
     def issue(self,key):
@@ -168,6 +170,9 @@ class SQLiteDiscussions:
         if self._pipeline_priority(config): return self.waiting('pipeline','Waiting for pipeline work to launch first')
         for key in self.commands.keys(queued=True):
             thread=self.commands.thread(key)
+            wait=self.problems.recheck('discussion',key,config)
+            if wait and not wait.get('resolved'):continue
+            if wait:thread=self.commands.thread(key)
             if self.clock()-thread['requested_at']>FINDING_SECONDS:
                 self.left(key,None,'timeout'); continue
             try: row=self.issue(key)
@@ -183,6 +188,8 @@ class SQLiteDiscussions:
             if entry is None:
                 self.waiting('accounts','Waiting for an available coding account',link=ACCOUNTS); return
             worker={**config,**{k:v for k,v in entry.items() if k!='id'}}
+            worker=self.problems.memory('discussion',key,worker)
+            if worker is None:continue
             quick=(config.get('discussion_model') or {}).get(worker['provider'])
             if quick: worker['model']=quick
             job=dict(id=str(uuid.uuid4()),slot='issue-discussion',role='discussion',issue_key=key,repo=row['repo'],repo_id=row['repo_id'],
@@ -231,6 +238,13 @@ class SQLiteDiscussions:
                 self.commands.activity(key,job['id'],partial=partial_text(logs),presence=here)
                 return
             capture=runner.capture(job); result=capture.get('result')
+            invalid=(not isinstance(result,dict) or result.get('attempt')!=job['id'] or result.get('role')!='discussion'
+                or result.get('outcome') not in {'pass','reject','unable','wait','blocked_environment'}
+                or not isinstance(result.get('summary'),str) or not result['summary'].strip())
+            fault=self.problems.record('discussion',key,job,capture,invalid=invalid)
+            if fault:
+                job=self.commands.job(job['id']);runner.reset(job);self.commands.cleanup(job['id'])
+                return
             if (not isinstance(result,dict) or result.get('attempt')!=job['id'] or result.get('role')!='discussion' or result.get('outcome')!='pass'):
                 job['excerpt']=excerpt(capture.get('logs'))
                 reason,detail,until=ended(capture,job,self.clock())

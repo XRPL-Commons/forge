@@ -111,6 +111,10 @@ class PlanningTests(unittest.TestCase):
         github.call.side_effect=call
         effects=TriageEffects(self.store,github,config=self.config,clock=lambda:self.now)
         first=effects.step(result['effects'][0]);self.assertEqual(first['status'],'pending')
+        reads = github.issue.call_count
+        self.assertEqual(effects.step(result['effects'][0])['reason'], 'retry_delay')
+        self.assertEqual(github.issue.call_count, reads)
+        self.now += 30
         with self.store.read_snapshot() as db:version=db.execute("SELECT version FROM units WHERE id='unit-1'").fetchone()[0]
         self.lifecycle.observe_issue(Command('observed-close','supervisor','unit-1',version),'issue-1',state='closed',state_reason='completed',
             title='Issue 1',body='Complete requirement',requirements={'acceptance':['complete']},remote_updated_at='2026-10-10T00:00:00Z',generation=1)
@@ -134,6 +138,40 @@ class PlanningTests(unittest.TestCase):
         effect=TriageEffects(self.store,github,config=self.config,clock=lambda:self.now)
         self.assertEqual(effect.step(result['effects'][0])['status'],'failed')
         github.call.assert_not_called()
+
+    def test_triage_retry_cap_stops_writes_but_allows_later_readback(self):
+        from copy import deepcopy
+        from forge.factory.github import GitHubUnavailable
+        from forge.factory.triage_effects import TriageEffects
+        rows = self.proposal(); accepted = self.accept(rows)
+        identifier = accepted['effects'][0]
+        remote = {'number': 1, 'state': 'open', 'state_reason': None, 'labels': [], 'assignees': []}
+        github = Mock()
+        github.issue.side_effect = lambda item: (deepcopy(remote), {'acceptance': ['complete']})
+        github.call.side_effect = GitHubUnavailable('unconfirmed write')
+        config = {**self.config, 'reliability': {'effect_max_attempts': 2, 'effect_retry_cap_seconds': 60}}
+        effects = TriageEffects(self.store, github, config=config, clock=lambda: self.now)
+        self.assertEqual(effects.step(identifier)['reason'], 'github_unavailable')
+        self.now += 30
+        self.assertEqual(effects.step(identifier)['reason'], 'effect_reconciliation')
+        self.assertEqual(github.call.call_count, 2)
+        with self.store.read_snapshot() as db:
+            gate = dict(db.execute("SELECT * FROM unit_gates WHERE code='forge_problem' AND unit_id='unit-1'").fetchone())
+            self.assertIsNone(gate['resolved_at'])
+            self.assertEqual(db.execute('SELECT attempts FROM external_effects WHERE id=?', (identifier,)).fetchone()[0], 2)
+        self.now += 60
+        self.assertEqual(effects.step(identifier)['reason'], 'effect_reconciliation')
+        self.assertEqual(github.call.call_count, 2)
+        remote.update(state='closed', state_reason='completed')
+        self.now += 60
+        self.assertEqual(effects.step(identifier)['status'], 'confirmed')
+        self.assertEqual(github.call.call_count, 2)
+        from forge.store.scheduling import Scheduling
+        with self.store.read_snapshot() as db:
+            version = db.execute("SELECT version FROM units WHERE id='unit-1'").fetchone()[0]
+        answer = Scheduling(self.store, clock=lambda: self.now).recheck(
+            Command('reconciled', 'supervisor', 'unit-1', version), gate['id'])
+        self.assertTrue(answer['resolved'])
 
     def test_queued_request_is_atomic_and_does_not_leave_orphan_drafts(self):
         queued=self.planning.queue(1,request_id='queued',actor_id='operator',base_branch='main')

@@ -205,6 +205,11 @@ class SqliteSupervisorIntegrationTests(unittest.TestCase):
         self.assertEqual(self.runner.containers, {})
         self.github.approved = True
         self.cycle()
+        self.assertEqual(self.github.merge_calls, 0)
+        with self.store.read_snapshot() as db:
+            due = db.execute("SELECT due_at FROM next_actions WHERE unit_id='u' AND owner='merges'").fetchone()[0]
+        self.now = due
+        self.cycle()
         self.assertEqual(self.view()['state'], 'merged')
         self.assertEqual(Queries(self.store).issue('i')['lifecycle']['state'], 'done')
         self.assertEqual(self.github.merge_calls, 1)

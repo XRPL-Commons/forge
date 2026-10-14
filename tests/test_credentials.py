@@ -37,6 +37,50 @@ class CredentialStoreTests(unittest.TestCase):
         path = Path(self.store.environment()['FORGE_SETUP_CODEX_AUTH'])
         self.assertEqual(path.read_text(), '{"token":"two"}')
 
+    def test_claim_login_identity_changes_on_reconnect_but_not_refresh(self):
+        reference = 'FORGE_SETUP_CODEX_AUTH'
+        self.store.put(reference, '{"token":"one"}', file=True)
+        original = self.store.login_generations()
+        self.assertTrue(self.store.refresh(reference, hashlib.sha256(b'{"token":"one"}').hexdigest(),
+                                           '{"token":"two"}'))
+        self.assertEqual(self.store.login_generations(), original)
+        self.store.put(reference, '{"token":"three"}', file=True)
+        self.assertNotEqual(self.store.login_generations(), original)
+        self.assertEqual(self.store.login_generations(only=['OPENAI_API_KEY']), {})
+
+    def test_legacy_login_identity_survives_its_first_refresh(self):
+        reference = 'FORGE_SETUP_CODEX_AUTH'
+        self.store.put(reference, '{"token":"one"}', file=True)
+        path = self.store.root / 'index.json'
+        index = json.loads(path.read_text())
+        del index[reference]['login_generation']
+        path.write_text(json.dumps(index))
+        original = self.store.login_generations()
+        self.assertNotEqual(original[reference], index[reference]['name'])
+        self.store.refresh(reference, hashlib.sha256(b'{"token":"one"}').hexdigest(), '{"token":"two"}')
+        self.assertEqual(self.store.login_generations(), original)
+
+    def test_cycle_publishes_only_selected_account_generations_without_refresh_churn(self):
+        from tests.test_sqlite_identity import selected_store
+        from forge.store.configuration import Configuration
+        database = selected_store(self.store.root.parent)
+        reference = 'FORGE_SETUP_CODEX_AUTH'
+        self.store.put(reference, '{"token":"one"}', file=True)
+        self.store.put('FORGE_SETUP_BUILDER_KEY', 'private-app-value')
+        config = {'provider_pool': [{'provider_auth_file_env': reference}]}
+        self.store.publish_login_generations(database, config)
+        before = Configuration(database).get('provider-logins.json')
+        self.assertEqual(before['settings'], {'generations': self.store.login_generations(only=[reference])})
+        self.assertNotIn('private-app-value', json.dumps(before))
+        self.store.refresh(reference, hashlib.sha256(b'{"token":"one"}').hexdigest(), '{"token":"two"}')
+        self.store.publish_login_generations(database, config)
+        self.assertEqual(Configuration(database).get('provider-logins.json'), before)
+        self.store.put(reference, '{"token":"three"}', file=True)
+        self.store.publish_login_generations(database, config)
+        after = Configuration(database).get('provider-logins.json')
+        self.assertEqual(after['revision'], before['revision'] + 1)
+        self.assertNotEqual(after['settings'], before['settings'])
+
     def test_leftovers_from_earlier_versions_are_removed_on_the_next_write(self):
         self.store.put('FORGE_SETUP_BUILDER_KEY', 'synthetic-key')
         orphan = self.store.root / ('a' * 32); orphan.write_text('old-synthetic-secret'); orphan.chmod(0o600)

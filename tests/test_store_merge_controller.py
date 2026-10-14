@@ -132,6 +132,20 @@ class MergeControllerTests(unittest.TestCase):
         self.config_reads += 1
         return deepcopy(self.config)
 
+    def test_merge_retry_uses_configured_schedule(self):
+        from forge.store.scheduling import Scheduling
+        self.prepare_candidate()
+        self.ready = False
+        self.controller.scheduling = Scheduling(self.store, clock=lambda: self.now, retry_seconds=75)
+        self.assertEqual(self.controller.step('u')['pending'], 'authorization')
+        before = self.admission_reads
+        self.now += 74
+        self.assertEqual(self.controller.step('u')['retry_at'], self.now + 1)
+        self.assertEqual(self.admission_reads, before)
+        self.now += 1
+        self.controller.step('u')
+        self.assertEqual(self.admission_reads, before + 1)
+
     def authorize(self, effect):
         self.admission_reads += 1
         return self.admission(effect)
@@ -196,12 +210,67 @@ class MergeControllerTests(unittest.TestCase):
         self.remote.runs.pop()
         self.assertIsNone(self.admission(effect))
 
+    def test_initial_conflict_rebuilds_without_ever_authorizing_an_effect(self):
+        self.controller=MergeController(self.store,admission=self.admission,clock=lambda:self.now)
+        self.prepare_candidate(human_required=False)
+        self.remote.pull['mergeable']=False
+        self.assertEqual(self.controller.step('u')['pending'],'merge_conflict')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+        self.now+=900
+        self.assertTrue(self.controller.step('u')['rebuilding'])
+        self.assertEqual(self.view()['state'],'building')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+        self.assertEqual(self.remote.merge_calls,0)
+
+    def test_initial_unknown_escalates_and_fresh_ready_releases_only_its_own_gate(self):
+        self.controller=MergeController(self.store,admission=self.admission,clock=lambda:self.now)
+        self.prepare_candidate(human_required=False)
+        self.remote.pull['mergeable']=None
+        self.assertEqual(self.controller.step('u')['pending'],'mergeability_unknown')
+        self.now+=900
+        self.assertEqual(self.controller.step('u')['pending'],'mergeability_unknown')
+        self.assertEqual(self.view()['reason_code'],'forge_problem')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+        self.life.pause(self.command())
+        self.remote.pull['mergeable']=True
+        with self.assertRaises(TransitionError):
+            self.controller.step('u')
+        self.assertEqual(self.view()['reason_code'],'operator_pause')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='forge_problem' AND resolved_at IS NULL").fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+        self.life.resume(self.command())
+        self.assertIn('effect_id',self.controller.step('u'))
+        self.assertEqual(self.remote.merge_calls,0)
+
+    def test_initial_conflict_bound_resets_after_unknown_observation(self):
+        self.controller=MergeController(self.store,admission=self.admission,clock=lambda:self.now)
+        self.prepare_candidate(human_required=False)
+        self.remote.pull['mergeable']=False
+        self.controller.step('u')
+        self.now+=600
+        self.remote.pull['mergeable']=None
+        self.controller.step('u')
+        self.now+=30
+        self.remote.pull['mergeable']=False
+        self.controller.step('u')
+        self.now+=300
+        self.assertEqual(self.controller.step('u')['pending'],'merge_conflict')
+        self.assertEqual(self.view()['state'],'merging')
+        self.now+=600
+        self.assertTrue(self.controller.step('u')['rebuilding'])
+
     def test_audit_requires_human_and_gate_is_resolved_before_durable_queue(self):
         self.prepare_candidate(human_required=False, audit_required=True)
         self.assertEqual(self.controller.step('u')['pending'], 'authorization')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0], 0)
         self.remote.approve()
+        self.now += 30
         queued = self.controller.step('u')
         effect = EffectQueries(self.store).get(queued['effect_id'])
         self.assertEqual(effect['status'], 'pending')
@@ -309,6 +378,7 @@ class MergeControllerTests(unittest.TestCase):
     def test_effect_driver_rechecks_approval_after_publishing_controller_check(self):
         self.prepare_candidate(human_required=True)
         self.remote.approve()
+        self.now += 30
         queued = self.controller.step('u')
         self.assertEqual(self.admission_reads, 1)
         self.remote.on_check = lambda: self.remote.approve(identifier=2, state='DISMISSED')
@@ -343,6 +413,7 @@ class MergeControllerTests(unittest.TestCase):
         row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
         self.assertTrue(any(review['state']=='CHANGES_REQUESTED' for review in row['approvals']))
         self.remote.approve(identifier=2)
+        self.now += 30
         self.assertIn('effect_id', controller.step('u'))
         row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
         self.assertTrue(any(review['counted'] for review in row['approvals']))

@@ -185,6 +185,11 @@ class TaskPipelineTests(unittest.TestCase):
         with f.store.write() as db:
             db.execute('INSERT INTO issue_environment_observations(issue_id,memory_retry_json) VALUES(?,?)',
                        (owner['members'][1]['issue_key'], json.dumps({'role': 'build', 'memory': '16g'})))
+        waiting = f.dispatch.step('batch')
+        self.assertFalse(waiting['reserved'])
+        self.assertEqual(waiting['reason'], 'member_blocked')
+        self.assertGreater(waiting['retry_at'], f.now)
+        f.now = waiting['retry_at']
         task = f.jobs.job(f.dispatch.step('batch')['job_id'])
         self.assertEqual({row['member_id'] for row in task['members']}, {first, second})
         self.assertEqual(task['runner_config']['services'], ['postgres', 'redis'])
@@ -286,6 +291,11 @@ class TaskPipelineTests(unittest.TestCase):
         with f.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
+        waiting = f.dispatch.step('batch')
+        self.assertFalse(waiting['reserved'])
+        self.assertEqual(waiting['reason'], 'environment_conflict')
+        self.assertGreater(waiting['retry_at'], f.now)
+        f.now = waiting['retry_at']
         replan = f.jobs.job(f.dispatch.step('batch')['job_id'])
         self.assertEqual(replan['builder_stage'], 'planning')
         self.assertEqual(replan['input_manifest']['environment_conflicts'][0]['choices'], choices)

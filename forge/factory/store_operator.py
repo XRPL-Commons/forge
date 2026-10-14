@@ -229,6 +229,13 @@ class OperatorActions(Lifecycle):
             if action=='environment':remove=[v for v in issue['labels'] if v.startswith('env:')]
             plan=dict(membership=membership,member_id=member['id'],scope_member_id=scoped_member,baseline=self._baseline(db,unit_id),requirements=json.loads(db.execute('SELECT requirements_json FROM issue_revisions WHERE id=?',(issue['current_revision_id'],)).fetchone()[0]),
                 labels=issue['labels'],assignees=issue['assignees'],add=add,remove=remove,reviewers=reviewers)
+            if action=='recheck':
+                from ..store.worker_claims import eligible_gate_in
+                plan['worker_claim_gates']=[candidate['id'] for candidate in _gates(db,unit_id)
+                    if candidate['id'] and candidate['member_id'] in {None,member['id']} and eligible_gate_in(db,candidate)]
+                plan['scheduling_gates']=[candidate['id'] for candidate in _gates(db,unit_id)
+                    if candidate['id'] and candidate['code']=='forge_problem' and candidate['member_id'] in {None,member['id']}
+                    and json.loads(candidate['details_json']).get('source')=='scheduling']
             if action=='recheck' and issue['lifecycle']['reason_code']=='external_change':
                 plan['external_change_gates']=[gate['id'] for gate in _gates(db,unit_id)
                     if gate['code']=='external_change' and gate['id'] and gate['member_id'] in {None,member['id']}]
@@ -623,6 +630,12 @@ class OperatorActions(Lifecycle):
             db.execute("UPDATE issue_action_requests SET status='applied',message='Operator decision applied' WHERE id=?",(row['id'],))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'applied':True,**result}),self.clock(),row['id']))
             if action=='recheck':
+                from ..store.worker_claims import WorkerClaims
+                WorkerClaims(self.store,clock=self.clock).recheck_in(db,command,unit,
+                    row['plan'].get('worker_claim_gates',[]),member_id=selected['id'],explicit=True)
+                from ..store.scheduling import Scheduling
+                for scheduling_gate in row['plan'].get('scheduling_gates',[]):
+                    Scheduling(self.store,clock=self.clock).recheck_in(db,command,unit,scheduling_gate,explicit=True)
                 db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
             return {'request_id':row['id'],'applied':True,**result}
         return self._apply(command,'complete_operator_action',{'request_id':row['id']},change)

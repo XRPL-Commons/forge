@@ -277,12 +277,22 @@ class TaskTopologyTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             rows={row['member_id']:dict(row) for row in db.execute("SELECT * FROM issue_selection_facts WHERE unit_id='batch'")}
             self.assertEqual((rows[a]['active'],rows[b]['active']),(1,0))
-            self.assertEqual(rows[b]['indexed_status'],'queued')
+            self.assertEqual(rows[b]['indexed_status'],'waiting')
         Executions(self.store,clock=lambda:100).collect(self.command(),job['job_id'],execution_fence='a',capture={'logs':'','worktree_bundle':b'bundle'})
         with self.store.read_snapshot() as db:
             rows={row['member_id']:dict(row) for row in db.execute("SELECT * FROM issue_selection_facts WHERE unit_id='batch'")}
             self.assertEqual(rows[a]['indexed_reason_code'],'cleanup_pending')
-            self.assertIsNone(rows[b]['indexed_reason_code']);self.assertEqual(rows[b]['indexed_status'],'queued')
+            self.assertIsNone(rows[b]['indexed_reason_code']);self.assertEqual(rows[b]['indexed_status'],'waiting')
+
+        # A sibling becomes queued only when the controller owns a real next
+        # action; that schedule cannot obscure the captured worker's cleanup.
+        from forge.store.scheduling import Scheduling
+        Scheduling(self.store, clock=lambda:100).record(
+            'batch', owner='dispatch', reason='role_capacity', member_id=b)
+        with self.store.read_snapshot() as db:
+            rows={row['member_id']:dict(row) for row in db.execute("SELECT * FROM issue_selection_facts WHERE unit_id='batch'")}
+            self.assertEqual(rows[a]['indexed_reason_code'],'cleanup_pending')
+            self.assertEqual(rows[b]['indexed_status'],'queued')
 
     def test_pending_v1_planning_and_integration_keep_original_manifest_contract(self):
         from unittest.mock import patch

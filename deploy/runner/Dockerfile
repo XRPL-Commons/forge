@@ -28,6 +28,6 @@ COPY --chmod=0644 forge/factory/job.py forge/factory/harness.py forge/factory/st
 COPY --chmod=0755 forge/factory/build_environment.py /opt/forge/build_environment.py
 COPY --chmod=0644 deploy/runner/browser-canary.cjs /opt/forge/browser-canary.cjs
 RUN ln -s /opt/forge/build_environment.py /usr/local/bin/safe-build
-LABEL org.forge.build-environment="1" org.forge.startup-protocol="1"
+LABEL org.forge.build-environment="1" org.forge.startup-protocol="1" org.forge.exit-protocol="1"
 USER 1000:1000
 WORKDIR /work

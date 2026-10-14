@@ -504,3 +504,32 @@ unimplemented. This receipt is consumed by ordinary ResultController jobs;
 recovery and auxiliary planning/discussion controllers do not yet classify it.
 Those parts of #258/#262 remain separate work. Images predating the startup
 protocol cannot supply this proof.
+
+
+## Durable scheduling and uncertain effects
+
+Every dispatch, result and merge decline records its exact work scope, responsible
+controller, reason and next try time. The default retry delay is 30 seconds. A
+changed assignment invalidates its old timer; admission still checks current
+facts. A future timer counts as owned work. The board calls work Queued only when
+that timer exists and shows when Forge will try again.
+
+The local supervisor audits ownership after remote phases, even when their
+request budget is exhausted. Cleanup, captured results, scoped gates, candidate
+effects and explicit maintenance count as ownership. After 300 seconds without
+ownership, a member gets a Forge problem with its last decline. Recheck schedules
+a fresh attempt without charging or clearing independent holds.
+
+Candidate effects persist a retry deadline before possible delivery. Exponential
+backoff starts at 30 seconds, caps at 900 seconds, and stops sends after eight
+attempts. Unknown outcomes older than 900 seconds get an owned Forge problem;
+read-back continues. These bounds are configured in the runtime `reliability`
+object. An attempt is an operation attempt, including its bounded subrequests;
+read-only observations and budget-deferred reads do not consume send attempts.
+
+A fresh exact merge observation completes the merge. A closed-unmerged PR or a
+changed head observed after the last send reconciles all earlier uncertain sends
+and atomically returns the candidate for rework. HTTP refusal remains a separate
+proof restricted to the first send. Observed conflicts sustained for 900 seconds
+rebuild only when no merge was possibly sent. Unknown mergeability remains
+uncertain. Neither elapsed time nor an HTTP success proves a merge.

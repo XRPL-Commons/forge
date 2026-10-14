@@ -10,14 +10,29 @@ from urllib.parse import quote
 from ..store.models import Command, TransitionError
 from ..store.runtime import writable
 from ..store.transitions import Lifecycle, _unit, _gates, _json
+from ..store.effects import Effects, admit_send_in, defer_effect_in, effect_due, retry_policy
 from .github import GitHubUnavailable
 from .store_operator import labels
+
+
+class EffectRetryPending(Exception):
+    """The effect retains its authority while its retry or reconciliation is due."""
 
 
 class TriageEffects(Lifecycle):
     def __init__(self,store,github,*,config,clock=time.time):
         super().__init__(store,clock=clock)
         self.github=github;self.config=config
+
+    def _reliability(self):
+        config = self.config() if callable(self.config) else self.config
+        return config.get('reliability', {})
+
+    def _defer_effect(self, identifier):
+        with self.store.write() as db:
+            row = db.execute('SELECT * FROM external_effects WHERE id=?', (identifier,)).fetchone()
+            defer_effect_in(db, row, self.clock(), reliability=self._reliability())
+        return Effects(self.store, clock=self.clock, **retry_policy(self._reliability())).bounded(identifier)
 
     def _row(self,identifier):
         with self.store.read_snapshot() as db:
@@ -63,12 +78,29 @@ class TriageEffects(Lifecycle):
         with self.store.write() as db:
             writable(db)
             if not self._current(db,row):raise TransitionError('Worker cleanup has not finished')
-            db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+1,updated_at=? WHERE id=?",(self.clock(),row['id']))
+            current = db.execute('SELECT * FROM external_effects WHERE id=?', (row['id'],)).fetchone()
+            first_send = not row.get('_attempt_started')
+            if first_send:
+                try:
+                    admit_send_in(current, self.clock(), reliability=self._reliability())
+                except TransitionError:
+                    raise EffectRetryPending() from None
+            # A relabel action may need several confirmed HTTP writes. They form
+            # one attempt; a later step resumes from fresh readback before retry.
+            policy = retry_policy(self._reliability())
+            retry_at = (self.clock() + min(policy['retry_cap'], policy['retry_seconds'] * 2 ** min(current['attempts'], 20))
+                        if first_send else current['retry_at'])
+            db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+?,"
+                       'uncertain_since=COALESCE(uncertain_since,?),retry_at=?,updated_at=? WHERE id=?',
+                       (int(first_send), self.clock(), retry_at, self.clock(), row['id']))
+            row['_attempt_started'] = True
         self.github.call('controller',row['item'],method,path,payload)
 
     def step(self,identifier):
         row=self._row(identifier)
         if row['status'] in {'confirmed','failed','superseded'}:return {'effect_id':identifier,'status':row['status']}
+        if not effect_due(row, self.clock()):
+            return {'effect_id': identifier, 'status': row['status'], 'reason': 'retry_delay', 'retry_at': row['retry_at']}
         try:
             with self.store.read_snapshot() as db:
                 if not self._current(db,row):return {'effect_id':identifier,'status':'pending','reason':'cleanup'}
@@ -86,11 +118,10 @@ class TriageEffects(Lifecycle):
                 issue=self._remote(row)
                 if issue.get('state')!='closed' or issue.get('state_reason')!='completed':raise GitHubUnavailable('Completed closure is not confirmed')
             return self._complete(row,issue)
-        except GitHubUnavailable:
-            with self.store.write() as db:
-                db.execute("UPDATE external_effects SET retry_at=?,updated_at=? WHERE id=? AND status NOT IN('confirmed','failed','superseded')",
-                    (self.clock()+30,self.clock(),identifier))
-            return {'effect_id':identifier,'status':'pending','reason':'github_unavailable'}
+        except (GitHubUnavailable, EffectRetryPending) as error:
+            bounded = self._defer_effect(identifier)
+            return {'effect_id':identifier,'status':'pending',
+                    'reason':'effect_reconciliation' if bounded else 'retry_delay' if isinstance(error, EffectRetryPending) else 'github_unavailable'}
         except TransitionError as error:
             return self._reject(row,str(error))
 

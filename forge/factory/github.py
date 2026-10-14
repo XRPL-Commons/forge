@@ -392,7 +392,7 @@ class GitHub:
             raise GitHubUnavailable('CI evidence exceeded its size limit')
         return value
 
-    def check(self, item, role, candidate_value, external_id, conclusion, summary):
+    def check(self, item, role, candidate_value, external_id, conclusion, summary, *, observe_only=False):
         name = 'forge/merge-policy' if role == 'controller' else 'forge/' + role
         runs = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
         app_id = self.connection(role)['app_id']
@@ -414,6 +414,8 @@ class GitHub:
             payload['conclusion'] = conclusion
         if own and own[0].get('head_sha') == candidate_value['head'] and own[0].get('status') == payload['status'] and own[0].get('conclusion') == conclusion and (own[0].get('output') or {}).get('summary') == payload['output']['summary']:
             return own[0]['id']
+        if observe_only:
+            return None
         if own:
             # Same external ID is the durable publication idempotency key.
             path = '/check-runs/' + str(own[0]['id'])
@@ -448,12 +450,14 @@ class GitHub:
             settled += 1
         return settled
 
-    def verdict(self, job, report):
+    def verdict(self, job, report, *, observe_only=False):
         candidate_value = job['candidate']
         marker = '<!-- forge-verdict ' + job['id'] + ' -->'
         reviews = self.pages(job['role'], job, f"/pulls/{candidate_value['pr']}/reviews")
         owned = [r for r in reviews if marker in (r.get('body') or '') and r.get('user', {}).get('login') == job['publisher']
                  and r.get('commit_id') == candidate_value['head']]
+        if not owned and observe_only:
+            return None
         if not owned:
             self.call(job['role'], job, 'POST', f"/pulls/{candidate_value['pr']}/reviews",
                       {'commit_id': candidate_value['head'], 'event': 'APPROVE' if report['outcome'] == 'pass' else 'REQUEST_CHANGES',
@@ -465,7 +469,7 @@ class GitHub:
         if len(owned) != 1 or owned[0]['state'] != expected:
             raise GitHubUnavailable('Role review publication is unconfirmed or dismissed')
         return self.check(job, job['role'], candidate_value, job['id'],
-                          'success' if report['outcome'] == 'pass' else 'failure', report['summary'])
+                          'success' if report['outcome'] == 'pass' else 'failure', report['summary'], observe_only=observe_only)
 
     def human(self, item, pr):
         approvals = self.approvals(item, pr)

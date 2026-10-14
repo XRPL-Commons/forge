@@ -34,6 +34,7 @@ class ResultBoundaryTests(unittest.TestCase):
                         }
                         with patch.dict(namespace, replacements), patch('builtins.print'), patch('subprocess.run', return_value=completed), \
                              patch('runpy.run_path', return_value={}), \
+                             patch.dict(module['EXECUTION'], {'stream': lambda *args: (0, [])}), \
                              patch.dict(module['RESULTS'], {'write_result': lambda n,r: results.write_result(n,r,root)}):
                             if excess:
                                 with self.assertRaisesRegex(ValueError, 'size limit'):
