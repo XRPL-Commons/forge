@@ -88,7 +88,7 @@ shards, UI unit/type/build/browser checks and source audit passed in
   and Anvil upgraded successfully to `fd0fb78` at schema 040. The next live canary
   reached capture and failed with `result_schema_invalid`; this does not prove
   malformed model output because schema validation preceded execution checks.
-  Diagnostic ordering and CLI failure-report retention are being corrected;
+  Diagnostic ordering and CLI failure-report retention are corrected in #286;
   no role is marked qualified by that failed attempt.
 - The diagnostic build on Anvil (`a5676c0`) reported build exit 125 with cleanup
   confirmed and automation still disabled. A credential-free reproduction of
@@ -96,8 +96,18 @@ shards, UI unit/type/build/browser checks and source audit passed in
   A scoped, read-only measurement of the selected repository then proved the
   mirror rejected its 239,187,791-byte Git pack at the 64 MiB buffered-response
   ceiling. Cache data was deleted and all temporary tokens were revoked.
-  Bounded spooling and chunked response transfer are being implemented. The role
-  canary now uses the production worker's bounded work volume.
+  Bounded spooling and chunked response transfer passed a generated 65 MiB
+  native clone with Python peak memory below 16 MiB, 39 focused regressions,
+  independent review and full CI on `3d12b9a`. The role canary uses the
+  production worker's bounded work volume.
+- Anvil installed `3d12b9a` and image
+  `sha256:c61ea6ca74d522223b8b7e1be03e388eb05ebd254372b03035b14bbba69e537a`.
+  All nine native boundary checks passed with confirmed cleanup. The automatic
+  account check exposed a separate setup-probe path mismatch: it still read
+  `/work/assignment.json` after inputs moved to `/run/forge-input`. The retained
+  capture proves failure before provider execution. The upgrade journal
+  completed through supported CLI resumption; account qualification remained
+  failed, and the role canary correctly refused `coding_account_not_ready`.
 - The native boundary canary also passed on `e430a9c` and its rebuilt image
   `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
   All nine checks passed and disposable cleanup was confirmed.
@@ -110,7 +120,9 @@ shards, UI unit/type/build/browser checks and source audit passed in
   independent read-back. No fixture result certifies a real PR or merge.
 
 Production completed the merged Run 2 upgrade plus the launcher correction at
-`d6113d3`, schema 040, at 2026-10-14 12:09:29 UTC. All four services are active.
+`d6113d3`, schema 040, at 2026-10-14 12:09:29 UTC. A later deployment advanced
+production to `01964ae`; its release receipt is dated 12:27:54 UTC and all four
+services are active. That later receipt starts the current observation window.
 Live role and target-bound publication qualification are still incomplete; a
 successful deployment does not establish them. The new production observation
 baseline is recorded in [Run 1 acceptance](run-1-acceptance.md).

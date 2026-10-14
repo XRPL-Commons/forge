@@ -53,7 +53,12 @@ advanced through the runtime cleanup and Run 2. The supported upgrade completed
 on `d6113d390a22d1223f0854f25cb5f1813d41235d`, schema 040, at
 **2026-10-14 12:09:29 UTC**. The release receipt matches the source, all four
 managed services are active, and the updater exited. This is the new completion
-baseline; the original Run 1 window cannot be claimed complete.
+baseline for that release; the original Run 1 window cannot be claimed complete.
+Production subsequently advanced to `01964ae7652a2faa2db90d81c2d50b772b2001c9`.
+Its release receipt is dated **2026-10-14 12:27:54 UTC**, source and receipt
+match, schema remains 040, and all four services are active. Use this later
+receipt as the current observation baseline; the schema-upgrade journal still
+records the earlier completion.
 
 Before that upgrade, source had advanced while the database remained at schema
 038. The mismatch was observed explicitly, admission was drained through the
