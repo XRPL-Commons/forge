@@ -156,16 +156,52 @@ class CanaryRunner(ContainerRunner):
         return WorkerBoundary(self.call, image=self.config['image'], work_bytes=512*1024**2)
 
 
+def capture_evidence(capture, job):
+    """Bounded host facts survive cleanup; worker prose and logs never do."""
+    from .harnesses.execution import valid
+    execution = capture.get('execution') or {}
+    facts = {key: execution[key] for key in ('running', 'oom_killed') if type(execution.get(key)) is bool}
+    if type(execution.get('exit_code')) is int:
+        facts['exit_code'] = execution['exit_code']
+    labels = {'valid result artifact': 'result', 'runner logs': 'logs',
+        'delegated output bundle': 'bundle', 'valid output receipt': 'output_receipt',
+        'valid startup receipt': 'startup_receipt', 'valid execution envelope': 'execution_envelope',
+        'container and worker-local evidence': 'container'}
+    evidence = dict(role=job['role'], job_id=job['id'], execution=facts,
+        result_present=capture.get('result') is not None,
+        missing=sorted({labels[label] for label in capture.get('missing', []) if label in labels}))
+    envelope = capture.get('execution_envelope')
+    if (isinstance(envelope, dict) and valid(envelope, job['id'], final=True)
+            and facts.get('running') is False and envelope['exit_code'] == facts.get('exit_code')):
+        safe = {'harness_status': envelope['harness_status']}
+        if 'provider_error' in envelope:
+            safe['provider_error'] = dict(envelope['provider_error'])
+        if 'harness_error' in envelope:
+            safe['harness_error'] = {'phase': envelope['harness_error']['phase']}
+        evidence['execution_envelope'] = safe
+    if (execution.get('startup_protocol') == '1' and facts.get('exit_code') == 78
+            and facts.get('running') is False and not facts.get('oom_killed')
+            and not evidence['result_present'] and not capture.get('timed_out')):
+        from .factory.startup_problems import validated_receipt
+        startup = validated_receipt(capture.get('forge_startup'), job['id'])
+        if startup is not None:
+            evidence['startup'] = dict(reason='harness_startup', phase=startup['phase'], exception=startup['exception'])
+    return evidence
+
+
 def validate_capture(capture, job, notes, source):
     from .factory.harness import schema
     from .factory.contracts import result
     from .mirror.git_store import run_git
-    value = capture.get('result')
-    schema_check(value, schema(notes))
-    execution = capture.get('execution') or {}
-    envelope = capture.get('execution_envelope') or {}
+    evidence = capture_evidence(capture, job)
+    execution = evidence['execution']
+    envelope = evidence.get('execution_envelope') or {}
     if execution.get('running') is not False or execution.get('exit_code') != 0 or envelope.get('harness_status')!='ok':
         raise QualificationError('provider_execution_not_confirmed')
+    value = capture.get('result')
+    if value is None:
+        raise QualificationError('result_missing')
+    schema_check(value, schema(notes))
     if job['role'] in {'build','review','audit','recovery'}:result(deepcopy(value),job)
     if value['outcome']!='pass':raise QualificationError('role_did_not_pass')
     match = re.search(r'QUALIFICATION_READ ([^\s]+) ([0-9a-f]{40}(?:[0-9a-f]{24})?)(?:\s|$)',value['summary'])
@@ -306,7 +342,11 @@ def qualify(root, repository, number, *, apply=False, image=None):
                         time.sleep(1)
                     captured=runner.capture(job)
                     notes=json.loads((source._directory(job['id'])/'assignment.json').read_text())
-                    reports.append(validate_capture(captured,job,notes,source))
+                    try:
+                        reports.append(validate_capture(captured,job,notes,source))
+                    except Exception:
+                        report['failure']=capture_evidence(captured,job)
+                        raise
                 finally:
                     try:
                         fixtures.fence(job)
