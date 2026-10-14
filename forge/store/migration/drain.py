@@ -13,6 +13,20 @@ from ..configuration import Configuration
 from .snapshot import MigrationError
 
 DOMAIN = 'runtime.json'
+# A running supervisor holds the controller lease for one cycle at a time.
+# Maintenance waits for it between cycles instead of failing on contention.
+LEASE_WAIT_SECONDS = 120
+
+
+@contextmanager
+def controller_lease(root, *, timeout=None):
+    """Wait, within a bound, for the lease the supervisor holds during a cycle."""
+    from ...factory.control import controller_lock, ControllerBusy
+    try:
+        with controller_lock(root, timeout=LEASE_WAIT_SECONDS if timeout is None else timeout):
+            yield
+    except ControllerBusy:
+        raise MigrationError('controller_busy') from None
 
 
 def digest(value):
@@ -25,7 +39,8 @@ class Drain:
 
     @contextmanager
     def transaction(self):
-        with schema.connection(self.store, write=True) as db:
+        # Publish drain changes between supervisor cycles, never mid-cycle.
+        with controller_lease(self.upgrade.root), schema.connection(self.store, write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
                 schema.validate_prefix(self.store, db)

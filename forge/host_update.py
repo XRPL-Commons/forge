@@ -245,8 +245,12 @@ def desired_units(root, bind):
                                        'FORGE_UPSTREAM_SECRET_FILE=' + str(root / UPSTREAM_SECRET)]),
         'forge-ui': unit('Forge operator UI', ' '.join(unit_quote(part) for part in ui),
                          after='network-online.target forge-status.service',
+                         # `docker run --rm` removes the container as soon as it
+                         # exits, so stopping or replacing it must accept that it
+                         # is already gone ("No such container") as done.
                          extra='ExecStartPre=-' + docker + ' rm --force ' + name + '\n'
-                               'ExecStop=' + docker + ' stop --time 10 ' + name + '\n'),
+                               'ExecStop=-' + docker + ' stop --time 10 ' + name + '\n'
+                               'ExecStopPost=-' + docker + ' rm --force ' + name + '\n'),
         'forge-supervisor': unit('Forge supervisor', unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root), python,
                                  after='network-online.target forge-mirror.service', requires='forge-mirror.service'),
     }
@@ -608,14 +612,23 @@ def reconcile(root, bind=None, assume_yes=False):
     remove_stale_units(stale)
     command(['systemctl', '--user', 'daemon-reload'])
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
+    # Converge every service to running, not only the changed ones: a
+    # maintenance window (the schema upgrade) stops them all before updating,
+    # and an unchanged UI would otherwise stay down and fail the health wait.
+    # Starting an already running unit is a no-op.
     # The mirror must pass a read-only health probe before dispatch can restart.
     if fresh or 'forge-mirror' in restart:
         command(['systemctl', '--user', 'restart', 'forge-mirror.service'])
+    else:
+        command(['systemctl', '--user', 'start', 'forge-mirror.service'])
     wait_mirror(root)
     # The API first: the UI and supervisor depend on it.
     ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror' and (fresh or name in restart)]
     if ordered:
         command(['systemctl', '--user', 'restart', *ordered])
+    idle = [name + '.service' for name in SERVICES if name != 'forge-mirror' and name + '.service' not in ordered]
+    if idle:
+        command(['systemctl', '--user', 'start', *idle])
     wait_healthy(bind)
     prune_ui(root, {release, record.data.get('ui_release')})
     record.save(bind=bind, source=source, image=image, ui_release=release, updated_at=time.time(),

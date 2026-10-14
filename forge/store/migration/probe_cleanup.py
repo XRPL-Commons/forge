@@ -15,13 +15,13 @@ def cleanup_fenced_probe(root, store):
         return 0
     from ..db import Store
     from ...sqlite_identity import identity_effect_lock
-    from ...factory.control import controller_lock
+    from .drain import controller_lease
     from ...onboarding import SetupState
     from ...factory.probe_runner import ProbeRunner
     from ...credentials import Credentials
     database=Store.open(store.root)
     # Matches setup's identity -> controller order; no transaction spans Docker.
-    with identity_effect_lock(database), controller_lock(root):
+    with identity_effect_lock(database), controller_lease(root):
         state=SetupState(root,database,time.time)
         with state.transaction() as data:
             for job in data.get('probe_jobs',[]):
