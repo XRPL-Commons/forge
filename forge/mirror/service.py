@@ -95,7 +95,9 @@ class Broker:
         details = dict(request_kind='invalid', request_bytes=len(body), response_bytes=0,
                        started_at=started, outcome='started')
         repository = None
+        request_id = None
         try:
+            request_id = self.store.append_receipt(self.session_id, details)
             # Only these bounded fields cross the trusted frontend connection.
             if (not isinstance(metadata, dict) or set(metadata) != {'method', 'path', 'protocol', 'content_type', 'body_length'}
                     or metadata['body_length'] != len(body) or len(body) > MAX_REQUEST
@@ -111,7 +113,6 @@ class Broker:
                     or kind == 'upload' and metadata['content_type'] != 'application/x-git-upload-pack-request'):
                 raise MirrorError('request_invalid')
             details.update(repository=name, request_kind=kind, **wants(body))
-            self.store.append_receipt(self.session_id, details)
             session = self._session()
             repository = self.resolve(name)
             # A redirect/rename is independently resolved; raw worker names never
@@ -136,18 +137,24 @@ class Broker:
             details.update(outcome='served', response_bytes=len(response), finished_at=self.clock())
             if kind == 'advertisement':
                 details['refs_digest'] = hashlib.sha256(response).hexdigest()
-            self.store.append_receipt(self.session_id, details)
+            self.store.append_receipt(self.session_id, details, request_id=request_id)
             return 200, headers, response
         except MirrorError as error:
             details.update(outcome='failed' if error.transient else 'denied', reason=error.reason,
                            transient=error.transient, finished_at=self.clock())
-            self.store.append_receipt(self.session_id, details)
+            if request_id is not None:
+                self.store.append_receipt(self.session_id, details, request_id=request_id)
             status = 503 if error.transient or error.reason == 'mirror_capacity' else 403
             return status, {'content-type': 'text/plain'}, ('Forge mirror: ' + error.reason + '\n').encode()
 
     def malformed(self):
-        self.store.append_receipt(self.session_id, dict(request_kind='invalid', outcome='denied',
-            reason='request_invalid', request_bytes=0, response_bytes=0, started_at=self.clock(), finished_at=self.clock()))
+        # A malformed frame is still an attempt. Revoked/exhausted sessions
+        # reject future frames without extending durable receipt history.
+        try:
+            self.store.append_receipt(self.session_id, dict(request_kind='invalid', outcome='denied',
+                reason='request_invalid', request_bytes=0, response_bytes=0, started_at=self.clock(), finished_at=self.clock()))
+        except MirrorError:
+            pass
 
 
 class SessionServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):

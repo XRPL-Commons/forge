@@ -94,7 +94,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.claims('aux:triage:1')[0]['reason'], 'project_denied')
         self.store.revoke(self.session_id)
         self.assertEqual(broker.handle(request, b'')[0], 403)
-        self.assertEqual(len(self.store.receipts('aux:triage:1')), 6)
+        self.assertEqual(len(self.store.receipts('aux:triage:1')), 4)
 
     def test_revocation_during_backend_work_cancels_before_handing_back_bytes(self):
         store, identifier = self.store, self.session_id
@@ -113,6 +113,95 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(backend.alive_before)
         self.assertFalse(backend.alive_after)
 
+    def test_same_policy_supports_distinct_immutable_job_sources(self):
+        other = create(repository_id=1, canonical_repository='acme/project', base_oid='b' * 40,
+            input_oids=[], manifest={'job': 'fixture'}, dependency_policy_digest=self.key, notes={'role':'review'})
+        self.assertEqual(self.store.prepare(other, self.policy), self.key)
+        other_id = self.store.bind_session(job_id='review:2', execution_fence='f2', network_generation='n2',
+            deadline=1000, source_digest=digest(other), policy_digest=self.key)
+        self.assertEqual(self.store.session(self.session_id)['source_input'], self.source)
+        self.assertEqual(self.store.session(other_id)['source_input'], other)
+        with self.db.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM mirror_policies').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM mirror_sources').fetchone()[0], 2)
+        different = {**self.policy, 'revision':'different'}
+        third = create(repository_id=1, canonical_repository='acme/project', base_oid='a'*40, input_oids=[],
+            manifest={'job':'fixture'}, dependency_policy_digest=policy_digest(different), notes={})
+        self.store.prepare(third, different)
+        with self.assertRaisesRegex(MirrorError, 'session_invalid'):
+            self.store.bind_session(job_id='bad', execution_fence='f3', network_generation='n3',
+                deadline=1000, source_digest=digest(other), policy_digest=policy_digest(different))
+        with self.assertRaises(sqlite3.IntegrityError), self.db.write() as db:
+            db.execute('INSERT INTO mirror_sessions VALUES(?,?,?,?,?,?,?,?,NULL)',
+                ('bad','bad','f3','n3',digest(other),policy_digest(different),1000,100))
+
+    def test_admit_and_prepared_bind_each_jobs_notes_to_its_exact_source(self):
+        sources = []
+        for job_id, notes in [('review', {'role':'review'}), ('audit', {'role':'audit'})]:
+            source = create(repository_id=1, canonical_repository='acme/project', base_oid='a'*40,
+                input_oids=[], manifest={'job':'fixture'}, dependency_policy_digest=self.key, notes=notes)
+            authority = dict(execution_fence=job_id, repo_id=1, manifest={'job':'fixture'}, deadline=1000)
+            with patch.object(self.store, 'authority_in', return_value=authority):
+                self.store.admit(job_id, source, self.policy, notes, {}, execution_fence=job_id,
+                    network_generation=job_id, deadline=1000)
+            prepared = self.store.prepared(job_id)
+            self.assertEqual(prepared['notes'], notes)
+            self.assertEqual(prepared['source_input'], source)
+            sources.append(source)
+        self.assertNotEqual(digest(sources[0]), digest(sources[1]))
+        with self.db.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM mirror_policies').fetchone()[0], 1)
+
+    def test_malformed_and_terminal_only_attempts_are_bounded_with_one_capacity_claim(self):
+        self.store.max_requests = 2
+        broker = self.broker(None, resolve=lambda _: self.fail('invalid request reached lookup'))
+        request = dict(method='GET', path='/nope', protocol='', content_type='', body_length=0)
+        self.assertEqual(broker.handle(request, b'')[0], 403)
+        broker.malformed()
+        self.assertEqual(broker.handle(request, b'')[0], 503)
+        for _ in range(20):
+            broker.malformed()
+            self.assertEqual(broker.handle(request, b'')[0], 403)
+        self.assertEqual(len(self.store.receipts('aux:triage:1')), 4)
+        self.assertEqual([row['reason'] for row in self.store.claims('aux:triage:1')], ['mirror_capacity'])
+        self.assertIsNotNone(self.store.session(self.session_id)['revoked_at'])
+
+    def test_denial_flood_after_quota_does_not_extend_history(self):
+        self.store.max_requests = 1
+        start = self.store.append_receipt(self.session_id, {'outcome':'started'})
+        with self.assertRaisesRegex(MirrorError, 'mirror_capacity'):
+            self.store.append_receipt(self.session_id, {'outcome':'denied', 'reason':'mirror_capacity'})
+        for _ in range(20):
+            with self.assertRaisesRegex(MirrorError, 'session_revoked'):
+                self.store.append_receipt(self.session_id, {'outcome':'denied', 'reason':'mirror_capacity'})
+        terminal = self.store.append_receipt(self.session_id, {'outcome':'denied','reason':'session_revoked'}, request_id=start)
+        self.assertEqual(self.store.append_receipt(self.session_id, {'outcome':'denied','reason':'session_revoked'}, request_id=start), terminal)
+        self.assertEqual(len(self.store.receipts('aux:triage:1')), 3)
+        self.assertEqual(len(self.store.claims('aux:triage:1')), 1)
+
+    def test_completion_after_revocation_cannot_claim_served_or_expand_records(self):
+        start = self.store.append_receipt(self.session_id, {'outcome':'started'})
+        self.store.revoke(self.session_id)
+        with self.assertRaisesRegex(MirrorError, 'session_revoked'):
+            self.store.append_receipt(self.session_id, {'outcome':'served', 'response_bytes':4}, request_id=start)
+        terminal = [r for r in self.store.receipts('aux:triage:1') if r['request_id'] == start]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(terminal[0]['details']['reason'], 'session_revoked')
+        for _ in range(10):
+            self.store.append_receipt(self.session_id, {'outcome':'denied', 'reason':'session_revoked'}, request_id=start)
+        self.assertEqual(len(self.store.receipts('aux:triage:1')), 2)
+        with self.assertRaisesRegex(MirrorError, 'receipt_invalid'):
+            self.store.append_receipt(self.session_id, {'outcome':'denied'}, request_id='different-session-request')
+
+    def test_response_quota_and_revocation_finalize_once_without_serving(self):
+        start = self.store.append_receipt(self.session_id, {'outcome':'started'})
+        self.store.max_response_bytes = 1
+        with self.assertRaisesRegex(MirrorError, 'mirror_capacity'):
+            self.store.append_receipt(self.session_id, {'outcome':'served','response_bytes':2}, request_id=start)
+        self.assertEqual(len(self.store.receipts('aux:triage:1')), 2)
+        self.assertEqual(len(self.store.claims('aux:triage:1')), 1)
+        self.assertEqual(self.store.claims('aux:triage:1')[0]['details']['response_bytes'], 0)
+
     def test_job_byte_budget_survives_store_restart(self):
         self.store.max_request_bytes = 10
         self.store.append_receipt(self.session_id, {'outcome': 'started', 'request_bytes': 8})
@@ -128,7 +217,7 @@ class StoreTests(unittest.TestCase):
                      '/github/acme/project.git/info/refs?service=git-upload-pack&token=secret'):
             metadata = dict(method='GET', path=path, protocol='', content_type='', body_length=0)
             self.assertEqual(broker.handle(metadata, b'')[0], 403)
-        self.assertEqual(len(self.store.receipts('aux:triage:1')), 6)
+        self.assertEqual(len(self.store.receipts('aux:triage:1')), 12)
         self.assertNotIn('secret', json.dumps(self.store.receipts('aux:triage:1')))
 
 
@@ -170,6 +259,7 @@ class SmartHTTPTests(StoreTests):
                         with self.assertRaises(MirrorError):
                             run_git(['-C', str(cloned), 'push', 'origin', 'HEAD:refs/heads/forbidden'])
                         self.store.revoke(self.session_id)
+                        receipt_count = len(self.store.receipts('aux:triage:1'))
                         with self.assertRaises(MirrorError):
                             run_git(['-C', str(cloned), 'fetch', 'origin'])
                     finally:
@@ -180,7 +270,8 @@ class SmartHTTPTests(StoreTests):
                 thread.join()
         receipts = self.store.receipts('aux:triage:1')
         self.assertTrue(any(r['details'].get('request_kind') == 'upload' and r['details']['outcome'] == 'served' for r in receipts))
-        self.assertTrue(any(r['details'].get('reason') == 'session_revoked' for r in receipts))
+        self.assertEqual(len(receipts), receipt_count)
+        self.assertIsNotNone(self.store.session(self.session_id)['revoked_at'])
         self.assertTrue(all('source_digest' in r['details'] for r in receipts))
 
     def test_base_object_handle_pins_exact_commit_and_reader_never_checks_out(self):

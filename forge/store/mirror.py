@@ -50,22 +50,23 @@ class MirrorStore:
                 or source['repository_id'] != policy['project_repository_id']):
             raise MirrorError('policy_denied')
         with self.store.write() as db:
-            row = db.execute('SELECT * FROM mirror_policies WHERE digest=?', (key,)).fetchone()
-            if row is not None and row['source_digest'] != source_digest:
-                # Policy includes assignment manifest identity. Reusing its key
-                # for different immutable notes/inputs would destroy attribution.
-                raise MirrorError('policy_denied')
-            db.execute('INSERT OR IGNORE INTO mirror_policies VALUES(?,?,?,?,?)',
-                       (key, source_digest, encoded(source).decode(), encoded(policy).decode(), self.clock()))
+            self._source_in(db, source, policy)
         return key
+
+    def _source_in(self, db, source, policy):
+        key, source_digest = policy_digest(policy), digest(source)
+        db.execute('INSERT OR IGNORE INTO mirror_policies VALUES(?,?,?)',
+                   (key, encoded(policy).decode(), self.clock()))
+        db.execute('INSERT OR IGNORE INTO mirror_sources VALUES(?,?,?,?)',
+                   (source_digest, key, encoded(source).decode(), self.clock()))
 
     def bind_session(self, *, job_id, execution_fence, network_generation, deadline, source_digest, policy_digest):
         if (any(not isinstance(v, str) or not 0 < len(v) <= 200 for v in (job_id, execution_fence, network_generation))
                 or type(deadline) not in (int, float) or not self.clock() < deadline <= self.clock() + 86400):
             raise MirrorError('session_invalid')
         with self.store.write() as db:
-            policy = db.execute('SELECT source_digest FROM mirror_policies WHERE digest=?', (policy_digest,)).fetchone()
-            if policy is None or policy[0] != source_digest:
+            policy = db.execute('SELECT 1 FROM mirror_sources WHERE digest=? AND policy_digest=?', (source_digest, policy_digest)).fetchone()
+            if policy is None:
                 raise MirrorError('session_invalid')
             previous = db.execute('SELECT * FROM mirror_sessions WHERE job_id=? AND execution_fence=? AND network_generation=?',
                                   (job_id, execution_fence, network_generation)).fetchone()
@@ -80,7 +81,7 @@ class MirrorStore:
 
     def session(self, identifier):
         with self.store.read_snapshot() as db:
-            row = db.execute('SELECT s.*,p.policy_json,p.source_json FROM mirror_sessions s JOIN mirror_policies p ON p.digest=s.policy_digest WHERE s.id=?',
+            row = db.execute('SELECT s.*,p.policy_json,x.source_json FROM mirror_sessions s JOIN mirror_policies p ON p.digest=s.policy_digest JOIN mirror_sources x ON x.digest=s.source_digest AND x.policy_digest=s.policy_digest WHERE s.id=?',
                              (identifier,)).fetchone()
             if row is None:
                 raise MirrorError('session_invalid')
@@ -93,30 +94,70 @@ class MirrorStore:
         with self.store.write() as db:
             db.execute('UPDATE mirror_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL', (self.clock(), identifier))
 
-    def append_receipt(self, identifier, details):
-        if not isinstance(details, dict) or not set(details) <= RECEIPT_FIELDS or len(encoded(details)) > 60000:
+    def _receipt_in(self, db, session, details, request_id=None):
+        identifier = str(uuid.uuid4())
+        safe = {**details, 'source_digest': session['source_digest'], 'policy_digest': session['policy_digest'],
+                'execution_fence': session['execution_fence'], 'network_generation': session['network_generation']}
+        db.execute('INSERT INTO mirror_receipts VALUES(?,?,?,?,?,?)',
+                   (identifier, session['id'], request_id, session['job_id'], encoded(safe).decode(), self.clock()))
+        if details.get('outcome') == 'denied' and details.get('reason') in CLAIMS:
+            db.execute('INSERT INTO mirror_claims VALUES(?,?,?,?,?)',
+                       (identifier, session['job_id'], details['reason'], encoded(safe).decode(), self.clock()))
+        return identifier
+
+    def append_receipt(self, identifier, details, *, request_id=None):
+        """Admit an attempt or finish one exact admitted request, under one lock.
+
+        Terminal-only host receipts count as attempts too. The first capacity
+        refusal is durable and revokes admission; subsequent probes add nothing.
+        Already admitted requests may each record one terminal cancellation.
+        """
+        if (not isinstance(details, dict) or not set(details) <= RECEIPT_FIELDS or len(encoded(details)) > 60000
+                or details.get('outcome') not in {'started', 'served', 'denied', 'failed'}
+                or any(type(details.get(key, 0)) is not int or details.get(key, 0) < 0 for key in ('request_bytes', 'response_bytes'))
+                or request_id is not None and details['outcome'] == 'started'):
             raise MirrorError('receipt_invalid')
-        receipt_id = str(uuid.uuid4())
+        refusal = None
         with self.store.write() as db:
             session = db.execute('SELECT * FROM mirror_sessions WHERE id=?', (identifier,)).fetchone()
             if session is None:
                 raise MirrorError('session_invalid')
-            if details.get('outcome') in ('started', 'served'):
-                usage = db.execute("SELECT sum(json_extract(details_json,'$.outcome')='started'), "
-                    "sum(CASE WHEN json_extract(details_json,'$.outcome')='started' THEN json_extract(details_json,'$.request_bytes') ELSE 0 END), "
-                    "sum(CASE WHEN json_extract(details_json,'$.outcome')='served' THEN json_extract(details_json,'$.response_bytes') ELSE 0 END) "
-                    'FROM mirror_receipts WHERE session_id=?', (identifier,)).fetchone()
-                requests, received, sent = (value or 0 for value in usage)
-                if (details['outcome'] == 'started' and (requests >= self.max_requests or received + details.get('request_bytes', 0) > self.max_request_bytes)
-                        or details['outcome'] == 'served' and sent + details.get('response_bytes', 0) > self.max_response_bytes):
-                    raise MirrorError('mirror_capacity')
-            safe = {**details, 'source_digest': session['source_digest'], 'policy_digest': session['policy_digest'],
-                    'execution_fence': session['execution_fence'], 'network_generation': session['network_generation']}
-            db.execute('INSERT INTO mirror_receipts VALUES(?,?,?,?,?)',
-                       (receipt_id, identifier, session['job_id'], encoded(safe).decode(), self.clock()))
-            if details.get('outcome') == 'denied' and details.get('reason') in CLAIMS:
-                db.execute('INSERT INTO mirror_claims VALUES(?,?,?,?,?)',
-                           (receipt_id, session['job_id'], details['reason'], encoded(safe).decode(), self.clock()))
+            if request_id is not None:
+                started = db.execute("SELECT 1 FROM mirror_receipts WHERE id=? AND session_id=? AND request_id IS NULL "
+                    "AND json_extract(details_json,'$.outcome')='started'", (request_id, identifier)).fetchone()
+                if not started:
+                    raise MirrorError('receipt_invalid')
+                previous = db.execute('SELECT id FROM mirror_receipts WHERE request_id=?', (request_id,)).fetchone()
+                if previous:
+                    return previous['id']
+            elif session['revoked_at'] is not None or session['deadline'] <= self.clock():
+                raise MirrorError('session_revoked')
+            usage = db.execute("SELECT sum(request_id IS NULL), "
+                "sum(CASE WHEN request_id IS NULL THEN json_extract(details_json,'$.request_bytes') ELSE 0 END), "
+                "sum(CASE WHEN json_extract(details_json,'$.outcome')='served' THEN json_extract(details_json,'$.response_bytes') ELSE 0 END) "
+                'FROM mirror_receipts WHERE session_id=?', (identifier,)).fetchone()
+            requests, received, sent = (value or 0 for value in usage)
+            exceeded = (request_id is None and (requests >= self.max_requests or received + details.get('request_bytes', 0) > self.max_request_bytes)
+                or details['outcome'] == 'served' and sent + details.get('response_bytes', 0) > self.max_response_bytes)
+            if details['outcome'] == 'served' and (session['revoked_at'] is not None or session['deadline'] <= self.clock()):
+                refusal = 'session_revoked'
+                receipt_id = self._receipt_in(db, session, {**details, 'outcome': 'denied', 'reason': refusal,
+                    'response_bytes': 0, 'finished_at': self.clock()}, request_id)
+            elif exceeded:
+                refusal = 'mirror_capacity'
+                if session['revoked_at'] is None:
+                    receipt_id = self._receipt_in(db, session, {**details, 'outcome': 'denied', 'reason': 'mirror_capacity',
+                        'response_bytes': 0, 'finished_at': self.clock()}, request_id)
+                    db.execute('UPDATE mirror_sessions SET revoked_at=? WHERE id=?', (self.clock(), identifier))
+                else:
+                    # A concurrent request already persisted the sole capacity
+                    # claim. This admitted request only records cancellation.
+                    receipt_id = self._receipt_in(db, session, {**details, 'outcome': 'denied', 'reason': 'session_revoked',
+                        'response_bytes': 0, 'finished_at': self.clock()}, request_id)
+            else:
+                receipt_id = self._receipt_in(db, session, details, request_id)
+        if refusal:
+            raise MirrorError(refusal)
         return receipt_id
 
     def preparation_receipt(self, authority, details):
@@ -126,7 +167,7 @@ class MirrorStore:
         safe = {**details, 'phase': 'preparation', 'manifest_digest': digest(authority['manifest']),
                 'execution_fence': authority['execution_fence']}
         with self.store.write() as db:
-            db.execute('INSERT INTO mirror_receipts VALUES(?,NULL,?,?,?)',
+            db.execute('INSERT INTO mirror_receipts VALUES(?,NULL,NULL,?,?,?)',
                        (identifier, authority['job_id'], encoded(safe).decode(), self.clock()))
             if details.get('outcome') == 'denied' and details.get('reason') in CLAIMS:
                 db.execute('INSERT INTO mirror_claims VALUES(?,?,?,?,?)',
@@ -202,8 +243,9 @@ class MirrorStore:
 
     def prepared(self, job_id):
         with self.store.read_snapshot() as db:
-            row = db.execute('SELECT i.*,p.source_json,p.policy_json,s.network_generation,s.deadline,s.revoked_at '
+            row = db.execute('SELECT i.*,x.source_json,p.policy_json,s.network_generation,s.deadline,s.revoked_at '
                 'FROM mirror_job_inputs i JOIN mirror_policies p ON p.digest=i.policy_digest '
+                'JOIN mirror_sources x ON x.digest=i.source_digest AND x.policy_digest=i.policy_digest '
                 'JOIN mirror_sessions s ON s.id=i.session_id WHERE i.job_id=?', (job_id,)).fetchone()
         if row is None:
             return None
@@ -232,11 +274,7 @@ class MirrorStore:
                 if previous['source_digest'] != source_digest:
                     raise MirrorError('assignment_changed')
                 return previous['session_id']
-            prior_policy = db.execute('SELECT source_digest FROM mirror_policies WHERE digest=?', (key,)).fetchone()
-            if prior_policy and prior_policy[0] != source_digest:
-                raise MirrorError('assignment_changed')
-            db.execute('INSERT OR IGNORE INTO mirror_policies VALUES(?,?,?,?,?)',
-                       (key, source_digest, encoded(source).decode(), encoded(policy).decode(), self.clock()))
+            self._source_in(db, source, policy)
             identifier = str(uuid.uuid4())
             db.execute('INSERT INTO mirror_sessions VALUES(?,?,?,?,?,?,?,?,NULL)',
                        (identifier, job_id, execution_fence, network_generation, source_digest, key, deadline, self.clock()))
