@@ -17,9 +17,7 @@ The public auditor template grants no administrative merge bypass. The generated
 `bin/forge setup` writes the user services for the checkout and runtime root it is given (default `~/.local/share/forge`); cloning the source alone installs nothing. The operator UI binds to loopback unless `--bind` names a private tailnet address, and requires a trusted private network.
 
 
-The optional remote queue notification channel is named `relay`; configure the `RELAY_*` environment variables only if using that adapter. No channels are connected by this repository. The package manifest is private and pins browser-test tooling; it is not an npm publication package.
-
-Provider isolation tools are experimental, opt-in components. Synthetic tests are not evidence that an arbitrary production installation is isolated. See [implementation status](implementation.md).
+The package manifest is private and pins browser-test tooling; it is not an npm publication package.
 
 The durable factory's defaults live in `forge/factory/config.py`, and the disabled
 `examples/runtime.json.example` restates them: 4 Build, 2 Review, 1 Audit and 1 Recovery

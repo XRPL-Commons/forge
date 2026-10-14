@@ -2,8 +2,7 @@
 
 JSON fixtures for the Nuxt operator-UI end-to-end test harness, served by
 `tests/e2e/mock-api.mjs`. Sourced from the Playwright fixtures in
-`tests/browser_*.cjs` and the payload shapes in
-`docs/superpowers/specs/2026-09-22-operator-api-contracts.md` §2, then renamed
+`tests/browser_*.cjs` and the operator API payload shapes, then renamed
 onto the `mock-api.mjs` naming rule (path segments after `/api/` joined with
 `-`; a query parameter that selects a specific fixture appends `.<param>`; a
 POST body override appends `.post`) and extended for Task 5. Every fixture

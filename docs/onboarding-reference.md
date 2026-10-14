@@ -283,7 +283,6 @@ App into a later setup. If access changes or checks expire, refresh and check
 again. Setup checks expire after five minutes; Start independently rechecks
 repository access, protection and runner prerequisites.
 
-The design prototype in docs/design/ remains a simulation for design review.
 The production onboarding screen is part of the operator UI, a separate
 `forge-ui` service on the tailnet address; `forge-status` serves only the JSON
 API on localhost. See docs/ui-deployment.md.

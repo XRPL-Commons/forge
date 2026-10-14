@@ -314,14 +314,9 @@ Run the regression suite and credential-free container reset canary first:
 ```sh
 python3 -m unittest discover -s tests -v
 PYTHONPATH=. python3 deploy/test_factory_container.py
-python3 deploy/test_factory_sandbox.py --image forge-runner:local \
-  --seccomp /etc/forge/runner/seccomp.json
 ```
 
-The native canary temporarily loads one uniquely named AppArmor test profile,
-checks repository writes and denial of a synthetic provider file/outside writes,
-and removes its container/profile afterward. Review that script before granting
-its narrow root operation. It does not run a model or access GitHub. Run the real
+The container canary does not run a model or access GitHub. Run the real
 App/authenticated workflow on a selected pilot repository before expanding access.
 The reset canary builds a synthetic image, creates its own internal network, and
 removes only its uniquely named resources.

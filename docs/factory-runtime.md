@@ -60,7 +60,7 @@ provider delegation is disabled; the supported fallback is Forge-managed childre
 
 The current production runner requires Linux, Docker and the installed isolation policies. If a project needs unavailable tools or a database environment, Forge reports a setup problem instead of treating it as a code defect.
 
-For exact mounts, network rules and limits, read the [runtime reference](factory-runtime-reference.md) and [isolation reference](isolation.md).
+For exact mounts, network rules and limits, read the [runtime reference](factory-runtime-reference.md) and the [isolation status](../SECURITY.md#isolation-status).
 
 ## Accounts and cooldowns
 

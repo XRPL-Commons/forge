@@ -28,17 +28,6 @@ def launch(argv=None):
             raise SystemExit('--root needs a path')
     if not root and target == 'forge.host_setup':
         root = str(Path.home() / '.local/share/forge')
-    if target == 'forge.notifications':
-        state = os.environ.get('FORGE_NOTIFY_STATE', 'state/notifications')
-        for index, value in enumerate(options):
-            if value == '--state':
-                if index + 1 >= len(options) or options[index + 1].startswith('--'):
-                    raise SystemExit('--state needs a path')
-                state = options[index + 1]
-            elif value.startswith('--state='):
-                state = value.split('=', 1)[1]
-        state = Path(state).absolute()
-        root = str(state.parent.parent) if state.name == 'notifications' and state.parent.name == 'state' else None
     if root:
         from .store.db import qualified_sqlite
         if not qualified_sqlite():

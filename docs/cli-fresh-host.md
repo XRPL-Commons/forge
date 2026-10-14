@@ -7,7 +7,7 @@ verified merge. Each stage also has a noninteractive command.
 
 `installed` means the host passed qualification. `factory_active` means you
 explicitly started processing. Only `first_merge_complete` confirms the final
-milestone. See the [acceptance specification](superpowers/specs/2026-10-02-fresh-factory-cli.md).
+milestone.
 
 ## Install the client
 

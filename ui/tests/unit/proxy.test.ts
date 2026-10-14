@@ -85,9 +85,9 @@ describe('allowedHosts', () => {
     expect(guardHost('127.0.0.1:8787', set)).toBe(true)
   })
   it('is replaced wholesale by NITRO_ALLOWED_HOSTS', () => {
-    const set = allowedHosts({ HOST: '100.111.151.38', PORT: '8787', NITRO_ALLOWED_HOSTS: 'forge.example:8787, forge.tail.ts.net' })
-    expect(set).toEqual(['forge.example:8787', 'forge.tail.ts.net'])
-    expect(guardHost('forge.tail.ts.net', set)).toBe(true)
+    const set = allowedHosts({ HOST: '100.111.151.38', PORT: '8787', NITRO_ALLOWED_HOSTS: 'forge.example:8787, forge.example.ts.net' })
+    expect(set).toEqual(['forge.example:8787', 'forge.example.ts.net'])
+    expect(guardHost('forge.example.ts.net', set)).toBe(true)
     expect(guardHost('100.111.151.38:8787', set)).toBe(false)
   })
 })
@@ -111,8 +111,8 @@ describe('upstreamHeaders', () => {
     expect(readUpstreamSecret('/f', () => { throw new Error('missing') })).toBe('')
   })
   it('forwards the validated browser host so App callbacks return through the UI', () => {
-    const out = upstreamHeaders({ host: 'forge.tail.ts.net:8787' }, 'GET', '127.0.0.1:8788')
-    expect(out['x-forwarded-host']).toBe('forge.tail.ts.net:8787')
+    const out = upstreamHeaders({ host: 'forge.example.ts.net:8787' }, 'GET', '127.0.0.1:8788')
+    expect(out['x-forwarded-host']).toBe('forge.example.ts.net:8787')
     expect(out.host).toBe('127.0.0.1:8788')
   })
   it('does not invent an origin on GET', () => {
