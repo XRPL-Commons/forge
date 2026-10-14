@@ -54,20 +54,22 @@ shards, UI unit/type/build/browser checks and source audit passed in
   record keeps host publication pending.
 - The Controller's current installation lacks Workflows write permission. Test
   that limitation and report it; do not expand permission as part of the probe.
-- Anvil is the native qualification target: Ubuntu 24.04, Docker 29.1.3, schema
-  029, automation and merging disabled. Its read-only upgrade plan had no
-  blockers, but apply stopped before the migration journal because its source
-  fetch required GitHub credentials on the host. The CLI source transfer is
-  corrected to keep those credentials local; 47 focused tests and independent
-  review passed. Install the corrected,
-  CI-passing revision with `forge migrate upgrade`,
-  retaining that idle state, then run `forge setup qualify-boundary --ssh anvil
-  --apply`. The CLI selects and records the installed immutable image ID.
+- Anvil is the native qualification target: Ubuntu 24.04, Docker 29.1.3,
+  automation and merging disabled. Its first apply stopped before migration
+  because source fetching required GitHub credentials on the host. The corrected
+  CLI transfers the source using local access, including complete ancestry for a
+  shallow checkout. All 47 focused tests, independent review and full CI passed.
+  The resumed upgrade reached revision `02cd206` and schema 040; image/service
+  reconciliation is still running. After it completes, run `forge setup
+  qualify-boundary --ssh anvil --apply`. The CLI selects and records the installed
+  immutable image ID.
 - Complete the signed-publication and every-role canaries before claiming the
   boundary accepted or deploying it to the active Forge factory. The boundary
   canary uses direct fixture workers, so it does not establish production role
-  harness compatibility. Supported role-canary and verified signing-evidence
-  CLI commands are being added; no manual configuration write is acceptance.
+  harness compatibility. The supported `setup qualify-roles` and `setup qualify-publication` commands
+  now provide those checks. Role candidates are explicitly disposable fixtures;
+  signing qualification requires a host-recorded API operation and exact
+  independent read-back. No fixture result certifies a real PR or merge.
 
 Forge remains on Run 1 during its separate 24-hour observation. The latest
 ownership sweep found 13 current memberships, all owned, with no orphans. See
@@ -89,5 +91,7 @@ Their changes are retained: removed legacy import tooling stays removed, `uv`
 installs the CLI, and API mutations require a signed-in operator. The supported
 `forge migrate upgrade` path remains. Run 2's mirror service, narrow rule repair
 and qualification commands are integrated with that updated base. Combined CI
-passed; the subsequent source-transfer correction requires its own validation
-before resuming Anvil's upgrade.
+passed, including the subsequent source-transfer correction on `02cd206`
+([run](https://github.com/XRPL-Commons/forge/actions/runs/38550713982)). The new
+qualification commands passed focused review and require their combined release
+gate before deployment.
