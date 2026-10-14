@@ -199,6 +199,18 @@ JSON. Provider capability proofs precede credential migration.
 
 ## Evidence and issue tracking
 
+Run 1 merged as [PR #272](https://github.com/XRPL-Commons/forge/pull/272)
+and deployed on 14 October. See [the acceptance record](run-1-acceptance.md).
+Its 24-hour observation remains open while Run 2 is developed.
+
+New cleanup issues #273 and #275 belong after the core replacements in this
+plan. Check callers before removing each proposed item. In particular, keep
+the current repository-rule repair until #271 supplies its replacement, and
+keep the observer deferred under the operator's earlier #111 decision. The
+proposal in #273 does not itself reverse that decision. Group compatible docs,
+dead-code and UI removals with Run 5; do not mix them into the security boundary
+change or reset Run 1's observation with an unrelated deployment.
+
 Keep broad parent issues open until their complete acceptance is met. Each run's
 acceptance note records the tested revision, CI/review, deployment identity,
 live outcomes and remaining scope. Prepare the note with the run; publish it to
