@@ -109,6 +109,17 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.addCleanup(patch.stopall)
         patch('forge.store.migration.upgrade.package_version', return_value='tool').start()
 
+
+    def test_resumed_drain_requalifies_source_before_fenced_probe_cleanup(self):
+        with patch.object(self.upgrader,'blockers',return_value=['uncleaned_jobs']):
+            self.assertEqual(self.upgrader.run(revision='b'*40,apply=True)['status'],'draining')
+        with patch.object(self.host,'prepare_source_update',side_effect=MigrationError('source_changed')), \
+                patch('forge.store.migration.probe_cleanup.cleanup_fenced_probe') as cleanup:
+            with self.assertRaisesRegex(MigrationError,'source_changed'):
+                self.upgrader.run(revision='b'*40,apply=True)
+            cleanup.assert_not_called()
+        self.assertEqual(self.upgrader.read()['stage'],'draining')
+
     def test_source_pack_reaches_both_preparations_without_entering_journal(self):
         pack={'data':'transport-only-pack','sha256':'transport-only-digest'}
         with patch.object(self.host,'prepare_source_update') as prepare:

@@ -22,8 +22,10 @@ class ProbeRunner(ContainerRunner):
                 or job.get('unit_id') or job.get('kind') not in ('provider', 'termination', 'reuse')
                 or self.config['harness_argv'] != (PROVIDER if job['kind'] == 'provider' else TERMINATION)):
             raise RunnerError('Only persisted setup probes may use the trusted probe runner')
-        job.setdefault('execution_fence', 'setup:' + job['id'])
-        return WorkerBoundary.identity(job)
+        # The persisted auxiliary launch manifest is immutable. Its original
+        # shape predates boundary fences; derive resource identity without adding
+        # an input field during create/reset or changing names on replay.
+        return WorkerBoundary.identity({**job, 'execution_fence': job.get('execution_fence', 'setup:' + job['id'])})
 
     def inputs(self, job):
         self.identity(job)

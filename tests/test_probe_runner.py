@@ -38,6 +38,31 @@ class ProbeRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(RunnerError, 'assignment changed'):
             self.runner.prepare_source(self.job)
 
+
+    def test_boundary_identity_does_not_change_durable_auxiliary_inputs(self):
+        from forge.store.db import Store
+        from forge.store.auxiliary import save_in, job_in
+        store=Store.create(Path(self.temp.name)/'database')
+        original=deepcopy(self.job)
+        with store.write() as db:save_in(db,'setup','live',self.job,100)
+        spec=self.runner.prepare_source(self.job)
+        self.assertEqual(self.job,original)
+        # Capacity deferral, followed by fencing and cleanup, must preserve the
+        # original launch manifest even when it had no explicit fence field.
+        self.job.update(capacity_wait_since=101,fenced=True)
+        with store.write() as db:save_in(db,'setup','live',self.job,102)
+        with patch.object(ContainerRunner,'reset',return_value={'container_absent':True}):
+            self.runner.reset(self.job)
+        self.job['cleanup']=True
+        with store.write() as db:save_in(db,'setup','live',self.job,103)
+        with store.read_snapshot() as db:
+            saved=job_in(db,self.job['id'])
+            self.assertTrue(saved['cleanup'])
+            self.assertNotIn('execution_fence',saved)
+            self.assertIsNone(db.execute('SELECT 1 FROM auxiliary_leases WHERE execution_id=?',(self.job['id'],)).fetchone())
+        self.assertNotIn(spec.volume,self.engine.resources['volume'])
+        self.assertNotIn(spec.frontend,self.engine.resources['container'])
+
     def test_ordinary_assignment_or_program_cannot_enter_trusted_network(self):
         for change in ({'slot':'ordinary'}, {'unit_id':'unit'}, {'repo':'owner/repo'}):
             with self.subTest(change=change), self.assertRaisesRegex(RunnerError, 'Only persisted'):

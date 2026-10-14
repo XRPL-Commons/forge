@@ -71,6 +71,13 @@ can complete. To install a corrected release, use its CLI and explicitly apply
 its new full commit SHA; the command verifies forward ancestry and retains the
 services stopped by the earlier attempt. There is no JSON switch-back.
 
+A corrected CLI can also finish one already-fenced setup probe per draining
+invocation when the installed schema already matches its target. It verifies the
+source release again, uses the recorded probe configuration to confirm resource
+removal, and saves cleanup through the normal setup transaction. Active probes
+and all other workers remain drain blockers. This repairs a failed setup cleanup
+without editing SQL, discarding execution history, or installing code early.
+
 The timestamp upgrade normalizes existing issue and pull-request observations to
 UTC with six fractional digits. It fixes unchanged imported issues being treated
 as newer than fresh GitHub reads. The following migration indexes request audit

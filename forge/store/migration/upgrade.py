@@ -97,6 +97,7 @@ class Upgrade:
             store = self.store()
             value = self.read() if self.path.exists() else None
             previous = value
+            source_qualified = False
             if value and value['source_revision'] != revision:
                 if value['stage'] == 'complete':
                     # Completion releases source, service and drain ownership.
@@ -116,6 +117,7 @@ class Upgrade:
             else:
                 plan = self.status()
                 self.host.prepare_source_update(plan['source_revision'], revision, tool_version, **source_options)
+                source_qualified = True
                 value = dict(protocol=1, root=str(self.root), source=str(self.host.source), authorized=True,
                              previous_revision=plan['source_revision'], source_revision=revision,
                              tool_version=tool_version, services=sorted(set(self.host.units()) | set(previous['services'] if previous else [])),
@@ -136,6 +138,13 @@ class Upgrade:
             if value['stage'] == 'draining':
                 from .drain import Drain
                 Drain(self, store).start(value)
+                # A new bundled tool can finish teardown that the installed
+                # release cannot persist. Requalify resumed source intent before
+                # invoking any corrected code against owned physical resources.
+                if not source_qualified:
+                    self.host.prepare_source_update(value['previous_revision'], revision, tool_version, **source_options)
+                from .probe_cleanup import cleanup_fenced_probe
+                cleanup_fenced_probe(self.root, store)
                 if self.blockers(store):
                     return {'status': 'draining', **self.status(), 'next_command': 'forge migrate upgrade'}
                 self.save(value, 'stopping')
