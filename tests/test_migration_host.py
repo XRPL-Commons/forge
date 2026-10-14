@@ -27,6 +27,20 @@ class HostTests(unittest.TestCase):
         self.host.inspect=lambda:self.plan
         self.host.quiet=lambda:None
 
+    def test_sqlite_failure_reports_only_structured_diagnostics(self):
+        import sqlite3
+        from forge.store.migration.host import failure
+        with sqlite3.connect(':memory:') as db:
+            with self.assertRaises(sqlite3.OperationalError) as raised:
+                db.execute('SELECT * FROM private_customer_table')
+        receipt = failure(raised.exception, dict(root=str(self.root), action='upgrade'))
+        self.assertEqual(receipt['error'], 'unexpected_migration_failure')
+        self.assertEqual(receipt['sqlite_errorcode'], sqlite3.SQLITE_ERROR)
+        self.assertEqual(receipt['sqlite_errorname'], 'SQLITE_ERROR')
+        self.assertNotIn('retryable', receipt)
+        self.assertNotIn('private_customer_table', json.dumps(receipt))
+        self.assertNotIn('no such table', json.dumps(receipt))
+
     def test_initial_updater_executes_pinned_checkout_with_typed_receipt_protocol(self):
         from types import SimpleNamespace
         requests=[]

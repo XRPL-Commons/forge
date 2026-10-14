@@ -255,8 +255,21 @@ def failure(error, request):
         except Exception:
             stage='journal_unreadable'
     name=type(error).__name__
-    return dict(ok=False,error=error.code if isinstance(error,(MigrationError,StoreError)) else 'unexpected_migration_failure',
-                exception_type=name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',name) else 'Exception',stage=stage)
+    result = dict(ok=False,error=error.code if isinstance(error,(MigrationError,StoreError)) else 'unexpected_migration_failure',
+                  exception_type=name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',name) else 'Exception',stage=stage)
+    import sqlite3
+    if isinstance(error, sqlite3.Error):
+        # SQLite's structured identifiers contain no SQL, paths or stored data.
+        # Exception text can contain SQL and paths, so transport only codes.
+        code = getattr(error, 'sqlite_errorcode', None)
+        label = getattr(error, 'sqlite_errorname', None)
+        if type(code) is int:
+            result['sqlite_errorcode'] = code
+            if (code & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                result.update(error='migration_store_busy', retryable=True)
+        if isinstance(label, str) and re.fullmatch(r'SQLITE_[A-Z0-9_]{1,80}', label):
+            result['sqlite_errorname'] = label
+    return result
 
 
 def run(request):

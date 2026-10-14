@@ -353,6 +353,35 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertTrue(self.runtime()[1]['enabled'])
         self.assertEqual(upgrade.inspect(storage.Store(self.store.root))['current_schema'], len(self.original))
 
+    def test_schema33_busy_drain_preserves_completed_journal_and_can_retry(self):
+        from forge.store.migration.host import failure
+        with patch('forge.store.db._migrations', return_value=self.original[:33]):
+            self.store = storage.Store.create(self.root/'schema33')
+            with self.store.write() as db:
+                db.executemany('INSERT INTO store_metadata VALUES(?,?)',
+                    [('runtime_root',str(self.root)),('runtime_active','true')])
+        (self.root/'state/storage').write_text('forge-sqlite-v1\n'+str(self.store.root)+'\n'+self.store.instance_id+'\n')
+        self.runtime(enabled=True)
+        self.upgrader.save(dict(protocol=1, root=str(self.root), source=str(self.host.source),
+            authorized=True, previous_revision='9'*40, source_revision=self.current,
+            tool_version='previous', services=list(self.active)), 'complete')
+        previous = self.upgrader.path.read_bytes()
+        with upgrade.connection(self.store, write=True) as writer, patch.object(storage.Store, 'busy_timeout_ms', 1):
+            writer.execute('BEGIN IMMEDIATE')
+            with self.assertRaises(storage.sqlite3.OperationalError) as raised:
+                self.upgrader.run(revision='b'*40, apply=True)
+            receipt = failure(raised.exception, dict(root=str(self.root), action='upgrade'))
+            self.assertEqual(receipt, dict(ok=False, error='migration_store_busy',
+                exception_type='OperationalError', stage='complete', sqlite_errorcode=5,
+                sqlite_errorname='SQLITE_BUSY', retryable=True))
+            self.assertEqual(self.upgrader.path.read_bytes(), previous)
+            self.assertEqual(self.calls, [])
+            self.assertTrue(self.runtime()[1]['enabled'])
+            writer.rollback()
+        self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(upgrade.inspect(storage.Store(self.store.root))['current_schema'], len(self.original))
+
     def test_partially_restarted_updater_drains_new_workers_before_retry(self):
         from types import SimpleNamespace
         self.runtime(enabled=True)
