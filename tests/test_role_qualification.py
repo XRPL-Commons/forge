@@ -17,6 +17,69 @@ from forge.store.mirror import MirrorStore
 from forge_client.role_qualification import execute, HOST
 
 
+class QualificationPolicyTests(unittest.TestCase):
+    def setUp(self):
+        from copy import deepcopy
+        from forge.role_qualification import QualificationSettings
+        self.config={'connections':{'controller':{'app_id':30,'installation_id':20}},'repositories':[]}
+        self.installed=Mock()
+        self.installed.load.side_effect=lambda:deepcopy(self.config)
+        self.repository=Repository(1,'acme/project',10,'Organization',20,actual_access=True)
+        self.policy=QualificationSettings(self.installed,self.repository)
+
+    def test_disposable_selection_keeps_live_restrictions_and_never_restores_removed_config(self):
+        from forge.factory.source_preparation import denied_repositories
+        self.assertEqual(self.policy.load()['repositories'],[{'id':1,'name':'acme/project','enabled':False}])
+        self.assertEqual(self.config['repositories'],[])
+        deny={'repository_id':2,'canonical_name':'vendor/private'}
+        self.config['repositories']=[dict(id=1,name='acme/project',enabled=False,mirror_denied_repositories=[deny])]
+        self.assertEqual(denied_repositories(self.policy,1),[deny])
+        self.config['connections']={}
+        self.assertEqual(self.policy.load()['connections'],{})
+        self.config['repositories']=[]
+        with self.assertRaisesRegex(MirrorError,'repository_unavailable'):
+            self.policy.load()
+
+    def test_existing_deny_blocks_source_preparation_without_enabling_repository(self):
+        from forge.role_qualification import CanarySource
+        from forge.worker_qualification import Fixture
+        from tests.test_source_preparation import Access
+        deny={'repository_id':1,'canonical_name':'acme/project'}
+        self.config['repositories']=[dict(id=1,name='acme/project',enabled=False,mirror_denied_repositories=[deny])]
+        with tempfile.TemporaryDirectory(prefix='qr-',dir='/tmp') as temp:
+            root=Path(temp)
+            git=Fixture(root)
+            fixtures=Fixtures(root/'fixture',self.repository,dict(number=10,title='Issue',body='Body'),
+                              'requirements',git.oid,dict(DEFAULT),180)
+            job=fixtures.reserve('build')
+            source=CanarySource(fixtures.store.root,fixtures.store,settings=self.policy,
+                                access=Access(),git_store=git.cache)
+            with self.assertRaisesRegex(MirrorError,'project_denied'):
+                source.prepare(job,assignment_note(job))
+            self.config['repositories'][0]['mirror_denied_repositories']=[]
+            prepared=source.prepare(job,assignment_note(job))
+            from forge.mirror_daemon import MirrorDaemon
+            from forge.mirror.service import Broker
+            daemon=MirrorDaemon(fixtures.store.root,fixtures.store,settings=self.policy,
+                                access=Access(),git_store=git.cache)
+            broker=Broker(prepared.session_id,source.mirror,git.cache,resolve=daemon.resolve,
+                          live_authority=daemon.live_authority,live_policy=daemon.policy)
+            self.config['repositories'][0]['mirror_denied_repositories']=[deny]
+            status,_,_=broker.handle(dict(method='GET',path='/github/acme/project.git/info/refs?service=git-upload-pack',
+                                          protocol='',content_type='',body_length=0),b'')
+            self.assertEqual(status,403)
+            receipt=source.mirror.receipts(job['id'])[-1]['details']
+            self.assertEqual(receipt['reason'],'project_denied')
+            self.assertEqual(receipt['request_kind'],'advertisement')
+        self.assertFalse(self.config['repositories'][0]['enabled'])
+        self.assertEqual(self.config['repositories'][0]['mirror_denied_repositories'],[deny])
+
+    def test_repository_name_reuse_cannot_supply_another_project_policy(self):
+        self.config['repositories']=[dict(id=2,name='acme/project',enabled=False)]
+        with self.assertRaisesRegex(MirrorError,'repository_unavailable'):
+            self.policy.load()
+
+
 class RoleFixturesTests(unittest.TestCase):
     def test_seven_roles_hold_real_exact_sql_authority_and_revoke(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -40,16 +103,26 @@ class RoleFixturesTests(unittest.TestCase):
     def test_all_roles_freeze_inputs_and_fetch_through_owned_broker(self):
         import threading
         from forge.worker_qualification import Fixture
-        from forge.role_qualification import CanarySource
+        from forge.role_qualification import CanarySource, QualificationSettings
         from forge.mirror_daemon import MirrorDaemon
         from forge.mirror.frontend import Frontend
         from forge.mirror.git_store import run_git
-        from tests.test_source_preparation import Access, Settings
+        from tests.test_source_preparation import Access
+        from forge.settings import Settings
+        from forge.store.fresh import initialize
+        from tests.test_settings import configured
         with tempfile.TemporaryDirectory(prefix='qr-',dir='/tmp') as temp:
             root=Path(temp)
             git=Fixture(root)
             access=Access()
-            settings=Settings()
+            (root/'installation').mkdir(mode=0o700)
+            initialize(root/'installation')
+            installed_settings=Settings(root/'installation',scope='active')
+            installed_settings.save_config(configured())
+            self.assertEqual(installed_settings.scope, 'setup')
+            self.assertEqual(installed_settings.load()['repositories'], [])
+            original_config=installed_settings.config_snapshot()
+            settings=QualificationSettings(installed_settings,access.resolve('acme/project'))
             # The local cache fixture has repository id 1 and a tracked README.
             for index,role in enumerate(ROLES):
                 with self.subTest(role=role):
@@ -109,6 +182,7 @@ class RoleFixturesTests(unittest.TestCase):
                             finally:
                                 frontend.shutdown();thread.join()
                     finally:daemon.close()
+            self.assertEqual(installed_settings.config_snapshot(),original_config)
 
 
     def test_idle_probe_refuses_enabled_or_unfinished_work_without_writes(self):
@@ -159,7 +233,8 @@ class RoleFixturesTests(unittest.TestCase):
                         ('forge.credentials.Credentials.environment',{}),
                         ('forge.role_qualification.CanaryRunner',runner)):
                         stack.enter_context(patch(target,return_value=value))
-                    stack.enter_context(patch('forge.settings.Settings'))
+                    settings=stack.enter_context(patch('forge.settings.Settings'))
+                    settings.return_value.load.return_value={'connections':{},'repositories':[]}
                     daemon=stack.enter_context(patch('forge.mirror_daemon.MirrorDaemon'))
                     report=qualify(root/'live','acme/project',10,apply=True)
                 self.assertEqual(report['status'],'failed')
