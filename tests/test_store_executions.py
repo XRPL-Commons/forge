@@ -282,7 +282,7 @@ class ExecutionTests(unittest.TestCase):
         with patch.object(self.store, '_connect_path', side_effect=connection):
             self.queries.pending()
             self.queries.job(job)
-        self.assertFalse(any('job_artifacts' in sql or 'import_records' in sql for sql in statements))
+        self.assertFalse(any('job_artifacts' in sql for sql in statements))
 
     def test_crash_after_create_resumes_existing_container(self):
         job = self.reserve()

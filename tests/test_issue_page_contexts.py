@@ -38,7 +38,7 @@ class IssuePageContextTests(unittest.TestCase):
             self.assertIsNone(contexts['1:7'][1])
         for prefix in ('SELECT i.*, r.title', 'SELECT m.* FROM issues', 'SELECT * FROM units WHERE id IN'):
             self.assertEqual(sum(sql.startswith(prefix) for sql in statements), 1, prefix)
-        for field in ('r.body', 'requirements_json', 'job_artifacts', 'import_records'):
+        for field in ('r.body', 'requirements_json', 'job_artifacts'):
             self.assertFalse(any(field in sql for sql in statements), field)
 
     def test_empty_missing_and_bounded_pages_are_explicit(self):

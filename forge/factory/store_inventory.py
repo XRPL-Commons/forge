@@ -300,9 +300,7 @@ class DiscoveryController:
                 "AND NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.issue_id=i.id "
                 "AND u.close_code IS NOT 'import_superseded') "
                 'AND NOT EXISTS(SELECT 1 FROM issue_discovery_observations d WHERE d.issue_id=i.id '
-                'AND d.revision_id=i.current_revision_id AND d.retry_after>?) '
-                'AND NOT EXISTS(SELECT 1 FROM imported_operator_requests p JOIN issue_action_requests q ON q.id=p.request_id '
-                'WHERE q.issue_id=i.id AND p.interrupted_at IS NOT NULL) ORDER BY i.id LIMIT ?', (after, self.config['ready_label'], self.clock(), limit + 1)).fetchall()
+                'AND d.revision_id=i.current_revision_id AND d.retry_after>?) ORDER BY i.id LIMIT ?', (after, self.config['ready_label'], self.clock(), limit + 1)).fetchall()
         results = []
         for row in rows[:limit]:
             item = dict(repo=row['full_name'], repo_id=row['repo_id'], number=row['github_number'])

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-SCHEMA = Path(__file__).resolve().parents[1] / 'forge/store/schema/001_initial.sql'
+SCHEMA = Path(__file__).resolve().parents[1] / 'forge/store/schema/001_baseline.sql'
 
 
 class StoreSchemaTests(unittest.TestCase):
@@ -12,6 +12,8 @@ class StoreSchemaTests(unittest.TestCase):
         self.db = sqlite3.connect(':memory:')
         self.addCleanup(self.db.close)
         self.db.execute('PRAGMA foreign_keys=ON')
+        from forge.store.remote_time import register
+        register(self.db)
         self.db.executescript(SCHEMA.read_text())
         self.insert('repositories', id=1, full_name='example/one')
         self.insert('repositories', id=2, full_name='example/two')
@@ -163,18 +165,14 @@ class StoreSchemaTests(unittest.TestCase):
                 self.db.execute(f'UPDATE units SET {column}=2')
                 self.rejected(lambda: self.db.execute(f'UPDATE units SET {column}=1'))
 
-    def test_candidate_evidence_and_part_output_cannot_cross_unit_or_member(self):
+    def test_candidate_evidence_cannot_cross_unit_or_change(self):
         evidence = dict(id='e', unit_id='u', candidate_id='cc', kind='audit', verdict='pass', actor_id='worker', observed_at=1)
         self.rejected(lambda: self.insert('candidate_evidence', **evidence))
         evidence['candidate_id'] = 'ca'
         self.insert('candidate_evidence', **evidence)
         self.rejected(lambda: self.db.execute("UPDATE candidate_evidence SET verdict='fail'"))
         self.rejected(lambda: self.db.execute('DELETE FROM candidate_evidence'))
-        output = dict(id='o', unit_id='u', member_id='ma', attempt_id='ab', requirements_revision_id='ra', membership_generation=1, commit_oid='commit', base_oid='base', input_manifest_hash='manifest', accepted_at=1)
-        self.rejected(lambda: self.insert('part_outputs', **output))
-        output['attempt_id'] = 'aa'
-        self.insert('part_outputs', **output)
-        self.rejected(lambda: self.db.execute("UPDATE part_outputs SET commit_oid='other'"))
+        # Part outputs bind to their task attempt: see test_task_topology.
 
     def test_required_history_cannot_be_deleted_or_rewritten(self):
         self.insert('events', transaction_id='t', unit_id='u', kind='unit_created', at=1, payload_json='{}')
@@ -206,9 +204,8 @@ class StoreSchemaTests(unittest.TestCase):
     def test_all_domain_tables_are_strict_and_schema_is_foreign_key_clean(self):
         domains = {'configuration', 'operator_sessions', 'client_connections', 'operator_audit',
                    'runtime_controls', 'environment_proposals', 'repository_observations',
-                   'import_runs', 'import_sources', 'import_progress', 'notification_outbox',
-                   'notification_deliveries', 'external_effects', 'check_runs', 'merge_requests'}
-        tables = {row[1]: row[5] for row in self.db.execute('PRAGMA table_list') if row[1] != 'sqlite_schema'}
+                   'external_effects', 'check_runs', 'merge_requests'}
+        tables = {row[1]: row[5] for row in self.db.execute('PRAGMA table_list') if row[2] == 'table'}
         self.assertTrue(domains <= tables.keys())
         self.assertTrue(all(strict == 1 for name, strict in tables.items() if not name.startswith('sqlite_')))
         self.assertEqual(self.db.execute('PRAGMA foreign_key_check').fetchall(), [])
