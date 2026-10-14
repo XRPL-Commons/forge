@@ -23,7 +23,10 @@ def current_in(db, unit, member_id=None):
         'AND (n.candidate_id IS NULL OR n.candidate_id IS ?) '
         'AND (n.member_id IS NULL OR n.member_id=?) '
         'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=n.job_id '
-        'AND j.outcome IS NULL AND j.fenced=0 AND EXISTS(SELECT 1 FROM job_members s '
+        'AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture '
+                'WHERE capture.job_id=j.id AND capture.capture_authorized=1 AND capture.result_revoked=0)) '
+        'AND NOT EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.result_revoked=1) '
+        "AND (n.reason NOT IN ('cleanup','cleanup_pending') OR j.cleanup=0) AND EXISTS(SELECT 1 FROM job_members s "
         'WHERE s.job_id=j.id AND s.member_id=?))) ORDER BY n.due_at,n.owner,n.scope_key LIMIT 1',
         (unit['id'], unit['version'], unit['fencing_generation'], unit['membership_generation'],
          unit['current_candidate_id'], member_id, member_id)).fetchone()
@@ -54,7 +57,10 @@ class Scheduling(Lifecycle):
             unit = db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()
             if unit is None or unit['state'] in {'merged', 'closed', 'dissolved'}:
                 return
-            if job_id and not db.execute('SELECT 1 FROM jobs WHERE id=? AND unit_id=? AND outcome IS NULL AND fenced=0', (job_id, unit_id)).fetchone():
+            if job_id and not db.execute('SELECT 1 FROM jobs j WHERE j.id=? AND j.unit_id=? AND j.outcome IS NULL '
+                'AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id '
+                'AND x.capture_authorized=1 AND x.result_revoked=0)) '
+                'AND NOT EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.result_revoked=1)', (job_id, unit_id)).fetchone():
                 return
             if member_id and not db.execute('SELECT 1 FROM unit_issues WHERE id=? AND unit_id=? AND left_at IS NULL', (member_id, unit_id)).fetchone():
                 raise TransitionError('schedule member must belong to the active unit')
@@ -94,7 +100,10 @@ class Scheduling(Lifecycle):
                 "AND u.state NOT IN ('merged','closed','dissolved') "
                 'AND (n.candidate_id IS NULL OR n.candidate_id=u.current_candidate_id) '
                 'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=n.job_id AND j.unit_id=u.id '
-                'AND j.outcome IS NULL AND j.fenced=0))', (unit_id,owner,scope,self.clock())).fetchone()
+                'AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture '
+                'WHERE capture.job_id=j.id AND capture.capture_authorized=1 AND capture.result_revoked=0)) '
+                'AND NOT EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.result_revoked=1) '
+                "AND (n.reason NOT IN ('cleanup','cleanup_pending') OR j.cleanup=0)))", (unit_id,owner,scope,self.clock())).fetchone()
         return dict(row) if row else None
 
     def outcome(self, unit_id, owner, result, *, job_id=None):
@@ -123,7 +132,7 @@ class Scheduling(Lifecycle):
                 gates = applicable_gates(db, unit, member['id'], unit['current_candidate_id'])
                 action = current_in(db, unit, member['id'])
                 live = db.execute('SELECT 1 FROM jobs j JOIN job_members s ON s.job_id=j.id '
-                    'WHERE j.unit_id=? AND s.member_id=? AND (j.cleanup=0 OR (j.outcome IS NULL AND j.fenced=0)) LIMIT 1',
+                    'WHERE j.unit_id=? AND s.member_id=? AND (j.cleanup=0 OR (j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.capture_authorized=1 AND x.result_revoked=0)))) LIMIT 1',
                     (unit['id'], member['id'])).fetchone()
                 effect = db.execute("SELECT 1 FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
                     "WHERE e.unit_id=? AND e.status IN ('pending','running','uncertain') "
@@ -163,7 +172,7 @@ class Scheduling(Lifecycle):
                 if applicable_gates(db,unit,member_id,unit['current_candidate_id']) or action and action['due_at']+self.stall_seconds>self.clock():
                     return {'owned':True}
                 if db.execute('SELECT 1 FROM jobs j JOIN job_members m ON m.job_id=j.id WHERE j.unit_id=? '
-                    'AND m.member_id=? AND (j.cleanup=0 OR (j.outcome IS NULL AND j.fenced=0))',(unit_id,member_id)).fetchone():
+                    'AND m.member_id=? AND (j.cleanup=0 OR (j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.capture_authorized=1 AND x.result_revoked=0))))',(unit_id,member_id)).fetchone():
                     return {'owned':True}
                 last=db.execute('SELECT reason FROM next_actions WHERE unit_id=? AND (member_id IS NULL OR member_id=?) ORDER BY updated_at DESC LIMIT 1',(unit_id,member_id)).fetchone()
                 details.update(unowned_since=orphan['unowned_since'],last_decline=last['reason'] if last else None,exit='recheck')

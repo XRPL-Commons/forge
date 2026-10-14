@@ -156,6 +156,12 @@ class EffectController:
                 return self.queries.get(effect_id)
             if not self._matches(effect, pr) or pr.get('state') != 'open' or pr.get('merged'):
                 return self._withdraw(effect, 'candidate_changed')
+            if (effect['kind']=='github_merge' and effect['escalation_at'] is not None
+                    and effect['merge_send_count']==0 and pr.get('mergeable') is True):
+                self.commands.resume_unsent_merge(effect_id,evidence=dict(verified=True,merged=False,mergeable=True,state='open',
+                    candidate_id=effect['candidate_id'],pull_number=effect['identity']['pull_number'],head_oid=effect['identity']['head_oid'],
+                    base_oid=effect['identity']['base_oid'],repository_id=effect['repo_id'],base_branch=effect['target_branch'],observed_at=self.clock()))
+                effect=self.queries.get(effect_id)
             authorization = None
             if effect['kind'] == 'github_merge':
                 authorization = self.admission(effect) if self.admission else None

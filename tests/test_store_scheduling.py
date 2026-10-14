@@ -6,7 +6,7 @@ from forge.store.db import Store
 from forge.store.models import Command
 from forge.store.queries import Queries
 from forge.store.scheduling import Scheduling, current_in
-from forge.store.transitions import Lifecycle
+from forge.store.executions import Executions, Launch
 from forge.factory.issue_selection import IssueSelection
 from forge.factory.status_projection import operator_status
 
@@ -17,7 +17,7 @@ class SchedulingTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.store=Store.create(directory.name)
         self.now=1000.
-        self.life=Lifecycle(self.store,clock=lambda:self.now)
+        self.life=Executions(self.store,clock=lambda:self.now)
         self.schedules=Scheduling(self.store,clock=lambda:self.now)
         self.member=self.life.admit_issue(request_id='admit',actor_id='operator',unit_id='u',issue_id='i',
             repository_id=1,repository_name='owner/repo',issue_number=1,title='Issue',body='body',requirements={},
@@ -91,3 +91,18 @@ class SchedulingTests(unittest.TestCase):
         self.schedules.clear('u',owner='dispatch')
         self.schedules.cycle()
         self.assertEqual(Queries(self.store).issue('i')['lifecycle']['next_action']['reason'],'admitted')
+
+    def test_revoked_result_receipt_invalidates_schedule_without_unit_version_change(self):
+        revision=Queries(self.store).issue('i')['current_revision_id']
+        manifest={'requirements_revision_id':revision,'base_oid':'base','policy_hash':'policy'}
+        job=self.life.reserve_job(self.command(),'build',slot='build-1',execution_fence='fence',input_manifest=manifest,
+            member_id=self.member,launch=Launch('branch','build[bot]','codex',2000,{},{}))['job_id']
+        self.life.collect(self.command(),job,execution_fence='fence',capture={'result':None,'logs':''})
+        self.schedules.record('u',owner='results',reason='policy_reconciliation',job_id=job)
+        self.assertIsNotNone(self.schedules.pending('u','results',job_id=job))
+        before=Queries(self.store).unit('u')['version']
+        with self.store.write() as db:
+            db.execute('UPDATE job_execution_state SET result_revoked=1 WHERE job_id=?',(job,))
+        self.assertEqual(Queries(self.store).unit('u')['version'],before)
+        self.assertIsNone(self.schedules.pending('u','results',job_id=job))
+        self.assertIsNone(Queries(self.store).issue('i')['lifecycle']['next_action'])

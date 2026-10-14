@@ -501,6 +501,20 @@ class EffectTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
 
+    def test_unsent_unknown_merge_wait_resumes_from_fresh_mergeable_observation(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.pull['mergeable']=None
+        self.driver.step(effect_id)
+        self.now+=900
+        self.driver.step(effect_id)
+        self.assertEqual(self.view()['reason_code'],'forge_problem')
+        self.now+=900
+        self.remote.pull['mergeable']=True
+        self.driver.step(effect_id)
+        self.assertEqual(self.view()['state'],'merged')
+        self.assertEqual(self.remote.merge_calls,1)
+
     def test_sustained_observed_conflict_rebuilds_without_charge(self):
         self.merge_ready()
         effect_id=self.queue_merge()
