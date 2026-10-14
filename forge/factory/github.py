@@ -39,9 +39,10 @@ def classic_allowances(value):
 
 
 class GitHubUnavailable(RuntimeError):
-    def __init__(self, message, *, status=None):
+    def __init__(self, message, *, status=None, error_types=()):
         super().__init__(message)
         self.status = status
+        self.error_types = error_types
 
 
 class GitHubBudgetExhausted(RequestBudgetExhausted):
@@ -108,6 +109,27 @@ class GitHub:
             raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
         except AccessError as error:
             raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
+
+    def graphql(self, role, repo, query, variables, *, extra=None):
+        """Host-owned GraphQL operation; HTTP 200 alone is not success."""
+        if (not isinstance(query, str) or not query or len(query.encode()) > 32768
+                or not isinstance(variables, dict) or len(json.dumps(variables, allow_nan=False).encode()) > 4 * 1024 * 1024):
+            raise ValueError('GraphQL publication request exceeds its contract')
+        if time.monotonic() >= min(getattr(self, 'deadline', float('inf')), request_deadline()):
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        try:
+            value = self.client.request('POST', '/graphql', self.token(role, repo['repo_id'], extra=extra),
+                                        {'query': query, 'variables': variables})
+        except RequestBudgetExhausted:
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
+        except AccessError as error:
+            raise GitHubUnavailable('GitHub publication is unconfirmed', status=error.status) from None
+        if not isinstance(value, dict) or value.get('errors') or not isinstance(value.get('data'), dict):
+            errors = value.get('errors', []) if isinstance(value, dict) else []
+            types = tuple(sorted({row['type'] for row in errors if isinstance(row, dict)
+                and isinstance(row.get('type'), str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', row['type'])})) if isinstance(errors, list) else ()
+            raise GitHubUnavailable('GitHub publication is unconfirmed', status=200, error_types=types)
+        return value['data']
 
     def prerequisite(self, ref, binding=None):
         """Read one installed repository target, including PR merge provenance."""
