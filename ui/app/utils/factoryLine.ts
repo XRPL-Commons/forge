@@ -176,7 +176,6 @@ export function lineState(view: FactoryView | null | undefined, now: number, gro
     if (reason) add(card, 'attention', { reason, status: LINE_REASON_TEXT[reason] })
     else add(card, 'hold', { status: 'On hold' })
   }
-  for (const card of groups.owned) add(card, 'hold', { status: 'Owned by someone else' })
   for (const card of groups.waiting) {
     const on = byKey.get(card.key)?.blocked_dependencies ?? []
     const state = byKey.get(card.key)?.state ?? ''

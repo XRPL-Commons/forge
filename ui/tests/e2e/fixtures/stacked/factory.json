@@ -135,7 +135,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/academy/settings/rules",
-      "setup_url": "/settings/repository?repo_id=1"
+      "setup_url": "/settings/repositories/1?setup=1"
     },
     {
       "id": 2,
@@ -264,7 +264,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
-      "setup_url": "/settings/repository?repo_id=2"
+      "setup_url": "/settings/repositories/2?setup=1"
     }
   ],
   "observation": {
@@ -312,7 +312,17 @@
           "role": "build",
           "slot": "build-1"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "working",
+        "label": "Working",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -343,7 +353,17 @@
       "key": "1:700",
       "number": 700,
       "title": "Add pagination to the runner capacity chart",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -374,7 +394,17 @@
       "key": "1:701",
       "number": 701,
       "title": "Cache the course catalogue between requests",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -405,7 +435,17 @@
       "key": "1:702",
       "number": 702,
       "title": "Document the worker image build",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -436,7 +476,17 @@
       "key": "1:703",
       "number": 703,
       "title": "Expire onboarding invitations after seven days",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -467,7 +517,17 @@
       "key": "1:704",
       "number": 704,
       "title": "Fix the sort order of the certificate list",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -498,7 +558,17 @@
       "key": "1:705",
       "number": 705,
       "title": "Give the audit report a printable layout",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -529,7 +599,17 @@
       "key": "1:706",
       "number": 706,
       "title": "Handle a missing avatar without a console error",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -560,7 +640,17 @@
       "key": "1:707",
       "number": 707,
       "title": "Index the submissions table by cohort",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -591,7 +681,17 @@
       "key": "1:708",
       "number": 708,
       "title": "Keep the lesson player in sync after a reload",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -622,7 +722,17 @@
       "key": "1:709",
       "number": 709,
       "title": "Let learners rename their own workspace",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -653,7 +763,17 @@
       "key": "1:710",
       "number": 710,
       "title": "Move the changelog out of the landing page bundle",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -684,7 +804,17 @@
       "key": "1:720",
       "number": 720,
       "title": "Migrate the legacy quiz importer",
-      "state": "hold"
+      "state": "hold",
+      "operator_status": {
+        "code": "blocked",
+        "label": "Blocked",
+        "reason_code": null,
+        "reason": "Paused by an operator"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -715,7 +845,17 @@
       "key": "1:721",
       "number": 721,
       "title": "Rewrite the certificate PDF renderer",
-      "state": "hold"
+      "state": "hold",
+      "operator_status": {
+        "code": "blocked",
+        "label": "Blocked",
+        "reason_code": null,
+        "reason": "Forge environment needs attention (toolchain)"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "env"
     },
     {
       "repo_id": 1,
@@ -746,7 +886,17 @@
       "key": "1:722",
       "number": 722,
       "title": "Split the monolithic settings page",
-      "state": "hold"
+      "state": "hold",
+      "operator_status": {
+        "code": "blocked",
+        "label": "Blocked",
+        "reason_code": null,
+        "reason": "Repeated failure requires a supported change of approach"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "approach"
     },
     {
       "repo_id": 1,
@@ -777,7 +927,17 @@
       "key": "1:730",
       "number": 730,
       "title": "Redact credential values at the logging boundary",
-      "state": "approval_needed"
+      "state": "approval_needed",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "A human review is required before merging."
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "approve"
     },
     {
       "repo_id": 1,
@@ -808,7 +968,17 @@
       "key": "1:731",
       "number": 731,
       "title": "Rotate the workshop signing key",
-      "state": "approval_needed"
+      "state": "approval_needed",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "A human review is required before merging."
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "approve"
     }
   ],
   "jobs": [

@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs'
 import { workbenchLook, type WorkbenchRow } from '../../app/utils/workbench'
 import { STAGE_FILL } from '../../app/utils/cube'
 import { LINE_LOOKS, LINE_RESERVED } from '../../app/utils/factoryLine'
+import { canonical } from './support/rows'
 
-const base: WorkbenchRow = { number: 50, status: 'queued', explanation: 'Queued for Forge.', actions: [], pull_requests: [], dependencies: [] }
+const base: WorkbenchRow = { number: 50, status: 'queued', explanation: 'Queued for Forge.', actions: [], pull_requests: [], dependencies: [], operator_status: canonical('queued', 'Waiting') }
 const look = (over: Partial<WorkbenchRow>) => workbenchLook({ ...base, ...over })
 const candidate = [{ number: 67, title: 'Fix', kind: 'candidate' as const }]
 const passed = (role: 'review' | 'audit') => ({ role, outcome: 'pass', summary: 'PASS.' })
@@ -21,7 +22,7 @@ describe('workbenchLook', () => {
   })
 
   it('puts a hard hat on a running build, with smoke from the bench', () => {
-    const view = look({ status: 'working', reason_code: 'build', explanation: 'Building', attempts: { failed: 0, limit: 3 } })
+    const view = look({ status: 'working', stage_code: 'building', operator_status: canonical('working', 'Building'), attempts: { failed: 0, limit: 3 } })
     expect([view.stage, view.mood, view.scene.accessory]).toEqual(['build', 'busy', 'hat'])
     expect(view.scene.smoke).toBe(true)
     expect(view.scene.beacon).toBe(false)
@@ -31,14 +32,14 @@ describe('workbenchLook', () => {
   })
 
   it('gives a reviewer a magnifier and no smoke', () => {
-    const view = look({ status: 'working', reason_code: 'review', explanation: 'Reviewing', pull_requests: candidate })
+    const view = look({ status: 'working', stage_code: 'reviewing', operator_status: canonical('working', 'Reviewing'), pull_requests: candidate })
     expect([view.stage, view.scene.accessory, view.scene.smoke]).toEqual(['review', 'magnifier', false])
     expect(view.badges.map(badge => badge.state)).toEqual(['done', 'current', 'future', 'future', 'future'])
   })
 
   it('worries, scorched and lit amber, when every attempt failed at the security review', () => {
     const view = look({
-      status: 'attention', explanation: 'The last attempt failed.', actions: ['retry'], pull_requests: candidate,
+      status: 'attention', operator_status: canonical('attention', 'Three attempts failed', 'budget_exhausted'), actions: ['retry'], pull_requests: candidate,
       reviews: [passed('review'), { role: 'audit', outcome: 'fail', summary: 'Fee check.' }],
       attempts: { failed: 3, limit: 3 },
     })
@@ -50,16 +51,16 @@ describe('workbenchLook', () => {
   })
 
   it('counts lives against the limit the server sends, never past it', () => {
-    expect(look({ status: 'attention', actions: ['retry'], attempts: { failed: 2, limit: 5 } }).attempts)
+    expect(look({ status: 'attention', operator_status: canonical('attention', 'Two attempts failed', 'budget_exhausted'), actions: ['retry'], attempts: { failed: 2, limit: 5 } }).attempts)
       .toEqual({ lost: 2, left: 3, limit: 5, text: '3 of 5 attempts left' })
-    expect(look({ status: 'attention', actions: ['retry'], attempts: { failed: 7, limit: 3 } }).scene.scorches).toBe(3)
+    expect(look({ status: 'attention', operator_status: canonical('attention', 'Three attempts failed', 'budget_exhausted'), actions: ['retry'], attempts: { failed: 7, limit: 3 } }).scene.scorches).toBe(3)
     expect(look({ attempts: null }).attempts).toBeNull()
   })
 
   it('wears the rosette and hopes while it waits for a human approval', () => {
     const view = look({
-      status: 'attention', explanation: 'The pull request needs a human review.', actions: ['assign_reviewer'],
-      approval: { pr: 31, reason: 'A person must sign off.' }, pull_requests: candidate,
+      status: 'attention', operator_status: canonical('attention', 'Needs a human approval', 'approval_required'), actions: ['assign_reviewer'],
+      stage_code: 'merging', approval: { pr: 31, reason: 'A person must sign off.' }, pull_requests: candidate,
       reviews: [passed('review'), passed('audit')],
     })
     expect([view.stage, view.mood, view.scene.accessory]).toEqual(['approval', 'hopeful', 'badge'])
@@ -69,15 +70,15 @@ describe('workbenchLook', () => {
   })
 
   it('worries instead when the merge itself is blocked', () => {
-    const view = look({ status: 'attention', merge_blocker: { reason: 'Branch rules' }, pull_requests: candidate })
+    const view = look({ status: 'attention', operator_status: canonical('attention', 'Merge blocked', 'merge_checks'), stage_code: 'merging', merge_blocker: { reason: 'Branch rules' }, pull_requests: candidate })
     expect([view.stage, view.mood]).toEqual(['approval', 'worried'])
   })
 
   it('sleeps on a hold, with z’s', () => {
-    const paused = look({ status: 'attention', explanation: 'Paused by an operator.', actions: ['resume'] })
+    const paused = look({ status: 'attention', operator_status: canonical('attention', 'Paused by an operator'), actions: ['resume'] })
     expect([paused.mood, paused.scene.zzz]).toEqual(['sleep', true])
     expect(paused.label).toBe('Cube for #50, Queue stage, on hold')
-    const labelled = look({ status: 'attention', explanation: 'Paused by hold on GitHub.', actions: ['resume'], held_by: [{ label: 'hold', login: 'x', at: '' }] })
+    const labelled = look({ status: 'attention', operator_status: canonical('attention', 'Paused by hold on GitHub'), actions: ['resume'], held_by: [{ label: 'hold', login: 'x', at: '' }] })
     expect(labelled.mood).toBe('sleep')
   })
 
@@ -86,32 +87,32 @@ describe('workbenchLook', () => {
   })
 
   it('waits patiently, tethered to the open prerequisites and never lit, when blocked on other issues', () => {
-    const view = look({ status: 'blocked', explanation: 'Waiting for #90, #101.', dependencies: [85, 90, 101] })
+    const view = look({ status: 'blocked', operator_status: canonical('blocked', 'Waiting for #90, #101', 'dependency'), explanation: 'Waiting for #90, #101.', dependencies: [85, 90, 101] })
     expect([view.mood, view.needsYou, view.scene.beacon, view.scene.zzz]).toEqual(['patient', false, false, false])
     expect(view.scene.dependencies).toEqual([90, 101])
     expect(view.label).toBe('Cube for #50, Queue stage, waiting on other issues')
     // Without the numbers in the explanation, the body's dependencies stand in.
-    expect(look({ status: 'blocked', explanation: '', dependencies: [85] }).scene.dependencies).toEqual([85])
+    expect(look({ status: 'blocked', operator_status: canonical('blocked', '', 'dependency'), explanation: '', dependencies: [85] }).scene.dependencies).toEqual([85])
   })
 
   it('rests in grey, eyes closed, with no bow or confetti, when no longer needed', () => {
-    const view = look({ status: 'dropped', explanation: 'No longer needed: closed as a duplicate.', pull_requests: candidate })
+    const view = look({ status: 'dropped', operator_status: canonical('dropped', 'Closed as a duplicate', 'github_duplicate'), pull_requests: candidate })
     expect([view.stage, view.mood, view.needsYou]).toEqual(['queued', 'rest', false])
     expect([view.scene.accessory, view.scene.confetti, view.scene.beacon, view.scene.zzz]).toEqual([null, false, false, false])
     expect(view.label).toBe('Cube for #50, Queue stage, no longer needed')
   })
 
   it('celebrates a merge with a bow, confetti and every badge earned', () => {
-    const view = look({ status: 'completed', reason_code: 'merged', explanation: 'Completed and merged.', pull_requests: candidate })
+    const view = look({ status: 'completed', operator_status: canonical('completed', 'Merged', 'merged'), pull_requests: candidate })
     expect([view.stage, view.mood, view.scene.accessory, view.scene.confetti]).toEqual(['merged', 'happy', 'bow', true])
     expect(view.badges.every(badge => badge.state === 'done')).toBe(true)
     expect(view.label).toBe('Cube for #50, Merged stage, merged')
   })
 
   it('leaves an issue closed without merging grey and at rest', () => {
-    const view = look({ status: 'completed', reason_code: 'closed', explanation: 'Closed on GitHub.' })
+    const view = look({ status: 'completed', operator_status: canonical('completed', 'Completed on GitHub', 'github_completed') })
     expect([view.stage, view.mood, view.scene.confetti]).toEqual(['queued', 'open', false])
-    expect(view.label).toBe('Cube for #50, Queue stage, closed')
+    expect(view.label).toBe('Cube for #50, Queue stage, completed on github')
   })
 })
 

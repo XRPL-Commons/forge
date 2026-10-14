@@ -2,14 +2,15 @@ import { describe, it, expect } from 'vitest'
 import { LINE_LOOKS, lineState, type LineItem } from '../../app/utils/factoryLine'
 import { lineBayCard, lineIssueCard, lineListCard, lineStatus, placeCard } from '../../app/utils/lineCard'
 import { needsAction, needsCounts, needsFiltered, needsYouRows, unblocksLabel } from '../../app/utils/needsYou'
+import { factoryRow } from './support/rows'
 
 const now = 1_000_000
 
 function issue(number: number, over: Record<string, unknown> = {}): any {
-  return {
+  return factoryRow({
     key: `1:${number}`, repo_id: 1, repo: 'XRPL-Commons/thegame', number, title: `Issue ${number}`,
     state: 'ready', reason: null, active: null, failure_count: 0, history: [], attention_kind: null, ...over,
-  }
+  })
 }
 
 function job(number: number, role: string, over: Record<string, unknown> = {}): any {
@@ -95,7 +96,7 @@ describe('the hover card', () => {
     expect(lineStatus(itemOf(state, '1:104'), raw(104))).toBe('The worker asked you something')
     expect(lineStatus(itemOf(state, '1:7'), raw(7))).toBe('A pull request waits for your approval')
     expect(lineStatus(itemOf(state, '1:5'), raw(5))).toBe("Forge's setup needs repair")
-    expect(lineStatus(itemOf(state, '1:9'), raw(9))).toBe('On hold')
+    expect(lineStatus(itemOf(state, '1:9'), raw(9))).toBe('Blocked')
     expect(lineStatus(itemOf(state, '1:4'), raw(4))).toBe('Waiting on #2, #3')
     expect(lineStatus(itemOf(state, '1:20'), raw(20))).toBe('Building · 4 min')
   })

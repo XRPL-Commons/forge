@@ -16,6 +16,13 @@
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
     "status": "queued",
+    "stage_code": "queued",
+    "operator_status": {
+      "code": "queued",
+      "label": "Queued",
+      "reason_code": null,
+      "reason": "Waiting"
+    },
     "explanation": "Queued for Forge.",
     "actions": [
       "backlog",
@@ -27,7 +34,7 @@
     "dependencies": [],
     "fresh": true,
     "revision": "after-decision",
-    "setup_url": "/settings/repository?repo_id=1",
+    "setup_url": "/settings/repositories/1?setup=1",
     "active": null,
     "body": "Send a shorter completion email with the certificate link.\n",
     "history": [

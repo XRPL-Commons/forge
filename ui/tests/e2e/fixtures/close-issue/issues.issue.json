@@ -15,6 +15,13 @@
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
     "status": "attention",
+    "stage_code": "auditing",
+    "operator_status": {
+      "code": "attention",
+      "label": "Needs attention",
+      "reason_code": "budget_exhausted",
+      "reason": "Failed"
+    },
     "explanation": "The last attempt failed. Ran `npm run release -- --dry-run` in packages/release after setting FORGE_RELEASE_TOKEN and NPM_CONFIG_REGISTRY; the command exited 1 at src/publish/pipeline.ts:214 with \"ENEEDAUTH: this command requires you to be logged in to https://registry.npmjs.org/\". Re-ran with --verbose after clearing node_modules/.cache and the same stack came back from lib/auth/resolve-token.js:88 → lib/auth/netrc.js:31. The token is read from ~/.npmrc, which the disposable checkout does not carry, so the publish step can never authenticate as configured.",
     "actions": [
       "retry"
@@ -41,7 +48,7 @@
     "dependencies": [],
     "fresh": true,
     "revision": "current",
-    "setup_url": "/settings/repository?repo_id=1",
+    "setup_url": "/settings/repositories/1?setup=1",
     "active": null,
     "body": "# Course navigation update\n\nRework the sidebar so nested lessons are easier to scan.\n\n- Simplify breadcrumb depth\n- Highlight the active module\n- See [the navigation spec](docs/x.md) for details\n\n<script>window.injected=1</script>\n\n- [x] Confirm mobile layout matches design\n",
     "history": [

@@ -7,7 +7,7 @@ import { STAGES, issuePipeline, type PipelineRow, type StageId } from './pipelin
 import type { BenchScene, CubeAccessory, CubeMood, PortraitLook } from './cube'
 import type { IssueState, JobRole } from './factory'
 
-export type WorkbenchRow = PipelineRow & Pick<IssueRow, 'number' | 'dependencies'> & Partial<Pick<IssueRow, 'held_by'>>
+export type WorkbenchRow = PipelineRow & Pick<IssueRow, 'number' | 'explanation' | 'dependencies' | 'actions'> & Partial<Pick<IssueRow, 'held_by' | 'merge_blocker'>>
 
 type BadgeState = 'done' | 'current' | 'future'
 interface StageBadge { id: StageId; label: string; state: BadgeState }
@@ -22,7 +22,7 @@ export interface WorkbenchLook {
   // "Cube for #50, Security stage, needs attention"
   label: string
   badges: StageBadge[]
-  // null when the payload does not carry attempts (older servers).
+  // null until the server has charged an attempt.
   attempts: AttemptLives | null
 }
 
@@ -33,7 +33,7 @@ const STAGE_SHORT: Record<StageId, string> = Object.fromEntries(STAGES.map(stage
 const EARNED: StageId[] = ['build', 'review', 'audit', 'approval', 'merged']
 
 function onHold(row: WorkbenchRow): boolean {
-  return (row.actions ?? []).includes('resume') || (row.held_by ?? []).length > 0
+  return row.actions.includes('resume') || (row.held_by ?? []).length > 0
 }
 
 // `stalled`: the running worker stopped sending heartbeats (liveWork.ts); the

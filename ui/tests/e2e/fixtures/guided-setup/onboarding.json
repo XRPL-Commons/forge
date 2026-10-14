@@ -160,7 +160,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/academy/settings/rules",
-      "setup_url": "/settings/repository?repo_id=1"
+      "setup_url": "/settings/repositories/1?setup=1"
     }
   ],
   "selected": {

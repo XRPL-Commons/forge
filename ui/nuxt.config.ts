@@ -4,10 +4,9 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
   ssr: true,
   devtools: { enabled: false },
-  // Old URLs keep working: one canonical page each (#74).
+  // forge/repository_setup.py still sends operators to /factory after setup.
   routeRules: {
     '/factory': { redirect: { to: '/', statusCode: 301 } },
-    '/settings/advanced': { redirect: { to: '/settings', statusCode: 301 } },
   },
   runtimeConfig: {
     forgeApi: 'http://127.0.0.1:8788',   // NITRO_FORGE_API overrides

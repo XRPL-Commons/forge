@@ -136,7 +136,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/academy/settings/rules",
-      "setup_url": "/settings/repository?repo_id=1"
+      "setup_url": "/settings/repositories/1?setup=1"
     },
     {
       "id": 2,
@@ -265,7 +265,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
-      "setup_url": "/settings/repository?repo_id=2"
+      "setup_url": "/settings/repositories/2?setup=1"
     }
   ],
   "observation": {
@@ -313,7 +313,17 @@
           "role": "build",
           "slot": "build-1"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "working",
+        "label": "Working",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:602",
@@ -363,7 +373,17 @@
           "kind": "accepted",
           "role": "build"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "2:603",
@@ -418,7 +438,17 @@
           "kind": "accepted",
           "role": "review"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:604",
@@ -481,7 +511,17 @@
           "issue": "1:604",
           "kind": "investigated"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "Three attempts failed"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "failed"
     },
     {
       "key": "2:605",
@@ -540,7 +580,17 @@
           "kind": "accepted",
           "role": "audit"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -571,7 +621,17 @@
       "key": "1:611",
       "number": 611,
       "title": "Add pagination to the runner capacity chart",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -602,7 +662,17 @@
       "key": "1:612",
       "number": 612,
       "title": "Improve the build supervisor retry backoff so recovered workers do not immediately collide with newly scheduled attempts and exhaust the shared runner capacity queue",
-      "state": "built"
+      "state": "built",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 2,
@@ -634,7 +704,16 @@
       "number": 615,
       "title": "Wire the hackathon repo into the review baseline",
       "state": "ready",
-      "prerequisite_hold": true
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 2,
@@ -698,7 +777,17 @@
       "key": "2:616",
       "number": 616,
       "title": "Stabilize the audit findings renderer",
-      "state": "failed"
+      "state": "failed",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "Two attempts failed"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "failed"
     },
     {
       "key": "1:801",
@@ -742,7 +831,17 @@
           "kind": "merged",
           "at": 1789990060
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:802",
@@ -786,7 +885,17 @@
           "kind": "merged",
           "at": 1789990120
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:803",
@@ -830,7 +939,17 @@
           "kind": "merged",
           "at": 1789990180
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:804",
@@ -874,7 +993,17 @@
           "kind": "merged",
           "at": 1789990240
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:805",
@@ -918,7 +1047,17 @@
           "kind": "merged",
           "at": 1789990300
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:806",
@@ -962,7 +1101,17 @@
           "kind": "merged",
           "at": 1789990360
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:807",
@@ -1004,7 +1153,17 @@
           "kind": "cancelled",
           "at": 1789990420
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "dropped",
+        "label": "No longer needed",
+        "reason_code": "github_not_planned",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:808",
@@ -1048,7 +1207,17 @@
           "kind": "merged",
           "at": 1789990480
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:809",
@@ -1092,7 +1261,17 @@
           "kind": "merged",
           "at": 1789990540
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:810",
@@ -1136,7 +1315,17 @@
           "kind": "merged",
           "at": 1789990600
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:811",
@@ -1180,7 +1369,17 @@
           "kind": "merged",
           "at": 1789990660
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:812",
@@ -1224,7 +1423,17 @@
           "kind": "merged",
           "at": 1789990720
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:813",
@@ -1268,7 +1477,17 @@
           "kind": "merged",
           "at": 1789990780
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:814",
@@ -1310,7 +1529,17 @@
           "kind": "cancelled",
           "at": 1789990840
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "dropped",
+        "label": "No longer needed",
+        "reason_code": "github_not_planned",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:815",
@@ -1354,7 +1583,17 @@
           "kind": "merged",
           "at": 1789990900
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:816",
@@ -1398,7 +1637,17 @@
           "kind": "merged",
           "at": 1789990960
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:817",
@@ -1442,7 +1691,17 @@
           "kind": "merged",
           "at": 1789991020
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:818",
@@ -1486,7 +1745,17 @@
           "kind": "merged",
           "at": 1789991080
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:819",
@@ -1530,7 +1799,17 @@
           "kind": "merged",
           "at": 1789991140
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:820",
@@ -1574,7 +1853,17 @@
           "kind": "merged",
           "at": 1789991200
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:821",
@@ -1616,7 +1905,17 @@
           "kind": "cancelled",
           "at": 1789991260
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "dropped",
+        "label": "No longer needed",
+        "reason_code": "github_not_planned",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:822",
@@ -1660,7 +1959,17 @@
           "kind": "merged",
           "at": 1789991320
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:823",
@@ -1704,7 +2013,17 @@
           "kind": "merged",
           "at": 1789991380
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:824",
@@ -1748,7 +2067,17 @@
           "kind": "merged",
           "at": 1789991440
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:825",
@@ -1792,7 +2121,17 @@
           "kind": "merged",
           "at": 1789991500
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     }
   ],
   "jobs": [

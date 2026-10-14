@@ -17,7 +17,7 @@ function row(overrides: Partial<RepositoryRow> = {}): RepositoryRow {
     protection: { repo_id: 2, branch: 'main', observed_at: 1790000000, available: true, requirements: [], sources: [], errors: [], additional_rules: [], code_owner_reviews: false, bypass: { status: 'operator_review', detail: 'Bypass list must be reviewed manually on GitHub.' } },
     protection_previous_status: null, protection_last_known: null,
     rules_url: 'https://github.com/XRPL-Commons/hackathon/settings/rules',
-    setup_url: '/settings/repository?repo_id=2',
+    setup_url: '/settings/repositories/2?setup=1',
     ...overrides,
   }
 }

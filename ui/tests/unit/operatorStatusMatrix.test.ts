@@ -18,7 +18,7 @@ function views(operator: CanonicalIssueStatus) {
   // Deliberately contradictory legacy fields: a second mapping must never win.
   const issue: any = { key: '1:1', repo_id: 1, repo: 'owner/repo', number: 1, title: 'Issue',
     state: 'approval_needed', active: null, reason: 'Old reason', failure_count: 0,
-    last_summary: null, operator_status: operator }
+    last_summary: null, blocked_dependencies: [], operator_status: operator }
   const view: any = { issues: [issue], jobs: [], repositories: [], observation: { at: now },
     runtime: { slots: {}, cycle_seconds: 30 } }
   const row: IssueRow = { key: '1:1', repo_id: 1, repo: 'owner/repo', number: 1, title: 'Issue',
@@ -54,17 +54,6 @@ describe('canonical projection/API/UI status matrix', () => {
       expect(issuePipeline(row).note).toBe(expected.reason)
     })
   }
-
-  it('uses one fallback for pre-cutover list and Activity payloads', () => {
-    for (const [state, status, label] of [
-      ['ready', 'queued', 'Queued'], ['approval_needed', 'attention', 'Needs attention'],
-      ['hold', 'blocked', 'Blocked'], ['investigating', 'waiting', 'Waiting'],
-      ['merged', 'completed', 'Completed'], ['cancelled', 'dropped', 'No longer needed'],
-    ]) {
-      expect(phaseLabel({ state } as any, null, null, now)).toBe(label)
-      expect(statusLabel({ status, explanation: '', dependencies: [] } as any)).toBe(label)
-    }
-  })
 
   it('shows the current stage at work while it cleans up or checks a result', () => {
     for (const name of ['cleanup_pending', 'result_pending']) {

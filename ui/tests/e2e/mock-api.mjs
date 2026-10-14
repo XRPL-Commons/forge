@@ -7,7 +7,6 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { withAttentionKinds } from './attention-kind.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES_DIR = path.join(__dirname, 'fixtures')
@@ -431,7 +430,7 @@ const server = http.createServer(async (req, res) => {
     // feed by their sequence, and the response shape matches the production endpoint.
     for (let left = 20; before === sequence && left && !res.destroyed; left--) await new Promise(resolve => setTimeout(resolve, 50))
     if (res.destroyed) return
-    const board = withAttentionKinds(savedFactory || resolveGetFixture('factory', { section: 'board' }))
+    const board = savedFactory || resolveGetFixture('factory', { section: 'board' })
     if (board.ok === false) return send(res, 200, board)
     if (codingAccounts) board.coding_accounts = codingAccounts
     const changed = before !== sequence
@@ -454,7 +453,7 @@ const server = http.createServer(async (req, res) => {
       : base === 'repositories' && savedRepositoryView?.repositories.some(row => String(row.id) === query.repo_id) ? savedRepositoryView
         : resolveGetFixture(base, query)
     if (fixture === undefined) return send(res, 404, { ok: false, reason: 'missing' })
-    if (base === 'factory') fixture = { ...withAttentionKinds(fixture), cursor: `mock:${sequence}` }
+    if (base === 'factory') fixture = { ...fixture, cursor: `mock:${sequence}` }
     if (base === 'issues' && query.issue && fixture.issue) {
       const scoped = savedFactory || resolveGetFixture('factory', { issue: query.issue })
       fixture = { ...fixture, cursor: `mock:${sequence}`, jobs: (scoped?.jobs || []).filter(job => job.issue_key === fixture.issue.key),

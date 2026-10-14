@@ -1,6 +1,6 @@
 // What the factory line's hover card says about one cube or one crate bay,
 // and where the card goes on screen. Pure, so the strip only renders it.
-import { elapsed, type LedgerIssueView } from './factory'
+import { ATTEMPT_LIMIT, elapsed, type LedgerIssueView } from './factory'
 import {
   LINE_REASON_SHORT, LINE_REASON_TEXT, LINE_STAGE_LABELS, lineFill,
   type AttentionReason, type LineItem,
@@ -32,7 +32,6 @@ interface LineListCard {
 }
 export type LineCard = LineIssueCard | LineListCard
 
-const ATTEMPT_LIMIT = 3
 const LIST_LIMIT = 6
 const VERBS: Record<string, string> = { build: 'Building', review: 'Reviewing', audit: 'Auditing' }
 
