@@ -51,7 +51,10 @@ def renewable(auth):
     if not isinstance(auth, dict):
         return 'unreadable'
     tokens = auth.get('tokens') or {}
-    if auth.get('auth_mode') == 'chatgptAuthTokens' or not tokens.get('refresh_token'):
+    if not isinstance(tokens, dict):
+        return 'unreadable'
+    refresh = tokens.get('refresh_token')
+    if auth.get('auth_mode') == 'chatgptAuthTokens' or not isinstance(refresh, str) or not refresh.strip():
         return 'access_only'
     return None
 

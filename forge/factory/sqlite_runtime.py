@@ -107,6 +107,8 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
     from .store_inventory import DiscoveryController
     parts = components(root, config=config, runner=runner, github=github, settings=settings, clock=clock, dispatch=dispatch)
     Credentials(root).publish_login_generations(parts['store'], parts['config'])
+    from .provider_logins import check_logins
+    check_logins(root, parts['store'], parts['config'], clock=clock)
     actions = OperatorActions(parts['store'], parts['github'], config=lambda: load(root),
                               requirements=parts['requirements'], verification=parts['verification'], clock=clock)
     discovery = DiscoveryController(parts['store'], parts['settings'], parts['github'], config=parts['config'], clock=clock)
