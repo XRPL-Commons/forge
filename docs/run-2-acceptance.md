@@ -65,8 +65,13 @@ shards, UI unit/type/build/browser checks and source audit passed in
   immutable saved input, so cleanup could not be saved. The fix preserves that
   input and lets the CLI finish verified teardown of already-fenced setup probes
   before ordinary drain checks. Forty-two focused tests and independent review
-  passed; the corrected release must pass CI and finish the resumable upgrade.
-  It does not change the qualified image or network boundary.
+  passed. The next live retry exposed a missing shared contract in the standalone
+  migration bundle before any checkout change. The bundle now carries exactly
+  the two client contract files it imports, bound to the target revision; an
+  isolated Python process exercises the actual bundle and fenced cleanup.
+  The corrected release must pass combined CI and finish the resumable upgrade.
+  Main's subsequent runtime cleanup changes the runner image input digest, so
+  qualify the resulting image before claiming acceptance for that release.
 - Complete the signed-publication and every-role canaries before claiming the
   boundary accepted or deploying it to the active Forge factory. The boundary
   canary uses direct fixture workers, so it does not establish production role
@@ -99,5 +104,20 @@ passed, including the subsequent source-transfer correction on `02cd206`
 ([run](https://github.com/XRPL-Commons/forge/actions/runs/38550713982)). The new
 qualification commands passed independent review and 63 combined focused tests.
 CI caught personal paths in documentation/test examples; generic paths now pass
-the source audit and all 17 affected tests. The cleanup repair joins this final
-combined gate before the next Anvil apply.
+the source audit and all 17 affected tests. The cleanup repair passed full CI on `62e4999`
+([run](https://github.com/XRPL-Commons/forge/actions/runs/38553600750)), before the
+standalone packaging failure was found on Anvil.
+
+Main's SQLite-only runtime deletion (#279) is now incorporated. Tokenless
+Discussion startup and setup-specific ProbeRunner cleanup use the surviving
+modules. Follow-up #280 joins this gate: fresh stores can pair agents using their
+existing UUID identity; discussion leases and memory retries do not block
+unrelated accounts or paused repositories; a deployment candidate failure leaves
+other candidates and discussions progressing and clears on a successful retry.
+Codex login admission now checks the stored account locally before dispatch,
+with an account-scoped auth block that preserves independent provider limits.
+Deployment regressions passed 69 tests, fresh pairing passed 28 tests, login
+admission passed 43 tests, and the standalone migration bundle passed 53 tests
+before this integration. Independent
+review covered the merge and these changes. The final combined revision still
+needs CI and live upgrade completion.
