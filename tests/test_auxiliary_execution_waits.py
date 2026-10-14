@@ -70,6 +70,8 @@ class PlannerExecutionWaitTests(unittest.TestCase):
         self.assertTrue(self.controller.problems.recheck('triage',self.request['proposal_id'],{'memory_tiers':['2g','8g']})['resolved'])
         config=self.controller.problems.memory('triage',self.request['proposal_id'],{'memory':'2g','memory_tiers':['2g','8g']})
         self.assertEqual(config['memory'],'8g')
+        self.assertIsNone(self.controller.problems.memory('triage',self.request['proposal_id'],{'memory':'2g','memory_tiers':['2g']}))
+        self.assertEqual(self.controller.problems.recheck('triage',self.request['proposal_id'],{'memory':'2g','memory_tiers':['2g']})['pending'],'memory_configuration')
 
 
 class DiscussionExecutionWaitTests(unittest.TestCase):

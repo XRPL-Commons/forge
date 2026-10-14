@@ -82,7 +82,9 @@ class AuxiliaryProblems:
         with self.store.write() as db:
             writable(db)
             wait=db.execute('SELECT * FROM auxiliary_execution_waits WHERE domain=? AND owner_id=? AND resolved_at IS NULL',(domain,str(owner))).fetchone()
-            if wait is None:return None
+            if wait is None:
+                if config is not None and self.memory(domain,owner,config) is None:return {'pending':'memory_configuration'}
+                return None
             detail=json.loads(wait['details_json']); previous=json.loads(wait['runner_config_json'])
             current=config or previous
             now=self.clock()
@@ -124,5 +126,5 @@ class AuxiliaryProblems:
         from .runtime_requirements import _memory
         minimum=max([_memory(config['memory']), *[_memory(value) for row in rows if (value:=json.loads(row[0]).get('next_memory'))]])
         chosen=next((tier for tier in config.get('memory_tiers',[]) if _memory(tier)>=minimum),None)
-        if chosen is None:raise TransitionError('Memory retry requires the previously selected allocation')
+        if chosen is None:return None
         return {**config,'memory':chosen}
