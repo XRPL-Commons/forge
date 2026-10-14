@@ -401,11 +401,27 @@ class Settings:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['show', 'sync', 'validate', 'watch'])
+    parser.add_argument('command', choices=['show', 'sync', 'validate', 'watch', 'mirror'])
     parser.add_argument('--root', required=True, help='Directory containing factory.json and state/')
+    parser.add_argument('--repo-id', type=int, help='Numeric project repository ID for mirror policy')
+    parser.add_argument('--revision', help='Current settings revision, required to change mirror policy')
+    parser.add_argument('--denied-json', help='Replace mirror deny list with this JSON array; omit to read')
     args = parser.parse_args(argv)
     settings = Settings(args.root)
     try:
+        if args.command == 'mirror':
+            from .repository_setup import RepositorySetup
+            if args.repo_id is None:
+                raise ValueError('--repo-id is required')
+            setup = RepositorySetup(settings)
+            if args.denied_json is not None:
+                if not args.revision:
+                    raise ValueError('--revision is required to change mirror policy')
+                result = setup.mirror_policy(args.repo_id, args.revision, json.loads(args.denied_json))
+            else:
+                result = setup.view(args.repo_id)
+            print(json.dumps(result, indent=2))
+            return 0
         if args.command == 'watch':
             settings.watch()
             return

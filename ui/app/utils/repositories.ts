@@ -104,7 +104,10 @@ export interface ProtectionReport {
   edit_url?: string
 }
 
+export interface MirrorDeniedRepository { canonical_name: string; repository_id?: number }
+
 export interface RepositoryRow {
+  mirror_denied_repositories?: MirrorDeniedRepository[]
   id: number; name: string; enabled: boolean; configured: boolean
   access: Record<AppRole, RepoAccessStatus>
   access_ready: boolean; dispatch_allowed: boolean

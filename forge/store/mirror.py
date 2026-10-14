@@ -13,6 +13,31 @@ RECEIPT_FIELDS = frozenset({'repository', 'repository_id', 'request_kind', 'outc
     'refs_digest', 'started_at', 'finished_at', 'transient'})
 
 
+def view_in(db, job_id, *, limit=20):
+    """Bounded diagnostic evidence; claims are observations, never grants."""
+    if type(limit) is not int or not 1 <= limit <= 50:
+        raise ValueError('Mirror evidence limit must be between 1 and 50')
+    fields = ('repository', 'repository_id', 'request_kind', 'outcome', 'reason', 'phase',
+              'cache', 'host_fetch', 'request_bytes', 'response_bytes', 'transient',
+              'source_digest', 'policy_digest', 'manifest_digest', 'refs_digest')
+    result = {}
+    for name, key in (('receipts', 'id'), ('claims', 'receipt_id')):
+        table = 'mirror_' + name
+        total = db.execute(f'SELECT count(*) FROM {table} WHERE job_id=?', (job_id,)).fetchone()[0]
+        rows = db.execute(f'SELECT {key},created_at,details_json FROM {table} WHERE job_id=? '
+                          f'ORDER BY created_at DESC,{key} DESC LIMIT ?', (job_id, limit))
+        values = []
+        for row in rows:
+            details = json.loads(row['details_json'])
+            safe = {field: value for field in fields if (value := details.get(field)) is not None
+                    and (type(value) in (bool, int, float) or isinstance(value, str) and len(value) <= 256)}
+            values.append(dict(id=row[key], created_at=row['created_at'], **safe))
+        result[name] = values
+        result[name + '_total'] = total
+        result[name + '_truncated'] = total > len(values)
+    return result
+
+
 class MirrorStore:
     def __init__(self, store, *, clock=time.time, max_requests=1024, max_request_bytes=64 * 1024 ** 2, max_response_bytes=1024 ** 3):
         self.store, self.clock = store, clock

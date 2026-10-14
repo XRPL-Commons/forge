@@ -352,7 +352,7 @@ class H(BaseHTTPRequestHandler):
             return
         if not self._operator_guard() or not self._signed_in():
             return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -495,6 +495,12 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected repository identity and current revision')
                 RepositorySetup(settings_service()).start_check(value['repo_id'],value['revision'])
                 self._send(json.dumps({'ok':True}));return
+            if self.path == '/api/repositories/mirror':
+                from forge.repository_setup import RepositorySetup
+                if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'denied_repositories'}:
+                    raise ValueError('Expected repository identity, current revision and denied repositories')
+                result = RepositorySetup(settings_service()).mirror_policy(**value)
+                self._send(json.dumps({**result, 'ok': True, 'controls_token': self._action_token}));return
             if self.path in ('/api/repositories/enable', '/api/repositories/disable'):
                 from forge.repository_setup import RepositorySetup
                 if (not isinstance(value,dict) or set(value)!={'repo_id','revision'}

@@ -108,6 +108,7 @@ class RepositorySetup:
         environment_snapshot = environments.snapshot(runtime=runtime)
         data, now = self.read(), self.settings.clock()
         profiles = {r['id']: r.get('deployment') for r in config['repositories']}
+        denied = {r['id']: r.get('mirror_denied_repositories', []) for r in config['repositories']}
         from .factory.config import load as runtime_config, merge_mode
         runtime = runtime_config(self.settings.authority.root,scope=self.settings.scope) if runtime is None else runtime
         entries = self.proposals()
@@ -127,7 +128,7 @@ class RepositorySetup:
             if not row.get('access_ready'):
                 status = 'access_needed'
             entry, profile = entries.get(str(row['id'])) or {}, profiles.get(row['id'])
-            result.append({**row, 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
+            result.append({**row, 'mirror_denied_repositories': denied.get(row['id'], []), 'merge_policy':merge_mode(runtime,row['id']), 'protection_status': status, 'protection_ready': status == 'ready',
                            'environment': environments.view(row['id'], environment_snapshot),
                            'protection': report, 'protection_previous_status': previous.get('previous_status') if current else None,
                            'protection_last_known': previous.get('last_known') if current else None, 'rules_url': f"https://github.com/{row['name']}/settings/rules",
@@ -158,6 +159,23 @@ class RepositorySetup:
                 'connections': connections, 'sync': settings['sync'],
                 'activation_available': self.settings.scope != 'setup',
                 'continue_url': '/onboarding' if self.settings.scope == 'setup' else '/factory'}
+
+    def mirror_policy(self, repo_id, revision, denied_repositories):
+        from .settings import mirror_denied_repositories
+        if type(repo_id) is not int or repo_id <= 0:
+            raise ValueError('Expected a numeric repository identity')
+        entries = mirror_denied_repositories(denied_repositories)
+        config = self.settings.load()
+        if revision != digest(config):
+            raise ValueError('Repository settings changed. Reload before saving.')
+        configured = next((r for r in config['repositories'] if r['id'] == repo_id), None)
+        if configured is None:
+            raise ValueError('Configure this repository before changing its mirror policy')
+        # No remote permission changes. IDs supplied with existing restrictions
+        # remain explicit in the form so renames cannot silently drop them.
+        configured['mirror_denied_repositories'] = [dict(entry, canonical_name=entry['canonical_name'].lower()) for entry in entries]
+        self.settings.save(config, revision)
+        return self.view(repo_id)
 
     def enable(self, repo_id, revision):
         if self.settings.scope == 'setup':

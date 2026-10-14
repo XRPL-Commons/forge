@@ -17,6 +17,8 @@ const props = defineProps<{
 const open = defineModel<boolean>('open', { default: false })
 const route = useRoute()
 
+const publication = computed(() => props.jobs.find(job => job.id === props.selectedJob)?.publication)
+const mirror = computed(() => props.jobs.find(job => job.id === props.selectedJob)?.mirror)
 const raw = ref(false)
 const text = computed(() => outputText(props.output, raw.value))
 // Raw only differs when the tail carries heartbeats; otherwise no toggle.
@@ -95,6 +97,23 @@ function isoTime(at: number): string { return new Date(at * 1000).toISOString() 
         <p v-else id="issue-output-empty" class="mt-2 text-xs text-muted">{{ emptyOutputText(output) }}</p>
       </template>
     </UCollapsible>
+    <div v-if="publication?.claim" class="my-3 rounded border border-line p-3 text-xs">
+      <p class="font-semibold">Publication {{ publication.active ? 'needs attention' : 'evidence' }}</p>
+      <p class="mt-1 break-all">{{ publication.claim.code || publication.claim.reason }}</p>
+      <ul v-if="publication.claim.paths?.length" class="mt-1"><li v-for="path in publication.claim.paths" :key="path" class="break-all">{{ path }}</li></ul>
+    </div>
+    <details v-if="mirror?.receipts_total" class="my-3 rounded border border-line p-3 text-xs">
+      <summary class="cursor-pointer">Git dependency fetches · {{ mirror.receipts_total }} records · {{ mirror.claims_total }} refusals</summary>
+      <p v-if="mirror.claims_total" class="mt-2 text-amber-200">A refusal is evidence for the steward. Changing access requires an operator decision.</p>
+      <ul class="mt-2 space-y-1">
+        <li v-for="claim in mirror.claims" :key="claim.id" class="break-all text-amber-200">{{ claim.repository || 'Repository unavailable' }}<span v-if="claim.repository_id"> (#{{ claim.repository_id }})</span>: {{ claim.reason }}</li>
+      </ul>
+      <p v-if="mirror.claims_truncated" class="mt-1 text-muted">Showing the latest {{ mirror.claims.length }} refusals.</p>
+      <ul class="mt-2 space-y-1">
+        <li v-for="receipt in mirror.receipts" :key="receipt.id" class="break-all">{{ receipt.repository || 'Repository unavailable' }} · {{ receipt.phase || 'worker' }} · {{ receipt.request_kind }} · {{ receipt.outcome }}<span v-if="receipt.cache"> · cached</span><span v-if="receipt.reason"> · {{ receipt.reason }}</span></li>
+      </ul>
+      <p v-if="mirror.receipts_truncated" class="mt-1 text-muted">Showing the latest {{ mirror.receipts.length }} records. All records remain attached to this job.</p>
+    </details>
     <ul v-if="jobs.length" id="issue-jobs" class="mt-1 mb-2 flex flex-col gap-1 px-1 text-xs">
       <li v-for="job in jobs" :key="job.id">
         <NuxtLink

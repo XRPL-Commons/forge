@@ -96,7 +96,21 @@ class SourcePreparation:
     def _notes(self, job, notes, publication_authorization):
         result = deepcopy(notes)
         result['publication_authorization'] = deepcopy(publication_authorization)
-        if self.github is not None and job.get('members'):
+        if job.get('role') == 'recovery':
+            # Recovery diagnoses the failed assignment, including requirements
+            # that have since changed or closed. Never refresh its authority.
+            with self.store.read_snapshot() as db:
+                row = db.execute('SELECT failed_job_id FROM recovery_assignments WHERE job_id=?', (job['id'],)).fetchone()
+            frozen = self.mirror.prepared(row['failed_job_id']) if row else None
+            if frozen:
+                result['failed_assignment'] = dict(job_id=row['failed_job_id'], source_input=frozen['source_input'],
+                    notes=frozen['notes'])
+            else:
+                result['failed_assignment'] = dict(job_id=row['failed_job_id'] if row else None,
+                    issue_snapshots=[{key: member.get(key) for key in
+                        ('issue_number', 'title', 'body', 'requirements_hash')} for member in job.get('members', [])],
+                    comments_unavailable=True)
+        elif self.github is not None and job.get('members'):
             observations = []
             for member in job['members']:
                 item = dict(repo=job['repo'], repo_id=job['repo_id'], number=member['issue_number'])
@@ -122,7 +136,7 @@ class SourcePreparation:
         original = original or manifest
         candidate = job.get('candidate') or {}
         base = original.get('base_oid') or candidate.get('base') or job.get('head')
-        inputs = [value for value in (original.get('head_oid'), candidate.get('head')) if value is not None]
+        inputs = [value for value in (original.get('head_oid'), candidate.get('head'), job.get('resume_head')) if value is not None]
         for key in ('existing_candidates', 'part_outputs', 'prerequisite_outputs'):
             for item in original.get(key, []):
                 oid = item.get('head_oid') or item.get('head') or item.get('commit_oid')
@@ -133,6 +147,14 @@ class SourcePreparation:
         if any(not isinstance(value, str) or not OID.fullmatch(value) for value in inputs):
             raise MirrorError('revision_unavailable')
         return base, sorted(set(inputs))
+
+    def _source_pins(self, job, manifest):
+        failed_id = (job.get('failure') or {}).get('attempt') if job.get('role') == 'recovery' else None
+        frozen = self.mirror.prepared(failed_id) if failed_id else None
+        if frozen:
+            source = frozen['source_input']
+            return source['base_oid'], list(source['input_oids'])
+        return self._pins(job, manifest)
 
     def prepare(self, job, notes, *, publication_authorization=None, bundle_inputs=()):
         authority = self.mirror.authority(job['id'])
@@ -146,7 +168,13 @@ class SourcePreparation:
                 raise MirrorError('session_revoked')
             return self._materialize(previous)
         authorization = publication_authorization or {}
-        repository = access_call(self.access.resolve, authority['repo'])
+        try:
+            repository = access_call(self.access.resolve, authority['repo'])
+        except MirrorError as error:
+            self.mirror.preparation_receipt(authority, dict(repository=canonical_name(authority['repo']),
+                repository_id=authority['repo_id'], request_kind='prepare_assignment', outcome='failed' if error.transient else 'denied',
+                reason=error.reason, transient=error.transient, finished_at=self.clock()))
+            raise
         if repository.repository_id != authority['repo_id']:
             raise MirrorError('assignment_changed')
         organizations = access_call(self.access.organizations)
@@ -156,13 +184,19 @@ class SourcePreparation:
             canonical_repository=canonical_name(repository.canonical_name), revision=source_inputs.digest(manifest),
             manifest_digest=source_inputs.digest(manifest), declared_repositories=[],
             organization_installations=organizations, denied_repositories=denies, extractor_version=1)
-        authorize(policy, repository, live_installations=organizations, live_denied=denies)
+        try:
+            authorize(policy, repository, live_installations=organizations, live_denied=denies)
+        except MirrorError as error:
+            self.mirror.preparation_receipt(authority, dict(repository=canonical_name(repository.canonical_name),
+                repository_id=repository.repository_id, request_kind='prepare_assignment', outcome='denied',
+                reason=error.reason, transient=error.transient, finished_at=self.clock()))
+            raise
         if authority['domain'] == 'pipeline':
             from ..store.executions import ExecutionQueries
             trusted_job = ExecutionQueries(self.store).job(job['id'])
         else:
             trusted_job = authority['manifest']
-        base, inputs = self._pins(trusted_job, manifest)
+        base, inputs = self._source_pins(trusted_job, manifest)
         # Bundles are retained output references supplied by ExecutionQueries;
         # their exact head is already pinned by the immutable parent assignment.
         bundles = list(bundle_inputs)
