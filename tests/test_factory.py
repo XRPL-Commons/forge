@@ -12,7 +12,7 @@ from forge.factory.ledger import Ledger
 from forge.factory.supervisor import Supervisor
 from forge.factory.runner import RunnerError
 from forge.factory.github import GitHubUnavailable, GitHubBudgetExhausted
-from forge.state import StateError
+from forge.store.files import StateError
 
 
 class FactoryTest(unittest.TestCase):

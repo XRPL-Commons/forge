@@ -8,7 +8,8 @@ from pathlib import Path
 import time
 
 from ..settings import Settings, digest, write_json, read_json
-from ..state import AtomicStore, StateError
+from ..state import AtomicStore
+from ..store.files import StateError
 from ..credentials import Credentials
 from .config import load, validate
 from .contracts import summary as plain_summary

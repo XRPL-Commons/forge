@@ -15,7 +15,7 @@ from .repository_policy import protection_ready
 from .credentials import Credentials
 from .deployments import Deployments
 from .settings import Settings, read_json, write_json
-from .state import StateError
+from .store.files import StateError
 from .factory.config import load
 from .factory.control import controller_lock, requests
 from .factory.github import GitHub, GitHubUnavailable

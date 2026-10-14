@@ -14,7 +14,6 @@ import ipaddress
 import json
 import os
 import re
-import shlex
 from pathlib import Path
 import runpy
 import shutil
@@ -211,53 +210,6 @@ def save_runtime_document(root, name, value, *, expected_revision, credential_re
 
 def ui_container(root):
     return 'forge-ui-' + hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:12]
-
-
-def qualify_sqlite_services(root, source, *, run=subprocess.run):
-    """Read-only cutover gate for the deployed source and managed launchers."""
-    from .store.migration.snapshot import MigrationError
-    from .store.migration.runtime import inspect as inspect_runtime
-    from .store.migration.importer import importer_version
-    root, source = Path(root).absolute(), Path(source).absolute()
-    prepared = inspect_runtime(root, run=run)
-    environment = {**os.environ, 'PYTHONPATH': str(source)}
-    if prepared:
-        environment['LD_LIBRARY_PATH'] = prepared['library_directory']
-    probe = ('import json; from forge.store.db import qualified_sqlite; '
-             'from forge.store.migration.importer import importer_version; '
-             'print(json.dumps({"qualified":qualified_sqlite(),"source":importer_version()}))')
-    result = run(['/usr/bin/python3', '-c', probe], env=environment, cwd=str(source), capture_output=True, text=True, timeout=30)
-    try:
-        receipt = json.loads(result.stdout)
-    except (ValueError, TypeError):
-        raise MigrationError('service_runtime_unqualified') from None
-    if result.returncode or not isinstance(receipt, dict) or receipt.get('qualified') is not True or receipt.get('source') != importer_version():
-        raise MigrationError('service_source_or_runtime_mismatch')
-    launcher = source / 'bin/forge'
-    status = source / 'legacy/forge-status.py'
-    if (not launcher.is_file() or launcher.is_symlink() or not status.is_file() or status.is_symlink()
-            or 'forge.launch forge.setup_service' not in launcher.read_text()):
-        raise MigrationError('legacy_launcher_detected')
-    for name in ('forge-status.service', 'forge-supervisor.service'):
-        observed = run(['systemctl', '--user', 'show', name, '-p', 'ExecStart', '-p', 'Environment', '--no-pager'],
-                       capture_output=True, text=True, timeout=30)
-        properties = dict(line.split('=', 1) for line in observed.stdout.splitlines() if '=' in line)
-        start = properties.get('ExecStart', '')
-        commands = re.findall(r'argv\[\]=(.*?)(?:\s;|$)', start)
-        paths = re.findall(r'(?:\{|\s)path=(.*?)(?:\s;|$)', start)
-        expected = (['/usr/bin/python3', '-m', 'forge.launch', '--script', str(status)] if name == 'forge-status.service'
-                    else [str(launcher), 'service', '--root', str(root)])
-        try:
-            arguments = shlex.split(commands[0]) if len(commands) == 1 else []
-            environment = dict(value.split('=', 1) for value in shlex.split(properties.get('Environment', '')))
-            executable = shlex.split(paths[0]) if len(paths) == 1 else []
-        except ValueError:
-            arguments, environment, executable = [], {}, []
-        if (observed.returncode or arguments != expected or executable != [expected[0]]
-                or environment.get('PYTHONPATH') != str(source) or environment.get('FORGE_ROOT') != str(root)):
-            raise MigrationError('service_launcher_unqualified')
-    return {'qualified': True, 'source': receipt['source'], 'launchers': ['forge-status', 'forge-supervisor'],
-            'library_directory': prepared['library_directory'] if prepared else None}
 
 
 def desired_units(root, bind):
@@ -527,16 +479,9 @@ def qualify_runner(image, seccomp, profile, *, full=False):
 
 def reconcile(root, bind=None, assume_yes=False):
     """Install or update the host. Returns True when running workers need requalification."""
-    from .store.migration.cutover import maintenance_writable
-    maintenance_writable(root)
-    return _reconcile(root, bind=bind, assume_yes=assume_yes)
-
-
-def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
-    """Shared installer; initial cutover defers configuration and service activation."""
     root = Path(root)
     fresh = runtime_document(root, 'host-runtime.json') is None
-    record = prepared_record if prepared_record is not None else Record(root)
+    record = Record(root)
     units = Path.home() / '.config/systemd/user'
     bind = resolve_bind(root, bind, units)
     source = source_revision()
@@ -589,7 +534,7 @@ def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
     plan += ['remove overriding drop-in ' + path.name + ' from ' + name for name, path, _ in overrides]
     stale = stale_units(units)
     plan += ['remove stale unit ' + path.name for path in stale]
-    if prepared_record is None and not fresh and not plan and not restart:
+    if not fresh and not plan and not restart:
         print('Forge host is up to date' + (' at ' + source[:12] if source else '') + '.')
         return False
     if not fresh:
@@ -633,7 +578,7 @@ def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
     except subprocess.CalledProcessError:
         raise ValueError('The worker egress proxy did not become healthy; see `docker logs forge-egress-1`, '
                          'correct it and rerun this command.') from None
-    if prepared_record is None and not fresh and runtime_changed:
+    if not fresh and runtime_changed:
         switch_runtime(root, image, APPARMOR_PROFILE)
         if full_image:
             switch_full_environment(root, full_image)
@@ -653,9 +598,6 @@ def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
         print('Moved overriding drop-ins to ' + str(backup))
     remove_stale_units(stale)
     command(['systemctl', '--user', 'daemon-reload'])
-    if prepared_record is not None:
-        return prepared_record.finish(bind=bind, source=source, image=image, ui_release=release,
-                                      full_image=full_image, seccomp_inputs=seccomp_inputs)
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
     # The API first: the UI and supervisor depend on it.
     ordered = [name + '.service' for name in SERVICES if fresh or name in restart]

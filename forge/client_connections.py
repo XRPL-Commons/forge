@@ -6,7 +6,7 @@ import secrets
 from urllib.parse import urlencode
 
 from .operator_auth import OperatorAuth, digest
-from .state import StateError
+from .store.files import StateError
 from forge_client.contracts import positive, repository
 
 CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy', 'repositories:triage')

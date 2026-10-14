@@ -7,12 +7,10 @@ from forge.store.operator_reconciliation import OperatorReconciliation
 from forge.store.transitions import Lifecycle
 import unittest
 from tests import test_store_reconciliation as fixtures
+from tests.legacy_rows import LegacyLedger
 
 
-class OperatorReconciliationTests(unittest.TestCase):
-    setUp=fixtures.ReconciliationTests.setUp
-    write=fixtures.ReconciliationTests.write
-    snapshot=fixtures.ReconciliationTests.snapshot
+class OperatorReconciliationTests(LegacyLedger, unittest.TestCase):
     setup_store=fixtures.ReconciliationTests.setup_store
     view=fixtures.ReconciliationTests.view
     unit=fixtures.ReconciliationTests.unit

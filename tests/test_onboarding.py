@@ -14,7 +14,7 @@ from forge.onboarding import Onboarding, ROLES
 from forge.settings import Settings, write_json, digest
 from forge.setup_service import Service
 from forge.factory.runner import RunnerError
-from forge.state import StateError
+from forge.store.files import StateError
 
 
 class SetupTests(unittest.TestCase):

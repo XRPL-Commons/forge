@@ -26,7 +26,7 @@ from .operator_auth import (AuthError, configuration, cookie, digest, github_ide
 from .client_connections import (ConnectionError, need, fields, capabilities, scope, active_generation,
                                  verify_owner, target_identity, TOKEN, CODE, CAPABILITIES, CLIENT_ID,
                                  ACCESS_SECONDS, IDLE_SECONDS, ABSOLUTE_SECONDS, DEVICE_SECONDS)
-from .state import StateError
+from .store.files import StateError
 from .store.db import _private, _new_file, _fsync_directory
 from .store.identity import session_in, valid_connection_in
 from .store.transitions import _json

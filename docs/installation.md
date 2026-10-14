@@ -114,10 +114,9 @@ the previous revision (printed by update and recorded in `<runtime-root>/host.js
 and running `bin/forge update --no-pull`. Earlier images and UI releases are reused
 when still present, and rebuilt otherwise.
 
-After SQLite activation, use a compatible forward update. The installation keeps
-its history and update records in SQLite; switching back to the JSON runtime or
-an older incompatible source is unsupported. The pre-migration copy is retained
-for diagnosis, not as a runtime rollback. See [the migration guide](store-migration.md).
+Use a compatible forward update. The installation keeps its history and update
+records in SQLite; switching back to the JSON runtime or an older incompatible
+source is unsupported. Schema changes use [`forge migrate upgrade`](store-migration.md).
 `bin/forge setup install` on an installed host performs the same reconciliation
 without fetching.
 

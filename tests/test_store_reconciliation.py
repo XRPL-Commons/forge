@@ -4,10 +4,9 @@ import unittest
 from forge.factory.config import validate, policy
 from forge.factory.observation_controller import ObservationController
 from forge.factory.reconciliation_controller import ReconciliationController
-from forge.store.migration.importer import Importer
 from forge.store.models import Command, TransitionError
 from forge.store.transitions import Lifecycle, manifest_hash, project_unit
-from tests import test_store_import as fixtures
+from tests.legacy_rows import LegacyLedger
 
 
 class GitHub:
@@ -25,10 +24,7 @@ class GitHub:
     def connection(self,role):return {'app_id':10 if role=='review' else 11}
 
 
-class ReconciliationTests(unittest.TestCase):
-    setUp=fixtures.ImportTests.setUp
-    write=fixtures.ImportTests.write
-    snapshot=fixtures.ImportTests.snapshot
+class ReconciliationTests(LegacyLedger, unittest.TestCase):
     unit='legacy:unit:1:1'
     def setup_store(self,*,authorized=True,candidate=False,phase='built'):
         self.config=validate({'enabled':True,'image':'sha256:'+'1'*64})
@@ -36,7 +32,7 @@ class ReconciliationTests(unittest.TestCase):
             self.issue['state']=phase
             self.issue['candidate']=dict(pr=12,head='head',base='base',policy=manifest_hash(policy(self.config,1,repository_name='owner/repo')),requirements='requirements-hash',key='identity',build_attempt='build',accepted_at=12,branch='work')
             self.ledger['jobs']['build']=dict(id='build',issue_key='1:1',role='build',cleanup=True,fenced=True,slot='slot',created_at=11,phase='cleaned',outcome='accepted',branch='work',target_branch='main')
-        importer=Importer(self.snapshot(),self.base/'staging');importer.run();self.store=importer.store
+        self.store=self.seed()
         self.now=2000000000.0
         with self.store.write() as db:
             db.execute("UPDATE store_metadata SET value='false' WHERE key='import_only'")

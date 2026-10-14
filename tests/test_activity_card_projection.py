@@ -7,7 +7,7 @@ from forge.factory.config import validate
 from forge.factory.store_views import PipelineViews
 from tests import test_completed_selection as completed
 from tests import test_store_completion as lifecycle
-from tests import test_store_public_parity as imported
+from tests.legacy_rows import LegacyLedger
 
 
 class RichIssueCards(PipelineViews):
@@ -111,11 +111,13 @@ class LifecycleActivityParityTests(unittest.TestCase):
         self.check()
 
 
-class ImportedActivityParityTests(unittest.TestCase):
-    setUp = imported.PublicParityTests.setUp
-    write = imported.PublicParityTests.write
-    snapshot = imported.PublicParityTests.snapshot
-    prepared = imported.PublicParityTests.prepared
+class ImportedActivityParityTests(LegacyLedger, unittest.TestCase):
+    def prepared(self):
+        from copy import deepcopy
+        from forge.settings import DEFAULT
+        self.settings = deepcopy(DEFAULT)
+        self.settings['repositories'] = [{'id': 1, 'name': 'test/repo', 'enabled': True}]
+        return None, self.seed()
 
     def test_historical_candidate_summary_dependencies_reviewers_and_deployment(self):
         self.issue.update(state='merged', last_observed=18,

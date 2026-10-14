@@ -16,7 +16,7 @@ from forge.operator_auth import OperatorAuth, AuthError, SESSION_COOKIE, FLOW_CO
 from forge.sqlite_identity import (SqliteOperatorAuth, SqliteClientConnections, SqliteClientRepositories,
                                     identity_effect_lock)
 from forge.store.db import Store, StoreError
-from forge.state import StateError
+from forge.store.files import StateError
 from tests import test_client_connections as connection_tests
 from tests import test_operator_auth as auth_tests
 

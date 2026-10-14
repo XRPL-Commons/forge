@@ -7,15 +7,11 @@ from unittest.mock import Mock
 from forge.factory.config import validate
 from forge.factory.store_inventory import StoreInventory
 from forge.factory.store_views import PipelineViews
-from forge.store.migration.importer import Importer
+from tests.legacy_rows import LegacyLedger
 from tests.test_sqlite_runtime_support import RuntimeFixture
-from tests import test_store_import as imports
 
 
-class BoardCompletionTests(TestCase):
-    setUp = imports.ImportTests.setUp
-    write = imports.ImportTests.write
-    snapshot = imports.ImportTests.snapshot
+class BoardCompletionTests(LegacyLedger, TestCase):
 
     def test_completion_windows_use_last_event_sequence_and_count_issue_outcomes(self):
         now = 1_000_000
@@ -50,9 +46,7 @@ class BoardCompletionTests(TestCase):
             (5, '1:4', 'cancelled', now-400),
         ):
             self.ledger['events'].append(dict(sequence=sequence, issue=key, kind=kind, at=at))
-        importer = Importer(self.snapshot(), self.base/'staging')
-        importer.run()
-        views = PipelineViews(importer.store, clock=lambda: now)
+        views = PipelineViews(self.seed(), clock=lambda: now)
         board = views.factory(section='board')
         self.assertEqual({row['key'] for row in board['issues']}, {'1:5'})
         self.assertEqual({key: board['summary'][key] for key in

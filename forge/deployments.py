@@ -13,7 +13,8 @@ import time
 import uuid
 
 from .app_access import OPTIONAL_PERMISSIONS
-from .state import AtomicStore, StateError
+from .state import AtomicStore
+from .store.files import StateError
 from .factory.contracts import SHA
 from .factory.github import GitHubUnavailable
 from .factory.live import LiveUnavailable

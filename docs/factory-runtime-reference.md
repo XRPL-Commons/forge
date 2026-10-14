@@ -42,8 +42,7 @@ Existing evidence: [launcher routing](../bin/forge),
 ## Configuration
 
 Use guided Settings or the supported CLI to configure the instance. Fresh CLI installations
-initialize selected SQLite before starting services. Pre-cutover instances use
-the [explicit migration](store-migration.md) workflow. Use
+initialize selected SQLite before starting services. Use
 [fresh-host setup](cli-fresh-host.md) for a new VM, or `forge server setup` to
 configure identity and HTTPS on an existing host.
 
@@ -59,7 +58,7 @@ configure identity and HTTPS on an existing host.
 The database uses WAL with FULL durability. The launcher validates the selected
 instance, schema and qualified SQLite runtime; failure does not restore JSON
 access. SQLite qualification applies to the library linked to the service
-interpreter. Repair it through `forge migrate prepare`; do not bypass the launcher
+interpreter. Repair it through `bin/forge setup initialize`; do not bypass the launcher
 or delete `state/storage` to regain access. Never commit runtime state, App keys
 or provider authentication.
 

@@ -64,7 +64,7 @@ Managed `forge.launch` entrypoints select a qualified SQLite library and validat
 schema checksums before opening runtime adapters. Selected state has one authority;
 staging databases cannot accept normal runtime writes. Qualification checks the
 SQLite library linked to Python, not the `sqlite3` shell version; use
-`forge migrate prepare` when the managed launcher reports an unqualified runtime.
+`bin/forge setup initialize` when the managed launcher reports an unqualified runtime.
 
 Fresh installations use `forge setup new`: the client owns privileged SSH host
 operations and initializes selected SQLite before starting services. Role App
@@ -73,11 +73,10 @@ generation and expiry. Personal GitHub administration stays local; only the
 server’s own App and provider credentials reach it. See
 [fresh-host setup](docs/cli-fresh-host.md).
 
-Migration is explicit and one-way. The CLI drains workers, stops writers, captures
-private source data, validates relational/source/public-view parity, then publishes
-the selection marker. An interruption resumes the journal; there is no JSON
-switch-back. The pre-migration copy is kept only for diagnosis. See the
-[migration procedure](docs/store-migration.md).
+The migration from the JSON runtime was one-way and is complete; there is no JSON
+switch-back. Schema changes are applied with `forge migrate upgrade`, which drains
+workers and stops writers before one migration transaction. See the
+[upgrade procedure](docs/store-migration.md).
 
 Events and structured results are retained. Eligible raw job logs expire after
 30 days through bounded supervisor pruning; active work, current evidence,
