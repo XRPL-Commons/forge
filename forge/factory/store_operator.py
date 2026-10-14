@@ -673,11 +673,6 @@ class OperatorActions(Lifecycle):
         return {'request_id':row['id'],'rejected':True}
 
     def step(self,identifier):
-        with self.store.read_snapshot() as db:
-            imported=db.execute('SELECT q.issue_id FROM issue_action_requests q JOIN imported_operator_requests p ON p.request_id=q.id LEFT JOIN operator_action_authority a ON a.request_id=q.id WHERE q.id=? AND a.request_id IS NULL',(identifier,)).fetchone()
-        if imported:
-            from .operator_reconciliation import ImportedOperatorController
-            return {'request_id':identifier,**ImportedOperatorController(self.store,self.github,clock=self.clock).step(imported[0])}
         row=self._request(identifier)
         if row['status']!='pending':return {'request_id':identifier,'status':row['status']}
         try:
@@ -720,7 +715,7 @@ class OperatorActions(Lifecycle):
     def cycle(self,*,after='',limit=50):
         if not 1<=limit<=100:raise ValueError('Invalid action page size')
         with self.store.read_snapshot() as db:
-            ids=[r[0] for r in db.execute("SELECT q.id FROM issue_action_requests q LEFT JOIN operator_action_authority a ON a.request_id=q.id LEFT JOIN imported_operator_requests p ON p.request_id=q.id WHERE q.status='pending' AND (a.request_id IS NOT NULL OR p.request_id IS NOT NULL) AND q.id>? ORDER BY q.id LIMIT ?",(after,limit+1))]
+            ids=[r[0] for r in db.execute("SELECT q.id FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id WHERE q.status='pending' AND q.id>? ORDER BY q.id LIMIT ?",(after,limit+1))]
         items=[]
         for identifier in ids[:limit]:
             try:items.append(self.step(identifier))

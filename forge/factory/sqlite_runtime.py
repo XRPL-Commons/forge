@@ -90,9 +90,6 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     parts['planning'] = RepositoryPlanner(store, github, config=config, settings=settings,
         observations=parts['observations'], runner=planner_runner, clock=clock)
     parts['triage_effects'] = TriageEffects(store, github, config=config, clock=clock)
-    from .reconciliation_controller import ReconciliationController
-    parts['reconciliation'] = ReconciliationController(store, github, config=config, admission=admission,
-        observations=parts['observations'], requirements=requirements, clock=clock)
     return parts
 
 def operator_actions(root, actor_id, **kwargs):
@@ -120,7 +117,7 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
             errors = adapter.observe(parts['github'], read_commit)
             return {'items': [{'repo': row['repo'], 'error': 'deployment_observation_unavailable'} for row in errors], 'next_cursor': None}
     supervisor = SqliteSupervisor(parts['store'], **{key: parts[key] for key in
-        ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'reconciliation', 'planning', 'triage_effects')},
+        ('execution', 'observations', 'results', 'recovery', 'verification', 'merges', 'effects', 'dispatch', 'planning', 'triage_effects')},
         requirements=parts['requirements'], operators=actions, discovery=discovery, deployments=DeploymentObserver(),
         scheduling=parts['scheduling'], clock=clock, cycle_budget_seconds=parts['config']['cycle_budget_seconds'])
     return supervisor.cycle()

@@ -1,52 +1,56 @@
 """Board selectors retain lifecycle and completion-event semantics."""
-from copy import deepcopy
 import json
+from pathlib import Path
+import tempfile
 from unittest import TestCase
 from unittest.mock import Mock
 
 from forge.factory.config import validate
 from forge.factory.store_inventory import StoreInventory
 from forge.factory.store_views import PipelineViews
-from tests.legacy_rows import LegacyLedger
+from forge.store.configuration import Configuration
+from forge.store.db import Store
+from tests.historical_store_fixtures import member
 from tests.test_sqlite_runtime_support import RuntimeFixture
 
 
-class BoardCompletionTests(LegacyLedger, TestCase):
+class BoardCompletionTests(TestCase):
 
     def test_completion_windows_use_last_event_sequence_and_count_issue_outcomes(self):
         now = 1_000_000
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        store = Store.create(Path(directory.name))
+        Configuration(store).replace('factory.json', {'repositories': [{'id': 1, 'enabled': True}]}, expected_revision=0)
         states = [('merged', 'completed'), ('merged', 'completed'),
-                  ('cancelled', 'completed'), ('cancelled', 'not_planned'),
-                  ('ready', None)]
-        self.ledger['issues'] = {}
-        self.ledger['events'] = []
-        for number, (state, reason) in enumerate(states, 1):
-            item = deepcopy(self.issue)
-            item.update(key=f'1:{number}', number=number, state=state)
-            item['github_observation'] = {'at': now, 'issue': {
-                'number': number, 'title': 'Change', 'body': '',
-                'state': 'closed' if reason else 'open', 'state_reason': reason}}
-            if state == 'merged':
-                job = f'build-{number}'
-                item['candidate'] = dict(pr=10+number, head='head', base='base', policy='policy',
-                    requirements='requirements-hash', key=f'candidate-{number}',
-                    build_attempt=job, accepted_at=12, branch=f'work-{number}')
-                item['evidence'] = {'merge': {'pr': 10+number, 'sha': f'merge-{number}'}}
-                self.ledger['jobs'][job] = dict(id=job, issue_key=item['key'], role='build',
-                    cleanup=True, fenced=True, slot='slot', created_at=11, phase='cleaned',
-                    outcome='accepted', branch=f'work-{number}', target_branch='main')
-            self.ledger['issues'][item['key']] = item
-        # Imported event time can go backwards. The last committed sequence,
-        # not MAX(at), determines each unit's completion timestamp.
-        for sequence, key, kind, at in (
-            (1, '1:1', 'merged', now-100),
-            (2, '1:1', 'merged', now-2*86400),
-            (3, '1:2', 'merged', now-200),
-            (4, '1:3', 'cancelled', now-300),
-            (5, '1:4', 'cancelled', now-400),
-        ):
-            self.ledger['events'].append(dict(sequence=sequence, issue=key, kind=kind, at=at))
-        views = PipelineViews(self.seed(), clock=lambda: now)
+                  ('github_completed', 'completed'), ('github_not_planned', 'not_planned'), (None, None)]
+        with store.write() as db:
+            for number, (end, reason) in enumerate(states, 1):
+                unit, member_id = f'u{number}', f'member-{number}'
+                member(db, unit=unit, issue=f'1:{number}', number=number, identifier=member_id)
+                if reason:
+                    db.execute("UPDATE issues SET github_state='closed',state_reason=? WHERE id=?", (reason, f'1:{number}'))
+                if end == 'merged':
+                    db.execute("INSERT INTO candidates VALUES(?,?,?,?,'head','base','policy','requirements',1,'inputs',12)",
+                               (f'candidate-{number}', unit, 10+number, f'work-{number}'))
+                    db.execute('UPDATE units SET current_candidate_id=? WHERE id=?', (f'candidate-{number}', unit))
+                    db.execute("UPDATE unit_issues SET state='done',completion_issue_version=1,left_at=100,exit_reason='merged' WHERE id=?", (member_id,))
+                    db.execute("UPDATE units SET state='reviewing' WHERE id=?", (unit,))
+                    db.execute("UPDATE units SET state='merged',merge_sha=? WHERE id=?", (f'sha-{number}', unit))
+                elif end:
+                    db.execute("UPDATE unit_issues SET state='removed',left_at=100,exit_reason='closed' WHERE id=?", (member_id,))
+                    db.execute("UPDATE units SET state='closed',close_code=? WHERE id=?", (end, unit))
+            # Event time can go backwards. The last committed sequence, not
+            # MAX(at), determines each unit's completion timestamp.
+            for sequence, unit, kind, at in (
+                (1, 'u1', 'merged', now-100),
+                (2, 'u1', 'merged', now-2*86400),
+                (3, 'u2', 'merged', now-200),
+                (4, 'u3', 'closed', now-300),
+                (5, 'u4', 'closed', now-400),
+            ):
+                db.execute("INSERT INTO events(sequence,transaction_id,unit_id,kind,at,payload_json) VALUES(?,?,?,?,?,'{}')",
+                           (sequence, f'event-{sequence}', unit, kind, at))
+        views = PipelineViews(store, clock=lambda: now)
         board = views.factory(section='board')
         self.assertEqual({row['key'] for row in board['issues']}, {'1:5'})
         self.assertEqual({key: board['summary'][key] for key in

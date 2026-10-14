@@ -203,7 +203,7 @@ class GroupClaimTests(unittest.TestCase):
         owner=self.delivery.reserve_builder(self.command(),stage='planning',slot='owner',execution_fence='parent-fence',input_manifest=manifest)
         tasks=[{'key':str(i),'executor':'child','member_ids':[self.members['issue-0']],'scope':'Separate contribution '+str(i),'depends_on':[],'internalizes':[]} for i in range(2)]
         tasks.append({'key':'2','executor':'child','member_ids':[self.members['issue-1']],'scope':'Independent contribution','depends_on':[],'internalizes':[]})
-        plan=self.delivery.save_plan(self.command(),owner['job_id'],execution_fence='parent-fence',input_manifest=manifest,plan=task_plan(tasks),evidence={'verified':True})
+        plan=self.delivery.save_task_plan(self.command(),owner['job_id'],execution_fence='parent-fence',input_manifest=manifest,plan=task_plan(tasks),evidence={'verified':True})
         self.clean(owner,'parent-fence')
         children=[]
         for i in range(2):

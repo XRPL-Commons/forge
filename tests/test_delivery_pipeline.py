@@ -91,7 +91,7 @@ class DeliveryPipelineTests(unittest.TestCase):
     def capture(self, identifier, *, outcome='pass', bundle=None, classifier=None, **fields):
         job = self.jobs.job(identifier)
         report = dict(version=1, attempt=identifier, role=job['role'], outcome=outcome, summary='Complete', **fields)
-        if job.get('builder_stage') or job.get('delegation'):
+        if job.get('builder_stage') or job.get('task'):
             report.setdefault('delegation_plan', None); report.setdefault('output_commit', None)
         capture = {'result': report, 'logs': '', 'execution': {'exit_code': 0}}
         if bundle is not None: capture['worktree_bundle'] = bundle

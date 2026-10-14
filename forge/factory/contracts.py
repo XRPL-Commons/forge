@@ -493,7 +493,7 @@ def assignment_note(job):
             'For other outcomes set verification null. Consult history.verified_checks before asking again: those '
             'checks were already confirmed for this candidate. Complete your remaining review using that evidence. '
             'Never return blocked_environment or reject only because a check needs access outside the worker.')
-    if job['role'] == 'build' and (job.get('builder_stage') or job.get('delegation') or job.get('task')):
+    if job['role'] == 'build' and (job.get('builder_stage') or job.get('task')):
         from .delegation_contracts import assignment
         return assignment(base, job)
     if job['role'] == 'build':

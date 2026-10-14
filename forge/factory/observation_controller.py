@@ -2,7 +2,7 @@
 
 Collection generations are reserved before network reads. A late response cannot
 replace a newer observation. Issue facts and holds commit together. Repository readiness uses its own
-revision-bound lifecycle observation; imported reconciliation gates stay intact.
+revision-bound lifecycle observation.
 """
 import time
 import uuid
@@ -121,10 +121,6 @@ class ObservationController:
         if snapshot is None:
             return {'unit_id': unit_id, 'terminal': True}
         unit, issue, candidate, item = snapshot
-        with self.store.read_snapshot() as db:
-            reconciliation_pending = db.execute(
-                "SELECT 1 FROM unit_gates WHERE unit_id=? AND code='legacy_reconciliation' AND resolved_at IS NULL",
-                (unit_id,)).fetchone() is not None
         generation = self._generation(issue)
         remote, requirements = self.github.issue(item)
         if (remote.get('number') != item['number'] or 'pull_request' in remote
@@ -180,10 +176,6 @@ class ObservationController:
         proof = {'issue_version': issue['version']}
         if selected:
             pr = remote_pr if remote_pr is not None else self._read_pr(item, selected)
-            if reconciliation_pending:
-                # Collection can finish without accepting an imported candidate,
-                # its execution inputs, or any migration/readiness gate.
-                return {'unit_id': unit_id, 'observed': True, 'pending': 'legacy_reconciliation'}
             exact_head = pr.get('head', {}).get('sha') == selected['head_oid']
             exact_base = pr.get('base', {}).get('sha') == selected['base_oid']
             if pr.get('merged') is True:
@@ -213,8 +205,6 @@ class ObservationController:
                     reason = 'base_changed' if not exact_base else 'policy_changed'
                     return {'unit_id': unit_id, 'observed': True, **self.commands.invalidate_candidate(self._command(unit),
                         selected['id'], reason=reason, evidence=proof)}
-        if reconciliation_pending:
-            return {'unit_id': unit_id, 'observed': True, 'pending': 'legacy_reconciliation'}
         if remote['state'] == 'closed' and remote.get('state_reason') in {'completed', 'not_planned', 'duplicate'}:
             if unit['delivery_approved']:
                 with self.store.read_snapshot() as db:

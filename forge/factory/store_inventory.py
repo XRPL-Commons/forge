@@ -295,7 +295,10 @@ class DiscoveryController:
         with self.store.read_snapshot() as db:
             rows = db.execute("SELECT i.id,i.github_number,r.id AS repo_id,r.full_name FROM issues i JOIN repositories r ON r.id=i.repository_id "
                 "WHERE i.id>? AND r.enabled=1 AND i.github_state='open' AND EXISTS(SELECT 1 FROM json_each(i.labels_json) l WHERE l.value=?) "
-                'AND NOT EXISTS(SELECT 1 FROM unit_issues m WHERE m.issue_id=i.id) '
+                # A delivery closed by the import retirement (migration 041) does
+                # not count: its issue is admitted fresh like a new one.
+                "AND NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.issue_id=i.id "
+                "AND u.close_code IS NOT 'import_superseded') "
                 'AND NOT EXISTS(SELECT 1 FROM issue_discovery_observations d WHERE d.issue_id=i.id '
                 'AND d.revision_id=i.current_revision_id AND d.retry_after>?) '
                 'AND NOT EXISTS(SELECT 1 FROM imported_operator_requests p JOIN issue_action_requests q ON q.id=p.request_id '

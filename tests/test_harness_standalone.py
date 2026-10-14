@@ -12,7 +12,7 @@ class StandaloneHarnessTests(unittest.TestCase):
 
     def test_planning_schema_builds_without_the_package(self):
         harness = runpy.run_path(str(HARNESS))
-        note = {'id': 'a', 'role': 'build', 'builder_stage': 'planning', 'input_manifest': {'manifest_version': 1}}
+        note = {'id': 'a', 'role': 'build', 'builder_stage': 'planning', 'input_manifest': {'manifest_version': 2}}
         schema = harness['schema'](note)
         self.assertEqual(schema['properties']['outcome']['enum'], list(PLANNING_OUTCOMES))
 

@@ -9,16 +9,13 @@ import json
 # The -> operator returns JSON text: absent keys are SQL NULL, while explicit
 # JSON null is the text "null". Keep this distinction and JSON value types.
 EVENT_METADATA_SQL = """e.kind,e.at,
- CASE WHEN e.kind='legacy_event' THEN e.payload_json -> '$.legacy.at' END AS at_json,
- CASE WHEN e.kind='legacy_event' THEN e.payload_json -> '$.legacy.kind' END AS kind_json,
- e.payload_json -> (CASE WHEN e.kind='legacy_event' THEN '$.legacy.provider' ELSE '$.provider' END) AS provider_json,
- e.payload_json -> (CASE WHEN e.kind='legacy_event' THEN '$.legacy.model' ELSE '$.model' END) AS model_json"""
+ e.payload_json -> '$.provider' AS provider_json,
+ e.payload_json -> '$.model' AS model_json"""
 
 
 def event_metadata(row):
-    legacy = row['kind'] == 'legacy_event'
-    result = {} if legacy else {'at': row['at'], 'kind': row['kind']}
-    for field in (('at', 'kind', 'provider', 'model') if legacy else ('provider', 'model')):
+    result = {'at': row['at'], 'kind': row['kind']}
+    for field in ('provider', 'model'):
         value = row[field + '_json']
         if value is not None:
             result[field] = json.loads(value)

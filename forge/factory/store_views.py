@@ -67,20 +67,19 @@ def available_actions(issue, unit, *, cleanup=False, pending=False):
         return ['assign_reviewer', 'pause']
     if reason == 'verification_human':
         return ['pause']  # Explicit verification has its own attributed endpoint.
-    if reason in {'membership_decision', 'legacy_reconciliation'}:
+    if reason == 'membership_decision':
         return []
     return ['pause'] if cleanup else ['pause', 'backlog']
 
 
 def _event(row, fields=('at','kind','reason')):
-    payload=json.loads(row['payload_json'])
-    source=payload.get('legacy',{}) if row['kind']=='legacy_event' else {**payload,'at':row['at'],'kind':row['kind']}
+    source={**json.loads(row['payload_json']),'at':row['at'],'kind':row['kind']}
     return {key:source[key] for key in fields if key in source}
 
 
-# Actual terminal event time, including normalized imported events. Observation
-# timestamps can advance after completion and cannot reorder completed cards.
-COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND (e.kind IN ('merged','closed','dissolved') OR (e.kind='legacy_event' AND json_extract(e.payload_json,'$.legacy_kind') IN ('merged','cancelled'))) ORDER BY e.sequence DESC LIMIT 1),0)"
+# Actual terminal event time. Observation timestamps can advance after
+# completion and cannot reorder completed cards.
+COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND e.kind IN ('merged','closed','dissolved') ORDER BY e.sequence DESC LIMIT 1),0)"
 
 
 # Every completed card already has a terminal-unit membership. Restrict the
@@ -216,7 +215,6 @@ class PipelineViews:
             from ..store.verification_requests import gate_details_in
             verification=(verification[0],gate_details_in(db,verification[0]))
         environment_block=gates.get('environment',(None,{}))[1] or {}
-        merge_block=gates.get('merge_checks',(None,{}))[1] or {}
         approval_gate=gates.get('approval_required',(None,{}))[1] or {}
         approval=None
         if candidate and (approval_gate or verification and not verification[1].get('ci')):
@@ -231,7 +229,7 @@ class PipelineViews:
         label_events=[dict(label=r['label'],login=r['login'],at=r['applied_at']) for r in db.execute('SELECT label,login,applied_at FROM issue_label_attributions WHERE issue_id=? AND labels_hash=? ORDER BY position LIMIT 100',(issue_id,digest(sorted(issue['labels']))))]
         held_by=[event for event in label_events if event['label'] in config['hold_labels'] and event['label'] in issue['labels']] or None
         display=db.execute('SELECT source_content_hash FROM revision_presentation WHERE revision_id=?',(issue['current_revision_id'],)).fetchone()
-        checked=context['last_observed_at'] if context and ('legacy_reconciliation' in gates or unit['state'] in {'merged','closed','dissolved'}) else issue['observed_at'] if unit else None
+        checked=context['last_observed_at'] if context and unit['state'] in {'merged','closed','dissolved'} else issue['observed_at'] if unit else None
         prerequisites=self._prerequisites(db,issue,unit_id)
         blocked_dependencies=[row['number'] for row in prerequisites
                               if not row['complete'] and row['reason']!='prerequisite_unobserved' and row['repository']==issue['repository'].lower()]
@@ -279,7 +277,7 @@ class PipelineViews:
             **({'forge_problem_report': report_draft} if report_draft is not None else {}),
             approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
             verification_request={**verification_view,'can_confirm':fresh and reason=='verification_human'} if verification_view else None,
-            approvals=approvals, last_checked=checked, merge_blocker={'reason':merge_block.get('reason') or wording} if merge_block else None,
+            approvals=approvals, last_checked=checked,
             environment={'choice':json.loads(environment['choice_json'] or 'null') if environment else None,
                          'override':json.loads(environment['override_json'] or 'null') if environment else None,
                          'full_available':'full' in config.get('environment_tiers',{}), 'editable':fresh and not cleanup and not pending and issue['github_state']=='open'},
@@ -324,12 +322,6 @@ class PipelineViews:
         operator = operator_status(issue, bool(active))
         context = (reads.unit_contexts.get(unit_id) if reads is not None else db.execute('SELECT summary_json,last_observed_at FROM unit_context WHERE unit_id=?', (unit_id,)).fetchone()) if unit else None
         historical = bool(unit and unit['state'] in {'merged', 'closed', 'dissolved'})
-        if context and not historical:
-            # Match the same bounded applicable gate collection as issue views.
-            historical = any(gate['code'] == 'legacy_reconciliation' for gate in db.execute(
-                'SELECT code FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) '
-                'AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',
-                (unit_id, life['candidate_id'], life['member_id'])))
         checked = context['last_observed_at'] if context and historical else issue['observed_at'] if unit else None
         prerequisites = self._prerequisites(db, issue, unit_id, reads=reads)
         blocked = [row['number'] for row in prerequisites if not row['complete'] and
@@ -377,7 +369,7 @@ class PipelineViews:
             'reason':row['explanation'] if reason else None,'failure_count':(row['attempts'] or {}).get('failed',0),
             'candidate':dict(pr=candidate['pull_number'],head=candidate['head_oid'],merge_commit=unit['merge_sha']) if candidate else None,
             'last_summary':row['_last_summary'],'history':history,'created_at':unit['created_at'],'last_observed':row['last_checked'],
-            'hold_kind':None if transitional(reason) else reason,'transition':transition,'merge_gate_kind':reason if reason in {'merge_checks','approval_required','verification_ci','verification_human'} else None,
+            'hold_kind':None if transitional(reason) else reason,'transition':transition,'merge_gate_kind':reason if reason in {'approval_required','verification_ci','verification_human'} else None,
             'attention_kind':attention,'closed_as':None if unit['state']=='merged' else row['state_reason'],'reviewers_requested':reviewer_request_in(db,unit['current_candidate_id']),
             'attempts':[{**{key:job[key] for key in ('id','role','outcome','phase','created_at')},'started_at':None} for job in row['_jobs']],
             'blocked_dependencies':row['_blocked_dependencies'],'deployed':deployed,'deploy_failed':failed,'completed_at':completed_at or None}
