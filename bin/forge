@@ -8,6 +8,8 @@ Usage: bin/forge COMMAND [ARGS...]
 
 Commands:
   setup     Install or configure this host (services, logins, UI)
+            Subcommands: install, login, check, status, full-environment
+            Run bin/forge setup --help for options
   update    Update the installed runtime from this checkout
   service   Run the setup supervisor and factory cycle (systemd entry point)
   factory   Inspect or operate the factory controller

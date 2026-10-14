@@ -87,15 +87,43 @@ def migration_commands():
     return result
 
 
+def verb(commands, name, **options):
+    options.setdefault('description', options.get('help'))
+    return commands.add_parser(name, **options)
+
+
 def parser():
     p = argparse.ArgumentParser(prog='forge', description='Install Forge factories and connect local agents.')
     p.add_argument('--json', action='store_true', help='Structured output; never opens a browser or prompts')
     sub = p.add_subparsers(dest='command', required=True)
+    install = sub.add_parser('install', help='Save a multi-repository interview, preflight, and resume installation')
+    install.add_argument('--ssh', help='Saved SSH destination')
+    install.add_argument('--intent-file', help='JSON interview inputs; contains no secrets')
+    action = install.add_mutually_exclusive_group()
+    action.add_argument('--preflight', action='store_true', help='Re-observe prerequisites without remote writes')
+    action.add_argument('--apply', action='store_true', help='Apply the saved intent after a fresh successful preflight')
+    action.add_argument('--resume', action='store_true', help='Re-observe saved stages and resume the same intent')
+    action.add_argument('--status', action='store_true', help='Read the local stage journal')
+    install.add_argument('--waive', action='append', default=[], help='Explicitly waive a finding marked waivable; repeat for each ID')
+    install.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    version = sub.add_parser('version', help='Show this client revision and compare an installed server')
+    version.add_argument('--ssh', help='Saved SSH destination; read the actual installed server revision')
+    version.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    update = sub.add_parser('self-update', help='Install a pinned client revision atomically')
+    update.add_argument('--revision', help='Full commit SHA; defaults to main resolved once')
+    update.add_argument('--adopt', action='store_true', help='Replace a foreign ~/.local/bin/forge after verifying the replacement; preserve a backup')
+    update.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    account = sub.add_parser('account', help='Connect or renew a coding account, including on active factories').add_subparsers(dest='account_command', required=True)
+    login = account.add_parser('login', help='Sign in to a provider on the selected server')
+    login.add_argument('provider', choices=('codex', 'claude', 'grok'))
+    login.add_argument('--ssh', required=True)
+    login.add_argument('--kind', choices=('browser', 'api_key', 'token'), default='browser')
+    login.add_argument('--secret-stdin', action='store_true', help='Read the provider credential privately from stdin')
+    login.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
     for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
-        command = fresh.add_parser(action, aliases=['sign-in'] if action == 'identity' else [],
-                                   help='Walk through GitHub sign-in setup' if action == 'identity' else
-                                   'Guided fresh-host installation' if action == 'new' else action.capitalize() + ' a saved host installation')
+        command = verb(fresh, action, aliases=['sign-in'] if action == 'identity' else [],
+                                   help={'new':'Walk through installation on a fresh VM', 'plan':'Observe the host and save a pinned installation plan', 'apply':'Apply the saved host installation plan', 'status':'Read saved installation progress', 'resume':'Resume the saved installation without repeating completed stages', 'host-key':'Discover an SSH fingerprint for you to verify', 'network':'Configure private Tailscale HTTPS access', 'identity':'Configure GitHub operator sign-in'}[action])
         command.add_argument('--ssh', help='SSH account and destination; verified host key and root or noninteractive sudo required')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
         command.add_argument('--wait', type=int, default=0, help='Watch progress for at most 0–600 seconds')
@@ -117,7 +145,7 @@ def parser():
             command.add_argument('--host-key', help='Verified ED25519 SHA256 fingerprint for this fresh VM')
             command.add_argument('--new-run', action='store_true', help='Archive the local run and plan again after rebuilding the VM; never wipes the host')
     for action in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
-        command = fresh.add_parser(action, help='Continue initial setup through the first verified merge' if action == 'continue' else action.capitalize() + ' initial factory setup')
+        command = verb(fresh, action, help={'continue':'Resume guided setup from its saved step', 'inspect':'Read factory setup, App and account status', 'apps':'Register or install the selected GitHub role App', 'account':'Connect or renew a coding account', 'repository':'Prepare and verify the initial repository', 'check':'Verify accounts, isolation and repository readiness', 'start':'Start the factory after successful verification', 'pilot':'Track an existing issue through a verified merge'}[action])
         command.add_argument('--ssh', required=True, help='The saved administrative SSH destination')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
         command.add_argument('--wait', type=int, default=0, help='Watch for at most 0–600 seconds')
@@ -151,7 +179,7 @@ def parser():
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
     for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
-        command = repo.add_parser(action)
+        command = verb(repo, action, help={'inspect':'Read repository readiness and effective policy', 'plan':'Preview repository preparation without writes', 'setup':'Prepare repository access and verify rules', 'verify':'Refresh access and verify effective branch protection', 'enable':'Enable automation after verification', 'disable':'Disable repository automation', 'activity':'Read repository activity', 'issues':'List repository issues', 'issue':'Read one issue', 'delivery':'Read issue delivery and task history', 'fix-rules':'Print narrow local branch-rule repair commands', 'policy':'Read or set the repository merge policy'}[action])
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
@@ -212,6 +240,20 @@ def parser():
 
 
 def execute(args):
+    if args.command == 'install':
+        from .installation import execute as install
+        return install(args)
+    if args.command == 'version':
+        from .version import report
+        return report(args.ssh)
+    if args.command == 'self-update':
+        from .version import update
+        return update(revision=args.revision, adopt=args.adopt)
+    if args.command == 'account':
+        from .factory_setup import execute as account_login
+        args.setup_command = 'account'
+        args.apply = True
+        return account_login(args)
     if args.command == 'setup':
         if args.setup_command in ('continue', 'inspect', 'apps', 'account', 'repository', 'check', 'start', 'pilot'):
             from .factory_setup import execute as setup_stage, wizard as finish_setup
@@ -246,7 +288,9 @@ def execute(args):
         from .delivery import commands as delivery_commands
         from .planning import commands as planning_commands
         from .install import schemas
-        return {'commands': ['setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        from .installation import schemas as installation_schemas
+        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+                'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),
                 'migration_commands': migration_commands(),
@@ -335,6 +379,14 @@ def main(argv=None):
                 print(fix['command'] or '\n'.join(str(i + 1) + '. ' + step for i, step in enumerate(fix['steps'])))
             if not result['fixes']:
                 print('No failing review rules in the latest Forge observation.')
+            return 0
+        if args.command == 'install' and not args.json and result.get('status') == 'preflight':
+            for row in result['items']:
+                print(row['status'].replace('_', ' ').ljust(23) + row['id'] + ': ' + row['detail'])
+                if row.get('command'):
+                    import shlex
+                    print('  ' + shlex.join(row['command']))
+            print('Saved. Apply with: forge install --ssh ' + (args.ssh or result['host']['ssh']) + ' --apply')
             return 0
         if args.command == 'skill' and not args.json:
             print(result['skill'])

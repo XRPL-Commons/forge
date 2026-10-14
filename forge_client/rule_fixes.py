@@ -15,8 +15,9 @@ def ruleset_command(repo, source, app_id):
     if path is None:
         return ''
     expression = ('if (.bypass_actors | type) != "array" or (.rules | type) != "array" or .target != "branch" '
-                  'then error("Full branch ruleset and bypass list required") else '
-                  '{name,target,enforcement,conditions,rules,bypass_actors: '
+                  'then error("Full branch ruleset and bypass list required") '
+                  'elif any(.rules[]; .type == "required_signatures") then error("Preserve signature enforcement; separate the review rule first") else '
+                  '{bypass_actors: '
                   '(.bypass_actors + (if any(.bypass_actors[]; .actor_type == "Integration" and .actor_id == '
                   + str(app_id) + ') then [] else [{actor_type:"Integration",actor_id:' + str(app_id)
                   + ',bypass_mode:"pull_request"}] end))} end')

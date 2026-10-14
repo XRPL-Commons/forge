@@ -44,7 +44,7 @@ class InstallationSetup:
             return proof(self.root, **params)
         if action == 'status':
             return self.view()
-        require(data['phase'] == 'setup', 'setup_complete', 'Factory is active; use the scoped repository commands.')
+        require(data['phase'] == 'setup' or action == 'account' and data['phase'] == 'active', 'setup_complete', 'Factory is active; use the scoped repository commands.')
         if action == 'app':
             return self.handoff.begin(setup_id=request['setup_id'], actor_id=request['actor_id'],
                                       generation=request['generation'], **params)
@@ -75,7 +75,17 @@ class InstallationSetup:
         elif action == 'account':
             require(params['kind'] in ('api_key', 'token') and isinstance(params['secret'], str)
                     and 16 <= len(params['secret']) <= 16384, 'invalid_account', 'Enter the selected provider credential privately.')
-            self.setup.connect(params['provider'], **{params['kind']: params['secret']})
+            from .factory.control import controller_lock
+            from .sqlite_identity import identity_effect_lock
+            from .store.runtime import writable
+            # Match terminal login serialization before changing an active runtime.
+            with identity_effect_lock(self.root), controller_lock(self.root, timeout=120):
+                self.handoff.operator(request['actor_id'])
+                require(self.setup.read()['generation'] == request['generation'], 'setup_changed')
+                self.setup.connect(params['provider'], **{params['kind']: params['secret']})
+                with self.store.write() as db:
+                    writable(db)
+                    db.execute('DELETE FROM provider_cooldowns WHERE provider=?', (params['provider'],))
         else:
             self.setup.queue(action, params['revision'])
         return self.view()

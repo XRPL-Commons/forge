@@ -4,6 +4,7 @@ set -eu
 command -v python3 >/dev/null 2>&1 || { echo 'Install Python 3.10+ first, then rerun this installer.' >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo 'Install Git first, then rerun this installer.' >&2; exit 1; }
 exec python3 - "$@" <<'PY'
+import argparse
 import fcntl
 import json
 import os
@@ -51,19 +52,30 @@ def command(argv):
                           stdin=subprocess.DEVNULL, env=environment, timeout=600).stdout.strip()
 
 try:
-    arguments = sys.argv[1:]
-    if arguments not in ([], ['--local']):
-        raise ValueError('Usage: sh install-cli.sh [--local]. Run --local from the cloned Forge repository.')
+    parser = argparse.ArgumentParser(description='Install the Forge CLI atomically; server setup is a separate step.')
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--local', action='store_true', help='Install the clean source checkout in the current directory')
+    selection.add_argument('--revision', help='Install this exact 40-character commit SHA')
+    parser.add_argument('--adopt', action='store_true', help='Replace an existing unmanaged forge command, preserving a backup')
+    arguments = parser.parse_args()
+    if arguments.revision and not re.fullmatch('[a-f0-9]{40}', arguments.revision):
+        raise ValueError('Use a full 40-character commit SHA for --revision.')
     private(install_root); private(state_root)
     lock = os.open(install_root / 'install.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    if executable.exists() or executable.is_symlink():
+    original = executable.lstat() if executable.exists() or executable.is_symlink() else None
+    foreign = False
+    if original:
         if not executable.is_symlink() or not executable.resolve().is_relative_to(install_root.resolve()):
-            raise ValueError('Another forge executable exists at ~/.local/bin/forge. Keep it or remove it explicitly before using this installer.')
+            if not arguments.adopt:
+                raise ValueError('Another forge executable exists at ~/.local/bin/forge. Use --adopt to replace it after verification and preserve a backup.')
+            if not executable.is_symlink() and not executable.is_file():
+                raise ValueError('The existing forge command must be a regular file or symlink.')
+            foreign = True
     attempt = {'version': 1, 'id': uuid.uuid4().hex, 'started_at': started, 'status': 'installing'}
     record = state_root / ('cli-install-' + attempt['id'] + '.json')
     write(record, attempt)
-    if arguments == ['--local']:
+    if arguments.local:
         source = Path.cwd()
         if not (source / 'forge_client/cli.py').is_file():
             raise ValueError('Run --local from the cloned Forge repository.')
@@ -71,6 +83,9 @@ try:
         if command(['git', 'status', '--porcelain', '--untracked-files=no']):
             raise ValueError('Commit tracked changes before installing a pinned local client.')
         requirement = str(source)
+    elif arguments.revision:
+        commit = arguments.revision
+        requirement = 'git+' + repository + '@' + commit
     else:
         resolved = command(['git', 'ls-remote', repository, 'refs/heads/main'])
         if not re.fullmatch('[a-f0-9]{40}\trefs/heads/main', resolved):
@@ -97,6 +112,15 @@ try:
     executable.parent.mkdir(parents=True, exist_ok=True)
     temporary = executable.parent / ('.forge-' + attempt['id'])
     temporary.symlink_to(installed)
+    current = executable.lstat() if executable.exists() or executable.is_symlink() else None
+    if current != original:
+        temporary.unlink()
+        raise ValueError('The existing forge command changed during installation; it was preserved.')
+    if foreign:
+        backup = install_root / ('adopted-forge-' + attempt['id'])
+        shutil.copy2(executable, backup, follow_symlinks=False)
+        attempt['adopted_backup'] = str(backup)
+        write(record, attempt)
     os.replace(temporary, executable)
     attempt.update(status='installed', installed_at=time.time())
     write(record, attempt)

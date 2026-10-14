@@ -88,6 +88,25 @@ class CLIInstallerTests(unittest.TestCase):
         self.assertIn('Another forge executable', errors)
         self.assertFalse(self.commands)
 
+    def test_explicit_adoption_preserves_foreign_command_and_pins_revision(self):
+        executable = self.home / '.local/bin/forge'
+        executable.parent.mkdir(parents=True)
+        executable.write_text('foreign command')
+        status, _, errors = self.install(['--adopt', '--revision', COMMIT])
+        self.assertEqual(status, 0, errors)
+        self.assertTrue(executable.is_symlink())
+        backups = list((self.home / '.local/share/forge-cli').glob('adopted-forge-*'))
+        self.assertEqual([path.read_text() for path in backups], ['foreign command'])
+        self.assertFalse(any('ls-remote' in command for command in self.commands))
+
+    def test_failed_adoption_keeps_foreign_command(self):
+        executable = self.home / '.local/bin/forge'
+        executable.parent.mkdir(parents=True)
+        executable.write_text('foreign command')
+        self.fail = 'pip'
+        self.assertEqual(self.install(['--adopt'])[0], 1)
+        self.assertEqual(executable.read_text(), 'foreign command')
+
     def test_failed_replacement_keeps_existing_command_and_records_failure(self):
         self.assertEqual(self.install()[0], 0)
         executable = self.home / '.local/bin/forge'

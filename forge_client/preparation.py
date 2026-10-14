@@ -11,10 +11,12 @@ from .contracts import SetupError, baseline, connection_identity, digest, fields
 
 
 class Preparation:
-    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None):
+    def __init__(self, github, forge, *, instance, generation, apps, clock=time.time, progress=None, repair='apply-if-admin'):
         self.github, self.forge, self.clock = github, forge, clock
         self.instance, self.generation, self.apps = instance, generation, deepcopy(apps)
         self.progress = progress or (lambda phase, step: None)
+        require(repair in ('apply-if-admin', 'print-commands', 'skip'))
+        self.repair = repair
 
     def _authorize(self, target, capability):
         self.forge.authorize(self.instance, self.generation,
@@ -56,17 +58,26 @@ class Preparation:
                     'Enable a GitHub plan that supports private-repository rulesets, then rerun setup, '
                     'or defer this repository. Its visibility will not be changed by Forge.'})
             else:
-                if readiness['protection_status'] == 'needs_setup':
-                    require(value['baseline']['branch'] == target['branch'], 'default_branch_changed',
-                            'Forge and GitHub observed different default branches; verify again.')
-                    collisions = [r for r in inventory
-                                  if r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']]
-                    if collisions:
-                        blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
+                from .rules import inspect
+                repair = inspect(self.github, target, self.apps['controller']['app_id'])
+                if self.repair == 'apply-if-admin':
+                    steps.extend(repair['steps'])
+                elif repair['steps']:
+                    blockers.append({'code': 'rules_repair_not_authorized', 'policy': self.repair,
+                                     'reason': 'Review forge repo fix-rules commands or authorize repair in a new plan.'})
+                blockers.extend(repair['blockers'])
+                if not repair['steps'] and not repair['blockers']:
+                    if readiness['protection_status'] == 'needs_setup':
+                        require(value['baseline']['branch'] == target['branch'], 'default_branch_changed',
+                                'Forge and GitHub observed different default branches; verify again.')
+                        collisions = [r for r in inventory
+                                      if r['name'] == baseline(target['branch'], self.apps['controller']['app_id'])['name']]
+                        if collisions:
+                            blockers.append({'code': 'ruleset_conflict', 'ruleset_ids': [r['id'] for r in collisions]})
+                        else:
+                            steps.append({'kind': 'github.ruleset.ensure_baseline'})
                     else:
-                        steps.append({'kind': 'github.ruleset.ensure_baseline'})
-                else:
-                    blockers.append({'code': 'protection_unverified'})
+                        blockers.append({'code': 'protection_unverified'})
         if steps and not target['admin']:
             blockers.append({'code': 'github_admin_required'})
         created_at = self.clock()
@@ -119,6 +130,14 @@ class Preparation:
                                     'kind': 'open_url',
                                     'url': self.github.installation_url(target, step['installation_id']),
                                     'reason': 'Check this App installation and grant the repository access.'}]}
+            elif step['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass'):
+                from .rules import apply as repair
+                try:
+                    self.progress('started', step)
+                    repair(self.github, target, step, self.apps['controller']['app_id'])
+                except SetupError as error:
+                    return {'status': 'write_unconfirmed', 'code': error.code, 'completed': completed,
+                            'next_actions': [{'kind': 'forge.repositories.verify'}]}
             else:
                 require(step['kind'] == 'github.ruleset.ensure_baseline')
                 require(fresh['baseline']['branch'] == target['branch'], 'default_branch_changed')
