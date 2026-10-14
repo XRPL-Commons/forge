@@ -154,7 +154,7 @@ class ImportSupersededMigrationTests(unittest.TestCase):
         store = storage.Store.create(self.root)
         with store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM units").fetchone()[0], 0)
-            self.assertEqual(db.execute("SELECT value FROM store_metadata WHERE key='schema_version'").fetchone()[0], '41')
+            self.assertEqual(db.execute("SELECT value FROM store_metadata WHERE key='schema_version'").fetchone()[0], str(storage._migrations()[-1][0]))
 
 
 class SupersededDiscoveryTests(RuntimeFixture):
@@ -234,9 +234,9 @@ class PendingMigrationLaunchTests(unittest.TestCase):
                                    run=lambda *args, **kwargs: SimpleNamespace(returncode=0), quiet=lambda: None)
             with patch('forge.store.migration.upgrade.package_version', return_value='tool'):
                 upgrader = Upgrade(host)
-                self.assertEqual(upgrader.status()['pending_migrations'], [41])
+                self.assertEqual(upgrader.status()['pending_migrations'], [version for version, _, _ in storage._migrations() if version >= 41])
                 result = upgrader.run(revision='b' * 40, apply=True)
-            self.assertEqual((result['status'], result['current_schema'], result['pending_migrations']), ('upgraded', 41, []))
+            self.assertEqual((result['status'], result['current_schema'], result['pending_migrations']), ('upgraded', storage._migrations()[-1][0], []))
             with selected(root).read_snapshot() as db:
                 self.assertEqual(db.execute("SELECT close_code FROM units WHERE id='imported'").fetchone()[0], 'import_superseded')
             self.assertEqual(launch().returncode, 0)
