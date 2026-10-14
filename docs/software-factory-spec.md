@@ -248,9 +248,8 @@ is explicit and bound to numeric repository identity. Multiple installations per
 role support repositories across accounts. Credentials are referenced, not stored
 in editable source/configuration; workers never inherit App private keys.
 
-After SQLite selection, configuration is owned by the selected database and its
-typed revision checks. UI, CLI and supervisor adapters use that same authority;
-legacy JSON files cannot switch it back. Repository merge policy is keyed by
+Configuration is owned by the selected database and its typed revision checks.
+UI, CLI and supervisor adapters use that same authority. Repository merge policy is keyed by
 immutable GitHub repository ID, defaults to `human`, and changes through an
 explicitly authorized compare-and-set operation. Settings displays it read-only.
 Defaults/examples remain portable and disabled; private credentials stay outside

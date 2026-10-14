@@ -32,8 +32,12 @@ Then, as the service account (`sudo -iu forge` is fine):
 
 ```sh
 cd ~/forge
+bin/forge setup initialize
 bin/forge setup
 ```
+
+`bin/forge setup initialize` creates the private SQLite store every Forge service
+runs on; the services refuse to start without it.
 
 `bin/forge setup install` prepares the host without offering coding-account logins.
 A first install builds the runner image and the UI; it took about three minutes on
@@ -109,14 +113,8 @@ shows the difference and asks, or stops unless you pass `--yes`. A failed build 
 canary leaves everything in use unchanged. An interrupted update converges when
 rerun.
 
-Before SQLite activation, a legacy installation can roll back by checking out
-the previous revision (printed by update and recorded in `<runtime-root>/host.json`)
-and running `bin/forge update --no-pull`. Earlier images and UI releases are reused
-when still present, and rebuilt otherwise.
-
 Use a compatible forward update. The installation keeps its history and update
-records in SQLite; switching back to the JSON runtime or an older incompatible
-source is unsupported. Schema changes use [`forge migrate upgrade`](store-migration.md).
+records in SQLite; switching back to an older incompatible source is unsupported. Schema changes use [`forge migrate upgrade`](store-migration.md).
 `bin/forge setup install` on an installed host performs the same reconciliation
 without fetching.
 
@@ -165,6 +163,7 @@ have mode 0700. Existing host settings and credentials are preserved when setup
 is repeated. Reset is an explicit separate operation in the UI.
 
 ```sh
+bin/forge setup initialize              # Create the SQLite store (first install only)
 bin/forge setup install                 # Prepare or converge the host without interactive login
 bin/forge setup login codex             # Device-code login
 bin/forge setup login claude            # Claude Code's browser/code login

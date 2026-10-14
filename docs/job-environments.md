@@ -78,17 +78,8 @@ scan evidence; they no longer force a database worker on every issue.
 Issue-specific choices take precedence. Database defaults require a qualified
 full environment on the host.
 
-The terminal commands remain available for administrators:
-
-```sh
-bin/forge factory environment-probe --root /path/to/forge-runtime --target REPOSITORY_ID
-bin/forge factory environment-confirm --root /path/to/forge-runtime \
-  --target REPOSITORY_ID --revision REVISION_FROM_PROBE
-```
-
-The first command refreshes evidence. The second saves an optional repository
-default. Neither executes repository code. The probe is bounded to 60 files of
-64 KiB each. An incomplete or oversized scan is reported; it is not treated as
+A scan refreshes evidence; saving a default records it. Neither executes
+repository code. The probe is bounded to 60 files of 64 KiB each. An incomplete or oversized scan is reported; it is not treated as
 proof that no databases are required.
 
 Inside a full-tier job, run services and tests in the same tool invocation:
