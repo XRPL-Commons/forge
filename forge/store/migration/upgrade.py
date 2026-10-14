@@ -110,14 +110,23 @@ class Upgrade:
             value = self.read() if self.path.exists() else None
             previous = value
             source_qualified = False
+            advanced = None
             if value and value['source_revision'] != revision:
                 if value['stage'] == 'complete':
                     # Completion releases source, service and drain ownership.
                     # A later application release can be the next upgrade's base.
                     previous = None
-                elif self.host.identity() not in {value['previous_revision'], value['source_revision']}:
-                    # Forward repair still belongs to the unfinished operation.
-                    raise MigrationError('upgrade_source_changed')
+                else:
+                    observed = self.host.identity()
+                    if observed not in {value['previous_revision'], value['source_revision']}:
+                        # An application update may have advanced the checkout
+                        # after the schema committed. Re-enter full maintenance
+                        # only after proving both legs of the forward history.
+                        if value['stage'] != 'reconciling':
+                            raise MigrationError('upgrade_source_changed')
+                        self.host.qualify_advanced_source(value['source_revision'], observed)
+                        advanced = dict(source_revision=value['source_revision'],
+                                        stage=value['stage'], observed_revision=observed)
                 value = None
             if value:
                 if value['source_revision'] != revision or value['tool_version'] != tool_version:
@@ -128,12 +137,16 @@ class Upgrade:
                     return {'status': 'upgraded', **self.status()}
             else:
                 plan = self.status()
+                if advanced and plan['source_revision'] != advanced['observed_revision']:
+                    raise MigrationError('upgrade_source_changed')
                 self.host.prepare_source_update(plan['source_revision'], revision, tool_version, **source_options)
                 source_qualified = True
                 value = dict(protocol=1, root=str(self.root), source=str(self.host.source), authorized=True,
                              previous_revision=plan['source_revision'], source_revision=revision,
                              tool_version=tool_version, services=sorted(set(self.host.units()) | set(previous['services'] if previous else [])),
                              started_at=time.time())
+                if advanced:
+                    value['superseded'] = advanced
                 from .drain import Drain
                 Drain(self, store).start(value, previous)
             if value['stage'] == 'reconciling' and self.host.units() and self.blockers(store):

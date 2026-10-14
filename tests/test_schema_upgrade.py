@@ -102,9 +102,11 @@ class UpgradeHostTests(SchemaUpgradeTests):
         def run(*args, **kwargs):
             self.calls.append(('update',))
             return SimpleNamespace(returncode=int(self.fail_update))
+        def qualify_advanced(*args):
+            raise MigrationError('upgrade_source_changed')
         self.host = SimpleNamespace(root=self.root, source=self.root/'source', identity=lambda:self.current,
             units=lambda:list(self.active), prepare_source_update=lambda *args,**kwargs:None, install_source_update=install,
-            command=command, run=run, quiet=lambda:None)
+            command=command, run=run, quiet=lambda:None, qualify_advanced_source=qualify_advanced)
         self.upgrader = Upgrade(self.host)
         self.addCleanup(patch.stopall)
         patch('forge.store.migration.upgrade.package_version', return_value='tool').start()
@@ -258,6 +260,77 @@ class UpgradeHostTests(SchemaUpgradeTests):
         with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
             self.upgrader.run(revision='b'*40, apply=True)
         self.assertEqual(self.calls, [])
+
+    def advanced_checkout(self):
+        self.runtime(enabled=True, model='original')
+        self.fail_update = True
+        with self.assertRaisesRegex(MigrationError, 'upgrade_host_update_failed'):
+            self.upgrader.run(revision='b'*40, apply=True)
+        self.fail_update = False
+        self.current = 'c'*40
+        self.active = ['forge-supervisor.service', 'forge-extra.timer']
+        self.calls.clear()
+
+    def test_advanced_checkout_reenters_maintenance_and_preserves_drain_ownership(self):
+        self.advanced_checkout()
+        with patch.object(self.host, 'qualify_advanced_source') as qualify, \
+                patch.object(self.host, 'prepare_source_update') as prepare:
+            result = self.upgrader.run(revision='d'*40, apply=True)
+        qualify.assert_called_once_with('b'*40, 'c'*40)
+        self.assertEqual(prepare.call_args_list[0].args, ('c'*40, 'd'*40, 'tool'))
+        self.assertEqual(result['status'], 'upgraded')
+        self.assertIn(('install', 'c'*40, 'd'*40), self.calls)
+        self.assertIn(('update',), self.calls)
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(set(self.active), {'forge-status.service', 'forge-ui.service',
+                                          'forge-supervisor.service', 'forge-extra.timer'})
+        self.assertEqual(self.upgrader.read()['superseded'], dict(source_revision='b'*40,
+                         stage='reconciling', observed_revision='c'*40))
+
+    def test_advanced_checkout_waits_for_workers_and_resumes_new_intent(self):
+        self.advanced_checkout()
+        with patch.object(self.host, 'qualify_advanced_source'), \
+                patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.assertEqual(self.upgrader.run(revision='d'*40, apply=True)['status'], 'draining')
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.runtime()[1]['enabled'])
+        with patch.object(self.host, 'qualify_advanced_source', side_effect=AssertionError('already adopted')):
+            self.assertEqual(self.upgrader.run(revision='d'*40, apply=True)['status'], 'upgraded')
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(sum(call[0] == 'install' for call in self.calls), 1)
+
+    def test_advanced_checkout_keeps_journal_when_target_qualification_fails(self):
+        self.advanced_checkout()
+        saved = self.upgrader.path.read_bytes()
+        config = self.runtime()
+        with patch.object(self.host, 'qualify_advanced_source'), \
+                patch.object(self.host, 'prepare_source_update', side_effect=MigrationError('repair_requires_forward_revision')):
+            with self.assertRaisesRegex(MigrationError, 'repair_requires_forward_revision'):
+                self.upgrader.run(revision='d'*40, apply=True)
+        self.assertEqual(self.upgrader.path.read_bytes(), saved)
+        self.assertEqual(self.runtime(), config)
+        self.assertEqual(self.calls, [])
+
+    def test_advanced_checkout_does_not_override_operator_reenable(self):
+        self.advanced_checkout()
+        self.runtime(enabled=True, model='operator-choice')
+        config = self.runtime()
+        with patch.object(self.host, 'qualify_advanced_source'):
+            with self.assertRaisesRegex(MigrationError, 'drain_configuration_changed'):
+                self.upgrader.run(revision='d'*40, apply=True)
+        self.assertEqual(self.runtime(), config)
+        self.assertEqual(self.calls, [])
+
+    def test_advanced_checkout_before_schema_commit_is_rejected(self):
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.upgrader.run(revision='b'*40, apply=True)
+        self.current = 'c'*40
+        saved = self.upgrader.path.read_bytes()
+        with patch.object(self.host, 'qualify_advanced_source') as qualify:
+            with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
+                self.upgrader.run(revision='d'*40, apply=True)
+        qualify.assert_not_called()
+        self.assertEqual(self.upgrader.path.read_bytes(), saved)
 
     def runtime(self, **changes):
         from forge.store.configuration import Configuration
@@ -579,6 +652,9 @@ class UpgradeTransportTests(unittest.TestCase):
             host.prepare_source_update(previous, target, version)
             host.install_source_update(previous, target)
             self.assertEqual(git('rev-parse', 'HEAD'), target)
+            host.qualify_advanced_source(previous, target)
+            with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
+                host.qualify_advanced_source(previous, previous)
             self.assertEqual((source/'existing-diagnostic.md').read_text(), 'keep this')
             host.install_source_update(previous, target)
             (source/'forge_client/contracts.py').write_text('version=999\n')
@@ -588,12 +664,16 @@ class UpgradeTransportTests(unittest.TestCase):
                 host.prepare_source_update(previous,target,changed_contract_version)
             git('rm','forge_client/contracts.py');git('commit','-qm','missing shared contract')
             missing_contract_target=git('rev-parse','HEAD');git('checkout','-q',target)
+            with self.assertRaisesRegex(MigrationError, 'upgrade_source_changed'):
+                host.qualify_advanced_source(missing_contract_target, target)
             with self.assertRaisesRegex(MigrationError,'repair_source_unavailable'):
                 host.prepare_source_update(target,missing_contract_target,version)
             self.assertEqual(git('rev-parse','HEAD'),target)
             with self.assertRaisesRegex(MigrationError, 'repair_requires_forward_revision'):
                 host.prepare_source_update(target, previous, version)
             (source/'forge/__init__.py').write_text('dirty\n')
+            with self.assertRaisesRegex(MigrationError, 'repair_source_not_clean'):
+                host.qualify_advanced_source(previous, target)
             with self.assertRaisesRegex(MigrationError, 'repair_source_not_clean'):
                 host.prepare_source_update(target, target, version)
 
