@@ -42,8 +42,11 @@ def launch(argv=None):
                 os.execve(sys.executable, command, environment)
             elif os.path.lexists(Path(root) / 'state/storage'):
                 raise SystemExit('SQLite runtime qualification is required; run bin/forge setup initialize')
-        from .store.runtime import selected
-        selected(root)  # Refuse missing, mismatched or inactive selected state before startup.
+        from .store.runtime import SETUP_REQUIRED, selected
+        # Refuse missing, mismatched or inactive selected state before startup.
+        # Only host setup runs without a store: it is what initializes one.
+        if selected(root) is None and target != 'forge.host_setup':
+            raise SystemExit(SETUP_REQUIRED)
     sys.argv = [target, *arguments]
     if script:
         runpy.run_path(target, run_name='__main__')

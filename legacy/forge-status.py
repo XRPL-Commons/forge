@@ -47,7 +47,7 @@ def upstream_secret(path):
 
 
 
-def runtime_control(name, legacy_path):
+def runtime_control(name):
     from forge.store.runtime import control_enabled
     return control_enabled(WD,name)
 
@@ -197,14 +197,13 @@ class H(BaseHTTPRequestHandler):
         try:
             if not read_snapshot:
                 return self._operator()
-            from forge.store.runtime import selected
-            store = selected(WD)
+            from forge.store.runtime import required
             # Authentication and pause state describe the same committed state.
             # Close before cache fingerprinting, projection, callbacks or waits.
-            with store.read_session() if store is not None else nullcontext():
+            with required(WD).read_session():
                 if not self._operator():
                     return False
-                self._factory_paused = runtime_control('factory_paused', 'state/factory-paused.json')
+                self._factory_paused = runtime_control('factory_paused')
                 return True
         except (ValueError, OSError, RuntimeError, KeyError, TypeError):
             self.send_error(503)
@@ -217,7 +216,7 @@ class H(BaseHTTPRequestHandler):
         return True
 
     def _auth_get(self, url):
-        from forge.operator_auth import read_cookie, FLOW_COOKIE, SESSION_COOKIE, cookie, failure_reason
+        from forge.operator_auth import read_cookie, FLOW_COOKIE, cookie, failure_reason
         if url.path == '/api/auth/session':
             self._send(json.dumps({'ok': True, 'enabled': bool(self._auth_config),
                                   'operator': self._session['operator'] if self._session else None,
@@ -331,10 +330,9 @@ class H(BaseHTTPRequestHandler):
         return 'github:'+str(self._session['operator']['id']) if self._session else 'local:control-capability'
 
     def do_POST(self):
-        from forge.store.runtime import selected
+        from forge.store.runtime import required
         from forge.mutation_audit import MutationAudit, request_context
-        store = selected(WD)
-        self._mutation_audit = MutationAudit(store, self.path, request_id=self.headers.get('X-Forge-Request-ID')) if store else None
+        self._mutation_audit = MutationAudit(required(WD), self.path, request_id=self.headers.get('X-Forge-Request-ID'))
         with request_context(self._mutation_audit):
             try:
                 return self._dispatch_POST()
@@ -375,11 +373,8 @@ class H(BaseHTTPRequestHandler):
             maximum = 262144 if self.path == '/api/runtime' else 8192
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
-            if self._mutation_audit is not None:
-                self._mutation_audit.describe(value)
-                self._mutation_audit.start()
-            else:
-                self._auth.audit(self._session, self.path)
+            self._mutation_audit.describe(value)
+            self._mutation_audit.start()
             if self.path.startswith('/api/connections/'):
                 from forge.client_connections import ClientConnections, fields
                 clients = ClientConnections(WD, auth=self._auth)
@@ -415,7 +410,7 @@ class H(BaseHTTPRequestHandler):
                 elif action=='repository':setup.select(value['repo_id'])
                 else:result={'request':setup.queue(action,**value)}
                 self._send(json.dumps({'ok':True,**result}));return
-            if runtime_control('factory_paused','state/factory-paused.json'):
+            if runtime_control('factory_paused'):
                 raise ValueError('Factory reset is in progress')
             phase=setup_phase() if self.path=='/api/runtime' else None
             if self.path == '/api/runtime' and phase is not None and phase!='active':
@@ -443,34 +438,33 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(value,dict) or set(value)!={'key','revision','gate_id','statement','request_id'}:
                     raise ValueError('Expected issue, current revision, verification request, statement, and request identity')
                 service=selected_service(WD,actor_id=self._operator_actor())
-                if service is None:raise ValueError('Explicit verification requires the SQLite runtime')
                 receipt=service.verify(value['key'],value['revision'],value['gate_id'],value['statement'],request_id=value['request_id'])
                 self._send(json.dumps({'ok':True,'receipt':receipt,'controls_token':self._action_token}));return
             if self.path == '/api/issues/delivery':
                 from forge.delivery_actions import request as delivery_request
                 from forge.factory.store_operator import selected_service
                 service=selected_service(WD,actor_id=self._operator_actor())
-                if service is None:raise ValueError('Delivery decisions require the SQLite runtime')
                 result=delivery_request(service,value)
                 self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/action':
-                from forge.factory.issue_actions import decide
-                from forge.factory.store_operator import IMMEDIATE
+                from forge.factory.store_operator import IMMEDIATE, selected_service
                 from forge.factory.issues import IssueInventory
                 if not isinstance(value,dict) or set(value) not in ({'key','action','revision','reason'}, {'key','action','revision','reason','request_id'}):
                     raise ValueError('Expected issue, action, current revision, and decision')
-                identifier=decide(WD,**value,actor_id=self._operator_actor())
+                identifier=selected_service(WD,actor_id=self._operator_actor()).request(
+                    value['key'],value['action'],value['revision'],value['reason'],request_id=value.get('request_id'))
                 result=IssueInventory(WD).view(key=value['key']) if value['action'] in IMMEDIATE else {}
                 self._send(json.dumps({'ok':True,'request':identifier,**result,'controls_token':self._action_token}));return
             if self.path == '/api/issues/environment':
-                from forge.factory.issue_actions import request
+                from forge.factory.store_operator import selected_service
                 from forge.factory.environments import override
                 if not isinstance(value,dict) or set(value)!={'key','revision','environment'}:
                     raise ValueError('Expected the issue, current revision, and environment selection.')
                 selected=override(value['environment'])
                 reason=('Supervisor chooses the environment for this issue' if selected['mode']=='automatic' else
                         'Use '+(', '.join(selected['services']) if selected['mode']=='full' else 'the standard environment')+' for this issue')
-                identifier=request(WD,key=value['key'],revision=value['revision'],action='environment',reason=reason,environment=selected,actor_id=self._operator_actor())
+                identifier=selected_service(WD,actor_id=self._operator_actor()).request(
+                    value['key'],'environment',value['revision'],reason,environment=selected)
                 self._send(json.dumps({'ok':True,'request':identifier}));return
             if self.path == '/api/issues/refresh':
                 from forge.factory.issues import IssueInventory
@@ -551,9 +545,9 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         store = None
         if u.path in {'/api/factory', '/api/issues', '/api/delivery'}:
-            from forge.store.runtime import selected
+            from forge.store.runtime import required
             try:
-                store = selected(WD)
+                store = required(WD)
             except (ValueError, OSError, RuntimeError, KeyError, TypeError):
                 self.send_error(503);return
         # Keep authorization and projection transactions separate, while the
@@ -647,7 +641,6 @@ class H(BaseHTTPRequestHandler):
                 query=parse_qs(u.query)
                 if set(query)!={'key'} or len(query['key'])!=1:raise ValueError('Expected one issue key')
                 service=selected_service(WD,actor_id=self._operator_actor())
-                if service is None:raise ValueError('Delivery decisions require the SQLite runtime')
                 self._send(json.dumps({'ok':True,**service.membership(query['key'][0])}))
             except (ValueError,KeyError,RuntimeError) as error:
                 self._send(json.dumps({'ok':False,'reason':str(error)}),status=409)
@@ -673,7 +666,6 @@ class H(BaseHTTPRequestHandler):
                 if set(query)-{'issue','after','task_after'} or 'issue' not in query or any(len(v)!=1 for v in query.values()):
                     raise ValueError('Expected an issue and optional delivery history cursor')
                 service = public_views(WD)
-                if service is None: raise ValueError('Delivery history requires the active SQLite runtime')
                 self._cached(('delivery',query['issue'][0],query.get('after',[''])[0],query.get('task_after',[''])[0]),
                              lambda: service.delivery(query['issue'][0],after=query.get('after',[''])[0],task_after=query.get('task_after',[''])[0]))
             except DeliveryPlanChanged:
@@ -688,9 +680,6 @@ class H(BaseHTTPRequestHandler):
                 if set(query) - {'since', 'wait'} or any(len(v) != 1 or not v[0] for v in query.values()):
                     raise ValueError('Invalid factory change query')
                 service = public_views(WD)
-                if service is None:
-                    self._send(json.dumps({'ok':False,'reason':'Factory changes require SQLite storage'}), status=409)
-                    return
                 result = Changes(service).read(since=query.get('since', [None])[0], wait=float(query.get('wait', ['25'])[0]),
                                                cancelled=lambda: socket_eof(self.connection))
                 # A session revoked while this request waited cannot receive its
@@ -718,20 +707,14 @@ class H(BaseHTTPRequestHandler):
                              lambda: factory_view(WD, section=query.get('section',[None])[0], issue=query.get('issue',[None])[0],
                                                  limit=query.get('limit',[None])[0], before=query.get('before',[None])[0]))
             except (ValueError,OSError,RuntimeError):
-                self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; reconcile the durable ledger.'}))
+                self._send(json.dumps({'ok':False,'reason':'Factory state is unavailable; check the supervisor service and retry.'}))
         elif u.path == '/api/factory/output':
             try:
-                from forge.factory.ledger import Ledger
                 from forge.factory.contracts import identifier
                 query=parse_qs(u.query)
                 if set(query) != {'id'} or len(query['id']) != 1:raise ValueError('Invalid execution')
                 from forge.factory.control import public_views
-                service=public_views(WD)
-                if service is not None:
-                    result=service.output(identifier(query['id'][0]))
-                else:
-                    job=Ledger(Path(WD)/'state'/'factory').read()['jobs'][identifier(query['id'][0])]
-                    result={'logs':(job.get('capture') or job.get('observation') or {}).get('logs','')}
+                result=public_views(WD).output(identifier(query['id'][0]))
                 self._send(json.dumps({'ok':True,**result}))
             except (ValueError,KeyError,OSError,RuntimeError):
                 self._send(json.dumps({'ok':False,'reason':'Execution output unavailable'}))

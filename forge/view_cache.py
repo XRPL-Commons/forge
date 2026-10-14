@@ -1,10 +1,8 @@
 """Reuse status views between polls until the state they are built from changes.
 
-Each dashboard GET used to re-parse the whole ledger. A view is now rebuilt only
-when a file under the runtime root changes, or after a short age so clock-based
-fields (freshness, "merged today") stay current.
+A view is rebuilt only when the selected database or its WAL changes, or after
+a short age so clock-based fields (freshness, "merged today") stay current.
 """
-import os
 import hashlib
 import json
 import secrets
@@ -12,35 +10,23 @@ import threading
 import time
 from pathlib import Path
 
-DIRECTORIES = ('', 'setup', 'state', 'state/factory', 'state/issues', 'state/github-access')
 MAX_AGE = 10
 MAX_ENTRIES = 32
 
 
 def fingerprint(root):
-    from .store.runtime import selected
-    store=selected(root)
-    if store is not None:
-        # SQLite may live outside the installation tree. Include the WAL so a
-        # committed request invalidates cached pages before the clock timeout.
-        found=[]
-        for path in (store.path,Path(str(store.path)+'-wal')):
-            try:
-                info=path.stat()
-                found.append((str(path),info.st_ino,info.st_mtime_ns,info.st_size))
-            except FileNotFoundError:found.append((str(path),None,0,0))
-        return (store.instance_id,*found)
+    from .store.runtime import required
+    store = required(root)
+    # SQLite may live outside the installation tree. Include the WAL so a
+    # committed request invalidates cached pages before the clock timeout.
     found = []
-    for name in DIRECTORIES:
+    for path in (store.path, Path(str(store.path) + '-wal')):
         try:
-            with os.scandir(Path(root) / name) as entries:
-                for entry in entries:
-                    if entry.is_file(follow_symlinks=False):
-                        stat = entry.stat(follow_symlinks=False)
-                        found.append((name, entry.name, stat.st_mtime_ns, stat.st_size))
-        except OSError:
-            found.append((name, None, 0, 0))
-    return tuple(sorted(found))
+            info = path.stat()
+            found.append((str(path), info.st_ino, info.st_mtime_ns, info.st_size))
+        except FileNotFoundError:
+            found.append((str(path), None, 0, 0))
+    return (store.instance_id, *found)
 
 
 class ViewCache:

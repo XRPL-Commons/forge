@@ -6,20 +6,22 @@ configured, missing/corrupt state fails closed, including after process restart.
 from __future__ import annotations
 
 import base64
-import fcntl
 import hashlib
 import hmac
 import json
-import os
-from pathlib import Path
 import re
 import secrets
 import time
+from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
-from forge.state import AtomicStore
-from forge.store.files import StateError
+
+from .sqlite_identity import active_in, audit_in, identity_effect_lock
+from .store.db import _private, _new_file, _fsync_directory
+from .store.files import StateError
+from .store.identity import session_in
+from .store.runtime import required
 
 SESSION_COOKIE = '__Host-forge_session'
 FLOW_COOKIE = '__Host-forge_oauth'
@@ -132,143 +134,163 @@ def sign_in_destination(value):
 
 
 class OperatorAuth:
-    def __new__(cls, root, *, store=None, **kwargs):
-        if cls is OperatorAuth:
-            from .store.runtime import selected
-            chosen = store if store is not None else selected(root)
-            if chosen is not None:
-                from .sqlite_identity import SqliteOperatorAuth
-                return SqliteOperatorAuth(root, store=chosen, **kwargs)
-        return super().__new__(cls)
+    def __init__(self, root, *, store=None, clock=time.time, identity=github_identity):
+        store = store if store is not None else required(root)
+        self.root, self.sqlite_store, self.store = Path(root), store, store
+        self.clock, self.identity = clock, identity
 
-    def __init__(self, root, *, clock=time.time, identity=github_identity):
-        directory = Path(root) / 'state/operator-auth'
-        if directory.is_symlink():
-            raise StateError('Operator state directory must not be a symlink')
-        self.store = AtomicStore(directory, 'auth')
-        self.clock = clock
-        self.identity = identity
-
-    def _config(self, data):
-        for path in (self.store.root, self.store.path):
-            if path.exists():
-                info = path.lstat()
-                if info.st_uid != os.getuid() or info.st_mode & 0o077:
-                    raise StateError('Operator authorization state must be private')
-        if not data:
-            if self.store.marker.exists():
-                raise StateError('Operator authorization state is empty')
+    def _config_in(self, db):
+        active_in(db)
+        row = db.execute('SELECT * FROM operator_auth_configuration WHERE singleton=1').fetchone()
+        if row is None:
             return None
-        if (data.get('version') != 1 or not isinstance(data.get('config'), dict)
-                or not isinstance(data.get('sessions'), dict) or not isinstance(data.get('flows'), dict)
-                or not isinstance(data.get('epoch'), str)):
-            raise StateError('Invalid operator authorization state')
-        return configuration(**data['config'])
+        reference = row['credential_ref']
+        if not re.fullmatch(r'credentials/operator-identity(?:-[a-f0-9]{64})?\.secret', reference):
+            raise StateError('Invalid identity credential reference')
+        path = self.sqlite_store.root / reference
+        _private(path.parent, directory=True)
+        _private(path)
+        raw = path.read_bytes()
+        if len(raw) > 200 or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), row['credential_digest']):
+            raise StateError('Identity credential does not match its configured digest')
+        operators = [value[0] for value in db.execute('SELECT github_id FROM operator_identities '
+                     'WHERE enabled=1 AND authorization_epoch=? ORDER BY github_id', (row['authorization_epoch'],))]
+        return configuration(row['origin'], row['client_id'], raw.decode(), operators)
 
     def config(self):
-        return self._config(self.store.read())
+        with self.sqlite_store.read_snapshot() as db:
+            return self._config_in(db)
 
     def configure(self, origin, client_id, client_secret, operators, *, if_unconfigured=False):
         config = configuration(origin, client_id, client_secret, operators)
-        with self.store.transaction() as data:
-            if if_unconfigured and self._config(data):
-                raise AuthError('Operator sign-in was configured concurrently')
-            instance = data.get('instance_id', secrets.token_urlsafe(32))
-            data.clear()
-            data.update(instance_id=instance, version=1, config=config, epoch=secrets.token_urlsafe(32), sessions={}, flows={})
-
-    def _prune(self, data):
-        now = self.clock()
-        for field in ('sessions', 'flows'):
-            data[field] = {key: value for key, value in data[field].items() if value['expires'] > now}
+        with identity_effect_lock(self.sqlite_store):
+            with self.sqlite_store.read_snapshot() as db:
+                active_in(db)
+                if if_unconfigured and db.execute('SELECT 1 FROM operator_auth_configuration').fetchone():
+                    raise AuthError('Operator sign-in was configured concurrently')
+            raw = config['client_secret'].encode()
+            hashed = hashlib.sha256(raw).hexdigest()
+            directory = self.sqlite_store.root / 'credentials'
+            directory.mkdir(mode=0o700, exist_ok=True)
+            _private(directory, directory=True)
+            reference = 'credentials/operator-identity-' + hashed + '.secret'
+            path = self.sqlite_store.root / reference
+            if path.exists():
+                _private(path)
+                if path.read_bytes() != raw:
+                    raise StateError('Identity credential digest collision')
+            else:
+                _new_file(path, raw)
+                _fsync_directory(directory)
+            with self.sqlite_store.write() as db:
+                active_in(db)
+                old = db.execute('SELECT * FROM operator_auth_configuration').fetchone()
+                if if_unconfigured and old:
+                    raise AuthError('Operator sign-in was configured concurrently')
+                epoch = old['authorization_epoch'] + 1 if old else 1
+                instance = old['instance_id'] if old else self.sqlite_store.instance_id
+                db.execute('INSERT INTO operator_auth_configuration VALUES(1,?,?,?,?,?,?,?) '
+                    'ON CONFLICT(singleton) DO UPDATE SET origin=excluded.origin,client_id=excluded.client_id,'
+                    'credential_ref=excluded.credential_ref,credential_digest=excluded.credential_digest,'
+                    'source_epoch=excluded.source_epoch,authorization_epoch=excluded.authorization_epoch',
+                    (origin, client_id, reference, hashed, instance, secrets.token_urlsafe(32), epoch))
+                db.execute('UPDATE operator_identities SET enabled=0,authorization_epoch=?', (epoch,))
+                for operator_id in config['operators']:
+                    db.execute("INSERT INTO operator_identities(id,github_id,login,authorization_epoch,enabled) VALUES(?,?,'',?,1) "
+                        'ON CONFLICT(github_id) DO UPDATE SET enabled=1,authorization_epoch=excluded.authorization_epoch',
+                        (str(operator_id), operator_id, epoch))
+                db.execute('UPDATE operator_sessions SET revoked_at=? WHERE revoked_at IS NULL', (self.clock(),))
+                db.execute("UPDATE client_connections SET revoked_at=?,revocation_reason='authorization_changed' WHERE revoked_at IS NULL", (self.clock(),))
+                db.execute('UPDATE operator_flows SET consumed_at=? WHERE consumed_at IS NULL', (self.clock(),))
+                db.execute("UPDATE client_pairings SET status='denied' WHERE status IN ('pending','approved')")
+                audit_in(db, self.clock, 'operator_auth_configured', details={'authorization_epoch': epoch})
 
     def begin(self, return_to='/'):
         if not sign_in_destination(return_to):
             raise AuthError('Invalid sign-in destination')
         state, browser, verifier = (secrets.token_urlsafe(32) for _ in range(3))
-        with self.store.transaction() as data:
-            config = self._config(data)
+        with self.sqlite_store.write() as db:
+            config = self._config_in(db)
             if not config:
                 raise AuthError('Operator sign-in is not configured')
-            self._prune(data)
-            if len(data['flows']) >= 100:
+            count = db.execute('SELECT count(*) FROM operator_flows WHERE consumed_at IS NULL AND expires_at>?', (self.clock(),)).fetchone()[0]
+            if count >= 100:
                 raise AuthError('Too many sign-in attempts; try again later')
-            data['flows'][digest(state)] = {'browser': digest(browser), 'verifier': verifier,
-                                           'expires': self.clock() + FLOW_SECONDS, 'return_to': return_to}
+            epoch = db.execute('SELECT source_epoch FROM operator_auth_configuration').fetchone()[0]
+            db.execute('INSERT INTO operator_flows(id,state_hash,nonce_hash,return_path,created_at,expires_at,verifier,source_epoch) '
+                       'VALUES(?,?,?,?,?,?,?,?)', (digest(state), digest(state), digest(browser), return_to,
+                                                self.clock(), self.clock() + FLOW_SECONDS, verifier, epoch))
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
-        url = 'https://github.com/login/oauth/authorize?' + urlencode({
-            'client_id': config['client_id'], 'redirect_uri': config['origin'] + '/auth/github/callback',
-            'state': state, 'scope': '', 'code_challenge': challenge, 'code_challenge_method': 'S256',
-            'allow_signup': 'false', 'prompt': 'select_account'})
+        url = 'https://github.com/login/oauth/authorize?' + urlencode(dict(client_id=config['client_id'],
+            redirect_uri=config['origin'] + '/auth/github/callback', state=state, scope='',
+            code_challenge=challenge, code_challenge_method='S256', allow_signup='false', prompt='select_account'))
         return url, cookie(FLOW_COOKIE, browser, FLOW_SECONDS)
 
     def callback(self, state, code, browser, previous='', *, with_target=False):
-        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', state):
-            raise AuthError('Invalid sign-in state')
-        if not re.fullmatch(r'[A-Za-z0-9_-]{1,256}', code):
-            raise AuthError('Invalid sign-in code')
-        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', browser):
-            raise AuthError('Missing or invalid sign-in cookie')
-        with self.store.transaction() as data:
-            config = self._config(data)
+        for value, pattern, message in ((state, r'[A-Za-z0-9_-]{43}', 'Invalid sign-in state'),
+            (code, r'[A-Za-z0-9_-]{1,256}', 'Invalid sign-in code'),
+            (browser, r'[A-Za-z0-9_-]{43}', 'Missing or invalid sign-in cookie')):
+            if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                raise AuthError(message)
+        with self.sqlite_store.write() as db:
+            config = self._config_in(db)
             if not config:
                 raise AuthError('Operator sign-in is not configured')
-            self._prune(data)
-            flow = data['flows'].get(digest(state))
-            if not flow or not hmac.compare_digest(flow['browser'], digest(browser)):
+            context = dict(db.execute('SELECT * FROM operator_auth_configuration').fetchone())
+            flow = db.execute('SELECT * FROM operator_flows WHERE state_hash=? AND consumed_at IS NULL AND expires_at>?',
+                              (digest(state), self.clock())).fetchone()
+            if (flow is None or flow['source_epoch'] != context['source_epoch']
+                    or not hmac.compare_digest(flow['nonce_hash'], digest(browser))):
                 raise AuthError('Sign-in expired or belongs to another browser')
-            del data['flows'][digest(state)]
-            epoch = data['epoch']
-        # Consume the browser-bound state before any network operation.
+            flow = dict(flow)
+            db.execute('UPDATE operator_flows SET consumed_at=? WHERE id=?', (self.clock(), flow['id']))
         identity = self.identity(config, code, flow['verifier'])
         if (type(identity.get('id')) is not int or identity['id'] not in config['operators']
-                or not isinstance(identity.get('login'), str)
-                or not re.fullmatch(r'[A-Za-z0-9-]{1,39}', identity['login'])):
+                or not isinstance(identity.get('login'), str) or not re.fullmatch(r'[A-Za-z0-9-]{1,39}', identity['login'])):
             raise AuthError('This GitHub account is not an authorized Forge operator')
         token = secrets.token_urlsafe(32)
-        with self.store.transaction() as data:
-            self._config(data)
-            if data['epoch'] != epoch:
+        with self.sqlite_store.write() as db:
+            active_in(db)
+            current = db.execute('SELECT * FROM operator_auth_configuration').fetchone()
+            if current is None or current['source_epoch'] != context['source_epoch']:
                 raise AuthError('Operator authorization changed; sign in again')
-            self._prune(data)
-            if len(data['sessions']) >= 1000:
+            if db.execute('SELECT count(*) FROM operator_sessions WHERE revoked_at IS NULL AND expires_at>?', (self.clock(),)).fetchone()[0] >= 1000:
                 raise AuthError('Too many active sessions')
-            data['sessions'].pop(digest(previous), None)
-            data['sessions'][digest(token)] = {'operator': identity, 'csrf': secrets.token_urlsafe(32),
-                                              'expires': self.clock() + SESSION_SECONDS}
+            db.execute('UPDATE operator_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL', (self.clock(), digest(previous)))
+            db.execute('UPDATE operator_identities SET login=? WHERE github_id=?', (identity['login'], identity['id']))
+            db.execute('INSERT INTO operator_sessions(id,operator_id,token_hash,authorization_epoch,created_at,expires_at,csrf,operator_login) '
+                       'VALUES(?,?,?,?,?,?,?,?)', (digest(token), str(identity['id']), digest(token), current['authorization_epoch'],
+                           self.clock(), self.clock() + SESSION_SECONDS, secrets.token_urlsafe(32), identity['login']))
+            audit_in(db, self.clock, 'operator_signed_in', operator=identity)
         result = cookie(SESSION_COOKIE, token, SESSION_SECONDS)
-        return (result, flow.get('return_to', '/')) if with_target else result
+        return (result, flow['return_path']) if with_target else result
 
     def session(self, token):
-        data = self.store.read()
-        config = self._config(data)
-        if not config:
-            return None
-        session = data['sessions'].get(digest(token)) if token else None
-        if session and session['expires'] > self.clock() and session['operator']['id'] in config['operators']:
-            return session
-        return None
+        with self.sqlite_store.read_snapshot() as db:
+            if not self._config_in(db) or not token:
+                return None
+            return session_in(db, digest(token), self.clock())
 
     def logout(self, token):
-        with self.store.transaction() as data:
-            if not self._config(data):
+        with identity_effect_lock(self.sqlite_store), self.sqlite_store.write() as db:
+            if not self._config_in(db):
                 raise AuthError('Operator sign-in is not configured')
-            session = data['sessions'].pop(digest(token), None)
-            if session:
-                for grant in data.get('clients', {}).values():
-                    if grant['operator']['id'] == session['operator']['id']:
-                        grant['revoked'] = 'operator_signed_out'
+            row = db.execute('SELECT s.*,i.github_id FROM operator_sessions s JOIN operator_identities i ON i.id=s.operator_id '
+                             'WHERE token_hash=? AND revoked_at IS NULL', (digest(token),)).fetchone()
+            if row:
+                db.execute('UPDATE operator_sessions SET revoked_at=? WHERE id=?', (self.clock(), row['id']))
+                db.execute("UPDATE client_connections SET revoked_at=?,revocation_reason='operator_signed_out' "
+                           'WHERE operator_id=? AND revoked_at IS NULL', (self.clock(), row['operator_id']))
+                audit_in(db, self.clock, 'operator_signed_out', operator={'id': row['github_id']})
 
     def audit(self, session, route):
-        """Record admission before mutation, without request bodies or credentials.
-
-        This records an authorized request, not proof of successful execution.
-        Full outcome/ledger correlation and external retention remain issue #77.
-        """
-        event = {'time': self.clock(), 'event': 'operator_request', 'operator': session['operator'], 'route': route}
-        fd = os.open(self.store.root / 'requests.jsonl', os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'a') as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
-            stream.write(json.dumps(event, sort_keys=True) + '\n')
-            stream.flush()
-            os.fsync(stream.fileno())
+        with self.sqlite_store.write() as db:
+            active_in(db)
+            from .mutation_audit import MutationAudit
+            context = MutationAudit(self.sqlite_store, route, clock=self.clock)
+            row = db.execute('SELECT id FROM operator_sessions WHERE operator_id=? AND csrf=?',
+                             (str(session['operator']['id']), session['csrf'])).fetchone()
+            context.bind(session=session, session_id=row[0] if row else None)
+            from .mutation_audit import _insert
+            _insert(db, self.clock, request_id=context.request_id, action=route, outcome='started',
+                    details={**context.details, 'kind': 'request_started'}, operator=context.operator, session=context.session)

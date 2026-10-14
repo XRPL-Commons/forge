@@ -10,16 +10,8 @@ def owner(root):
 
 
 def reset_logins(root):
-    from ..store.runtime import selected
-    database = selected(root)
-    marker = Path(root) / 'state/harness-login-enabled.json'
-    if database is not None:
-        with database.read_snapshot() as db:
-            row = db.execute("SELECT enabled FROM runtime_controls WHERE name='harness_login_enabled'").fetchone()
-        enabled = bool(row and row[0])
-    else:
-        enabled = marker.exists()
-    if not enabled:
+    from ..store.runtime import control_enabled
+    if not control_enabled(root, 'harness_login_enabled'):
         return
     expected = owner(root)
     def docker(*args):
@@ -37,14 +29,9 @@ def reset_logins(root):
 
 def mark_login(root):
     """Persist cleanup responsibility before starting a browser login container."""
-    from ..store.runtime import selected, writable
-    database = selected(root)
-    if database is None:
-        from ..settings import write_json
-        write_json(Path(root) / 'state/harness-login-enabled.json', {'owner': owner(root)})
-    else:
-        import time
-        from ..sqlite_onboarding import control_in
-        with database.write() as db:
-            writable(db)
-            control_in(db, 'harness_login_enabled', True, time.time(), {'owner': owner(root)})
+    import time
+    from ..store.runtime import required, writable
+    from ..onboarding import control_in
+    with required(root).write() as db:
+        writable(db)
+        control_in(db, 'harness_login_enabled', True, time.time(), {'owner': owner(root)})

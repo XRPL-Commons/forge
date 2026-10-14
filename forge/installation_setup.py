@@ -12,15 +12,14 @@ from .installation_apps import RoleAppHandoff
 from .onboarding import Onboarding
 from .repository_requirements import describe
 from .repository_setup import RepositorySetup
-from .store.runtime import selected
+from .store.runtime import required
 from forge_client.contracts import fields, repository, require
 
 
 class InstallationSetup:
     def __init__(self, root, *, setup=None, handoff=None):
         self.root = Path(root)
-        self.store = selected(root)
-        require(self.store is not None, 'storage_required', 'Initialize SQLite before continuing setup.')
+        self.store = required(root)
         self.setup = setup or Onboarding(root)
         self.handoff = handoff or RoleAppHandoff(root, setup=self.setup)
 

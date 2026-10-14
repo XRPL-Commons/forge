@@ -18,7 +18,6 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 
 from .operator_auth import AuthError, OperatorAuth, configuration
-from .settings import read_json
 
 SOURCE = Path(__file__).resolve().parent.parent
 
@@ -92,11 +91,8 @@ class Bootstrap:
         self.auth = OperatorAuth(self.root)
 
     def generation(self):
-        if self.database:
-            from .onboarding import Onboarding
-            setup = Onboarding(self.root).read()
-        else:
-            setup = read_json(self.root / 'state/onboarding/setup.json')
+        from .onboarding import Onboarding
+        setup = Onboarding(self.root).read()
         need(setup.get('phase') in ('setup', 'active') and isinstance(setup.get('generation'), str),
              'reset_in_progress', 'Wait for the current Forge setup or reset to finish.')
         return setup['generation']
@@ -129,7 +125,7 @@ class Bootstrap:
 
     @contextmanager
     def locked(self):
-        path = self.database.root / '.operator-bootstrap.lock' if self.database else self.root / 'state/operator-auth/bootstrap.lock'
+        path = self.database.root / '.operator-bootstrap.lock'
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'a') as stream:
             try:

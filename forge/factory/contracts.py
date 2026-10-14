@@ -5,15 +5,8 @@ import re
 import uuid
 
 ROLES = ('recovery', 'audit', 'review', 'build')
-STATES = ('ready', 'built', 'reviewed', 'audited', 'approval_needed', 'investigating',
-          'hold', 'failed', 'merged', 'cancelled')
-NEXT_ROLE = {'ready': 'build', 'built': 'review', 'reviewed': 'audit'}
-PASS_STATE = {'build': 'built', 'review': 'reviewed', 'audit': 'audited', 'merge': 'merged'}
-# Failures of execution retry the same step. Rejections invalidate downstream work.
-RETRY_STATE = {'build': 'ready', 'review': 'built', 'audit': 'reviewed', 'merge': 'audited'}
 SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?\Z')
 MARKER = re.compile(r'<!-- forge-submission\s+(.*?)\s+-->', re.S)
-MAX_FAILURES = 3
 BUILD_CANDIDATE_OUTCOMES = frozenset({'pass', 'needs_human_verification'})
 ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources', 'ci_evidence', 'services', 'github_permission')
 # Plain-language limits, shared with harness.schema(). result() truncates, never rejects.
@@ -96,11 +89,6 @@ def summary(value, role, at):
         return None
     # The operator summary is written for this card; older results keep plain.
     return {'headline': headline, 'plain': plain_text(value.get('operator_summary') or value.get('plain')), 'role': role, 'at': at}
-
-
-def environment_key(config):
-    return digest({key: config.get(key) for key in
-                   ('image', 'memory', 'cpus', 'pids_limit', 'apparmor_profile', 'network', 'proxy', 'services')})
 
 
 def digest(value):

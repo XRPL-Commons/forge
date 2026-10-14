@@ -1,10 +1,11 @@
 """Deployment profiles proposed by a read-only strategist, never applied by it.
 
-The store is controller-owned operational state, like the ledger: one entry per
-repository, one strategist execution at a time, and no effect on settings,
-issues or any domain until an operator confirms the proposal.
+The selected store holds one profile per repository and one strategist
+execution at a time, with no effect on settings, issues or any domain until an
+operator confirms the proposal.
 """
 from copy import deepcopy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -13,9 +14,9 @@ import time
 import uuid
 
 from .app_access import OPTIONAL_PERMISSIONS
-from .state import AtomicStore
-from .store.files import StateError
-from .factory.contracts import SHA
+from .store.auxiliary import save_in, job_in
+from .store.operations import deployment_views
+from .store.runtime import required, writable
 from .factory.github import GitHubUnavailable
 from .factory.live import LiveUnavailable
 from .factory.runner import RunnerCapacity, RunnerError
@@ -85,99 +86,88 @@ class Deployments:
     BACKOFF = 600
     FAILURE_LIMIT = 3
 
-    def __new__(cls, root, **kwargs):
-        if cls is Deployments:
-            from .store.runtime import selected
-            store = selected(root)
-            if store is not None:
-                from .sqlite_deployments import SqliteDeployments
-                value = object.__new__(SqliteDeployments)
-                value.database = store
-                return value
-        return object.__new__(cls)
-
     def __init__(self, root, *, runner, github, settings, clock=time.time):
         self.root = Path(root)
-        self.store = AtomicStore(self.root / 'state', 'deployments')
+        self.database = required(root)
         self.runner, self.github, self.settings, self.clock = runner, github, settings, clock
 
-    @staticmethod
-    def blank(name):
-        return {'name': name, 'status': 'idle', 'workflows_digest': None, 'head': None, 'job': None,
-                'proposal': None, 'summary': None, 'reason': None, 'error': None,
-                'observed_at': None, 'checked_at': 0, 'reread_requested': False, 'observation': None,
-                'exposure_issue': None, 'observed': None}
-
     def read(self):
-        """The supervisor reads this store every cycle; a read never writes it."""
-        try:
-            data = json.loads(self.store.path.read_text()) if self.store.path.exists() else {}
-        except (OSError, ValueError) as error:
-            raise StateError('unreadable deployment state; reconcile before recovery') from error
-        if not isinstance(data, dict) or (not self.store.path.exists() and self.store.marker.exists()):
-            raise StateError('invalid or missing initialized deployment state')
-        data.setdefault('version', 1)
-        data.setdefault('repositories', {})
-        return data
-
-    def entry(self, data, repo_id, name=None):
-        entry = data.setdefault('repositories', {}).setdefault(str(repo_id), self.blank(name))
-        if name:
-            entry['name'] = name
-        return entry
+        profiles = deployment_views(self.database)
+        with self.database.read_snapshot() as db:
+            for row in db.execute('SELECT repository_id,execution_id FROM deployment_profiles WHERE execution_id IS NOT NULL'):
+                execution = db.execute('SELECT cleanup FROM auxiliary_executions WHERE id=?', (row['execution_id'],)).fetchone()
+                profiles[str(row['repository_id'])]['job'] = job_in(db, row['execution_id']) if execution and not execution[0] else None
+            error = db.execute("SELECT details_json FROM runtime_controls WHERE name='deployment_error'").fetchone()
+        return {'version': 1, 'repositories': profiles, **(json.loads(error[0]) if error else {})}
 
     def save(self, repo_id, name=None, **values):
-        with self.store.transaction() as data:
-            data['version'] = 1
-            self.entry(data, repo_id, name).update(values)
+        mapping = dict(status='status', workflows_digest='workflows_digest', head='head_oid', proposal='proposal_json', summary='summary',
+                       reason='reason', error='error', observed_at='observed_at', checked_at='checked_at',
+                       reread_requested='reread_requested', observation='observation_json', observed='observed_json', exposure_issue='exposure_issue')
+        if set(values) - (set(mapping) | {'job'}):
+            raise ValueError('Unknown deployment observation field')
+        with self.database.write() as db:
+            writable(db)
+            if name is not None:
+                db.execute('INSERT INTO repositories(id,full_name,enabled) VALUES(?,?,0) ON CONFLICT(id) DO NOTHING', (int(repo_id), name))
+            db.execute("INSERT INTO deployment_profiles(repository_id,status,checked_at,reread_requested,source_fields_json) "
+                       "VALUES(?,'idle',0,0,'[]') ON CONFLICT(repository_id) DO NOTHING", (int(repo_id),))
+            fields = {}
+            for key, value in values.items():
+                if key == 'job':
+                    if value is not None:
+                        save_in(db, 'deployment', str(repo_id), value, self.clock())
+                    fields['execution_id'] = value['id'] if value else None
+                else:
+                    fields[mapping[key]] = json.dumps(value, allow_nan=False) if mapping[key].endswith('_json') else int(value) if key == 'reread_requested' else value
+            if fields:
+                db.execute('UPDATE deployment_profiles SET ' + ','.join(key + '=?' for key in fields) + ' WHERE repository_id=?',
+                           (*fields.values(), int(repo_id)))
 
     def fail(self, message):
-        """A cycle-level failure belongs in the store, not in the supervisor's path."""
-        with self.store.transaction() as data:
-            data['version'] = 1
-            data.setdefault('repositories', {})
-            data['error'] = str(message)[:500]
+        with self.database.write() as db:
+            writable(db)
+            db.execute("INSERT INTO runtime_controls(name,updated_at,details_json) VALUES('deployment_error',?,?) "
+                       'ON CONFLICT(name) DO UPDATE SET updated_at=excluded.updated_at,details_json=excluded.details_json',
+                       (self.clock(), json.dumps({'error': str(message)[:500]})))
 
     def request_reread(self, repo_id, name=None):
         self.save(repo_id, name, reread_requested=True)
 
     def confirm(self, repo_id, domain):
-        """Return the profile for the operator's settings; the store only records the decision."""
-        with self.store.transaction() as data:
-            entry = data.get('repositories', {}).get(str(repo_id))
-            if not entry or entry['status'] != 'proposed' or not entry['proposal']:
+        with self.database.write() as db:
+            writable(db)
+            row = db.execute('SELECT * FROM deployment_profiles WHERE repository_id=?', (int(repo_id),)).fetchone()
+            if row is None or row['status'] != 'proposed' or not row['proposal_json']:
                 raise ValueError('There is no deployment proposal to confirm')
-            proposed = entry['proposal']
-            value = {'strategy': proposed['strategy'], 'deploy': deepcopy(proposed['deploy']),
-                     # The card prefills the candidate, so an emptied box is a
-                     # decision: track GitHub deployments only.
-                     'domain': host(proposed['domain']['value']) if domain is None else host(domain),
-                     'exposure': deepcopy(proposed['exposure']), 'workflows_digest': entry['workflows_digest'],
-                     'confirmed_at': self.clock(), 'exposure_issue': None}
-            entry.update(status='confirmed', observed_at=self.clock(), reason=None, error=None)
+            proposed = json.loads(row['proposal_json'])
+            value = dict(strategy=proposed['strategy'], deploy=deepcopy(proposed['deploy']),
+                         domain=host(proposed['domain']['value']) if domain is None else host(domain),
+                         exposure=deepcopy(proposed['exposure']), workflows_digest=row['workflows_digest'],
+                         confirmed_at=self.clock(), exposure_issue=row['exposure_issue'])
+            db.execute("UPDATE deployment_profiles SET status='confirmed',observed_at=?,reason=NULL,error=NULL WHERE repository_id=?", (self.clock(), int(repo_id)))
             return value
 
     def reject(self, repo_id, reason):
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError('A rejected proposal needs a reason')
-        with self.store.transaction() as data:
-            entry = data.get('repositories', {}).get(str(repo_id))
-            if not entry or entry['status'] not in ('proposed', 'failed'):
+        with self.database.write() as db:
+            writable(db)
+            row = db.execute('SELECT status FROM deployment_profiles WHERE repository_id=?', (int(repo_id),)).fetchone()
+            if row is None or row[0] not in ('proposed', 'failed'):
                 raise ValueError('There is no deployment proposal to reject')
-            entry.update(status='rejected', reason=reason.strip()[:2000], observed_at=self.clock())
+            db.execute("UPDATE deployment_profiles SET status='rejected',reason=?,observed_at=? WHERE repository_id=?", (reason.strip()[:2000], self.clock(), int(repo_id)))
 
     def leased(self, config):
-        """A rotating OAuth credential has one writer; pipeline work holds it first."""
         reference = config.get('provider_auth_file_env')
-        from .factory.discussions import Discussions
-        if reference and any(j['runner_config'].get('provider_auth_file_env') == reference for j in Discussions(self.root).active_jobs()):
-            return True
-        root = self.root / 'state/factory'
-        if not reference or not (root / 'factory-ledger.json').exists():
+        if not reference:
             return False
-        from .factory.ledger import Ledger
-        return any(not job['cleanup'] and (job.get('runner_config') or {}).get('provider_auth_file_env') == reference
-                   for job in Ledger(root).read()['jobs'].values())
+        with self.database.read_snapshot() as db:
+            return bool(db.execute("SELECT 1 FROM job_leases l JOIN job_launches j ON j.job_id=l.job_id "
+                "WHERE json_extract(j.runner_config_json,'$.provider_auth_file_env')=? UNION ALL "
+                "SELECT 1 FROM auxiliary_leases l JOIN auxiliary_runtime r ON r.execution_id=l.execution_id "
+                "WHERE json_extract(r.manifest_json,'$.runner_config.provider_auth_file_env')=? LIMIT 1", (reference, reference)).fetchone()
+                or db.execute('SELECT 1 FROM discussion_leases LIMIT 1').fetchone())
 
     def new_job(self, config, repo, head, deadline):
         """A probe-shaped internal job: no issue, no candidate, no publication."""
@@ -240,18 +230,14 @@ class Deployments:
             return  # One strategist at a time; the next repository waits a cycle.
 
     def memory_draining(self, config):
-        from .factory.memory import pending
-        from .factory.ledger import Ledger
-        ledger_root = self.root / 'state/factory'
-        return bool(config.get('memory_tiers') and (ledger_root / 'factory-ledger.json').exists()
-                    and any(self.settings.admission(item['repo'])['allowed']
-                            for item in pending(Ledger(ledger_root).read(), config)))
+        if not config.get('memory_tiers'):
+            return False
+        with self.database.read_snapshot() as db:
+            return db.execute("SELECT 1 FROM unit_environment_observations e JOIN units u ON u.id=e.unit_id "
+                              "WHERE e.memory_retry_json IS NOT NULL AND e.memory_retry_json!='null' AND u.state NOT IN ('merged','closed','dissolved') LIMIT 1").fetchone() is not None
 
-    def observe(self, github, ledger, reader):
-        """One bounded read per confirmed profile, then a verdict per merged issue."""
-        errors, view, merged = [], self.settings.view(), None
-        # Whether the optional grant is missing was decided by the access sync; a
-        # refused token is otherwise an outage, not a permission to ask for.
+    def observe(self, github, reader):
+        errors, view = [], self.settings.view()
         ungranted = any(item.split(':')[0].strip() == 'deployments' for item in
                         ((view.get('roles') or {}).get('controller') or {}).get('missing_recommended') or [])
         for row in view['repositories']:
@@ -259,18 +245,41 @@ class Deployments:
             if not profile or not row['enabled']:
                 continue
             if time.monotonic() >= getattr(github, 'deadline', float('inf')):
-                break  # The cycle's observation budget is spent; resume next cycle.
-            if merged is None:
-                merged = {}
-                for issue in ledger.read()['issues'].values():
-                    if issue['state'] == 'merged' and not issue.get('deployed'):
-                        merged.setdefault(issue['repo_id'], []).append(issue)
-            entry = self.read()['repositories'].get(str(row['id'])) or {}
+                break
+            entry = deployment_views(self.database).get(str(row['id']), {})
             observed = self.read_live(github, reader, row, profile, entry.get('observed') or {}, ungranted)
-            self.save(row['id'], row['name'], observed=observed)
+            self.save(row['id'], observed=observed)
             if observed['error']:
                 errors.append({'repo': row['name'], 'reason': observed['error']})
-            errors.extend(self.verdicts(github, ledger, row, observed, merged.get(row['id']) or []))
+            with self.database.read_snapshot() as db:
+                candidates = db.execute("SELECT c.*,i.github_number,e.details_json FROM units u JOIN candidates c ON c.id=u.current_candidate_id "
+                    "JOIN unit_issues m ON m.unit_id=u.id JOIN issues i ON i.id=m.issue_id JOIN candidate_evidence e ON e.candidate_id=c.id AND e.kind='merge' AND e.verdict='pass' "
+                    "WHERE u.state='merged' AND u.repository_id=? AND NOT EXISTS(SELECT 1 FROM deployment_observations d WHERE d.candidate_id=c.id AND d.status='success') "
+                    'ORDER BY e.observed_at,c.id LIMIT 100', (row['id'],)).fetchall()
+            for candidate in candidates:
+                if time.monotonic() >= getattr(github, 'deadline', float('inf')):
+                    break
+                merge = json.loads(candidate['details_json']).get('merge_sha')
+                if not merge:
+                    continue
+                item = dict(repo=row['name'], repo_id=row['id'], number=candidate['github_number'])
+                live, deploy = (observed.get('live') or {}).get('commit'), observed.get('deploy') or {}
+                verdict, commit, via = None, None, None
+                try:
+                    if live and (merge.startswith(live) or github.contains(item, merge, live)):
+                        verdict, commit, via = 'success', live, 'live'
+                    elif deploy.get('state') in ('success', 'failure') and deploy.get('sha') and github.contains(item, merge, deploy['sha']):
+                        verdict, commit, via = deploy['state'], deploy['sha'], 'github'
+                except GitHubUnavailable as error:
+                    errors.append({'repo': row['name'], 'reason': str(error)})
+                    continue
+                if verdict:
+                    identifier = hashlib.sha256((candidate['id'] + commit + verdict + via).encode()).hexdigest()
+                    with self.database.write() as db:
+                        writable(db)
+                        db.execute('INSERT INTO deployment_observations VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',
+                                   (identifier, row['id'], candidate['id'], (profile.get('deploy') or {}).get('environment') or '',
+                                    verdict, commit, self.clock(), json.dumps({'via': via, 'run_url': deploy.get('run_url')})))
         return errors
 
     def read_live(self, github, reader, row, profile, previous, ungranted):
@@ -325,45 +334,6 @@ class Deployments:
         return {'sha': newest['sha'], 'state': latest['state'] if latest else 'pending',
                 'at': (latest or newest).get('created_at'),
                 'run_url': (latest or {}).get('log_url') or (latest or {}).get('target_url')}
-
-    def verdicts(self, github, ledger, row, observed, issues):
-        """A merge is deployed only when Forge can see its commit in what is running."""
-        errors = []
-        live = (observed.get('live') or {}).get('commit')
-        deploy = observed.get('deploy') or {}
-        for issue in issues:
-            if time.monotonic() >= getattr(github, 'deadline', float('inf')):
-                break
-            try:
-                merge = self.merge_commit(github, ledger, issue)
-                if not merge:
-                    continue
-                if live and (merge.startswith(live) or github.contains(issue, merge, live)):
-                    ledger.deployed(issue['key'], {'commit': live, 'via': 'live'})
-                elif deploy.get('state') not in ('success', 'failure') or not deploy.get('sha'):
-                    continue  # No deployment carries a verdict for this merge yet.
-                elif not github.contains(issue, merge, deploy['sha']):
-                    continue  # The deployment predates this merge; it says nothing about it.
-                elif deploy['state'] == 'success':
-                    ledger.deployed(issue['key'], {'commit': deploy['sha'], 'via': 'github'})
-                else:
-                    ledger.deploy_failed(issue['key'], {'sha': deploy['sha'], 'run_url': deploy.get('run_url')})
-            except (GitHubUnavailable, StateError, ValueError, KeyError, TypeError) as error:
-                errors.append({'repo': row['name'], 'reason': str(error)})
-        return errors
-
-    @staticmethod
-    def merge_commit(github, ledger, issue):
-        candidate = issue['candidate'] or {}
-        if candidate.get('merge_commit'):
-            return candidate['merge_commit']
-        if not candidate.get('pr'):
-            return None
-        value = github.pr(issue, candidate['pr']).get('merge_commit_sha')
-        if not isinstance(value, str) or not SHA.fullmatch(value):
-            return None
-        ledger.merge_commit(issue['key'], value)
-        return value
 
     def drive(self, key):
         job = self.read()['repositories'][key]['job']
