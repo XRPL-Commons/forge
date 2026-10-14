@@ -11,6 +11,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ from .policy import MirrorError, OID, canonical_name
 MAX_REQUEST = 8 * 1024 * 1024
 MAX_RESPONSE = 64 * 1024 * 1024
 MAX_REPOSITORY = 512 * 1024 * 1024
+MAX_HTTP_RESPONSE = MAX_REPOSITORY
+CHUNK_BYTES = 65536
 
 
 @dataclass(frozen=True)
@@ -55,46 +58,107 @@ def _disk_size(path):
     return size
 
 
-def run_git(args, *, env=None, data=b'', limit=MAX_RESPONSE, timeout=120, alive=lambda: True, disk=None):
-    """Bound buffered CGI bytes and disk growth; cancel child process group."""
-    with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
-        incoming.write(data)
-        incoming.seek(0)
-        try:
-            process = subprocess.Popen(['git', *args], stdin=incoming, stdout=output, stderr=error,
-                                       env=env or environment(), start_new_session=True)
-        except OSError:
-            raise MirrorError('mirror_unavailable', transient=True) from None
-        started = time.monotonic()
-        reason = None
-        try:
-            while True:
+def spool_git(args, *, env=None, data=b'', limit=MAX_RESPONSE, timeout=120, alive=lambda: True, disk=None):
+    """Return an owned anonymous spool; pipe reads enforce its byte ceiling.
+
+    No complete pack enters Python memory. Failure kills the process group and
+    closes the spool; success transfers ownership to the caller.
+    """
+    output = tempfile.TemporaryFile()
+    try:
+        with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as error:
+            incoming.write(data)
+            incoming.seek(0)
+            try:
+                process = subprocess.Popen(['git', *args], stdin=incoming, stdout=subprocess.PIPE, stderr=error,
+                                           env=env or environment(), start_new_session=True)
+            except OSError:
+                raise MirrorError('mirror_unavailable', transient=True) from None
+            started = time.monotonic()
+            checked = 0
+            eof = False
+            completed = False
+            try:
+                while not eof or process.poll() is None:
+                    now = time.monotonic()
+                    if now - checked >= .05:
+                        if not alive():
+                            raise MirrorError('session_revoked')
+                        if error.tell() > 65536 or disk is not None and _disk_size(disk) > MAX_REPOSITORY:
+                            raise MirrorError('mirror_capacity')
+                        if now - started > timeout:
+                            raise MirrorError('mirror_timeout', transient=True)
+                        checked = now
+                    if eof:
+                        time.sleep(.05)
+                    elif select.select([process.stdout], [], [], .05)[0]:
+                        chunk = os.read(process.stdout.fileno(), CHUNK_BYTES)
+                        if not chunk:
+                            eof = True
+                        else:
+                            if output.tell() + len(chunk) > limit:
+                                raise MirrorError('mirror_capacity')
+                            output.write(chunk)
+                if error.tell() > 65536 or disk is not None and _disk_size(disk) > MAX_REPOSITORY:
+                    raise MirrorError('mirror_capacity')
                 if not alive():
-                    reason = 'session_revoked'
-                elif output.tell() > limit or error.tell() > 65536 or disk is not None and _disk_size(disk) > MAX_REPOSITORY:
-                    reason = 'mirror_capacity'
-                elif time.monotonic() - started > timeout:
-                    reason = 'mirror_timeout'
-                if reason:
-                    raise MirrorError(reason, transient=reason == 'mirror_timeout')
-                if process.poll() is not None:
-                    break
-                time.sleep(.05)
-            if process.returncode:
-                # Neither stderr nor command environment is safe to persist.
-                raise MirrorError('mirror_fetch_failed', transient=True)
-            output.seek(0)
-            result = output.read(limit + 1)
-            if len(result) > limit:
-                raise MirrorError('mirror_capacity')
-            return result
-        finally:
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            process.wait()
+                    raise MirrorError('session_revoked')
+                if process.returncode:
+                    # Neither stderr nor command environment is safe to persist.
+                    raise MirrorError('mirror_fetch_failed', transient=True)
+                output.seek(0)
+                completed = True
+                return output
+            finally:
+                if not completed or process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                process.wait()
+                process.stdout.close()
+    except BaseException:
+        output.close()
+        raise
+
+
+def run_git(args, **kwargs):
+    """Small metadata callers retain their explicit bounded byte result."""
+    with spool_git(args, **kwargs) as output:
+        return output.read()
+
+
+class HttpBody:
+    """Owned payload slice of a CGI spool, checked before every transfer chunk."""
+    def __init__(self, spool, offset, length, *, alive=lambda: True):
+        self.spool, self.offset, self.length, self.alive = spool, offset, length, alive
+        spool.seek(offset)
+
+    def __len__(self):
+        return self.length
+
+    def chunks(self):
+        self.spool.seek(self.offset)
+        remaining = self.length
+        while remaining:
+            if not self.alive():
+                raise MirrorError('session_revoked')
+            chunk = self.spool.read(min(CHUNK_BYTES, remaining))
+            if not chunk:
+                raise MirrorError('mirror_protocol_failed', transient=True)
+            remaining -= len(chunk)
+            yield chunk
+        if not self.alive():
+            raise MirrorError('session_revoked')
+
+    def digest(self):
+        value = hashlib.sha256()
+        for chunk in self.chunks():
+            value.update(chunk)
+        return value.hexdigest()
+
+    def close(self):
+        self.spool.close()
 
 
 class GitStore:
@@ -207,21 +271,31 @@ class GitStore:
                        CONTENT_TYPE='application/x-git-upload-pack-request' if kind == 'upload' else '',
                        CONTENT_LENGTH=str(len(body)), GIT_PROTOCOL=protocol,
                        SERVER_PROTOCOL='HTTP/1.1', REMOTE_ADDR='127.0.0.1')
-            result = run_git(['http-backend'], env=env, data=body, alive=alive)
-            header, separator, payload = result.partition(b'\r\n\r\n')
-            if not separator or len(header) > 8192:
-                raise MirrorError('mirror_protocol_failed', transient=True)
-            headers = {}
-            status = 200
-            for line in header.decode('ascii').split('\r\n'):
-                key, _, value = line.partition(':')
-                if key.lower() == 'status':
-                    status = int(value.strip().split(' ', 1)[0])
-                elif key.lower() in {'content-type', 'cache-control', 'expires', 'pragma'}:
-                    headers[key.lower()] = value.strip()
-            if status != 200:
-                raise MirrorError('revision_unavailable')
-            return headers, payload
+            result = spool_git(['http-backend'], env=env, data=body, alive=alive,
+                               limit=MAX_HTTP_RESPONSE + 8192 + 4)
+            try:
+                prefix = result.read(8192 + 4)
+                header, separator, _ = prefix.partition(b'\r\n\r\n')
+                if not separator or len(header) > 8192:
+                    raise MirrorError('mirror_protocol_failed', transient=True)
+                offset = len(header) + 4
+                length = os.fstat(result.fileno()).st_size - offset
+                if length > MAX_HTTP_RESPONSE:
+                    raise MirrorError('mirror_capacity')
+                headers = {}
+                status = 200
+                for line in header.decode('ascii').split('\r\n'):
+                    key, _, value = line.partition(':')
+                    if key.lower() == 'status':
+                        status = int(value.strip().split(' ', 1)[0])
+                    elif key.lower() in {'content-type', 'cache-control', 'expires', 'pragma'}:
+                        headers[key.lower()] = value.strip()
+                if status != 200:
+                    raise MirrorError('revision_unavailable')
+                return headers, HttpBody(result, offset, length, alive=alive)
+            except BaseException:
+                result.close()
+                raise
 
     @contextmanager
     def base_objects(self, repository, pinned_oids, source_input_digest, *, alive=lambda: True):

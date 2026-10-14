@@ -398,7 +398,9 @@ def main(argv=None):
             from .identity import display_error
             display_error(error, args.ssh)
             return 1
-        print(json.dumps({'ok': False, 'error': error.code, 'reason': str(error)}))
+        from .role_qualification import RoleQualificationFailed
+        details = {'report': error.report} if isinstance(error, RoleQualificationFailed) else {}
+        print(json.dumps({'ok': False, 'error': error.code, 'reason': str(error), **details}))
         return 1
     except (Exception, KeyboardInterrupt):
         # Raw network/keyring/subprocess exceptions may contain credentials.

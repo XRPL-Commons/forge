@@ -1,6 +1,7 @@
 """Bounded seven-role acceptance on an installed, idle host."""
+import math
 import re
-from .contracts import require
+from .contracts import SetupError, require
 from .install import Installation
 
 HOST = '''import json,pwd,re,subprocess,sys
@@ -29,6 +30,86 @@ def main(payload):
 '''
 
 
+class RoleQualificationFailed(SetupError):
+    """A failed acceptance run with credential-free host observations."""
+    def __init__(self, report):
+        super().__init__('role_qualification_failed', 'Role qualification did not complete; inspect the report before retrying.')
+        self.report = failure_report(report)
+
+
+def failure_report(value):
+    """Keep bounded execution identities and outcomes, never capture contents."""
+    roles = {'build', 'review', 'audit', 'recovery', 'strategist', 'triage', 'discussion'}
+    enums = {'status': {'failed', 'qualified', 'planned'}, 'current_role': roles,
+             'cleanup': {'confirmed', 'unconfirmed', 'pending'},
+             'automation': {'disabled'}, 'automation_after': {'disabled', 'changed'},
+             'role': roles, 'provider': {'codex', 'claude', 'grok'},
+             'outcome': {'pass', 'reject', 'unable', 'wait', 'blocked_environment'}}
+    patterns = {'source_revision': r'[0-9a-f]{40}', 'image': r'sha256:[0-9a-f]{64}',
+                'source_digest': r'[0-9a-f]{64}', 'base_oid': r'(?:[0-9a-f]{40}|[0-9a-f]{64})',
+                'job_id': r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',
+                'reason': r'[a-z][a-z_]{0,79}'}
+    def project(row, keys):
+        result = {}
+        for key in keys:
+            item = row.get(key)
+            if key in enums and isinstance(item, str) and item in enums[key]:
+                result[key] = item
+            elif key in patterns and isinstance(item, str) and re.fullmatch(patterns[key], item):
+                result[key] = item
+            elif key == 'fixture' and type(item) is bool:
+                result[key] = item
+            elif key == 'mirror_requests' and type(item) is int and 0 <= item <= 1000000:
+                result[key] = item
+        return result
+    report = project(value, ('status', 'reason', 'current_role', 'cleanup', 'source_revision', 'image',
+                             'automation', 'automation_after'))
+    rows = value.get('results')
+    if isinstance(rows, list):
+        report['results'] = [project(row, ('role', 'status', 'job_id', 'provider', 'base_oid', 'source_digest',
+                                         'fixture', 'outcome', 'mirror_requests'))
+                             for row in rows[:7] if isinstance(row, dict)]
+    failure = value.get('failure')
+    if isinstance(failure, dict):
+        diagnostic = project(failure, ('role', 'job_id'))
+        if type(failure.get('result_present')) is bool:
+            diagnostic['result_present'] = failure['result_present']
+        missing = failure.get('missing')
+        if isinstance(missing, list):
+            codes = {'result', 'logs', 'bundle', 'output_receipt', 'startup_receipt', 'execution_envelope', 'container'}
+            diagnostic['missing'] = sorted({item for item in missing[:7] if isinstance(item, str) and item in codes})
+        execution = failure.get('execution')
+        if isinstance(execution, dict):
+            diagnostic['execution'] = {key: execution[key] for key in ('running', 'oom_killed')
+                                       if type(execution.get(key)) is bool}
+            code = execution.get('exit_code')
+            if type(code) is int and -255 <= code <= 255:
+                diagnostic['execution']['exit_code'] = code
+        envelope = failure.get('execution_envelope')
+        if isinstance(envelope, dict) and envelope.get('harness_status') in ('ok', 'timeout', 'harness_error', 'provider_error'):
+            safe = {'harness_status': envelope['harness_status']}
+            provider = envelope.get('provider_error')
+            if isinstance(provider, dict) and provider.get('code') in ('quota', 'auth', 'rate_limit', 'overloaded', 'unknown'):
+                safe['provider_error'] = {'code': provider['code']}
+                status, retry = provider.get('status'), provider.get('retry_after')
+                if type(status) is int and 400 <= status <= 599:
+                    safe['provider_error']['status'] = status
+                if type(retry) in (int, float) and math.isfinite(retry) and 1 <= retry <= 3600:
+                    safe['provider_error']['retry_after'] = retry
+            harness = envelope.get('harness_error')
+            if isinstance(harness, dict) and harness.get('phase') in ('harness', 'runner', 'before_agent', 'contract'):
+                safe['harness_error'] = {'phase': harness['phase']}
+            diagnostic['execution_envelope'] = safe
+        startup = failure.get('startup')
+        if (isinstance(startup, dict) and startup.get('reason') == 'harness_startup'
+                and startup.get('phase') == 'before_agent'
+                and startup.get('exception') in ('ImportError', 'ModuleNotFoundError', 'NameError',
+                    'UnboundLocalError', 'SyntaxError', 'IndentationError', 'TabError')):
+            diagnostic['startup'] = {key: startup[key] for key in ('reason', 'phase', 'exception')}
+        report['failure'] = diagnostic
+    return report
+
+
 def execute(args, *, installation=None):
     require(isinstance(args.repo,str) and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',args.repo)
             and type(args.issue) is int and 1<=args.issue<=2147483647,'invalid_request')
@@ -38,11 +119,11 @@ def execute(args, *, installation=None):
                                    timeout=1830 if args.apply else 90)
     report=response.get('result')
     require(isinstance(report,dict),'invalid_host_response')
-    require(report.get('status')==('qualified' if args.apply else 'planned'),
-            'role_qualification_failed',report.get('reason','Role qualification did not complete.'))
+    if report.get('status') != ('qualified' if args.apply else 'planned'):
+        raise RoleQualificationFailed(report)
     if args.apply:
-        require(report.get('cleanup')=='confirmed' and report.get('automation_after')=='disabled',
-                'role_qualification_failed','Cleanup and unchanged automation must both be confirmed.')
+        if report.get('cleanup') != 'confirmed' or report.get('automation_after') != 'disabled':
+            raise RoleQualificationFailed(report)
     else:
         report['next_action']='Use --apply to run seven bounded provider invocations. The factory must remain disabled and idle.'
     return report

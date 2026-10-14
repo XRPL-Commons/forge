@@ -84,7 +84,44 @@ shards, UI unit/type/build/browser checks and source audit passed in
   correction gives only the disposable canary an explicit policy for that
   selection; configured deny rules and actual App access remain authoritative.
   Its fresh-store regression and all seven source/broker paths passed focused
-  tests and independent review. Live role qualification remains pending.
+  tests and independent review. The correction merged in #282, passed full CI,
+  and Anvil upgraded successfully to `fd0fb78` at schema 040. The next live canary
+  reached capture and failed with `result_schema_invalid`; this does not prove
+  malformed model output because schema validation preceded execution checks.
+  Diagnostic ordering and CLI failure-report retention are corrected in #286;
+  no role is marked qualified by that failed attempt.
+- The diagnostic build on Anvil (`a5676c0`) reported build exit 125 with cleanup
+  confirmed and automation still disabled. A credential-free reproduction of
+  clone/fetch/checkout and native sandbox checks passed on a small fixture.
+  A scoped, read-only measurement of the selected repository then proved the
+  mirror rejected its 239,187,791-byte Git pack at the 64 MiB buffered-response
+  ceiling. Cache data was deleted and all temporary tokens were revoked.
+  Bounded spooling and chunked response transfer passed a generated 65 MiB
+  native clone with Python peak memory below 16 MiB, 39 focused regressions,
+  independent review and full CI on `3d12b9a`. The role canary uses the
+  production worker's bounded work volume.
+- Anvil installed `3d12b9a` and image
+  `sha256:c61ea6ca74d522223b8b7e1be03e388eb05ebd254372b03035b14bbba69e537a`.
+  All nine native boundary checks passed with confirmed cleanup. The automatic
+  account check exposed a separate setup-probe path mismatch: it still read
+  `/work/assignment.json` after inputs moved to `/run/forge-input`. The retained
+  capture proves failure before provider execution. The upgrade journal
+  completed through supported CLI resumption; account qualification remained
+  failed, and the role canary correctly refused `coding_account_not_ready`.
+- The setup-probe path correction passed 12 focused regressions and independent
+  review. Anvil upgraded to `a8e8a98`; Codex verification passed and the rebuilt
+  image `sha256:801298624fe20068d4a980a17559cb472862f34228b4505cdb258830644a6ce4`
+  passed all nine native checks. Full CI passed on that source.
+- The subsequent real-repository Build canary timed out during clone before
+  provider execution (exit 124, cleanup confirmed, automation unchanged).
+  A credential-free profile measured 512 physical SQLite opens across 128 live
+  authority checks: 6.65 seconds total, including 4.78 seconds opening handles.
+  Existing request-scoped connection leases reduced those same fresh checks to
+  0.93 seconds. A native 16 MiB Git clone measured 16.44 seconds before leases
+  and 3.04 seconds with them, with exact HEAD and confirmed cleanup in both runs.
+  The mirror now retains physical handles within each request while preserving
+  fresh transactions and authority checks for every chunk. No permission
+  decision is cached and the role deadline remains unchanged.
 - The native boundary canary also passed on `e430a9c` and its rebuilt image
   `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
   All nine checks passed and disposable cleanup was confirmed.
@@ -96,9 +133,13 @@ shards, UI unit/type/build/browser checks and source audit passed in
   signing qualification requires a host-recorded API operation and exact
   independent read-back. No fixture result certifies a real PR or merge.
 
-Forge remains on Run 1 during its separate 24-hour observation. The latest
-ownership sweep found 13 current memberships, all owned, with no orphans. See
-[Run 1 acceptance](run-1-acceptance.md) for the release and observation window.
+Production completed the merged Run 2 upgrade plus the launcher correction at
+`d6113d3`, schema 040, at 2026-10-14 12:09:29 UTC. A later deployment advanced
+production to `01964ae`; its release receipt is dated 12:27:54 UTC and all four
+services are active. That later receipt starts the current observation window.
+Live role and target-bound publication qualification are still incomplete; a
+successful deployment does not establish them. The new production observation
+baseline is recorded in [Run 1 acceptance](run-1-acceptance.md).
 
 ## Explicit limits
 

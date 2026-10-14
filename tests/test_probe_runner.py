@@ -41,6 +41,44 @@ class ProbeRunnerTests(unittest.TestCase):
             self.runner.prepare_source(self.job)
 
 
+    def test_probe_entrypoint_reads_the_actual_immutable_input_mount(self):
+        from forge.factory import probe
+        spec = self.runner.prepare_source(self.job)
+        mounts = [spec.worker_args[index + 1] for index, value in enumerate(spec.worker_args)
+                  if value == '--mount']
+        mount = next(value for value in mounts if 'target=/run/forge-input,' in value)
+        self.assertIn(',readonly', mount)
+        source = Path(next(field.removeprefix('source=') for field in mount.split(',') if field.startswith('source=')))
+        work = Path(self.temp.name) / 'worker-work'
+        work.mkdir()
+        def container_path(value):
+            path = Path(value)
+            for virtual, actual in (('/run/forge-input', source), ('/work', work)):
+                if path.is_relative_to(virtual):
+                    return actual / path.relative_to(virtual)
+            raise AssertionError('Unexpected container path')
+        called = []
+        def adapter(name):
+            self.assertEqual(name, 'codex')
+            def execute(note, directory):
+                called.append(note['id'])
+                self.assertEqual(note['harness_argv'], PROVIDER)
+                self.assertEqual(directory, work / 'repository')
+                self.assertTrue(directory.is_dir())
+                return 7
+            return {'probe': execute}
+        # A missing legacy file reproduces the deployed failure. A conflicting
+        # writable file must also never replace the host-pinned assignment.
+        for legacy in (None, {'id': 'mutable-worker-copy', 'provider': 'untrusted'}):
+            with self.subTest(legacy=legacy):
+                if legacy is not None:
+                    (work / 'assignment.json').write_text(json.dumps(legacy))
+                with patch.object(probe, 'Path', side_effect=container_path), \
+                        patch.object(probe.runpy, 'run_path', return_value={'adapter': adapter}) as registry:
+                    self.assertEqual(probe.main(), 7)
+                registry.assert_called_once_with('/opt/forge/harnesses/registry.py')
+        self.assertEqual(called, [self.job['id'], self.job['id']])
+
     def test_boundary_identity_does_not_change_durable_auxiliary_inputs(self):
         from forge.store.db import Store
         from forge.store.auxiliary import save_in, job_in

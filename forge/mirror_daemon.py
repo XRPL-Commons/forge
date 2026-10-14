@@ -1,6 +1,6 @@
 """Host mirror service: bind/revoke sockets from durable execution authority."""
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import os
 import json
@@ -33,6 +33,15 @@ class MirrorDaemon:
         self.servers = {}
         self.observations = {}
         self.observation_lock = threading.RLock()
+
+    @contextmanager
+    def read_scope(self):
+        # Qualification uses a disposable authority store and the installation's
+        # live settings store. Both retain connections, not transaction snapshots.
+        with ExitStack() as stack:
+            for store in dict.fromkeys((self.mirror.store, self.settings.database)):
+                stack.enter_context(store.read_connection_lease())
+            yield
 
     @contextmanager
     def credentials(self, repository):
@@ -102,7 +111,7 @@ class MirrorDaemon:
             broker = Broker(identifier, self.mirror, self.git_store, resolve=self.resolve,
                             live_authority=self.live_authority, live_policy=self.policy, clock=self.clock,
                             revalidate=self.revalidate)
-            server = SessionServer(path, broker, peer_uid=self.peer_uid)
+            server = SessionServer(path, broker, peer_uid=self.peer_uid, read_scope=self.read_scope)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             self.servers[identifier] = server, thread

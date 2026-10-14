@@ -173,7 +173,8 @@ class RoleFixturesTests(unittest.TestCase):
                                     receipt=dict(local_head_oid=head,source_digest=digest(prepared.source_input),
                                         job_id=job['id'],bundle_size=len(bundle),bundle_digest=hashlib.sha256(bundle).hexdigest())
                                     capture=dict(result=value,execution=dict(running=False,exit_code=0),
-                                        execution_envelope=dict(harness_status='ok'),worktree_bundle=bundle,export_receipt=receipt)
+                                        execution_envelope=dict(version=1,attempt=job['id'],harness_status='ok',exit_code=0),
+                                        worktree_bundle=bundle,export_receipt=receipt)
                                     self.assertEqual(validate_capture(capture,job,frozen,source)['status'],'qualified')
                                     capture['worktree_bundle']=b'not a Git bundle'
                                     with self.assertRaises(PublicationClaim):validate_capture(capture,job,frozen,source)
@@ -231,7 +232,7 @@ class RoleFixturesTests(unittest.TestCase):
                         ('forge.mirror.git_store.GitStore',git.cache),
                         ('forge.factory.github.GitHub.issue_inputs',(dict(number=10,title='Issue',body='Body'),'requirements',[])),
                         ('forge.credentials.Credentials.environment',{}),
-                        ('forge.role_qualification.CanaryRunner',runner)):
+                        ('forge.role_qualification.ContainerRunner',runner)):
                         stack.enter_context(patch(target,return_value=value))
                     settings=stack.enter_context(patch('forge.settings.Settings'))
                     settings.return_value.load.return_value={'connections':{},'repositories':[]}
