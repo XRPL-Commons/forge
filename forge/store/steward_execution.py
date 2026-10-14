@@ -128,6 +128,28 @@ class StewardExecutions(Executions):
         return self._apply(command, 'steward_decision_wait', {'decision_id': decision_id}, change)
 
 
+    def changed_observations(self, command, *, decision_id, observations):
+        """Retain a fresh host observation that invalidates one unapplied choice."""
+        from .steward import Steward, selection_in
+        from .steward_dossier import move_observations
+        from ..steward_contract import digest
+        def change(db, unit):
+            view = selection_in(db,decision_id)
+            Steward(self.store,clock=self.clock)._current(db,unit,view['dossier'])
+            if view['application'] or not view['choice']:
+                raise TransitionError('Only a selected unapplied choice can be invalidated')
+            previous = move_observations(view['choice'],view['dossier']['facts']['observations'])
+            observed = move_observations(view['choice'],observations)
+            if previous == observed:
+                raise TransitionError('Steward move observations have not changed')
+            db.execute('INSERT INTO steward_observation_changes VALUES(?,?,?,?,?,?,?,?)',
+                (decision_id,unit['id'],_id(command.request_id,'decision'),digest(previous),digest(observed),
+                 _json(previous),_json(observed),self.clock()))
+            return {'decision_id':decision_id,'pending':'observations_changed',
+                    'previous_digest':digest(previous),'observed_digest':digest(observed)}
+        return self._apply(command,'steward_observations_changed',
+            {'decision_id':decision_id,'observations':observations},change)
+
     def retire_stale_wait(self, command, decision_id):
         from .steward import decision_in
         from .steward_dossier import authority_in

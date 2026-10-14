@@ -310,6 +310,102 @@ class StewardControllerTests(unittest.TestCase):
             self.assertFalse(db.execute("SELECT 1 FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone())
         with self.assertRaises(VersionConflict):self.f.select(identifier,output)
 
+    def test_advanced_base_invalidates_exact_choice_then_reinvestigates_same_stall(self):
+        driver=self.driver();identifier,output=self.accept(self.reserve())
+        driver.github.call=lambda *args:{'commit':{'sha':'b'*40}}
+        answer=driver.advance(identifier)
+        self.assertEqual(answer['pending'],'observations_changed')
+        self.assertEqual(driver.advance(identifier)['pending'],'authority_changed')
+        driver.github.call=lambda *args:{'commit':{'sha':'a'*40}}
+        self.assertEqual(driver.advance(identifier)['pending'],'authority_changed')
+        driver.github.call=lambda *args:{'commit':{'sha':'b'*40}}
+        with self.store.read_snapshot() as db:
+            old=selection_in(db,identifier)
+            self.assertIsNotNone(old['selection']);self.assertIsNone(old['application'])
+            receipt=db.execute('SELECT * FROM steward_observation_changes').fetchone()
+            self.assertEqual(json.loads(receipt['previous_json']),{'base_oid':'a'*40})
+            self.assertEqual(json.loads(receipt['observed_json']),{'base_oid':'b'*40})
+            self.assertIsNone(db.execute('SELECT resolved_at FROM unit_gates WHERE id=?',(self.f.gate,)).fetchone()[0])
+        reserved=driver._unit_step('u');self.assertTrue(reserved['reserved'],reserved)
+        job=ExecutionQueries(self.store).job(reserved['job_id'])
+        self.assertEqual(job['input_manifest']['base_oid'],'b'*40)
+        self.completed(job)
+        applied=driver.finish(job['id'])
+        self.assertEqual(applied['continuation']['status'],'applied')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_decisions').fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_observation_changes').fetchone()[0],1)
+            self.assertIsNone(selection_in(db,identifier)['application'])
+        self.assertEqual(self.f.view()['charged_failures'],0)
+
+    def test_new_read_time_and_unrelated_issue_change_do_not_invalidate_retry(self):
+        driver=self.driver();identifier,_=self.accept(self.reserve())
+        self.f.now+=1
+        driver._observe=lambda *args,**kwargs:{'base_oid':'a'*40,'observed_at':self.f.now,'issues':[
+            {'repository_id':1,'issue_number':2,'state':'closed','revision':'unrelated-change'}]}
+        self.assertEqual(driver.advance(identifier)['status'],'applied')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_observation_changes').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_turns').fetchone()[0],1)
+
+    def test_closed_selected_prerequisite_invalidates_wait_choice(self):
+        driver=self.driver();identifier,_=self.accept(self.reserve(),action='wait_on',
+            parameters={'repository_id':1,'issue_number':2})
+        driver._observe=lambda *args,**kwargs:{'base_oid':'a'*40,'observed_at':self.f.now,'issues':[
+            {'repository_id':1,'issue_number':2,'state':'closed','revision':'closed-revision'}]}
+        self.assertEqual(driver.advance(identifier)['pending'],'observations_changed')
+        with self.store.read_snapshot() as db:
+            receipt=db.execute('SELECT observed_json FROM steward_observation_changes').fetchone()
+            self.assertEqual(json.loads(receipt[0])['target']['state'],'closed')
+            self.assertEqual(db.execute('SELECT count(*) FROM issue_dependencies').fetchone()[0],0)
+        reserved=driver._unit_step('u')
+        self.assertTrue(reserved['reserved'],reserved)
+        job=ExecutionQueries(self.store).job(reserved['job_id'])
+        self.assertEqual(job['steward']['dossier']['facts']['observations']['issues'][0]['state'],'closed')
+
+    def test_changed_autonomy_refreshes_original_stall_and_keeps_old_decision(self):
+        driver=self.driver();identifier,output=self.accept(self.reserve())
+        self.exec.decision_wait(self.f.command(),identifier)
+        with self.store.write() as db:
+            db.execute("INSERT INTO configuration(domain,subject,revision,active,settings_json,created_at) VALUES('steward','1',1,1,?,?)",(json.dumps({'autonomy':'manual'}),self.f.now))
+        answer=driver._unit_step('u')
+        self.assertTrue(answer['reserved'],answer)
+        job=ExecutionQueries(self.store).job(answer['job_id']);self.completed(job)
+        accepted=driver.finish(job['id'])
+        self.assertEqual(accepted['continuation']['pending'],'operator_choice')
+        self.assertNotEqual(accepted['decision_id'],identifier)
+        for _ in range(2):
+            self.assertEqual(driver._unit_step('u')['pending'],'operator_choice')
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_decisions').fetchone()[0],2)
+            self.assertEqual([tuple(r) for r in db.execute('SELECT cycle,physical_attempt FROM steward_turns ORDER BY cycle')],[(1,1),(2,1)])
+            self.assertIsNone(selection_in(db,identifier)['selection'])
+            self.assertIsNone(db.execute('SELECT resolved_at FROM unit_gates WHERE id=?',(self.f.gate,)).fetchone()[0])
+        with self.assertRaises(VersionConflict):self.f.select(identifier,output)
+        self.assertEqual(self.f.view()['charged_failures'],0)
+
+    def test_captured_pause_discard_resume_refreshes_same_trigger_within_cycle_limit(self):
+        driver=self.driver();job=self.reserve()
+        for cycle in range(1,4):
+            self.completed(job)
+            self.f.life.pause(self.f.command())
+            self.assertEqual(driver.finish(job['id'])['outcome'],'stale_investigation')
+            self.f.life.resume(self.f.command())
+            answer=driver._unit_step('u')
+            if cycle<3:
+                self.assertTrue(answer['reserved'],answer)
+                job=ExecutionQueries(self.store).job(answer['job_id'])
+            else:
+                self.assertEqual(answer['pending'],'cycle_limit')
+        with self.store.read_snapshot() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT cycle,physical_attempt FROM steward_turns ORDER BY cycle')],[(1,1),(2,1),(3,1)])
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_decisions').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM jobs WHERE outcome='stale_investigation'").fetchone()[0],3)
+            self.assertIsNone(db.execute('SELECT resolved_at FROM unit_gates WHERE id=?',(self.f.gate,)).fetchone()[0])
+            wait=json.loads(db.execute("SELECT details_json FROM unit_gates WHERE code='decision_required' AND resolved_at IS NULL").fetchone()[0])
+            self.assertEqual(wait['reason'],'cycle_limit')
+        self.assertEqual(self.f.view()['charged_failures'],0)
+
     def test_semantically_stale_capture_is_consumed_without_application_or_charge(self):
         driver=self.driver();job=self.reserve();self.completed(job)
         self.f.life.pause(self.f.command())

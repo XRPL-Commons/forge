@@ -88,10 +88,13 @@ class StewardEffectController(Lifecycle):
             issue,requirements=self.github.issue(self._item(member))
             labels=sorted(value['name'] if isinstance(value,dict) else value for value in issue.get('labels',[]))
             assignees=sorted(value['login'] if isinstance(value,dict) else value for value in issue.get('assignees',[]))
+            assignee_types={value['login']:value['type'] for value in issue.get('assignees',[])
+                            if isinstance(value,dict) and value.get('type')}
             desired='closed' if member['member_id'] in closed else 'open'
             if (issue.get('number')!=member['number'] or requirements!=expected[member['member_id']]
                     or issue.get('state')!=desired or labels!=sorted(json.loads(member['labels_json']))
-                    or assignees!=sorted(json.loads(member['assignees_json']))):
+                    or assignees!=sorted(json.loads(member['assignees_json']))
+                    or assignee_types!=json.loads(member['assignee_types_json'])):
                 raise TransitionError('Source issue requirements, ownership, labels or state changed')
         if row['choice']['action']=='fold':
             parameters=row['choice']['parameters'];target=next(v for v in row['dossier']['facts']['observations']['issues']

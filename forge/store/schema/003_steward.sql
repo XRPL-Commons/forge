@@ -25,8 +25,7 @@ CREATE TABLE steward_decisions (
  output_digest TEXT NOT NULL,
  unit_id TEXT NOT NULL REFERENCES units(id),
  trigger_key TEXT NOT NULL,
- accepted_at REAL NOT NULL,
- UNIQUE(unit_id,trigger_key)
+ accepted_at REAL NOT NULL
 ) STRICT;
 CREATE TABLE steward_applications (
  decision_id TEXT PRIMARY KEY REFERENCES steward_selections(decision_id),
@@ -66,6 +65,34 @@ BEGIN SELECT RAISE(ABORT,'steward turn requires its exact physical assignment');
 CREATE TRIGGER steward_decision_assignment BEFORE INSERT ON steward_decisions
 WHEN NOT EXISTS(SELECT 1 FROM steward_turns t WHERE t.job_id=NEW.job_id AND t.unit_id=NEW.unit_id AND t.trigger_key=NEW.trigger_key)
 BEGIN SELECT RAISE(ABORT,'steward decision requires its assigned trigger'); END;
+CREATE TRIGGER steward_decision_cycle BEFORE INSERT ON steward_decisions
+WHEN EXISTS(SELECT 1 FROM steward_decisions d JOIN steward_turns previous ON previous.job_id=d.job_id
+ JOIN steward_turns current ON current.job_id=NEW.job_id
+ WHERE previous.unit_id=current.unit_id AND previous.cycle=current.cycle)
+BEGIN SELECT RAISE(ABORT,'steward cycle already has an accepted decision'); END;
+
+
+-- Host observations invalidate an exact unapplied choice without rewriting its dossier.
+CREATE TABLE steward_observation_changes (
+ decision_id TEXT PRIMARY KEY REFERENCES steward_decisions(decision_id),
+ unit_id TEXT NOT NULL REFERENCES units(id),
+ command_id TEXT NOT NULL UNIQUE REFERENCES decisions(id) DEFERRABLE INITIALLY DEFERRED,
+ previous_digest TEXT NOT NULL,
+ observed_digest TEXT NOT NULL CHECK(observed_digest!=previous_digest),
+ previous_json TEXT NOT NULL CHECK(json_valid(previous_json) AND length(previous_json)<=65536),
+ observed_json TEXT NOT NULL CHECK(json_valid(observed_json) AND length(observed_json)<=65536),
+ observed_at REAL NOT NULL
+) STRICT;
+CREATE TRIGGER steward_observation_changes_assignment BEFORE INSERT ON steward_observation_changes
+WHEN NOT EXISTS(SELECT 1 FROM steward_decisions d JOIN steward_selections s ON s.decision_id=d.decision_id
+ WHERE d.decision_id=NEW.decision_id AND d.unit_id=NEW.unit_id)
+ OR EXISTS(SELECT 1 FROM steward_applications a WHERE a.decision_id=NEW.decision_id)
+BEGIN SELECT RAISE(ABORT,'observation change requires its exact unapplied steward choice'); END;
+CREATE TRIGGER steward_observation_changes_no_update BEFORE UPDATE ON steward_observation_changes
+ BEGIN SELECT RAISE(ABORT,'steward observation receipt is immutable'); END;
+CREATE TRIGGER steward_observation_changes_no_delete BEFORE DELETE ON steward_observation_changes
+ BEGIN SELECT RAISE(ABORT,'steward observation receipt is retained'); END;
+CREATE INDEX steward_observation_changes_unit ON steward_observation_changes(unit_id);
 
 -- Add the explicit new role without rewriting historical configuration or jobs.
 CREATE TEMP TABLE steward_role_configs AS

@@ -76,6 +76,18 @@ class StewardServiceTests(unittest.TestCase):
             self.assertEqual(markers_in(db, ['u'])['u'], {'decision_id': request['decision_id'],
                 'digest': request['digest'], 'status': 'proposed'})
 
+    def test_refreshed_cycle_is_visible_even_after_clock_adjustment(self):
+        from forge.store.configuration import Configuration
+        first,_,_=self.fixture.accepted(judgement='judgement')
+        Configuration(self.fixture.store).replace('steward',{'autonomy':'manual'},
+                                                   subject='1',expected_revision=0)
+        self.fixture.now=99
+        latest,_,_=self.fixture.accepted(judgement='judgement')
+        self.assertNotEqual(first,latest)
+        self.assertEqual(self.service.view('i')['decision']['decision_id'],latest)
+        with self.fixture.store.read_snapshot() as db, patch('forge.store.steward.read_in',side_effect=AssertionError('artifact read')):
+            self.assertEqual(markers_in(db,['u'])['u']['decision_id'],latest)
+
 
 class StewardHTTPTests(unittest.TestCase):
     def setUp(self):

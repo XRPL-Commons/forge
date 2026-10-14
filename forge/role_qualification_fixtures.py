@@ -44,15 +44,23 @@ class Fixtures:
     def reserve(self, role):
         if role in {'triage', 'strategist', 'discussion'}:
             return self.auxiliary(role)
-        if role == 'recovery':
+        if role in {'recovery','steward'}:
             failed = self.reserve('build')
             self.clean_pipeline(failed, {'result': None, 'logs':
                 'QUALIFICATION FIXTURE: an assertion expected 2 + 2 == 5; no real issue failure.', 'missing': []})
             self.life.record_failure(self.command(), failed['id'], execution_fence=failed['execution_fence'],
                 input_manifest=failed['input_manifest'], evidence={'reason':
                     'QUALIFICATION FIXTURE: assertion 2 + 2 == 5 failed; inspect pinned repository and explain the incorrect assertion.'})
-            row = self.life.reserve(self.command(), failed['id'], slot='qualification-recovery',
-                                    execution_fence=str(uuid.uuid4()), launch=self.launch())
+            if role == 'steward':
+                from .store.steward_execution import StewardExecutions
+                row = StewardExecutions(self.store).reserve(self.command(), mode='recovery',
+                    trigger={'failed_job_id':failed['id']},
+                    observations={'base_oid':self.base,'observed_at':time.time(),'issues':[]},
+                    config=self.config, slot='qualification-steward',
+                    execution_fence=str(uuid.uuid4()), launch=self.launch())
+            else:
+                row = self.life.reserve(self.command(), failed['id'], slot='qualification-recovery',
+                                        execution_fence=str(uuid.uuid4()), launch=self.launch())
         else:
             member, candidate, manifest = self.admitted['member_id'], None, self.manifest
             if role != 'build':

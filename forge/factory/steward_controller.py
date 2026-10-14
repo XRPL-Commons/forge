@@ -8,7 +8,7 @@ from ..store.db import StoreError
 from ..store.executions import ExecutionQueries, Launch
 from ..store.models import Command, TransitionError
 from ..store.queries import _limit
-from ..store.steward import Steward, decision_in, dossier_in, selection_in
+from ..store.steward import Steward, decision_in, dossier_in, selection_in, trigger_decision_in
 from ..store.steward_execution import StewardExecutions, StewardExecutionQueries, StewardMoves
 from ..steward_contract import REVERSIBLE, digest
 from .config import policy, validate
@@ -120,7 +120,8 @@ class StewardController:
             prior = db.execute('SELECT t.*,j.outcome,j.cleanup FROM steward_turns t JOIN jobs j ON j.id=t.job_id '
                                'WHERE t.unit_id=? AND t.trigger_key=? ORDER BY t.cycle DESC,t.physical_attempt DESC LIMIT 1',
                                (unit_id, key)).fetchone()
-            if db.execute('SELECT 1 FROM steward_decisions WHERE unit_id=? AND trigger_key=?', (unit_id,key)).fetchone():
+            from ..store.steward_dossier import authority_in
+            if trigger_decision_in(db,unit_id,key,authority_in(db,unit),include_applied=True):
                 return {'unit_id':unit_id,'pending':'decision_required'}
             if prior and (not prior['cleanup'] or prior['outcome'] is None):
                 return {'unit_id':unit_id,'pending':'active'}
@@ -238,13 +239,18 @@ class StewardController:
             with self.store.read_snapshot() as db:
                 view = selection_in(db, decision_id)
         choice = view['choice']
-        if choice['action'] in {'retry', 'rebuild'} and view['brief'] is None:
-            return self.schedule(unit_id, mode='brief', trigger=dict(decision_id=decision_id,
-                choice_id=choice['id'], choice_digest=digest(choice)))
         unit, scope, related = self._scope(unit_id)
         if self.admission(scope) is not True:
             return {'decision_id': decision_id, 'pending': 'repository_setup'}
         observations = self._observe(scope, related)
+        from ..store.steward_dossier import move_observations
+        if move_observations(choice,observations) != move_observations(choice,view['dossier']['facts']['observations']):
+            return self.commands.changed_observations(
+                Command(str(uuid.uuid4()),'supervisor:steward',unit_id,unit['version']),
+                decision_id=decision_id,observations=observations)
+        if choice['action'] in {'retry', 'rebuild'} and view['brief'] is None:
+            return self.schedule(unit_id, mode='brief', trigger=dict(decision_id=decision_id,
+                choice_id=choice['id'], choice_digest=digest(choice)))
         moves = StewardMoves(self.store, clock=self.clock)
         return self.core.apply(Command(str(uuid.uuid4()), 'supervisor:steward', unit_id, unit['version']),
             decision_id=decision_id, apply_move=lambda db, command, current, selected, brief:
@@ -276,7 +282,7 @@ class StewardController:
                     candidate = ('recovery', {'failed_job_id': failed}, 'failure:'+failed)
                 elif detail.get('source') == 'scheduling' and detail.get('reason') == 'stalled':
                     candidate = ('stall', {'gate_id': row['id']}, 'stall:'+row['id'])
-                if candidate and not db.execute('SELECT 1 FROM steward_decisions WHERE unit_id=? AND trigger_key=?', (unit_id,candidate[2])).fetchone():
+                if candidate and not trigger_decision_in(db,unit_id,candidate[2],authority,include_applied=True):
                     trigger = candidate; break
         for stale in stale_waits:
             self.commands.retire_stale_wait(self._command(unit_id), stale)

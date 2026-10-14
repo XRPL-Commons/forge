@@ -206,6 +206,14 @@ class ObservationController:
                     return {'unit_id': unit_id, 'observed': True, **self.commands.invalidate_candidate(self._command(unit),
                         selected['id'], reason=reason, evidence=proof)}
         if remote['state'] == 'closed' and remote.get('state_reason') in {'completed', 'not_planned', 'duplicate'}:
+            # A selected steward mutation retains ownership through a lost
+            # reply. Creating a second membership decision for its own closure
+            # would invalidate the exact authority needed to finish that intent.
+            from ..store.steward_effects import closure_obligation_in
+            with self.store.read_snapshot() as db:
+                closure=closure_obligation_in(db,unit_id,member_id)
+            if closure:
+                return {'unit_id':unit_id,'observed':True,'pending':'steward_issue','effect_id':closure}
             if unit['delivery_approved']:
                 with self.store.read_snapshot() as db:
                     existing=db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='membership_decision' AND resolved_at IS NULL",(unit_id,member_id)).fetchone()

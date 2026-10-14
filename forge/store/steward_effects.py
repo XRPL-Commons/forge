@@ -20,7 +20,7 @@ def queue_in(db,command,unit,*,decision_id,choice,dossier):
     require(choice['action'] in EXTERNAL_ACTIONS, 'Unsupported steward issue action')
     require(authority_in(db,unit)==dossier['authority'], 'Steward issue scope changed')
     members=[dict(row) for row in db.execute('SELECT m.id AS member_id,m.issue_id,m.requirements_revision_id,i.repository_id,i.github_number AS number,'
-        'i.labels_json,i.assignees_json,r.full_name AS repo FROM unit_issues m JOIN issues i ON i.id=m.issue_id '
+        'i.labels_json,i.assignees_json,i.assignee_types_json,r.full_name AS repo FROM unit_issues m JOIN issues i ON i.id=m.issue_id '
         'JOIN repositories r ON r.id=i.repository_id WHERE m.unit_id=? AND m.left_at IS NULL ORDER BY m.id',(unit['id'],))]
     require(members and len(members)<=100, 'Steward issue action requires bounded complete scope')
     if choice['action']=='fold':
@@ -63,13 +63,47 @@ def row_in(db,effect_id):
     return result
 
 
+def _observed_closure_in(db,row,member_id):
+    """A closure observation may change exactly the selected issue's state."""
+    pin=next((m for m in row['dossier']['authority']['members'] if m['member_id']==member_id),None)
+    scope=next((m for m in row['scope'] if m['member_id']==member_id),None)
+    issue=db.execute('SELECT i.*,m.requirements_revision_id AS member_revision FROM unit_issues m '
+                     'JOIN issues i ON i.id=m.issue_id WHERE m.id=? AND m.unit_id=? AND m.left_at IS NULL',
+                     (member_id,row['unit_id'])).fetchone()
+    return bool(pin and scope and issue and pin['github_state']=='open'
+        and issue['github_state']=='closed' and issue['state_reason']=='not_planned'
+        and issue['version']==pin['issue_version']+1
+        and issue['current_revision_id']==pin['current_revision_id']
+        and issue['member_revision']==pin['requirements_revision_id']
+        and issue['labels_json']==scope['labels_json'] and issue['assignees_json']==scope['assignees_json']
+        and json.loads(issue['assignee_types_json'])==json.loads(scope['assignee_types_json']))
+
+
+def closure_obligation_in(db,unit_id,member_id):
+    """An already-sent closure stays owned by its durable outbox reconciliation.
+
+    Observation is not confirmation. The effect controller must still read back
+    the outcome and validate every independent authority pin before completion.
+    """
+    rows=db.execute("SELECT e.id FROM external_effects e JOIN steward_issue_effects s ON s.effect_id=e.id "
+        "JOIN steward_effect_groups g ON g.decision_id=s.decision_id WHERE e.unit_id=? AND g.completed_at IS NULL "
+        "AND e.status IN ('uncertain','confirmed') AND e.attempts>0 "
+        "AND json_extract(e.payload_json,'$.operation')='close' AND json_extract(e.payload_json,'$.member_id')=?",
+        (unit_id,member_id)).fetchall()
+    for effect in rows:
+        row=row_in(db,effect['id'])
+        if _observed_closure_in(db,row,member_id):
+            return effect['id']
+    return None
+
+
 def current_in(db,row):
     """Own confirmed closures may refresh GitHub state; other authority stays pinned."""
     unit=_unit(db,row['unit_id']);current=authority_in(db,unit)
     expected=json.loads(_json(row['dossier']['authority']))
     closed={json.loads(r[0])['member_id'] for r in db.execute("SELECT e.payload_json FROM external_effects e JOIN steward_issue_effects s ON s.effect_id=e.id WHERE s.decision_id=? AND e.status='confirmed' AND json_extract(e.payload_json,'$.operation')='close'",(row['decision_id'],))}
     for member in current['members']:
-        if member['member_id'] in closed and member['github_state']=='closed':
+        if member['member_id'] in closed and _observed_closure_in(db,row,member['member_id']):
             old=next(m for m in expected['members'] if m['member_id']==member['member_id'])
             member['github_state']=old['github_state'];member['issue_version']=old['issue_version']
     # The shared bounded-effect gate belongs to this effect, not a new approval.

@@ -15,8 +15,8 @@ def markers_in(db, unit_ids):
                WHEN u.state IN ('merged','closed','dissolved') THEN 'stale'
                WHEN s.decision_id IS NOT NULL THEN 'selected' ELSE 'proposed' END AS status
         FROM json_each(?) p JOIN steward_decisions d ON d.decision_id=(
-          SELECT decision_id FROM steward_decisions WHERE unit_id=p.value
-          AND trigger_key NOT LIKE 'brief:%' ORDER BY accepted_at DESC,decision_id DESC LIMIT 1)
+          SELECT latest.decision_id FROM steward_decisions latest JOIN steward_turns t ON t.job_id=latest.job_id
+          WHERE latest.unit_id=p.value AND t.mode!='brief' ORDER BY t.cycle DESC LIMIT 1)
         JOIN units u ON u.id=d.unit_id
         LEFT JOIN steward_selections s ON s.decision_id=d.decision_id
         LEFT JOIN steward_applications a ON a.decision_id=d.decision_id

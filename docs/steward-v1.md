@@ -29,10 +29,12 @@ The UI displays the complete original issue scope. A recorded choice stays pendi
 
 ## Release checks
 
-Before deployment:
+Before production rollout:
 
 - Review the combined core, executor, outbox and UI change independently.
 - Pass full CI and qualify the new steward schema on the installed provider image.
 - Exercise the captured stuck-work cases through automatic application or one operator choice, including a grouped delivery and an interrupted remote reply.
+
+Qualify a candidate on an idle test instance with automation disabled. Install its exact commit through `forge migrate upgrade`, then use `forge setup qualify-roles --role steward` for the provider check. Upgrades are forward-only: when installing a PR head, merge that PR with a merge commit so the release retains the tested commit in its ancestry. This provider check uses disposable work and does not establish live choice or issue-to-merge acceptance.
 
 Keep #258 and the Run 3 tracking plan open until those acceptance checks pass. Unit tests alone do not establish live acceptance.

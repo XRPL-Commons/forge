@@ -119,6 +119,104 @@ class StewardEffectsTests(unittest.TestCase):
         self.driver.step(effects[1]); self.assertEqual(self.f.view()['state'],'closed')
         self.assertEqual([write[0] for write in self.writes],['POST','PATCH'])
 
+    def lost_closure(self,*,approved=True):
+        if approved:
+            with self.store.write() as db:
+                db.execute("INSERT INTO unit_publication_targets VALUES('u','{}')")
+        self.issues[1].update(title='Keep intent',body='Original body',updated_at='2026-10-14T10:00:00Z')
+        identifier,effects=self.queue('drop',{'intent_note':'This work is no longer needed.'})
+        self.driver.step(effects[0])
+        def lost(*args):
+            self.call(*args)
+            raise GitHubUnavailable('lost closure reply')
+        self.github.call.side_effect=lost
+        self.assertEqual(self.driver.step(effects[1])['reason'],'github_unavailable')
+        return identifier,effects
+
+    def observe_closure(self):
+        from forge.factory.observation_controller import ObservationController
+        observer=ObservationController(self.store,self.github,admission=lambda _:True,clock=lambda:self.f.now)
+        return observer.observe_member('u',self.f.member,'i')
+
+    def test_lost_closure_reply_survives_normal_observation_before_readback(self):
+        identifier,effects=self.lost_closure()
+        observed=self.observe_closure()
+        self.assertEqual(observed['pending'],'steward_issue')
+        self.assertEqual(observed['effect_id'],effects[-1])
+        self.assertEqual(self.f.view()['state'],'queued')
+        self.f.now+=31
+        self.assertEqual(self.driver.step(effects[-1])['status'],'confirmed')
+        self.assertEqual(self.f.view()['state'],'closed')
+        self.assertEqual(len(self.writes),2)
+        with self.store.read_snapshot() as db:
+            self.assertIsNotNone(db.execute('SELECT completed_at FROM steward_effect_groups WHERE decision_id=?',(identifier,)).fetchone()[0])
+            self.assertFalse(db.execute("SELECT 1 FROM unit_gates WHERE code='membership_decision'").fetchone())
+
+    def test_single_issue_observation_leaves_settlement_to_the_pending_closure(self):
+        _,effects=self.lost_closure(approved=False)
+        self.assertEqual(self.observe_closure()['pending'],'steward_issue')
+        self.assertEqual(self.f.view()['state'],'queued')
+        self.f.now+=31
+        self.assertEqual(self.driver.step(effects[-1])['status'],'confirmed')
+        self.assertEqual(self.f.view()['state'],'closed')
+
+    def test_own_closure_does_not_clear_an_independent_membership_decision(self):
+        _,effects=self.lost_closure()
+        gate=self.f.life.open_gate(self.f.command(),'membership_decision',member_id=self.f.member,
+            details={'reason':'requirements_changed','revision_id':'independent-revision'})['gate_id']
+        self.assertEqual(self.observe_closure()['pending'],'steward_issue')
+        self.f.now+=31
+        self.assertEqual(self.driver.step(effects[-1])['reason'],'Accepted steward issue authority changed')
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute('SELECT resolved_at FROM unit_gates WHERE id=?',(gate,)).fetchone()[0])
+            self.assertIsNone(db.execute('SELECT completed_at FROM steward_effect_groups').fetchone()[0])
+            self.assertEqual(db.execute('SELECT status FROM external_effects WHERE id=?',(effects[-1],)).fetchone()[0],'confirmed')
+
+    def test_closure_with_changed_labels_requires_its_independent_membership_decision(self):
+        _,effects=self.lost_closure()
+        self.issues[1]['labels']=['new-scope']
+        self.assertEqual(self.observe_closure()['pending'],'membership_decision')
+        self.f.now+=31
+        self.assertEqual(self.driver.step(effects[-1])['reason'],'Accepted steward issue authority changed')
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute('SELECT completed_at FROM steward_effect_groups').fetchone()[0])
+            self.assertTrue(db.execute("SELECT 1 FROM unit_gates WHERE code='membership_decision' AND resolved_at IS NULL").fetchone())
+
+    def test_closure_with_changed_requirements_preserves_the_requirements_hold(self):
+        _,effects=self.lost_closure()
+        self.github.issue.side_effect=lambda item:(dict(self.issues[item['number']]),'new acceptance')
+        self.assertEqual(self.observe_closure()['pending'],'membership_decision')
+        self.f.now+=31
+        self.assertEqual(self.driver.step(effects[-1])['reason'],'Accepted steward issue authority changed')
+        with self.store.read_snapshot() as db:
+            gate=db.execute("SELECT details_json FROM unit_gates WHERE code='membership_decision' AND resolved_at IS NULL").fetchone()
+            self.assertEqual(json.loads(gate[0])['reason'],'requirements_changed')
+            self.assertIsNone(db.execute('SELECT completed_at FROM steward_effect_groups').fetchone()[0])
+
+    def test_closure_with_changed_assignee_type_is_not_normalized(self):
+        self.issues[1]['assignees']=[{'login':'worker','type':'Bot'}]
+        with self.store.write() as db:
+            db.execute('UPDATE issues SET assignees_json=?,assignee_types_json=? WHERE id=?',
+                       (json.dumps(['worker']),json.dumps({'worker':'Bot'}),'i'))
+        _,effects=self.lost_closure()
+        self.issues[1]['assignees'][0]['type']='User'
+        self.assertEqual(self.observe_closure()['pending'],'membership_decision')
+        self.f.now+=31
+        self.assertEqual(self.driver.step(effects[-1])['reason'],'Accepted steward issue authority changed')
+        with self.store.read_snapshot() as db:
+            self.assertIsNone(db.execute('SELECT completed_at FROM steward_effect_groups').fetchone()[0])
+            self.assertTrue(db.execute("SELECT 1 FROM unit_gates WHERE code='membership_decision' AND resolved_at IS NULL").fetchone())
+
+    def test_changed_assignee_type_prevents_remote_write_before_observation(self):
+        self.issues[1]['assignees']=[{'login':'worker','type':'Bot'}]
+        with self.store.write() as db:
+            db.execute('UPDATE issues SET assignees_json=?,assignee_types_json=? WHERE id=?',
+                       (json.dumps(['worker']),json.dumps({'worker':'Bot'}),'i'))
+        _,effects=self.queue()
+        self.issues[1]['assignees'][0]['type']='User'
+        self.assertEqual(self.driver.step(effects[0])['reason'],'Source issue requirements, ownership, labels or state changed')
+        self.github.call.assert_not_called()
+
     def test_split_creates_children_before_comments_and_closure(self):
         _,effects=self.queue('split',{'children':[
             {'title':'First','body':'First scope','acceptance_criteria':['First passes']},

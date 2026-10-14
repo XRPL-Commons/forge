@@ -30,6 +30,35 @@ def decision_in(db, decision_id):
     return dict(row), output, artifact_in(db,row['job_id'],'steward_dossier')
 
 
+def trigger_decision_in(db, unit_id, trigger_key, authority, *, include_applied=False):
+    """Find current semantic authority, never an arbitrary historical decision."""
+    rows = db.execute('SELECT d.decision_id,d.job_id,a.decision_id AS applied '
+        'FROM steward_decisions d LEFT JOIN steward_applications a ON a.decision_id=d.decision_id '
+        'JOIN steward_turns t ON t.job_id=d.job_id WHERE d.unit_id=? AND d.trigger_key=? '
+        'ORDER BY t.cycle DESC', (unit_id, trigger_key))
+    for row in rows:
+        if (include_applied and row['applied']) or dossier_in(db,row['job_id'])['authority'] == authority:
+            return row['decision_id']
+    return None
+
+
+def refreshed_cycle_in(db, unit_id, trigger_key, authority):
+    """A changed obligation gets a new cycle; failed physical runs cannot escape their cap."""
+    prior = db.execute('SELECT t.job_id,j.cleanup,j.outcome FROM steward_turns t '
+        'JOIN jobs j ON j.id=t.job_id WHERE t.unit_id=? AND t.trigger_key=? '
+        'ORDER BY t.cycle DESC,t.physical_attempt DESC LIMIT 1', (unit_id,trigger_key)).fetchone()
+    if prior is None:
+        return True
+    if not prior['cleanup'] or dossier_in(db,prior['job_id'])['authority'] == authority:
+        return False
+    if trigger_decision_in(db,unit_id,trigger_key,authority,include_applied=True):
+        return False
+    if prior['outcome'] == 'stale_investigation':
+        return artifact_in(db,prior['job_id'],'result').get('reason') == 'steward_authority_changed'
+    return prior['outcome'] == 'success' and db.execute(
+        'SELECT 1 FROM steward_decisions WHERE job_id=?', (prior['job_id'],)).fetchone() is not None
+
+
 def selection_in(db, decision_id):
     row, output, dossier = decision_in(db, decision_id)
     selected = db.execute('SELECT * FROM steward_selections WHERE decision_id=?', (decision_id,)).fetchone()
@@ -37,11 +66,11 @@ def selection_in(db, decision_id):
     choice = next((c for c in output['choices'] if selected and c['id']==selected['choice_id']), None)
     brief, brief_id = output['brief'], None
     if choice and (brief is None or brief['choice_id']!=choice['id']):
-        enriched = db.execute('SELECT decision_id FROM steward_decisions WHERE unit_id=? AND trigger_key=?',
-                              (row['unit_id'], 'brief:'+decision_id)).fetchone()
+        enriched = (applied['brief_decision_id'] if applied else
+            trigger_decision_in(db,row['unit_id'],'brief:'+decision_id,authority_in(db,_unit(db,row['unit_id']))))
         if enriched:
-            brief = decision_in(db,enriched[0])[1]['brief']
-            brief_id = enriched[0]
+            brief = decision_in(db,enriched)[1]['brief']
+            brief_id = enriched
         else:
             brief = None
     return {'decision_id':decision_id,'output':output,'dossier':dossier,'choice':choice,'brief':brief,
@@ -74,14 +103,17 @@ class Steward(Executions):
         count = db.execute('SELECT count(DISTINCT cycle) FROM steward_turns WHERE unit_id=?',(unit['id'],)).fetchone()[0]
         cycle, physical = count+1, 1
         if retry_of is None:
-            require(not db.execute('SELECT 1 FROM steward_turns WHERE unit_id=? AND trigger_key=?',(unit['id'],dossier['trigger_key'])).fetchone(),
-                    'Existing trigger requires an authorized physical retry')
+            require(refreshed_cycle_in(db,unit['id'],dossier['trigger_key'],dossier['authority']),
+                    'Existing trigger requires changed semantic authority or an authorized physical retry')
             require(count < MAX_CYCLES, 'Steward cycle limit reached; operator choice required')
         else:
             prior = db.execute('SELECT t.*,j.cleanup,j.outcome,e.container_id FROM steward_turns t JOIN jobs j ON j.id=t.job_id '
                 'JOIN job_execution_state e ON e.job_id=j.id WHERE t.job_id=? AND t.unit_id=?', (retry_of,unit['id'])).fetchone()
             require(prior and prior['cleanup'] and prior['outcome']=='deferred' and prior['trigger_key']==dossier['trigger_key'],
                     'Steward retry requires the cleaned exact deferred turn')
+            latest = db.execute('SELECT job_id FROM steward_turns WHERE unit_id=? AND trigger_key=? '
+                'ORDER BY cycle DESC,physical_attempt DESC LIMIT 1', (unit['id'],dossier['trigger_key'])).fetchone()
+            require(latest and latest[0]==retry_of, 'Steward retry must continue the latest physical attempt')
             from ..factory.execution_problems import classify
             evidence = artifact_in(db,retry_of,'result')
             observed = classify({'id':retry_of,'container_id':prior['container_id']}, artifact_in(db,retry_of,'worker_capture'), self.clock())
@@ -92,8 +124,8 @@ class Steward(Executions):
             physical = db.execute('SELECT count(*) FROM steward_turns WHERE unit_id=? AND cycle=?',(unit['id'],cycle)).fetchone()[0]+1
             require(physical <= 3, 'Steward physical retry limit reached; owned wait requires operator attention')
 
-        require(not db.execute('SELECT 1 FROM steward_decisions WHERE unit_id=? AND trigger_key=?',
-                              (unit['id'],dossier['trigger_key'])).fetchone(), 'Trigger already has an accepted steward decision')
+        require(not trigger_decision_in(db,unit['id'],dossier['trigger_key'],dossier['authority'],include_applied=True),
+                'Trigger already has a current or applied steward decision')
         require(not db.execute('SELECT 1 FROM steward_turns t JOIN jobs j ON j.id=t.job_id '
             'WHERE t.unit_id=? AND t.trigger_key=? AND (j.cleanup=0 OR j.outcome IS NULL)',
             (unit['id'],dossier['trigger_key'])).fetchone(), 'Trigger already has a live steward')
@@ -114,8 +146,8 @@ class Steward(Executions):
         require(captured.get('result') == decision, 'Decision does not match the captured worker output')
         accepted = decision_in(db,dossier['trigger']['decision_id'])[1] if dossier['mode']=='brief' else None
         output = validate_decision(decision,dossier,accepted=accepted)
-        require(not db.execute('SELECT 1 FROM steward_decisions WHERE unit_id=? AND trigger_key=?',
-            (unit['id'],turn['trigger_key'])).fetchone(), 'Trigger already has an accepted decision')
+        require(not trigger_decision_in(db,unit['id'],turn['trigger_key'],dossier['authority'],include_applied=True),
+                'Trigger already has a current or applied decision')
         identifier = _id(command.request_id,'decision')
         _artifact(db,job_id,'steward_decision',encoded(output),self.clock())
         db.execute('INSERT INTO steward_decisions VALUES(?,?,?,?,?,?)',
@@ -172,12 +204,11 @@ class Steward(Executions):
         require(digest(choice)==selected['choice_digest'], 'Selected choice digest changed')
         brief,brief_id = output['brief'], None
         if choice['action'] in {'retry','rebuild'} and (brief is None or brief['choice_id']!=choice['id']):
-            enriched = db.execute('SELECT decision_id FROM steward_decisions WHERE unit_id=? AND trigger_key=?',
-                (unit['id'],'brief:'+decision_id)).fetchone()
+            enriched = trigger_decision_in(db,unit['id'],'brief:'+decision_id,dossier['authority'])
             require(enriched is not None, 'Selected move awaits its brief')
-            brief_row,brief_output,brief_dossier = decision_in(db,enriched[0])
+            brief_row,brief_output,brief_dossier = decision_in(db,enriched)
             self._current(db,unit,brief_dossier)
-            brief,brief_id = brief_output['brief'], enriched[0]
+            brief,brief_id = brief_output['brief'], enriched
         require(choice['action'] not in {'retry','rebuild'} or _charges(db,unit)<3,
                 'Steward cannot reset an exhausted failure budget')
         require(not db.execute("SELECT 1 FROM publication_intents WHERE unit_id=? AND status NOT IN ('confirmed','superseded')", (unit['id'],)).fetchone(),

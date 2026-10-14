@@ -200,6 +200,32 @@ class StewardCoreTests(unittest.TestCase):
         self.assertEqual(self.view()['charged_failures'],0)
         with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT count(*) FROM steward_turns').fetchone()[0],3)
 
+    def test_changed_authority_does_not_repeat_applied_obligation(self):
+        identifier,output,_=self.accepted();self.select(identifier,output)
+        # A queued remote action deliberately retains its original obligation.
+        self.life.apply(self.command(),decision_id=identifier,apply_move=lambda *args:{'pending':True})
+        self.life.pause(self.command());self.life.resume(self.command())
+        with self.assertRaisesRegex(TransitionError,'changed semantic authority'):
+            self.reserve(self.dossier())
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_turns').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT count(*) FROM steward_applications').fetchone()[0],1)
+
+    def test_dossier_time_change_alone_cannot_repeat_accepted_trigger(self):
+        self.accepted();self.now+=100
+        with self.assertRaisesRegex(TransitionError,'changed semantic authority'):
+            self.reserve(self.dossier())
+
+    def test_changed_authority_cannot_turn_provider_failure_into_fresh_cycle(self):
+        dossier=self.dossier();job=self.reserve(dossier);self.capture(job,None)
+        self.life.defer_job(self.command(),job['id'],execution_fence=job['id'],input_manifest=job['input_manifest'],
+            evidence={'kind':'provider_error'},code='provider_unavailable',details={'retry_at':130})
+        self.life.pause(self.command());self.life.resume(self.command());self.now=131
+        with self.assertRaisesRegex(TransitionError,'authorized physical retry'):
+            self.reserve(self.dossier())
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(DISTINCT cycle) FROM steward_turns').fetchone()[0],1)
+
     def test_uncertain_external_effect_blocks_adapter_before_any_mutation(self):
         identifier,output,_=self.accepted();self.select(identifier,output)
         with self.store.write() as db:

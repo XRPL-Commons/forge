@@ -1,4 +1,4 @@
-"""Explicit seven-role native canary. No dispatcher, publisher or activation.
+"""Explicit native role canaries. No dispatcher, publisher or activation.
 
 The real installed provider runs normal image job.py + harness.py against a real
 read-only Git mirror. Only a private disposable database receives fixture work.
@@ -21,7 +21,7 @@ from .factory.source_preparation import SourcePreparation
 from .mirror.policy import MirrorError
 from .role_qualification_fixtures import Fixtures
 
-ROLES = ('build', 'review', 'audit', 'recovery', 'triage', 'strategist', 'discussion')
+ROLES = ('build', 'review', 'audit', 'recovery', 'triage', 'strategist', 'discussion', 'steward')
 SECONDS = 180
 
 
@@ -125,12 +125,13 @@ class CanarySource(SourcePreparation):
         result = super()._notes(job, notes, publication_authorization)
         result['qualification'] = dict(fixture=True, publishes=False,
             candidate='base equals head; synthetic PR identity' if job['role'] in {'review','audit'} else None,
-            failure='synthetic incorrect assertion' if job['role']=='recovery' else None)
+            failure='synthetic incorrect assertion' if job['role'] in {'recovery','steward'} else None)
+        evidence_field = 'the recommended choice reason' if job['role']=='steward' else 'summary'
         instruction = (
             '\nHOST QUALIFICATION TASK (replaces implementation scope; supplied issue remains context only): '
             'This is a disposable installation canary, not work on the actual GitHub issue. '
             'Read one tracked text source or documentation file in this checkout. Run git rev-parse HEAD and '
-            'git hash-object on that file. Include exactly "QUALIFICATION_READ <path> <blob-oid>" in summary, '
+            f'git hash-object on that file. Include exactly "QUALIFICATION_READ <path> <blob-oid>" in {evidence_field}, '
             'using the actual path and full Git blob OID. Explain one concrete fact from that file. '
             'Do not install dependencies or run the full project suite. Do not access GitHub directly. ')
         if job['role']=='build':
@@ -141,6 +142,11 @@ class CanarySource(SourcePreparation):
             instruction += 'The fixture candidate has no diff (base=head); verify this and report pass with the exact candidate key. '
         elif job['role']=='recovery':
             instruction += 'Explain why the synthetic assertion 2 + 2 == 5 is incorrect; report pass with evidence and a concrete correction. '
+        elif job['role']=='steward':
+            instruction += ('Return the normal pinned decision v1 contract with exactly one question choice, '
+                'judgement judgement, and brief null. Ask whether to correct the synthetic assertion 2 + 2 == 5. '
+                'Explain the incorrect assertion and the observed file fact in the choice reason. '
+                'No choice will be selected or applied; no question will be posted. ')
         elif job['role']=='triage':
             instruction += 'This fixture index contains only the selected issue. Propose keep for it, with notes [] and handoff null. '
         elif job['role']=='discussion':
@@ -197,9 +203,16 @@ def validate_capture(capture, job, notes, source):
     if value is None:
         raise QualificationError('result_missing')
     schema_check(value, schema(notes))
-    if job['role'] in {'build','review','audit','recovery'}:result(deepcopy(value),job)
-    if value['outcome']!='pass':raise QualificationError('role_did_not_pass')
-    match = re.search(r'QUALIFICATION_READ ([^\s]+) ([0-9a-f]{40}(?:[0-9a-f]{24})?)(?:\s|$)',value['summary'])
+    if job['role'] in {'build','review','audit','recovery','steward'}:result(deepcopy(value),job)
+    if job['role']=='steward':
+        if (len(value['choices'])!=1 or value['choices'][0]['action']!='question'
+                or value['choices'][0]['judgement']!='judgement' or value['brief'] is not None):
+            raise QualificationError('steward_fixture_scope_changed')
+        read_evidence=value['choices'][0]['reason']
+    else:
+        if value['outcome']!='pass':raise QualificationError('role_did_not_pass')
+        read_evidence=value['summary']
+    match = re.search(r'QUALIFICATION_READ ([^\s]+) ([0-9a-f]{40}(?:[0-9a-f]{24})?)(?:\s|$)',read_evidence)
     if not match:raise QualificationError('repository_read_evidence_missing')
     path, oid = match.groups()
     if path.startswith('/') or '..' in path.split('/'):raise QualificationError('repository_read_evidence_invalid')
@@ -243,7 +256,7 @@ def validate_capture(capture, job, notes, source):
     return dict(role=job['role'],status='qualified',job_id=job['id'],provider=source.config['provider'],
         base_oid=job['source_input']['base_oid'],source_digest=source.mirror.prepared(job['id'])['source_digest'],
         repository_read=dict(path=path,blob_oid=oid),mirror_requests=len(receipts),fixture=True,
-        outcome=value['outcome'])
+        outcome='pass')
 
 
 def configuration(root, store):
@@ -259,7 +272,7 @@ def configuration(root, store):
     return config
 
 
-def qualify(root, repository, number, *, apply=False, image=None):
+def qualify(root, repository, number, *, apply=False, image=None, roles=None):
     from .store.runtime import selected
     from .settings import Settings
     from .credentials import Credentials
@@ -268,6 +281,10 @@ def qualify(root, repository, number, *, apply=False, image=None):
     from .mirror_access import MirrorAccess
     from .mirror.git_store import GitStore, run_git
     from .mirror_daemon import MirrorDaemon
+    roles = list(ROLES) if roles is None else roles
+    if (not isinstance(roles,list) or not roles or any(role not in ROLES for role in roles)
+            or len(set(roles))!=len(roles)):
+        raise QualificationError('invalid_roles')
     root=Path(root)
     store=selected(root)
     if store is None:raise QualificationError('selected_store_required')
@@ -276,7 +293,7 @@ def qualify(root, repository, number, *, apply=False, image=None):
     idle_logins(root,config)
     if image is not None and image!=config['image']:raise QualificationError('installed_image_changed')
     report=dict(status='planned',image=config['image'],repo=repository,issue=number,
-        roles=list(ROLES),seconds_per_role=SECONDS,max_agent_invocations=len(ROLES),max_run_seconds=1500,
+        roles=roles,seconds_per_role=SECONDS,max_agent_invocations=len(roles),max_run_seconds=1500,
         source_revision=run_git(['-C',str(Path(__file__).resolve().parent.parent),'rev-parse','HEAD']).decode().strip(),
         provider=config['provider'],model=config.get('model'),automation='disabled',
         fixtures=['candidate base=head, synthetic PR identity','synthetic failed assertion','one-issue triage index'],
@@ -311,7 +328,7 @@ def qualify(root, repository, number, *, apply=False, image=None):
             cache=GitStore(directory/'cache',credentials=access.credentials,max_cache_bytes=1024**3)
             cache.ensure(resolved)
             base=run_git(['--git-dir',str(cache.path(resolved.repository_id)),'rev-parse','HEAD']).decode().strip()
-            for index,role in enumerate(ROLES):
+            for index,role in enumerate(roles):
                 report['current_role']=role
                 if idle(store)!=before:raise QualificationError('configuration_changed')
                 fixtures=Fixtures(directory/str(index),resolved,issue,requirements,base,config,SECONDS)
@@ -393,11 +410,12 @@ def main():
     parser.add_argument('--repo',required=True)
     parser.add_argument('--issue',required=True,type=int)
     parser.add_argument('--image')
+    parser.add_argument('--role', choices=ROLES, action='append', dest='roles')
     parser.add_argument('--apply',action='store_true')
     args=parser.parse_args()
     try:
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',args.repo) or args.issue<1:raise QualificationError('invalid_repository_or_issue')
-        report=qualify(args.root,args.repo,args.issue,apply=args.apply,image=args.image)
+        report=qualify(args.root,args.repo,args.issue,apply=args.apply,image=args.image,roles=args.roles)
     except Exception as error:
         report=dict(status='failed',reason=str(error) if isinstance(error,QualificationError) else type(error).__name__)
     print(json.dumps(report))

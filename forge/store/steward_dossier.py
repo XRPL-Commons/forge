@@ -15,6 +15,25 @@ def autonomy_in(db, repository_id):
     return {'revision': row['revision'] if row else 0, 'policy': policy}
 
 
+
+def move_observations(choice, observations):
+    """Only facts authorizing this move matter; read time and unrelated issues do not."""
+    base = observations.get('base_oid')
+    require(isinstance(base,str) and 0 < len(base) <= 64, 'Invalid observed target commit')
+    value = {'base_oid':base}
+    if choice['action'] in {'wait_on','fold'}:
+        parameters = choice['parameters']
+        matches = [row for row in observations['issues']
+                   if row['repository_id']==parameters['repository_id'] and row['issue_number']==parameters['issue_number']]
+        require(len(matches)<=1, 'Ambiguous selected issue observation')
+        target = matches[0] if matches else None
+        if target:
+            require(target['state'] in {'open','closed'} and isinstance(target['revision'],str), 'Invalid selected issue observation')
+        value['target'] = ({key:target[key] for key in ('repository_id','issue_number','state','revision')}
+                           if target else None)
+    return value
+
+
 def authority_in(db, unit):
     """Semantic pins omit controller bookkeeping and the steward's own cleanup."""
     current = _unit(db, unit['id'])
@@ -48,7 +67,11 @@ def authority_in(db, unit):
     return {**{key: current[key] for key in ('membership_generation','fencing_generation','budget_generation')},
             'members': members, 'candidate': dict(candidate) if candidate else None, 'gates': gates,
             'repository_rules_revision': rules[0] if rules else 0, 'configuration': configuration,
-            'autonomy': autonomy_in(db, current['repository_id'])}
+            'autonomy': autonomy_in(db, current['repository_id']),
+            'observation_changes': [dict(row) for row in db.execute(
+                'SELECT c.previous_digest,c.observed_digest FROM steward_observation_changes c '
+                'JOIN steward_decisions d ON d.decision_id=c.decision_id JOIN steward_turns t ON t.job_id=d.job_id '
+                'WHERE c.unit_id=? ORDER BY t.cycle', (current['id'],))]}
 
 
 def trigger_in(db, unit, mode, trigger):
