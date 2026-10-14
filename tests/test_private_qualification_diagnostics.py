@@ -41,13 +41,14 @@ class PrivateQualificationDiagnosticsTests(unittest.TestCase):
 
     def test_runner_scrubs_issued_credentials_before_private_storage(self):
         opaque = 'opaque-credential-"quoted"-value'
+        fake_api_key = 'sk-' + '1234567890' * 2
         runner = ContainerRunner({**DEFAULT, 'provider_environment':['OPENAI_API_KEY']},
-            environ={'FORGE_CREDENTIAL_ROOT':str(self.root), 'OPENAI_API_KEY':'sk-12345678901234567890'})
+            environ={'FORGE_CREDENTIAL_ROOT':str(self.root), 'OPENAI_API_KEY':fake_api_key})
         secret_path = runner._secrets_path(self.job)
         secret_path.parent.mkdir(parents=True)
         (self.root / 'state').chmod(0o700)
         secret_path.write_text(json.dumps({'values':[opaque]}))
-        text = self.message + ' ' + opaque + ' sk-12345678901234567890'
+        text = self.message + ' ' + opaque + ' ' + fake_api_key
         events = [{'type':'item.completed','item':{'type':'agent_message','text':'MODEL TEXT'}},
                   {'type':'item.completed','item':{'type':'command_execution','output':'TOOL TEXT'}},
                   {'type':'turn.failed','error':{'message':text,'unknown':'EXCLUDED FIELD'}}]
@@ -63,7 +64,7 @@ class PrivateQualificationDiagnosticsTests(unittest.TestCase):
         data = evidence.read(self.root, identifier)
         record = json.loads(data)
         self.assertIn('[REDACTED]', record['terminal_error']['message'])
-        for forbidden in (opaque, 'sk-12345678901234567890', 'MODEL TEXT', 'TOOL TEXT', 'EXCLUDED FIELD'):
+        for forbidden in (opaque, fake_api_key, 'MODEL TEXT', 'TOOL TEXT', 'EXCLUDED FIELD'):
             self.assertNotIn(forbidden, data.decode())
         expected = json.dumps(schema(self.notes), sort_keys=True, separators=(',', ':')).encode()
         self.assertEqual(record['schema_sha256'], hashlib.sha256(expected).hexdigest())
