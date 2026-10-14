@@ -66,7 +66,7 @@ export default async function (page, { base, scenario, observeIssue }) {
     for (const repo of body.repositories ?? []) { repo.protection_status = 'access_needed'; repo.access_ready = false }
     await route.fulfill({response,json:body})
   })
-  await page.goto(base + '/settings/repository?repo_id=2')
+  await page.goto(base + '/settings/repositories/2')
   await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Refresh repository' && button.disabled))
   await page.unroute('**/api/repositories?repo_id=2')
 }

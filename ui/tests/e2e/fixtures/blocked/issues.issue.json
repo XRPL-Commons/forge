@@ -16,6 +16,13 @@
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
     "status": "blocked",
+    "stage_code": "queued",
+    "operator_status": {
+      "code": "blocked",
+      "label": "Blocked",
+      "reason_code": null,
+      "reason": "Waiting on other issues"
+    },
     "explanation": "Waiting for #590, #601.",
     "summary": {
       "headline": "Waiting for #590 and #601 to close",
@@ -31,7 +38,7 @@
     ],
     "fresh": true,
     "revision": "current",
-    "setup_url": "/settings/repository?repo_id=1",
+    "setup_url": "/settings/repositories/1?setup=1",
     "active": null,
     "body": "Show each learner their course progress.\n\nDo not start until #590 is closed. #601 must be merged first.\n",
     "history": [

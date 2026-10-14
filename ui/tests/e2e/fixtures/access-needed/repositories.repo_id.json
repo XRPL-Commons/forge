@@ -22,7 +22,7 @@
       "protection_previous_status": null,
       "protection_last_known": null,
       "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
-      "setup_url": "/settings/repository?repo_id=2"
+      "setup_url": "/settings/repositories/2?setup=1"
     }
   ],
   "connections": {

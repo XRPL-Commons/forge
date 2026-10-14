@@ -130,7 +130,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
-      "setup_url": "/settings/repository?repo_id=2",
+      "setup_url": "/settings/repositories/2?setup=1",
       "environment": {
         "profile": {
           "services": [

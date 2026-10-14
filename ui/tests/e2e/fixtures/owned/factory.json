@@ -37,20 +37,18 @@
       "reason": null,
       "active": null,
       "failure_count": 0,
-      "ownership_wait": {
-        "headline": "Assigned to @lucbocahut",
-        "plain": "Forge leaves assigned issues to their assignees. Unassign it on GitHub to let Forge work on it."
-      },
       "blocked_dependencies": [
         658
       ],
-      "dependency_reason": "Waiting for #658.",
       "operator_status": {
         "code": "blocked",
         "label": "Blocked",
         "reason_code": "ownership_conflict",
         "reason": "Someone else is working on this issue"
-      }
+      },
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     }
   ],
   "jobs": [],

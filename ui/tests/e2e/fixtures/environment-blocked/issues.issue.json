@@ -16,6 +16,13 @@
     "repo": "XRPL-Commons/academy",
     "repo_id": 1,
     "status": "attention",
+    "stage_code": "building",
+    "operator_status": {
+      "code": "attention",
+      "label": "Needs attention",
+      "reason_code": null,
+      "reason": "Environment needs attention"
+    },
     "explanation": "Held: Forge environment needs attention (release image).",
     "actions": [],
     "setup_needed": false,
@@ -24,7 +31,7 @@
     "dependencies": [],
     "fresh": true,
     "revision": "current",
-    "setup_url": "/settings/repository?repo_id=1",
+    "setup_url": "/settings/repositories/1?setup=1",
     "active": null,
     "body": "# Course navigation update\n\nRework the sidebar so nested lessons are easier to scan.\n\n- Simplify breadcrumb depth\n- Highlight the active module\n- See [the navigation spec](docs/x.md) for details\n\n<script>window.injected=1</script>\n\n- [x] Confirm mobile layout matches design\n",
     "history": [

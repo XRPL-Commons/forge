@@ -17,6 +17,13 @@
       "repo": "XRPL-Commons/academy",
       "repo_id": 1,
       "status": "attention",
+      "stage_code": "reviewing",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "On hold"
+      },
       "explanation": "Repository setup now passes. Recheck to resume.",
       "actions": [
         "recheck"
@@ -38,7 +45,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=1",
+      "setup_url": "/settings/repositories/1?setup=1",
       "active": null,
       "summary": {
         "headline": "Paused until repository setup is checked again.",
@@ -62,6 +69,12 @@
       "repo": "XRPL-Commons/academy",
       "repo_id": 1,
       "status": "dropped",
+      "operator_status": {
+        "code": "dropped",
+        "label": "No longer needed",
+        "reason_code": "github_not_planned",
+        "reason": "No longer needed"
+      },
       "explanation": "No longer needed: closed as not planned.",
       "summary": {
         "headline": "No longer needed",
@@ -74,7 +87,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=1",
+      "setup_url": "/settings/repositories/1?setup=1",
       "active": null,
       "closable": false
     }

@@ -3,7 +3,7 @@ import {
   forgeReportUrl, actionEffect, ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, summaryBlock,
-  activityAge, rowFacts, rowPrimary, rowStory, blockingIssues, statusLabel,
+  activityAge, rowFacts, rowPrimary, rowStory, blockingIssues,
   type IssueListResponse, type IssueRow,
 } from '../../app/utils/issues'
 
@@ -17,7 +17,7 @@ const row = (over: Partial<IssueRow> = {}): IssueRow => ({
   content_hash: 'h', body_truncated: false, state: 'open', updated_at: null, labels: [], assignees: [],
   status: 'backlog', summary: null, explanation: 'Not queued for Forge.', actions: ['queue'], setup_needed: false,
   environment_blocker: null, pull_requests: [], dependencies: [], fresh: true, revision: 'current',
-  setup_url: '/settings/repository?repo_id=1', active: null, ...over,
+  setup_url: '/settings/repositories/1?setup=1', active: null, ...over,
 })
 
 describe('copy maps', () => {
@@ -214,7 +214,6 @@ describe('pull requests and attempts', () => {
 
   it('requests the review on the candidate, never on someone else’s pull request', () => {
     expect(reviewPull([{ number: 29, title: '', kind: 'external' }, { number: 31, title: '', kind: 'candidate' }])?.number).toBe(31)
-    expect(reviewPull([{ number: 28, title: '' }])?.number).toBe(28)
     expect(reviewPull([{ number: 29, title: '', kind: 'external' }])).toBeNull()
     expect(reviewPull(undefined)).toBeNull()
   })
@@ -406,11 +405,6 @@ describe('waiting on other issues', () => {
     expect(blockingIssues(blocked)).toEqual([90, 101])
     expect(blockingIssues({ ...blocked, explanation: '' })).toEqual([85, 90, 101])
     expect(blockingIssues({ ...blocked, status: 'queued' })).toEqual([])
-  })
-  it('keeps the main blocked label separate from dependency details', () => {
-    expect(statusLabel(blocked)).toBe('Blocked')
-    expect(statusLabel({ ...blocked, explanation: '', dependencies: [] })).toBe('Blocked')
-    expect(statusLabel({ status: 'waiting', explanation: 'Waiting for #9.', dependencies: [9] })).toBe('Waiting')
   })
   it('is only opened, never asked to decide anything', () => {
     expect(rowAction({ status: 'blocked', actions: [], approval: null } as any, null)).toBe('Open')

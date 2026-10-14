@@ -4,6 +4,7 @@ import {
   type BubbleInput, type OutputView,
 } from '../../app/utils/liveWork'
 import { workbenchLook } from '../../app/utils/workbench'
+import { canonical } from './support/rows'
 
 const BEAT = '{"runner": "alive", "attempt": "a", "at": 100}'
 const working: BubbleInput['detail'] = {
@@ -47,7 +48,7 @@ describe('liveness', () => {
   })
 
   it('puts the cube to sleep, without smoke, when the worker went quiet', () => {
-    const row = { number: 5, status: 'working' as const, reason_code: 'build', explanation: 'Building', actions: [], pull_requests: [], dependencies: [] }
+    const row = { number: 5, status: 'working' as const, stage_code: 'building', operator_status: canonical('working', 'Building'), explanation: 'Building', actions: [], pull_requests: [], dependencies: [] }
     expect(workbenchLook(row).mood).toBe('busy')
     const stalled = workbenchLook(row, { stalled: true })
     expect([stalled.mood, stalled.scene.zzz, stalled.scene.smoke]).toEqual(['sleep', true, false])

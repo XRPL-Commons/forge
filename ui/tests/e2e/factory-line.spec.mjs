@@ -54,7 +54,7 @@ export default async function (page, { base, scenario }) {
   assert.match(summary, /Queued 6, Build 2 of 2, Review 0 of 1, Audit 0 of 1/)
   assert.match(summary, /need you 5, waiting on other issues 4, on hold 1\./)
   // Every cube has a hidden link for screen readers, named like its tooltip.
-  assert.equal(await page.locator('.factory-line [data-line-issue="2:616"]').textContent(), '#616 · Needs attention · An attempt failed · XRPL-Commons/hackathon')
+  assert.equal(await page.locator('.factory-line [data-line-issue="2:616"]').textContent(), '#616 · Needs attention · Two attempts failed · XRPL-Commons/hackathon')
   // The page has no Needs attention section and no "on hold" stack.
   assert.equal(await page.locator('#needs-attention, .issue-stack').count(), 0)
 

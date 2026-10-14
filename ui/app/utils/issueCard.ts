@@ -4,7 +4,7 @@
 import { operatorReason } from './operatorStatus'
 import { elapsed, type CardModel } from './factory'
 import { ago } from './format'
-import { rowFacts, rowStory, statusLabel, type IssueRow } from './issues'
+import { attemptsText, rowFacts, rowStory, statusLabel, type IssueRow } from './issues'
 import { statusBadge, type BadgeColor } from './tones'
 import { portraitFromScene, type PortraitLook } from './cube'
 import { workbenchLook } from './workbench'
@@ -66,8 +66,6 @@ export function rowCardView(row: IssueRow, now: number): IssueCardView {
   }
 }
 
-const ATTEMPTS = /^(\d+) \/ (\d+) attempts failed$/
-
 function cardColor(card: CardModel): BadgeColor {
   if (card.state === 'failed' || card.state === 'approval_needed' || card.state === 'hold') return 'warning'
   if (card.state === 'merged' || card.running) return 'primary'
@@ -87,13 +85,7 @@ export function modelCardView(card: CardModel, now: number): IssueCardView {
   const progress = [card.providerLine, timer].filter(Boolean).join(' · ')
   if (progress) facts.push({ key: 'progress', text: progress, tone: card.running ? 'ok' : 'muted' })
   if (card.pr) facts.push({ key: `pr-${card.pr}`, text: `PR #${card.pr}`, tone: 'link' })
-  const attempts = card.footerLink && !card.footerLink.to ? ATTEMPTS.exec(card.footerLink.label) : null
-  if (attempts) {
-    const lost = Number(attempts[1]), limit = Number(attempts[2])
-    facts.push({ key: 'attempts', text: `${lost} of ${limit} attempts failed`, tone: 'warn', hearts: hearts(lost, limit) })
-  } else if (card.footerLink) {
-    facts.push({ key: 'note', text: card.footerLink.label, tone: card.footerLink.to ? 'link' : 'warn', to: card.footerLink.to || undefined })
-  }
+  if (card.attempts) facts.push({ key: 'attempts', text: attemptsText(card.attempts), tone: 'warn', hearts: hearts(card.attempts.failed, card.attempts.limit) })
   if (card.deployment) facts.push({ key: 'deployment', text: card.deployment, tone: card.deployment === 'deploy failed' ? 'warn' : 'ok' })
   const age = cardAge(card, now)
   if (age) facts.push({ key: 'age', text: age, tone: 'muted' })
