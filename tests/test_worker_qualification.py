@@ -57,6 +57,11 @@ class QualificationTests(unittest.TestCase):
                 finally:server.shutdown();server_thread.join()
             self.assertTrue(any(row['outcome']=='served' for row in fixture.receipts))
             self.assertTrue(any(row.get('reason')=='session_revoked' for row in fixture.receipts))
+            started={row['receipt_id'] for row in fixture.receipts if row['outcome']=='started'}
+            finished=[row['request_id'] for row in fixture.receipts if row['outcome'] in ('served','denied','failed')]
+            self.assertTrue(started, 'starting receipts must retain their original snapshot')
+            self.assertTrue(all(identifier in started for identifier in finished))
+            self.assertEqual(len(finished),len(set(finished)), 'each terminal receipt belongs to one request')
             compile(WORKER,'<worker-qualification>','exec')
 
     def test_cli_plan_is_read_only_and_failed_receipt_cannot_be_success(self):

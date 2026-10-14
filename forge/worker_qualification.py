@@ -54,8 +54,12 @@ class Fixture:
     def session(self, identifier):
         return dict(revoked_at=time.time() if self.revoked else None, deadline=time.time()+600, policy=self.policy)
 
-    def append_receipt(self, identifier, details):
-        self.receipts.append(details)
+    def append_receipt(self, identifier, details, *, request_id=None):
+        if request_id is not None and not any(row['receipt_id'] == request_id and row['outcome'] == 'started' for row in self.receipts):
+            raise AssertionError('Canary receipt has no matching request')
+        receipt_id = uuid.uuid4().hex
+        self.receipts.append({**details, 'receipt_id': receipt_id, 'request_id': request_id})
+        return receipt_id
 
     def broker(self):
         repository = Repository(1, 'canary/project', 10, 'Organization', 20, actual_access=True)
