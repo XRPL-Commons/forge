@@ -55,8 +55,8 @@ Run that command again when they have finished. The supervisor cannot refill
 capacity while the drain setting remains in place.
 
 Once cleanup is complete, the CLI stops managed writers, advances the checkout,
-and applies pending migrations in one transaction. It restores the original
-`enabled` value before the normal updater restarts services. Restoration changes
+and applies pending migrations in one transaction. The normal updater converges
+services before the CLI restores the original `enabled` value. Restoration changes
 only that field and preserves other settings edited during the drain. If an
 operator re-enables agents before draining completes, the CLI reports
 `drain_configuration_changed` and keeps the newer choice; switch agents off
@@ -70,6 +70,15 @@ migration transaction; services remain stopped until a corrected forward update
 can complete. To install a corrected release, use its CLI and explicitly apply
 its new full commit SHA; the command verifies forward ancestry and retains the
 services stopped by the earlier attempt. There is no JSON switch-back.
+
+If another deployment advanced the checkout after the schema committed but
+before reconciliation finished, apply the next release through its CLI. Recovery
+requires a clean checkout and proves that the interrupted target is an ancestor
+of the current checkout, which must itself be an ancestor of the requested
+release. It records the superseded target and repeats the normal maintenance
+cycle, retaining the original drain ownership and services to restore. Earlier
+unfinished stages, divergent source history and changed operator choices still
+stop the upgrade; the CLI never treats an advanced checkout as proof of success.
 
 A corrected CLI can also finish one already-fenced setup probe per draining
 invocation when the installed schema already matches its target. It verifies the

@@ -54,6 +54,17 @@ class Host:
             if (str(self.root).encode() in command or str(self.source).encode() in command) and b'git\x00' not in command:
                 raise MigrationError('unmanaged_process')
 
+    def qualify_advanced_source(self, previous, observed):
+        """Prove an intervening checkout only moved forward from our target."""
+        if self.identity() != observed:
+            raise MigrationError('upgrade_source_changed')
+        if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
+            raise MigrationError('repair_source_not_clean')
+        ancestry = self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,observed],
+                            capture_output=True, timeout=30)
+        if ancestry.returncode:
+            raise MigrationError('upgrade_source_changed')
+
     def prepare_source_update(self, previous, target, tool_version, *, source_pack=None):
         """Qualify pinned, forward-only source before any host change."""
         import io
