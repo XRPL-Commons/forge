@@ -103,8 +103,10 @@ def update(root, bind=None, assume_yes=False):
     if not installed:
         raise ValueError('This host has no Forge installation yet; run bin/forge setup first')
     preflight()
-    if host_update.reconcile(root, bind, assume_yes) and Onboarding(root).view()['provider_connected']:
-        print('The runner changed; verifying connected accounts against it. New work waits for this check.', flush=True)
+    changed = host_update.reconcile(root, bind, assume_yes)
+    view = Onboarding(root).view()
+    if view['provider_connected'] and (changed or not view['image_verified']):
+        print('Verifying connected accounts against the installed runner. New work waits for this check.', flush=True)
         check(root)
 
 
