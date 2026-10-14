@@ -38,7 +38,10 @@ def export(revision, *, previous=None, run=run_bounded):
                     if error.code == 'github_request_failed':
                         raise SetupError('source_not_forward', 'The installed revision is not a verified ancestor of this release. Running factories require a forward release.') from None
                     raise
-            scope = ['--no-walk', revision] if previous is None else [revision, '^' + previous]
+            # The initial host has only a shallow commit/tree. A merged release
+            # can reach older shared ancestors through another parent, so a
+            # previous..target delta is not a closed graph on that host.
+            scope = ['--no-walk', revision] if previous is None else [revision]
             objects = run(git + ['rev-list', '--objects', *scope])
             identifiers = [line.split(b' ', 1)[0] for line in objects.splitlines()]
             require(identifiers and all(re.fullmatch(b'[a-f0-9]{40}', item) for item in identifiers), 'invalid_source', 'Git returned an invalid source inventory.')

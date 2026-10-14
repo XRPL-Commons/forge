@@ -103,11 +103,19 @@ class UpgradeHostTests(SchemaUpgradeTests):
             self.calls.append(('update',))
             return SimpleNamespace(returncode=int(self.fail_update))
         self.host = SimpleNamespace(root=self.root, source=self.root/'source', identity=lambda:self.current,
-            units=lambda:list(self.active), prepare_source_update=lambda *args:None, install_source_update=install,
+            units=lambda:list(self.active), prepare_source_update=lambda *args,**kwargs:None, install_source_update=install,
             command=command, run=run, quiet=lambda:None)
         self.upgrader = Upgrade(self.host)
         self.addCleanup(patch.stopall)
         patch('forge.store.migration.upgrade.package_version', return_value='tool').start()
+
+    def test_source_pack_reaches_both_preparations_without_entering_journal(self):
+        pack={'data':'transport-only-pack','sha256':'transport-only-digest'}
+        with patch.object(self.host,'prepare_source_update') as prepare:
+            self.assertEqual(self.upgrader.run(revision='b'*40,apply=True,source_pack=pack)['status'],'upgraded')
+        self.assertEqual(prepare.call_count,2)
+        self.assertTrue(all(call.kwargs=={'source_pack':pack} for call in prepare.call_args_list))
+        self.assertNotIn('transport-only',self.upgrader.path.read_text())
 
     def test_plan_is_read_only_and_apply_requires_exact_revision(self):
         self.assertEqual(self.upgrader.run(revision=None)['status'], 'planned')

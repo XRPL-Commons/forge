@@ -28,14 +28,18 @@ class MigrationCLITests(unittest.TestCase):
 
     def test_upgrade_plan_and_pinned_apply_are_machine_readable(self):
         values=['migrate','upgrade','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
-        with patch('forge_client.migration.call',return_value={'status':'planned'}) as call:
+        with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'b'*40}) as call:
             execute(parser().parse_args(values))
             self.assertEqual(call.call_args.kwargs,{'apply':False,'source_revision':None})
             call.reset_mock()
             with self.assertRaises(SetupError):execute(parser().parse_args([*values,'--apply']))
             call.assert_not_called()
-            execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
-            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
+            pack={'data':'bounded-pack','sha256':'digest'}
+            with patch('forge_client.source.export',return_value=pack) as export:
+                execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
+            export.assert_called_once_with('a'*40,previous='b'*40)
+            self.assertEqual(call.call_args_list[0].kwargs,{'apply':False,'source_revision':'a'*40})
+            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40,'source_pack':pack})
 
     def test_upgrade_draining_reply_contains_the_complete_pinned_resume_command(self):
         from types import SimpleNamespace
@@ -162,3 +166,21 @@ print(json.dumps({'before':before}))
         self.assertIn('IntegrityError at migrating',str(error.exception))
         self.assertIn("--source '/srv/forge source' --root /srv/runtime",str(error.exception))
         self.assertIn('--apply --source-revision '+'a'*40,str(error.exception))
+
+
+    def test_resume_after_checkout_needs_no_new_github_access(self):
+        args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',
+            '--root','/srv/runtime','--apply','--source-revision','a'*40])
+        with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'a'*40}) as call, \
+                patch('forge_client.source.export',side_effect=AssertionError('unexpected GitHub access')):
+            execute(args)
+        self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
+
+    def test_local_source_failure_stops_before_remote_apply(self):
+        args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',
+            '--root','/srv/runtime','--apply','--source-revision','a'*40])
+        with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'b'*40}) as call, \
+                patch('forge_client.source.export',side_effect=SetupError('source_unavailable','local source unavailable')):
+            with self.assertRaises(SetupError):execute(args)
+        self.assertEqual(call.call_count,1)
+        self.assertFalse(call.call_args.kwargs['apply'])

@@ -66,7 +66,10 @@ class Host:
         if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
             raise MigrationError('repair_source_not_clean')
         if source_pack is None:
-            self.command('git','-c','maintenance.auto=false','-C',str(self.source),'fetch','--no-tags','origin',target)
+            present = self.run(['git','-C',str(self.source),'rev-parse','--verify',target+'^{commit}'],
+                               capture_output=True,text=True,timeout=30)
+            if present.returncode or present.stdout.strip() != target:
+                raise MigrationError('source_pack_required')
         else:
             import base64
             try:
@@ -151,5 +154,6 @@ def run(request):
     host=Host(request['root'],request['source'])
     if request['action']=='upgrade':
         from .upgrade import Upgrade
-        return Upgrade(host).run(revision=request.get('source_revision'),apply=request.get('apply') is True)
+        return Upgrade(host).run(revision=request.get('source_revision'),apply=request.get('apply') is True,
+                                 source_pack=request.get('source_pack'))
     raise MigrationError('unknown_migration_action')

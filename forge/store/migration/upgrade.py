@@ -86,11 +86,12 @@ class Upgrade:
         value.update(stage=stage, updated_at=time.time())
         atomic_json(self.path, value)
 
-    def run(self, *, revision, apply=False):
+    def run(self, *, revision, apply=False, source_pack=None):
         if not apply:
             return {'status': 'planned', **self.status()}
         if not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{40}', revision):
             raise MigrationError('upgrade_revision_required')
+        source_options = {'source_pack': source_pack} if source_pack is not None else {}
         with operation_lock(self.root, '.migration-host.lock'):
             tool_version = package_version(Path(__file__).resolve().parents[3])
             store = self.store()
@@ -114,7 +115,7 @@ class Upgrade:
                     return {'status': 'upgraded', **self.status()}
             else:
                 plan = self.status()
-                self.host.prepare_source_update(plan['source_revision'], revision, tool_version)
+                self.host.prepare_source_update(plan['source_revision'], revision, tool_version, **source_options)
                 value = dict(protocol=1, root=str(self.root), source=str(self.host.source), authorized=True,
                              previous_revision=plan['source_revision'], source_revision=revision,
                              tool_version=tool_version, services=sorted(set(self.host.units()) | set(previous['services'] if previous else [])),
@@ -151,7 +152,7 @@ class Upgrade:
                 self.save(value, 'installing')
             if value['stage'] == 'installing':
                 self.host.quiet()
-                self.host.prepare_source_update(value['previous_revision'], revision, tool_version)
+                self.host.prepare_source_update(value['previous_revision'], revision, tool_version, **source_options)
                 self.host.install_source_update(value['previous_revision'], revision)
                 self.save(value, 'migrating')
             if value['stage'] == 'migrating':

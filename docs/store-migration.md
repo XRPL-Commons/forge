@@ -37,6 +37,14 @@ forge migrate upgrade --ssh forge --source /home/forge/forge \
   --apply --json
 ```
 
+The CLI fetches the pinned release using local GitHub access, verifies forward
+ancestry, and transfers the target’s complete Git object history over SSH.
+Complete ancestry lets an initially shallow installation verify merged releases. GitHub credentials and local Git
+configuration stay on your computer. The service account needs no GitHub login.
+The host checks the object-pack digest and exact source fingerprint before
+pausing work. After checkout succeeds, resuming uses the installed objects and
+does not need another GitHub fetch.
+
 The first command reports the current and target schemas and any workers still
 awaiting cleanup. The second verifies that the CLI bundle matches the selected
 release, then temporarily disables new agent work through the versioned runtime

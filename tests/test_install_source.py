@@ -85,10 +85,18 @@ class SourceTransferTests(unittest.TestCase):
     def test_upgrade_transfers_forward_ancestry_without_remote_credentials_or_fetch(self):
         from forge.store.migration.host import Host
         from forge.store.migration.upgrade import package_version
+        # A release merges a side branch based before the installed shallow
+        # commit. Excluding previous's ancestors would leave its parent missing.
+        self.git(self.original,'checkout','-qb','release-side',self.parent)
+        (self.original/'side-file').write_text('side branch change\n')
+        self.git(self.original,'add','side-file');self.commit('side change')
+        self.git(self.original,'checkout','--detach',self.revision)
         module=self.original/'forge';module.mkdir()
         (module/'__init__.py').write_text('# public source fixture\n')
         self.git(self.original,'add','forge')
         self.commit('qualified target')
+        self.git(self.original,'-c','commit.gpgsign=false','-c','user.name=Fixture',
+                 '-c','user.email=fixture@example.invalid','merge','--no-ff','-m','merged release','release-side')
         target_revision=self.git(self.original,'rev-parse','HEAD')
         installed=self.directory/'upgrade';installed.mkdir()
         self.git(installed,'init','--quiet')
@@ -105,10 +113,20 @@ class SourceTransferTests(unittest.TestCase):
             return subprocess.run(argv,env={**os.environ,'GIT_TRACE2_EVENT':str(trace)},**kwargs)
         host=Host(self.directory/'runtime',installed,run=run)
         host.identity=lambda:self.git(installed,'rev-parse','HEAD')
+        from forge.store.migration.snapshot import MigrationError
+        with self.assertRaisesRegex(MigrationError,'source_pack_required'):
+            host.prepare_source_update(self.revision,target_revision,package_version(self.original))
+        with self.assertRaisesRegex(MigrationError,'source_pack_invalid'):
+            host.prepare_source_update(self.revision,target_revision,package_version(self.original),source_pack={**pack,'sha256':'0'*64})
+        self.assertNotEqual(subprocess.run(['git','-C',str(installed),'cat-file','-e',target_revision],capture_output=True).returncode,0)
+        host.prepare_source_update(self.revision,target_revision,package_version(self.original),source_pack=pack)
         host.prepare_source_update(self.revision,target_revision,package_version(self.original),source_pack=pack)
         self.assertEqual(host.identity(),self.revision)
         host.install_source_update(self.revision,target_revision)
         self.assertEqual(host.identity(),target_revision)
+        # A lost reply after checkout can resume entirely from installed objects.
+        host.prepare_source_update(self.revision,target_revision,package_version(self.original))
+        host.install_source_update(self.revision,target_revision)
         self.assertEqual((installed/'forge/__init__.py').read_text(),'# public source fixture\n')
         self.assertNotIn('synthetic-github-admin-only-local',(installed/'.git/config').read_text())
         self.assertFalse((installed/'old-secret').exists())
