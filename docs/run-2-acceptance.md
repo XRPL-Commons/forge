@@ -45,7 +45,7 @@ fixes batch passed. After integrating main's cleanup changes, all three backend
 shards, UI unit/type/build/browser checks and source audit passed in
 [CI on `0ee4941`](https://github.com/XRPL-Commons/forge/actions/runs/38549115143).
 
-## Live qualification still required
+## Live qualification
 
 - The approved GitHub signing probe is waiting at GitHub's passkey confirmation.
   Its scratch repository exists, but installation selection, commit/signature
@@ -54,15 +54,19 @@ shards, UI unit/type/build/browser checks and source audit passed in
   record keeps host publication pending.
 - The Controller's current installation lacks Workflows write permission. Test
   that limitation and report it; do not expand permission as part of the probe.
-- Anvil is the native qualification target: Ubuntu 24.04, Docker 29.1.3,
-  automation and merging disabled. Its first apply stopped before migration
-  because source fetching required GitHub credentials on the host. The corrected
-  CLI transfers the source using local access, including complete ancestry for a
-  shallow checkout. All 47 focused tests, independent review and full CI passed.
-  The resumed upgrade reached revision `02cd206` and schema 040; image/service
-  reconciliation is still running. After it completes, run `forge setup
-  qualify-boundary --ssh anvil --apply`. The CLI selects and records the installed
-  immutable image ID.
+- Anvil's native boundary canary passed on Ubuntu 24.04 and Docker 29.1.3,
+  revision `02cd206`, image
+  `sha256:a5d60fa4463e13574ceadbbfc3ccfe3d03ec3ca3fc9a29b48b5f6c3be3b5c8c6`.
+  Real Git clone/fetch, denied push, provider TLS, npm/pip downloads, GitHub/host/
+  cross-job denial, external DNS denial, immutable inputs, disk quota, session
+  revocation and stopped capture passed. Disposable cleanup was confirmed.
+- Anvil reached schema 040 and its services are active, but its upgrade watcher
+  timed out during setup verification. Probe identity calculation mutated an
+  immutable saved input, so cleanup could not be saved. The fix preserves that
+  input and lets the CLI finish verified teardown of already-fenced setup probes
+  before ordinary drain checks. Forty-two focused tests and independent review
+  passed; the corrected release must pass CI and finish the resumable upgrade.
+  It does not change the qualified image or network boundary.
 - Complete the signed-publication and every-role canaries before claiming the
   boundary accepted or deploying it to the active Forge factory. The boundary
   canary uses direct fixture workers, so it does not establish production role
@@ -93,5 +97,7 @@ installs the CLI, and API mutations require a signed-in operator. The supported
 and qualification commands are integrated with that updated base. Combined CI
 passed, including the subsequent source-transfer correction on `02cd206`
 ([run](https://github.com/XRPL-Commons/forge/actions/runs/38550713982)). The new
-qualification commands passed focused review and require their combined release
-gate before deployment.
+qualification commands passed independent review and 63 combined focused tests.
+CI caught personal paths in documentation/test examples; generic paths now pass
+the source audit and all 17 affected tests. The cleanup repair joins this final
+combined gate before the next Anvil apply.
