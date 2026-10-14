@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  actionEffect, ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
+  forgeReportUrl, actionEffect, ACTION_EFFECTS, ACTION_LABELS, EVENT_LABELS, SHOW_OPTIONS, attentionNote,
   decisionNeedsReason, emptyState, filterQuery, filtersFromQuery, freshnessText, listParams, preselectedReviewers,
   attemptsText, heldByLines, pullLabel, reviewPull, reviewRequestText, reviewRows, reviewerOptions, reviewerReason, rowAction, rowNote, summaryBlock,
   activityAge, rowFacts, rowPrimary, rowStory, STATUS_ORDER, blockingIssues, statusLabel,
@@ -437,5 +437,17 @@ describe('attentionNote', () => {
       .toBe('A person needs to look at this. See the note above.')
     expect(attentionNote({ summary: null, explanation: null, environment_blocker: null } as any))
       .toBe('A person needs to look at this. Discuss the blocker to work out what.')
+  })
+})
+
+describe('Forge fault report draft', () => {
+  it('opens a reviewable GitHub draft with exact escaped text', () => {
+    const title = 'Harness failed: A & B #12'
+    const body = 'First line\nSecond line with ? & # characters'
+    const url = new URL(forgeReportUrl({ status: 'draft', signature: 'safe-hash', title, body, affected: 2 })!)
+    expect(url.origin + url.pathname).toBe('https://github.com/XRPL-Commons/forge/issues/new')
+    expect(url.searchParams.get('title')).toBe(title)
+    expect(url.searchParams.get('body')).toBe(body)
+    expect(forgeReportUrl(null)).toBeUndefined()
   })
 })

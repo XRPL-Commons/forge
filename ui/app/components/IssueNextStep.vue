@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { actionLabel } from '~/utils/issues'
+import { actionLabel, forgeReportUrl } from '~/utils/issues'
 const {
   verificationRequest, verificationStatement, poll, detail, actions, pending, busy, decision,
   message, summary, look, blocking, plainOpen, plainLong, holds, issueUrl, canAssign, decisions,
@@ -8,6 +8,11 @@ const {
   siblingLink, pullUrl, askReviewer, checkNow, ask, confirmVerification, tab, ACTION_LABELS,
   attentionNote, pullLabel, plan, moreItems, live, bubble, facts, technical, technicalOpen,
 } = useIssueDetailContext()
+const reportUrl = computed(() => forgeReportUrl(detail.value?.forge_problem_report))
+const nextActionTime = computed(() => {
+  const at = detail.value?.operator_status?.next_action?.due_at
+  return at === undefined ? undefined : new Date(at * 1000).toLocaleString()
+})
 </script>
 <template>
   <template v-if="detail">
@@ -46,6 +51,9 @@ const {
               <p v-if="live.state !== 'unknown'" id="issue-liveness" class="mt-1.5 inline-flex items-center gap-1.5 text-xs" :class="live.state === 'stalled' ? 'text-amber-200' : 'text-muted'" :data-state="live.state">
                 <span aria-hidden="true" class="size-1.5 rounded-full" :class="live.state === 'stalled' ? 'bg-amber-200' : 'bg-mint-400 motion-safe:animate-pulse'" />
                 {{ live.text }}
+              </p>
+              <p v-if="nextActionTime" id="issue-next-action" class="mt-1.5 text-xs text-muted">
+                Next try: {{ nextActionTime }}
               </p>
               <p v-if="!bubble?.headline && !holds.length" class="text-sm text-muted">Forge has no summary for this issue yet.</p>
             </IssueWorkbench>
@@ -99,6 +107,7 @@ const {
                 <p class="text-muted">{{ detail.decision_request.evidence }}</p>
                 <p class="text-muted">Discuss the options below, then choose Retry attempt and record your answer.</p>
               </section>
+              <a v-if="reportUrl" id="issue-forge-report" :href="reportUrl" target="_blank" rel="noopener noreferrer" class="text-sm text-sky-200 underline underline-offset-4">Report to Forge ↗</a>
               <p v-if="detail.merge_policy" id="issue-merge-policy" class="text-xs text-muted">
                 {{ detail.merge_policy === 'auto'
                   ? 'Forge merges this automatically once checks pass. A security audit or a verification may still need your approval.'

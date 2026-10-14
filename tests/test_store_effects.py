@@ -147,6 +147,7 @@ class EffectTests(unittest.TestCase):
             self.driver.ensure(job, report)
         effect = self.queries.verdict(job['id'])
         self.assertEqual(effect['status'], 'uncertain')
+        self.now += 30
         restarted = EffectController(self.store, self.remote, clock=lambda: self.now)
         self.assertEqual(restarted.ensure(job, report), {'check_id': 10})
         self.assertEqual(restarted.ensure(job, report), {'check_id': 10})
@@ -185,6 +186,7 @@ class EffectTests(unittest.TestCase):
         self.assertEqual(self.queries.get(effect_id)['status'], 'uncertain')
         self.life.pause(self.command())
         self.driver.admission = None
+        self.now += 30
         result = self.driver.step(effect_id)
         self.assertEqual(result['status'], 'confirmed')
         self.assertEqual(self.view()['state'], 'merged')
@@ -230,6 +232,7 @@ class EffectTests(unittest.TestCase):
         self.remote.merge = Mock(side_effect=GitHubUnavailable('Response lost'))
         with self.assertRaises(GitHubUnavailable):
             self.driver.step(effect_id)
+        self.now += 30
         self.remote.merge = Mock(side_effect=GitHubUnavailable('Rules refused this retry', status=405))
         with self.assertRaises(GitHubUnavailable):
             self.driver.step(effect_id)
@@ -320,6 +323,7 @@ class EffectTests(unittest.TestCase):
         # assignment, so delivery revalidates current semantic authority.
         with self.store.write() as db:
             db.execute("UPDATE units SET version=version+1 WHERE id='u'")
+        self.now += 30
         self.assertEqual(self.driver.ensure(job, report), {'check_id': 10})
         self.assertEqual(len(self.remote.checks), 1)
 
@@ -384,6 +388,7 @@ class EffectTests(unittest.TestCase):
         effect_id = self.effects.queue_settlement(self.command(), self.candidate_id, summary='Stopped')['effect_id']
         with self.assertRaises(GitHubUnavailable):
             self.driver.step(effect_id)
+        self.now += 30
         self.assertEqual(self.driver.step(effect_id)['receipt'], {'check_ids': [1]})
         self.assertEqual(patches, ['/check-runs/1'])
         self.assertEqual(runs[1]['status'], 'in_progress')
@@ -422,9 +427,121 @@ class EffectTests(unittest.TestCase):
             return original(effect, number)
         self.remote.pr = observe
         self.assertEqual(self.driver.cycle(limit=1)[0]['id'], first)
+        self.now += 30
         restarted = EffectController(self.store, self.remote, clock=lambda: self.now)
         self.assertEqual(restarted.cycle(limit=1)[0]['id'], second)
         self.assertEqual(self.queries.get(second)['status'], 'confirmed')
+
+    def test_retry_schedule_survives_restart_and_direct_claim_cannot_bypass_it(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.merge_visible=False
+        self.driver.step(effect_id)
+        effect=self.queries.get(effect_id)
+        self.assertEqual(effect['attempts'],1)
+        self.assertEqual(effect['retry_at'],self.now+30)
+        self.assertNotIn(effect_id,EffectQueries(self.store,clock=lambda:self.now).pending())
+        restarted=EffectController(self.store,self.remote,admission=lambda e:self.authorization(),clock=lambda:self.now)
+        restarted.step(effect_id)
+        with self.assertRaises(TransitionError):
+            self.effects.claim(effect_id,expected_version=effect['unit_version'],authorization=self.authorization(),merge_request=True)
+        self.assertEqual(self.remote.merge_calls,1)
+        self.now+=30
+        restarted.step(effect_id)
+        self.assertEqual(self.remote.merge_calls,2)
+        self.assertEqual(self.queries.get(effect_id)['retry_at'],self.now+60)
+
+    def test_two_uncertain_sends_reconcile_fresh_closed_unmerged_and_preserve_pause(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.merge_visible=False
+        self.driver.step(effect_id)
+        self.now+=30
+        self.driver.step(effect_id)
+        self.assertEqual(self.queries.get(effect_id)['merge_send_count'],2)
+        self.life.pause(self.command())
+        self.now+=60
+        self.remote.pull.update(state='closed',merged=False)
+        result=self.driver.step(effect_id)
+        self.assertEqual((result['status'],result['merge_status']),('failed','refused'))
+        self.assertEqual(self.view()['state'],'building')
+        self.assertEqual(self.view()['reason_code'],'operator_pause')
+        self.assertEqual(self.remote.merge_calls,2)
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+
+    def test_two_uncertain_sends_changed_head_rebuilds_and_rejects_stale_observation(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.merge_visible=False
+        self.driver.step(effect_id)
+        self.now+=30
+        self.driver.step(effect_id)
+        with self.assertRaises(TransitionError):
+            self.effects.observe_unmerged(effect_id,evidence=dict(verified=True,merged=False,candidate_id=self.candidate_id,
+                pull_number=1,head_oid='head',observed_head='different',repository_id=1,base_branch='main',state='open',observed_at=100))
+        self.now+=60
+        self.remote.pull['head']['sha']='new-head'
+        self.driver.step(effect_id)
+        self.assertIsNone(self.view()['current_candidate_id'])
+        self.assertEqual(self.queries.get(effect_id)['status'],'failed')
+
+    def test_unknown_mergeability_escalates_without_becoming_conflict_or_charging(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.pull['mergeable']=None
+        self.driver.step(effect_id)
+        self.now+=900
+        self.driver.step(effect_id)
+        self.assertEqual(self.remote.merge_calls,0)
+        self.assertEqual(self.view()['state'],'merging')
+        self.assertEqual(self.view()['reason_code'],'forge_problem')
+        self.assertEqual(self.queries.get(effect_id)['merge_status'],'pending')
+        self.assertIsNotNone(self.queries.get(effect_id)['escalation_at'])
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+
+    def test_sustained_observed_conflict_rebuilds_without_charge(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.pull['mergeable']=False
+        self.driver.step(effect_id)
+        self.now+=900
+        self.driver.step(effect_id)
+        self.assertEqual(self.view()['state'],'building')
+        self.assertEqual(self.queries.get(effect_id)['status'],'superseded')
+        self.assertEqual(self.remote.merge_calls,0)
+
+    def test_send_cap_keeps_fence_and_readback_can_finish_later(self):
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.merge_visible=False
+        driver=EffectController(self.store,self.remote,admission=lambda e:self.authorization(),clock=lambda:self.now,
+            reliability={'effect_max_attempts':2})
+        driver.step(effect_id)
+        self.now+=30
+        driver.step(effect_id)
+        self.now+=60
+        driver.step(effect_id)
+        self.assertEqual(self.remote.merge_calls,2)
+        self.assertEqual(self.view()['reason_code'],'forge_problem')
+        self.assertEqual(self.queries.get(effect_id)['merge_status'],'uncertain')
+        self.now+=900
+        self.remote.pull.update(merged=True,state='closed',merge_commit_sha='confirmed-merge')
+        driver.step(effect_id)
+        self.assertEqual(self.view()['state'],'merged')
+        self.assertEqual(self.remote.merge_calls,2)
+
+    def test_budget_deferred_read_does_not_consume_a_send_attempt(self):
+        from forge.request_metrics import RequestBudgetExhausted
+        self.merge_ready()
+        effect_id=self.queue_merge()
+        self.remote.pr=Mock(side_effect=RequestBudgetExhausted())
+        with self.assertRaises(RequestBudgetExhausted):
+            self.driver.step(effect_id)
+        effect=self.queries.get(effect_id)
+        self.assertEqual((effect['attempts'],effect['merge_send_count']), (0,0))
+        self.assertIsNone(effect['uncertain_since'])
 
 
 if __name__ == '__main__':

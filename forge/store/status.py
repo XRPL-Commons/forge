@@ -124,6 +124,10 @@ def github_rule(details):
 def describe_gate(gate):
     """Common wording for a gate, including its typed dependency distinction."""
     details = json.loads(gate['details_json'])
+    if gate['code'] == 'forge_problem' and details.get('source') == 'scheduling':
+        return ('Forge has no scheduled next step; recheck to resume scheduling. No issue attempt was charged'
+                if details.get('reason') == 'stalled' else
+                'Forge is reconciling an uncertain GitHub action; no further sends are scheduled until its outcome is known')
     if gate['code'] == 'dependency' and details.get('reason') == 'prerequisite_output_pending':
         return 'Waiting for accepted prerequisite outputs'
     if gate['code'] == 'environment' and (rule := github_rule(details.get('value', details))):

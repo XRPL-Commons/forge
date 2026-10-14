@@ -11,6 +11,7 @@ import time
 from urllib.parse import quote
 import uuid
 
+from ..request_metrics import RequestBudgetExhausted
 from ..store.db import StoreError
 from ..store.executions import Launch, provider_available
 from ..store.models import Command, TransitionError
@@ -287,6 +288,20 @@ class DispatchController:
         return None, None
 
     def step(self, unit_id, role=None):
+        from ..store.scheduling import Scheduling
+        settings=self.config.get('reliability', {})
+        schedules = Scheduling(self.store, clock=self.clock, retry_seconds=settings.get('retry_seconds',30),stall_seconds=settings.get('stall_seconds',300))
+        pending=schedules.pending(unit_id, 'dispatch')
+        if pending:
+            return {'unit_id':unit_id,'reserved':False,'reason':pending['reason'],'retry_at':pending['due_at']}
+        try:
+            result = self._step(unit_id, role)
+        except (RequestBudgetExhausted, RunnerError, GitHubUnavailable, TransitionError, StoreError, OSError) as error:
+            schedules.record(unit_id, owner='dispatch', reason='github_budget' if isinstance(error,RequestBudgetExhausted) else getattr(error, 'code', type(error).__name__))
+            raise
+        return schedules.outcome(unit_id, 'dispatch', result)
+
+    def _step(self, unit_id, role=None):
         result = {'unit_id': unit_id, 'reserved': False}
         if not self.config['enabled']:
             return {**result, 'reason': 'runtime_disabled'}
@@ -320,7 +335,7 @@ class DispatchController:
         if isinstance(prepared, StaleBase):
             # Review and audit only judge a candidate on the current base. Send
             # it back for an uncharged rework instead of waiting forever.
-            if role not in ('review', 'audit') or not snapshot['candidate'] or snapshot['candidate']['id'] != prepared.candidate_id:
+            if not snapshot['candidate'] or snapshot['candidate']['id'] != prepared.candidate_id:
                 return {**result, 'reason': 'observation_changed'}
             self.commands.invalidate_candidate(
                 Command(str(uuid.uuid4()), 'supervisor:dispatch', unit_id, snapshot['unit']['version']),

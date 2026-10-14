@@ -202,6 +202,7 @@ class MergeControllerTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0], 0)
         self.remote.approve()
+        self.now += 30
         queued = self.controller.step('u')
         effect = EffectQueries(self.store).get(queued['effect_id'])
         self.assertEqual(effect['status'], 'pending')
@@ -309,6 +310,7 @@ class MergeControllerTests(unittest.TestCase):
     def test_effect_driver_rechecks_approval_after_publishing_controller_check(self):
         self.prepare_candidate(human_required=True)
         self.remote.approve()
+        self.now += 30
         queued = self.controller.step('u')
         self.assertEqual(self.admission_reads, 1)
         self.remote.on_check = lambda: self.remote.approve(identifier=2, state='DISMISSED')
@@ -343,6 +345,7 @@ class MergeControllerTests(unittest.TestCase):
         row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
         self.assertTrue(any(review['state']=='CHANGES_REQUESTED' for review in row['approvals']))
         self.remote.approve(identifier=2)
+        self.now += 30
         self.assertIn('effect_id', controller.step('u'))
         row=PipelineViews(self.store,runtime=self.config,clock=lambda:self.now).issues(key='i')['issue']
         self.assertTrue(any(review['counted'] for review in row['approvals']))

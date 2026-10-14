@@ -1,5 +1,5 @@
 [
-  {"name":"queued","expected":{"code":"queued","label":"Queued","reason_code":"queued","reason":"Waiting to start"}},
+  {"name":"queued","expected":{"code":"queued","label":"Queued","reason_code":"admitted","reason":"Scheduled to start","next_action":{"owner":"dispatch","reason":"admitted","due_at":100.0}}},
   {"name":"working","expected":{"code":"working","label":"Working","reason_code":"building","reason":"Building"}},
   {"name":"operator_pause","expected":{"code":"backlog","label":"Backlog","reason_code":"operator_pause","reason":"Paused by the operator"}},
   {"name":"label_hold","expected":{"code":"blocked","label":"Blocked","reason_code":"label_hold","reason":"On hold by a GitHub label; removing it clears this hold"}},

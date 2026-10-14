@@ -3,6 +3,7 @@ import json
 import time
 import uuid
 
+from ..request_metrics import RequestBudgetExhausted
 from ..store.db import StoreError
 from ..store.effects import Effects
 from ..store.models import Command, TransitionError
@@ -157,6 +158,19 @@ class MergeController:
         self.commands = Lifecycle(store, clock=clock)
 
     def step(self, unit_id):
+        from ..store.scheduling import Scheduling
+        schedules = Scheduling(self.store, clock=self.clock)
+        pending=schedules.pending(unit_id, 'merges')
+        if pending:
+            return {'unit_id':unit_id,'pending':pending['reason'],'retry_at':pending['due_at']}
+        try:
+            result = self._step(unit_id)
+        except (RequestBudgetExhausted, GitHubUnavailable, TransitionError, StoreError, OSError) as error:
+            schedules.record(unit_id, owner='merges', reason='github_budget' if isinstance(error,RequestBudgetExhausted) else getattr(error, 'code', type(error).__name__))
+            raise
+        return schedules.outcome(unit_id, 'merges', result)
+
+    def _step(self, unit_id):
         item = candidate_snapshot(self.store, unit_id)
         if item is None or item['state'] != 'merging':
             return {'unit_id': unit_id, 'pending': 'technical_evidence'}
