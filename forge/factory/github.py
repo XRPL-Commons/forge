@@ -185,6 +185,22 @@ class GitHub:
             raise GitHubUnavailable('Role identity is not verified')
         return slug + '[bot]'
 
+    def identity(self, role, repo_id):
+        """Resolve the configured App bot through a bounded host-only request."""
+        login = self.publisher(role)
+        if time.monotonic() >= min(getattr(self, 'deadline', float('inf')), request_deadline()):
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        try:
+            value = self.client.request('GET', '/users/' + quote(login, safe=''), self.token(role, repo_id))
+        except RequestBudgetExhausted:
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
+        except AccessError as error:
+            raise GitHubUnavailable('Publisher identity is unconfirmed', status=error.status) from None
+        if (not isinstance(value, dict) or type(value.get('id')) is not int or value['id'] <= 0
+                or value.get('login') != login or value.get('type') != 'Bot'):
+            raise GitHubUnavailable('Publisher identity is unconfirmed')
+        return {key: value[key] for key in ('id', 'login', 'type')}
+
     def target(self, item):
         repository = self.call('controller', item, 'GET', '')
         if repository.get('id') != item['repo_id'] or not isinstance(repository.get('default_branch'), str):

@@ -35,6 +35,16 @@ class GraphQLPublicationTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, 503)
         self.assertNotIn('private', str(caught.exception))
 
+    def test_publisher_identity_requires_exact_bot_and_keeps_credentials_host_side(self):
+        self.github.publisher = Mock(return_value='forge-controller[bot]')
+        self.client.request.return_value = {'id': 7, 'login': 'forge-controller[bot]', 'type': 'Bot', 'extra': 'ignored'}
+        self.assertEqual(self.github.identity('controller', 12), {'id': 7, 'login': 'forge-controller[bot]', 'type': 'Bot'})
+        self.assertEqual(self.client.request.call_args.args[1], '/users/forge-controller%5Bbot%5D')
+        for changed in ({'id': True}, {'login': 'another[bot]'}, {'type': 'User'}):
+            self.client.request.return_value.update(changed)
+            with self.assertRaises(GitHubUnavailable):
+                self.github.identity('controller', 12)
+
     def test_deadline_prevents_token_and_network_calls(self):
         self.github.deadline = 0
         with self.assertRaises(GitHubBudgetExhausted):
