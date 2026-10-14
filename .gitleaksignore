@@ -1,0 +1,3 @@
+# Synthetic sequential-digit credential in a redaction regression fixture.
+# Exact historical finding only; live source constructs this test value.
+ddac86691ec3b3e4d1c3240905eef4f64834f8b7:tests/test_private_qualification_diagnostics.py:generic-api-key:45
