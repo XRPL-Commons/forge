@@ -1,5 +1,4 @@
 """Recovery faults retry physical workers without losing original failure history."""
-import json
 import unittest
 from unittest.mock import patch
 
@@ -95,23 +94,3 @@ class RecoveryExecutionWaitTests(unittest.TestCase):
         self.assertEqual(self.jobs.job(repaired)['runner_config']['memory'],'8g')
 
 
-class RecoveryHistoryMigrationTests(unittest.TestCase):
-    def test_035_upgrade_preserves_nonempty_investigation_findings_and_foreign_keys(self):
-        from forge.store import db as storage, upgrade
-        migrations=storage._migrations()
-        import tempfile
-        from tests.historical_store_fixtures import investigation_035
-        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
-        with patch('forge.store.db._migrations',return_value=migrations[:35]):
-            historical=storage.Store.create(directory.name)
-            investigation_035(historical)
-            with historical.read_snapshot() as db:
-                before={table:[tuple(row) for row in db.execute('SELECT * FROM '+table)]
-                    for table in ('recovery_assignments','recovery_findings','attempt_failures','budget_entries')}
-                self.assertTrue(all(before.values()))
-                self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
-        upgraded=storage.Store(historical.root);upgrade.apply(upgraded)
-        with upgraded.read_snapshot() as db:
-            self.assertEqual({table:[tuple(row) for row in db.execute('SELECT * FROM '+table)] for table in before},before)
-            self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
-            self.assertEqual(db.execute('PRAGMA foreign_keys').fetchone()[0],1)

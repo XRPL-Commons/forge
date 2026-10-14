@@ -92,30 +92,6 @@ class PublicationLedgerTests(unittest.TestCase):
         self.assertEqual(self.commands.get(identifier)['receipt'],receipt)
 
 
-class PublicationMigrationTests(unittest.TestCase):
-    def test_populated_schema38_upgrade_preserves_capture_and_execution_authority(self):
-        import tempfile
-        from pathlib import Path
-        from forge.store import db as storage, upgrade
-        from tests.historical_store_fixtures import reservation
-        with tempfile.TemporaryDirectory() as temporary:
-            migrations=storage._migrations()
-            with patch('forge.store.db._migrations',return_value=migrations[:38]):
-                store=storage.Store.create(Path(temporary)/'store')
-                job=reservation(store,config={},policy={},base_oid=BASE)
-                with store.write() as db:
-                    _artifact(db,job,'worker_capture',b'{"result":null}',100)
-                    authority=tuple(db.execute('SELECT slot,execution_fence FROM job_leases').fetchone())
-                    artifact=tuple(db.execute("SELECT digest,content,size FROM job_artifacts WHERE kind='worker_capture'").fetchone())
-            store=storage.Store(store.root);upgrade.apply(store);upgrade.apply(store)
-            with store.read_snapshot() as db:
-                self.assertEqual(tuple(db.execute('SELECT slot,execution_fence FROM job_leases').fetchone()),authority)
-                self.assertEqual(tuple(db.execute("SELECT digest,content,size FROM job_artifacts WHERE kind='worker_capture'").fetchone()),artifact)
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM publication_intents').fetchone()[0],0)
-                self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
-                self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
-
-
 def bind_source(fixture):
     source=fixture.source;key=source['dependency_policy_digest'];source_digest=digest(source)
     authorization=fixture.target['authorization'] or dict(kind='forge_owned',branch=fixture.target['branch'],

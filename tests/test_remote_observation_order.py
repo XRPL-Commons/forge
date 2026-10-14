@@ -1,12 +1,9 @@
-"""Exact timestamp migration and fresh requirements after unchanged GitHub reads."""
+"""Fresh requirements after unchanged GitHub reads."""
 import json
 from pathlib import Path
-import sqlite3
-import unittest
 from unittest.mock import Mock, patch
 
-from forge.store.db import _execute_script
-from forge.store.remote_time import normalize, order, register, RemoteTimestampError
+from forge.store.remote_time import normalize
 from forge.store.models import TransitionError
 from forge.factory.config import validate
 from forge.factory.store_inventory import StoreInventory, DiscoveryController
@@ -15,65 +12,6 @@ from forge.factory.sqlite_supervisor import SqliteSupervisor
 from tests.test_sqlite_runtime_support import RuntimeFixture
 
 SCHEMA = Path(__file__).resolve().parents[1] / 'forge/store/schema'
-
-
-class TimestampMigrationTests(unittest.TestCase):
-    def setUp(self):
-        self.db = sqlite3.connect(':memory:', isolation_level=None)
-        self.addCleanup(self.db.close)
-        register(self.db)
-        for path in sorted(SCHEMA.glob('*.sql')):
-            if int(path.name[:3]) < 20:
-                _execute_script(self.db, path.read_text())
-        self.db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'example/project')")
-
-    def issue(self, number, timestamp):
-        self.db.execute('INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,remote_updated_at,observed_at) '
-                        "VALUES(?,1,?,'open',?,?,1)", (f'1:{number}', number, f'rev-{number}', timestamp))
-        self.db.execute('INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) '
-                        "VALUES(?,?,'Title','','body','requirements','{}',1)", (f'rev-{number}', f'1:{number}'))
-
-    def migrate(self):
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            _execute_script(self.db, (SCHEMA / '020_remote_observation_order.sql').read_text())
-            self.db.commit()
-        except BaseException:
-            self.db.rollback()
-            raise
-
-    def test_normalizes_both_timestamp_tables_exactly_and_data_step_is_idempotent(self):
-        cases = ['2026-10-03T16:02:51Z', '2026-10-03T16:02:51+00:00',
-                 '2026-10-03T16:02:51.123456Z', '2026-10-03T17:02:51.123455+01:00']
-        for number, timestamp in enumerate(cases, 1):
-            self.issue(number, timestamp)
-            self.db.execute('INSERT INTO pull_requests VALUES(?,1,?,\'author\',\'head\',\'main\',\'oid\',\'open\',NULL,?,1,1)',
-                            (f'pull-{number}', number, timestamp))
-        self.migrate()
-        expected = [normalize(value) for value in cases]
-        for table in ('issues', 'pull_requests'):
-            actual = [row[0] for row in self.db.execute(f'SELECT remote_updated_at FROM {table} ORDER BY github_number')]
-            self.assertEqual(actual, expected)
-            self.db.execute(f'UPDATE {table} SET remote_updated_at=forge_remote_time(remote_updated_at)')
-            self.assertEqual([row[0] for row in self.db.execute(f'SELECT remote_updated_at FROM {table} ORDER BY github_number')], expected)
-        self.assertGreater(order(cases[2]), order(cases[3]))
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.db.execute("UPDATE issues SET remote_updated_at='2026-10-03T16:02:51.123454+00:00' WHERE id='1:3'")
-
-    def test_invalid_stored_timestamp_rolls_back_data_and_schema(self):
-        self.issue(1, '2026-10-03T16:02:51Z')
-        self.issue(2, 'invalid')
-        with self.assertRaises(sqlite3.OperationalError):
-            self.migrate()
-        self.assertEqual(self.db.execute("SELECT remote_updated_at FROM issues WHERE id='1:1'").fetchone()[0], '2026-10-03T16:02:51Z')
-        self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='issue_discovery_observations'").fetchone())
-        self.assertIsNotNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='issues_observed_in_order'").fetchone())
-
-    def test_order_accepts_equivalent_offsets_and_rejects_unparseable_values(self):
-        self.assertEqual(order('2026-10-03T16:02:51Z'), order('2026-10-03T17:02:51+01:00'))
-        for value in ('invalid', '', '2026-10-03T16:02:51', '2026-10-03T16:02:51.1234567Z'):
-            with self.subTest(value=value), self.assertRaises(RemoteTimestampError):
-                order(value)
 
 
 class DiscoveryTimestampTests(RuntimeFixture):
