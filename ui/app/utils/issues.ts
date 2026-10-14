@@ -54,6 +54,7 @@ export interface IssueRow extends OperatorStatusSource {
   closable?: boolean
   delivery_approved?: boolean
   setup_needed: boolean; environment_blocker: string | null
+  forge_problem_report?: { status: 'draft'; signature: string; title: string; body: string; affected: number } | null
   decision_request?: { question: string; options: string[]; recommendation: string; evidence: string } | null
   approval?: { pr: number; reason: string } | null
   verification_request?: { what: string; why: string; created_at: number; gate_id?: string; can_confirm?: boolean; ci?: { name: string; app_id: number }[] } | null
@@ -617,4 +618,9 @@ export function emptyState(list: Pick<IssueListResponse, 'issues' | 'repositorie
 export function countText(list: Pick<IssueListResponse, 'total' | 'page' | 'pages' | 'complete'>): string {
   const issues = `${list.total} ${list.total === 1 ? 'issue' : 'issues'}${list.complete ? '' : ' received'}`
   return `${issues} · Page ${list.page} of ${Math.max(list.pages, 1)}`
+}
+
+export function forgeReportUrl(report: IssueRow['forge_problem_report']): string | undefined {
+  if (!report || report.status !== 'draft') return undefined
+  return 'https://github.com/XRPL-Commons/forge/issues/new?' + new URLSearchParams({ title: report.title, body: report.body })
 }

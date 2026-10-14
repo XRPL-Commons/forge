@@ -34,7 +34,7 @@ class IssueSelectionMigrationTests(unittest.TestCase):
             store = storage.Store(root)
             applied = upgrade.apply(store)
             with store.read_snapshot() as db:
-                self.assertEqual(IssueSelection(db).execute("SELECT public_status FROM public_issue_index WHERE id='issue-1'").fetchone()[0], 'queued')
+                self.assertEqual(IssueSelection(db).execute("SELECT public_status FROM public_issue_index WHERE id='issue-1'").fetchone()[0], 'waiting')
                 self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
                 self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
                 self.assertEqual(db.execute("SELECT task_id FROM part_outputs WHERE id='output'").fetchone()[0], 'v1:plan:0')
@@ -42,6 +42,6 @@ class IssueSelectionMigrationTests(unittest.TestCase):
             for table in ('issues', 'issue_revisions', 'attempts', 'job_members', 'delegation_plans'):
                 self.assertEqual(after[table], before[table], table)
             view = PipelineViews(store, runtime=validate({}), clock=lambda:100)
-            self.assertIn('issue-1', [row['key'] for row in view.issues(state='queued')['issues']])
+            self.assertIn('issue-1', [row['key'] for row in view.issues(state='waiting')['issues']])
             self.assertEqual(upgrade.apply(store), applied)
             self.assertEqual(blocker.IssueBlockerLookupTests.data(store), after)

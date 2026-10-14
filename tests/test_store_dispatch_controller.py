@@ -149,6 +149,7 @@ class DispatchTests(unittest.TestCase):
                 self.prepare = GitHubPrepare(self.github, self.config)
                 self.controller = self.driver()
                 change()
+                self.now += 30
                 self.assertFalse(self.controller.step('u')['reserved'])
                 with self.store.read_snapshot() as db:
                     self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
@@ -225,6 +226,7 @@ class DispatchTests(unittest.TestCase):
         self.now += 1
         self.life.verify_cleanup(self.command(), job['id'], execution_fence=job['execution_fence'],
                                  evidence={'process_stopped': True, 'resources_released': True})
+        self.now += 30
         self.assertTrue(self.driver(prepare).step('v')['reserved'])
         self.admit('w', 3)
         self.assertTrue(self.driver(prepare).step('w')['reserved'])
@@ -258,6 +260,40 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(review['ci_evidence']['verified'], {'head': HEAD, 'base': BASE})
         self.assertEqual(review['review_policy'], policy(self.config,1,repository_name='owner/repo'))
 
+    def test_build_rework_with_retained_candidate_invalidates_a_stale_base(self):
+        build = self.controller.step('u')
+        job = self.job(build)
+        candidate = Candidate(10, job['branch'], HEAD, BASE, job['input_manifest']['policy_hash'],
+                              manifest_hash('github-requirements'), manifest_hash(job['input_manifest']))
+        self.life.finish_job(Command('finish', 'test', 'u', job['unit_version']), job['id'],
+            execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
+            evidence={'head_oid': HEAD, 'base_oid': BASE, 'pull_number': 10}, candidate=candidate)
+        self.life.verify_cleanup(self.command(), job['id'], execution_fence=job['execution_fence'],
+                                 evidence={'process_stopped': True, 'resources_released': True})
+        # A persisted rework phase can retain the old publication for continuation.
+        with self.store.write() as db:
+            db.execute("UPDATE units SET state='building',version=version+1 WHERE id='u'")
+        self.github.head = 'c' * 40
+        self.assertEqual(self.controller.step('u')['reason'],'base_changed')
+        self.now += 30
+        rebuilt=self.job(self.controller.step('u'))
+        self.assertEqual((rebuilt['role'],rebuilt['input_manifest']['base_oid']),('build','c'*40))
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],0)
+
+    def test_capacity_decline_is_durable_and_reservation_clears_schedule(self):
+        from forge.store.queries import Queries
+        self.runner.allowed=False
+        self.assertEqual(self.controller.step('u')['reason'],'capacity_unavailable')
+        action=Queries(self.store).issue('issue-u')['lifecycle']['next_action']
+        self.assertEqual((action['owner'],action['reason']),('dispatch','capacity_unavailable'))
+        self.assertEqual(action['due_at'],self.now+30)
+        self.runner.allowed=True
+        self.assertFalse(self.controller.step('u')['reserved'])
+        self.now += 30
+        self.assertTrue(self.controller.step('u')['reserved'])
+        self.assertIsNone(Queries(self.store).issue('issue-u')['lifecycle']['next_action'])
+
     def test_review_on_a_moved_base_sends_the_candidate_back_for_uncharged_rework(self):
         build = self.controller.step('u')
         job = self.job(build)
@@ -278,6 +314,7 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(unit[0], 'building')
         self.assertIsNone(unit[1])
         self.assertEqual(charged, 0)
+        self.now += 30
         rebuilt = self.job(self.controller.step('u'))
         self.assertEqual(rebuilt['role'], 'build')
         self.assertEqual(rebuilt['input_manifest']['base_oid'], 'c' * 40)

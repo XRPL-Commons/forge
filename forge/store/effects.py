@@ -5,12 +5,54 @@ intent may be superseded before its first request. Once a merge might have been
 sent, a changed local decision cannot erase that uncertainty.
 """
 import json
+import time
+import uuid
+import math
 
-from .models import TransitionError, VersionConflict
+from .runtime import writable
+from .models import Command, TransitionError, VersionConflict
 from .transitions import Lifecycle, _id, _json, _unit, applicable_gates
 
 
+def retry_policy(reliability=None):
+    config=reliability or {}
+    return {'retry_seconds':config.get('retry_seconds',30),'retry_cap':config.get('effect_retry_cap_seconds',900),
+            'max_attempts':config.get('effect_max_attempts',8),'uncertainty_seconds':config.get('effect_uncertainty_seconds',900)}
+
+
+def effect_due(row, now):
+    return row['retry_at'] is None or row['retry_at']<=now
+
+
+def admit_send_in(row, now, *, reliability=None):
+    policy=retry_policy(reliability)
+    if not effect_due(row,now):
+        raise TransitionError('effect retry is not due')
+    if (row['escalation_at'] is not None or row['attempts']>=policy['max_attempts']
+        or row['uncertain_since'] is not None and now-row['uncertain_since']>=policy['uncertainty_seconds']):
+        raise TransitionError('effect requires owned reconciliation before another send')
+
+
+def defer_effect_in(db, row, now, *, reliability=None):
+    """Persist backoff after a failed read/send; never increases physical attempts."""
+    writable(db)
+    policy=retry_policy(reliability)
+    delay=policy['retry_cap'] if row['escalation_at'] is not None else min(policy['retry_cap'],policy['retry_seconds']*2**min(max(0,row['attempts']-1),20))
+    db.execute("UPDATE external_effects SET status='uncertain',retry_at=?,uncertain_since=COALESCE(uncertain_since,?),updated_at=? "
+        "WHERE id=? AND status IN ('pending','running','uncertain')",(now+delay,now,now,row['id']))
+
+
 class Effects(Lifecycle):
+    def __init__(self, store, *, clock=time.time, retry_seconds=30, retry_cap=900, max_attempts=8, uncertainty_seconds=900):
+        super().__init__(store, clock=clock)
+        if any(type(n) not in (int, float) or not math.isfinite(n) or n <= 0 for n in (retry_seconds, retry_cap, uncertainty_seconds)) or type(max_attempts) is not int or max_attempts < 1:
+            raise ValueError('effect retry policy must use positive bounds')
+        self.retry_seconds, self.retry_cap = retry_seconds, retry_cap
+        self.max_attempts, self.uncertainty_seconds = max_attempts, uncertainty_seconds
+
+    def delay(self, attempts):
+        return min(self.retry_cap, self.retry_seconds * 2 ** min(max(0, attempts - 1), 20))
+
     def _effect_event(self, db, effect_id):
         row = db.execute('SELECT * FROM external_effects WHERE id=?', (effect_id,)).fetchone()
         db.execute('INSERT INTO events(transaction_id,unit_id,kind,at,actor_id,payload_json) '
@@ -156,11 +198,13 @@ class Effects(Lifecycle):
     def claim(self, effect_id, *, expected_version, authorization=None, merge_request=False):
         """Commit possible delivery before any network mutation, under driver lock."""
         with self.store.write() as db:
+            writable(db)
             row = db.execute('SELECT e.*,c.candidate_id,c.job_id,c.fencing_generation,c.membership_generation '
                              'FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id WHERE e.id=?',
                              (effect_id,)).fetchone()
             if row is None or row['status'] not in {'pending', 'running', 'uncertain'}:
                 raise TransitionError('effect is not runnable')
+            admit_send_in(row,self.clock(),reliability={'effect_max_attempts':self.max_attempts,'effect_uncertainty_seconds':self.uncertainty_seconds})
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot issue effects')
             unit = _unit(db, row['unit_id'])
@@ -175,8 +219,12 @@ class Effects(Lifecycle):
                 self._merge_ready(db, unit, candidate, authorization)
             elif row['kind'] == 'github_verdict':
                 self._verdict_ready(db, unit, candidate, row['job_id'])
-            db.execute("UPDATE external_effects SET status='running',attempts=attempts+1,updated_at=? WHERE id=?",
-                       (self.clock(), effect_id))
+            # The preliminary merge check is not another merge PUT attempt.
+            increment = int(row['kind'] != 'github_merge' or merge_request)
+            db.execute("UPDATE external_effects SET status='running',attempts=attempts+?,updated_at=?,"
+                       'retry_at=CASE WHEN ? THEN ? ELSE retry_at END,'
+                       'uncertain_since=CASE WHEN ? THEN COALESCE(uncertain_since,?) ELSE uncertain_since END WHERE id=?',
+                       (increment,self.clock(),increment,self.clock()+self.delay(row['attempts']+increment),increment,self.clock(),effect_id))
             # Check publication is recoverable independently. Only a possible
             # merge PUT must prevent later membership changes indefinitely.
             if merge_request:
@@ -192,6 +240,7 @@ class Effects(Lifecycle):
         if receipt is not None and (not isinstance(receipt, dict) or len(_json(receipt).encode()) > 65536):
             raise TransitionError('effect receipt must be a bounded object')
         with self.store.write() as db:
+            writable(db)
             row = db.execute('SELECT * FROM external_effects WHERE id=?', (effect_id,)).fetchone()
             if row is None:
                 raise KeyError(effect_id)
@@ -200,8 +249,12 @@ class Effects(Lifecycle):
             merge = db.execute('SELECT status FROM merge_requests WHERE effect_id=?', (effect_id,)).fetchone()
             if row['kind'] == 'github_merge' and (status == 'confirmed' or merge and merge[0] == 'uncertain' and status != 'uncertain'):
                 raise TransitionError('a possibly sent merge requires authoritative lifecycle reconciliation')
-            db.execute('UPDATE external_effects SET status=?,receipt_json=?,updated_at=? WHERE id=?',
-                       (status, _json(receipt) if receipt is not None else None, self.clock(), effect_id))
+            uncertain = status == 'uncertain'
+            db.execute('UPDATE external_effects SET status=?,receipt_json=?,updated_at=?,retry_at=?,'
+                       'uncertain_since=CASE WHEN ? THEN COALESCE(uncertain_since,?) ELSE uncertain_since END WHERE id=?',
+                       (status, _json(receipt) if receipt is not None else None, self.clock(),
+                        self.clock() + (self.retry_cap if row['escalation_at'] is not None else self.delay(row['attempts'])) if uncertain else None,
+                        uncertain, self.clock(), effect_id))
             if row['kind'] == 'github_merge' and status == 'superseded':
                 db.execute("UPDATE merge_requests SET status='superseded' WHERE effect_id=?", (effect_id,))
             self._effect_event(db, effect_id)
@@ -211,6 +264,7 @@ class Effects(Lifecycle):
         if type(http_status) is not int or http_status not in {400, 401, 403, 404, 405, 409, 422}:
             raise TransitionError('merge response does not prove refusal')
         with self.store.write() as db:
+            writable(db)
             row = db.execute('SELECT e.status,m.send_count,m.last_sent_at,m.candidate_id,c.pull_number,c.head_oid,u.repository_id '
                              'FROM external_effects e JOIN merge_requests m ON m.effect_id=e.id '
                              'JOIN candidates c ON c.id=m.candidate_id JOIN units u ON u.id=e.unit_id '
@@ -232,20 +286,99 @@ class Effects(Lifecycle):
             db.execute("UPDATE merge_requests SET status='refused' WHERE effect_id=?", (effect_id,))
             self._effect_event(db, effect_id)
 
+    def bounded(self, effect_id):
+        """Pin escalation once, retain the effect for authoritative reads only."""
+        with self.store.write() as db:
+            writable(db)
+            row=db.execute('SELECT * FROM external_effects WHERE id=?',(effect_id,)).fetchone()
+            if row is None or row['status'] not in {'pending','running','uncertain'}:
+                return False
+            exhausted = row['attempts'] >= self.max_attempts
+            elapsed = row['uncertain_since'] is not None and self.clock()-row['uncertain_since'] >= self.uncertainty_seconds
+            if not exhausted and not elapsed and row['escalation_at'] is None:
+                return False
+            db.execute('UPDATE external_effects SET escalation_at=COALESCE(escalation_at,?),retry_at=? WHERE id=?',
+                (self.clock(),self.clock()+self.retry_cap,effect_id))
+        from .scheduling import Scheduling
+        Scheduling(self.store,clock=self.clock).escalate(row['unit_id'],reason='effect_uncertain',effect_id=effect_id)
+        return True
+
+    def observe_unmerged(self, effect_id, *, evidence):
+        """Fresh remote state reconciles every earlier SHA-bound PUT, not a refusal."""
+        with self.store.read_snapshot() as db:
+            scope = db.execute('SELECT e.unit_id,u.version FROM external_effects e JOIN units u ON u.id=e.unit_id WHERE e.id=?',(effect_id,)).fetchone()
+        if scope is None:
+            raise KeyError(effect_id)
+        command=Command(str(uuid.uuid4()),'supervisor:effects',scope['unit_id'],scope['version'])
+        def change(db,unit):
+            row = db.execute('SELECT e.*,m.send_count,m.last_sent_at,m.candidate_id,c.pull_number,c.head_oid,u.repository_id,u.base_branch '
+                'FROM external_effects e JOIN merge_requests m ON m.effect_id=e.id '
+                'JOIN candidates c ON c.id=m.candidate_id JOIN units u ON u.id=e.unit_id '
+                "WHERE e.id=? AND m.status='uncertain'", (effect_id,)).fetchone()
+            if row is None:
+                raise TransitionError('observation must reconcile a possibly sent merge')
+            if (not isinstance(evidence, dict) or evidence.get('verified') is not True or evidence.get('merged') is not False
+                or any(evidence.get(key) != row[key] for key in ('candidate_id','pull_number','head_oid','repository_id','base_branch'))
+                or type(evidence.get('observed_at')) not in (int,float)
+                or row['last_sent_at'] is None or not row['last_sent_at'] <= evidence['observed_at'] <= self.clock()
+                or not isinstance(evidence.get('observed_head'), str) or not evidence['observed_head']
+                or not (evidence.get('state') == 'closed' or evidence['observed_head'] != row['head_oid'])):
+                raise TransitionError('fresh exact repository PR evidence must establish closure or changed head')
+            db.execute("UPDATE external_effects SET status='failed',receipt_json=?,retry_at=NULL,updated_at=? WHERE id=?",
+                (_json({'reason':'merge_observed_unmerged','evidence':evidence}),self.clock(),effect_id))
+            db.execute("UPDATE merge_requests SET status='refused' WHERE effect_id=?",(effect_id,))
+            self._effect_event(db,effect_id)
+            if unit['current_candidate_id']==row['candidate_id']:
+                self._invalidate(db,command,unit,'candidate_changed',evidence)
+            return {'effect_id':effect_id,'reconciled':True}
+        return self._apply(command,'observe_unmerged_effect',{'effect_id':effect_id,'evidence':evidence},change)
+
+    def rebuild_conflict(self, effect_id):
+        """Atomically withdraw an unsent intent and rebuild a sustained conflict."""
+        with self.store.read_snapshot() as db:
+            scope=db.execute('SELECT e.unit_id,u.version FROM external_effects e JOIN units u ON u.id=e.unit_id WHERE e.id=?',(effect_id,)).fetchone()
+        command=Command(str(uuid.uuid4()),'supervisor:effects',scope['unit_id'],scope['version'])
+        def change(db,unit):
+            row=db.execute('SELECT e.*,m.candidate_id,m.send_count FROM external_effects e JOIN merge_requests m ON m.effect_id=e.id '
+                "WHERE e.id=? AND m.status='pending'",(effect_id,)).fetchone()
+            if (row is None or row['send_count']!=0 or row['conflict_since'] is None
+                or self.clock()-row['conflict_since']<self.uncertainty_seconds
+                or self.clock()-row['updated_at']>60 or row['candidate_id']!=unit['current_candidate_id']):
+                raise TransitionError('rebuild requires a fresh sustained conflict without uncertain sends')
+            evidence={'verified':True,'observed_at':self.clock(),'conflict_since':row['conflict_since'],'effect_id':effect_id}
+            db.execute("UPDATE external_effects SET status='superseded',receipt_json=?,retry_at=NULL,updated_at=? WHERE id=?",
+                (_json({'reason':'observed_merge_conflict','evidence':evidence}),self.clock(),effect_id))
+            db.execute("UPDATE merge_requests SET status='superseded' WHERE effect_id=?",(effect_id,))
+            self._effect_event(db,effect_id)
+            self._invalidate(db,command,unit,'merge_conflict',evidence)
+            return {'effect_id':effect_id,'rebuilding':True}
+        return self._apply(command,'rebuild_observed_conflict',{'effect_id':effect_id},change)
+
+    def observe_wait(self, effect_id, *, conflict=False):
+        with self.store.write() as db:
+            writable(db)
+            row = db.execute('SELECT * FROM external_effects WHERE id=?',(effect_id,)).fetchone()
+            if row is None or row['status'] not in {'pending','running','uncertain'}:
+                return
+            db.execute('UPDATE external_effects SET uncertain_since=COALESCE(uncertain_since,?),'
+                'conflict_since=CASE WHEN ? THEN COALESCE(conflict_since,?) ELSE NULL END,retry_at=?,updated_at=? WHERE id=?',
+                (self.clock(),conflict,self.clock(),self.clock()+self.delay(row['attempts']),self.clock(),effect_id))
+
+
 
 class EffectQueries:
-    def __init__(self, store):
-        self.store = store
+    def __init__(self, store, *, clock=time.time):
+        self.store, self.clock = store, clock
 
     def pending(self, *, limit=20, after=None):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('effect page must contain between 1 and 100 rows')
         with self.store.read_snapshot() as db:
             cursor = '' if after is None else 'AND (e.created_at,e.id) > (?,?) '
-            parameters = (limit,) if after is None else (*after, limit)
+            parameters = (self.clock(),limit) if after is None else (self.clock(),*after,limit)
             return [row[0] for row in db.execute(
                 "SELECT e.id FROM external_effects e JOIN candidate_effects c ON c.effect_id=e.id "
-                "WHERE e.status IN ('pending','running','uncertain') " + cursor +
+                "WHERE e.status IN ('pending','running','uncertain') AND (e.retry_at IS NULL OR e.retry_at<=?) " + cursor +
                 'ORDER BY e.created_at,e.id LIMIT ?', parameters)]
 
     def get(self, effect_id):
@@ -262,9 +395,10 @@ class EffectQueries:
             value['receipt'] = json.loads(value.pop('receipt_json') or 'null')
             candidate = dict(db.execute('SELECT * FROM candidates WHERE id=?', (value['candidate_id'],)).fetchone())
             value['identity'] = candidate
-            merge = db.execute('SELECT status,send_count FROM merge_requests WHERE effect_id=?', (effect_id,)).fetchone()
+            merge = db.execute('SELECT status,send_count,last_sent_at FROM merge_requests WHERE effect_id=?', (effect_id,)).fetchone()
             value['merge_status'] = merge['status'] if merge else None
             value['merge_send_count'] = merge['send_count'] if merge else 0
+            value['merge_last_sent_at'] = merge['last_sent_at'] if merge else None
             value['candidate'] = dict(key=candidate['id'], pr=candidate['pull_number'], branch=candidate['branch'],
                                       head=candidate['head_oid'], base=candidate['base_oid'],
                                       requirements=candidate['requirements_hash'], accepted_at=candidate['accepted_at'])
