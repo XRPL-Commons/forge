@@ -87,6 +87,10 @@ class BoundaryTests(unittest.TestCase):
             self.writes.append((method, path, payload))
         if method == 'GET' and path == '/repos/example/project':
             return json.dumps(self.repo).encode()
+        if method == 'GET' and '/rules/branches/' in path:
+            return b'[]'
+        if method == 'GET' and path.endswith('/protection'):
+            raise SetupError('github_not_found', 'No classic protection')
         if method == 'GET' and path.startswith('/repos/example/project/rulesets?'):
             return json.dumps(self.github_rules).encode()
         if method == 'PUT' and path.startswith('/user/installations/'):

@@ -8,14 +8,14 @@ from ..db import Store, _private
 from ..files import atomic_json
 from .. import upgrade as schema
 from .snapshot import MigrationError, digest, operation_lock, read_regular
-from .source import source_files
+from .source import migration_files
 
 
 def package_version(source):
-    """Digest of the installation-owned files a release ships under forge/."""
-    directory = Path(source) / 'forge'
-    paths = source_files(directory)
-    return '1:' + digest(b''.join(path.relative_to(directory).as_posix().encode() + read_regular(path) for path in paths))
+    """Bind every executable file transferred by the standalone upgrade tool."""
+    directory = Path(source)
+    paths = migration_files(directory)
+    return '2:' + digest(b''.join(path.relative_to(directory).as_posix().encode() + read_regular(path) for path in paths))
 
 
 class Upgrade:
@@ -86,16 +86,18 @@ class Upgrade:
         value.update(stage=stage, updated_at=time.time())
         atomic_json(self.path, value)
 
-    def run(self, *, revision, apply=False):
+    def run(self, *, revision, apply=False, source_pack=None):
         if not apply:
             return {'status': 'planned', **self.status()}
         if not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{40}', revision):
             raise MigrationError('upgrade_revision_required')
+        source_options = {'source_pack': source_pack} if source_pack is not None else {}
         with operation_lock(self.root, '.migration-host.lock'):
             tool_version = package_version(Path(__file__).resolve().parents[3])
             store = self.store()
             value = self.read() if self.path.exists() else None
             previous = value
+            source_qualified = False
             if value and value['source_revision'] != revision:
                 if value['stage'] == 'complete':
                     # Completion releases source, service and drain ownership.
@@ -114,7 +116,8 @@ class Upgrade:
                     return {'status': 'upgraded', **self.status()}
             else:
                 plan = self.status()
-                self.host.prepare_source_update(plan['source_revision'], revision, tool_version)
+                self.host.prepare_source_update(plan['source_revision'], revision, tool_version, **source_options)
+                source_qualified = True
                 value = dict(protocol=1, root=str(self.root), source=str(self.host.source), authorized=True,
                              previous_revision=plan['source_revision'], source_revision=revision,
                              tool_version=tool_version, services=sorted(set(self.host.units()) | set(previous['services'] if previous else [])),
@@ -135,6 +138,13 @@ class Upgrade:
             if value['stage'] == 'draining':
                 from .drain import Drain
                 Drain(self, store).start(value)
+                # A new bundled tool can finish teardown that the installed
+                # release cannot persist. Requalify resumed source intent before
+                # invoking any corrected code against owned physical resources.
+                if not source_qualified:
+                    self.host.prepare_source_update(value['previous_revision'], revision, tool_version, **source_options)
+                from .probe_cleanup import cleanup_fenced_probe
+                cleanup_fenced_probe(self.root, store)
                 if self.blockers(store):
                     return {'status': 'draining', **self.status(), 'next_command': 'forge migrate upgrade'}
                 self.save(value, 'stopping')
@@ -151,7 +161,7 @@ class Upgrade:
                 self.save(value, 'installing')
             if value['stage'] == 'installing':
                 self.host.quiet()
-                self.host.prepare_source_update(value['previous_revision'], revision, tool_version)
+                self.host.prepare_source_update(value['previous_revision'], revision, tool_version, **source_options)
                 self.host.install_source_update(value['previous_revision'], revision)
                 self.save(value, 'migrating')
             if value['stage'] == 'migrating':

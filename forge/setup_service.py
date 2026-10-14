@@ -3,6 +3,7 @@ import argparse
 from copy import deepcopy
 import fcntl
 import json
+import logging
 from pathlib import Path
 import signal
 import subprocess
@@ -80,9 +81,11 @@ class Service:
     def database(self):
         return self.setup.database
 
-    def runner(self, config):
+    def runner(self, config, *, probe=False):
         # The runner finds <root>/runner-seccomp.json through FORGE_CREDENTIAL_ROOT.
-        return self.runner_class(config, environ=Credentials(self.root).environment())
+        from .factory.probe_runner import ProbeRunner
+        runner = ProbeRunner if probe and self.runner_class is ContainerRunner else self.runner_class
+        return runner(config, environ=Credentials(self.root).environment())
 
     def update(self, expected, **values):
         with self.setup.store.transaction() as data:
@@ -169,7 +172,7 @@ class Service:
             return
         if op['step'] == 'prepare':
             for job in data['probe_jobs']:
-                self.runner(job['runner_config']).reset(job)
+                self.runner(job['runner_config'], probe=True).reset(job)
                 job['cleanup'] = True
             if data['probe_jobs']:
                 self.update(op, probe_jobs=data['probe_jobs'])
@@ -201,7 +204,7 @@ class Service:
                         operation={**op, 'step': 'probe'})
             return
         job = data['probe_jobs'][-1]
-        runner = self.runner(job['runner_config'])
+        runner = self.runner(job['runner_config'], probe=True)
         if job['fenced']:
             runner.reset(job)
             job['cleanup'] = True
@@ -236,7 +239,7 @@ class Service:
             self.update(op, probe_jobs=data['probe_jobs'])
             current = runner.inspect(job)
         if current['status'] == 'created':
-            runner.prepare(job, 'synthetic-no-github-access')
+            runner.prepare(job)
             try:
                 runner.start(job)
             except RunnerCapacity:
@@ -309,7 +312,7 @@ class Service:
                 job['fenced'] = True
                 with self.database.write() as db:
                     save_in(db, domain, owner, job, self.setup.clock())
-                self.runner(job['runner_config']).reset(job)
+                self.runner(job['runner_config'], probe=domain == 'setup').reset(job)
                 job['cleanup'] = True
                 with self.database.write() as db:
                     save_in(db, domain, owner, job, self.setup.clock())
@@ -440,8 +443,10 @@ class Service:
         deployments = Deployments(self.root, runner=self.runner, github=github, settings=settings)
         try:
             deployments.tick(config)
-        except (RunnerError, GitHubUnavailable, ValueError, StateError, OSError) as error:
-            deployments.fail(str(error))
+        except Exception as error:
+            reason = 'Deployment tick failed (' + type(error).__name__ + '); retry pending'
+            logging.getLogger(__name__).warning(reason)
+            deployments.fail(reason)
         github = self.github_class(settings, config)
         github.deadline = time.monotonic() + 10
         try:

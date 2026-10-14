@@ -69,6 +69,8 @@ def run_bounded(argv, *, payload=None, input_bytes=None, input_limit=65536, outp
                     and failure.get('message') == 'Upgrade to GitHub Pro or make this repository public to enable this feature.'):
                 raise SetupError('github_plan_required',
                                  'GitHub reports that this repository\'s plan does not support the requested feature.')
+            if isinstance(failure, dict) and failure.get('status') in (404, '404'):
+                raise SetupError('github_not_found', 'The requested GitHub resource was not found or is inaccessible.')
             raise SetupError('github_request_failed', 'GitHub request failed; check local login, permissions and the requested operation.')
         return bytes(output)
     except (OSError, subprocess.SubprocessError):

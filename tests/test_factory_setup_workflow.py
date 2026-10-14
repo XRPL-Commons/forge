@@ -54,6 +54,25 @@ class SetupStageTests(unittest.TestCase):
         self.assertFalse(engine)
         with self.assertRaises(SetupError): self.factory.apps(apply=True)
 
+    def test_account_can_be_renewed_after_start_without_reopening_setup_authority(self):
+        self.factory.check(apply=True)
+        service, _, _ = sql_setup.SetupTests.service(self)
+        for _ in range(30):
+            if not self.setup.read()['operation']: break
+            service.tick()
+        self.factory.check(start=True, apply=True)
+        service.tick()
+        secret = 'replacement-provider-credential-123456789'
+        result = self.factory.account('codex', kind='api_key', secret=secret, apply=True)
+        self.assertEqual(result['phase'], 'active')
+        self.assertNotIn(secret, self.local.path.read_text())
+        with self.assertRaises(SetupError) as error:
+            self.factory.call('refresh')
+        self.assertEqual(error.exception.code, 'setup_complete')
+        self.factory.state['factory_actor']['id'] = 999
+        with self.assertRaises((SetupError, ValueError)):
+            self.factory.account('codex', kind='api_key', secret=secret, apply=True)
+
     def test_initial_repository_uses_real_preparation_and_readiness_without_start(self):
         from forge.repository_setup import RepositorySetup
         self.installations[:] = [{'id':100+i,'app_id':i,'account':{'login':'example'}} for i in range(1,5)]

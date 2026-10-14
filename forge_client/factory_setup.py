@@ -72,14 +72,16 @@ class FactorySetup:
                     'next_action': {'instruction': 'Use --apply to prepare the signed-in GitHub registration handoff.'}}
         return self.call('app', role=role, owner=chosen)
 
-    def prepare_repository(self, name, *, apply=False):
+    def prepare_repository(self, name, *, apply=False, initial=True, repair='apply-if-admin'):
         view = self.call('status')
         require(view['phase'] == 'setup', 'setup_complete', 'Use forge repo setup after initial setup.')
         resolved = self.github.repository(name)
         target = {k: resolved[k] for k in ('id', 'name')}
-        require(not self.state.get('first_repository') or self.state['first_repository'] == target,
-                'repository_changed', 'Resume with the same first repository.')
-        self.state['first_repository'] = target; self.save()
+        if initial:
+            require(not self.state.get('first_repository') or self.state['first_repository'] == target,
+                    'repository_changed', 'Resume with the same first repository.')
+            self.state['first_repository'] = target
+        self.save()
         remote = SetupRepository(self)
         if apply:
             self.call('refresh')
@@ -88,34 +90,44 @@ class FactorySetup:
         observed = remote.requirements(target)
         binding = self.state['factory_binding']
         preparation = Preparation(self.github, remote, instance=binding['instance'], generation=binding['generation'],
-                                  apps=connection_identity(observed), progress=self.repository_progress)
-        uncertain = self.state.get('repository_write')
+                                  apps=connection_identity(observed), repair=repair,
+                                  progress=lambda phase, step: self.repository_progress(phase, step, target=target))
+        writes = self.state.setdefault('repository_writes', {})
+        uncertain = writes.get(str(target['id'])) or (self.state.get('repository_write') if self.state.get('first_repository') == target else None)
         if uncertain:
-            ready = observed['readiness']['protection_ready'] if uncertain['kind'] == 'github.ruleset.ensure_baseline' else (
-                observed['roles'][uncertain['role']]['access'] == 'ready')
+            if uncertain['kind'] in ('github.ruleset.repair_bypass', 'github.classic.repair_bypass'):
+                from .rules import confirmed
+                ready = confirmed(self.github, resolved, uncertain)
+            else:
+                ready = observed['readiness']['protection_ready'] if uncertain['kind'] == 'github.ruleset.ensure_baseline' else (
+                    observed['roles'][uncertain['role']]['access'] == 'ready')
             if not ready:
                 return {'status': 'write_unconfirmed', 'next_action': {'instruction': 'Inspect the previous GitHub write, then resume. It will not be repeated blindly.'}}
-            self.state.pop('repository_write'); self.save()
+            writes.pop(str(target['id']), None)
+            if self.state.get('first_repository') == target: self.state.pop('repository_write', None)
+            self.save()
         result = preparation.setup(name, apply=apply)
         if apply and result['status'] in ('ready', 'enabled'):
-            self.call('select', repository=target)
+            if initial: self.call('select', repository=target)
             self.state['milestones'].setdefault('repository_prepared', self.workflow.clock()); self.save()
             result.update(status='repository_ready', next_action={'instruction': 'Verify coding accounts and repository, then explicitly Start Forge.'})
         return result
 
-    def repository_progress(self, phase, step):
-        self.state['repository_write'] = step if phase == 'started' else None
+    def repository_progress(self, phase, step, *, target=None):
+        if target is None or self.state.get('first_repository') == target:
+            self.state['repository_write'] = step if phase == 'started' else None
+        if target is not None:
+            self.state.setdefault('repository_writes', {})[str(target['id'])] = step if phase == 'started' else None
         self.save()
 
     def account(self, provider, *, apply=False, kind='browser', secret=None, interactive=False):
         require(provider in ('codex', 'claude', 'grok'), 'invalid_provider', 'Choose codex, claude or grok.')
         require(kind in ('browser', 'api_key', 'token'))
         view = self.call('status')
-        require(view['phase'] == 'setup', 'setup_complete', 'Manage active factory accounts through Settings.')
+        require(view['phase'] in ('setup', 'active'), 'setup_busy', 'Finish the current factory transition before signing in.')
         if not apply or kind == 'browser' and not interactive:
             return {'status': 'account_login_required', 'provider': provider,
-                    'next_action': {'command': ['forge', 'setup', 'account', '--ssh', self.workflow.ssh,
-                                                '--provider', provider, '--apply'],
+                    'next_action': {'command': ['forge', 'account', 'login', provider, '--ssh', self.workflow.ssh],
                                     'instruction': 'Run the guided account login in a terminal, or use --kind api_key --secret-stdin --apply for a private noninteractive credential.'}}
         if kind == 'browser':
             self.login_terminal(provider)

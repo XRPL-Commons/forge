@@ -1,4 +1,4 @@
-"""Durable issue conversations. Discussion runs have read-only repository tokens.
+"""Durable issue conversations. Discussion runs read repositories through the credential-free mirror.
 
 The service drives one disposable discussion at a time under controller_lock.
 An explicit operator Apply or the exact documented close command enters the decision queue.
@@ -478,7 +478,7 @@ class Discussions:
             if current['status']=='created':
                 job=self.commands.job(job['id'])
                 if job['fenced']: return
-                runner.prepare(job,github.token('recovery',job['repo_id'],worker=True))
+                runner.prepare(job)
                 if self.commands.job(job['id'])['fenced']: return
                 runner.start(job)
                 self.commands.progress(job['id'],joined_at=self.clock())

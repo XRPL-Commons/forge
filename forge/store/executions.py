@@ -201,10 +201,15 @@ class Executions(Lifecycle):
                 from .resource_usage import observe_in
                 observe_in(db, job_id, container, observation.get('resources'))
 
-    def collect(self, command, job_id, *, execution_fence, capture):
+    def collect(self, command, job_id, *, execution_fence, capture, preparation_refusal=None):
         """Commit capture and fence launch before reset; never accept worker claims."""
         if not isinstance(capture, dict) or not isinstance(capture.get('logs', ''), str):
             raise TransitionError('capture requires structured output and text logs')
+        if preparation_refusal is not None:
+            from ..factory.preparation_problems import validate
+            validate(preparation_refusal)
+            if command.actor_id != 'supervisor:execution' or capture.get('result') is not None:
+                raise TransitionError('preparation refusals require a host execution observation')
         bundle = capture.get('worktree_bundle')
         from ..factory.delegation_artifacts import MAX_BUNDLE_SIZE
         if bundle is not None and (not isinstance(bundle, bytes) or not 0 < len(bundle) <= MAX_BUNDLE_SIZE):
@@ -218,8 +223,17 @@ class Executions(Lifecycle):
             raise TransitionError('worker capture exceeds the supported artifact size')
         payload = dict(job_id=job_id, execution_fence=execution_fence,
                        capture_digest=hashlib.sha256(content).hexdigest(), logs_digest=hashlib.sha256(logs).hexdigest())
+        if preparation_refusal is not None:
+            payload['preparation_refusal'] = preparation_refusal
         def change(db, unit):
             job = self._owned(db, unit, job_id, execution_fence)
+            if preparation_refusal is not None:
+                state = db.execute('SELECT started_at,observed_status FROM job_execution_state WHERE job_id=?', (job_id,)).fetchone()
+                if (job['phase'] not in {'reserved', 'starting'} or job['fenced']
+                        or state['started_at'] is not None or state['observed_status'] not in ('missing', 'created')
+                        or preparation_refusal['manifest_digest'] != manifest_hash(json.loads(db.execute(
+                            'SELECT input_manifest_json FROM attempts WHERE id=?', (job['attempt_id'],)).fetchone()[0]))):
+                    raise TransitionError('preparation refusal requires an unstarted current assignment')
             if job['captured_at'] is not None or job['outcome'] is not None:
                 raise TransitionError('execution already has a capture or result')
             now = self.clock()
@@ -228,8 +242,8 @@ class Executions(Lifecycle):
             capture_in(db, job_id, structured, now)
             _artifact(db, job_id, 'logs', logs, now)
             if bundle is not None:
-                if not db.execute('SELECT 1 FROM job_delegations WHERE job_id=?', (job_id,)).fetchone():
-                    raise TransitionError('only a tracked child can return a worktree bundle')
+                if job['role'] != 'build':
+                    raise TransitionError('only a build assignment can return a worktree bundle')
                 for sequence, offset in enumerate(range(0, len(bundle), MAX_ARTIFACT_SIZE)):
                     _artifact(db, job_id, 'worktree_bundle', bundle[offset:offset + MAX_ARTIFACT_SIZE], now,
                               sequence=sequence, media_type='application/x-git-bundle')
@@ -329,6 +343,14 @@ class Executions(Lifecycle):
             expected_author = target['author'] if grouped and target.get('kind') == 'existing' else None
             author_matches = (publication['author'] == expected_author if expected_author is not None else
                               publication['author']['type'] == 'Bot' and publication['author']['login'] == launch['publisher'])
+            if db.execute('SELECT 1 FROM mirror_job_inputs WHERE job_id=?', (job_id,)).fetchone():
+                receipt = db.execute("SELECT r.receipt_json FROM publication_receipts r JOIN publication_intents p "
+                    "ON p.id=r.intent_id WHERE p.job_id=? AND p.status='confirmed'", (job_id,)).fetchone()
+                proven = json.loads(receipt[0]) if receipt else {}
+                author_matches = (proven.get('pr_author') == publication['author']
+                    and proven.get('branch') == publication['branch'] and proven.get('head_oid') == publication['head_oid']
+                    and proven.get('pull_number') == publication['pull_number']
+                    and proven.get('repository_id') == publication['repository_id'])
             if not author_matches:
                 raise TransitionError('publication author differs from the assigned publisher')
             db.execute('UPDATE jobs SET fenced=1 WHERE id=?', (job_id,))
@@ -336,6 +358,35 @@ class Executions(Lifecycle):
             self._event(db, command, 'attempt_fenced', {'reason': 'base_changed', 'publication': publication}, job_id=job_id)
             return {'job_id': job_id, 'result_revoked': True}
         return self._apply(command, 'revoke_captured_base', payload, change)
+
+
+def observed_facts_in(db, job, candidate):
+    """Project only facts attached to this candidate's confirmed publication."""
+    from ..factory.source_inputs import digest
+    rows = db.execute("SELECT p.id,p.job_id,p.output_digest,p.output_json,r.receipt_json "
+        "FROM candidate_evidence e JOIN publication_intents p ON p.id=json_extract(e.details_json,'$.publication_receipt_id') "
+        "JOIN publication_receipts r ON r.intent_id=p.id JOIN jobs j ON j.id=p.job_id "
+        "WHERE e.candidate_id=? AND e.unit_id=? AND e.kind='publication' AND e.verdict='pass' "
+        "AND p.unit_id=e.unit_id AND p.status='confirmed' AND j.attempt_id=e.attempt_id LIMIT 2",
+        (candidate['id'], job['unit_id'])).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise TransitionError('Candidate publication evidence is ambiguous')
+    row = rows[0]
+    receipt, output = json.loads(row['receipt_json']), json.loads(row['output_json'])
+    facts = output.get('facts')
+    if (not isinstance(facts, dict) or receipt.get('intent_id') != row['id']
+            or receipt.get('job_id') != row['job_id'] or receipt.get('repository_id') != job['repo_id']
+            or any(receipt.get(key) != candidate[key] for key in ('pull_number', 'branch', 'head_oid', 'base_oid'))
+            or any(receipt.get(key) is not True for key in ('verified', 'exact_ref', 'exact_pr'))
+            or receipt.get('output_digest') != row['output_digest'] or digest(output) != row['output_digest']
+            or receipt.get('tree_oid') != output.get('tree_oid')
+            or receipt.get('facts_digest') != digest(facts) or output.get('facts_digest') != digest(facts)):
+        raise TransitionError('Candidate publication facts do not match its receipt')
+    return dict(candidate_id=candidate['id'], publication_receipt_id=row['id'],
+                repository_id=job['repo_id'], head_oid=receipt['head_oid'], base_oid=receipt['base_oid'],
+                tree_oid=receipt['tree_oid'], facts_digest=receipt['facts_digest'], facts=facts)
 
 
 class ExecutionQueries:
@@ -385,6 +436,8 @@ class ExecutionQueries:
                 identity = dict(db.execute('SELECT * FROM candidates WHERE id=?', (job['candidate_id'],)).fetchone())
                 job['candidate'] = dict(key=identity['id'], pr=identity['pull_number'], branch=identity['branch'],
                                         head=identity['head_oid'], base=identity['base_oid'], requirements=identity['requirements_hash'])
+            if job['role'] in ('review', 'audit') and job['candidate_id']:
+                job['observed_by_forge'] = observed_facts_in(db, job, identity)
             from .operator_views import reviewer_request_in
             job['reviewers_requested']=reviewer_request_in(db,job['candidate_id']) if job['candidate_id']==job['current_candidate_id'] else None
             # Every assignment reads its immutable scope; later membership edits
@@ -436,6 +489,11 @@ class ExecutionQueries:
             if job['role'] == 'recovery':
                 from .recovery import failure_context
                 job['failure'] = failure_context(self.store, db, job['id'])
+            prepared = db.execute('SELECT p.source_json,i.publication_authorization_json FROM mirror_job_inputs i '
+                'JOIN mirror_sources p ON p.digest=i.source_digest AND p.policy_digest=i.policy_digest WHERE i.job_id=?', (job_id,)).fetchone()
+            if prepared:
+                job['source_input'] = json.loads(prepared['source_json'])
+                job['publication_authorization'] = json.loads(prepared['publication_authorization_json'])
             return job
 
     def capture(self, job_id):

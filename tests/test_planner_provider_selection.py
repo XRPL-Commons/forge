@@ -4,6 +4,7 @@ import json
 import tarfile
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from forge.factory.config import validate
 from forge.factory.runner import ContainerRunner
@@ -44,16 +45,27 @@ class PlannerProviderSelectionTests(unittest.TestCase):
         base=ContainerRunner(default,environ=environment)
         planner,github=self.planner(base,default)
         job=self.reserve(planner,selected)
-        commands=[];payloads=[]
+        job=planner.plans.job(job['id'],context=True)
+        commands=[];payloads=[];notes=[]
+        source=base.source_preparation
+        source.mirror=Mock()
+        source.mirror.prepared.return_value={'source_input':{},'execution_fence':job['id'],
+                                            'publication_authorization':{},'revoked_at':None}
+        source.mirror.live_authority.return_value=True
+        def freeze(job,note,**kwargs):
+            notes.append(note)
+            return SimpleNamespace(input_directory='/fixture/input',socket_directory='/fixture/socket')
+        source.prepare=Mock(side_effect=freeze)
         def call(runner,args,**kwargs):
             commands.append((runner.config,args))
             if args[:3]==['cp','-a','-']:
                 with tarfile.open(fileobj=io.BytesIO(kwargs['input'])) as archive:
                     payloads.append({name:json.load(archive.extractfile(name))
-                        for name in ('assignment.json','credentials.json')})
+                        for name in ('credentials.json',)})
             return Mock(stdout=b'')
         created={'id':'container','status':'created','running':False}
-        with patch.object(ContainerRunner,'call',autospec=True,side_effect=call):
+        with patch.object(ContainerRunner,'call',autospec=True,side_effect=call), \
+                patch('forge.factory.worker_boundary.WorkerBoundary.prepare',return_value=SimpleNamespace(worker_args=())):
             worker=planner.runner(planner.plans.job(job['id'])['runner_config'])
             self.assertIsNot(worker,base)
             self.assertIs(worker.environ,environment)
@@ -69,7 +81,7 @@ class PlannerProviderSelectionTests(unittest.TestCase):
         self.assertTrue(all(config['provider']=='claude' for config,_ in commands))
         self.assertTrue(any(args[0]=='start' for _,args in commands))
         self.assertEqual(len(payloads),1)
-        assignment=payloads[0]['assignment.json'];credentials=payloads[0]['credentials.json']
+        assignment=notes[-1];credentials=payloads[0]['credentials.json']
         self.assertEqual(assignment['provider'],'claude')
         self.assertEqual(assignment['model'],'claude-test-model')
         self.assertEqual(assignment['harness_argv'],selected['harness_argv'])
@@ -77,9 +89,8 @@ class PlannerProviderSelectionTests(unittest.TestCase):
         captured=planner.plans.job(job['id'],context=True)['context']
         self.assertEqual(assignment['context']['note_sources_schema'],captured['note_sources_schema'])
         self.assertEqual(manifest_hash(assignment['context']),job['context_hash'])
-        self.assertEqual(credentials,{'CLAUDE_CODE_OAUTH_TOKEN':'selected-claude-test-token',
-            'GH_TOKEN':'read-only-github-test-token'})
-        github.token.assert_called_once_with('recovery',10,worker=True)
+        self.assertEqual(credentials,{'CLAUDE_CODE_OAUTH_TOKEN':'selected-claude-test-token'})
+        github.token.assert_not_called()
         self.assertEqual(base.config['provider'],'codex')
 
     def test_injected_non_container_adapter_remains_the_planner_engine(self):
@@ -94,4 +105,5 @@ class PlannerProviderSelectionTests(unittest.TestCase):
         adapter.prepare.assert_called_once()
         adapter.start.assert_called_once()
         self.assertEqual(adapter.prepare.call_args.args[0]['runner_config'],config)
-        self.assertEqual(adapter.prepare.call_args.args[1],'read-only-github-test-token')
+        self.assertEqual(len(adapter.prepare.call_args.args),1)
+        github.token.assert_not_called()

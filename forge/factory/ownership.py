@@ -63,10 +63,11 @@ def publication_context(store, unit_id, item):
             item = {**item, 'approved_sources': [{**source, 'repository_id': unit['repository_id'],
                      'base_branch': unit['base_branch']} for source in sources
                      if target.get('kind') != 'existing' or source['candidate_id'] != target['candidate_id']]}
-        if target and target.get('kind') == 'new':
+        if not target or target.get('kind') == 'new':
             from ..store.delivery_inputs import previous_publication_in
             previous = previous_publication_in(db, unit_id)
             if previous:
+                unit = db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()
                 if 'source_job_id' in previous:
                     owner = db.execute('SELECT job_id AS id,publisher FROM job_launches WHERE job_id=?',
                                        (previous['source_job_id'],)).fetchone()
@@ -76,7 +77,7 @@ def publication_context(store, unit_id, item):
                                        (previous['id'],)).fetchone()
                 if owner:
                     item = {**item, 'owned_publication': {**previous, 'repository_id': unit['repository_id'],
-                            'base_branch': unit['base_branch'], 'publisher': owner['publisher'], 'attempt': owner['id']}}
+                            'base_branch': unit['base_branch'], 'publisher': (previous.get('author') or {}).get('login', owner['publisher']), 'attempt': owner['id']}}
         if not target or target.get('kind') != 'existing' or target.get('ownership_transfer') is not True:
             return item
         unit = db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()

@@ -28,14 +28,18 @@ class MigrationCLITests(unittest.TestCase):
 
     def test_upgrade_plan_and_pinned_apply_are_machine_readable(self):
         values=['migrate','upgrade','--ssh','forge','--source','/srv/source','--root','/srv/runtime']
-        with patch('forge_client.migration.call',return_value={'status':'planned'}) as call:
+        with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'b'*40}) as call:
             execute(parser().parse_args(values))
             self.assertEqual(call.call_args.kwargs,{'apply':False,'source_revision':None})
             call.reset_mock()
             with self.assertRaises(SetupError):execute(parser().parse_args([*values,'--apply']))
             call.assert_not_called()
-            execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
-            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
+            pack={'data':'bounded-pack','sha256':'digest'}
+            with patch('forge_client.source.export',return_value=pack) as export:
+                execute(parser().parse_args([*values,'--apply','--source-revision','a'*40]))
+            export.assert_called_once_with('a'*40,previous='b'*40)
+            self.assertEqual(call.call_args_list[0].kwargs,{'apply':False,'source_revision':'a'*40})
+            self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40,'source_pack':pack})
 
     def test_upgrade_draining_reply_contains_the_complete_pinned_resume_command(self):
         from types import SimpleNamespace
@@ -55,7 +59,8 @@ class MigrationCLITests(unittest.TestCase):
             self.assertIn('forge/store/migration/host.py',names)
             self.assertIn('forge/store/schema/002_import_archive.sql',names)
             self.assertIn('forge/harnesses/codex/manifest.json', names)
-            self.assertTrue(all(n.startswith('forge/') and (n.endswith(('.py','.sql')) or
+            self.assertEqual({n for n in names if n.startswith('forge_client/')},{'forge_client/__init__.py','forge_client/contracts.py'})
+            self.assertTrue(all(n in {'forge_client/__init__.py','forge_client/contracts.py'} or n.startswith('forge/') and (n.endswith(('.py','.sql')) or
                 Path(n).match('forge/harnesses/*/manifest.json')) for n in names))
 
     def test_isolated_upgrade_bundle_owns_planning_contract_and_source_identity(self):
@@ -70,7 +75,8 @@ class MigrationCLITests(unittest.TestCase):
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,sys.argv[1])
-assert importlib.util.find_spec('forge_client') is None
+assert importlib.util.find_spec('forge_client.contracts') is not None
+assert importlib.util.find_spec('forge_client.cli') is None
 from forge.store.migration.host import Host,run
 from forge.store.migration.upgrade import Upgrade, package_version
 from forge.store.repository_planning import RepositoryPlanning
@@ -129,6 +135,63 @@ print(json.dumps({'before':before}))
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(json.loads(result.stdout)['before'],package_version(Path(__file__).resolve().parents[1]))
 
+    def test_isolated_bundle_executes_fenced_probe_cleanup_and_binds_shared_contract(self):
+        from forge.store.migration.upgrade import package_version
+        with tempfile.TemporaryDirectory() as directory:
+            directory=str(Path(directory).resolve())
+            with zipfile.ZipFile(io.BytesIO(bundle())) as archive:
+                archive.extractall(directory)
+            script = r'''import importlib.util,json,sys,tempfile,time
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+from forge.store.fresh import initialize
+from forge.onboarding import SetupState
+from forge.setup_service import Service
+from forge.factory.probe_runner import ProbeRunner,PROVIDER
+from forge.factory.runner import ContainerRunner
+from forge.factory.worker_boundary import WorkerBoundary
+from forge.store.migration.probe_cleanup import cleanup_fenced_probe
+from forge.store.migration.upgrade import package_version
+assert importlib.util.find_spec('forge_client.cli') is None
+before=package_version(sys.argv[1])
+with tempfile.TemporaryDirectory() as runtime:
+    root=Path(runtime).resolve();store=initialize(root)
+    state=SetupState(root,store,time.time)
+    config=dict(image='sha256:'+'a'*64,network='forge-workers',harness_argv=PROVIDER,
+                grace_seconds=2,provider='codex')
+    job=Service.new_probe(None,config,'provider')
+    operation=dict(id='existing-operation',action='harness_check',step='probe')
+    with state.transaction() as data:
+        data.update(generation=1,phase='setup',probe_jobs=[job],operation=operation,
+                    error='auxiliary execution inputs changed')
+    with state.transaction() as data:
+        data['probe_jobs'][0].update(fenced=True,capacity_wait_since=101)
+    with patch.object(ContainerRunner,'reset',return_value={'container_absent':True}), \
+            patch.object(WorkerBoundary,'inspect',return_value=None):
+        assert cleanup_fenced_probe(root,store)==1
+    data=state.read()
+    assert data['probe_jobs'][0]['cleanup'] is True
+    assert 'execution_fence' not in data['probe_jobs'][0]
+    assert data['operation']==operation and data['error']=='auxiliary execution inputs changed'
+    with store.read_snapshot() as db:
+        assert db.execute('SELECT count(*) FROM auxiliary_leases').fetchone()[0]==0
+path=Path(sys.argv[1])/'forge_client/contracts.py'
+path.write_text(path.read_text()+'\n')
+assert package_version(sys.argv[1])!=before
+path.unlink()
+try: package_version(sys.argv[1])
+except FileNotFoundError: pass
+else: raise AssertionError('Missing contract accepted')
+print(json.dumps({'before':before,'cleanup':'confirmed'}))
+'''
+            result=subprocess.run([sys.executable,'-I','-c',script,directory],cwd=directory,
+                                  capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            report=json.loads(result.stdout)
+            self.assertEqual(report['before'],package_version(Path(__file__).resolve().parents[1]))
+            self.assertEqual(report['cleanup'],'confirmed')
+
     def test_bootstrap_is_executable_python_with_qualified_child(self):
         from forge_client.migration import BOOTSTRAP
         compile(BOOTSTRAP,'migration-bootstrap','exec')
@@ -162,3 +225,21 @@ print(json.dumps({'before':before}))
         self.assertIn('IntegrityError at migrating',str(error.exception))
         self.assertIn("--source '/srv/forge source' --root /srv/runtime",str(error.exception))
         self.assertIn('--apply --source-revision '+'a'*40,str(error.exception))
+
+
+    def test_resume_after_checkout_needs_no_new_github_access(self):
+        args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',
+            '--root','/srv/runtime','--apply','--source-revision','a'*40])
+        with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'a'*40}) as call, \
+                patch('forge_client.source.export',side_effect=AssertionError('unexpected GitHub access')):
+            execute(args)
+        self.assertEqual(call.call_args.kwargs,{'apply':True,'source_revision':'a'*40})
+
+    def test_local_source_failure_stops_before_remote_apply(self):
+        args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',
+            '--root','/srv/runtime','--apply','--source-revision','a'*40])
+        with patch('forge_client.migration.call',return_value={'status':'planned','source_revision':'b'*40}) as call, \
+                patch('forge_client.source.export',side_effect=SetupError('source_unavailable','local source unavailable')):
+            with self.assertRaises(SetupError):execute(args)
+        self.assertEqual(call.call_count,1)
+        self.assertFalse(call.call_args.kwargs['apply'])

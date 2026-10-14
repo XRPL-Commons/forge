@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
  with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
   for name in bundle.namelist():
    p=pathlib.PurePosixPath(name)
-   if p.is_absolute() or ".." in p.parts or p.parts[0]!="forge": raise ValueError("bad bundle")
+   if p.is_absolute() or ".." in p.parts or (p.parts[0]!="forge" and name not in ("forge_client/__init__.py","forge_client/contracts.py")): raise ValueError("bad bundle")
   bundle.extractall(directory)
  sys.path.insert(0,directory)
  from forge.store.migration.host import run,failure
@@ -47,12 +47,12 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
 
 def bundle():
     import forge
-    from forge.store.migration.source import source_files
-    root=Path(forge.__file__).parent
+    from forge.store.migration.source import migration_files
+    root=Path(forge.__file__).parent.parent
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in source_files(root):
-            archive.writestr('forge/'+path.relative_to(root).as_posix(),path.read_bytes())
+        for path in migration_files(root):
+            archive.writestr(path.relative_to(root).as_posix(),path.read_bytes())
     return output.getvalue()
 
 
@@ -118,6 +118,19 @@ def execute(args):
         revision=getattr(args,'source_revision',None)
         require(args.ssh and args.source and args.root,'migration_host_required','Select --ssh, --source and --root for this host.')
         require(not args.apply or isinstance(revision,str) and re.fullmatch(r'[0-9a-f]{40}',revision),'upgrade_revision_required','Supply the full release SHA with --source-revision when using --apply.')
-        return call(args,'upgrade',apply=args.apply,source_revision=revision)
+        if not args.apply:
+            return call(args,'upgrade',apply=False,source_revision=revision)
+        observed = call(args,'upgrade',apply=False,source_revision=revision)
+        previous = observed.get('source_revision')
+        require(isinstance(previous,str) and re.fullmatch(r'[0-9a-f]{40}',previous),
+                'invalid_host_response','The host did not report its installed source revision.')
+        # GitHub credentials remain local. Once checkout completed, resumption
+        # uses the already installed objects and needs no further GitHub read.
+        if previous != revision:
+            from .source import export
+            source_pack = export(revision, previous=previous)
+            return call(args,'upgrade',apply=True,source_revision=revision,source_pack=source_pack)
+        return call(args,'upgrade',apply=True,source_revision=revision)
+
     except (MigrationError, StoreError) as error:
         raise SetupError('migration_'+error.code,'Schema upgrade could not proceed: '+error.code) from None

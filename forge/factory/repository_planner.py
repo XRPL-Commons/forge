@@ -84,7 +84,7 @@ class RepositoryPlanner:
         return self.drive(job)
 
     def drive(self,job):
-        job=self.plans.job(job['id']);runner=self.runner(job['runner_config'])
+        job=self.plans.job(job['id'],context=True);runner=self.runner(job['runner_config'])
         try:
             if job['fenced'] or self.clock()>=job['deadline']:
                 if not job['fenced']:job=self.plans.progress(job['id'],fenced=True)
@@ -101,7 +101,7 @@ class RepositoryPlanner:
                 current=runner.inspect(job)
             if current['status']=='created':
                 prepared=self.plans.job(job['id'],context=True)
-                runner.prepare(prepared,self.github.token('recovery',job['repo_id'],worker=True))
+                runner.prepare(prepared)
                 if self.plans.job(job['id'])['fenced']:return {'phase':'collecting'}
                 runner.start(job)
                 return {'phase':'running'}

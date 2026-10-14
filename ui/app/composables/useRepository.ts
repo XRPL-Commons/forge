@@ -29,6 +29,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
   let autoCheckRetryAt = 0
   const deployError = ref('')
   const environmentError = ref('')
+  const mirrorError = ref('')
   const environmentAction = ref<'scan' | 'confirm' | 'automatic' | null>(null)
   const rejecting = ref(false)
   const deployments = ref<Record<string, FactoryDeployment>>({})
@@ -73,6 +74,7 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     error.value = ''
     deployError.value = ''
     environmentError.value = ''
+    mirrorError.value = ''
     // A refresh started before the navigation resolves with the previous
     // route's payload, which holds no row
     // for the new repository: ask once more rather than leave the page empty
@@ -257,6 +259,25 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
+  async function updateMirrorPolicy(denied: import('~/utils/repositories').MirrorDeniedRepository[]) {
+    const current = row.value
+    if (!view.value || !current || busy.value) return
+    busy.value = true
+    mirrorError.value = ''
+    try {
+      const next = await api.act<RepositoriesView>('/api/repositories/mirror', {
+        repo_id: current.id, revision: view.value.revision, denied_repositories: denied,
+      })
+      if (repoId.value === current.id) poll.replace(next)
+    } catch (failure: unknown) {
+      if (repoId.value === current.id) mirrorError.value = actionMessage(failure, 'Could not save Git dependency restrictions.')
+      busy.value = false
+      await poll.refresh()
+    } finally {
+      busy.value = false
+    }
+  }
+
   async function refreshAccess() {
     const current = view.value
     if (!current || refreshing.value) return
@@ -275,5 +296,5 @@ export function useRepository(repoId: import('vue').Ref<number | null>, active: 
     }
   }
 
-  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, refreshAccess }
+  return { poll, view, live, row, report, shown, displayReady, ready, prepared, pickerRows, connections, accessDescription, failed, editUrl, canDownload, downloadHref, checking, syncing, hint, deployment, busy, enabling, downloaded, error, query, accessNote, deployError, environmentError, environmentAction, rejecting, check, enable, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, refreshAccess }
 }

@@ -140,6 +140,10 @@ def failure_context(store, db, recovery_job_id):
     value = dict(attempt=row['id'], attempt_id=row['attempt_id'], role=row['role'], cause=row['cause'],
                  retry_stage=row['retry_stage'], candidate_id=row['candidate_id'],
                  input_manifest=json.loads(row['input_manifest_json']))
+    from .mirror import view_in as mirror_in
+    value['mirror'] = mirror_in(db, row['id'])
+    from .job_evidence import publication_in
+    value['publication'] = publication_in(db, row['id'])
     artifacts = Artifacts(store)
     for kind in ('failure_evidence', 'worker_capture'):
         try:

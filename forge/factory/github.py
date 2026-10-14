@@ -38,9 +38,10 @@ def classic_allowances(value):
 
 
 class GitHubUnavailable(RuntimeError):
-    def __init__(self, message, *, status=None):
+    def __init__(self, message, *, status=None, error_types=()):
         super().__init__(message)
         self.status = status
+        self.error_types = error_types
 
 
 class GitHubBudgetExhausted(RequestBudgetExhausted):
@@ -108,6 +109,27 @@ class GitHub:
         except AccessError as error:
             raise GitHubUnavailable('GitHub observation or publication is unconfirmed', status=error.status) from None
 
+    def graphql(self, role, repo, query, variables, *, extra=None):
+        """Host-owned GraphQL operation; HTTP 200 alone is not success."""
+        if (not isinstance(query, str) or not query or len(query.encode()) > 32768
+                or not isinstance(variables, dict) or len(json.dumps(variables, allow_nan=False).encode()) > 4 * 1024 * 1024):
+            raise ValueError('GraphQL publication request exceeds its contract')
+        if time.monotonic() >= min(getattr(self, 'deadline', float('inf')), request_deadline()):
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        try:
+            value = self.client.request('POST', '/graphql', self.token(role, repo['repo_id'], extra=extra),
+                                        {'query': query, 'variables': variables})
+        except RequestBudgetExhausted:
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
+        except AccessError as error:
+            raise GitHubUnavailable('GitHub publication is unconfirmed', status=error.status) from None
+        if not isinstance(value, dict) or value.get('errors') or not isinstance(value.get('data'), dict):
+            errors = value.get('errors', []) if isinstance(value, dict) else []
+            types = tuple(sorted({row['type'] for row in errors if isinstance(row, dict)
+                and isinstance(row.get('type'), str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', row['type'])})) if isinstance(errors, list) else ()
+            raise GitHubUnavailable('GitHub publication is unconfirmed', status=200, error_types=types)
+        return value['data']
+
     def prerequisite(self, ref, binding=None):
         """Read one installed repository target, including PR merge provenance."""
         from ..store.repository_requirements import reference
@@ -161,6 +183,22 @@ class GitHub:
         if not slug:
             raise GitHubUnavailable('Role identity is not verified')
         return slug + '[bot]'
+
+    def identity(self, role, repo_id):
+        """Resolve the configured App bot through a bounded host-only request."""
+        login = self.publisher(role)
+        if time.monotonic() >= min(getattr(self, 'deadline', float('inf')), request_deadline()):
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle')
+        try:
+            value = self.client.request('GET', '/users/' + quote(login, safe=''), self.token(role, repo_id))
+        except RequestBudgetExhausted:
+            raise GitHubBudgetExhausted('Cycle observation budget reached; resume next cycle') from None
+        except AccessError as error:
+            raise GitHubUnavailable('Publisher identity is unconfirmed', status=error.status) from None
+        if (not isinstance(value, dict) or type(value.get('id')) is not int or value['id'] <= 0
+                or value.get('login') != login or value.get('type') != 'Bot'):
+            raise GitHubUnavailable('Publisher identity is unconfirmed')
+        return {key: value[key] for key in ('id', 'login', 'type')}
 
     def target(self, item):
         repository = self.call('controller', item, 'GET', '')
@@ -243,13 +281,18 @@ class GitHub:
                 if 'pull_request' not in i]
 
     def issue(self, item):
+        value, requirements, _ = self.issue_inputs(item)
+        return value, requirements
+
+    def issue_inputs(self, item):
+        """One bounded comment observation for both the digest and frozen notes."""
         value = self.call('controller', item, 'GET', f"/issues/{item['number']}")
         if value.get('number') != item['number'] or 'pull_request' in value:
             raise GitHubUnavailable('Issue identity could not be verified')
         comments = self.pages('controller', item, f"/issues/{item['number']}/comments")
         requirements = digest({'title': value['title'], 'body': value.get('body') or '',
                                'comments': [(c['id'], c['body']) for c in comments if c.get('user', {}).get('type') == 'User']})
-        return value, requirements
+        return value, requirements, comments
 
     def pulls(self, item):
         rows = self.pages('controller', item, '/pulls?state=open')

@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import patch
 
 from tests import test_store_recovery_controller as controller_fixtures
-from tests import test_store_recovery as store_fixtures
 from forge.harnesses.execution import fault
 from forge.store.execution_problems import ExecutionProblems
 from forge.store.configuration import Configuration
@@ -100,14 +99,18 @@ class RecoveryHistoryMigrationTests(unittest.TestCase):
     def test_035_upgrade_preserves_nonempty_investigation_findings_and_foreign_keys(self):
         from forge.store import db as storage, upgrade
         migrations=storage._migrations()
-        fixture=store_fixtures.RecoveryStoreTests('runTest')
-        with patch('forge.store.db._migrations',return_value=migrations[:35]), patch('forge.store.executions.provider_available',return_value=True):
-            fixture.setUp();self.addCleanup(fixture.doCleanups)
-            original=fixture.fail();fixture.finish(original)
-            with fixture.store.read_snapshot() as db:
+        import tempfile
+        from tests.historical_store_fixtures import investigation_035
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        with patch('forge.store.db._migrations',return_value=migrations[:35]):
+            historical=storage.Store.create(directory.name)
+            investigation_035(historical)
+            with historical.read_snapshot() as db:
                 before={table:[tuple(row) for row in db.execute('SELECT * FROM '+table)]
                     for table in ('recovery_assignments','recovery_findings','attempt_failures','budget_entries')}
-        upgraded=storage.Store(fixture.store.root);upgrade.apply(upgraded)
+                self.assertTrue(all(before.values()))
+                self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
+        upgraded=storage.Store(historical.root);upgrade.apply(upgraded)
         with upgraded.read_snapshot() as db:
             self.assertEqual({table:[tuple(row) for row in db.execute('SELECT * FROM '+table)] for table in before},before)
             self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])

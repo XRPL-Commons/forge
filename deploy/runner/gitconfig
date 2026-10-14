@@ -1,0 +1,14 @@
+[url "http://forge-git/github/"]
+    insteadOf = https://github.com/
+    insteadOf = ssh://git@github.com/
+    insteadOf = ssh://github.com/
+    insteadOf = git@github.com:
+    insteadOf = git://github.com/
+[protocol "file"]
+    allow = never
+[protocol "ext"]
+    allow = never
+[credential]
+    helper =
+[core]
+    hooksPath = /dev/null

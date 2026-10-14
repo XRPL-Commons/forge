@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from forge.client_connections import ClientConnections, ConnectionError, CAPABILITIES, ACCESS_SECONDS, IDLE_SECONDS
 from forge.operator_auth import OperatorAuth, read_cookie, SESSION_COOKIE, FLOW_COOKIE
-from forge_client.connection import Client, Vault, connection_lock, origin
+from forge_client.connection import Client, Vault, Transport, public_connection, connection_lock, origin
 from forge_client.contracts import SetupError
 from tests import test_settings_http
 from tests.sqlite_fixture import selected_store
@@ -24,7 +24,7 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        self.database = selected_store(self.root, self.instance_id)
+        self.database = self.create_store()
         self.now = int(time.time())
         self.generation = 'generation-one'
         self.auth = OperatorAuth(self.root, clock=lambda: self.now, identity=lambda *args: {'id': 123, 'login': 'operator'})
@@ -39,6 +39,9 @@ class Fixture(unittest.TestCase):
         self.target = {'id': 321, 'name': 'example/project'}
         self.request = {'client_id': 'forge-cli', 'name': 'Local agent', 'capabilities': list(CAPABILITIES),
                         'scope': {'repositories': [self.target], 'owners': []}}
+
+    def create_store(self):
+        return selected_store(self.root, self.instance_id)
 
     def begin(self, **extra):
         return self.service.begin({**self.request, **extra})
@@ -199,9 +202,9 @@ class MemoryVault:
 
 
 class ClientTests(Fixture):
-    # forge_client only accepts a 43-character URL-safe instance, while a fresh
-    # store's default instance_id is a UUID; pin a client-compatible instance.
-    instance_id = 'i' * 43
+    def create_store(self):
+        from forge.store.fresh import initialize
+        return initialize(self.root)
 
     def setUp(self):
         super().setUp()
@@ -226,6 +229,29 @@ class ClientTests(Fixture):
         display = self.client.begin('Local agent', self.request['capabilities'], self.request['scope'])
         self.approve({'user_code': display['user_code']})
         return display, self.client.resume(wait=5)
+
+    def test_fresh_pairing_preserves_store_identity_and_separate_credential_format(self):
+        import uuid
+        from forge.store.fresh import initialize
+        identity = self.database.instance_id
+        self.assertEqual(str(uuid.UUID(identity)), identity)
+        _, connected = self.connect()
+        self.assertEqual(connected['instance'], identity)
+        self.assertEqual(self.vault.get(self.client.key)['instance'], identity)
+        self.assertEqual(initialize(self.root).instance_id, identity)
+        self.now += ACCESS_SECONDS
+        self.assertEqual(self.client.status()['instance'], identity)
+        # Existing token-shaped instance identities remain valid too.
+        legacy = {**connected, 'instance': 'i' * 43}
+        self.assertEqual(public_connection(legacy, self.client.base)['instance'], 'i' * 43)
+        with self.assertRaises(SetupError) as changed:
+            public_connection(connected, self.client.base, str(uuid.uuid4()))
+        self.assertEqual(changed.exception.code, 'connection_changed')
+        transport = Transport(self.client.base)
+        transport.opener = Mock()
+        with self.assertRaises(SetupError):
+            transport.call('status', {}, token=identity)
+        transport.opener.open.assert_not_called()
 
     def test_connect_resume_refresh_status_and_disconnect_without_secret_output(self):
         display, connected = self.connect()

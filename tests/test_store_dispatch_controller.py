@@ -45,6 +45,13 @@ class GitHub:
     def pulls(self, item):
         return self.open_pulls
 
+    def pr(self, item, number):
+        previous = item.get('owned_publication') or self.draft or {}
+        return {'number': number, 'state': 'open', 'merged': False,
+                'head': {'sha': previous.get('head_oid', HEAD), 'ref': previous.get('branch'), 'repo': {'id': 1}},
+                'base': {'sha': self.head, 'ref': 'main', 'repo': {'id': 1}},
+                'user': previous.get('author') or {'id': 42, 'login': 'build[bot]', 'type': 'Bot'}}
+
     def target(self, item):
         return self.branch
 

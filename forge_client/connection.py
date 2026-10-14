@@ -16,6 +16,9 @@ from .contracts import SetupError, require, repository, positive
 PATHS = {'device', 'token', 'refresh', 'status', 'disconnect', 'requirements', 'authorize', 'read', 'operation', 'policy', 'planning', 'delivery'}
 CAPABILITIES = ('repositories:read', 'repositories:prepare', 'repositories:activate', 'repositories:policy', 'repositories:triage')
 TOKEN = re.compile(r'[A-Za-z0-9_-]{43}')
+# Imported installations use opaque IDs; fresh SQLite stores use canonical UUIDs.
+# Instance identity is public and must not change credential validation.
+INSTANCE = re.compile(r'(?:[A-Za-z0-9_-]{43}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})')
 
 
 def origin(value):
@@ -129,7 +132,7 @@ def public_connection(value, base, instance=None, generation=None):
     keys = {'id', 'name', 'operator', 'capabilities', 'scope', 'created', 'expires', 'idle_expires',
             'last_used', 'instance', 'generation', 'origin', 'status'}
     require(isinstance(value, dict) and set(value) == keys)
-    require(value['origin'] == base and isinstance(value['instance'], str) and TOKEN.fullmatch(value['instance']))
+    require(value['origin'] == base and isinstance(value['instance'], str) and INSTANCE.fullmatch(value['instance']))
     require(isinstance(value['generation'], str) and 0 < len(value['generation']) <= 128)
     require(instance is None or instance == value['instance'], 'connection_changed', 'Forge instance changed. Connect again.')
     require(generation is None or generation == value['generation'], 'connection_changed', 'Forge generation changed. Connect again.')
@@ -175,7 +178,7 @@ class Client:
         require(value['verification_uri'] == self.base + '/settings/agents'
                 and value['verification_uri_complete'] == value['verification_uri'] + '?code=' + value['user_code'])
         require(type(value['expires_in']) is int and 0 < value['expires_in'] <= 600 and value['interval'] == 5)
-        require(isinstance(value['instance'], str) and TOKEN.fullmatch(value['instance'])
+        require(isinstance(value['instance'], str) and INSTANCE.fullmatch(value['instance'])
                 and isinstance(value['generation'], str) and 0 < len(value['generation']) <= 128)
         self.vault.set(self.key, {'state': 'pending', 'base': self.base, **value,
             'deadline': self.clock() + value['expires_in'], 'next_poll': self.clock() + value['interval'],

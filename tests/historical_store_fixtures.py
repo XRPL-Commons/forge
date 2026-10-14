@@ -1,4 +1,4 @@
-"""Explicit pre-033 records for upgrade tests; never use current lifecycle writers.
+"""Explicit historical records for upgrade tests; never use current lifecycle writers.
 
 These small fixtures exercise historical storage contracts without asking today's
 commands to write a schema they no longer support. No runtime fallback is needed.
@@ -104,3 +104,22 @@ def reservation(store, *, config, policy, base_oid):
         db.execute("INSERT INTO job_execution_state(job_id) VALUES('job')")
         db.execute("INSERT INTO events(transaction_id,unit_id,job_id,kind,at,actor_id,payload_json) VALUES('reserve','u','job','attempt_reserved',100,'operator','{}')")
     return 'job'
+
+
+def investigation_035(store):
+    """A completed investigation under schema 035, before recovery table rebuilds."""
+    findings = dict(summary='Investigated failure', pattern='missing dependency',
+                    evidence=['preserved test output'], uncertainty='', alternative=None, incomplete=False)
+    with store.write() as db:
+        revision = member(db)
+        inputs = json.dumps(dict(requirements_revision_id=revision, base_oid='base', policy_hash='policy'))
+        for identifier, role, outcome in (('failed', 'build', 'failure'), ('recovery', 'recovery', 'investigated')):
+            db.execute("INSERT INTO attempts VALUES(?,'u','member',1,1,?,1,100)", (identifier, inputs))
+            db.execute("INSERT INTO jobs(id,unit_id,attempt_id,member_id,role,phase,outcome,fenced,cleanup,created_at) "
+                       "VALUES(?,'u',?,'member',?,'cleaned',?,1,1,100)", (identifier, identifier, role, outcome))
+        db.execute("INSERT INTO attempt_failures(attempt_id,unit_id,position,role,cause,investigation,retry_stage,evidence_kind,findings_json,at,recovery_required) "
+                   "VALUES('failed','u',0,'build','failed tests','complete','build','failure_evidence',?,100,1)", (json.dumps(findings),))
+        db.execute("INSERT INTO recovery_assignments VALUES('recovery','failed','failed',100)")
+        db.execute("INSERT INTO recovery_findings VALUES('recovery',0,1,?,100)", (json.dumps(findings),))
+        db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) "
+                   "VALUES('charge','failed','charge','execution_failure',100)")

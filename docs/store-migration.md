@@ -37,6 +37,14 @@ forge migrate upgrade --ssh forge --source /home/forge/forge \
   --apply --json
 ```
 
+The CLI fetches the pinned release using local GitHub access, verifies forward
+ancestry, and transfers the target’s complete Git object history over SSH.
+Complete ancestry lets an initially shallow installation verify merged releases. GitHub credentials and local Git
+configuration stay on your computer. The service account needs no GitHub login.
+The host checks the object-pack digest and exact source fingerprint before
+pausing work. After checkout succeeds, resuming uses the installed objects and
+does not need another GitHub fetch.
+
 The first command reports the current and target schemas and any workers still
 awaiting cleanup. The second verifies that the CLI bundle matches the selected
 release, then temporarily disables new agent work through the versioned runtime
@@ -62,6 +70,13 @@ migration transaction; services remain stopped until a corrected forward update
 can complete. To install a corrected release, use its CLI and explicitly apply
 its new full commit SHA; the command verifies forward ancestry and retains the
 services stopped by the earlier attempt. There is no JSON switch-back.
+
+A corrected CLI can also finish one already-fenced setup probe per draining
+invocation when the installed schema already matches its target. It verifies the
+source release again, uses the recorded probe configuration to confirm resource
+removal, and saves cleanup through the normal setup transaction. Active probes
+and all other workers remain drain blockers. This repairs a failed setup cleanup
+without editing SQL, discarding execution history, or installing code early.
 
 The timestamp upgrade normalizes existing issue and pull-request observations to
 UTC with six fractional digits. It fixes unchanged imported issues being treated

@@ -69,4 +69,3 @@ def operation_lock(root, name='.migration.lock'):
         yield
     finally:
         os.close(fd)
-

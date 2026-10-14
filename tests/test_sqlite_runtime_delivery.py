@@ -60,8 +60,8 @@ class Runner(DeliveryRunner):
         super().__init__(github)
         self.planning_contexts={}
 
-    def prepare(self,job,token):
-        super().prepare(job,token)
+    def prepare(self,job):
+        super().prepare(job)
         if job['role']=='triage':
             self.planning_contexts[job['id']]=deepcopy(job['context'])
 

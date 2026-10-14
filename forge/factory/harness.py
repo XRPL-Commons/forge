@@ -5,8 +5,6 @@ import os
 from pathlib import Path
 import subprocess
 import runpy
-from urllib.request import Request, urlopen
-from urllib.error import URLError
 
 # The worker image ships this file alone (deploy/runner/Dockerfile), so it cannot
 # import the forge package. Kept equal to delegation_contracts.PLANNING_OUTCOMES by tests.
@@ -35,31 +33,6 @@ def begin_agent(env):
             os.close(acknowledgement)
     env.pop('FORGE_STARTUP_FD', None)
     env.pop('FORGE_STARTUP_ACK_FD', None)
-
-
-def check_publication_target(note, env):
-    if note.get('builder_stage') != 'integration' or not note.get('resume_pr'):
-        return
-    if not note.get('resume_head') or not note.get('publication_author'):
-        raise AssignmentChanged('The existing pull request needs a fresh publication approval')
-    request = Request('https://api.github.com/repos/' + note['repo'] + '/pulls/' + str(note['resume_pr']),
-                      headers={'Authorization': 'Bearer ' + env['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
-    try:
-        with urlopen(request, timeout=30) as response:
-            raw = response.read(262145)
-        if len(raw) > 262144:
-            raise PreparationError('Existing publication metadata exceeds its bound')
-        pr = json.loads(raw)
-    except (URLError, ValueError) as error:
-        raise PreparationError('Existing publication identity could not be checked') from error
-    if (pr.get('number') != note['resume_pr'] or pr.get('state') != 'open' or pr.get('merged')
-            or {key: pr.get('user', {}).get(key) for key in ('id', 'login', 'type')} != note['publication_author']
-            or pr.get('head', {}).get('sha') != note['resume_head']
-            or pr.get('head', {}).get('ref') != note['resume_branch']
-            or pr.get('head', {}).get('repo', {}).get('id') != note['repo_id']
-            or pr.get('base', {}).get('ref') != note['target_branch']
-            or pr.get('base', {}).get('repo', {}).get('id') != note['repo_id']):
-        raise AssignmentChanged('The approved pull request changed before work started')
 
 
 def prepare_environment(directory, services=()):
@@ -187,6 +160,10 @@ def schema(note):
              'headline': {'type': 'string', 'maxLength': HEADLINE_LIMIT},
              'plain': {'type': 'string', 'maxLength': PLAIN_LIMIT}}
     props.update(role_properties(note))
+    if note['role'] == 'build' and note.get('source_input'):
+        props['output_commit'] = {'type': ['string', 'null']}
+        props['pr_title'] = {'type': ['string', 'null'], 'maxLength': 256}
+        props['pr_body'] = {'type': ['string', 'null'], 'maxLength': 12000}
     if note['role'] in OPERATOR_ROLES:
         props['operator_summary'] = {'type': 'string', 'minLength': 1, 'maxLength': OPERATOR_SUMMARY_LIMIT}
     if note['role'] in ('build', 'review', 'audit', 'recovery'):
@@ -225,62 +202,36 @@ def checkout_recovery(note, directory, git):
 def main():
     note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
     directory = Path('/work/repository')
-    # Token never enters a remote URL, git configuration, argument or image layer.
-    askpass = Path('/work/askpass')
-    askpass.write_text('#!/usr/local/bin/python3\nimport os,sys\nprint("x-access-token" if "Username" in sys.argv[1] else os.environ["GH_TOKEN"])\n')
-    askpass.chmod(0o700)
-    env = {**os.environ, 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
-           'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+    env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0',
+           'GIT_CONFIG_GLOBAL': '/opt/forge/gitconfig', 'GIT_CONFIG_NOSYSTEM': '1'}
     def git(*args):
         try:
             completed = subprocess.run(['git', *args], env=env, check=False, timeout=180, capture_output=True, text=True)
         except (OSError, subprocess.SubprocessError) as error:
             raise PreparationError('Repository preparation could not run') from error
         if completed.returncode:
-            print(completed.stderr[-16384:].replace(env['GH_TOKEN'], '[REDACTED]'), flush=True)
+            print(completed.stderr[-16384:], flush=True)
             raise PreparationError('Repository preparation failed; check repository access, revision availability and disk space')
         return completed
-    check_publication_target(note, env)
     git('clone', '--no-checkout', 'https://github.com/' + note['repo'] + '.git', str(directory))
     git('-C', str(directory), 'config', 'user.name', note['publisher'])
     git('-C', str(directory), 'config', 'user.email', note['publisher'] + '@users.noreply.github.com')
     selected = note.get('candidate')
-    if note['role'] == 'recovery':
-        checkout_recovery(note, directory, git)
-    elif note['role'] == 'build' and note.get('resume_branch'):
-        # A memory retry may have pushed newer work than the last accepted
-        # candidate. Resume that branch, preserving the PR and published commits.
-        ref = 'refs/heads/' + note['resume_branch']
-        published = git('-C', str(directory), 'ls-remote', '--heads', 'origin', ref).stdout.strip()
-        if published:
-            if note.get('resume_head') and published.split()[0] != note['resume_head']:
-                raise AssignmentChanged('The approved branch changed before work started')
-            git('-C', str(directory), 'fetch', 'origin', ref)
-            git('-C', str(directory), 'checkout', '--detach', 'FETCH_HEAD')
-        elif selected:
-            git('-C', str(directory), 'fetch', 'origin', selected['head'])
-            git('-C', str(directory), 'checkout', '--detach', selected['head'])
-        else:
-            git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
-    elif selected:
-        git('-C', str(directory), 'fetch', 'origin', selected['head'])
-        git('-C', str(directory), 'checkout', '--detach', selected['head'])
-    elif note.get('input_manifest', {}).get('base_oid'):
-        git('-C', str(directory), 'fetch', 'origin', note['input_manifest']['base_oid'])
-        git('-C', str(directory), 'checkout', '--detach', note['input_manifest']['base_oid'])
-    elif note['role'] in ('strategist','triage'):
-        # Read-only assignment: detach at the given head, never create a branch.
-        git('-C', str(directory), 'fetch', 'origin', note['head'])
-        git('-C', str(directory), 'checkout', '--detach', note['head'])
-    else:
-        git('-C', str(directory), 'checkout', '--detach', 'origin/HEAD')
+    source = note['source_input']
+    revision = ((note.get('failure') or {}).get('input_manifest') or {}).get('head_oid') if note['role'] == 'recovery' else None
+    revision = revision or note.get('resume_head') or (selected or {}).get('head') or source['base_oid']
+    if revision not in {source['base_oid'], *source['input_oids']}:
+        raise PreparationError('Checkout revision is outside the frozen source inputs')
+    for pinned in {source['base_oid'], *source['input_oids']}:
+        git('-C', str(directory), 'fetch', 'origin', pinned)
+    git('-C', str(directory), 'checkout', '--detach', revision)
     if note['role'] == 'build':
         git('-C', str(directory), 'checkout', '-B', note['branch'])
     inputs = note.get('bundle_inputs', [])
     for index, output in enumerate(inputs):
         bundle = '/work/input-' + str(index) + '.bundle'
         git('-C', str(directory), 'bundle', 'verify', bundle)
-        git('-C', str(directory), 'fetch', bundle, 'HEAD')
+        git('-c', 'protocol.file.allow=always', '-C', str(directory), 'fetch', bundle, 'HEAD')
         actual = git('-C', str(directory), 'rev-parse', 'FETCH_HEAD').stdout.strip()
         if actual != output['commit_oid']:
             raise PreparationError('Task output does not match the assigned revision')
@@ -307,7 +258,9 @@ def main():
     contract = schema(note)
     begin_agent(env)
     code = adapter['run'](note, directory, env, contract)
-    if (note.get('task') or note.get('delegation')) and Path('/work/result.json').is_file():
+    exports = (note.get('task') or note.get('delegation') or
+               note['role'] == 'build' and note.get('source_input') and note.get('builder_stage') != 'planning')
+    if exports and Path('/work/result.json').is_file():
         # Export belongs to the completed implementation, not environment setup.
         # A bad claimed commit must charge a failed attempt rather than pause for
         # infrastructure that was already ready enough to run the provider.
@@ -317,6 +270,7 @@ def main():
 
 
 def export_child(note, directory, inputs, git, *, result_path=Path('/work/result.json'), bundle_path='/work/output.bundle'):
+    """Export successful local work; the host alone decides whether to publish."""
     try:
         report = json.loads(result_path.read_text())
     except (ValueError, OSError):
@@ -332,8 +286,22 @@ def export_child(note, directory, inputs, git, *, result_path=Path('/work/result
         for output in inputs:
             git('-C', str(directory), 'merge-base', '--is-ancestor', output['commit_oid'], head)
         git('-C', str(directory), 'bundle', 'create', bundle_path, 'HEAD', '^' + base)
+        if note.get('source_input'):
+            import hashlib
+            with open(bundle_path, 'rb') as stream:
+                bundle = stream.read(16 * 1024 * 1024 + 1)
+            if not 0 < len(bundle) <= 16 * 1024 * 1024:
+                raise PreparationError('Exported work exceeds its bundle bound')
+            source = note['source_input']
+            receipt = dict(version=1, job_id=note['id'], input_manifest_hash=source['manifest_digest'],
+                base_oid=base, local_head_oid=head, object_format=source['object_format'],
+                source_digest=hashlib.sha256(json.dumps(source, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest(),
+                bundle_digest=hashlib.sha256(bundle).hexdigest(), bundle_size=len(bundle))
+            path = Path('/work/home/forge-output.json')
+            path.write_text(json.dumps(receipt, sort_keys=True))
+            path.chmod(0o600)
     except PreparationError:
-        report.update(outcome='unable', output_commit=None,
+        report.update(outcome='unable', output_commit=None, **({'pr_title': None, 'pr_body': None} if note.get('source_input') else {}),
                       summary='Task output could not be verified and retained as the assigned commit.',
                       headline='The task output could not be retained',
                       plain='The implementation did not produce a verifiable commit containing its assigned inputs.')

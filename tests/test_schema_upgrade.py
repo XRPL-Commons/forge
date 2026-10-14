@@ -103,11 +103,30 @@ class UpgradeHostTests(SchemaUpgradeTests):
             self.calls.append(('update',))
             return SimpleNamespace(returncode=int(self.fail_update))
         self.host = SimpleNamespace(root=self.root, source=self.root/'source', identity=lambda:self.current,
-            units=lambda:list(self.active), prepare_source_update=lambda *args:None, install_source_update=install,
+            units=lambda:list(self.active), prepare_source_update=lambda *args,**kwargs:None, install_source_update=install,
             command=command, run=run, quiet=lambda:None)
         self.upgrader = Upgrade(self.host)
         self.addCleanup(patch.stopall)
         patch('forge.store.migration.upgrade.package_version', return_value='tool').start()
+
+
+    def test_resumed_drain_requalifies_source_before_fenced_probe_cleanup(self):
+        with patch.object(self.upgrader,'blockers',return_value=['uncleaned_jobs']):
+            self.assertEqual(self.upgrader.run(revision='b'*40,apply=True)['status'],'draining')
+        with patch.object(self.host,'prepare_source_update',side_effect=MigrationError('source_changed')), \
+                patch('forge.store.migration.probe_cleanup.cleanup_fenced_probe') as cleanup:
+            with self.assertRaisesRegex(MigrationError,'source_changed'):
+                self.upgrader.run(revision='b'*40,apply=True)
+            cleanup.assert_not_called()
+        self.assertEqual(self.upgrader.read()['stage'],'draining')
+
+    def test_source_pack_reaches_both_preparations_without_entering_journal(self):
+        pack={'data':'transport-only-pack','sha256':'transport-only-digest'}
+        with patch.object(self.host,'prepare_source_update') as prepare:
+            self.assertEqual(self.upgrader.run(revision='b'*40,apply=True,source_pack=pack)['status'],'upgraded')
+        self.assertEqual(prepare.call_count,2)
+        self.assertTrue(all(call.kwargs=={'source_pack':pack} for call in prepare.call_args_list))
+        self.assertNotIn('transport-only',self.upgrader.path.read_text())
 
     def test_plan_is_read_only_and_apply_requires_exact_revision(self):
         self.assertEqual(self.upgrader.run(revision=None)['status'], 'planned')
@@ -353,6 +372,35 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertTrue(self.runtime()[1]['enabled'])
         self.assertEqual(upgrade.inspect(storage.Store(self.store.root))['current_schema'], len(self.original))
 
+    def test_schema33_busy_drain_preserves_completed_journal_and_can_retry(self):
+        from forge.store.migration.host import failure
+        with patch('forge.store.db._migrations', return_value=self.original[:33]):
+            self.store = storage.Store.create(self.root/'schema33')
+            with self.store.write() as db:
+                db.executemany('INSERT INTO store_metadata VALUES(?,?)',
+                    [('runtime_root',str(self.root)),('runtime_active','true')])
+        (self.root/'state/storage').write_text('forge-sqlite-v1\n'+str(self.store.root)+'\n'+self.store.instance_id+'\n')
+        self.runtime(enabled=True)
+        self.upgrader.save(dict(protocol=1, root=str(self.root), source=str(self.host.source),
+            authorized=True, previous_revision='9'*40, source_revision=self.current,
+            tool_version='previous', services=list(self.active)), 'complete')
+        previous = self.upgrader.path.read_bytes()
+        with upgrade.connection(self.store, write=True) as writer, patch.object(storage.Store, 'busy_timeout_ms', 1):
+            writer.execute('BEGIN IMMEDIATE')
+            with self.assertRaises(storage.sqlite3.OperationalError) as raised:
+                self.upgrader.run(revision='b'*40, apply=True)
+            receipt = failure(raised.exception, dict(root=str(self.root), action='upgrade'))
+            self.assertEqual(receipt, dict(ok=False, error='migration_store_busy',
+                exception_type='OperationalError', stage='complete', sqlite_errorcode=5,
+                sqlite_errorname='SQLITE_BUSY', retryable=True))
+            self.assertEqual(self.upgrader.path.read_bytes(), previous)
+            self.assertEqual(self.calls, [])
+            self.assertTrue(self.runtime()[1]['enabled'])
+            writer.rollback()
+        self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(upgrade.inspect(storage.Store(self.store.root))['current_schema'], len(self.original))
+
     def test_partially_restarted_updater_drains_new_workers_before_retry(self):
         from types import SimpleNamespace
         self.runtime(enabled=True)
@@ -410,6 +458,8 @@ class UpgradeTransportTests(unittest.TestCase):
             git('init', '-q'); git('config', 'commit.gpgsign', 'false')
             git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test')
             (source/'forge').mkdir(); (source/'forge/__init__.py').write_text('version=1\n')
+            (source/'forge_client').mkdir(); (source/'forge_client/__init__.py').write_text('# contracts\n')
+            (source/'forge_client/contracts.py').write_text('version=1\n')
             git('add', '.'); git('commit', '-qm', 'first'); previous = git('rev-parse', 'HEAD')
             (source/'forge/__init__.py').write_text('version=2\n')
             git('commit', '-qam', 'corrected'); target = git('rev-parse', 'HEAD'); version = package_version(source)
@@ -426,8 +476,48 @@ class UpgradeTransportTests(unittest.TestCase):
             self.assertEqual(git('rev-parse', 'HEAD'), target)
             self.assertEqual((source/'existing-diagnostic.md').read_text(), 'keep this')
             host.install_source_update(previous, target)
+            (source/'forge_client/contracts.py').write_text('version=999\n')
+            changed_contract_version=package_version(source)
+            git('checkout','--','forge_client/contracts.py')
+            with self.assertRaisesRegex(MigrationError,'repair_bundle_source_mismatch'):
+                host.prepare_source_update(previous,target,changed_contract_version)
+            git('rm','forge_client/contracts.py');git('commit','-qm','missing shared contract')
+            missing_contract_target=git('rev-parse','HEAD');git('checkout','-q',target)
+            with self.assertRaisesRegex(MigrationError,'repair_source_unavailable'):
+                host.prepare_source_update(target,missing_contract_target,version)
+            self.assertEqual(git('rev-parse','HEAD'),target)
             with self.assertRaisesRegex(MigrationError, 'repair_requires_forward_revision'):
                 host.prepare_source_update(target, previous, version)
             (source/'forge/__init__.py').write_text('dirty\n')
             with self.assertRaisesRegex(MigrationError, 'repair_source_not_clean'):
                 host.prepare_source_update(target, target, version)
+
+
+class UpgradeHostDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+
+    def test_sqlite_failure_reports_only_structured_diagnostics(self):
+        import sqlite3
+        from forge.store.migration.host import failure
+        with sqlite3.connect(':memory:') as db:
+            with self.assertRaises(sqlite3.OperationalError) as raised:
+                db.execute('SELECT * FROM private_customer_table')
+        receipt = failure(raised.exception, dict(root=str(self.root), action='upgrade'))
+        self.assertEqual(receipt['error'], 'unexpected_migration_failure')
+        self.assertEqual(receipt['sqlite_errorcode'], sqlite3.SQLITE_ERROR)
+        self.assertEqual(receipt['sqlite_errorname'], 'SQLITE_ERROR')
+        self.assertNotIn('retryable', receipt)
+        self.assertNotIn('private_customer_table', json.dumps(receipt))
+        self.assertNotIn('no such table', json.dumps(receipt))
+
+    def test_mirror_writer_is_inventoried_without_a_separate_service_list(self):
+        from types import SimpleNamespace
+        rows = [{'unit': 'forge-mirror.service', 'active': 'active'},
+                {'unit': 'forge-supervisor.service', 'active': 'active'},
+                {'unit': 'unrelated.service', 'active': 'active'}]
+        from forge.store.migration.host import Host
+        host = Host(self.root, self.root / 'source', run=lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(rows)))
+        self.assertEqual(host.units(), ['forge-mirror.service', 'forge-supervisor.service'])

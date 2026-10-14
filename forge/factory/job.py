@@ -82,7 +82,7 @@ class StartupChannel:
 
 
 def main():
-    note = json.loads(Path('/work/assignment.json').read_text())
+    note = json.loads(Path('/run/forge-input/assignment.json').read_text())
     credentials = json.loads(Path('/work/credentials.json').read_text())
     Path('/work/credentials.json').unlink()
     Path('/work/home').mkdir(mode=0o700, exist_ok=True)
@@ -95,7 +95,8 @@ def main():
         target.write_text(json.dumps(auth)); target.chmod(0o600)
         Path('/work/home/.forge-auth-origin').write_text(origin)
     env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/work/home', 'LANG': 'C.UTF-8',
-           'FORGE_ASSIGNMENT': '/work/assignment.json', 'FORGE_RESULT': '/work/result.json', **credentials}
+           'FORGE_ASSIGNMENT': '/run/forge-input/assignment.json', 'FORGE_RESULT': '/work/result.json', **credentials}
+    env.update(note.get('boundary_environment', {}))
     env.update(HTTPS_PROXY=note['proxy'], HTTP_PROXY=note['proxy'], https_proxy=note['proxy'], http_proxy=note['proxy'])
     # No shell interpolation. An image-provided adapter reads the assignment and
     # invokes its pinned harness. The contract works with any coding provider.

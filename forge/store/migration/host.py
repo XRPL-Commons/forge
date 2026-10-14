@@ -66,7 +66,10 @@ class Host:
         if self.command('git','-C',str(self.source),'status','--porcelain','--untracked-files=no'):
             raise MigrationError('repair_source_not_clean')
         if source_pack is None:
-            self.command('git','-c','maintenance.auto=false','-C',str(self.source),'fetch','--no-tags','origin',target)
+            present = self.run(['git','-C',str(self.source),'rev-parse','--verify',target+'^{commit}'],
+                               capture_output=True,text=True,timeout=30)
+            if present.returncode or present.stdout.strip() != target:
+                raise MigrationError('source_pack_required')
         else:
             import base64
             try:
@@ -83,23 +86,24 @@ class Host:
         ancestry=self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,target],capture_output=True,timeout=30)
         if ancestry.returncode:
             raise MigrationError('repair_requires_forward_revision')
-        archive=self.run(['git','-C',str(self.source),'archive','--format=tar',target,'forge'],capture_output=True,timeout=60)
+        from .source import CLIENT_CONTRACT_FILES, migration_path
+        archive=self.run(['git','-C',str(self.source),'archive','--format=tar',target,'forge',*CLIENT_CONTRACT_FILES],capture_output=True,timeout=60)
         if archive.returncode or len(archive.stdout)>32*1024*1024:
             raise MigrationError('repair_source_unavailable')
         records={}
         with tarfile.open(fileobj=io.BytesIO(archive.stdout),mode='r:') as contents:
             for member in contents:
-                if member.isdir() and member.name.rstrip('/')=='forge':continue
+                if member.isdir() and member.name.rstrip('/') in {'forge','forge_client'}:continue
                 path=Path(member.name)
-                if not member.name.startswith('forge/') or '..' in path.parts:
+                if (not member.name.startswith('forge/') and member.name not in CLIENT_CONTRACT_FILES) or '..' in path.parts:
                     raise MigrationError('repair_source_unsafe')
-                if not (path.suffix in {'.py','.sql'} or path.match('forge/harnesses/*/manifest.json')):
+                if not migration_path(member.name):
                     continue
                 if not member.isfile() or member.size>4*1024*1024 or member.name in records:
                     raise MigrationError('repair_source_unsafe')
-                records[member.name.removeprefix('forge/')]=contents.extractfile(member).read()
-        fingerprint='1:'+digest(b''.join(name.encode()+records[name] for name in sorted(records,key=Path)))
-        if not records or fingerprint!=tool_version:
+                records[member.name]=contents.extractfile(member).read()
+        fingerprint='2:'+digest(b''.join(name.encode()+records[name] for name in sorted(records,key=Path)))
+        if not set(CLIENT_CONTRACT_FILES).issubset(records) or fingerprint!=tool_version:
             raise MigrationError('repair_bundle_source_mismatch')
 
     def install_source_update(self, previous, target):
@@ -130,13 +134,27 @@ def failure(error, request):
         except Exception:
             stage='journal_unreadable'
     name=type(error).__name__
-    return dict(ok=False,error=error.code if isinstance(error,(MigrationError,StoreError)) else 'unexpected_migration_failure',
-                exception_type=name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',name) else 'Exception',stage=stage)
+    result = dict(ok=False,error=error.code if isinstance(error,(MigrationError,StoreError)) else 'unexpected_migration_failure',
+                  exception_type=name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}',name) else 'Exception',stage=stage)
+    import sqlite3
+    if isinstance(error, sqlite3.Error):
+        # SQLite's structured identifiers contain no SQL, paths or stored data.
+        # Exception text can contain SQL and paths, so transport only codes.
+        code = getattr(error, 'sqlite_errorcode', None)
+        label = getattr(error, 'sqlite_errorname', None)
+        if type(code) is int:
+            result['sqlite_errorcode'] = code
+            if (code & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                result.update(error='migration_store_busy', retryable=True)
+        if isinstance(label, str) and re.fullmatch(r'SQLITE_[A-Z0-9_]{1,80}', label):
+            result['sqlite_errorname'] = label
+    return result
 
 
 def run(request):
     host=Host(request['root'],request['source'])
     if request['action']=='upgrade':
         from .upgrade import Upgrade
-        return Upgrade(host).run(revision=request.get('source_revision'),apply=request.get('apply') is True)
+        return Upgrade(host).run(revision=request.get('source_revision'),apply=request.get('apply') is True,
+                                 source_pack=request.get('source_pack'))
     raise MigrationError('unknown_migration_action')

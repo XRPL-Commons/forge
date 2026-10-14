@@ -17,7 +17,7 @@ from ..store.executions import Executions, ExecutionQueries
 from ..store.db import StoreError
 from ..store.models import Command, TransitionError
 from .github import GitHubUnavailable
-from .runner import ContainerRunner, RunnerError
+from .runner import ContainerRunner, RunnerError, RunnerPreparationError
 
 
 class ExecutionController:
@@ -63,14 +63,41 @@ class ExecutionController:
                 and job['assigned_budget'] == job['budget_generation'])
 
     def step(self, job_id):
+        from ..store.scheduling import Scheduling
+        from ..store.transitions import manifest_hash
+        scheduling = Scheduling(self.store, clock=self.clock)
         with self._lock():
-            return self._step(job_id)
+            job = self.queries.job(job_id)
+            if self._can_launch(job) and self.clock() < job['deadline'] and self.admission(job):
+                pending = scheduling.pending(job['unit_id'], 'execution', job_id=job_id)
+                if pending:
+                    return {'job_id': job_id, 'pending': pending['reason'], 'retry_at': pending['due_at']}
+            try:
+                answer = self._step(job_id)
+            except RunnerPreparationError as error:
+                job = self.queries.job(job_id)
+                if error.transient:
+                    scheduling.record(job['unit_id'], owner='execution', reason=error.reason, job_id=job_id)
+                    return {'job_id': job_id, 'pending': error.reason}
+                runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ, source=self.runner.source_preparation)
+                          if isinstance(self.runner, ContainerRunner) else self.runner)
+                current = runner.inspect(job)
+                if current and current['status'] != 'created':
+                    raise  # Never reinterpret a started worker as a launch refusal.
+                self.commands.observe(job_id, execution_fence=job['execution_fence'], observation=current)
+                self.commands.collect(self._command(job), job_id, execution_fence=job['execution_fence'],
+                    capture={'result': None, 'logs': '', 'missing': [], 'timed_out': False},
+                    preparation_refusal={'version': 1, 'reason': error.reason, 'gate': error.gate,
+                                         'manifest_digest': manifest_hash(job['input_manifest'])})
+                answer = self._step(job_id)  # Verify cleanup before classifying the durable refusal.
+            scheduling.clear(job['unit_id'], owner='execution', job_id=job_id)
+            return answer
 
     def _step(self, job_id):
         job = self.queries.job(job_id)
         if job['cleanup']:
             return {'job_id': job_id, 'cleanup': True}
-        runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ)
+        runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ, source=self.runner.source_preparation)
                   if isinstance(self.runner, ContainerRunner) else self.runner)
         if not job['fenced'] and job['phase'] in {'reserved', 'starting'}:
             if not self._can_launch(job) or self.clock() >= job['deadline'] or not self.admission(job):
@@ -89,21 +116,12 @@ class ExecutionController:
                 elif job['container_id'] is None:
                     job = self._progress(job, 'starting', current['id'])
                 if current and current['status'] == 'created' and self._can_launch(job):
-                    # Token exists only in memory and the runner's private IPC.
-                    from .delegation_contracts import read_only_build
-                    restricted = read_only_build(job)
-                    token = self.github.token(job['role'], job['repo_id'], worker=True, **({'read_only': True} if restricted else {}))
                     job = self.queries.job(job_id)
                     if self._can_launch(job):
-                        job['bundle_inputs'] = self.queries.input_refs(job)
-                        if job['bundle_inputs']:
-                            runner.prepare(job, token, bundles=self.queries.input_bundles(job['bundle_inputs']))
-                        else:
-                            runner.prepare(job, token)
+                        runner.prepare(job)
                         job = self.queries.job(job_id)
                         if self._can_launch(job):
                             runner.start(job)
-                    del token
                 job = self.queries.job(job_id)
                 current = runner.inspect(job)
                 if self._can_launch(job) and current and current['status'] != 'created':

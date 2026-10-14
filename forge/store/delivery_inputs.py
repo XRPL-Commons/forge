@@ -84,12 +84,26 @@ def existing_candidates_in(db, unit_id):
     return sources
 
 
+def publication_author_in(db, unit_id, previous):
+    """The author observed in a confirmed host publication for this exact head."""
+    rows = db.execute("SELECT p.job_id,r.receipt_json FROM publication_receipts r "
+        "JOIN publication_intents p ON p.id=r.intent_id WHERE p.unit_id=? AND p.status='confirmed' "
+        "AND json_extract(r.receipt_json,'$.branch')=? AND json_extract(r.receipt_json,'$.head_oid')=? "
+        "AND json_extract(r.receipt_json,'$.pull_number')=? ORDER BY r.observed_at DESC LIMIT 2",
+        (unit_id, previous['branch'], previous['head_oid'], previous['pull_number'])).fetchall()
+    authors = [json.loads(row['receipt_json']).get('pr_author') for row in rows
+               if not previous.get('source_job_id') or row['job_id'] == previous['source_job_id']]
+    if authors and authors[0] and all(author == authors[0] for author in authors):
+        return {**previous, 'author': authors[0]}
+    return previous
+
+
 def previous_publication_in(db, unit_id):
     """Exact accepted, base-invalidated, or operator-reloaded publication."""
     event = db.execute("SELECT e.kind,e.job_id,e.payload_json FROM events e "
         "WHERE e.unit_id=? AND (e.kind='candidate_selected' OR e.kind='attempt_fenced' "
         "AND json_extract(e.payload_json,'$.reason')='base_changed' "
-        "AND EXISTS(SELECT 1 FROM builder_assignments b WHERE b.job_id=e.job_id AND b.stage='integration') "
+        "AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=e.job_id AND j.role='build') "
         "OR e.kind='candidate_superseded' AND json_extract(e.payload_json,'$.reason')='candidate_changed' "
         "AND json_type(e.payload_json,'$.evidence.operator_request')='text' "
         "AND json_type(e.payload_json,'$.evidence.publication')='object') "
@@ -98,10 +112,10 @@ def previous_publication_in(db, unit_id):
         return None
     payload = json.loads(event['payload_json'])
     if event['kind'] == 'candidate_selected':
-        return dict(db.execute('SELECT * FROM candidates WHERE id=?', (payload['candidate_id'],)).fetchone())
+        return publication_author_in(db, unit_id, dict(db.execute('SELECT * FROM candidates WHERE id=?', (payload['candidate_id'],)).fetchone()))
     if event['kind']=='candidate_superseded':
-        return {**payload['evidence']['publication'],'source_job_id':payload['evidence']['source_job_id']}
-    return {**payload['publication'], 'source_job_id': event['job_id']}
+        return publication_author_in(db, unit_id, {**payload['evidence']['publication'],'source_job_id':payload['evidence']['source_job_id']})
+    return publication_author_in(db, unit_id, {**payload['publication'], 'source_job_id': event['job_id']})
 
 
 from .task_inputs import member_contributions_in

@@ -31,6 +31,10 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
         config = {**config, 'enabled': False, 'merge_enabled': False}
     runner = runner or ContainerRunner(config, environ=Credentials(root).environment())
     github = github or GitHub(settings, config, clock=clock)
+    from .source_preparation import SourcePreparation
+    sources = SourcePreparation(root, store, github=github, settings=settings, clock=clock)
+    if isinstance(runner, ContainerRunner):
+        runner.source_preparation = sources
 
     def admission(item):
         repo = item.get('repo') or (item.get('issue') or {}).get('repository')
@@ -58,14 +62,19 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     scheduling = Scheduling(store, clock=clock, retry_seconds=reliability['retry_seconds'],
                             stall_seconds=reliability['stall_seconds'])
     effects = EffectController(store, github, admission=merge_admission, clock=clock, reliability=reliability)
-    parts = dict(store=store, settings=settings, config=config, runner=runner, github=github,
+    from .publisher_runtime import PublicationRuntime, SigningCapabilities
+    publisher = PublicationRuntime(store, github, sources,
+        signing_capability=SigningCapabilities(store, github),
+        admission=lambda job: current_config()['enabled'] and execution_admission(job),
+        clock=clock, reliability=reliability)
+    parts = dict(store=store, settings=settings, config=config, runner=runner, github=github, publisher=publisher,
         requirements=requirements, verification=verification, effects=effects, admission=admission, scheduling=scheduling,
         execution=ExecutionController(store, runner, github, admission=execution_admission, clock=clock, enabled=lambda: current_config()['enabled']),
         observations=ObservationController(store, github, admission=admission, readiness=readiness, policy=lambda item: manifest_hash(policy(current_config(),item['repo_id'],repository_name=item['repo'])),
                                             hold_labels=config['hold_labels'], clock=clock),
         results=ResultController(store, github, policy=lambda item: policy(current_config(),item['repo_id'],repository_name=item['repo']), verdicts=effects,
             requirements=requirements, clock=clock, hold_labels=config['hold_labels'],
-            availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling),
+            availability_retry_seconds=config['availability_retry_seconds'], scheduling=scheduling, publisher=publisher),
         recovery=RecoveryController(store, runner, github, config=config, admission=admission, clock=clock),
         merges=MergeController(store, admission=merge_admission, clock=clock, scheduling=scheduling),
         dispatch=DispatchController(store, runner, config=config, prepare=GitHubPrepare(github, config, requirements=requirements, readiness=readiness),
@@ -76,7 +85,7 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     def planner_runner(worker):
         # The setup service supplies a real runner configured for the default
         # provider. Each owned planner must use its immutable selected config.
-        return ContainerRunner(worker, environ=runner.environ) if isinstance(runner, ContainerRunner) else runner
+        return ContainerRunner(worker, environ=runner.environ, source=runner.source_preparation) if isinstance(runner, ContainerRunner) else runner
 
     parts['planning'] = RepositoryPlanner(store, github, config=config, settings=settings,
         observations=parts['observations'], runner=planner_runner, clock=clock)
@@ -98,6 +107,8 @@ def cycle(root, *, config=None, runner=None, github=None, settings=None, clock=t
     from .store_inventory import DiscoveryController
     parts = components(root, config=config, runner=runner, github=github, settings=settings, clock=clock, dispatch=dispatch)
     Credentials(root).publish_login_generations(parts['store'], parts['config'])
+    from .provider_logins import check_logins
+    check_logins(root, parts['store'], parts['config'], clock=clock)
     actions = OperatorActions(parts['store'], parts['github'], config=lambda: load(root),
                               requirements=parts['requirements'], verification=parts['verification'], clock=clock)
     discovery = DiscoveryController(parts['store'], parts['settings'], parts['github'], config=parts['config'], clock=clock)

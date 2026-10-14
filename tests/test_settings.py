@@ -422,3 +422,21 @@ class ReliabilityPolicyTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class MirrorDenySettingsTests(unittest.TestCase):
+    def test_repository_deny_list_preserves_ids_and_names(self):
+        config = configured()
+        config['repositories'] = [{'id': 10, 'name': 'example/project', 'enabled': False,
+            'mirror_denied_repositories': [{'canonical_name': 'example/secret', 'repository_id': 20}]}]
+        self.assertEqual(validate(config), config)
+
+    def test_rejects_ambiguous_or_invalid_deny_entries(self):
+        from forge.settings import mirror_denied_repositories
+        for rows in ([{'canonical_name': 'example/secret', 'repository_id': True}],
+                     [{'canonical_name': 'example/secret'}, {'canonical_name': 'Example/Secret'}],
+                     [{'canonical_name': 'example/secret', 'repository_id': 20},
+                      {'canonical_name': 'example/renamed', 'repository_id': 20}],
+                     [{'canonical_name': '../secret'}]):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                mirror_denied_repositories(rows)

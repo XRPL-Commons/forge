@@ -83,6 +83,9 @@ class GitHubPrepare:
         candidate = snapshot['candidate']
         item = dict(repo_id=unit['repository_id'], repo=issue['repository'], number=issue['github_number'],
                     candidate={'pr': candidate['pull_number'],'key':candidate['id']} if candidate else None,unit_state=unit['state'],reviewers_requested=snapshot.get('reviewers_requested'))
+        for key in ('publication_transfer', 'approved_sources', 'owned_publication'):
+            if key in snapshot:
+                item[key] = snapshot[key]
         remote, requirements = self.github.issue(item)
         pinned = issue['requirements']
         # Imported legacy requirement records need explicit reconciliation.
@@ -124,13 +127,35 @@ class GitHubPrepare:
         context['ci_evidence'] = self.github.ci_evidence(ci_item)
         branch = candidate['branch'] if candidate else None
         if role == 'build':
-            draft = self.github.own_draft(item, issue['github_number'], publisher)
-            retry = environment.get('memory_retry') or environment.get('retry') or {}
-            branch = draft['branch'] if draft else retry.get('branch') or snapshot.get('resume_branch')
-            if branch:
-                context['resume_branch'] = branch
-            if draft:
-                context['resume_pr'] = draft['pr']
+            previous = snapshot.get('resume_candidate')
+            if previous:
+                current = self.github.pr(item, previous['pull_number'])
+                if (current.get('head', {}).get('sha') != previous['head_oid']
+                        or current.get('head', {}).get('ref') != previous['branch']
+                        or current.get('head', {}).get('repo', {}).get('id') != unit['repository_id']
+                        or current.get('base', {}).get('ref') != unit['base_branch']
+                        or current.get('base', {}).get('repo', {}).get('id') != unit['repository_id']
+                        or current.get('state') != 'open' or current.get('merged')
+                        or current.get('user', {}).get('type') != 'Bot'
+                        or ('author' in previous and {key: current.get('user', {}).get(key) for key in ('id','login','type')} != previous['author'])
+                        or ('author' not in previous and current.get('user', {}).get('login') != publisher)):
+                    return None
+                branch = previous['branch']
+                context.update(resume_branch=branch, resume_pr=previous['pull_number'], resume_head=previous['head_oid'],
+                               publication_author={key: current['user'].get(key) for key in ('id','login','type')})
+            else:
+                draft = self.github.own_draft(item, issue['github_number'], publisher)
+                retry = environment.get('memory_retry') or environment.get('retry') or {}
+                branch = draft['branch'] if draft else retry.get('branch') or snapshot.get('resume_branch')
+                if branch:
+                    context['resume_branch'] = branch
+                if draft:
+                    current = self.github.pr(item, draft['pr'])
+                    from .github import own_build_pr
+                    if not own_build_pr(current, unit['repository_id'], issue['github_number'], publisher):
+                        return None
+                    context.update(resume_pr=draft['pr'], resume_head=current['head']['sha'],
+                                   publication_author={key: current['user'].get(key) for key in ('id','login','type')})
         return PreparedDispatch(base, publisher, config, branch, context, refreshed['unit_version'] if refreshed else None)
 
     def group(self, snapshot, role):
@@ -197,7 +222,7 @@ class GitHubPrepare:
                     or current.get('base', {}).get('ref') != unit['base_branch']
                     or current.get('base', {}).get('repo', {}).get('id') != unit['repository_id']
                     or current.get('state') != 'open' or current.get('merged')
-                    or current.get('user', {}).get('login') != self.github.publisher('build')
+                    or 'author' not in previous and current.get('user', {}).get('login') != self.github.publisher('build')
                     or current.get('user', {}).get('type') != 'Bot'
                     or 'author' in previous and {key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')} != previous['author']):
                 return None
@@ -267,7 +292,7 @@ class DispatchController:
             from .ownership import publication_context
             ownership_context = publication_context(self.store, unit_id, {})
             from ..store.delivery_inputs import previous_publication_in
-            resume_candidate = previous_publication_in(db, unit_id) if grouped else None
+            resume_candidate = previous_publication_in(db, unit_id)
             return dict(**ownership_context, reviewers_requested=reviewer_request_in(db,unit['current_candidate_id']),unit=unit, member=member, issue=issue, candidate=dict(candidate) if candidate else None,
                         role=role, reason=reason, environment=environment, memory_bytes=memory, members=members, grouped=grouped, repo=members[0]['issue']['repository'],
                         resume_branch=previous[0] if previous else None, resume_candidate=resume_candidate)

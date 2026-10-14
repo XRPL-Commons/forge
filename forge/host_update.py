@@ -42,9 +42,9 @@ UI_PORT, API_PORT = 8787, 8788
 # source never rebuilds and never needs requalification.
 RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses', 'forge/factory/job.py',
                  'forge/factory/harness.py', 'forge/factory/startup.py', 'forge/factory/probe.py', 'forge/factory/build_environment.py',
-                 'deploy/runner/browser-canary.cjs')
+                 'deploy/runner/browser-canary.cjs', 'deploy/runner/gitconfig', 'deploy/runner/gateway.py', 'forge/mirror/frontend.py')
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
-SERVICES = ('forge-status', 'forge-ui', 'forge-supervisor')
+SERVICES = ('forge-mirror', 'forge-status', 'forge-ui', 'forge-supervisor')
 # Disabled leftovers of removed host services. Update deletes exactly these
 # unit files when present; any other unit is left alone.
 STALE_UNITS = tuple(name + suffix for name in ('forge-activity', 'forge-notify', 'forge-observability',
@@ -169,8 +169,8 @@ def unit_quote(value):
     return json.dumps(str(value).replace('%', '%%'))
 
 
-def unit(description, execution, environment=(), *, after='network-online.target', extra=''):
-    return ('[Unit]\nDescription=' + description + '\nAfter=' + after + '\n\n[Service]\nType=simple\n' + extra
+def unit(description, execution, environment=(), *, after='network-online.target', extra='', requires=None):
+    return ('[Unit]\nDescription=' + description + '\nAfter=' + after + ('\nRequires=' + requires if requires else '') + '\n\n[Service]\nType=simple\n' + extra
             + 'ExecStart=' + execution + '\n'
             + ''.join('Environment=' + unit_quote(value) + '\n' for value in environment)
             + 'Restart=on-failure\nRestartSec=5\nTimeoutStopSec=30\nUMask=0077\n\n[Install]\nWantedBy=default.target\n')
@@ -239,6 +239,7 @@ def desired_units(root, bind):
             ui[-3:-3] = ['--env', 'NITRO_FORGE_PUBLIC_ORIGIN=' + origin,
                          '--env', 'NITRO_ALLOWED_HOSTS=' + urlsplit(origin).netloc]
     return {
+        'forge-mirror': unit('Forge job-bound read-only Git mirrors', '/usr/bin/python3 -m forge.launch forge.mirror_daemon --root ' + unit_quote(root), python),
         'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 -m forge.launch --script ' + unit_quote(SOURCE / 'legacy/forge-status.py'),
                              python + ['FORGE_BIND_ADDRESS=127.0.0.1', 'FORGE_PORT=' + str(API_PORT),
                                        'FORGE_UPSTREAM_SECRET_FILE=' + str(root / UPSTREAM_SECRET)]),
@@ -246,7 +247,8 @@ def desired_units(root, bind):
                          after='network-online.target forge-status.service',
                          extra='ExecStartPre=-' + docker + ' rm --force ' + name + '\n'
                                'ExecStop=' + docker + ' stop --time 10 ' + name + '\n'),
-        'forge-supervisor': unit('Forge supervisor', unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root), python),
+        'forge-supervisor': unit('Forge supervisor', unit_quote(SOURCE / 'bin/forge') + ' service --root ' + unit_quote(root), python,
+                                 after='network-online.target forge-mirror.service', requires='forge-mirror.service'),
     }
 
 
@@ -456,6 +458,27 @@ def confirm(changes, assume_yes, overrides=()):
         raise ValueError('Update cancelled; nothing was replaced')
 
 
+def qualify_boundary_engine():
+    from .factory.worker_boundary import WorkerBoundary
+    # No resource creation: unsupported engines fail before building or switching.
+    WorkerBoundary(lambda args: command(['docker', *args], capture_output=True, text=True),
+                   image='sha256:' + '0' * 64).qualify()
+
+
+def wait_mirror(root, *, timeout=20):
+    deadline = time.monotonic() + timeout
+    while True:
+        result = subprocess.run(['/usr/bin/python3', '-m', 'forge.launch', 'forge.mirror_daemon',
+                                 '--root', str(root), '--check'],
+                                env={**os.environ, 'PYTHONPATH': str(SOURCE)},
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise ValueError('The job mirror service is unhealthy. Inspect forge-mirror.service and rerun the supported update.')
+        time.sleep(.25)
+
+
 def qualify_runner(image, seccomp, profile, *, full=False):
     """Offline canary: tools, memory limits, browser and credential protection in the real sandbox."""
     runpy.run_path(str(SOURCE / 'deploy/build_environment_check.py'))['validate'](image, seccomp, profile, services=full)
@@ -470,6 +493,8 @@ def reconcile(root, bind=None, assume_yes=False):
     bind = resolve_bind(root, bind, units)
     source = source_revision()
     plan = []
+
+    qualify_boundary_engine()
 
     # 1. Build and qualify everything new. Nothing in use changes here.
     image = runner_image()
@@ -503,7 +528,7 @@ def reconcile(root, bind=None, assume_yes=False):
         print('Keeping drop-in ' + str(path) + ' (it does not change what the service runs).')
     restart = set(unit_changes) | {name for name, _, _ in overrides}
     if source != record.data.get('source'):
-        restart.update(('forge-status', 'forge-supervisor'))  # Python services run this checkout.
+        restart.update(('forge-mirror', 'forge-status', 'forge-supervisor'))  # Python services run this checkout.
     if release != record.data.get('ui_release'):
         restart.add('forge-ui')
     if runtime_changed and not fresh:
@@ -583,8 +608,12 @@ def reconcile(root, bind=None, assume_yes=False):
     remove_stale_units(stale)
     command(['systemctl', '--user', 'daemon-reload'])
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
+    # The mirror must pass a read-only health probe before dispatch can restart.
+    if fresh or 'forge-mirror' in restart:
+        command(['systemctl', '--user', 'restart', 'forge-mirror.service'])
+    wait_mirror(root)
     # The API first: the UI and supervisor depend on it.
-    ordered = [name + '.service' for name in SERVICES if fresh or name in restart]
+    ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror' and (fresh or name in restart)]
     if ordered:
         command(['systemctl', '--user', 'restart', *ordered])
     wait_healthy(bind)

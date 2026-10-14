@@ -20,8 +20,12 @@ identity, instance/generation, capabilities and configuration revisions.
 Plans have a ten-minute lifetime and pin App/installation IDs and the exact
 repository. Applying a plan reconstructs it from fresh observations. Grant calls
 add one repository; rule writes create an additive review baseline. Existing
-rulesets are never patched or deleted. A name collision requires independent
-verification or operator resolution.
+effective review rules can receive a bypass-only update that preserves their
+rules and current actors. Classic protection receives only review bypass
+allowances. Organization rules require organization admin authority. A ruleset
+that also enforces signatures needs an operator to separate that rule first;
+Forge does not add a signing bypass. A baseline name collision still requires
+independent verification or operator resolution.
 
 A failed grant returns a GitHub browser link. An uncertain rule write returns
 `write_unconfirmed`; the engine does not retry it automatically. Subsequent setup
@@ -119,3 +123,90 @@ The progress read `repo delivery` uses an issue number; membership commands use
 the exact issue key returned by `repo issues`. See [repository planning](../docs/repository-planning.md)
 and [delivery execution](../docs/delivery-execution.md#change-membership-explicitly)
 for paging, identities, preview fields and failure-budget effects.
+
+## Client maintenance and account renewal
+
+`forge version --ssh anvil` reports the client commit and reads the installed
+server commit over verified SSH. Different revisions produce a warning.
+`forge self-update --revision COMMIT` uses `uv tool install --reinstall` to install
+that exact client revision, then verifies the installed command and revision.
+Install uv first and use `uv tool install` for the initial CLI installation, as
+shown in the [README](../README.md#install). Existing commands owned by
+other package managers are left for you to resolve; Forge does not force replacement.
+
+`forge account login codex --ssh anvil` works during setup and after Start.
+For an API key, use `--kind api_key`; the CLI prompts privately. Agents can use
+`--kind api_key --secret-stdin --json`. The server still checks operator identity,
+setup generation and runtime locks. Account renewal does not reopen App or
+repository setup authority on an active factory.
+
+## Saved installation interview
+
+Run `forge install` for the interview, or supply its deterministic inputs:
+
+```sh
+forge install --ssh anvil --intent-file install.json --json
+forge install --ssh anvil --preflight --json
+forge install --ssh anvil --apply --json
+forge install --ssh anvil --status --json
+forge install --ssh anvil --resume --json
+```
+
+`forge commands` includes the closed `installation_commands.intent_schema`.
+The intent records multiple repositories, per-repository human/auto merge policy
+(default human in the interview), workflow-edit permission, provider login kinds,
+rules repair preference, operators, App owner, hostname and a source revision
+resolved once. It accepts no credentials. Resume preserves the saved inputs and
+re-observes every stage. Local journals are private and each stage records its
+input digest, status, safe receipt and whether a write is still uncertain.
+
+Preflight performs read-only observations. It checks local tools and tailnet,
+client revision, owner/repository authority, effective and classic rules,
+signatures, workflow files, dependency evidence, existing ready issues, host
+prerequisites, resources, TLS egress and Tailscale certificate domains. It prints
+`pass`, `will fix automatically` or `needs you`. Apply rechecks the findings and
+refuses unresolved prerequisites. Only findings explicitly marked waivable can
+be waived with `--waive ID`; host identity and resource checks cannot be waived.
+For one worker slot, the minimum is 2 CPUs, 7.5 GiB observed RAM and 20 GiB free
+disk; database dependencies raise the RAM/disk floors to 11/40 GiB.
+
+This first coordinator prepares existing setup stages. **It does not yet complete
+installation:** the single-App consent batch, remote full database environment
+installation, provider-consent automation, smoke verification and final policy
+application/enable remain later stages. Their receipts stay pending. Existing
+identity/App installations can prepare multiple repositories independently;
+an uncertain write on one does not block preparation of another. Real repositories
+are never enabled by this command. Continue to use the existing `forge setup`
+building blocks where available.
+
+## Native worker boundary qualification
+
+After the matching server source and worker image have been staged through the
+supported upgrade, run:
+
+```sh
+forge setup qualify-boundary --ssh anvil
+forge setup qualify-boundary --ssh anvil --apply
+```
+
+The first command reads the installed image, source revision and Docker version,
+then prints the exact image ID and checks. The second selects that host’s current
+installed image and reports its exact identity with the result. Supply
+`--image sha256:IMAGE_ID` to select an explicit pinned image; its plan needs no SSH.
+Both host operations use the saved SSH host identity
+and runs disposable canaries as the Forge service account. It requires a native
+Linux host with Docker Engine 28 or newer and the exact worker-boundary v2 image.
+It creates its own networks, volumes, endpoints and local Git fixture; it does
+not change installation settings, services, repository permissions or jobs.
+
+The receipt verifies real Git clone/fetch and denied push, live session revocation,
+provider TLS without credentials, public npm/pip downloads, blocked GitHub/host/
+cross-job access, immutable assignment inputs, the work-volume limit, capture
+after worker exit, and confirmed cleanup. All checks must pass. A network outage
+fails qualification. Local Docker Desktop 23 cannot qualify native isolation;
+the separate local volume canary provides only its stated partial checks.
+
+The work volume is bounded tmpfs. Its pages count against the writing worker's
+memory limit; the quota is a ceiling, not a memory reservation. The trusted
+frontend keeps it mounted through stopped-worker capture. A full host restart
+loses these temporary bytes, so recovery must retry the physical job.

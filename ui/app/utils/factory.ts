@@ -23,7 +23,18 @@ export interface ResourceUsage {
   collection: { checked_at: number | null; status: 'available' | 'partial' | 'unavailable'; reason: string | null }
 }
 
+export interface MirrorReceipt {
+  id: string; created_at: number; repository?: string; repository_id?: number
+  request_kind?: string; outcome?: string; reason?: string; phase?: string
+  cache?: boolean; host_fetch?: boolean; request_bytes?: number; response_bytes?: number
+}
+export interface MirrorEvidence {
+  receipts: MirrorReceipt[]; claims: MirrorReceipt[]
+  receipts_total: number; claims_total: number; receipts_truncated: boolean; claims_truncated: boolean
+}
 export interface JobView {
+  publication?: { intent_id: string | null; status: string; updated_at: number; claim: { code?: string; reason?: string; paths?: string[] } | null; active: boolean } | null
+  mirror?: MirrorEvidence
   id: string; issue_key: string | null; repo_id: number; repo: string; issue_number: number | null
   unit_id?: string; members?: Array<{ member_id: string; issue_key: string; issue_number: number }>
   builder_id?: string | null; builder_stage?: 'planning' | 'integration' | 'child' | 'task' | null

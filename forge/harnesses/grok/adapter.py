@@ -166,8 +166,7 @@ def probe(note, directory):
               '. Do not create or edit any files yourself. If it succeeds, return ready true.')
     build_env = runpy.run_path('/opt/forge/build_environment.py')['environment'](directory)
     try:
-        answer, failure = invoke(note, directory, {**os.environ, **build_env, 'FORGE_PROBE_SECRET': 'synthetic-private-env',
-                                                  'GH_TOKEN': 'forge-synthetic-repository-token'}, schema, prompt, canary=(command, nonce))
+        answer, failure = invoke(note, directory, {**os.environ, **build_env, 'FORGE_PROBE_SECRET': 'synthetic-private-env'}, schema, prompt, canary=(command, nonce))
     except RuntimeError as error:
         answer, failure = None, 'canary' if 'canary' in str(error) else str(error)
     proof = directory / 'grok-probe-proof'

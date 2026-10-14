@@ -102,7 +102,7 @@ class DeploymentTests(unittest.TestCase):
                 test.engine[job['id']] = {'id': job['id'], 'status': 'created', 'running': False,
                                           'exit_code': 0, 'oom_killed': False}
                 return job['id']
-            def prepare(self, job, token): test.prepared.append((job['id'], job['role'], token))
+            def prepare(self, job): test.prepared.append((job['id'], job['role']))
             def start(self, job):
                 if test.capacity:
                     raise test.capacity
@@ -191,10 +191,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(entry['job']['publisher'], 'forge-strategist')
         self.assertEqual(entry['job']['head'], 'a' * 40)
         self.assertEqual(entry['job']['runner_config']['harness_argv'], self.config['harness_argv'])
-        self.assertEqual(self.prepared, [(entry['job']['id'], 'strategist',
-                                          'synthetic-worker-token-not-a-real-credential')])
+        self.assertEqual(self.prepared, [(entry['job']['id'], 'strategist')])
         # The recovery role is the controller App's read-only worker credential.
-        self.assertEqual(self.github.tokens, [('recovery', 7, True)])
+        self.assertEqual(self.github.tokens, [])
         job = self.finish()
         self.deployments().tick(self.config)
         entry = self.entry()
@@ -476,6 +475,19 @@ class DeploymentTests(unittest.TestCase):
         self.deployments().tick(self.config)
         self.assertEqual(self.entry()['status'], 'running')
 
+    def test_discussion_leases_hold_only_their_own_account_or_unknown_identity(self):
+        with self.database.write() as db:
+            db.execute("INSERT INTO discussions(id,title,created_at,updated_at) VALUES('discussion','Question',100,100)")
+            db.execute("INSERT INTO discussion_executions(id,discussion_id,phase,created_at) VALUES('execution','discussion','running',100)")
+            db.execute("INSERT INTO discussion_leases VALUES('discussion','execution','fence',100)")
+        config = {**self.config, 'provider_auth_file_env': 'FORGE_HARNESS_AUTH_TWO'}
+        self.assertTrue(self.deployments().leased(config))
+        with self.database.write() as db:
+            db.execute("INSERT INTO discussion_runtime(execution_id,manifest_json) VALUES('execution',?)",
+                       (json.dumps({'runner_config': {'provider_auth_file_env': 'FORGE_HARNESS_AUTH_ONE'}}),))
+        self.assertFalse(self.deployments().leased(config))
+        self.assertTrue(self.deployments().leased({**config, 'provider_auth_file_env': 'FORGE_HARNESS_AUTH_ONE'}))
+
     def test_an_api_key_configuration_needs_no_lease(self):
         self.config['provider_auth_file_env'] = None
         self.pipeline_job('FORGE_HARNESS_AUTH_ONE')
@@ -513,6 +525,18 @@ class DeploymentTests(unittest.TestCase):
         # Without memory tiers there is no larger retry to drain for.
         self.deployments().tick(self.config)
         self.assertEqual(self.entry()['status'], 'running')
+
+    def test_inadmissible_or_paused_unit_does_not_drain_strategist_capacity(self):
+        self.memory_retry('queued')
+        config = {**self.config, 'memory_tiers': ['4g', '8g']}
+        self.settings.rows[0]['dispatch_allowed'] = False
+        self.assertFalse(self.deployments().memory_draining(config))
+        self.settings.rows[0]['dispatch_allowed'] = True
+        self.assertTrue(self.deployments().memory_draining(config))
+        with self.database.write() as db:
+            db.execute("INSERT INTO unit_gates(id,unit_id,subject_key,code,created_at) "
+                       "VALUES('pause','unit-7-5','unit','operator_pause',100)")
+        self.assertFalse(self.deployments().memory_draining(config))
 
     def test_a_finished_unit_never_holds_memory_capacity(self):
         self.memory_retry('merged')
@@ -567,7 +591,7 @@ class DeploymentTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    def test_prepare_writes_the_read_only_strategist_note(self):
+    def test_strategist_note_is_separate_from_provider_credential_ipc(self):
         config = {'image': 'sha256:' + 'a' * 64, 'memory': '4g', 'engine': '/usr/bin/docker',
                   'engine_socket': '/var/run/docker.sock', 'provider_environment': ['OPENAI_API_KEY'],
                   'provider_auth_file_env': None, 'harness_argv': ['/usr/local/bin/python3'],
@@ -579,15 +603,17 @@ class ContractTests(unittest.TestCase):
         run = Mock(return_value=subprocess.CompletedProcess([], 0, b'', b''))
         runner = ContainerRunner(config, run=run, environ={'OPENAI_API_KEY': 'synthetic-provider-value'})
         with patch.object(ContainerRunner, 'inspect', return_value={'id': 'abc', 'status': 'created'}):
-            runner.prepare(job, 'synthetic-token-not-a-real-credential')
+            runner._prepare_credentials(job)
         with tarfile.open(fileobj=BytesIO(run.call_args.kwargs['input'])) as archive:
-            note = json.loads(archive.extractfile('assignment.json').read())
+            self.assertEqual(archive.getnames(), ['credentials.json'])
+            self.assertNotIn('GH_TOKEN', json.load(archive.extractfile('credentials.json')))
+        from forge.factory.contracts import strategist_note
+        note = strategist_note(job)
         self.assertEqual(note['role'], 'strategist')
         self.assertEqual(note['head'], 'c' * 40)
         self.assertIsNone(note['candidate'])
         self.assertIn('Read only', note['instructions'])
         self.assertNotIn('issue_number', note)
-        self.assertEqual(note['harness_argv'], config['harness_argv'])
 
     def github(self, contents):
         github = GitHub(Mock(), {}, client=Mock())
@@ -746,7 +772,7 @@ class ServiceHookTests(unittest.TestCase):
             def create(self, job):
                 engine[job['id']] = {'id': job['id'], 'status': 'created', 'running': False, 'exit_code': 0}
                 return job['id']
-            def prepare(self, job, token): pass
+            def prepare(self, job): pass
             def start(self, job):
                 engine[job['id']].update(status='exited' if job.get('kind') == 'provider' else 'running',
                                          running=job.get('kind') != 'provider')
@@ -795,13 +821,20 @@ class ServiceHookTests(unittest.TestCase):
         from forge.factory.runner import RunnerError
         service = self.activated()
         deployments = self.cycle(service, **{'return_value.tick.side_effect': RunnerError('Engine unavailable')})
-        deployments.return_value.fail.assert_called_once_with('Engine unavailable')
+        deployments.return_value.fail.assert_called_once_with('Deployment tick failed (RunnerError); retry pending')
         self.assertGreater(service.next_cycle, time.monotonic())
         deployments = self.cycle(service, **{'return_value.tick.side_effect': GitHubUnavailable('GitHub is unconfirmed')})
-        deployments.return_value.fail.assert_called_once_with('GitHub is unconfirmed')
+        deployments.return_value.fail.assert_called_once_with('Deployment tick failed (GitHubUnavailable); retry pending')
         deployments = self.cycle(service, **{'return_value.tick.side_effect': ValueError('bad profile')})
-        deployments.return_value.fail.assert_called_once_with('bad profile')
+        deployments.return_value.fail.assert_called_once_with('Deployment tick failed (ValueError); retry pending')
         self.assertIsNone(self.setup.view()['error'])
+
+    def test_unexpected_deployment_failure_still_ticks_discussions(self):
+        service = self.activated()
+        with patch('forge.factory.discussions.Discussions') as discussions:
+            deployments = self.cycle(service, **{'return_value.tick.side_effect': TypeError('private details')})
+        deployments.return_value.fail.assert_called_once_with('Deployment tick failed (TypeError); retry pending')
+        discussions.return_value.tick.assert_called_once()
 
     def test_a_live_conversation_moves_between_cycles(self):
         service = self.activated()
@@ -966,6 +999,26 @@ class ObservationTests(unittest.TestCase):
         self.observe()
         self.assertEqual(len(self.verdicts(candidate)), 1)
         self.assertEqual(self.deployed(candidate)['at'], 1000.0)
+
+    def test_bad_candidate_does_not_prevent_later_deployment_observations(self):
+        bad = self.merged(1, merge='d' * 40)
+        good = self.merged(2)
+        original = self.github.contains
+        self.github.contains = Mock(side_effect=TypeError('private details'))
+        self.live = MERGE
+        with self.assertLogs('forge.deployments', level='WARNING') as logged:
+            errors = self.observe()
+        self.assertEqual(errors, [{'repo': 'example/site', 'reason': 'Deployment observation failed (TypeError); retry pending'}])
+        self.assertIsNone(self.deployed(bad))
+        self.assertIsNotNone(self.deployed(good))
+        self.assertEqual(self.entry()['observed']['error'], errors[0]['reason'])
+        self.assertIn(bad, logged.output[0])
+        self.assertNotIn('private details', logged.output[0])
+        self.github.contains = original
+        self.live = 'd' * 40
+        self.observe()
+        self.assertIsNotNone(self.deployed(bad))
+        self.assertIsNone(self.entry()['observed']['error'])
 
     def test_a_short_live_commit_still_matches_its_merge(self):
         candidate = self.merged()

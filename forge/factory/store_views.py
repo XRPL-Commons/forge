@@ -439,6 +439,8 @@ class PipelineViews:
                 'JOIN delegation_plans p ON p.id=j.plan_id WHERE j.job_id=?',(job_id,)).fetchone()
             singular=members[0] if len(members)==1 else None
             from ..store.resource_usage import read_in as resources_in
+            from ..store.mirror import view_in as mirror_in
+            from ..store.job_evidence import publication_in
             return {**{k:row[k] for k in ('id','role','slot','provider','provider_id','model','phase','outcome','created_at','deadline','branch')},
                     'phase':row['source_phase'] or row['phase'],'execution_phase':row['phase'],
                     'cleanup':bool(row['cleanup']),'fenced':bool(row['source_fenced'] if row['source_fenced'] is not None else row['fenced']),
@@ -452,7 +454,7 @@ class PipelineViews:
                     'task_executor':task['executor'] if task else None,
                     'repo_id':row['repository_id'],'repo':row['full_name'],'issue_number':singular['issue_number'] if singular else None,
                     'started_at':row['started_at'],'observed_at':row['observed_at'],'last_observed':row['observed_at'],
-                    'observed_status':row['observed_status'], 'resource_usage':resources_in(db,job_id)}
+                    'observed_status':row['observed_status'], 'resource_usage':resources_in(db,job_id), 'mirror':mirror_in(db,job_id), 'publication':publication_in(db,job_id)}
 
     @projection
     def delivery(self, issue_key, *, after='', task_after=''):

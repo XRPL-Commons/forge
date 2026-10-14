@@ -425,6 +425,8 @@ class Delivery(TaskCommands, Lifecycle):
                     and gate['details'].get('verification_job_id') == job_id for gate in gates):
                 raise TransitionError('integrated candidate must retain task verification requirements')
             self._publication_target_in(expected,candidate)
+            from .publications import require_receipt_in
+            require_receipt_in(db,job,candidate,evidence)
             candidate_id = _id(command.request_id,'candidate')
             db.execute('INSERT INTO candidates(id,unit_id,pull_number,branch,head_oid,base_oid,policy_hash,requirements_hash,membership_generation,input_manifest_hash,accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                 (candidate_id,unit['id'],candidate.pull_number,candidate.branch,candidate.head_oid,candidate.base_oid,candidate.policy_hash,candidate.requirements_hash,unit['membership_generation'],candidate.input_manifest_hash,self.clock()))

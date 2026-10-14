@@ -16,27 +16,41 @@ class MemoryConfigTests(unittest.TestCase):
 class ResumeHarnessTests(unittest.TestCase):
     def test_memory_retry_prefers_published_branch_over_old_candidate(self):
         from forge.factory import harness
+        from forge.factory.source_inputs import create
         import json
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             note = {'id': 'attempt', 'repo': 'example/project', 'publisher': 'build', 'role': 'build',
-                    'branch': 'forge/retry', 'resume_branch': 'forge/retry',
+                    'branch': 'forge/retry', 'resume_branch': 'forge/retry', 'resume_head': 'b'*40,
                     'candidate': {'head': 'a'*40}, 'provider': 'codex'}
+            note['source_input'] = create(repository_id=1, canonical_repository=note['repo'], base_oid='c'*40,
+                input_oids=['b'*40], manifest={'base_oid':'c'*40}, dependency_policy_digest='d'*64, notes=note)
             assignment = root/'assignment.json'; assignment.write_text(json.dumps(note))
             def paths(value):
                 return root/value.removeprefix('/work/') if value.startswith('/work/') else Path(value)
             commands = []
             def run(argv, **kwargs):
                 commands.append(argv)
-                return Mock(returncode=0, stderr='', stdout=('b'*40+' refs/heads/forge/retry') if 'ls-remote' in argv else '')
+                return Mock(returncode=0, stderr='', stdout='')
+            agent = Mock(return_value=0)
             with patch.object(harness, 'Path', side_effect=paths), \
-                    patch.dict(harness.os.environ, {'FORGE_ASSIGNMENT': str(assignment), 'GH_TOKEN':'fixture'}), \
+                    patch.dict(harness.os.environ, {'FORGE_ASSIGNMENT': str(assignment)}, clear=True), \
                     patch.object(harness.subprocess, 'run', side_effect=run), \
                     patch.object(harness, 'prepare_environment', return_value={}), \
-                    patch.object(harness.runpy, 'run_path', return_value={'adapter': lambda _: {'run': lambda *args: 0}}):
+                    patch.object(harness.runpy, 'run_path', return_value={'adapter': lambda _: {'run': agent}}):
                 self.assertEqual(harness.main(), 0)
-            self.assertTrue(any(c[-3:] == ['fetch','origin','refs/heads/forge/retry'] for c in commands))
-            self.assertTrue(any(c[-3:] == ['checkout','--detach','FETCH_HEAD'] for c in commands))
-            self.assertFalse(any('a'*40 in c for c in commands))
+                agent.assert_called_once()
+                self.assertEqual({c[-1] for c in commands if 'fetch' in c}, {'b'*40, 'c'*40})
+                self.assertTrue(any(c[-3:] == ['checkout','--detach','b'*40] for c in commands))
+                self.assertFalse(any('ls-remote' in c or 'FETCH_HEAD' in c or 'a'*40 in c for c in commands))
+                # A changed remote branch cannot widen this assignment's source
+                # authority. The host must approve and pin a new resume head.
+                note['resume_head'] = 'e'*40
+                assignment.write_text(json.dumps(note))
+                commands.clear(); agent.reset_mock()
+                with self.assertRaisesRegex(harness.PreparationError, 'outside the frozen source inputs'):
+                    harness.main()
+                agent.assert_not_called()
+                self.assertFalse(any('fetch' in c or 'checkout' in c for c in commands))

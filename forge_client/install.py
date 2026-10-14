@@ -99,6 +99,13 @@ def schemas():
                                         'secret_stdin': {'type': 'boolean', 'default': False}}, 'required': ['ssh']},
         'result_statuses': ['identity_app_required', 'identity_secret_required', 'planned', 'sign_in_required']}
     commands['sign-in'] = {**commands['identity'], 'usage': 'forge setup sign-in --ssh USER@HOST --json', 'alias_for': 'identity'}
+    commands['qualify-boundary'] = {
+        'usage': 'forge setup qualify-boundary --ssh HOST [--image sha256:IMAGE_ID] [--apply] --json',
+        'authority': 'explicit administrative SSH destination; disposable native Docker canaries only',
+        'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': {
+            'ssh': {'type': 'string'}, 'image': {'type': 'string', 'pattern': '^sha256:[0-9a-f]{64}$'},
+            'apply': {'type': 'boolean', 'default': False}}, 'required': ['ssh']},
+        'result_statuses': ['planned', 'qualified']}
     from .factory_setup import schemas as factory_schemas
     commands.update(factory_schemas())
     return commands

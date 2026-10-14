@@ -71,4 +71,3 @@ class ModuleEntrypointTests(unittest.TestCase):
                 # the SQL document and returns its public view without network.
                 self.assertEqual(result.returncode,1,result.stderr)
                 self.assertEqual(json.loads(result.stdout)['config'],DEFAULT)
-

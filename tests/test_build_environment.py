@@ -36,15 +36,24 @@ class BuildToolsTests(unittest.TestCase):
             with patch.object(adapter, 'Path', side_effect=path), \
                     patch.object(adapter.runpy, 'run_path', return_value={'environment': lambda _, services: {'TMPDIR': str(root / 'tmp'), **build.service_environment(services)}}):
                 env = adapter.prepare_tool_environment(root / 'repository', {
-                    'GH_TOKEN': 'job-scoped', 'OPENAI_API_KEY': 'private-provider-key',
+                    'GH_TOKEN': 'private-github-key', 'GITHUB_TOKEN': 'private-github-key',
+                    'OPENAI_API_KEY': 'private-provider-key', 'ANTHROPIC_API_KEY': 'private-provider-key',
+                    'HTTP_PROXY': 'http://forge-egress:3128', 'HTTPS_PROXY': 'http://forge-egress:3128',
+                    'NO_PROXY': 'forge-git', 'npm_config_registry': 'http://forge-egress:3128/npm/',
                     'FORGE_PROBE_SECRET': 'private-parent-secret', 'FORGE_REQUIRED_SERVICES': 'mongodb'})
             policy = tomllib.loads((root / 'home/.codex/config.toml').read_text())['shell_environment_policy']
             self.assertEqual(policy['inherit'], 'none')
             self.assertEqual(policy['set'], env)
             self.assertIn('/usr/local/bin', env['PATH'])
-            self.assertEqual(env['GH_TOKEN'], 'job-scoped')
-            self.assertNotIn('OPENAI_API_KEY', env)
-            self.assertNotIn('FORGE_PROBE_SECRET', env)
+            self.assertEqual(env['GIT_CONFIG_GLOBAL'], '/opt/forge/gitconfig')
+            self.assertEqual(env['GIT_CONFIG_NOSYSTEM'], '1')
+            self.assertEqual(env['HTTP_PROXY'], 'http://forge-egress:3128')
+            self.assertEqual(env['HTTPS_PROXY'], 'http://forge-egress:3128')
+            self.assertEqual(env['NO_PROXY'], 'forge-git')
+            self.assertEqual(env['npm_config_registry'], 'http://forge-egress:3128/npm/')
+            for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'FORGE_PROBE_SECRET'):
+                self.assertNotIn(key, env)
+            self.assertNotIn('private-', (root / 'home/.codex/config.toml').read_text())
             self.assertEqual(env['MONGOMS_SYSTEM_BINARY'], '/usr/bin/mongod')
 
     def test_cache_and_temp_use_repository_disk(self):
