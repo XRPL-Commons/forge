@@ -8,7 +8,7 @@ import struct
 import threading
 
 MAX_REQUEST = 8 * 1024 * 1024
-MAX_RESPONSE = 64 * 1024 * 1024
+MAX_RESPONSE = 512 * 1024 * 1024
 
 
 def exact(stream, length):
@@ -38,6 +38,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.slots.acquire(blocking=False):
             self.send_error(503)
             return
+        headers_sent = False
         try:
             lengths = self.headers.get_all('Content-Length', [])
             if (self.headers.get('Transfer-Encoding') is not None or len(lengths) > 1
@@ -64,17 +65,23 @@ class Handler(BaseHTTPRequestHandler):
                 response = json.loads(exact(stream, header_size))
                 if type(response['body_length']) is not int or not 0 <= response['body_length'] <= MAX_RESPONSE:
                     raise ValueError('response limit')
-                payload = exact(stream, response['body_length'])
-            self.send_response(response['status'])
-            for key, value in response['headers'].items():
-                if key.lower() in {'content-type', 'cache-control', 'expires', 'pragma'}:
-                    self.send_header(key, value)
-            self.send_header('Content-Length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+                self.send_response(response['status'])
+                for key, value in response['headers'].items():
+                    if key.lower() in {'content-type', 'cache-control', 'expires', 'pragma'}:
+                        self.send_header(key, value)
+                self.send_header('Content-Length', str(response['body_length']))
+                headers_sent = True
+                self.end_headers()
+                remaining = response['body_length']
+                while remaining:
+                    payload = exact(stream, min(65536, remaining))
+                    self.wfile.write(payload)
+                    remaining -= len(payload)
         except (ValueError, KeyError, OSError, TimeoutError):
             self.close_connection = True
-            self.send_error(502)
+            # A second HTTP response would corrupt an already-started Git pack.
+            if not headers_sent:
+                self.send_error(502)
         finally:
             self.server.slots.release()
 

@@ -111,6 +111,8 @@ class MirrorStore:
         Terminal-only host receipts count as attempts too. The first capacity
         refusal is durable and revokes admission; subsequent probes add nothing.
         Already admitted requests may each record one terminal cancellation.
+        A served receipt atomically admits the generated response before network
+        transfer; its byte charge remains even if the client disconnects.
         """
         if (not isinstance(details, dict) or not set(details) <= RECEIPT_FIELDS or len(encoded(details)) > 60000
                 or details.get('outcome') not in {'started', 'served', 'denied', 'failed'}

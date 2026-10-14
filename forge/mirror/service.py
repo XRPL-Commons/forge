@@ -10,7 +10,7 @@ import struct
 import threading
 import time
 
-from .git_store import MAX_REQUEST, MAX_RESPONSE
+from .git_store import MAX_REQUEST, HttpBody
 from .policy import MirrorError, authorize, canonical_name
 
 MAX_HEADER = 8192
@@ -27,7 +27,7 @@ def receive_exact(stream, count):
     return bytes(data)
 
 
-def receive(stream, *, response=False):
+def receive(stream):
     size = struct.unpack('!I', receive_exact(stream, 4))[0]
     if size > MAX_HEADER:
         raise MirrorError('request_invalid')
@@ -36,7 +36,7 @@ def receive(stream, *, response=False):
     except (ValueError, UnicodeError):
         raise MirrorError('request_invalid') from None
     length = metadata.get('body_length') if isinstance(metadata, dict) else None
-    if type(length) is not int or not 0 <= length <= (MAX_RESPONSE if response else MAX_REQUEST):
+    if type(length) is not int or not 0 <= length <= MAX_REQUEST:
         raise MirrorError('request_invalid')
     return metadata, receive_exact(stream, length)
 
@@ -45,7 +45,10 @@ def send(stream, metadata, body):
     raw = json.dumps({**metadata, 'body_length': len(body)}, separators=(',', ':')).encode()
     if len(raw) > MAX_HEADER:
         raise MirrorError('request_invalid')
-    stream.sendall(struct.pack('!I', len(raw)) + raw + body)
+    stream.sendall(struct.pack('!I', len(raw)) + raw)
+    chunks = body.chunks() if isinstance(body, HttpBody) else (body, )
+    for chunk in chunks:
+        stream.sendall(chunk)
 
 
 def wants(body):
@@ -96,6 +99,8 @@ class Broker:
                        started_at=started, outcome='started')
         repository = None
         request_id = None
+        response = None
+        handed_off = False
         try:
             request_id = self.store.append_receipt(self.session_id, details)
             # Only these bounded fields cross the trusted frontend connection.
@@ -136,8 +141,11 @@ class Broker:
             self._authorize(self._session(), self.revalidate(repository))
             details.update(outcome='served', response_bytes=len(response), finished_at=self.clock())
             if kind == 'advertisement':
-                details['refs_digest'] = hashlib.sha256(response).hexdigest()
+                details['refs_digest'] = response.digest() if isinstance(response, HttpBody) else hashlib.sha256(response).hexdigest()
+            # Served records the entire admitted payload, including transfers
+            # interrupted by a disconnect. Admission precedes exposing any byte.
             self.store.append_receipt(self.session_id, details, request_id=request_id)
+            handed_off = True
             return 200, headers, response
         except MirrorError as error:
             details.update(outcome='failed' if error.transient else 'denied', reason=error.reason,
@@ -146,6 +154,9 @@ class Broker:
                 self.store.append_receipt(self.session_id, details, request_id=request_id)
             status = 503 if error.transient or error.reason == 'mirror_capacity' else 403
             return status, {'content-type': 'text/plain'}, ('Forge mirror: ' + error.reason + '\n').encode()
+        finally:
+            if not handed_off and isinstance(response, HttpBody):
+                response.close()
 
     def malformed(self):
         # A malformed frame is still an attempt. Revoked/exhausted sessions
@@ -194,6 +205,8 @@ class SessionServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(150)
+        response = None
+        admitted = False
         try:
             if hasattr(socket, 'SO_PEERCRED'):
                 _, uid, _ = struct.unpack('3i', self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
@@ -213,6 +226,11 @@ class _Handler(socketserver.BaseRequestHandler):
                 raise MirrorError('session_peer_invalid')
             metadata, body = receive(self.request)
             status, headers, response = self.server.broker.handle(metadata, body)
+            admitted = True
             send(self.request, {'status': status, 'headers': headers}, response)
         except (MirrorError, TimeoutError, OSError):
-            self.server.broker.malformed()
+            if not admitted:
+                self.server.broker.malformed()
+        finally:
+            if isinstance(response, HttpBody):
+                response.close()
