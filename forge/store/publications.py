@@ -1,4 +1,5 @@
 """Before-candidate publication ledger. Only host read-back confirms delivery."""
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -9,7 +10,7 @@ from ..factory import source_inputs
 from ..publication_artifacts import VerifiedOutput
 from .effects import admit_send_in, retry_policy
 from .executions import ExecutionQueries
-from .models import IdempotencyConflict, TransitionError
+from .models import Command, IdempotencyConflict, TransitionError
 from .runtime import writable
 from .transitions import Lifecycle, _id, _json, _unit, applicable_gates
 
@@ -70,9 +71,15 @@ class Publications(Lifecycle):
                 or len(report['pr_title'])>256 or len(_json(report).encode())>65536):
             raise TransitionError('Publication requires a bounded candidate-eligible report')
         query=ExecutionQueries(self.store);launch=query.job(job_id);capture=query.capture(job_id)
-        if (capture.get('result')!=report or report.get('output_commit')!=output.head_oid
+        from ..factory.contracts import result as parse_result
+        try:
+            retained_report=parse_result(deepcopy(capture.get('result')),launch)
+            supplied_report=parse_result(deepcopy(report),launch)
+        except (ValueError,TypeError,KeyError):raise TransitionError('Publication report is invalid') from None
+        if (retained_report!=supplied_report or report.get('output_commit')!=output.head_oid
                 or hashlib.sha256(query.bundle(job_id)).hexdigest()!=output.bundle_digest):
             raise TransitionError('Publication report or bundle differs from retained capture')
+        report=retained_report
         export=dict(version=1,job_id=job_id,input_manifest_hash=output.source['manifest_digest'],base_oid=output.source['base_oid'],
                     local_head_oid=output.head_oid,object_format=output.source['object_format'],source_digest=source_inputs.digest(output.source),
                     bundle_digest=output.bundle_digest,bundle_size=output.bundle_size)
@@ -113,6 +120,21 @@ class Publications(Lifecycle):
                 (identifier,job_id,unit['id'],execution_fence,_json(input_manifest),output.digest(),_json(identity),_json(target),_json(report),self.clock(),self.clock()))
             return {'intent_id':identifier}
         return self._apply(command,'queue_publication',payload,change)
+
+    def remember_claim(self,job_id,claim):
+        """Retain a deterministic pre-intent refusal for steward/operator views."""
+        if not isinstance(claim,dict) or not isinstance(claim.get('code'),str) or len(_json(claim).encode())>8192:
+            raise TransitionError('Publication claim exceeds its contract')
+        request_id='publication-claim:'+job_id+':'+source_inputs.digest(claim)
+        with self.store.read_snapshot() as db:
+            prior=db.execute('SELECT result_json FROM decisions WHERE request_id=?',(request_id,)).fetchone()
+            if prior:return json.loads(prior[0])
+        job=ExecutionQueries(self.store).job(job_id)
+        command=Command(request_id,'supervisor:publisher',job['unit_id'],job['unit_version'])
+        def change(db,unit):
+            self._ready(db,dict(unit_id=unit['id'],job_id=job_id,execution_fence=job['execution_fence'],input_manifest_json=_json(job['input_manifest'])))
+            return {'job_id':job_id,'claim':claim,'charged':False}
+        return self._apply(command,'publication_claim',{'job_id':job_id,'source_input':job.get('source_input'),'claim':claim},change)
 
     def get(self,identifier):
         with self.store.read_snapshot() as db:
@@ -202,6 +224,36 @@ class Publications(Lifecycle):
             db.execute("UPDATE publication_intents SET status='blocked',claim_json=?,version=version+1,updated_at=? WHERE id=? AND status!='confirmed'",(_json(claim),self.clock(),identifier))
         return {'status':'blocked','claim':claim}
 
+    def recheck(self,command,identifier,*,evidence):
+        """Explicit fresh access repair resumes only a definite refused request."""
+        def change(db,unit):
+            row=db.execute('SELECT * FROM publication_intents WHERE id=? AND unit_id=?',(identifier,unit['id'])).fetchone()
+            if row is None:raise TransitionError('Publication belongs to another unit')
+            self._ready(db,row)
+            target=json.loads(row['target_json']);output=json.loads(row['output_json']);claim=json.loads(row['claim_json'] or 'null') or {}
+            if row['status']!='blocked' or claim.get('code')!='publication_refused' or claim.get('http_status') not in (401,403,404):
+                raise TransitionError('Publication requires a content or uncertainty decision')
+            required={'contents':'write','pull_requests':'write'}
+            if any(path.startswith('.github/workflows/') for path in output['facts'].get('protected_paths',[])):required['workflows']='write'
+            if (not isinstance(evidence,dict) or evidence.get('source')!='host_app_installation'
+                    or evidence.get('repository_id')!=target['repository_id'] or evidence.get('app_id')!=target['app_id']
+                    or evidence.get('source_input_digest')!=output['source_input_digest'] or evidence.get('output_digest')!=row['output_digest']
+                    or evidence.get('strategy')!=target['strategy'] or evidence.get('signing_qualified') is not True
+                    or any((evidence.get('permissions') or {}).get(k)!=v for k,v in required.items())
+                    or type(evidence.get('observed_at')) not in (int,float) or not self.clock()-60<=evidence['observed_at']<=self.clock()):
+                raise TransitionError('Publication repair requires fresh matching App access')
+            step=db.execute('SELECT * FROM publication_steps WHERE intent_id=? AND key=?',(identifier,claim['step'])).fetchone()
+            if step is None or step['status']=='confirmed' or step['attempts']>=self.policy['max_attempts']:
+                raise TransitionError('Publication request is not retryable')
+            key='repair:'+command.request_id
+            db.execute("INSERT INTO publication_steps(intent_id,key,request_digest,status,receipt_json,created_at,updated_at) VALUES(?,?,?,'confirmed',?,?,?)",
+                       (identifier,key,source_inputs.digest(evidence),_json(evidence),self.clock(),self.clock()))
+            db.execute("UPDATE publication_steps SET status='refused',retry_at=NULL,uncertain_since=NULL,escalation_at=NULL,updated_at=? WHERE intent_id=? AND key=?",
+                       (self.clock(),identifier,claim['step']))
+            db.execute("UPDATE publication_intents SET status='pending',claim_json=NULL,version=version+1,updated_at=? WHERE id=?",(self.clock(),identifier))
+            return {'intent_id':identifier,'status':'pending'}
+        return self._apply(command,'recheck_publication',{'intent_id':identifier,'evidence':evidence},change)
+
     def confirm(self,identifier,receipt):
         with self.store.write() as db:
             writable(db)
@@ -231,3 +283,21 @@ class Publications(Lifecycle):
                 return
             db.execute('INSERT INTO publication_receipts VALUES(?,?,?)',(identifier,_json(receipt),self.clock()))
             db.execute("UPDATE publication_intents SET status='confirmed',version=version+1,updated_at=? WHERE id=?",(self.clock(),identifier))
+
+
+def require_receipt_in(db,job,candidate,evidence):
+    """Source-bound builds can select only their independently confirmed tree."""
+    source=db.execute('SELECT source_digest,execution_fence FROM mirror_job_inputs WHERE job_id=?',(job['id'],)).fetchone()
+    if source is None:return None  # A job launched before the source boundary.
+    identifier=evidence.get('publication_receipt_id') if isinstance(evidence,dict) else None
+    row=db.execute('SELECT i.*,r.receipt_json FROM publication_intents i JOIN publication_receipts r ON r.intent_id=i.id '
+                   "WHERE i.id=? AND i.job_id=? AND i.status='confirmed'",(identifier,job['id'])).fetchone()
+    if row is None:raise TransitionError('Source-bound publication requires its confirmed receipt')
+    receipt=json.loads(row['receipt_json']);output=json.loads(row['output_json'])
+    if (row['execution_fence']!=source['execution_fence'] or row['input_manifest_json']!=job['input_manifest_json']
+            or receipt.get('source_input_digest')!=source['source_digest']
+            or any(receipt.get(key)!=getattr(candidate,key) for key in ('pull_number','branch','head_oid','base_oid'))
+            or receipt.get('tree_oid')!=output['tree_oid'] or receipt.get('verified') is not True
+            or receipt.get('exact_ref') is not True or receipt.get('exact_pr') is not True):
+        raise TransitionError('Publication receipt differs from the assigned candidate')
+    return receipt

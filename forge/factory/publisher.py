@@ -43,6 +43,7 @@ class Publisher:
             raise PublicationClaim('publication_signing_unqualified')
         if (capability['strategy']!=target['strategy'] or capability.get('app_id')!=target['app_id']
                 or target['signing_qualified'] is not True):raise PublicationClaim('publication_capability_changed')
+        self.workflows_granted=capability.get('workflows_granted') is True
         connection=self.github.connection('controller',job['repo_id'])
         if connection.get('app_id')!=target['app_id']:raise PublicationClaim('publication_app_changed')
 
@@ -70,7 +71,12 @@ class Publisher:
         self._capability(job,intent['target'])
 
     def _call(self,job,method,path,payload=None):
-        return self.github.call('controller',job,method,path,payload)
+        extra={'workflows':'write'} if method!='GET' and getattr(self,'workflow_needed',False) and getattr(self,'workflows_granted',False) else None
+        return self.github.call('controller',job,method,path,payload,**({'extra':extra} if extra else {}))
+
+    def _graphql(self,job,query,variables):
+        extra={'workflows':'write'} if getattr(self,'workflow_needed',False) and getattr(self,'workflows_granted',False) else None
+        return self.github.graphql('controller',job,query,variables,**({'extra':extra} if extra else {}))
 
     def _ref(self,job,branch):
         try:ref=self._call(job,'GET','/git/ref/heads/'+quote(branch,safe=''))
@@ -121,7 +127,7 @@ class Publisher:
         repository=self._call(job,'GET','')
         if repository.get('id')!=job['repo_id'] or not repository.get('node_id'):raise PublicationClaim('publication_repository_changed')
         def send():
-            self.github.graphql('controller',job,CAS,{'input':{'repositoryId':repository['node_id'],
+            self._graphql(job,CAS,{'input':{'repositoryId':repository['node_id'],
                 'refUpdates':[dict(name='refs/heads/'+branch,beforeOid=before or ZERO,afterOid=after,force=force)]}})
             return {'head_oid':after}
         self._send(intent,job,key,request,send,repeat_safe=True)
@@ -210,6 +216,7 @@ class Publisher:
             job=self.jobs.job(intent['job_id']);self._admit(intent,job)
             output=self.output_loader(intent['job_id'])
             if output.digest()!=intent['output_digest']:raise PublicationClaim('publication_output_changed')
+            self.workflow_needed=any(path.startswith('.github/workflows/') for path in output.facts.get('protected_paths',[]))
             target=intent['target'];bot=self.github.publisher('controller')
             base=output.source['base_oid'];before=target['expected_head_oid'];parent=before or base;force=False
             marker='Forge-Publication: '+identifier+'\nForge-Output: '+output.digest()
@@ -257,7 +264,7 @@ class Publisher:
                 else:
                     if observed!=parent:raise PublicationClaim('publication_head_changed')
                     result=self._send(intent,job,'commit',payload,
-                        lambda:{'sha':self.github.graphql('controller',job,COMMIT,{'input':payload})['createCommitOnBranch']['commit']['oid']},repeat_safe=True)
+                        lambda:{'sha':self._graphql(job,COMMIT,{'input':payload})['createCommitOnBranch']['commit']['oid']},repeat_safe=True)
                     head=result['sha']
                 self._commit_proof(job,head,output,parent,marker,bot)
             pr=self._pull(intent,job,head,bot)

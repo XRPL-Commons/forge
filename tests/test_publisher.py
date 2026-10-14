@@ -1,6 +1,9 @@
 from copy import deepcopy
+import base64
+import hashlib
 import unittest
 from urllib.parse import unquote
+from types import SimpleNamespace
 
 from forge.factory.github import GitHubUnavailable
 from forge.factory.publisher import Publisher
@@ -10,23 +13,30 @@ from tests import test_publications as ledger
 
 class GitHub:
     def __init__(self):
-        self.ref=None;self.commit=None;self.pull=None;self.writes=[];self.lose=set();self.reject={};self.verified=True
-        self.read_error=None
+        self.ref=None;self.commit=None;self.pull=None;self.writes=[];self.extras=[];self.lose=set();self.reject={};self.verified=True
+        self.read_error=None;self.base=ledger.BASE;self.tree='d'*40
+        self.client=SimpleNamespace(jwt=lambda connection:'synthetic-app-jwt',request=lambda method,path,token:{'id':43,'app_id':42,'permissions':{'contents':'write','pull_requests':'write'}})
         self.bot='controller[bot]';self.head='e'*40;self.contains_base=True
-    def connection(self,*args):return {'app_id':42}
+    def connection(self,*args):return {'app_id':42,'installation_id':43}
     def publisher(self,*args):return self.bot
     def contains(self,*args):return self.contains_base
     def mutation(self,key,value):
         if key in self.reject:raise GitHubUnavailable('redacted',status=self.reject[key])
         if key in self.lose:self.lose.remove(key);raise GitHubUnavailable('lost',status=500)
         return value
-    def call(self,role,job,method,path,payload=None):
+    def call(self,role,job,method,path,payload=None,**kwargs):
+        if kwargs.get('extra'):self.extras.append(kwargs['extra'])
         if method!='GET':self.writes.append((method,path,deepcopy(payload)))
         branch=job['branch']
         if path=='':return {'id':1,'node_id':'R_1'}
         if path.startswith('/git/ref/'):
             if self.ref is None:raise GitHubUnavailable('missing',status=404)
             return {'ref':'refs/heads/'+branch,'object':{'type':'commit','sha':self.ref}}
+        if path=='/git/blobs' and method=='POST':
+            content=base64.b64decode(payload['content']);return {'sha':hashlib.sha1(b'blob '+str(len(content)).encode()+b'\0'+content).hexdigest()}
+        if path=='/git/trees' and method=='POST':
+            raw=b''.join((entry['mode'].lstrip('0')+' '+entry['path']).encode()+b'\0'+bytes.fromhex(entry['sha']) for entry in payload['tree'])
+            return {'sha':hashlib.sha1(b'tree '+str(len(raw)).encode()+b'\0'+raw).hexdigest()}
         if path=='/git/commits' and method=='POST':
             self.commit={'sha':self.head,'tree':{'sha':payload['tree']},'parents':[{'sha':p} for p in payload['parents']],
                 'message':payload['message'],'verification':{'verified':self.verified}}
@@ -38,7 +48,7 @@ class GitHub:
         if path.startswith('/pulls?'):return [] if self.pull is None else [deepcopy(self.pull)]
         if path=='/pulls' and method=='POST':
             self.pull={'number':7,'state':'open','draft':False,'merged':False,'body':payload['body'],
-                'head':{'sha':self.ref,'ref':branch,'repo':{'id':1}},'base':{'sha':ledger.BASE,'ref':'main','repo':{'id':1}},
+                'head':{'sha':self.ref,'ref':branch,'repo':{'id':1}},'base':{'sha':self.base,'ref':'main','repo':{'id':1}},
                 'user':{'id':42,'login':self.bot,'type':'Bot'}}
             return self.mutation('pr',deepcopy(self.pull))
         if path.startswith('/pulls/'):
@@ -46,7 +56,8 @@ class GitHub:
             value=deepcopy(self.pull);value['head']['sha']=self.ref
             return value
         raise AssertionError((method,path))
-    def graphql(self,role,job,query,variables):
+    def graphql(self,role,job,query,variables,**kwargs):
+        if kwargs.get('extra'):self.extras.append(kwargs['extra'])
         self.writes.append(('GRAPHQL',query,deepcopy(variables)))
         value=variables['input']
         if 'refUpdates' in value:
@@ -55,7 +66,7 @@ class GitHub:
             self.ref=update['afterOid'];return self.mutation('ref',{'updateRefs':{'clientMutationId':None}})
         self.assert_commit(value)
         self.ref=self.head
-        self.commit={'sha':self.head,'tree':{'sha':'d'*40},'parents':[{'sha':value['expectedHeadOid']}],
+        self.commit={'sha':self.head,'tree':{'sha':self.tree},'parents':[{'sha':value['expectedHeadOid']}],
             'message':value['message']['headline']+'\n\n'+value['message']['body'],'verification':{'verified':self.verified}}
         return self.mutation('commit',{'createCommitOnBranch':{'commit':{'oid':self.head}}})
     def assert_commit(self,value):
@@ -197,3 +208,18 @@ class PublisherTests(unittest.TestCase):
         del self.github.reject['commit']
         result=self.finish();self.assertEqual(result['status'],'confirmed',result)
         self.assertEqual(self.count('/git/commits'),2)
+
+    def test_workflow_scope_is_requested_only_when_already_granted(self):
+        from dataclasses import replace
+        self.fixture.output=replace(self.fixture.output,facts={'protected_paths':['.github/workflows/ci.yml']})
+        self.capability['workflows_granted']=True
+        self.assertEqual(self.finish()['status'],'confirmed')
+        self.assertTrue(self.github.extras)
+        self.assertTrue(all(value=={'workflows':'write'} for value in self.github.extras))
+
+    def test_ungranted_workflow_scope_is_never_requested(self):
+        from dataclasses import replace
+        self.fixture.output=replace(self.fixture.output,facts={'protected_paths':['.github/workflows/ci.yml']})
+        self.capability['workflows_granted']=False
+        self.assertEqual(self.finish()['status'],'confirmed')
+        self.assertEqual(self.github.extras,[])

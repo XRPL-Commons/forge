@@ -248,7 +248,8 @@ def publication(job):
     if job.get('role') != 'build':
         return ''
     return ('Commit implementation locally and return output_commit equal to git rev-parse HEAD on success. '
-            'Provide pr_title and pr_body as proposed text, or null when they do not apply. '
+            'For a successful ordinary build or final integration, provide nonempty pr_title and pr_body as proposed text. '
+            'For implementation subtasks and unsuccessful work, use null when publication text does not apply. '
             'Forge verifies and publishes the retained bundle, then requests independent review and audit. '
             'The worker has read-only mirror access and no GitHub credential or publication capability. '
             'Do not push, call GitHub APIs, edit pull requests, or write submission markers. ')
@@ -312,6 +313,8 @@ def result(value, job):
             if value[key] is not None and (not isinstance(value[key], str) or not value[key].strip() or len(value[key]) > limit):
                 raise ValueError('Pull request text must be bounded content')
         if value['outcome'] in BUILD_CANDIDATE_OUTCOMES:
+            if not task_assignment(job) and any(not isinstance(value[key],str) or not value[key].strip() for key in ('pr_title','pr_body')):
+                raise ValueError('Publishable implementation requires a PR title and body')
             if job.get('builder_stage') == 'planning' or not isinstance(value['output_commit'], str) or not SHA.fullmatch(value['output_commit']):
                 raise ValueError('Successful implementation requires its exact local output commit')
         elif value['output_commit'] is not None or value['pr_title'] is not None or value['pr_body'] is not None:

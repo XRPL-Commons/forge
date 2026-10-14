@@ -657,6 +657,8 @@ class Lifecycle:
                         or evidence.get("base_oid") != candidate.base_oid
                         or evidence.get("pull_number") != candidate.pull_number):
                     raise TransitionError("publication evidence does not match the assigned candidate")
+                from .publications import require_receipt_in
+                require_receipt_in(db,job,candidate,evidence)
                 candidate_id = _id(command.request_id, "candidate")
                 db.execute("INSERT INTO candidates(id,unit_id,pull_number,branch,head_oid,base_oid,policy_hash,requirements_hash,membership_generation,input_manifest_hash,accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (candidate_id, unit["id"], candidate.pull_number, candidate.branch, candidate.head_oid, candidate.base_oid, candidate.policy_hash, candidate.requirements_hash, unit["membership_generation"], candidate.input_manifest_hash, self.clock()))
                 db.execute("UPDATE units SET current_candidate_id = ? WHERE id = ?", (candidate_id, unit["id"]))

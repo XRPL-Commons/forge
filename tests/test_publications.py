@@ -114,3 +114,16 @@ class PublicationMigrationTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM publication_intents').fetchone()[0],0)
                 self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
                 self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
+
+
+def bind_source(fixture):
+    source=fixture.source;key=source['dependency_policy_digest'];source_digest=digest(source)
+    authorization=fixture.target['authorization'] or dict(kind='forge_owned',branch=fixture.target['branch'],
+        expected_head_oid=None,pull_number=None,author={'id':42,'login':'controller[bot]','type':'Bot'},replace_ref=False)
+    fixture.target['authorization']=authorization
+    with fixture.store.write() as db:
+        db.execute('INSERT INTO mirror_policies VALUES(?,?,?,?,?)',(key,source_digest,json.dumps(source),'{}',100))
+        db.execute('INSERT INTO mirror_sessions VALUES(?,?,?,?,?,?,?,?,NULL)',
+            ('session',fixture.job,fixture.launch['execution_fence'],'network',source_digest,key,200,100))
+        db.execute('INSERT INTO mirror_job_inputs VALUES(?,?,?,?,?,?,?,?)',
+            (fixture.job,fixture.launch['execution_fence'],source_digest,key,'session','{}',json.dumps(authorization),100))

@@ -22,8 +22,9 @@ from .ownership import ownership, publication_context
 
 class ResultController:
     def __init__(self, store, github, *, policy, verdicts=None, clock=time.time,
-                 availability_retry_seconds=300, hold_labels=('hold', 'blocked'), requirements=None, scheduling=None):
+                 availability_retry_seconds=300, hold_labels=('hold', 'blocked'), requirements=None, scheduling=None, publisher=None):
         self.store, self.github = store, github
+        self.publisher = publisher
         self.requirements = requirements
         self.scheduling = scheduling
         self.policy, self.verdicts, self.clock = policy, verdicts, clock
@@ -234,8 +235,33 @@ class ResultController:
                 return {'job_id': job_id, **self._defer(job, evidence, 'dependency',
                     {'issues': sorted(report['issues']), 'blocked': blocked, 'evidence': quote,
                      **({'requirements': requirements} if len(members) == 1 else {}), 'job_id': job_id})}
-            publication = (None if read_only_build(job) or not report or report['outcome'] not in BUILD_CANDIDATE_OUTCOMES else
-                           self.github.publication(job, requirements, job['input_manifest']['policy_hash']))
+            publishable=not read_only_build(job) and report and report['outcome'] in BUILD_CANDIDATE_OUTCOMES
+            publication=None
+            if publishable and job.get('source_input'):
+                published=(self.publisher.ensure(job,report) if self.publisher is not None else
+                           {'status':'blocked','claim':{'code':'publication_runtime_unavailable'}})
+                # Queueing owns a unit version; the retained lease identity stays
+                # immutable while later operator decisions still fence this job.
+                job=self.queries.job(job_id)
+                if published.get('status')!='confirmed':
+                    if published.get('status')=='blocked' and not published.get('intent_id'):
+                        from ..store.publications import Publications
+                        Publications(self.store,clock=self.clock).remember_claim(job_id,published['claim'])
+                    return {'job_id':job_id,'pending':'publication_recovery' if published.get('status')=='blocked' else 'publication',
+                            'publication_claim':published.get('claim'),'publication_intent_id':published.get('intent_id')}
+                receipt=published['receipt']
+                pr=self.github.pr(item,receipt['pull_number'])
+                if (pr.get('number')!=receipt['pull_number'] or pr.get('state')!='open' or pr.get('merged') or pr.get('draft') is not False
+                        or (pr.get('head') or {}).get('sha')!=receipt['head_oid'] or (pr.get('head') or {}).get('ref')!=receipt['branch']
+                        or ((pr.get('head') or {}).get('repo') or {}).get('id')!=job['repo_id']
+                        or (pr.get('base') or {}).get('ref')!=job['target_branch'] or ((pr.get('base') or {}).get('repo') or {}).get('id')!=job['repo_id']
+                        or {k:(pr.get('user') or {}).get(k) for k in ('id','login','type')}!=receipt['pr_author']):
+                    return {'job_id':job_id,'pending':'candidate_reconciliation'}
+                publication=dict(pr=receipt['pull_number'],branch=receipt['branch'],head=receipt['head_oid'],
+                    base=pr['base']['sha'],author=receipt['pr_author'])
+                evidence['publication_receipt_id']=receipt['intent_id']
+            elif publishable:
+                publication=self.github.publication(job, requirements, job['input_manifest']['policy_hash'])
             if publication:
                 if publication['base'] != job['input_manifest']['base_oid']:
                     Executions(self.store, clock=self.clock).revoke_captured_base(self._command(job), job_id,
