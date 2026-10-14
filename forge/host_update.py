@@ -448,6 +448,12 @@ def dropins(units):
 def confirm(changes, assume_yes, overrides=()):
     if not changes and not overrides:
         return
+    if not sys.stdin.isatty():
+        if assume_yes:
+            return
+        # Unit contents can contain opaque credentials. Automated diagnostics
+        # retain fixed guidance; interactive operators can review the full diff.
+        raise ValueError('Files changed outside Forge would be replaced; inspect the service files and rerun with --yes')
     for path, current, desired in changes:
         print('\n' + str(path) + ' was changed outside Forge and will be replaced:')
         sys.stdout.writelines(difflib.unified_diff(current.splitlines(True), desired.splitlines(True), 'installed', 'update'))
@@ -456,8 +462,6 @@ def confirm(changes, assume_yes, overrides=()):
         print(path.read_text().rstrip())
     if assume_yes:
         return
-    if not sys.stdin.isatty():
-        raise ValueError('Files changed outside Forge would be replaced; review the differences above and rerun with --yes')
     if input('\nReplace them? [y/N] ').strip().lower() not in ('y', 'yes'):
         raise ValueError('Update cancelled; nothing was replaced')
 
@@ -486,6 +490,22 @@ def wait_mirror(root, *, timeout=20):
 def qualify_runner(image, seccomp, profile, *, full=False):
     """Offline canary: tools, memory limits, browser and credential protection in the real sandbox."""
     runpy.run_path(str(SOURCE / 'deploy/build_environment_check.py'))['validate'](image, seccomp, profile, services=full)
+
+
+def reconcile_services(root, bind, restart=()):
+    """Start every managed service; restart only those whose inputs changed."""
+    # Migration can stop unchanged units too. Artifact equality does not imply
+    # that a service is running; systemctl start leaves active units untouched.
+    mirror_action = 'restart' if 'forge-mirror' in restart else 'start'
+    command(['systemctl', '--user', mirror_action, 'forge-mirror.service'])
+    wait_mirror(root)
+    # The mirror must be healthy before dispatch can start.
+    for action in ('restart', 'start'):
+        ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror'
+                   and (name in restart) == (action == 'restart')]
+        if ordered:
+            command(['systemctl', '--user', action, *ordered])
+    wait_healthy(bind)
 
 
 def reconcile(root, bind=None, assume_yes=False):
@@ -548,6 +568,7 @@ def reconcile(root, bind=None, assume_yes=False):
     stale = stale_units(units)
     plan += ['remove stale unit ' + path.name for path in stale]
     if not fresh and not plan and not restart:
+        reconcile_services(root, bind)
         print('Forge host is up to date' + (' at ' + source[:12] if source else '') + '.')
         return False
     if not fresh:
@@ -612,24 +633,7 @@ def reconcile(root, bind=None, assume_yes=False):
     remove_stale_units(stale)
     command(['systemctl', '--user', 'daemon-reload'])
     command(['systemctl', '--user', 'enable', *[name + '.service' for name in SERVICES]], stdout=subprocess.DEVNULL)
-    # Converge every service to running, not only the changed ones: a
-    # maintenance window (the schema upgrade) stops them all before updating,
-    # and an unchanged UI would otherwise stay down and fail the health wait.
-    # Starting an already running unit is a no-op.
-    # The mirror must pass a read-only health probe before dispatch can restart.
-    if fresh or 'forge-mirror' in restart:
-        command(['systemctl', '--user', 'restart', 'forge-mirror.service'])
-    else:
-        command(['systemctl', '--user', 'start', 'forge-mirror.service'])
-    wait_mirror(root)
-    # The API first: the UI and supervisor depend on it.
-    ordered = [name + '.service' for name in SERVICES if name != 'forge-mirror' and (fresh or name in restart)]
-    if ordered:
-        command(['systemctl', '--user', 'restart', *ordered])
-    idle = [name + '.service' for name in SERVICES if name != 'forge-mirror' and name + '.service' not in ordered]
-    if idle:
-        command(['systemctl', '--user', 'start', *idle])
-    wait_healthy(bind)
+    reconcile_services(root, bind, SERVICES if fresh else restart)
     prune_ui(root, {release, record.data.get('ui_release')})
     record.save(bind=bind, source=source, image=image, ui_release=release, updated_at=time.time(),
                 full_image=full_image,

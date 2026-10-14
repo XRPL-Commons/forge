@@ -1,4 +1,4 @@
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import io
 from pathlib import Path
 import subprocess
@@ -21,12 +21,18 @@ class FakeHost:
         self.apparmor = self.base / 'apparmor/forge-runner-private-proc'; self.apparmor.parent.mkdir()
         self.images, self.calls, self.revision, self.builds = {}, [], 'a' * 40, 0
         self.qualify = Mock()
-        self.healthy = lambda bind: None
+        self.active, self.activations = set(), {}
+        self.health_checks = 0
 
     def run(self, argv, check=False, **kwargs):
         self.calls.append(argv)
         result = Mock(returncode=0, stdout='')
-        if argv[:2] == ['docker', 'version']:
+        if argv[:2] == ['systemctl', '--user'] and argv[2] in ('start', 'restart'):
+            for unit in argv[3:]:
+                if argv[2] == 'restart' or unit not in self.active:
+                    self.activations[unit] = self.activations.get(unit, 0) + 1
+                self.active.add(unit)
+        elif argv[:2] == ['docker', 'version']:
             result.stdout = '29.5.3\n'
         elif argv[:2] == ['git', '-C'] and argv[3:] == ['rev-parse', 'HEAD']:
             result.stdout = self.revision + '\n'
@@ -61,6 +67,11 @@ class FakeHost:
                 patch.object(host_update, 'qualify_runner', self.qualify),
                 patch.object(host_update, 'wait_healthy', side_effect=lambda bind, **kw: self.healthy(bind)),
                 patch.object(host_update, 'Onboarding', return_value=Mock(runtime=Mock(return_value={'slots': {}})))]
+
+    def healthy(self, bind):
+        self.health_checks += 1
+        if self.active != {name + '.service' for name in host_update.SERVICES}:
+            raise RuntimeError('Managed service is stopped')
 
     def reconcile(self, **kwargs):
         with ExitStack() as stack:
@@ -205,6 +216,37 @@ class ReconcileTests(unittest.TestCase):
         self.assertFalse(any(argv[:2] in (['docker', 'build'], ['docker', 'run'], ['docker', 'compose']) for argv in self.host.calls))
         self.host.qualify.assert_called_once()  # Only by the install.
 
+    def test_merge_only_update_starts_unchanged_ui_after_migration_stops_units(self):
+        self.host.reconcile()
+        self.host.active.clear()  # Upgrade's migration stops every managed unit.
+        self.host.revision = 'b' * 40
+        changed, _ = self.host.reconcile()
+        self.assertFalse(changed)
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'],
+                                                ['forge-status.service', 'forge-supervisor.service']])
+        self.assertIn(['systemctl', '--user', 'start', 'forge-ui.service'], self.host.calls)
+        self.assertEqual(self.host.health_checks, 2)
+        self.assertEqual(self.host.document('host.json')['source'], 'b' * 40)
+        self.assertEqual(self.host.builds, 1)
+        self.host.qualify.assert_called_once()
+
+    def test_up_to_date_update_restores_stopped_units_without_restarting_healthy_units(self):
+        self.host.reconcile()
+        self.host.active.difference_update({'forge-mirror.service', 'forge-ui.service'})
+        changed, _ = self.host.reconcile()
+        self.assertFalse(changed)
+        self.assertEqual(self.host.restarted(), [])
+        self.assertEqual(self.host.activations, {'forge-mirror.service': 2, 'forge-status.service': 1,
+                                                 'forge-ui.service': 2, 'forge-supervisor.service': 1})
+        health = next(i for i, call in enumerate(self.host.calls)
+                      if 'forge.mirror_daemon' in call and '--check' in call)
+        start = next(i for i, call in enumerate(self.host.calls)
+                     if call[:3] == ['systemctl', '--user', 'start'] and 'forge-supervisor.service' in call)
+        self.assertLess(health, start)
+        self.assertEqual(self.host.health_checks, 2)
+        self.assertFalse(any(argv[:2] in (['docker', 'build'], ['docker', 'run'], ['docker', 'compose'])
+                             for argv in self.host.calls))
+
     def failing(self, prefix):
         run = self.host.run
         def fail(argv, check=False, **kwargs):
@@ -341,6 +383,25 @@ class ReconcileTests(unittest.TestCase):
         record = self.host.document('host.json')
         self.assertEqual(record['image'], first['image'])
         self.assertEqual(self.host.builds, 2)
+
+    def test_automated_confirmation_does_not_emit_opaque_unit_credentials(self):
+        from forge.store.migration.upgrade import output_tail
+        secret = 'opaque-private-value-without-token-prefix'
+        override = self.host.base / 'credential-override.conf'
+        override.write_text('[Service]\nExecStart=/worker --credential ' + secret + '\n')
+        changes = [(self.host.base / 'foreign.service',
+                    '[Service]\nEnvironment=CLIENT_SECRET=' + secret + '\n', '[Service]\n')]
+        for yes in (False, True):
+            output = io.StringIO()
+            with self.subTest(assume_yes=yes), redirect_stdout(output), patch.object(host_update.sys.stdin, 'isatty', return_value=False):
+                if yes:
+                    host_update.confirm(changes, True, [('forge-ui', override, True)])
+                else:
+                    with self.assertRaisesRegex(ValueError, 'rerun with --yes') as error:
+                        host_update.confirm(changes, False, [('forge-ui', override, True)])
+                    output.write(str(error.exception))
+            self.assertNotIn(secret, output.getvalue())
+            self.assertNotIn(secret, output_tail(output.getvalue()))
 
     def test_files_edited_outside_forge_are_only_replaced_after_confirmation(self):
         self.host.reconcile()
