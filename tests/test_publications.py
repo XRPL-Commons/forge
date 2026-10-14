@@ -122,7 +122,8 @@ def bind_source(fixture):
         expected_head_oid=None,pull_number=None,author={'id':42,'login':'controller[bot]','type':'Bot'},replace_ref=False)
     fixture.target['authorization']=authorization
     with fixture.store.write() as db:
-        db.execute('INSERT INTO mirror_policies VALUES(?,?,?,?,?)',(key,source_digest,json.dumps(source),'{}',100))
+        db.execute('INSERT INTO mirror_policies VALUES(?,?,?)',(key,'{}',100))
+        db.execute('INSERT INTO mirror_sources VALUES(?,?,?,?)',(source_digest,key,json.dumps(source),100))
         db.execute('INSERT INTO mirror_sessions VALUES(?,?,?,?,?,?,?,?,NULL)',
             ('session',fixture.job,fixture.launch['execution_fence'],'network',source_digest,key,200,100))
         db.execute('INSERT INTO mirror_job_inputs VALUES(?,?,?,?,?,?,?,?)',
