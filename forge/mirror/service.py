@@ -1,4 +1,5 @@
 """Job-bound smart HTTP broker. The socket, never request data, selects a job."""
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -127,8 +128,9 @@ class Broker:
 
             def alive():
                 try:
+                    repository_access = self.revalidate(repository)
                     current = self._session()
-                    self._authorize(current, self.revalidate(repository))
+                    self._authorize(current, repository_access)
                     return True
                 except MirrorError:
                     return False
@@ -173,8 +175,9 @@ class SessionServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     block_on_close = True
 
-    def __init__(self, path, broker, *, peer_uid=None, max_concurrent=4):
+    def __init__(self, path, broker, *, peer_uid=None, max_concurrent=4, read_scope=nullcontext):
         self.broker, self.peer_uid = broker, os.geteuid() if peer_uid is None else peer_uid
+        self.read_scope = read_scope
         self.slots = threading.BoundedSemaphore(max_concurrent)
         path = Path(path)
         if path.exists() or path.is_symlink():
@@ -225,9 +228,12 @@ class _Handler(socketserver.BaseRequestHandler):
             if uid != self.server.peer_uid:
                 raise MirrorError('session_peer_invalid')
             metadata, body = receive(self.request)
-            status, headers, response = self.server.broker.handle(metadata, body)
-            admitted = True
-            send(self.request, {'status': status, 'headers': headers}, response)
+            # Lease physical read handles for this request thread, never a SQL
+            # snapshot across chunks. Authorization still reads current state.
+            with self.server.read_scope():
+                status, headers, response = self.server.broker.handle(metadata, body)
+                admitted = True
+                send(self.request, {'status': status, 'headers': headers}, response)
         except (MirrorError, TimeoutError, OSError):
             if not admitted:
                 self.server.broker.malformed()

@@ -38,6 +38,7 @@ class QualificationSettings:
     """
     def __init__(self, settings, repository):
         self.settings = settings
+        self.database = settings.database
         self.repository = dict(id=repository.repository_id, name=repository.canonical_name, enabled=False)
         self.configured = False
         self.load()
