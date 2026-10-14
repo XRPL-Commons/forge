@@ -108,6 +108,20 @@ shards, UI unit/type/build/browser checks and source audit passed in
   capture proves failure before provider execution. The upgrade journal
   completed through supported CLI resumption; account qualification remained
   failed, and the role canary correctly refused `coding_account_not_ready`.
+- The setup-probe path correction passed 12 focused regressions and independent
+  review. Anvil upgraded to `a8e8a98`; Codex verification passed and the rebuilt
+  image `sha256:801298624fe20068d4a980a17559cb472862f34228b4505cdb258830644a6ce4`
+  passed all nine native checks. Full CI passed on that source.
+- The subsequent real-repository Build canary timed out during clone before
+  provider execution (exit 124, cleanup confirmed, automation unchanged).
+  A credential-free profile measured 512 physical SQLite opens across 128 live
+  authority checks: 6.65 seconds total, including 4.78 seconds opening handles.
+  Existing request-scoped connection leases reduced those same fresh checks to
+  0.93 seconds. A native 16 MiB Git clone measured 16.44 seconds before leases
+  and 3.04 seconds with them, with exact HEAD and confirmed cleanup in both runs.
+  The mirror now retains physical handles within each request while preserving
+  fresh transactions and authority checks for every chunk. No permission
+  decision is cached and the role deadline remains unchanged.
 - The native boundary canary also passed on `e430a9c` and its rebuilt image
   `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
   All nine checks passed and disposable cleanup was confirmed.
