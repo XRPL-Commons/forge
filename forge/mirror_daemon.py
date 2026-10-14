@@ -3,6 +3,8 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import os
+import json
+import stat
 from pathlib import Path
 import signal
 import socket
@@ -128,15 +130,62 @@ class MirrorDaemon:
         self.servers.clear()
 
 
+def health(root, store, *, timeout=3, clock=time.time):
+    """Read-only bounded readiness: owned daemon lock and all current sockets."""
+    root = Path(root)
+    lock_path = root / 'state/factory/mirror/daemon.lock'
+    until = time.monotonic() + timeout
+    mirror = MirrorStore(store, clock=clock)
+    while True:
+        healthy = False
+        count = 0
+        try:
+            info = lock_path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                return {'ok': False, 'reason': 'daemon_lock_invalid'}
+            descriptor = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    healthy = True
+                else:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+            if healthy:
+                for session in mirror.active_sessions():
+                    if not mirror.live_authority(session):
+                        continue
+                    path = session_directory(root, session['id']) / 'session.sock'
+                    endpoint = path.lstat()
+                    if not stat.S_ISSOCK(endpoint.st_mode) or endpoint.st_uid != os.geteuid() or stat.S_IMODE(endpoint.st_mode) != 0o600:
+                        healthy = False
+                        break
+                    count += 1
+        except (FileNotFoundError, OSError, MirrorError):
+            healthy = False
+        if healthy:
+            return {'ok': True, 'active_sessions': count}
+        if time.monotonic() >= until:
+            return {'ok': False, 'reason': 'mirror_service_unavailable'}
+        time.sleep(.1)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Serve Forge job-bound read-only Git mirrors')
     parser.add_argument('--root', required=True)
     parser.add_argument('--peer-uid', type=int)
+    parser.add_argument('--check', action='store_true', help='Read-only bounded service readiness probe')
     args = parser.parse_args()
     root = Path(args.root)
     store = selected(root)
     if store is None:
         parser.error('Mirror service requires the active SQLite runtime')
+    if args.check:
+        result = health(root, store)
+        print(json.dumps(result))
+        return 0 if result['ok'] else 1
     directory = root / 'state/factory/mirror'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = os.open(directory / 'daemon.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -157,4 +206,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

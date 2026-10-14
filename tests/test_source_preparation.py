@@ -2,12 +2,13 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import tempfile
+import shutil
 import unittest
 
 from forge.factory.source_preparation import SourcePreparation
 from forge.mirror.git_store import GitStore, environment, run_git
 from forge.mirror.policy import MirrorError, Repository
-from forge.mirror_daemon import MirrorDaemon
+from forge.mirror_daemon import MirrorDaemon, health
 from forge.store.auxiliary import save_in
 from forge.store.db import Store
 from forge.store.executions import Executions, ExecutionQueries, Launch
@@ -30,7 +31,7 @@ class Access:
         self.calls = []
     def resolve(self, name):
         self.calls.append(name)
-        return Repository(1 if name == 'acme/project' else 2, name, 10, 'Organization', 20, actual_access=True)
+        return Repository({'acme/project': 1, 'vendor/private': 2, 'vendor/nested': 3}.get(name, 4), name, 10, 'Organization', 20, actual_access=True)
     def organizations(self):
         return [{'account_id': 10, 'installation_id': 20, 'app_id': 30}]
     credentials = staticmethod(no_credentials)
@@ -55,6 +56,7 @@ class SourcePreparationTests(unittest.TestCase):
         run_git(['--git-dir', str(gitdir), 'update-ref', 'refs/heads/main', self.base])
         run_git(['--git-dir', str(gitdir), 'symbolic-ref', 'HEAD', 'refs/heads/main'])
         (gitdir / 'forge-refreshed').touch()
+        shutil.copytree(gitdir, self.cache.path(2))
         self.life = Executions(self.store, clock=lambda: 100)
         admitted = self.life.admit_issue(request_id='admit', actor_id='operator', unit_id='u', issue_id='i',
             repository_id=1, repository_name='acme/project', issue_number=1, title='Issue', body='Body',
@@ -184,3 +186,43 @@ class SourcePreparationTests(unittest.TestCase):
         self.assertEqual(result.repositories[0]['canonical_name'], 'vendor/approved')
         with self.assertRaisesRegex(MirrorError, 'source_bundle_invalid'):
             self.cache.import_bundle(repository, bundle.read_bytes(), 'a' * 40, self.base)
+
+    def test_transitive_package_manifest_is_pinned_before_worker_execution(self):
+        dependency = self.cache.path(2)
+        env = {**environment(), 'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.test',
+               'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.test'}
+        blob = run_git(['--git-dir', str(dependency), 'hash-object', '-w', '--stdin'],
+                       data=b'{"dependencies":{"nested":"github:vendor/nested"}}').decode().strip()
+        tree = run_git(['--git-dir', str(dependency), 'mktree'], data=f'100644 blob {blob}\tpackage.json\n'.encode()).decode().strip()
+        head = run_git(['--git-dir', str(dependency), 'commit-tree', tree, '-p', self.base, '-m', 'dependency'], env=env).decode().strip()
+        run_git(['--git-dir', str(dependency), 'update-ref', 'refs/heads/main', head])
+        shutil.copytree(self.cache.path(1), self.cache.path(3))
+        job = self.reserve()
+        self.preparation.prepare(job, {})
+        policy = self.preparation.mirror.prepared(job['id'])['policy']
+        child = next(item for item in policy['declared_repositories'] if item['canonical_name'] == 'vendor/nested')
+        self.assertEqual(child['repository_id'], 3)
+        self.assertEqual(child['source_evidence']['commit_oid'], head)
+        self.assertEqual(child['source_evidence']['parent_declarations'][0]['commit_oid'], self.base)
+        self.assertEqual(len(child['source_evidence']['resolved_commit_oid']), 40)
+
+    def test_health_probe_is_read_only_and_requires_live_daemon_lock(self):
+        import fcntl
+        import os
+        before = sorted(str(path) for path in self.root.rglob('*'))
+        self.assertFalse(health(self.root, self.store, timeout=0, clock=lambda: 100)['ok'])
+        self.assertEqual(before, sorted(str(path) for path in self.root.rglob('*')))
+        job = self.reserve()
+        prepared = self.preparation.prepare(job, {})
+        lock_path = self.root / 'state/factory/mirror/daemon.lock'
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertFalse(health(self.root, self.store, timeout=0, clock=lambda: 100)['ok'])
+        daemon = MirrorDaemon(self.root, self.store, settings=self.settings, access=self.access,
+                              git_store=self.cache, clock=lambda: 100)
+        self.addCleanup(daemon.close)
+        daemon.step()
+        self.assertEqual(health(self.root, self.store, timeout=0, clock=lambda: 100), {'ok': True, 'active_sessions': 1})
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        self.assertFalse(health(self.root, self.store, timeout=0, clock=lambda: 100)['ok'])

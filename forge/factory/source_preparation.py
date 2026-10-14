@@ -9,7 +9,8 @@ import time
 import uuid
 
 from ..app_access import AccessError
-from ..mirror.dependencies import submodule_closure
+from ..mirror.dependencies import dependency_closure
+from ..mirror.revisions import resolve_revision
 from ..mirror.git_store import GitStore, run_git
 from ..mirror.policy import MirrorError, authorize, canonical_name, policy_digest, OID
 from ..mirror_access import MirrorAccess
@@ -181,29 +182,32 @@ class SourcePreparation:
         reader = self.git_store.reader(repository.repository_id)
 
         def nested(declaration):
-            nested_repo = access_call(self.access.resolve, declaration['canonical_name'])
-            nested_policy = {**policy, 'declared_repositories': [declaration]}
-            authorize(nested_policy, nested_repo, live_installations=organizations, live_denied=denies)
-            self._fetch(authority, nested_repo, [declaration['commit_oid']])
-            return nested_repo.repository_id, nested_repo.canonical_name, self.git_store.reader(nested_repo.repository_id)
+            details = dict(repository=declaration['canonical_name'], request_kind='resolve_dependency',
+                           started_at=self.clock())
+            try:
+                nested_repo = access_call(self.access.resolve, declaration['canonical_name'])
+                details['repository_id'] = nested_repo.repository_id
+                nested_policy = {**policy, 'declared_repositories': [declaration]}
+                authorize(nested_policy, nested_repo, live_installations=organizations,
+                          live_denied=denied_repositories(self.settings, repository.repository_id))
+                selector = declaration['source_evidence'].get('dependency_ref')
+                self._fetch(authority, nested_repo, [selector] if isinstance(selector, str) and OID.fullmatch(selector) else [])
+                commit = resolve_revision(self.git_store, nested_repo, selector, alive=lambda: self._still_owned(authority))
+                self._fetch(authority, nested_repo, [commit])
+                return nested_repo.repository_id, nested_repo.canonical_name, self.git_store.reader(nested_repo.repository_id), commit
+            except MirrorError as error:
+                self.mirror.preparation_receipt(authority, {**details, 'outcome': 'failed' if error.transient else 'denied',
+                    'reason': error.reason, 'transient': error.transient, 'finished_at': self.clock()})
+                if error.transient or error.reason in {'session_revoked', 'mirror_capacity'}:
+                    raise
+                # The root declaration remains allowed (subject to its deny),
+                # but inaccessible trees cannot invent additional dependencies.
+                # Its exact refusal is already an actionable job claim.
+                return None
 
-        extraction = submodule_closure(reader, repository.repository_id, repository.canonical_name,
-                                       [base, *inputs], resolve_pinned=nested)
+        extraction = dependency_closure(reader, repository.repository_id, repository.canonical_name,
+                                         [base, *inputs], resolve_pinned=nested)
         declared = extraction.repositories
-        # Resolve numeric identities where access exists; unavailable declared
-        # dependencies remain name-bound and produce a typed claim upon fetch.
-        identities = {}
-        for declaration in declared:
-            name = declaration['canonical_name']
-            if name not in identities:
-                try:
-                    identities[name] = access_call(self.access.resolve, name).repository_id
-                except MirrorError as error:
-                    if error.transient:
-                        raise
-                    identities[name] = None
-            if identities[name] is not None:
-                declaration['repository_id'] = identities[name]
         policy['declared_repositories'] = declared
         frozen_notes = self._notes(trusted_job, notes, authorization)
         if extraction.unsupported:

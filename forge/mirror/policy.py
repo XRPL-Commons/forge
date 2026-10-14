@@ -24,9 +24,11 @@ def canonical_name(value):
 
 def github_repository(value):
     """Normalize supported Git transport declarations, never arbitrary URLs."""
-    if not isinstance(value, str) or len(value) > 2048 or any(c in value for c in '\\%\x00\r\n\t '):
+    if not isinstance(value, str) or len(value) > 2048 or any(c in value for c in '\\\x00\r\n\t'):
         raise MirrorError('dependency_format_unsupported')
     value = value.split('#', 1)[0]
+    if any(c in value for c in '% '):
+        raise MirrorError('dependency_format_unsupported')
     if value.startswith('git+'):
         value = value[4:]
     if value.startswith('github:'):

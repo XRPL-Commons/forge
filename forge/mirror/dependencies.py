@@ -62,14 +62,18 @@ def _extract(reader, repository_id, repository, commits):
                 candidate = 'github:' + candidate
             if not candidate.startswith(GIT_MARKERS):
                 return
-            # pip puts a revision after repository.git; it is not part of its name.
+            fragment = candidate.partition('#')[2]
+            revision = fragment if fragment and not fragment.startswith(('egg=', 'subdirectory=')) else None
+            pip_revision = re.search(r'\.git@([^#]+)', candidate)
+            if pip_revision:
+                revision = pip_revision[1]
             candidate = re.sub(r'(\.git)@[^#]+', r'\1', candidate)
             try:
                 name = github_repository(candidate)
             except (MirrorError, ValueError):
                 unsupported.append({**evidence, 'reason': 'dependency_format_unsupported'})
                 return
-            declarations.append({'canonical_name': name, 'source_evidence': dict(evidence)})
+            declarations.append({'canonical_name': name, 'source_evidence': {**evidence, 'dependency_ref': revision}})
             if len(declarations) > MAX_DECLARATIONS:
                 raise MirrorError('mirror_capacity')
 
@@ -231,7 +235,7 @@ def _extract(reader, repository_id, repository, commits):
                     if not section.startswith('submodule ') or entry is None or entry['mode'] != '160000':
                         raise MirrorError('dependency_format_unsupported')
                     name = relative_submodule(url, repository)
-                    record = {'canonical_name': name, 'source_evidence': dict(evidence)}
+                    record = {'canonical_name': name, 'source_evidence': {**evidence, 'dependency_ref': entry['oid']}}
                     declarations.append(record)
                     submodules.append({**record, 'commit_oid': entry['oid'], 'path': path})
             except (configparser.Error, ValueError):
@@ -276,6 +280,58 @@ def submodule_closure(reader, repository_id, repository, commits, *, resolve_pin
         unsupported.extend(child.unsupported)
         submodules.extend(child.submodules)
         pending.extend((item, depth + 1, child_chain) for item in child.submodules)
+        if len(declarations) > MAX_DECLARATIONS:
+            raise MirrorError('mirror_capacity')
+    return Extraction(declarations, submodules, unsupported)
+
+
+def dependency_closure(reader, repository_id, repository, commits, *, resolve_pinned,
+                       max_depth=5, max_repositories=64):
+    """Resolve transitive Git declarations only from exact host-observed trees.
+
+    Callback resolves a declared selector to an exact commit after deny/access
+    checks and returns (repo_id, canonical_name, reader, commit_oid), or None for
+    an already-recorded refusal. Every derived declaration retains its complete
+    parent chain. Nothing is read from mutable worker files or package scripts.
+    """
+    result = extract(reader, repository_id, repository, commits)
+    declarations, submodules, unsupported = list(result.repositories), list(result.submodules), list(result.unsupported)
+    pending = [(item, 1, []) for item in result.repositories]
+    visited, resolved_refs, refused = set(), {}, set()
+    while pending:
+        declaration, depth, chain = pending.pop(0)
+        identity = (declaration['canonical_name'], declaration['source_evidence'].get('dependency_ref'))
+        if identity in refused:
+            continue
+        if identity in resolved_refs:
+            repo_id, commit = resolved_refs[identity]
+            declaration['repository_id'] = repo_id
+            declaration['source_evidence']['resolved_commit_oid'] = commit
+            continue
+        if depth > max_depth or len(resolved_refs) + len(refused) >= max_repositories:
+            raise MirrorError('mirror_capacity')
+        resolved = resolve_pinned(declaration)
+        if resolved is None:
+            refused.add(identity)
+            continue
+        repo_id, name, child_reader, commit = resolved
+        if not OID.fullmatch(commit):
+            raise MirrorError('revision_unavailable')
+        resolved_refs[identity] = repo_id, commit
+        declaration['repository_id'] = repo_id
+        declaration['source_evidence']['resolved_commit_oid'] = commit
+        if (repo_id, commit) in visited:
+            continue
+        visited.add((repo_id, commit))
+        child = extract(child_reader, repo_id, name, [commit])
+        parent = {key: value for key, value in declaration['source_evidence'].items() if key != 'parent_declarations'}
+        child_chain = [*chain, parent]
+        for item in child.repositories:
+            item['source_evidence']['parent_declarations'] = child_chain
+        declarations.extend(child.repositories)
+        submodules.extend(child.submodules)
+        unsupported.extend(child.unsupported)
+        pending.extend((item, depth + 1, child_chain) for item in child.repositories)
         if len(declarations) > MAX_DECLARATIONS:
             raise MirrorError('mirror_capacity')
     return Extraction(declarations, submodules, unsupported)
