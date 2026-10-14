@@ -22,7 +22,7 @@ def current_in(db, unit, member_id=None):
         'AND n.fencing_generation=? AND n.membership_generation=? '
         'AND (n.candidate_id IS NULL OR n.candidate_id IS ?) '
         'AND (n.member_id IS NULL OR n.member_id=?) '
-        'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=n.job_id '
+        'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j JOIN attempts assignment ON assignment.id=j.attempt_id JOIN units assigned_unit ON assigned_unit.id=j.unit_id WHERE assignment.assignment_generation=assigned_unit.fencing_generation AND assignment.membership_generation=assigned_unit.membership_generation AND assignment.budget_generation=assigned_unit.budget_generation AND (j.candidate_id IS NULL OR j.candidate_id=assigned_unit.current_candidate_id) AND j.id=n.job_id '
         'AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture '
                 'WHERE capture.job_id=j.id AND capture.capture_authorized=1 AND capture.result_revoked=0)) '
         'AND NOT EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.result_revoked=1) '
@@ -57,7 +57,7 @@ class Scheduling(Lifecycle):
             unit = db.execute('SELECT * FROM units WHERE id=?', (unit_id,)).fetchone()
             if unit is None or unit['state'] in {'merged', 'closed', 'dissolved'}:
                 return
-            if job_id and not db.execute('SELECT 1 FROM jobs j WHERE j.id=? AND j.unit_id=? AND j.outcome IS NULL '
+            if job_id and not db.execute('SELECT 1 FROM jobs j JOIN attempts assignment ON assignment.id=j.attempt_id JOIN units assigned_unit ON assigned_unit.id=j.unit_id WHERE assignment.assignment_generation=assigned_unit.fencing_generation AND assignment.membership_generation=assigned_unit.membership_generation AND assignment.budget_generation=assigned_unit.budget_generation AND (j.candidate_id IS NULL OR j.candidate_id=assigned_unit.current_candidate_id) AND j.id=? AND j.unit_id=? AND j.outcome IS NULL '
                 'AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id '
                 'AND x.capture_authorized=1 AND x.result_revoked=0)) '
                 'AND NOT EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.result_revoked=1)', (job_id, unit_id)).fetchone():
@@ -99,7 +99,7 @@ class Scheduling(Lifecycle):
                 'AND n.membership_generation=u.membership_generation '
                 "AND u.state NOT IN ('merged','closed','dissolved') "
                 'AND (n.candidate_id IS NULL OR n.candidate_id=u.current_candidate_id) '
-                'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=n.job_id AND j.unit_id=u.id '
+                'AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j JOIN attempts assignment ON assignment.id=j.attempt_id JOIN units assigned_unit ON assigned_unit.id=j.unit_id WHERE assignment.assignment_generation=assigned_unit.fencing_generation AND assignment.membership_generation=assigned_unit.membership_generation AND assignment.budget_generation=assigned_unit.budget_generation AND (j.candidate_id IS NULL OR j.candidate_id=assigned_unit.current_candidate_id) AND j.id=n.job_id AND j.unit_id=u.id '
                 'AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture '
                 'WHERE capture.job_id=j.id AND capture.capture_authorized=1 AND capture.result_revoked=0)) '
                 'AND NOT EXISTS(SELECT 1 FROM job_execution_state x WHERE x.job_id=j.id AND x.result_revoked=1) '
@@ -205,6 +205,8 @@ class Scheduling(Lifecycle):
                 details=json.loads(gate['details_json'])
                 if gate['resolved_at'] is not None:
                     return {'gate_id':gate_id,'resolved':True}
+                if details['reason']=='mergeability_unknown':
+                    return {'gate_id':gate_id,'pending':'fresh_mergeability'}
                 if details['reason']=='stalled':
                     return {'gate_id':gate_id,'pending':'operator_recheck'}
                 effect=db.execute('SELECT status FROM external_effects WHERE id=?',(details['effect_id'],)).fetchone()
@@ -226,6 +228,8 @@ class Scheduling(Lifecycle):
             raise TransitionError('scheduling cannot release another Forge fault')
         if gate['resolved_at'] is not None:
             return {'resolved':True,'gate_id':gate_id}
+        if details['reason']=='mergeability_unknown':
+            return {'gate_id':gate_id,'pending':'fresh_mergeability'}
         if details['reason']=='stalled':
             if not explicit:
                 return {'pending':'operator_recheck','gate_id':gate_id}

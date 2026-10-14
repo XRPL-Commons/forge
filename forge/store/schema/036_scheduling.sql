@@ -89,10 +89,18 @@ SELECT *,CASE WHEN issue_state='done' THEN 'completed' WHEN issue_state='dropped
  WHEN EXISTS(SELECT 1 FROM next_actions n JOIN units u ON u.id=n.unit_id WHERE n.unit_id=classified.unit_id
  AND n.unit_version=u.version AND n.fencing_generation=u.fencing_generation AND n.membership_generation=u.membership_generation
  AND (n.candidate_id IS NULL OR n.candidate_id=u.current_candidate_id) AND (n.member_id IS NULL OR n.member_id=classified.member_id)
- AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j JOIN job_members s ON s.job_id=j.id
- WHERE j.id=n.job_id AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture
+ AND (n.job_id IS NULL OR EXISTS(SELECT 1 FROM jobs j JOIN attempts assignment ON assignment.id=j.attempt_id JOIN units assigned_unit ON assigned_unit.id=j.unit_id JOIN job_members s ON s.job_id=j.id
+ WHERE assignment.assignment_generation=assigned_unit.fencing_generation AND assignment.membership_generation=assigned_unit.membership_generation AND assignment.budget_generation=assigned_unit.budget_generation AND (j.candidate_id IS NULL OR j.candidate_id=assigned_unit.current_candidate_id) AND j.id=n.job_id AND j.outcome IS NULL AND (j.fenced=0 OR EXISTS(SELECT 1 FROM job_execution_state capture
  WHERE capture.job_id=j.id AND capture.capture_authorized=1 AND capture.result_revoked=0))
  AND NOT EXISTS(SELECT 1 FROM job_execution_state revoked WHERE revoked.job_id=j.id AND revoked.result_revoked=1)
  AND (n.reason NOT IN ('cleanup','cleanup_pending') OR j.cleanup=0) AND s.member_id=classified.member_id))) THEN 'queued'
  ELSE 'waiting' END AS indexed_status
 FROM classified;
+
+-- PR mergeability can wait before any merge effect is authorized.
+CREATE TABLE candidate_merge_observations (
+ candidate_id TEXT PRIMARY KEY NOT NULL REFERENCES candidates(id),
+ state TEXT NOT NULL CHECK(state IN ('ready','conflict','unknown')),
+ first_at REAL NOT NULL,
+ observed_at REAL NOT NULL
+) STRICT;

@@ -106,3 +106,16 @@ class SchedulingTests(unittest.TestCase):
         self.assertEqual(Queries(self.store).unit('u')['version'],before)
         self.assertIsNone(self.schedules.pending('u','results',job_id=job))
         self.assertIsNone(Queries(self.store).issue('i')['lifecycle']['next_action'])
+
+    def test_paused_assignment_cannot_be_rebound_as_current_result_schedule(self):
+        revision=Queries(self.store).issue('i')['current_revision_id']
+        manifest={'requirements_revision_id':revision,'base_oid':'base','policy_hash':'policy'}
+        job=self.life.reserve_job(self.command(),'build',slot='build-1',execution_fence='fence',input_manifest=manifest,
+            member_id=self.member,launch=Launch('branch','build[bot]','codex',2000,{},{}))['job_id']
+        self.life.collect(self.command(),job,execution_fence='fence',capture={'result':None,'logs':''})
+        self.schedules.record('u',owner='results',reason='publication',job_id=job)
+        self.assertIsNotNone(self.schedules.pending('u','results',job_id=job))
+        self.life.pause(self.command())
+        self.schedules.record('u',owner='results',reason='VersionConflict',job_id=job)
+        self.assertIsNone(self.schedules.pending('u','results',job_id=job))
+        self.assertIsNone(Queries(self.store).issue('i')['lifecycle']['next_action'])

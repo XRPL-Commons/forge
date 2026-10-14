@@ -127,6 +127,8 @@ def describe_gate(gate):
     if gate['code'] == 'forge_problem' and details.get('source') == 'execution':
         return 'Forge could not complete the worker execution; waiting for a qualified runner update. No issue attempt was charged'
     if gate['code'] == 'forge_problem' and details.get('source') == 'scheduling':
+        if details.get('reason') == 'mergeability_unknown':
+            return 'GitHub has not established whether this pull request can merge; Forge is checking again'
         return ('Forge has no scheduled next step; recheck to resume scheduling. No issue attempt was charged'
                 if details.get('reason') == 'stalled' else
                 'Forge is reconciling an uncertain GitHub action; no further sends are scheduled until its outcome is known')
