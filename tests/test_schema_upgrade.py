@@ -272,7 +272,7 @@ class UpgradeHostTests(SchemaUpgradeTests):
                 settings.update(changes)
             return revision, settings
 
-    def test_apply_drains_then_restores_only_owned_field_before_updater(self):
+    def test_apply_drains_then_restores_only_owned_field_after_updater(self):
         self.runtime(enabled=True, model='before')
         workers = [True]
         with patch.object(self.upgrader, 'blockers', side_effect=lambda store:['uncleaned_jobs'] if workers[0] else []):
@@ -286,11 +286,13 @@ class UpgradeHostTests(SchemaUpgradeTests):
             workers[0] = False
             def update(*args, **kwargs):
                 from types import SimpleNamespace
-                self.assertEqual(self.runtime()[1], dict(enabled=True, model='operator-choice'))
+                # Agents stay off until the host converged.
+                self.assertEqual(self.runtime()[1], dict(enabled=False, model='operator-choice'))
                 return SimpleNamespace(returncode=0)
             with patch.object(self.host, 'run', side_effect=update):
                 result = self.upgrader.run(revision='b'*40, apply=True)
         self.assertEqual(result['status'], 'upgraded')
+        self.assertEqual(self.runtime()[1], dict(enabled=True, model='operator-choice'))
         self.assertTrue(self.upgrader.read()['drain']['restored'])
 
     def test_operator_reenable_is_preserved_and_requires_explicit_disable(self):
@@ -410,7 +412,7 @@ class UpgradeHostTests(SchemaUpgradeTests):
         with patch.object(self.host, 'run', side_effect=partial_update):
             with self.assertRaisesRegex(MigrationError, 'upgrade_host_update_failed'):
                 self.upgrader.run(revision='b'*40, apply=True)
-        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertFalse(self.runtime()[1]['enabled'])
         self.calls.clear()
         with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
             result = self.upgrader.run(revision='b'*40, apply=True)
@@ -423,6 +425,109 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertEqual(result['status'], 'upgraded')
         self.assertTrue(self.runtime()[1]['enabled'])
         self.assertEqual(set(self.active), {'forge-status.service','forge-ui.service','forge-supervisor.service','forge-extra.timer'})
+
+
+    def hold_controller_lease(self, seconds):
+        """Stand in for a supervisor cycle that owns the lease for a while."""
+        import fcntl
+        import threading
+        stream = open(self.root/'state-supervisor.lock', 'a')
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        def release():
+            if not stream.closed:
+                fcntl.flock(stream, fcntl.LOCK_UN)
+                stream.close()
+        timer = threading.Timer(seconds, release)
+        timer.start()
+        self.addCleanup(release)
+        self.addCleanup(timer.join)
+        self.addCleanup(timer.cancel)
+
+    def test_transient_updater_failure_finishes_in_one_retry_without_redrain(self):
+        from types import SimpleNamespace
+        from forge.store.migration.host import failure
+        self.runtime(enabled=True, model='before')
+        outputs = [(1, 'Updating: restart services for source bbbbbbbbbbbb\n'
+                       'Error response from daemon: No such container: forge-ui-0123456789ab\n'
+                       'token ghp_abcdefghijklmnopqrstu was rejected\n'),
+                   (0, 'Forge host is up to date at bbbbbbbbbbbb.\n')]
+        def updater(argv, **kwargs):
+            self.calls.append(('update',))
+            returncode, output = outputs.pop(0)
+            # The failed run already restarted the Python services.
+            self.active = sorted(set(self.active) | {'forge-status.service', 'forge-supervisor.service'})
+            self.assertFalse(self.runtime()[1]['enabled'])
+            return SimpleNamespace(returncode=returncode, stdout=output)
+        with patch.object(self.host, 'run', side_effect=updater):
+            with self.assertRaises(MigrationError) as raised:
+                self.upgrader.run(revision='b'*40, apply=True)
+            error = raised.exception
+            self.assertEqual(error.code, 'upgrade_host_update_failed')
+            self.assertIn('No such container: forge-ui-0123456789ab', error.detail)
+            self.assertNotIn('ghp_', error.detail)
+            receipt = self.upgrader.read()
+            self.assertEqual(receipt['stage'], 'reconciling')
+            self.assertEqual(receipt['updater']['returncode'], 1)
+            self.assertEqual(receipt['updater']['output_tail'], error.detail)
+            reply = failure(error, dict(root=str(self.root), action='upgrade'))
+            self.assertEqual((reply['error'], reply['stage'], reply['detail']),
+                             ('upgrade_host_update_failed', 'reconciling', error.detail))
+            # Agents stay off: the restarted supervisor took no new work.
+            self.assertEqual(self.runtime()[1], dict(enabled=False, model='before'))
+            self.calls.clear()
+            # The supervisor is mid-cycle when the operator retries.
+            self.hold_controller_lease(0.3)
+            result = self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(result['status'], 'upgraded')
+        self.assertEqual(outputs, [])
+        self.assertEqual([call for call in self.calls if call[0] == 'update'], [('update',)])
+        self.assertFalse(any('stop' in call for call in self.calls))
+        self.assertEqual(self.runtime()[1], dict(enabled=True, model='before'))
+        self.assertEqual(set(self.active), {'forge-status.service', 'forge-ui.service', 'forge-supervisor.service'})
+        receipt = self.upgrader.read()
+        self.assertEqual((receipt['stage'], receipt['updater']['returncode']), ('complete', 0))
+        self.assertTrue(receipt['drain']['restored'])
+
+    def test_retry_redrains_only_when_a_worker_started_since_the_stop(self):
+        from types import SimpleNamespace
+        self.runtime(enabled=True)
+        def failed(*args, **kwargs):
+            self.active = ['forge-supervisor.service']
+            return SimpleNamespace(returncode=1, stdout='')
+        with patch.object(self.host, 'run', side_effect=failed):
+            with self.assertRaises(MigrationError) as raised:
+                self.upgrader.run(revision='b'*40, apply=True)
+        self.assertIsNone(raised.exception.detail)
+        self.calls.clear()
+        # A worker the restarted supervisor started (e.g. an auxiliary check).
+        with patch.object(self.upgrader, 'blockers', return_value=['uncleaned_jobs']):
+            self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'draining')
+        self.assertFalse(any(call[0] == 'update' for call in self.calls))
+        self.assertFalse(self.runtime()[1]['enabled'])
+        self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
+        self.assertTrue(self.runtime()[1]['enabled'])
+
+    def test_drain_waits_out_a_supervisor_cycle_holding_the_controller_lease(self):
+        import time
+        self.runtime(enabled=True)
+        self.hold_controller_lease(0.5)
+        started = time.monotonic()
+        self.assertEqual(self.upgrader.run(revision='b'*40, apply=True)['status'], 'upgraded')
+        self.assertGreaterEqual(time.monotonic() - started, 0.4)
+        self.assertTrue(self.runtime()[1]['enabled'])
+
+    def test_lease_held_past_the_bound_is_a_retryable_busy_without_side_effects(self):
+        from forge.store.migration.host import failure
+        self.runtime(enabled=True)
+        self.hold_controller_lease(5)
+        with patch('forge.store.migration.drain.LEASE_WAIT_SECONDS', 0.3):
+            with self.assertRaises(MigrationError) as raised:
+                self.upgrader.run(revision='b'*40, apply=True)
+        self.assertEqual(raised.exception.code, 'controller_busy')
+        reply = failure(raised.exception, dict(root=str(self.root), action='upgrade'))
+        self.assertEqual((reply['error'], reply['retryable']), ('controller_busy', True))
+        self.assertTrue(self.runtime()[1]['enabled'])
+        self.assertEqual(self.calls, [])
 
 
 class UpgradeTransportTests(unittest.TestCase):

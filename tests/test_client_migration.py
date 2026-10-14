@@ -227,6 +227,19 @@ print(json.dumps({'before':before,'cleanup':'confirmed'}))
         self.assertIn('--apply --source-revision '+'a'*40,str(error.exception))
 
 
+    def test_failed_updater_output_tail_reaches_the_operator(self):
+        from types import SimpleNamespace
+        from forge_client.migration import call
+        args=parser().parse_args(['migrate','upgrade','--ssh','forge','--source','/srv/source','--root','/srv/runtime',
+                                  '--apply','--source-revision','a'*40])
+        response={'ok':False,'error':'upgrade_host_update_failed','exception_type':'MigrationError','stage':'reconciling',
+                  'detail':'Error response from daemon: No such container: forge-ui-0123456789ab'}
+        with patch('forge_client.migration.bundle',return_value=b''), patch('forge_client.migration.subprocess.run',
+                return_value=SimpleNamespace(returncode=0,stdout=json.dumps(response).encode())):
+            with self.assertRaises(SetupError) as error:call(args,'upgrade',apply=True,source_revision=args.source_revision)
+        self.assertIn('upgrade_host_update_failed (MigrationError at reconciling)',str(error.exception))
+        self.assertIn('Host output (last lines):\nError response from daemon: No such container',str(error.exception))
+
     def test_resume_after_checkout_needs_no_new_github_access(self):
         args=parser().parse_args(['migrate','upgrade','--ssh','anvil','--source','/srv/source',
             '--root','/srv/runtime','--apply','--source-revision','a'*40])

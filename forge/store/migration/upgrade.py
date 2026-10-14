@@ -11,6 +11,18 @@ from .snapshot import MigrationError, digest, operation_lock, read_regular
 from .source import migration_files
 
 
+OUTPUT_TAIL = 4000
+
+
+def output_tail(text):
+    """The bounded, scrubbed end of the updater's output for receipts and errors."""
+    from ...factory.runner import scrub
+    text = scrub(text if isinstance(text, str) else '')
+    text = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|[^\S\n]+|[\x00-\x08\x0b-\x1f\x7f]', ' ', text)
+    lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
+    return '\n'.join(lines[-40:])[-OUTPUT_TAIL:]
+
+
 def package_version(source):
     """Bind every executable file transferred by the standalone upgrade tool."""
     directory = Path(source)
@@ -124,10 +136,12 @@ class Upgrade:
                              started_at=time.time())
                 from .drain import Drain
                 Drain(self, store).start(value, previous)
-            if value['stage'] == 'reconciling' and self.host.units():
+            if value['stage'] == 'reconciling' and self.host.units() and self.blockers(store):
                 # A failed updater can already have restarted the supervisor.
-                # Re-enter maintenance before retrying any host changes so its
-                # newly owned workers finish through the normal cleanup path.
+                # Agents stay switched off until reconciling succeeds, so it
+                # normally starts nothing and the retry just finishes. Only a
+                # worker that started since the stop (none existed then)
+                # re-enters maintenance, so it finishes through normal cleanup.
                 if self.host.identity() != revision or package_version(self.host.source) != tool_version:
                     raise MigrationError('upgrade_source_changed')
                 previous = value
@@ -173,14 +187,21 @@ class Upgrade:
             if value['stage'] == 'reconciling':
                 if self.host.identity() != revision or package_version(self.host.source) != tool_version:
                     raise MigrationError('upgrade_source_changed')
-                from .drain import Drain
-                Drain(self, store).restore(value)
                 # The supported updater rebuilds the UI and converges units. It
                 # is repeatable after a disconnect, including after DB commit.
+                # Agents are restored only after it succeeds: a failed updater
+                # leaves services "not yet restored", so a supervisor it already
+                # restarted takes no new work and a retry needs no new drain.
+                import subprocess
                 result = self.host.run([str(self.host.source/'bin/forge'), 'update', '--root', str(self.root), '--no-pull'],
-                                       capture_output=True, text=True, timeout=900)
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900)
+                tail = output_tail(getattr(result, 'stdout', ''))
+                value['updater'] = dict(returncode=result.returncode, output_tail=tail, finished_at=time.time())
+                self.save(value, 'reconciling')
                 if result.returncode:
-                    raise MigrationError('upgrade_host_update_failed')
+                    raise MigrationError('upgrade_host_update_failed', detail=tail or None)
+                from .drain import Drain
+                Drain(self, store).restore(value)
                 if value['services']:
                     self.host.command('systemctl', '--user', 'start', *value['services'])
                 if not set(value['services']).issubset(set(self.host.units())):

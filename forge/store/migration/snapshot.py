@@ -11,8 +11,10 @@ MAX_SOURCE = 512 * 1024 * 1024
 
 
 class MigrationError(ValueError):
-    def __init__(self, code):
-        self.code = code
+    def __init__(self, code, *, detail=None):
+        # detail is operator diagnostics that the raiser already bounded and
+        # scrubbed, such as the updater's output tail; never exception text.
+        self.code, self.detail = code, detail
         super().__init__(code)
 
 

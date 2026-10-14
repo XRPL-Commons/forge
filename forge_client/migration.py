@@ -103,7 +103,9 @@ def call(args,action,**fields):
         if code=='drain_configuration_changed':
             raise SetupError('migration_'+code,'Runtime settings changed while maintenance was draining. The CLI kept the newer settings. '
                 'Switch off agents explicitly before continuing, then resume with: '+resume)
-        raise SetupError('migration_'+code,'Schema upgrade could not proceed: '+code+' ('+kind+' at '+stage+'). Resume with: '+resume)
+        detail = value.get('detail')
+        detail = ('\nHost output (last lines):\n' + detail[-4000:]) if isinstance(detail, str) and detail.strip() else ''
+        raise SetupError('migration_'+code,'Schema upgrade could not proceed: '+code+' ('+kind+' at '+stage+'). Resume with: '+resume+detail)
 
     if value.get('next_command') == 'forge migrate upgrade':
         value['next_command'] = resume
