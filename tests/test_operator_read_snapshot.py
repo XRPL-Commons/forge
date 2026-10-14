@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from forge.operator_auth import OperatorAuth, FLOW_COOKIE, SESSION_COOKIE, read_cookie
-from forge.sqlite_identity import SqliteOperatorAuth
 from forge.store.db import Store
 from forge.store.runtime import selected
 from forge.view_cache import ViewCache
@@ -30,7 +29,7 @@ class OperatorReadSnapshotTests(unittest.TestCase):
         state = parse_qs(urlsplit(url).query)['state'][0]
         self.token = read_cookie(self.auth.callback(state, 'code', read_cookie(flow, FLOW_COOKIE)), SESSION_COOKIE)
         self.writer = Store.open(self.store.root)
-        self.writer_auth = SqliteOperatorAuth(self.root, store=self.writer, clock=lambda: 1000)
+        self.writer_auth = OperatorAuth(self.root, store=self.writer, clock=lambda: 1000)
         for patcher in (patch.object(dashboard, 'WD', self.root),
                         patch('forge.operator_auth.OperatorAuth', return_value=self.auth),
                         patch.object(dashboard, 'VIEWS', ViewCache(clock=lambda: 1))):

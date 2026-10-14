@@ -11,16 +11,20 @@ from urllib.parse import parse_qs, urlsplit
 
 from forge.client_connections import ClientConnections, ConnectionError, CAPABILITIES, ACCESS_SECONDS, IDLE_SECONDS
 from forge.operator_auth import OperatorAuth, read_cookie, SESSION_COOKIE, FLOW_COOKIE
-from forge_client.connection import Client, Transport, Vault, connection_lock, origin
+from forge_client.connection import Client, Vault, connection_lock, origin
 from forge_client.contracts import SetupError
 from tests import test_settings_http
+from tests.sqlite_fixture import selected_store
 from tests.test_dashboard import dashboard
 
 
 class Fixture(unittest.TestCase):
+    instance_id = None
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+        self.database = selected_store(self.root, self.instance_id)
         self.now = int(time.time())
         self.generation = 'generation-one'
         self.auth = OperatorAuth(self.root, clock=lambda: self.now, identity=lambda *args: {'id': 123, 'login': 'operator'})
@@ -66,10 +70,12 @@ class ConnectionTests(Fixture):
         self.assertEqual(connection['operator'], {'id': 123, 'login': 'operator'})
         self.service.authorize(token['access_token'], self.target, 'repositories:activate', device['instance'], device['generation'])
         listing = json.dumps(self.service.view(self.session))
-        stored = self.auth.store.path.read_text()
-        for secret in (device['device_code'], token['access_token'], token['refresh_token']):
+        with self.database.read_snapshot() as db:
+            stored = '\n'.join(db.iterdump())
+        for secret in (device['device_code'], token['access_token'], token['refresh_token'], 's' * 40):
             self.assertNotIn(secret, stored)
             self.assertNotIn(secret, listing)
+        self.assertFalse((self.root / 'state/operator-auth').exists())
         self.now += 1
         self.assertEqual(self.service.status(token['access_token'])['last_used'], self.now)
 
@@ -193,6 +199,10 @@ class MemoryVault:
 
 
 class ClientTests(Fixture):
+    # forge_client only accepts a 43-character URL-safe instance, while a fresh
+    # store's default instance_id is a UUID; pin a client-compatible instance.
+    instance_id = 'i' * 43
+
     def setUp(self):
         super().setUp()
         self.vault = MemoryVault()
@@ -274,7 +284,6 @@ class ClientHTTPTests(Fixture):
         super().setUp()
         patcher = patch.object(dashboard, 'WD', str(self.root)); patcher.start(); self.addCleanup(patcher.stop)
         from forge.onboarding import Onboarding
-        (self.root / 'state/factory-v2.enabled').touch()
         with Onboarding(self.root).store.transaction() as data:
             data.update(phase='active', generation=self.generation)
 

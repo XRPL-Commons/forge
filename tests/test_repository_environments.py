@@ -3,20 +3,20 @@ from unittest.mock import Mock, patch
 
 from forge.repository_environments import RepositoryEnvironments, SCAN_TIMEOUT
 from forge.repository_setup import RepositorySetup
-from forge.settings import digest, read_json, write_json
-from forge.factory.config import load
-from tests import test_settings as settings_tests
+from forge.settings import digest
+from forge.factory.config import load, save
+from tests.test_repository_setup import pause, settings_setup
 from tests.test_environment_tiers import FULL
 
 
 class RepositoryEnvironmentTests(unittest.TestCase):
     def setUp(self):
-        settings_tests.SettingsTests.setUp(self)
+        settings_setup(self)
         self.settings.refresh()
         self.service = RepositoryEnvironments(self.settings, github_class=Mock())
         self.proposal = {'repo_id': 10, 'repo': 'example/project', 'head': 'a' * 40,
                          'services': ['mongodb'], 'evidence': ['package.json: mongoose'], 'revision': 'proposal-1'}
-        write_json(self.root / 'runtime.json', {'environment_tiers': {'full': FULL}})
+        save(self.root, {'environment_tiers': {'full': FULL}})
 
     def action(self, action, revision=None):
         self.service.act(10, digest(self.settings.load()), revision or self.service.view(10)['revision'], action)
@@ -25,7 +25,10 @@ class RepositoryEnvironmentTests(unittest.TestCase):
         with patch('forge.repository_environments.threading.Thread') as thread:
             self.action('scan')
             thread.return_value.start.assert_called_once()
-        return read_json(self.root / 'state/environment-scans.json')['10']['id']
+        return self.scan_id()
+
+    def scan_id(self):
+        return self.service.snapshot()[2]['10']['id']
 
     def finish(self, identifier, proposal=None):
         with patch('forge.repository_environments.probe', return_value=proposal or self.proposal):
@@ -93,7 +96,7 @@ class RepositoryEnvironmentTests(unittest.TestCase):
 
     def test_confirm_checks_access_identity_and_host_support(self):
         self.proposed()
-        write_json(self.root / 'runtime.json', {})
+        save(self.root, {})
         with self.assertRaisesRegex(ValueError, 'Database workers are unavailable'):
             self.action('confirm')
         self.assertEqual(load(self.root)['repository_environments'], {})
@@ -101,14 +104,14 @@ class RepositoryEnvironmentTests(unittest.TestCase):
             self.service.act(99, digest(self.settings.load()), 'x', 'scan')
         with self.assertRaisesRegex(ValueError, 'settings changed'):
             self.service.act(10, 'old', self.service.view(10)['revision'], 'scan')
-        write_json(self.root / 'state/factory-paused.json', {})
+        pause(self.database)
         with self.assertRaisesRegex(ValueError, 'reset'):
             self.action('confirm')
 
     def test_no_databases_can_be_saved_and_replaces_previous_profile(self):
         self.proposed(); self.action('confirm')
         self.finish(self.start(), {**self.proposal, 'services': [], 'evidence': []})
-        write_json(self.root / 'runtime.json', {'repository_environments': load(self.root)['repository_environments']})
+        save(self.root, {'repository_environments': load(self.root)['repository_environments']})
         self.action('confirm')
         self.assertEqual(self.service.view(10)['profile']['services'], [])
         self.assertIsNone(self.service.view(10)['proposal'])
@@ -117,23 +120,17 @@ class RepositoryEnvironmentTests(unittest.TestCase):
         identifier = self.start()
         revision = digest(self.settings.load())
         config = self.settings.load(); config['connections']['build']['app_id'] = 99
-        write_json(self.settings.path, config)
+        self.settings.save_config(config)
         with patch('forge.repository_environments.probe', return_value=self.proposal):
             self.service.scan({'repo_id': 10, 'repo': 'example/project'}, revision, identifier)
         self.assertEqual(self.service.view(10)['status'], 'failed')
-        self.assertFalse((self.root / 'state/environment-proposals.json').exists())
-
-    def test_existing_cli_proposal_is_reviewable_without_rescanning(self):
-        write_json(self.root / 'state/environment-proposals.json', {'10': self.proposal})
-        self.assertEqual(self.service.view(10)['proposal'], self.proposal)
-        self.action('confirm')
-        self.assertEqual(self.service.view(10)['profile']['services'], ['mongodb'])
+        self.assertNotIn('10', self.service.snapshot()[1])
 
     def test_poll_does_not_create_scan_state_or_contact_github(self):
         for _ in range(3):
             row = RepositorySetup(self.settings).view(10)['repositories'][0]
             self.assertIsNone(row['environment']['profile'])
-        self.assertFalse((self.root / 'state/environment-scans.json').exists())
+        self.assertEqual(self.service.snapshot()[2], {})
         self.service.github_class.assert_not_called()
 
     def test_automatic_scan_is_cached_and_never_creates_a_default(self):
@@ -142,7 +139,7 @@ class RepositoryEnvironmentTests(unittest.TestCase):
             self.assertFalse(self.service.automatic(repo).get('services'))
             self.service.automatic(repo)
             thread.return_value.start.assert_called_once()
-        identifier = read_json(self.root / 'state/environment-scans.json')['10']['id']
+        identifier = self.scan_id()
         self.finish(identifier)
         with patch('forge.repository_environments.threading.Thread') as thread:
             self.assertEqual(self.service.automatic(repo), self.proposal)
@@ -160,7 +157,7 @@ class RepositoryEnvironmentTests(unittest.TestCase):
 
     def test_legacy_profile_is_evidence_without_a_repository_default(self):
         from tests.test_environment_tiers import PROFILE
-        write_json(self.root / 'runtime.json', {'environment_tiers': {'full': FULL}, 'repository_environments': {'10': PROFILE}})
+        save(self.root, {'environment_tiers': {'full': FULL}, 'repository_environments': {'10': PROFILE}})
         self.assertIsNone(self.service.view(10)['profile'])
         with patch('forge.repository_environments.threading.Thread'):
             evidence = self.service.automatic({'repo_id': 10, 'repo': 'example/project'})

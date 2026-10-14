@@ -1,7 +1,6 @@
 from copy import deepcopy
 import io
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -10,7 +9,7 @@ from forge.client_connections import ClientConnections, CAPABILITIES, Connection
 from forge.client_repositories import ClientRepositories
 from forge.operator_auth import OperatorAuth, read_cookie, FLOW_COOKIE, SESSION_COOKIE
 from forge.repository_requirements import describe
-from forge.settings import digest, write_json
+from forge.settings import digest
 from forge_client.cli import main, parser
 from forge_client.connection import Client
 from forge_client.contracts import SetupError
@@ -23,6 +22,9 @@ from tests.test_client_connections import MemoryVault
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.boundary = boundary_tests.BoundaryTests()
+        # forge_client only accepts a 43-character URL-safe instance, while a fresh
+        # store's default instance_id is a UUID; pin a client-compatible instance.
+        self.boundary.instance_id = 'i' * 43
         self.boundary.setUp()
         self.addCleanup(self.boundary.doCleanups)
         b = self.boundary
@@ -54,14 +56,24 @@ class WorkflowTests(unittest.TestCase):
                 return {'ok': True, **result}
             except ConnectionError as exc:
                 raise SetupError(exc.code, str(exc)) from None
-        self.client = Client('https://forge.example', vault=MemoryVault(), transport=Mock(call=call),
+        self.call = call
+        self.pair(list(CAPABILITIES))
+
+    def pair(self, approved):
+        """Connect a fresh agent client; the operator approves only these capabilities."""
+        b = self.boundary
+        self.client = Client('https://forge.example', vault=MemoryVault(), transport=Mock(call=self.call),
                              clock=lambda: self.now, sleep=lambda delay: setattr(self, 'now', self.now + delay))
         scope = {'repositories': [b.target], 'owners': []}
         display = self.client.begin('Test agent', list(CAPABILITIES), scope)
         self.connections.decide(self.session, {'code': display['user_code'], 'decision': 'approve',
-            'capabilities': list(CAPABILITIES), 'scope': scope, 'confirmed': True})
+            'capabilities': approved, 'scope': scope, 'confirmed': True})
         self.client.resume(wait=5)
         self.journal = Journal(self.client.key, b.target, root=b.root / 'local')
+
+    def operations(self):
+        with self.service.store.read_snapshot() as db:
+            return [row[0] for row in db.execute('SELECT id FROM client_operations')]
 
     def workflow(self, **kwargs):
         return Workflow(self.client, self.boundary.broker, self.boundary.target, journal=self.journal, **kwargs)
@@ -75,10 +87,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow().execute('setup', apply=True, enable=True)['status'], 'enabled')
         self.assertEqual(len(b.writes), 5)
         self.assertNotIn(SECRET, json.dumps(self.requests))
-        for file in b.root.rglob('*.json'):
-            self.assertNotIn(SECRET, file.read_text())
+        for file in [*b.root.rglob('*.json'), b.database.path]:
+            self.assertNotIn(SECRET.encode(), file.read_bytes())
+        store = self.service.store.path
         for token in ('access_token', 'refresh_token'):
-            self.assertNotIn(self.client._saved()[token], self.service.store.path.read_text())
+            for file in store.parent.glob(store.name + '*'):
+                self.assertNotIn(self.client._saved()[token].encode(), file.read_bytes())
             self.assertNotIn(self.client._saved()[token], self.journal.path.read_text())
 
     def test_plan_has_no_operations_or_writes_and_cli_flags(self):
@@ -115,7 +129,7 @@ class WorkflowTests(unittest.TestCase):
         self.service = ClientRepositories(self.boundary.settings, self.connections, setup=self.boundary.service, launch=lambda fn: fn())
         result = self.workflow().execute('setup', apply=True, enable=True, resume=True)
         self.assertEqual(result['status'], 'enabled')
-        self.assertEqual(self.service.store.read()[identifier]['status'], 'complete')
+        self.assertEqual(self.service._get(identifier)['status'], 'complete')
         self.assertEqual(len(self.boundary.writes), 5)
 
     def test_interrupted_create_does_not_duplicate_and_independent_verification_recovers(self):
@@ -160,7 +174,7 @@ class WorkflowTests(unittest.TestCase):
         self.workflow().execute('setup')
         config = self.boundary.settings.load()
         config['connections']['controller']['app_id'] = 99
-        write_json(self.boundary.settings.path, config)
+        self.boundary.settings.save_config(config)
         with self.assertRaisesRegex(SetupError, 'App identities changed'):
             self.workflow().execute('setup', apply=True)
         self.assertFalse(self.boundary.writes)
@@ -171,7 +185,7 @@ class WorkflowTests(unittest.TestCase):
                  'id': 'a' * 32, 'action': 'verify', 'revision': digest(self.boundary.settings.load())}
         for extra in ({'command': 'shell'}, {'github_token': SECRET}, {'endpoint': 'https://other.example'}):
             with self.assertRaises(ConnectionError): self.service.operation(saved['access_token'], {**value, **extra})
-        self.assertEqual(self.service.store.read(), {})
+        self.assertEqual(self.operations(), [])
 
     def test_concurrent_duplicate_verification_has_one_effect(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -204,11 +218,11 @@ class WorkflowTests(unittest.TestCase):
         self.connections.revoke(self.session, self.client.status()['id'])
         for fn in queued: fn()
         self.assertFalse(self.boundary.writes)
-        self.assertEqual(next(iter(self.service.store.read().values()))['error'], 'invalid_token')
+        [identifier] = self.operations()
+        self.assertEqual(self.service._get(identifier)['error'], 'invalid_token')
 
     def test_readonly_cannot_mutate_and_out_of_scope_cannot_read(self):
-        with self.connections.store.transaction() as data:
-            for grant in data['clients'].values(): grant['capabilities'] = ['repositories:read']
+        self.pair(['repositories:read'])
         with self.assertRaises(SetupError): self.workflow().execute('setup', apply=True)
         self.assertFalse(self.boundary.writes)
         with self.assertRaises(SetupError): self.client.read({'id': 999, 'name': 'other/private'})
@@ -237,7 +251,7 @@ class WorkflowTests(unittest.TestCase):
             result = original(*args)
             config = self.boundary.settings.load()
             config['access_max_age_seconds'] += 1
-            write_json(self.boundary.settings.path, config)
+            self.boundary.settings.save_config(config)
             return result
         with patch.object(self.boundary.service, 'check', side_effect=concurrent):
             with self.assertRaises(SetupError): self.workflow().execute('enable')

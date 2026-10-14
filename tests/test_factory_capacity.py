@@ -1,13 +1,12 @@
 import json
 import tempfile
 import threading
-import time
 import unittest
 import uuid
 from unittest.mock import Mock, patch
 
 from forge.factory.capacity import GIB, observe, launch_lock, parse_meminfo, parse_pressure
-from forge.factory.config import DEFAULT, validate
+from forge.factory.config import validate
 from forge.factory.runner import ContainerRunner, RunnerCapacity, RunnerError
 
 
@@ -61,9 +60,9 @@ class MemoryAdmissionTests(unittest.TestCase):
             self.assertFalse(observe(4*GIB, [existing], read_text=telemetry().__getitem__)['allowed'])
         self.assertFalse(observe(True, [], read_text=telemetry().__getitem__)['allowed'])
 
-    def test_old_total_is_removed_on_normalization(self):
-        self.assertNotIn('max_running', validate({'max_running': 1}))
-        self.assertEqual(validate({'max_running': 1})['slots'], DEFAULT['slots'])
+    def test_the_retired_manual_total_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'Unknown runtime settings'):
+            validate({'max_running': 1})
 
     def test_check_and_launch_lock_is_shared(self):
         with tempfile.TemporaryDirectory() as directory, patch('forge.factory.capacity.tempfile.gettempdir', return_value=directory):

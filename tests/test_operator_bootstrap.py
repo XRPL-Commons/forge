@@ -9,11 +9,14 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
+from forge.configuration_authority import ConfigurationAuthority
+from forge.onboarding import Onboarding
 from forge.operator_auth import AuthError, FLOW_COOKIE, SESSION_COOKIE, read_cookie
 from forge.operator_bootstrap import Bootstrap, BootstrapError, verify
 from forge_client.bootstrap import Host, setup, verify_https
 from forge_client.cli import parser, main
 from forge_client.contracts import SetupError
+from tests.sqlite_fixture import selected_store
 
 ORIGIN = 'https://forge.example.ts.net'
 TARGET = {'origin': ORIGIN, 'client_id': 'identity-client', 'operators': [123]}
@@ -25,8 +28,9 @@ class HostTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        (self.root / 'host-runtime.json').write_text('{}')
-        (self.root / 'state/onboarding').mkdir(parents=True)
+        selected_store(self.root)
+        ConfigurationAuthority(self.root).replace('host-runtime.json', {}, expected_revision=0)
+        Onboarding(self.root).read()
         self.generation()
         self.serve = {}
         self.commands = []
@@ -34,7 +38,8 @@ class HostTests(unittest.TestCase):
         self.host = Bootstrap(self.root, command=self.command, check_https=self.verify)
 
     def generation(self, value='generation-one', phase='active'):
-        (self.root / 'state/onboarding/setup.json').write_text(json.dumps({'generation': value, 'phase': phase}))
+        with Onboarding(self.root).store.transaction() as setup:
+            setup.update(generation=value, phase=phase)
 
     def command(self, argv, **kwargs):
         self.commands.append(argv)
@@ -161,8 +166,10 @@ class HostTests(unittest.TestCase):
             self.error('tailscale_origin_mismatch', lambda: self.request(target={**TARGET, 'origin': value}))
 
     def test_uninstalled_or_public_root_and_malformed_requests_are_refused(self):
-        (self.root / 'host-runtime.json').unlink()
-        self.error('installation_required', lambda: Bootstrap(self.root))
+        with tempfile.TemporaryDirectory() as uninstalled:
+            uninstalled = Path(uninstalled).resolve()
+            selected_store(uninstalled)
+            self.error('installation_required', lambda: Bootstrap(uninstalled))
         self.root.chmod(0o755)
         self.error('invalid_root', lambda: Bootstrap(self.root))
         self.root.chmod(0o700)
