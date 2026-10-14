@@ -71,17 +71,13 @@ def publication_access(job,github):
 
 
 class SigningCapabilities:
-    """Read host qualification evidence bound to the current repository and App.
-
-    A CLI/host signing probe writes versioned Configuration domain
-    publication_signing, subject=str(repository_id), after successful read-back.
-    There is no default strategy and worker output cannot populate this record.
-    """
+    """A completed host probe proves an API strategy for one current target context."""
     def __init__(self, store, github):
         from ..store.configuration import Configuration
         self.configuration, self.github = Configuration(store), github
 
     def __call__(self, job):
+        from ..publication_qualification import signing_context, QualificationError
         connection = self.github.connection('controller', job['repo_id'])
         pending = dict(app_id=connection['app_id'], strategy='pending', qualified=False)
         record = self.configuration.get('publication_signing', str(job['repo_id']))
@@ -89,16 +85,31 @@ class SigningCapabilities:
             return pending
         proof = record['settings']
         fields = {'version', 'repository_id', 'app_id', 'installation_id', 'strategy',
-                  'probe_repository_id', 'commit_oid', 'tree_oid', 'verified', 'exact_ref', 'signing_rule_accepted', 'observed_at'}
-        if (not isinstance(proof, dict) or set(proof) != fields or type(proof['version']) is not int or proof['version'] != 1
+                  'probe_repository_id', 'commit_oid', 'tree_oid', 'verified', 'exact_ref', 'signing_rule_accepted',
+                  'observed_at', 'target_branch', 'target_rules', 'probe_ref', 'probe_receipt_id', 'signing_requirement'}
+        if (not isinstance(proof, dict) or set(proof) != fields or type(proof['version']) is not int or proof['version'] != 2
                 or any(type(proof[k]) is not int or proof[k] <= 0 for k in ('repository_id', 'app_id', 'installation_id', 'probe_repository_id'))
                 or proof['repository_id'] != job['repo_id'] or proof['app_id'] != connection['app_id']
-                or proof['installation_id'] != connection['installation_id']
-                or proof['strategy'] not in ('rest', 'graphql')
+                or proof['installation_id'] != connection['installation_id'] or proof['target_branch'] != job.get('target_branch')
+                or proof['strategy'] not in ('rest', 'graphql') or not isinstance(proof['target_rules'], list)
                 or any(not isinstance(proof[k], str) or not re.fullmatch('[0-9a-f]{40}', proof[k]) for k in ('commit_oid', 'tree_oid'))
-                or any(proof[k] is not True for k in ('verified', 'exact_ref', 'signing_rule_accepted'))
-                or type(proof['observed_at']) not in (int, float) or not math.isfinite(proof['observed_at'])
-                or proof['observed_at'] <= 0):
+                or proof['verified'] is not True or proof['exact_ref'] is not True
+                or proof['signing_requirement'] != ('accepted' if proof['target_rules'] else 'not_required')
+                or proof['signing_rule_accepted'] is not bool(proof['target_rules'])
+                or not isinstance(proof['probe_receipt_id'], str) or not re.fullmatch('[a-f0-9]{32}', proof['probe_receipt_id'])
+                or type(proof['observed_at']) not in (int, float) or not math.isfinite(proof['observed_at']) or proof['observed_at'] <= 0):
+            return pending
+        receipt = self.configuration.get('publication_signing_probe', proof['probe_receipt_id'])
+        if receipt is None or receipt['settings'].get('stage') != 'qualified':
+            return pending
+        if any(receipt['settings'].get(key) != proof[key] for key in ('repository_id', 'app_id', 'installation_id',
+                'probe_repository_id', 'target_branch', 'target_rules', 'probe_ref', 'strategy', 'commit_oid', 'tree_oid')):
+            return pending
+        try:
+            current = signing_context(lambda method, suffix: self.github.call('controller', job, method, suffix), proof['target_branch'])
+        except QualificationError:
+            return pending
+        if current != proof['target_rules']:
             return pending
         return dict(app_id=proof['app_id'], strategy=proof['strategy'], qualified=True,
                     qualification_revision=record['revision'])

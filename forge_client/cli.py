@@ -99,6 +99,16 @@ def parser():
     qualification.add_argument('--image', help='Exact sha256 image ID; defaults to the installed worker image')
     qualification.add_argument('--apply', action='store_true', help='Create and remove disposable qualification resources')
     qualification.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
+    signing = verb(fresh, 'qualify-publication', help='Verify signed publication using an explicitly selected scratch repository')
+    signing.add_argument('--ssh', required=True)
+    signing.add_argument('--repo', required=True, help='Connected target owner/repository')
+    signing.add_argument('--probe-repo', required=True, help='Existing private scratch repository in the same Controller installation')
+    signing.add_argument('--target-branch', help='Target branch; defaults to the repository default')
+    signing.add_argument('--probe-ref', help='Existing scratch branch; defaults to the scratch default')
+    signing.add_argument('--check-workflow', action='store_true', help='Test workflow-file publication with an existing qualified receipt and current grants only')
+    signing.add_argument('--receipt', help='Re-read an existing host probe receipt; never repeats GitHub writes')
+    signing.add_argument('--apply', action='store_true', help='Write only the selected scratch ref and host qualification evidence')
+    signing.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):
         command = verb(fresh, action, aliases=['sign-in'] if action == 'identity' else [],
                                    help={'new':'Walk through installation on a fresh VM', 'plan':'Observe the host and save a pinned installation plan', 'apply':'Apply the saved host installation plan', 'status':'Read saved installation progress', 'resume':'Resume the saved installation without repeating completed stages', 'host-key':'Discover an SSH fingerprint for you to verify', 'network':'Configure private Tailscale HTTPS access', 'identity':'Configure GitHub operator sign-in'}[action])
@@ -230,6 +240,9 @@ def execute(args):
         args.apply = True
         return account_login(args)
     if args.command == 'setup':
+        if args.setup_command == 'qualify-publication':
+            from .publication_qualification import execute as qualify_publication
+            return qualify_publication(args)
         if args.setup_command == 'qualify-boundary':
             from .boundary_qualification import execute as qualify_boundary
             return qualify_boundary(args)
@@ -267,11 +280,15 @@ def execute(args):
         from forge.planning_contract import commands as planning_commands
         from .install import schemas
         from .installation import schemas as installation_schemas
-        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup qualify-publication', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),
                 'migration_commands': migration_commands(),
+                'publication_qualification': {'command':'setup qualify-publication', 'authority':'explicit SSH host',
+                    'required':['ssh','repo','probe_repo'], 'optional':['target_branch','probe_ref','receipt','check_workflow'],
+                    'default':'read-only plan', 'apply':'scratch-only probe or read-only receipt import',
+                    'repository_creation':False, 'permission_grants':False, 'automation_activation':False},
                 'setup_statuses': ['planned', 'ready', 'enabled', 'blocked', 'needs_user_action',
                                    'operation_pending', 'verification_pending', 'write_unconfirmed'],
                 'credential_storage': 'OS keyring', 'transport': 'verified HTTPS',

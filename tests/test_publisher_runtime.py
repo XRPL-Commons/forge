@@ -194,15 +194,19 @@ class SigningCapabilityTests(unittest.TestCase):
         self.store=Store.create(directory.name);self.configuration=Configuration(self.store)
         self.connection={'app_id':42,'installation_id':43}
         self.reader=SigningCapabilities(self.store,SimpleNamespace(connection=lambda *args:self.connection))
-        self.job={'repo_id':1}
-        self.proof=dict(version=1,repository_id=1,app_id=42,installation_id=43,probe_repository_id=2,strategy='graphql',
-            commit_oid='a'*40,tree_oid='b'*40,verified=True,exact_ref=True,signing_rule_accepted=True,observed_at=100)
+        self.patch_context=patch('forge.publication_qualification.signing_context',return_value=[])
+        self.patch_context.start();self.addCleanup(self.patch_context.stop)
+        self.job={'repo_id':1,'target_branch':'main'}
+        self.proof=dict(version=2,repository_id=1,app_id=42,installation_id=43,probe_repository_id=2,strategy='graphql',
+            commit_oid='a'*40,tree_oid='b'*40,verified=True,exact_ref=True,signing_rule_accepted=False,observed_at=100,
+            target_branch='main',target_rules=[],probe_ref='main',probe_receipt_id='a'*32,signing_requirement='not_required')
+        self.configuration.replace('publication_signing_probe',{**self.proof,'stage':'qualified'},subject='a'*32,expected_revision=0)
     def save(self,proof):
         row=self.configuration.get('publication_signing','1')
         self.configuration.replace('publication_signing',proof,subject='1',expected_revision=row['revision'] if row else 0)
     def test_absent_or_incomplete_proof_cannot_select_strategy(self):
         self.assertFalse(self.reader(self.job)['qualified'])
-        for field,value in [('verified',False),('exact_ref',False),('signing_rule_accepted',False),('tree_oid',''),('repository_id',2)]:
+        for field,value in [('verified',False),('exact_ref',False),('signing_rule_accepted',True),('version',1),('tree_oid',''),('repository_id',2)]:
             self.save({**self.proof,field:value})
             self.assertFalse(self.reader(self.job)['qualified'],field)
     def test_matching_proof_survives_restart_but_not_app_installation_change(self):

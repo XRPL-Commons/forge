@@ -307,3 +307,65 @@ The existing Forge production server is outside this test workflow.
 
 `setup_elapsed_seconds` remains a progress measurement; use the verified first-merge
 receipt above for the completed run.
+
+## Qualify signed publication on an existing host
+
+The host must run the same release as the client. Connect the intended target
+repository first, then choose an **existing private scratch repository** in the
+same owner and Controller installation. The scratch repository must have an
+existing branch. This command does not create repositories, change App
+installations or permissions, or start automation.
+
+```sh
+forge --json setup qualify-publication --ssh anvil \
+  --repo OWNER/TARGET --probe-repo OWNER/SCRATCH
+```
+
+The default is a read-only plan. Add `--apply` to create a small text-file commit
+and update the scratch branch. Use `--target-branch` and `--probe-ref` to select
+branches explicitly; otherwise each repository's default branch is used.
+Personal GitHub credentials stay local. The host uses separate target-read and
+scratch-write App tokens and revokes them afterward.
+
+The probe first uses the Git Data API without a custom author or committer.
+Only a confirmed unsigned commit permits the GraphQL fallback. The host records
+the operation before each write and checks the resulting commit, tree, author,
+signature and exact ref. If the target requires signatures, the same active
+organization signing rules must apply to the scratch ref, with no Controller
+bypass; GitHub's rule-suite evidence must show an enforced pass for this exact
+update. Classic and repository-local signing requirements currently return an
+explicit unsupported result. A target without a signing requirement receives
+signed-API qualification without a claim about rule enforcement.
+
+Keep the returned `receipt_id`. A delayed rule suite or lost API response can
+be checked again without repeating writes:
+
+```sh
+forge --json setup qualify-publication --ssh anvil \
+  --repo OWNER/TARGET --probe-repo OWNER/SCRATCH --receipt RECEIPT_ID --apply
+```
+
+An uncertain unattached REST commit cannot be inferred from the branch and
+remains unresolved. The command does not retry that write or import a
+caller-supplied success flag. Qualification is bound to the current Controller
+App, installation, target branch and signing rules; changed context requires
+qualification again.
+
+Workflow-file permissions are a separate explicit probe after qualification:
+
+```sh
+forge --json setup qualify-publication --ssh anvil \
+  --repo OWNER/TARGET --probe-repo OWNER/SCRATCH --receipt RECEIPT_ID \
+  --check-workflow --apply
+```
+
+This attempts a workflow-file change with Contents-only permission. A positive
+case runs only when the installation already grants Workflows write. It never
+grants permission or dispatches a workflow. HTTP refusal is recorded without
+claiming its permission cause. A missing Workflows grant does not invalidate
+ordinary-file publication. Repeating the command reads the saved cases and
+reconciles uncertain outcomes without repeating writes.
+
+Finish and retain the probe receipts before deleting the scratch repository.
+Scratch deletion remains a separately authorized operation. This qualification
+does not replace the native boundary, every-role or real issue-to-merge canaries.
