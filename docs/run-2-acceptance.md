@@ -40,8 +40,10 @@ not load; this is an environment limitation, not a skipped compatibility check.
 
 Combined UI unit tests (585), typecheck, production build and browser suite
 passed. The initial backend batch exposed old contract fixtures and the source
-file-mode/canary-receipt bugs described above. Their fixes are being checked
-together before the final GitHub CI gate; that gate is not claimed complete.
+file-mode/canary-receipt bugs described above. All 142 tests in the combined
+fixes batch passed. After integrating main's cleanup changes, all three backend
+shards, UI unit/type/build/browser checks and source audit passed in
+[CI on `0ee4941`](https://github.com/XRPL-Commons/forge/actions/runs/38549115143).
 
 ## Live qualification still required
 
@@ -53,12 +55,19 @@ together before the final GitHub CI gate; that gate is not claimed complete.
 - The Controller's current installation lacks Workflows write permission. Test
   that limitation and report it; do not expand permission as part of the probe.
 - Anvil is the native qualification target: Ubuntu 24.04, Docker 29.1.3, schema
-  029, automation and merging disabled. Its read-only upgrade plan has no
-  blockers. Install the exact CI-passing revision with `forge migrate upgrade`,
+  029, automation and merging disabled. Its read-only upgrade plan had no
+  blockers, but apply stopped before the migration journal because its source
+  fetch required GitHub credentials on the host. The CLI source transfer is
+  corrected to keep those credentials local; 47 focused tests and independent
+  review passed. Install the corrected,
+  CI-passing revision with `forge migrate upgrade`,
   retaining that idle state, then run `forge setup qualify-boundary --ssh anvil
   --apply`. The CLI selects and records the installed immutable image ID.
 - Complete the signed-publication and every-role canaries before claiming the
-  boundary accepted or deploying it to the active Forge factory.
+  boundary accepted or deploying it to the active Forge factory. The boundary
+  canary uses direct fixture workers, so it does not establish production role
+  harness compatibility. Supported role-canary and verified signing-evidence
+  CLI commands are being added; no manual configuration write is acceptance.
 
 Forge remains on Run 1 during its separate 24-hour observation. The latest
 ownership sweep found 13 current memberships, all owned, with no orphans. See
@@ -79,5 +88,6 @@ Cleanup PRs #274, #276 and #277 merged while this branch was being validated.
 Their changes are retained: removed legacy import tooling stays removed, `uv`
 installs the CLI, and API mutations require a signed-in operator. The supported
 `forge migrate upgrade` path remains. Run 2's mirror service, narrow rule repair
-and qualification commands are integrated with that updated base. CI must pass
-on this combined revision before Anvil is changed.
+and qualification commands are integrated with that updated base. Combined CI
+passed; the subsequent source-transfer correction requires its own validation
+before resuming Anvil's upgrade.
