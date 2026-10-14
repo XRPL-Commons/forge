@@ -42,10 +42,12 @@ def launch(argv=None):
                 os.execve(sys.executable, command, environment)
             elif os.path.lexists(Path(root) / 'state/storage'):
                 raise SystemExit('SQLite runtime qualification is required; run bin/forge setup initialize')
-        from .store.runtime import SETUP_REQUIRED, selected
-        # Refuse missing, mismatched or inactive selected state before startup.
-        # Only host setup runs without a store: it is what initializes one.
-        if selected(root) is None and target != 'forge.host_setup':
+        from .store.runtime import SETUP_REQUIRED
+        # Refuse an installation with no selected store before startup. Only the
+        # selection marker is checked here: opening the store would also refuse
+        # a pending schema migration, and the upgrade itself runs through here.
+        # Each service validates the store when it opens it.
+        if not os.path.lexists(Path(root) / 'state/storage') and target != 'forge.host_setup':
             raise SystemExit(SETUP_REQUIRED)
     sys.argv = [target, *arguments]
     if script:
