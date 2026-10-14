@@ -86,23 +86,24 @@ class Host:
         ancestry=self.run(['git','-C',str(self.source),'merge-base','--is-ancestor',previous,target],capture_output=True,timeout=30)
         if ancestry.returncode:
             raise MigrationError('repair_requires_forward_revision')
-        archive=self.run(['git','-C',str(self.source),'archive','--format=tar',target,'forge'],capture_output=True,timeout=60)
+        from .source import CLIENT_CONTRACT_FILES, migration_path
+        archive=self.run(['git','-C',str(self.source),'archive','--format=tar',target,'forge',*CLIENT_CONTRACT_FILES],capture_output=True,timeout=60)
         if archive.returncode or len(archive.stdout)>32*1024*1024:
             raise MigrationError('repair_source_unavailable')
         records={}
         with tarfile.open(fileobj=io.BytesIO(archive.stdout),mode='r:') as contents:
             for member in contents:
-                if member.isdir() and member.name.rstrip('/')=='forge':continue
+                if member.isdir() and member.name.rstrip('/') in {'forge','forge_client'}:continue
                 path=Path(member.name)
-                if not member.name.startswith('forge/') or '..' in path.parts:
+                if (not member.name.startswith('forge/') and member.name not in CLIENT_CONTRACT_FILES) or '..' in path.parts:
                     raise MigrationError('repair_source_unsafe')
-                if not (path.suffix in {'.py','.sql'} or path.match('forge/harnesses/*/manifest.json')):
+                if not migration_path(member.name):
                     continue
                 if not member.isfile() or member.size>4*1024*1024 or member.name in records:
                     raise MigrationError('repair_source_unsafe')
-                records[member.name.removeprefix('forge/')]=contents.extractfile(member).read()
-        fingerprint='1:'+digest(b''.join(name.encode()+records[name] for name in sorted(records,key=Path)))
-        if not records or fingerprint!=tool_version:
+                records[member.name]=contents.extractfile(member).read()
+        fingerprint='2:'+digest(b''.join(name.encode()+records[name] for name in sorted(records,key=Path)))
+        if not set(CLIENT_CONTRACT_FILES).issubset(records) or fingerprint!=tool_version:
             raise MigrationError('repair_bundle_source_mismatch')
 
     def install_source_update(self, previous, target):

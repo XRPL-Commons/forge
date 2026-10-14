@@ -458,6 +458,8 @@ class UpgradeTransportTests(unittest.TestCase):
             git('init', '-q'); git('config', 'commit.gpgsign', 'false')
             git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test')
             (source/'forge').mkdir(); (source/'forge/__init__.py').write_text('version=1\n')
+            (source/'forge_client').mkdir(); (source/'forge_client/__init__.py').write_text('# contracts\n')
+            (source/'forge_client/contracts.py').write_text('version=1\n')
             git('add', '.'); git('commit', '-qm', 'first'); previous = git('rev-parse', 'HEAD')
             (source/'forge/__init__.py').write_text('version=2\n')
             git('commit', '-qam', 'corrected'); target = git('rev-parse', 'HEAD'); version = package_version(source)
@@ -474,6 +476,16 @@ class UpgradeTransportTests(unittest.TestCase):
             self.assertEqual(git('rev-parse', 'HEAD'), target)
             self.assertEqual((source/'existing-diagnostic.md').read_text(), 'keep this')
             host.install_source_update(previous, target)
+            (source/'forge_client/contracts.py').write_text('version=999\n')
+            changed_contract_version=package_version(source)
+            git('checkout','--','forge_client/contracts.py')
+            with self.assertRaisesRegex(MigrationError,'repair_bundle_source_mismatch'):
+                host.prepare_source_update(previous,target,changed_contract_version)
+            git('rm','forge_client/contracts.py');git('commit','-qm','missing shared contract')
+            missing_contract_target=git('rev-parse','HEAD');git('checkout','-q',target)
+            with self.assertRaisesRegex(MigrationError,'repair_source_unavailable'):
+                host.prepare_source_update(target,missing_contract_target,version)
+            self.assertEqual(git('rev-parse','HEAD'),target)
             with self.assertRaisesRegex(MigrationError, 'repair_requires_forward_revision'):
                 host.prepare_source_update(target, previous, version)
             (source/'forge/__init__.py').write_text('dirty\n')

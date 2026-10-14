@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
  with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
   for name in bundle.namelist():
    p=pathlib.PurePosixPath(name)
-   if p.is_absolute() or ".." in p.parts or p.parts[0]!="forge": raise ValueError("bad bundle")
+   if p.is_absolute() or ".." in p.parts or (p.parts[0]!="forge" and name not in ("forge_client/__init__.py","forge_client/contracts.py")): raise ValueError("bad bundle")
   bundle.extractall(directory)
  sys.path.insert(0,directory)
  from forge.store.migration.host import run,failure
@@ -47,12 +47,12 @@ with tempfile.TemporaryDirectory(prefix="forge-migration-tool-") as directory:
 
 def bundle():
     import forge
-    from forge.store.migration.source import source_files
-    root=Path(forge.__file__).parent
+    from forge.store.migration.source import migration_files
+    root=Path(forge.__file__).parent.parent
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in source_files(root):
-            archive.writestr('forge/'+path.relative_to(root).as_posix(),path.read_bytes())
+        for path in migration_files(root):
+            archive.writestr(path.relative_to(root).as_posix(),path.read_bytes())
     return output.getvalue()
 
 

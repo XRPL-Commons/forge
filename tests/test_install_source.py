@@ -93,7 +93,10 @@ class SourceTransferTests(unittest.TestCase):
         self.git(self.original,'checkout','--detach',self.revision)
         module=self.original/'forge';module.mkdir()
         (module/'__init__.py').write_text('# public source fixture\n')
-        self.git(self.original,'add','forge')
+        (self.original/'forge_client').mkdir()
+        (self.original/'forge_client/__init__.py').write_text('# local contracts\n')
+        (self.original/'forge_client/contracts.py').write_text('version=1\n')
+        self.git(self.original,'add','forge','forge_client')
         self.commit('qualified target')
         self.git(self.original,'-c','commit.gpgsign=false','-c','user.name=Fixture',
                  '-c','user.email=fixture@example.invalid','merge','--no-ff','-m','merged release','release-side')
