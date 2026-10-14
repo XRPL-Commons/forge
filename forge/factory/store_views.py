@@ -257,6 +257,11 @@ class PipelineViews:
             summary={'headline':clamp(written['headline'],HEADLINE_LIMIT),'plain':plain_text(written.get('plain'))}
         if reason=='forge_problem':
             summary={'headline':'Forge needs a repair', 'plain':wording}
+        report_draft = None
+        if reason == 'forge_problem' and details.get('signature'):
+            from ..store.execution_problems import report_in
+            if db.execute('SELECT 1 FROM forge_problem_reports WHERE signature=?', (details['signature'],)).fetchone():
+                report_draft = report_in(db, details['signature'])
         if reason=='environment' and (rule:=github_rule(environment_block)):
             summary={'headline':rule['headline'],'plain':rule['plain']}
         delivery_approved = bool(unit and db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?',(unit_id,)).fetchone())
@@ -271,6 +276,7 @@ class PipelineViews:
             setup_needed=reason=='repository_setup', environment_blocker=environment_block.get('detail') or environment_block.get('summary'),
             decision_request=decision,
             **({'forge_problem':details} if reason=='forge_problem' else {}),
+            **({'forge_problem_report': report_draft} if report_draft is not None else {}),
             approval=approval, merge_policy=merge_mode(config,issue['repository_id']),
             verification_request={**verification_view,'can_confirm':fresh and reason=='verification_human'} if verification_view else None,
             approvals=approvals, last_checked=checked, merge_blocker={'reason':merge_block.get('reason') or wording} if merge_block else None,

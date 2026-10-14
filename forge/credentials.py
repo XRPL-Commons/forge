@@ -6,6 +6,7 @@ import stat
 import uuid
 import fcntl
 import hashlib
+import json
 from contextlib import contextmanager
 
 from .settings import read_json, write_json
@@ -40,7 +41,7 @@ class Credentials:
         with self.locked():
             self._put(reference, value, file=file)
 
-    def _put(self, reference, value, *, file=False):
+    def _put(self, reference, value, *, file=False, login_generation=None):
         if not self.valid_reference(reference):
             raise ValueError('Invalid credential reference')
         if not isinstance(value, str) or not 0 < len(value.encode()) <= 65536:
@@ -51,7 +52,8 @@ class Credentials:
         with os.fdopen(fd, 'w') as stream:
             stream.write(value); stream.flush(); os.fsync(stream.fileno())
         index = read_json(self.root / 'index.json') if (self.root / 'index.json').exists() else {}
-        index[reference] = {'name': name, 'file': file}
+        index[reference] = {'name': name, 'file': file,
+                            'login_generation': login_generation or uuid.uuid4().hex}
         write_json(self.root / 'index.json', index)
         self._prune(index)
 
@@ -75,8 +77,39 @@ class Credentials:
             path = Path(self.environment(only=[reference])[reference])
             if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 return False
-            self._put(reference, value, file=True)
+            self._put(reference, value, file=True, login_generation=self._login_generation(record))
             return True
+
+    @staticmethod
+    def _login_generation(record):
+        # Older credential records acquire a stable opaque identity without
+        # reading the secret or rotating its identity on the next token refresh.
+        return record.get('login_generation') or uuid.uuid5(uuid.NAMESPACE_OID, record['name']).hex
+
+    def login_generations(self, only=None):
+        """Safe account identities: explicit reconnect changes them, refresh does not."""
+        if not self.root.exists():
+            return {}
+        self._private()
+        index = read_json(self.root / 'index.json') if (self.root / 'index.json').exists() else {}
+        return {reference: self._login_generation(record) for reference, record in index.items()
+                if only is None or reference in only}
+
+    def publish_login_generations(self, store, config):
+        """Publish only selected provider identities before a supervisor cycle."""
+        from .store.configuration import Configuration
+        providers = config.get('provider_pool') or [config]
+        references = {reference for provider in providers
+                      for reference in [provider.get('provider_auth_file_env'),
+                                        *provider.get('provider_environment', [])] if reference}
+        settings = {'generations': self.login_generations(only=references)}
+        configuration = Configuration(store)
+        with store.write() as db:
+            row = db.execute("SELECT revision,settings_json FROM configuration WHERE domain='provider-logins.json' "
+                             "AND subject='instance' AND active=1").fetchone()
+            if row is None or json.loads(row['settings_json']) != settings:
+                configuration.replace_in(db, 'provider-logins.json', settings,
+                                         expected_revision=row['revision'] if row else 0)
 
     def environment(self, only=None):
         """The process environment plus stored credentials, which take precedence.

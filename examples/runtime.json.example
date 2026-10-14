@@ -75,5 +75,17 @@
   "environment_tiers": {},
   "repository_environments": {},
   "repository_verification": {},
-  "repository_merge_policies": {}
+  "repository_merge_policies": {},
+  "reliability": {
+    "retry_seconds": 30,
+    "stall_seconds": 300,
+    "effect_retry_cap_seconds": 900,
+    "effect_max_attempts": 8,
+    "effect_uncertainty_seconds": 900,
+    "claim_retest_seconds": [
+      300,
+      1800,
+      7200
+    ]
+  }
 }

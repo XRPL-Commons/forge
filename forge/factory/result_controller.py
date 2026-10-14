@@ -4,13 +4,12 @@ No external operation runs in a SQL transaction. The lifecycle rechecks the
 assignment and version at commit; an observation or operator decision racing
 with GitHub reads therefore cannot advance a superseded candidate.
 """
-import json
 import re
 import subprocess
 import time
 import uuid
 
-from ..store.artifacts import Artifacts, ArtifactCorrupt, ArtifactExpired
+from ..store.artifacts import ArtifactCorrupt
 from ..store.db import StoreError
 from ..store.executions import Executions, ExecutionQueries
 from ..store.models import Candidate, Command, TransitionError, InvalidDelegationPlan
@@ -22,9 +21,10 @@ from .ownership import ownership, publication_context
 
 class ResultController:
     def __init__(self, store, github, *, policy, verdicts=None, clock=time.time,
-                 availability_retry_seconds=300, hold_labels=('hold', 'blocked'), requirements=None):
+                 availability_retry_seconds=300, hold_labels=('hold', 'blocked'), requirements=None, scheduling=None):
         self.store, self.github = store, github
         self.requirements = requirements
+        self.scheduling = scheduling
         self.policy, self.verdicts, self.clock = policy, verdicts, clock
         self.availability_retry_seconds = availability_retry_seconds
         self.hold_labels = frozenset(hold_labels)
@@ -43,31 +43,6 @@ class ResultController:
 
     def _defer(self, job, evidence, code, details):
         return self.commands.defer_job(self._command(job), job['id'], **self._args(job, evidence), code=code, details=details)
-
-    @staticmethod
-    def _availability(capture, logs):
-        """Only failed CLI error channels can establish provider unavailability."""
-        if (capture.get('execution') or {}).get('exit_code', 0) == 0:
-            return None
-        for line in logs.splitlines():
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(event, dict) or event.get('type') not in {'error', 'turn.failed'}:
-                continue
-            error = event.get('error') or event
-            message = error.get('message', '') if isinstance(error, dict) else ''
-            if not isinstance(message, str):
-                continue
-            message = message.lower()
-            if any(word in message for word in ('insufficient_quota', 'credit balance', 'usage limit',
-                                                'out of credits', 'exhausted credits')):
-                return 'blocked_quota'
-            if any(word in message for word in ('authentication_error', 'invalid_api_key', 'not logged in',
-                                                'please login', 'please log in', 'token expired', 'unauthorized')):
-                return 'blocked_auth'
-        return None
 
     @staticmethod
     def _current_pr(pr, job):
@@ -101,6 +76,19 @@ class ResultController:
                 'details': {**requests[0], 'checks': wanted, 'ci': checks, 'job_id': job['id']}}
 
     def step(self, job_id):
+        from ..store.scheduling import Scheduling
+        scheduling = self.scheduling or Scheduling(self.store, clock=self.clock)
+        job = self.queries.job(job_id)
+        try:
+            value = self._step(job_id)
+        except (GitHubUnavailable, TransitionError, StoreError, ArtifactCorrupt, OSError) as error:
+            scheduling.record(job['unit_id'], owner='results', reason=getattr(error, 'code', type(error).__name__),
+                              job_id=job_id)
+            raise
+        scheduling.outcome(job['unit_id'], 'results', value, job_id=job_id)
+        return value
+
+    def _step(self, job_id):
         with self.store.read_snapshot() as db:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot classify worker results')
@@ -125,10 +113,34 @@ class ResultController:
         if startup is not None:
             return {'job_id': job_id, **self._defer(job,
                 {'reason': 'forge_problem', 'capture_job_id': job_id, 'startup': startup}, 'forge_problem', startup)}
+        from .execution_problems import classify, contract_problem
+        from ..store.execution_problems import ExecutionProblems
+        execution = classify(job, capture, self.clock())
+        if execution is not None:
+            kind, details = execution['kind'], execution['details']
+            if kind == 'forge_problem':
+                return {'job_id': job_id, **ExecutionProblems(self.store, clock=self.clock).defer(
+                    self._command(job), job_id, execution_fence=job['execution_fence'],
+                    input_manifest=job['input_manifest'], details=details)}
+            if kind == 'timeout':
+                return {'job_id': job_id, **self._failure(job, details)}
+            if kind == 'provider_error':
+                return {'job_id': job_id, **self._defer(job, details, 'provider_unavailable',
+                    {**details, 'provider_id': job['provider_id'], 'provider': job['provider']})}
+            if kind == 'oom':
+                retry = self.requirements.classify(job, capture, None) if self.requirements is not None else None
+                return {'job_id': job_id, **(retry if retry is not None else
+                    self._defer(job, details, 'environment', details))}
         try:
             report = result(capture.get('result'), job)
         except (ValueError, TypeError, KeyError):
             report = None
+        if report is None:
+            fault = contract_problem(job, capture)
+            if fault is not None:
+                return {'job_id': job_id, **ExecutionProblems(self.store, clock=self.clock).defer(
+                    self._command(job), job_id, execution_fence=job['execution_fence'],
+                    input_manifest=job['input_manifest'], details=fault)}
         evidence = {'report': report, 'capture_job_id': job_id}
         item = publication_context(self.store, job['unit_id'], dict(repo=job['repo'], repo_id=job['repo_id'], number=job['issue_number']))
         members = job.get('members') or [{'issue_number': job['issue_number'], 'requirements': job['requirements']}]
@@ -161,9 +173,12 @@ class ResultController:
             return {'job_id': job_id, **self._defer(job, evidence, 'environment',
                 {'reason': 'resources', 'job_id': job_id, 'oom_killed': True})}
         if report and report['outcome'] == 'blocked_environment':
-            return {'job_id': job_id, **self._defer(job, evidence, 'environment',
-                {'reason': report['blocker'], 'summary': report['summary'], 'operator_summary': report['operator_summary'],
-                 'required_services': report.get('required_services', []), 'job_id': job_id})}
+            from ..store.worker_claims import WorkerClaims
+            return {'job_id': job_id, **WorkerClaims(self.store, clock=self.clock).defer_claim(
+                self._command(job), job_id, **self._args(job, evidence), details={
+                    'reason': report['blocker'], 'summary': report['summary'],
+                    'operator_summary': report['operator_summary'],
+                    'required_services': report.get('required_services', []), 'job_id': job_id})}
         if job['role'] == 'build':
             if report and report['outcome'] == 'delegate' and job.get('builder_stage') == 'planning':
                 from ..store.delivery import Delivery
@@ -261,15 +276,6 @@ class ResultController:
         else:
             return {'job_id': job_id, 'pending': 'unsupported_role'}
 
-        try:
-            logs = Artifacts(self.store).read(job_id, 'logs').content.decode('utf-8', errors='replace')
-        except ArtifactExpired:
-            logs = ''  # Retention expiry is not worker evidence.
-        unavailable = self._availability(capture, logs)
-        if unavailable:
-            return {'job_id': job_id, **self._defer(job, evidence, 'provider_unavailable',
-                {'reason': unavailable, 'retry_at': self.clock() + self.availability_retry_seconds,
-                 'provider_id': job['provider_id'], 'provider': job['provider'], 'job_id': job_id})}
         evidence['reason'] = 'deadline_exceeded' if capture.get('timed_out') else 'unverified_result'
         return {'job_id': job_id, **self._failure(job, evidence)}
 

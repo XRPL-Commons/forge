@@ -324,15 +324,15 @@ class ResultControllerTests(unittest.TestCase):
                 self.assertEqual(self.view()['reason_code'], 'environment')
                 self.assertEqual(self.charges(), 0)
 
-    def test_only_failed_error_channel_establishes_provider_outage(self):
-        for channel, exit_code, charged in [('error', 1, False), ('message', 1, True), ('error', 0, True)]:
+    def test_log_prose_never_establishes_provider_outage(self):
+        for channel, exit_code in [('error', 1), ('message', 1), ('error', 0)]:
             with self.subTest(channel=channel, exit_code=exit_code):
                 self.setUp()
                 job = self.reserve()
                 self.capture(job, logs=json.dumps({'type': channel, 'error': {'message': 'usage limit'}}),
                              execution={'exit_code': exit_code})
-                self.assertEqual(self.controller.step(job)['charged'], charged)
-                self.assertEqual(self.charges(), int(charged))
+                self.assertTrue(self.controller.step(job)['charged'])
+                self.assertEqual(self.charges(), 1)
 
     def test_pass_and_reject_flow_through_real_durable_effect_adapter(self):
         for outcome, phase in [('pass', 'auditing'), ('reject', 'building')]:

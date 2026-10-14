@@ -6,6 +6,13 @@ with the publication and identity target in
 This document distinguishes the agreed target from the implementation on `main`
 at `e38e367`. It supplements dated decisions; it does not rewrite their evidence.
 
+**Execution order updated 14 October:** the [five-run plan](run-plan.md), based on
+the superseding comment in #269, now controls batching and delivery order. The
+phases below remain the architectural breakdown, not the current run schedule.
+In particular, provider credential isolation is scheduled in Run 5. Source
+inspection during Run 1 moved the Codex shell credential fix into Run 2 with the
+publisher: current builds still require agent-side publication.
+
 ## Agreed target
 
 Forge has a deterministic core and one mover agent, the steward. The core owns
