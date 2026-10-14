@@ -109,7 +109,10 @@ class DeliveryMemberProgressTests(unittest.TestCase):
         self.assertNotIn('output_commit', first)
         self.assertEqual(first['operator_status']['code'], 'blocked')
         self.assertEqual({gate['code'] for gate in first['gates']}, {'label_hold', 'environment'})
-        self.assertEqual(second['operator_status']['code'], 'queued')
+        # Accepting an output clears the dependency, but no controller has
+        # scheduled another attempt in this store-only fixture.
+        self.assertEqual(second['operator_status']['code'], 'waiting')
+        self.assertEqual(self.views.issues(key='1:2')['issue']['status'], 'waiting')
         self.assertEqual(second['gates'], [])
 
     def test_dropped_prerequisite_leaves_current_graph_and_becomes_external(self):

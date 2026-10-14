@@ -30,10 +30,11 @@ class DeliveryPipelineTests(unittest.TestCase):
         (self.repo / 'base').write_text('base\n')
         self.git('add', '.'); self.git('commit', '-qm', 'base')
         self.base = self.git('rev-parse', 'HEAD').strip()
+        self.now = 100
         self.store = Store.create(self.root / 'state')
-        self.life = Lifecycle(self.store, clock=lambda: 100)
-        self.delivery = Delivery(self.store, clock=lambda: 100)
-        self.executions = Executions(self.store, clock=lambda: 100)
+        self.life = Lifecycle(self.store, clock=lambda: self.now)
+        self.delivery = Delivery(self.store, clock=lambda: self.now)
+        self.executions = Executions(self.store, clock=lambda: self.now)
         self.jobs = ExecutionQueries(self.store)
         self.serial = 0
         pins = []
@@ -69,7 +70,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.pulls.return_value = []
         self.github.publisher.side_effect = lambda role: role + '[bot]'
         self.verdicts = Mock(); self.verdicts.ensure.return_value = {'check_id': 7}
-        self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config, job['repo_id'], repository_name=job['repo']), verdicts=self.verdicts, clock=lambda: 100)
+        self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config, job['repo_id'], repository_name=job['repo']), verdicts=self.verdicts, clock=lambda: self.now)
         self.dispatch = self.dispatcher()
 
     def git(self, *args, root=False):
@@ -79,7 +80,7 @@ class DeliveryPipelineTests(unittest.TestCase):
     def dispatcher(self):
         return DispatchController(self.store, self.runner, config=self.config,
             prepare=lambda snapshot, role: PreparedDispatch(self.base, role + '[bot]', self.config,
-                snapshot['candidate']['branch'] if snapshot['candidate'] else None), admission=lambda _: True, clock=lambda: 100)
+                snapshot['candidate']['branch'] if snapshot['candidate'] else None), admission=lambda _: True, clock=lambda: self.now)
 
     def command(self, unit='batch'):
         self.serial += 1
@@ -168,6 +169,10 @@ class DeliveryPipelineTests(unittest.TestCase):
             allocations.append(job['id'])
             with self.store.read_snapshot() as db:
                 self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 1)
+            # An occupied slot keeps its original deadline even across a restart.
+            waiting = self.dispatcher().step('other' if unit == 'batch' else 'batch')
+            self.assertEqual(waiting['reason'], 'role_capacity')
+            self.assertGreater(waiting['retry_at'], self.now)
             if stage == 'planning':
                 children = [dict(key='part-' + str(i), executor='child', member_ids=[member['member_id']], scope='Implement member', depends_on=[], internalizes=[])
                             for i, member in enumerate(job['members'])]
@@ -239,6 +244,10 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.pr.return_value = changed_author
         self.assertFalse(self.dispatch.step('batch')['reserved'])
         self.github.pr.return_value = pr
+        waiting = self.dispatch.step('batch')
+        self.assertFalse(waiting['reserved'])
+        self.assertEqual(waiting['reason'], 'observation_changed')
+        self.now = waiting['retry_at']
         resumed = self.jobs.job(self.dispatch.step('batch')['job_id'])
         self.assertEqual(resumed['builder_stage'], 'planning')
         self.assertEqual(resumed['builder_id'], integration['builder_id'])
@@ -286,7 +295,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         failed = self.capture(integration['id'], outcome='pass')
         self.assertTrue(failed['charged'])
         recovery = RecoveryController(self.store, self.runner, self.github, config=self.config,
-                                      admission=lambda _: True, clock=lambda: 100)
+                                      admission=lambda _: True, clock=lambda: self.now)
         investigation = recovery.schedule(integration['id'])['job_id']
         self.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': self.base}
         receipt = self.capture(investigation, classifier=recovery.finish,
@@ -302,7 +311,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.assertTrue(self.capture(integration['id'], outcome='unable')['charged'])
         self.github.publication.assert_not_called()
         recovery = RecoveryController(self.store, self.runner, self.github, config=self.config,
-                                      admission=lambda _: True, clock=lambda: 100)
+                                      admission=lambda _: True, clock=lambda: self.now)
         investigation = recovery.schedule(integration['id'])['job_id']
         self.capture(investigation, classifier=recovery.finish,
                      pattern='Matching publication exists', evidence=[], uncertainty='', alternative=None)
@@ -319,7 +328,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         integration = self.integrate(verification=task_check)
         self.assertTrue(self.capture(integration['id'], outcome='needs_human_verification', verification=owner_check)['charged'])
         recovery = RecoveryController(self.store, self.runner, self.github, config=self.config,
-                                      admission=lambda _: True, clock=lambda: 100)
+                                      admission=lambda _: True, clock=lambda: self.now)
         investigation = recovery.schedule(integration['id'])['job_id']
         self.github.publication.return_value = {'pr': 9, 'branch': integration['branch'], 'head': 'c' * 40, 'base': self.base}
         receipt = self.capture(investigation, classifier=recovery.finish, outcome='needs_human_verification',
@@ -451,7 +460,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.pulls.return_value = [updated]
         self.github.issue.side_effect = lambda item: (dict(number=item['number'], state='open', title='Issue',
             body='Scope', updated_at='2026-10-10T00:00:00Z', labels=[], assignees=[]), 'req-' + str(item['number']))
-        observed = ObservationController(self.store, self.github, admission=lambda _: True, clock=lambda: 100).step('batch')
+        observed = ObservationController(self.store, self.github, admission=lambda _: True, clock=lambda: self.now).step('batch')
         self.assertTrue(all(row.get('observed') for row in observed['members'].values()))
         self.assertFalse(self.jobs.job(resumed['id'])['fenced'])
         self.assertFalse(active_publication_matches(self.store, 'batch', {**updated, 'head': {**updated['head'], 'sha': 'e' * 40}}))
@@ -464,7 +473,7 @@ class DeliveryPipelineTests(unittest.TestCase):
 
     def test_public_jobs_and_issue_detail_keep_exact_assignment_scope(self):
         from forge.factory.store_views import PipelineViews
-        views = PipelineViews(self.store, runtime=self.config, clock=lambda: 100)
+        views = PipelineViews(self.store, runtime=self.config, clock=lambda: self.now)
         parent = self.dispatch.step('batch')['job_id']; planning = self.jobs.job(parent)
         shared = views.job(parent)
         self.assertIsNone(shared['issue_key']); self.assertIsNone(shared['issue_number'])

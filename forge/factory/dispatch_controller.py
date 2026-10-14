@@ -292,6 +292,13 @@ class DispatchController:
         settings=self.config.get('reliability', {})
         schedules = Scheduling(self.store, clock=self.clock, retry_seconds=settings.get('retry_seconds',30),stall_seconds=settings.get('stall_seconds',300))
         pending=schedules.pending(unit_id, 'dispatch')
+        if pending and pending['reason'] == 'role_capacity':
+            # A verified lease release satisfies this local wait immediately.
+            # Keeping its timer would let the previous owner take another turn
+            # before an older delivery, despite the durable allocation order.
+            snapshot = self.snapshot(unit_id)
+            if self._free_slot(snapshot['role']) is not None:
+                pending = None
         if pending:
             return {'unit_id':unit_id,'reserved':False,'reason':pending['reason'],'retry_at':pending['due_at']}
         try:
@@ -300,6 +307,12 @@ class DispatchController:
             schedules.record(unit_id, owner='dispatch', reason='github_budget' if isinstance(error,RequestBudgetExhausted) else getattr(error, 'code', type(error).__name__))
             raise
         return schedules.outcome(unit_id, 'dispatch', result)
+
+    def _free_slot(self, role):
+        with self.store.read_snapshot() as db:
+            occupied = {row[0] for row in db.execute('SELECT slot FROM job_leases UNION SELECT slot FROM discussion_leases')}
+        return next((f'{role}-{index + 1}' for index in range(self.config['slots'].get(role, 0))
+                     if f'{role}-{index + 1}' not in occupied), None)
 
     def _step(self, unit_id, role=None):
         result = {'unit_id': unit_id, 'reserved': False}
@@ -325,10 +338,7 @@ class DispatchController:
                 'candidate':{'pr':snapshot['candidate']['pull_number'],'key':snapshot['candidate']['id']} if snapshot['candidate'] else None,
                 'reviewers_requested':snapshot.get('reviewers_requested')},issue['repository']):
                 return {**result, 'reason': 'human_owned'}
-        with self.store.read_snapshot() as db:
-            occupied = {row[0] for row in db.execute('SELECT slot FROM job_leases UNION SELECT slot FROM discussion_leases')}
-        slot = next((f'{role}-{index + 1}' for index in range(self.config['slots'][role])
-                     if f'{role}-{index + 1}' not in occupied), None)
+        slot = self._free_slot(role)
         if slot is None:
             return {**result, 'reason': 'role_capacity'}
         prepared = self.prepare(deepcopy(snapshot), role)

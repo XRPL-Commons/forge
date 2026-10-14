@@ -136,6 +136,13 @@ class SelectedRuntimeDeliveryTests(unittest.TestCase):
         self.assertEqual(proof(root, **pilot)['status'], 'waiting')
         github.approved = True
         tick()
+        self.assertEqual(Queries(store).unit(unit_id)['state'], 'merging')
+        self.assertEqual(github.merge_calls, 0)
+        with store.read_snapshot() as db:
+            retry_at = db.execute("SELECT due_at FROM next_actions WHERE unit_id=? AND owner='merges'", (unit_id,)).fetchone()[0]
+        self.assertGreater(retry_at, now[0])
+        now[0] = retry_at - 1
+        tick()
         self.assertEqual(Queries(store).unit(unit_id)['state'], 'merged')
         self.assertEqual(Queries(store).issue('1:1')['lifecycle']['state'], 'done')
         self.assertEqual(github.merge_calls, 1)
