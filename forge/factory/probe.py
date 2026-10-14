@@ -5,7 +5,7 @@ import runpy
 
 
 def main():
-    note = json.loads(Path('/work/assignment.json').read_text())
+    note = json.loads(Path('/run/forge-input/assignment.json').read_text())
     directory = Path('/work/repository'); directory.mkdir(exist_ok=True)
     registry = runpy.run_path('/opt/forge/harnesses/registry.py')
     return registry['adapter'](note.get('provider', 'codex'))['probe'](note, directory)
