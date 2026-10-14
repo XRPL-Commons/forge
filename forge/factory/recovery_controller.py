@@ -156,6 +156,12 @@ class RecoveryController:
                 execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
                 findings=self._incomplete('Investigation assignment was superseded'), incomplete=True)
             return {'job_id': recovery_job_id, **answer}
+        from .preparation_problems import problem as preparation_problem
+        preparation = preparation_problem(self.store, job)
+        if preparation is not None:
+            return {'job_id': recovery_job_id, **self.commands.defer_job(self._command(job), recovery_job_id,
+                execution_fence=job['execution_fence'], input_manifest=job['input_manifest'],
+                evidence=preparation, code=preparation['gate'], details=preparation)}
         from .execution_problems import classify, contract_problem
         from ..store.execution_problems import ExecutionProblems
         execution = classify(job, capture, self.clock())

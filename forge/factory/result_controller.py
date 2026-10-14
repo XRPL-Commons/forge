@@ -120,6 +120,10 @@ class ResultController:
                  or job['candidate_id'] is not None and job['candidate_id'] != job['current_candidate_id'])
         if stale:
             return {'job_id': job_id, **self._failure(job, {'reason': 'assignment_superseded'}, charge=False)}
+        from .preparation_problems import problem as preparation_problem
+        preparation = preparation_problem(self.store, job)
+        if preparation is not None:
+            return {'job_id': job_id, **self._defer(job, preparation, preparation['gate'], preparation)}
         from .startup_problems import problem
         startup = problem(job, capture)
         if startup is not None:

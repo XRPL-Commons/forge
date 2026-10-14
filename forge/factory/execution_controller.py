@@ -17,7 +17,7 @@ from ..store.executions import Executions, ExecutionQueries
 from ..store.db import StoreError
 from ..store.models import Command, TransitionError
 from .github import GitHubUnavailable
-from .runner import ContainerRunner, RunnerError
+from .runner import ContainerRunner, RunnerError, RunnerPreparationError
 
 
 class ExecutionController:
@@ -63,8 +63,35 @@ class ExecutionController:
                 and job['assigned_budget'] == job['budget_generation'])
 
     def step(self, job_id):
+        from ..store.scheduling import Scheduling
+        from ..store.transitions import manifest_hash
+        scheduling = Scheduling(self.store, clock=self.clock)
         with self._lock():
-            return self._step(job_id)
+            job = self.queries.job(job_id)
+            if self._can_launch(job) and self.clock() < job['deadline'] and self.admission(job):
+                pending = scheduling.pending(job['unit_id'], 'execution', job_id=job_id)
+                if pending:
+                    return {'job_id': job_id, 'pending': pending['reason'], 'retry_at': pending['due_at']}
+            try:
+                answer = self._step(job_id)
+            except RunnerPreparationError as error:
+                job = self.queries.job(job_id)
+                if error.transient:
+                    scheduling.record(job['unit_id'], owner='execution', reason=error.reason, job_id=job_id)
+                    return {'job_id': job_id, 'pending': error.reason}
+                runner = (ContainerRunner(job['runner_config'], environ=self.runner.environ, source=self.runner.source_preparation)
+                          if isinstance(self.runner, ContainerRunner) else self.runner)
+                current = runner.inspect(job)
+                if current and current['status'] != 'created':
+                    raise  # Never reinterpret a started worker as a launch refusal.
+                self.commands.observe(job_id, execution_fence=job['execution_fence'], observation=current)
+                self.commands.collect(self._command(job), job_id, execution_fence=job['execution_fence'],
+                    capture={'result': None, 'logs': '', 'missing': [], 'timed_out': False},
+                    preparation_refusal={'version': 1, 'reason': error.reason, 'gate': error.gate,
+                                         'manifest_digest': manifest_hash(job['input_manifest'])})
+                answer = self._step(job_id)  # Verify cleanup before classifying the durable refusal.
+            scheduling.clear(job['unit_id'], owner='execution', job_id=job_id)
+            return answer
 
     def _step(self, job_id):
         job = self.queries.job(job_id)

@@ -201,10 +201,15 @@ class Executions(Lifecycle):
                 from .resource_usage import observe_in
                 observe_in(db, job_id, container, observation.get('resources'))
 
-    def collect(self, command, job_id, *, execution_fence, capture):
+    def collect(self, command, job_id, *, execution_fence, capture, preparation_refusal=None):
         """Commit capture and fence launch before reset; never accept worker claims."""
         if not isinstance(capture, dict) or not isinstance(capture.get('logs', ''), str):
             raise TransitionError('capture requires structured output and text logs')
+        if preparation_refusal is not None:
+            from ..factory.preparation_problems import validate
+            validate(preparation_refusal)
+            if command.actor_id != 'supervisor:execution' or capture.get('result') is not None:
+                raise TransitionError('preparation refusals require a host execution observation')
         bundle = capture.get('worktree_bundle')
         from ..factory.delegation_artifacts import MAX_BUNDLE_SIZE
         if bundle is not None and (not isinstance(bundle, bytes) or not 0 < len(bundle) <= MAX_BUNDLE_SIZE):
@@ -218,8 +223,17 @@ class Executions(Lifecycle):
             raise TransitionError('worker capture exceeds the supported artifact size')
         payload = dict(job_id=job_id, execution_fence=execution_fence,
                        capture_digest=hashlib.sha256(content).hexdigest(), logs_digest=hashlib.sha256(logs).hexdigest())
+        if preparation_refusal is not None:
+            payload['preparation_refusal'] = preparation_refusal
         def change(db, unit):
             job = self._owned(db, unit, job_id, execution_fence)
+            if preparation_refusal is not None:
+                state = db.execute('SELECT started_at,observed_status FROM job_execution_state WHERE job_id=?', (job_id,)).fetchone()
+                if (job['phase'] not in {'reserved', 'starting'} or job['fenced']
+                        or state['started_at'] is not None or state['observed_status'] not in ('missing', 'created')
+                        or preparation_refusal['manifest_digest'] != manifest_hash(json.loads(db.execute(
+                            'SELECT input_manifest_json FROM attempts WHERE id=?', (job['attempt_id'],)).fetchone()[0]))):
+                    raise TransitionError('preparation refusal requires an unstarted current assignment')
             if job['captured_at'] is not None or job['outcome'] is not None:
                 raise TransitionError('execution already has a capture or result')
             now = self.clock()

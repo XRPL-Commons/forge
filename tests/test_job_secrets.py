@@ -41,6 +41,7 @@ class JobSecretTests(unittest.TestCase):
             'session_id': 'session', 'revoked_at': None}
         self.runner.source_preparation.mirror.live_authority.return_value = True
         self.runner.boundary = Mock(return_value=Mock())
+        self.runner.prepare_source = Mock()
         self.runner.prepare(dict(JOB))
         self.path = self.runner._secrets_path(JOB)
 

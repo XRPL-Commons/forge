@@ -26,6 +26,13 @@ class RunnerError(RuntimeError):
     pass
 
 
+class RunnerPreparationError(RunnerError):
+    """Host refusal before worker start; no repository failure is implied."""
+    def __init__(self, reason, *, gate='environment', transient=False):
+        self.reason, self.gate, self.transient = reason, gate, transient
+        super().__init__('Worker preparation: ' + reason)
+
+
 class RunnerCapacity(RunnerError):
     def __init__(self, decision):
         super().__init__('Waiting for available memory; Forge will retry automatically')
@@ -125,6 +132,7 @@ class ContainerRunner:
 
     def prepare_source(self, job):
         from .publisher_runtime import publication_authorization
+        from ..publication_artifacts import PublicationClaim
         from ..mirror.policy import MirrorError
         from .worker_boundary import BoundaryError
         try:
@@ -155,8 +163,12 @@ class ContainerRunner:
             boundary = self.boundary().prepare(job, input_directory=prepared.input_directory,
                                                broker_socket_directory=prepared.socket_directory)
             return boundary
-        except (MirrorError, BoundaryError) as error:
-            raise RunnerError('Worker source preparation: ' + getattr(error, 'reason', 'boundary_unavailable')) from None
+        except MirrorError as error:
+            raise RunnerPreparationError(error.reason, gate='dependency', transient=error.transient) from None
+        except PublicationClaim as error:
+            raise RunnerPreparationError(error.code, gate='decision_required') from None
+        except BoundaryError:
+            raise RunnerPreparationError('boundary_unavailable') from None
 
     def _secrets_path(self, job):
         root = self.environ.get('FORGE_CREDENTIAL_ROOT')
@@ -334,6 +346,7 @@ class ContainerRunner:
         if not record or record['revoked_at'] is not None or not self.source().mirror.live_authority({
                 **record, 'job_id': job['id']}):
             raise RunnerError('Immutable assignment authority was revoked')
+        self.prepare_source(job)
         if job.get('unit_id'):
             from ..store.executions import ExecutionQueries
             queries = ExecutionQueries(self.source().store)
@@ -460,6 +473,9 @@ class ContainerRunner:
                 decision = self.capacity(job)
                 if not decision['allowed']:
                     raise RunnerCapacity(decision)
+                record = self.source_record(job)
+                if record and not self.source().mirror.live_authority({**record, 'job_id': job['id']}):
+                    raise RunnerError('Immutable assignment authority was revoked')
                 self.call(['start', current['id']])
         except OSError:
             raise RunnerCapacity({'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}) from None
@@ -585,7 +601,11 @@ class ContainerRunner:
         if self.inspect(job) is not None:
             raise RunnerError('Teardown remains unverified')
         if record:
-            self.boundary().cleanup(job)
+            from .worker_boundary import BoundaryError
+            try:
+                self.boundary().cleanup(job)
+            except BoundaryError:
+                raise RunnerError('Worker network and volume cleanup remains unverified') from None
         self.call(['info', '--format', '{{.ServerVersion}}'])
         token = self.job_secrets(job).get('github_token')
         # Installation tokens are ghs_…; anything else was never minted by GitHub.

@@ -139,7 +139,7 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(note['failure']['attempt'], failed)
         self.assertIn('assertion mismatch', json.dumps(note['failure']))
         self.assertIn('Read only', note['instructions'])
-        self.assertEqual(self.github.tokens, ['build', 'recovery'])
+        self.assertEqual(self.github.tokens, [])
         self.assertEqual(self.budget(), 1)
         self.assertIsNone(self.view()['reason_code'])
         retried = self.dispatch.step('u')
