@@ -266,8 +266,13 @@ class RuntimeRequirements(Executions):
         self.fence_member_in(db,command,member['id'],reason='environment_changed')
         db.execute('INSERT INTO issue_environment_observations(issue_id,override_json) VALUES(?,?) ON CONFLICT(issue_id) DO UPDATE SET override_json=excluded.override_json,retry_json=NULL',
                    (member['issue_id'],_json(value) if value['mode']!='automatic' else None))
+        from .worker_claims import WorkerClaims, eligible_gate_in
         for gate in db.execute("SELECT * FROM unit_gates WHERE unit_id=? AND member_id=? AND code='environment' AND resolved_at IS NULL",(unit['id'],member['id'])).fetchall():
-            self._resolve(db,command,gate['id'],{'operator_environment_override':value})
+            if eligible_gate_in(db,gate):
+                WorkerClaims(self.store,clock=self.clock).recheck_in(db,command,unit,[gate['id']],
+                    member_id=member['id'],explicit=True,reason='environment_override')
+            else:
+                self._resolve(db,command,gate['id'],{'operator_environment_override':value})
         self._event(db,command,'lifecycle_changed',{'environment_override':value})
         return {'accepted':True}
 

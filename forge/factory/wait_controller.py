@@ -26,14 +26,23 @@ class WaitController:
             gate = dict(row)
         if gate['resolved_at'] is not None:
             return {'gate_id': gate_id, 'resolved': True}
-        if gate['code'] not in {'forge_problem', 'provider_unavailable', 'retry_delay'}:
+        if gate['code'] not in {'forge_problem', 'provider_unavailable', 'retry_delay', 'environment'}:
             raise TransitionError('this wait needs an observation or operator decision')
+        if gate['code'] == 'environment':
+            from ..store.worker_claims import eligible_gate_in
+            with self.store.read_snapshot() as db:
+                if not eligible_gate_in(db, gate):
+                    raise TransitionError('this wait needs an observation or operator decision')
         if gate['state'] in {'merged', 'closed', 'dissolved'}:
             return {'gate_id': gate_id, 'pending': 'terminal_history'}
         if gate['code'] == 'forge_problem':
             from ..store.forge_problems import ForgeProblems
             command = Command(str(uuid.uuid4()), 'supervisor:waits', gate['unit_id'], gate['version'])
             return ForgeProblems(self.store, clock=self.clock).recheck(command, gate_id)
+        if gate['code'] == 'environment':
+            from ..store.worker_claims import WorkerClaims
+            return WorkerClaims(self.store, clock=self.clock).recheck(
+                Command(str(uuid.uuid4()), 'supervisor:waits', gate['unit_id'], gate['version']), gate_id)
         retry_at = json.loads(gate['details_json']).get('retry_at')
         if type(retry_at) not in (int, float) or not math.isfinite(retry_at):
             return {'gate_id': gate_id, 'pending': 'missing_retry_time'}
@@ -52,10 +61,16 @@ class WaitController:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot process runtime waits')
             rows = db.execute("SELECT g.id FROM unit_gates g JOIN units u ON u.id=g.unit_id "
-                "WHERE g.id>? AND g.resolved_at IS NULL AND g.code IN ('forge_problem','provider_unavailable','retry_delay') "
+                "WHERE g.id>? AND g.resolved_at IS NULL AND g.code IN ('forge_problem','provider_unavailable','retry_delay','environment') "
                 "AND u.state NOT IN ('merged','closed','dissolved') ORDER BY g.id LIMIT ?", (after, limit + 1)).fetchall()
         page, results = rows[:limit], []
         for row in page:
+            with self.store.read_snapshot() as db:
+                gate = db.execute('SELECT * FROM unit_gates WHERE id=?', (row['id'],)).fetchone()
+                if gate['code'] == 'environment':
+                    from ..store.worker_claims import eligible_gate_in
+                    if not eligible_gate_in(db, gate):
+                        continue
             try:
                 results.append(self.step(row['id']))
             except (TransitionError, StoreError, OSError) as error:
