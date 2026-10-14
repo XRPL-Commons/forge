@@ -45,7 +45,9 @@ def report(ssh=None):
         installation.host.fingerprint = state.get('host_key')
         program = '''import json, subprocess
 def main(payload):
-    result = subprocess.run(['git','-C','/home/forge/forge','rev-parse','HEAD'], capture_output=True, text=True, timeout=10)
+    result = subprocess.run(['runuser','-u','forge','--','env','-i','PATH=/usr/sbin:/usr/bin:/sbin:/bin',
+                             'HOME=/home/forge','git','-C','/home/forge/forge','rev-parse','HEAD'],
+                            capture_output=True, text=True, timeout=10)
     print(json.dumps({'ok':True,'revision':result.stdout.strip() if result.returncode == 0 else None}))
     return 0
 '''

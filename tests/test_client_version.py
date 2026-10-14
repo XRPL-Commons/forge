@@ -28,8 +28,10 @@ class VersionTests(unittest.TestCase):
         self.assertIn('differ', result['warning'])
         self.assertEqual(installation.host.fingerprint, 'pinned')
         namespace = {}; exec(installation.host.rpc.call_args.args[0], namespace)
-        with patch('subprocess.run', return_value=SimpleNamespace(stdout='b'*40, returncode=0)), patch('builtins.print') as output:
+        with patch('subprocess.run', return_value=SimpleNamespace(stdout='b'*40, returncode=0)) as run, patch('builtins.print') as output:
             self.assertEqual(namespace['main']('unused'), 0)
+            self.assertEqual(run.call_args.args[0][:4], ['runuser','-u','forge','--'])
+            self.assertIn('HOME=/home/forge', run.call_args.args[0])
         self.assertEqual(json.loads(output.call_args.args[0])['revision'], 'b'*40)
 
     def test_login_and_help_surface(self):

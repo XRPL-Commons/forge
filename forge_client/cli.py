@@ -123,7 +123,7 @@ def parser():
     fresh = sub.add_parser('setup', help='Install a fresh factory from this computer').add_subparsers(dest='setup_command', required=True)
     qualification = verb(fresh, 'qualify-boundary', help='Run disposable native worker isolation canaries on the selected host')
     qualification.add_argument('--ssh', required=True)
-    qualification.add_argument('--image', required=True, help='Exact sha256 image ID built on the host')
+    qualification.add_argument('--image', help='Exact sha256 image ID; defaults to the installed worker image')
     qualification.add_argument('--apply', action='store_true', help='Create and remove disposable qualification resources')
     qualification.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     for action in ('new', 'plan', 'apply', 'status', 'resume', 'host-key', 'network', 'identity'):

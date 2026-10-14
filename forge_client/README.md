@@ -203,11 +203,15 @@ After the matching server source and worker image have been staged through the
 supported upgrade, run:
 
 ```sh
-forge setup qualify-boundary --ssh anvil --image sha256:IMAGE_ID
-forge setup qualify-boundary --ssh anvil --image sha256:IMAGE_ID --apply
+forge setup qualify-boundary --ssh anvil
+forge setup qualify-boundary --ssh anvil --apply
 ```
 
-The first command prints the checks. The second uses the saved SSH host identity
+The first command reads the installed image, source revision and Docker version,
+then prints the exact image ID and checks. The second selects that host’s current
+installed image and reports its exact identity with the result. Supply
+`--image sha256:IMAGE_ID` to select an explicit pinned image; its plan needs no SSH.
+Both host operations use the saved SSH host identity
 and runs disposable canaries as the Forge service account. It requires a native
 Linux host with Docker Engine 28 or newer and the exact worker-boundary v2 image.
 It creates its own networks, volumes, endpoints and local Git fixture; it does
