@@ -37,7 +37,7 @@ def relative_submodule(value, parent):
     return github_repository(value)
 
 
-def extract(reader, repository_id, repository, commits):
+def _extract(reader, repository_id, repository, commits):
     declarations, submodules, unsupported = [], [], []
     total_bytes, file_count = 0, 0
     if len(commits) > 101 or any(not OID.fullmatch(oid) for oid in commits):
@@ -182,6 +182,22 @@ def extract(reader, repository_id, repository, commits):
                 if isinstance(source, dict):
                     add(source.get('git'))
 
+        for lock_path in ('poetry.lock', 'uv.lock'):
+            raw = read(lock_path)
+            if raw is None:
+                continue
+            try:
+                lock = tomllib.loads(raw)
+            except tomllib.TOMLDecodeError:
+                raise MirrorError('dependency_format_unsupported') from None
+            for package in lock.get('package', []):
+                source = package.get('source', {})
+                if source.get('type') == 'git':
+                    add(source.get('url'))
+                git = source.get('git')
+                if isinstance(git, str):
+                    add(git.split('?', 1)[0])
+
         requirement_paths = [p for p in tree if re.fullmatch(r'(?:requirements(?:/[^/]+)*|requirements[^/]*)\.(?:txt|in)', p)]
         seen = set()
         while requirement_paths:
@@ -222,3 +238,44 @@ def extract(reader, repository_id, repository, commits):
                 raise MirrorError('dependency_format_unsupported') from None
     unique = {json.dumps(item, sort_keys=True): item for item in declarations}
     return Extraction(list(unique.values()), submodules, unsupported)
+
+
+def extract(reader, repository_id, repository, commits):
+    try:
+        return _extract(reader, repository_id, repository, commits)
+    except (AttributeError, KeyError, TypeError, UnicodeError, RecursionError):
+        raise MirrorError('dependency_format_unsupported') from None
+
+
+def submodule_closure(reader, repository_id, repository, commits, *, resolve_pinned,
+                      max_depth=5, max_repositories=64):
+    """Resolve only exact gitlinks; callback enforces deny/access before fetching.
+
+    resolve_pinned(declaration)->(repository_id, canonical_repository, reader).
+    The declaration carries parent blob evidence and its exact gitlink OID.
+    General dynamic package-script dependencies remain unsupported.
+    """
+    result = extract(reader, repository_id, repository, commits)
+    declarations, unsupported = list(result.repositories), list(result.unsupported)
+    pending = [(item, 1, []) for item in result.submodules]
+    submodules, visited = list(result.submodules), set()
+    while pending:
+        declaration, depth, chain = pending.pop(0)
+        identity = (declaration['canonical_name'], declaration['commit_oid'])
+        if identity in visited:
+            continue
+        visited.add(identity)
+        if depth > max_depth or len(visited) > max_repositories:
+            raise MirrorError('mirror_capacity')
+        repo_id, name, nested_reader = resolve_pinned(declaration)
+        child = extract(nested_reader, repo_id, name, [declaration['commit_oid']])
+        child_chain = [*chain, declaration['source_evidence']]
+        for item in child.repositories:
+            item['source_evidence']['parent_declarations'] = child_chain
+        declarations.extend(child.repositories)
+        unsupported.extend(child.unsupported)
+        submodules.extend(child.submodules)
+        pending.extend((item, depth + 1, child_chain) for item in child.submodules)
+        if len(declarations) > MAX_DECLARATIONS:
+            raise MirrorError('mirror_capacity')
+    return Extraction(declarations, submodules, unsupported)

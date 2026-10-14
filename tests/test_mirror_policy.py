@@ -2,7 +2,7 @@ import hashlib
 import json
 import unittest
 
-from forge.mirror.dependencies import extract, relative_submodule
+from forge.mirror.dependencies import extract, relative_submodule, submodule_closure
 from forge.mirror.policy import MirrorError, Repository, authorize, github_repository, policy_digest
 
 
@@ -26,6 +26,8 @@ class PolicyTests(unittest.TestCase):
         org = Repository(3, 'acme/another', 10, 'Organization', 20, actual_access=True)
         self.assertEqual(self.check(declared), 'declared')
         self.assertEqual(self.check(org), 'organization')
+        public = Repository(5, 'acme/public', 10, 'Organization', None, actual_access=True)
+        self.assertEqual(self.check(public), 'organization')
         with self.assertRaisesRegex(MirrorError, 'installation_access_missing'):
             self.check(Repository(3, 'acme/another', 10, 'Organization', 20))
         with self.assertRaisesRegex(MirrorError, 'policy_denied'):
@@ -117,3 +119,28 @@ class DeclarationTests(unittest.TestCase):
             extract(Reader({'requirements.txt': 'x' * (4 * 1024 * 1024 + 1)}), 1, 'org/source', ['a' * 40])
         with self.assertRaises(MirrorError):
             relative_submodule('../../../private', 'org/source')
+
+
+class ClosureTests(unittest.TestCase):
+    def test_nested_submodule_declarations_are_bound_to_parent_gitlink(self):
+        outer = Reader({'.gitmodules': '[submodule "inner"]\npath=inner\nurl=../inner.git\n'}, {'inner': 'b' * 40})
+        inner = Reader({'package.json': '{"dependencies":{"nested":"github:vendor/nested"}}'})
+        calls = []
+        def resolve(item):
+            calls.append(item)
+            return 2, 'acme/inner', inner
+        result = submodule_closure(outer, 1, 'acme/outer', ['a' * 40], resolve_pinned=resolve)
+        self.assertEqual(calls[0]['commit_oid'], 'b' * 40)
+        nested = next(item for item in result.repositories if item['canonical_name'] == 'vendor/nested')
+        self.assertEqual(nested['source_evidence']['commit_oid'], 'b' * 40)
+        self.assertEqual(nested['source_evidence']['parent_declarations'][0]['commit_oid'], 'a' * 40)
+        with self.assertRaisesRegex(MirrorError, 'mirror_capacity'):
+            submodule_closure(outer, 1, 'acme/outer', ['a' * 40], resolve_pinned=resolve, max_depth=0)
+
+    def test_python_lock_declarations_are_pinned_and_malformed_shapes_owned(self):
+        reader = Reader({'uv.lock': '[[package]]\nname="x"\nsource={git="https://github.com/vendor/uv?rev=main#abc"}\n',
+                         'poetry.lock': '[[package]]\nname="y"\n[package.source]\ntype="git"\nurl="https://github.com/vendor/poetry.git"\n'})
+        result = extract(reader, 1, 'org/source', ['a' * 40])
+        self.assertEqual({r['canonical_name'] for r in result.repositories}, {'vendor/uv', 'vendor/poetry'})
+        with self.assertRaisesRegex(MirrorError, 'dependency_format_unsupported'):
+            extract(Reader({'pyproject.toml': 'project="invalid"'}), 1, 'org/source', ['a' * 40])

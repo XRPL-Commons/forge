@@ -117,7 +117,7 @@ def authorize(policy, repo, *, live_installations, live_denied=()):
                    for item in policy['declared_repositories'])
     installed = {tuple(item[key] for key in ('account_id', 'installation_id', 'app_id')) for item in live_installations}
     organization = (repo.owner_type == 'Organization' and any(
-        item['account_id'] == repo.owner_id and item['installation_id'] == repo.installation_id
+        item['account_id'] == repo.owner_id
         and tuple(item[key] for key in ('account_id', 'installation_id', 'app_id')) in installed
         for item in policy['organization_installations']))
     if not (source or declared or organization):
