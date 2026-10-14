@@ -591,8 +591,9 @@ export function rulesetBypassCommand(repo: string, source: ProtectionSource, app
     : source.source_type === 'Organization' ? `orgs/${repo.split('/')[0]}/rulesets/${source.id}` : null
   if (!path) return ''
   const expression = 'if (.bypass_actors | type) != "array" or (.rules | type) != "array" or .target != "branch" '
-    + 'then error("Full branch ruleset and bypass list required") else '
-    + '{name,target,enforcement,conditions,rules,bypass_actors: '
+    + 'then error("Full branch ruleset and bypass list required") '
+    + 'elif any(.rules[]; .type == "required_signatures") then error("Preserve signature enforcement; separate the review rule first") else '
+    + '{bypass_actors: '
     + '(.bypass_actors + (if any(.bypass_actors[]; .actor_type == "Integration" and .actor_id == '
     + appId + ') then [] else [{actor_type:"Integration",actor_id:' + appId
     + ',bypass_mode:"pull_request"}] end))} end'

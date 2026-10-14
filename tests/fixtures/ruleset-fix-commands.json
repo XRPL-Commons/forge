@@ -7,7 +7,7 @@
       "bypass_actors_visible": true
     },
     "app_id": 123,
-    "command": "forge_rules=$(gh api repos/example/project/rulesets/42 | jq -e 'if (.bypass_actors | type) != \"array\" or (.rules | type) != \"array\" or .target != \"branch\" then error(\"Full branch ruleset and bypass list required\") else {name,target,enforcement,conditions,rules,bypass_actors: (.bypass_actors + (if any(.bypass_actors[]; .actor_type == \"Integration\" and .actor_id == 123) then [] else [{actor_type:\"Integration\",actor_id:123,bypass_mode:\"pull_request\"}] end))} end') &&\nprintf '%s\\n' \"$forge_rules\" | gh api --method PUT repos/example/project/rulesets/42 --input -"
+    "command": "forge_rules=$(gh api repos/example/project/rulesets/42 | jq -e 'if (.bypass_actors | type) != \"array\" or (.rules | type) != \"array\" or .target != \"branch\" then error(\"Full branch ruleset and bypass list required\") elif any(.rules[]; .type == \"required_signatures\") then error(\"Preserve signature enforcement; separate the review rule first\") else {bypass_actors: (.bypass_actors + (if any(.bypass_actors[]; .actor_type == \"Integration\" and .actor_id == 123) then [] else [{actor_type:\"Integration\",actor_id:123,bypass_mode:\"pull_request\"}] end))} end') &&\nprintf '%s\\n' \"$forge_rules\" | gh api --method PUT repos/example/project/rulesets/42 --input -"
   },
   {
     "repo": "example/project",
@@ -17,6 +17,6 @@
       "bypass_actors_visible": true
     },
     "app_id": 123,
-    "command": "forge_rules=$(gh api orgs/example/rulesets/42 | jq -e 'if (.bypass_actors | type) != \"array\" or (.rules | type) != \"array\" or .target != \"branch\" then error(\"Full branch ruleset and bypass list required\") else {name,target,enforcement,conditions,rules,bypass_actors: (.bypass_actors + (if any(.bypass_actors[]; .actor_type == \"Integration\" and .actor_id == 123) then [] else [{actor_type:\"Integration\",actor_id:123,bypass_mode:\"pull_request\"}] end))} end') &&\nprintf '%s\\n' \"$forge_rules\" | gh api --method PUT orgs/example/rulesets/42 --input -"
+    "command": "forge_rules=$(gh api orgs/example/rulesets/42 | jq -e 'if (.bypass_actors | type) != \"array\" or (.rules | type) != \"array\" or .target != \"branch\" then error(\"Full branch ruleset and bypass list required\") elif any(.rules[]; .type == \"required_signatures\") then error(\"Preserve signature enforcement; separate the review rule first\") else {bypass_actors: (.bypass_actors + (if any(.bypass_actors[]; .actor_type == \"Integration\" and .actor_id == 123) then [] else [{actor_type:\"Integration\",actor_id:123,bypass_mode:\"pull_request\"}] end))} end') &&\nprintf '%s\\n' \"$forge_rules\" | gh api --method PUT orgs/example/rulesets/42 --input -"
   }
 ]

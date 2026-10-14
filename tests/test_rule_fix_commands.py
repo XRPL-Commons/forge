@@ -41,14 +41,19 @@ class RuleFixTests(unittest.TestCase):
                 result = subprocess.run(['bash', '-c', CASES[0]['command']], env=environment, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 written = json.loads((root / 'written.json').read_text())
-                self.assertEqual({key: value for key, value in written.items() if key != 'bypass_actors'},
-                                 {key: value for key, value in current.items() if key != 'bypass_actors'})
+                self.assertEqual(set(written), {'bypass_actors'},
+                                 'repair must not rewrite observed rules, conditions or enforcement')
                 self.assertEqual(written['bypass_actors'], current['bypass_actors'] + [{'actor_type': 'Integration', 'actor_id': 123, 'bypass_mode': 'pull_request'}])
             (root / 'written.json').unlink()
             (root / 'current.json').write_text(json.dumps({**current, 'bypass_actors': None}))
             result = subprocess.run(['bash', '-c', CASES[0]['command']], env=environment, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((root / 'written.json').exists(), 'hidden list must never cause a replacement write')
+            (root / 'current.json').write_text(json.dumps({**current, 'rules': [*current['rules'], {'type': 'required_signatures'}]}))
+            result = subprocess.run(['bash', '-c', CASES[0]['command']], env=environment, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'Preserve signature enforcement', result.stderr)
+            self.assertFalse((root / 'written.json').exists(), 'a review bypass must not also bypass signing')
 
     def test_cli_prints_fixes_using_only_a_scoped_read(self):
         source = {**CASES[0]['source'], 'kind': 'ruleset', 'name': 'Required reviews', 'url': 'https://github.com/example/project/rules/42'}
