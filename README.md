@@ -168,7 +168,6 @@ The Python runtime uses the standard library. Run:
 
 ```sh
 python3 -m unittest discover -s tests -v
-python3 -m unittest discover -s observer/tests -v
 ```
 
 The operator UI has its own unit and end-to-end suites, in `ui/`:
@@ -182,11 +181,10 @@ it first with `npx playwright-core install chromium`, or set
 `FORGE_BROWSER_PATH` to an existing executable. Installing Chromium's system
 dependencies may require administrator access. See
 [`ui/README.md`](ui/README.md) for the harness and its environment variables.
-GitHub Actions runs the Python suites and the `ui` job on pushes and pull
+GitHub Actions runs the Python suite and the `ui` job on pushes and pull
 requests.
 
-These checks use synthetic local fixtures and do not mutate GitHub or send
-notifications. Optional systemd integration tests are documented separately and
+These checks use synthetic local fixtures and do not mutate GitHub. Optional systemd integration tests are documented separately and
 must be enabled explicitly.
 
 ## Source layout
@@ -196,8 +194,8 @@ must be enabled explicitly.
 | `forge/` | Setup/update, settings, the setup supervisor, and the durable factory (`forge/factory`) |
 | `forge_client/` | Local CLI for installation, host maintenance and scoped agent connections |
 | `ui/` | Operator UI (Nuxt) |
-| `observer/` | Independent observation and isolation experiments |
 | `deploy/` | Runner image, isolation policies and deployment utilities |
+| `docs/` | Operator and reference documentation ([index](docs/README.md)) |
 | `tests/` | Deterministic backend and browser regression checks |
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing and

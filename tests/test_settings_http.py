@@ -103,7 +103,7 @@ class SettingsHTTPTests(unittest.TestCase):
     def test_app_manifest_returns_through_the_name_the_browser_used(self):
         cases=[({}, 'http://127.0.0.1:8787'),
                ({'X-Forwarded-Host':'100.64.0.7:8787'}, 'http://100.64.0.7:8787'),
-               ({'X-Forwarded-Host':'forge.tail.ts.net:8787'}, 'http://forge.tail.ts.net:8787'),
+               ({'X-Forwarded-Host':'forge.example.ts.net:8787'}, 'http://forge.example.ts.net:8787'),
                ({'X-Forwarded-Host':'evil/path'}, 'http://127.0.0.1:8787')]
         for headers,origin in cases:
             with patch('forge.onboarding.Onboarding') as setup, patch.object(dashboard.H,'_browser',return_value='b'*32):

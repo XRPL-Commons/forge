@@ -46,10 +46,10 @@ Use explicit paths on the selected SSH host:
 ```sh
 forge --json server setup \
   --ssh forge \
-  --source /home/luc/forger-remote \
-  --root /home/luc/ops/forge-watchdog \
-  --origin https://forge.tail7560bd.ts.net \
-  --operator lucbocahut
+  --source /home/forge/forge \
+  --root /home/forge/.local/share/forge \
+  --origin https://forge.example.ts.net \
+  --operator YOUR_GITHUB_LOGIN
 ```
 
 Without a client ID, an unconfigured server returns `identity_app_required`, a

@@ -36,8 +36,9 @@ large or inconsistent paginated responses fail rather than becoming empty lists.
 The settings UI is the operator UI's `/settings` page. `bin/forge setup` installs the
 UI and the loopback status API it reads, with `FORGE_ROOT` set to the runtime root
 that holds `factory.json` and `state/`; see [UI deployment](ui-deployment.md). Keep
-the UI on a trusted private network: it does not provide per-user login. Mutating
-requests require same-origin JSON and a per-process capability token.
+the UI on a trusted private network. Operators sign in with GitHub (see
+[operator sign-in](operator-sign-in.md)); mutating requests also require
+same-origin JSON and a per-process capability token.
 
 ## Create and install role Apps
 
@@ -89,7 +90,8 @@ export FORGE_BUILD_KEY_FILE=/srv/forge/credentials/build.pem
 ```
 
 The variable contains a file path, not the key itself. Configure the four variables
-in the dashboard and standalone sync service environment before starting them.
+in the `forge-status` and `forge-supervisor` service environments (and for any
+manual `bin/forge settings` command) before starting them.
 Runners must not inherit App private keys or the controller's environment. Changing
 service environment variables requires restarting that service; replacing key
 contents at the same referenced path is picked up on the next sync.
@@ -139,8 +141,8 @@ bin/forge settings sync --root ./local
 bin/forge settings watch --root ./local
 ```
 
-`watch` syncs at startup and on the configured interval. The dashboard also starts
-this loop. A shared file lock prevents concurrent syncs from duplicating API work.
+`watch` syncs at startup and on the configured interval. The `forge-status` API
+also runs this loop. A shared file lock prevents concurrent syncs from duplicating API work.
 The one-shot `sync` command exits nonzero when configured access cannot be verified;
 exit code 2 means another sync already owns the lock.
 A crash leaves an interrupted indicator; restarting or clicking Refresh retries

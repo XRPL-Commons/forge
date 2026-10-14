@@ -46,6 +46,11 @@ RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses',
                  'deploy/runner/browser-canary.cjs')
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
 SERVICES = ('forge-status', 'forge-ui', 'forge-supervisor')
+# Disabled leftovers of removed host services. Update deletes exactly these
+# unit files when present; any other unit is left alone.
+STALE_UNITS = tuple(name + suffix for name in ('forge-activity', 'forge-notify', 'forge-observability',
+                                                'forge-babysitter', 'forge-triage')
+                    for suffix in ('.service', '.timer'))
 RECORD = 'host.json'
 # A drop-in that sets any of these makes systemd run something other than the
 # unit update writes, silently undoing it. Other drop-ins (NITRO_ALLOWED_HOSTS,
@@ -478,6 +483,19 @@ def wait_healthy(bind, timeout=90):
                          'journalctl --user -u ' + ' -u '.join(pending))
 
 
+def stale_units(units):
+    return [units / name for name in STALE_UNITS if os.path.lexists(units / name)]
+
+
+def remove_stale_units(paths):
+    for path in paths:
+        # Stop and disable first so systemd keeps no wants links or running copy; both are no-ops when already off.
+        subprocess.run(['systemctl', '--user', 'disable', '--now', path.name],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        path.unlink(missing_ok=True)
+        print('Removed stale unit ' + path.name)
+
+
 def dropins(units):
     """(service, path, overriding) for each drop-in on a service this module manages."""
     for name in SERVICES:
@@ -569,6 +587,8 @@ def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
         plan.append('operator UI release ' + release)
     plan += ['service ' + name for name in unit_changes]
     plan += ['remove overriding drop-in ' + path.name + ' from ' + name for name, path, _ in overrides]
+    stale = stale_units(units)
+    plan += ['remove stale unit ' + path.name for path in stale]
     if prepared_record is None and not fresh and not plan and not restart:
         print('Forge host is up to date' + (' at ' + source[:12] if source else '') + '.')
         return False
@@ -631,6 +651,7 @@ def _reconcile(root, bind=None, assume_yes=False, *, prepared_record=None):
             target.mkdir(parents=True, exist_ok=True)
             shutil.move(str(path), target / path.name)
         print('Moved overriding drop-ins to ' + str(backup))
+    remove_stale_units(stale)
     command(['systemctl', '--user', 'daemon-reload'])
     if prepared_record is not None:
         return prepared_record.finish(bind=bind, source=source, image=image, ui_release=release,

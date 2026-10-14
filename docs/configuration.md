@@ -24,8 +24,6 @@ Configuration refers to stored credentials by name (`private_key_env`, `provider
 | `FORGE_BIND_ADDRESS` | `legacy/forge-status.py` | none; must be `127.0.0.1` | Status API listen address. The API refuses to start otherwise |
 | `FORGE_PORT` | `legacy/forge-status.py` | `8787` in code; setup writes `8788` | Status API port (the UI takes 8787) |
 | `FORGE_UPSTREAM_SECRET_FILE` | `legacy/forge-status.py` | `<root>/state/ui-upstream.secret` | Secret proving requests came through the UI proxy |
-| `FORGE_NOTIFY_STATE` | `forge/notifications.py` | `state/notifications` | Notification dedupe state directory |
-| `RELAY_HOST`, `RELAY_WORKER_CONTAINER`, `RELAY_REDIS_HOST`, `RELAY_REDIS_PORT`, `NOTIFY_JID`, `NOTIFY_CHANNEL`, `NOTIFY_QUEUE` | `forge/notifications.py` | unset (channel off) | Optional `relay` notification channel |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `XAI_API_KEY` | harness adapters, via the credential store | unset | Coding-provider credentials (store wins; see above) |
 | `SAFE_BUILD_TIMEOUT_SECONDS` | `forge/factory/build_environment.py` | `1200` (max `2400`) | Bounded safe-build step timeout |
 

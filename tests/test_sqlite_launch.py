@@ -90,18 +90,6 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             launch(['unrelated.module'])
 
-    def test_notification_state_selects_runtime_and_message_cannot_override_it(self):
-        path = self.root / 'state/notifications'
-        with patch('forge.store.db.qualified_sqlite', return_value=True), patch('forge.store.runtime.selected') as selected, \
-                patch('forge.launch.runpy.run_module'):
-            launch(['forge.notifications', 'enqueue', '--state=' + str(path), '--', '--root=/message'])
-            selected.assert_called_with(str(self.root))
-            os.environ['FORGE_NOTIFY_STATE'] = str(path)
-            launch(['forge.notifications', 'drain'])
-            selected.assert_called_with(str(self.root))
-            selected.reset_mock()
-            launch(['forge.notifications', 'drain', '--state', str(self.root / 'observer-notifications')])
-            selected.assert_not_called()
 
 
 class ServiceQualificationTests(unittest.TestCase):

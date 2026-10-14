@@ -315,19 +315,3 @@ else:
             self.driver(after_stage=interrupt).activate()
         with self.assertRaisesRegex(MigrationError,'maintenance_in_progress'):
             write_json(self.root/'state/factory/supervisor.json', {'late':True})
-
-    def test_notification_send_and_quarantine_are_fenced_before_side_effects(self):
-        from forge.legacy_writers import exclusive
-        from forge.notifications import drain, enqueue
-        path=self.root/'state/notifications/outbox/invalid.json'
-        path.parent.mkdir(parents=True)
-        path.write_text('invalid')
-        sent=[]
-        with exclusive(self.root):
-            with self.assertRaisesRegex(MigrationError,'maintenance_in_progress'):
-                drain(path.parent.parent, sender=lambda *args: sent.append(args))
-            with self.assertRaisesRegex(MigrationError,'maintenance_in_progress'):
-                enqueue(path.parent.parent, 'late notification')
-        self.assertEqual(sent, [])
-        self.assertEqual(path.read_text(), 'invalid')
-        self.assertFalse((path.parent.parent/'quarantine').exists())

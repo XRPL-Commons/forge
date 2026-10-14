@@ -302,7 +302,7 @@ class ReconcileTests(unittest.TestCase):
         extra.write_text('[Service]\nEnvironment=MAX_SESSIONS=6\n')
         allowed = units / 'forge-ui.service.d/override.conf'
         allowed.parent.mkdir()
-        allowed.write_text('[Service]\nEnvironment=NITRO_ALLOWED_HOSTS=forge.tail.ts.net:8787\n')
+        allowed.write_text('[Service]\nEnvironment=NITRO_ALLOWED_HOSTS=forge.example.ts.net:8787\n')
         with patch.object(host_update.sys.stdin, 'isatty', return_value=False):
             with self.assertRaisesRegex(ValueError, 'rerun with --yes'):
                 self.host.reconcile()
@@ -315,6 +315,26 @@ class ReconcileTests(unittest.TestCase):
         moved = list((self.host.root / 'backups').glob('unit-dropins-*/forge-supervisor.service.d/99-onboarding-service.conf'))
         self.assertEqual(len(moved), 1)
         self.assertEqual(self.host.restarted(), [['forge-supervisor.service']])
+
+    def test_update_removes_only_the_named_stale_units_and_is_idempotent(self):
+        self.host.reconcile()
+        units = self.host.home / '.config/systemd/user'
+        stale = [units / name for name in ('forge-notify.service', 'forge-notify.timer', 'forge-activity.service',
+                                            'forge-observability.service', 'forge-babysitter.timer', 'forge-triage.service')]
+        for path in stale:
+            path.write_text('[Unit]\n')
+        kept = [units / 'forge-notify-extra.service', units / 'other.timer', units / 'forge-notify.service.d']
+        kept[0].write_text('[Unit]\n'); kept[1].write_text('[Unit]\n'); kept[2].mkdir()
+        _, output = self.host.reconcile()
+        self.assertIn('remove stale unit forge-notify.timer', output)
+        self.assertFalse(any(path.exists() for path in stale))
+        self.assertTrue(all(path.exists() for path in kept))
+        disabled = [argv[-1] for argv in self.host.calls if argv[:4] == ['systemctl', '--user', 'disable', '--now']]
+        self.assertEqual(sorted(disabled), sorted(path.name for path in stale))
+        self.assertEqual(self.host.restarted(), [])
+        _, output = self.host.reconcile()
+        self.assertIn('Forge host is up to date', output)
+        self.assertTrue(self.host.unit('forge-status'))
 
     def test_environment_overrides_count_as_overriding(self):
         for line, overriding in [('Environment=PYTHONPATH=/old', True), ('Environment="FORGE_ROOT=/x" "A=b"', True),

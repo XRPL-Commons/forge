@@ -66,7 +66,7 @@ Inside a worker, `safe-build COMMAND` serializes builds, limits Node's heap to
 60% of the container's finite memory budget, and kills the process group after
 the deadline (20 minutes by default, at most 40). The container cgroup remains
 the hard resource limit; the host admission check reserves memory before launch.
-This is independent of the host's systemd-based `bin/safe-build` helper. Projects
+Projects
 needing another runtime or more memory stop with an environment blocker; Forge
 does not bypass isolation or treat missing infrastructure as a code defect.
 

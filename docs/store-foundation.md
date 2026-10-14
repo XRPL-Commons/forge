@@ -221,7 +221,7 @@ The capture/core-import work is described in [the migration guide](store-migrati
 
 ## Remaining #209 work
 
-The [approved design](design/state-and-units-of-work.md) remains the release plan.
+[#209](https://github.com/XRPL-Commons/forge/issues/209) remains the release plan.
 Label removal and repaired repository readiness resume eligible work; completed
 external closure shows done; batches may include existing PRs with approval.
 The store supports these rules, but existing runtime adapters must still adopt it.

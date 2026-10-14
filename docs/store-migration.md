@@ -257,64 +257,7 @@ seal and cannot be imported.
   `public_view_parity: pending` explicitly distinguishes these checks from the
   separate public-view acceptance gate run by activation.
 
-## Production-copy dry run (2026-10-06)
-
-The CLI captured the idle production installation and restored its three active
-services. The copy contained 70 files / 69,754,890 bytes. No production data was
-rewritten or selected as SQLite.
-
-| Imported fact | Count |
-| --- | ---: |
-| Repositories, including one without tracked issues | 9 |
-| Observed issues | 1,023 |
-| Units of one | 112 |
-| Jobs | 895 |
-| Budget entries | 137 |
-| Candidates checked | 87 |
-| Events | 3,191 |
-| Pipeline artifact chunks checked | 3,994 |
-| Conversations / messages | 7 / 17 |
-| Operator decisions | 17 |
-| Notification events | 8 |
-| Memory profiles | 24 |
-| Configuration documents | 5 |
-| Environment scans | 6 |
-| Role access observations / repository access rows | 8 / 157 |
-| Repository setup observations | 9 |
-| Setup, deployment and qualification executions | 13 |
-| Deployment profiles | 8 |
-| Operator sessions / request audit entries | 1 / 31 |
-
-Source round-trip differences: **0**. All checked normalized facts matched.
-The first dry run exposed two importer errors around completed-unit insertion;
-those were corrected and covered by a terminal-history regression test. Merge
-receipts occur in both issue evidence and events; both forms are now recognized.
-
-The first import reported 34 unmapped supporting files. Those captured sources
-now have mappings; the expanded dry run reports **zero unmapped source files**.
-That does not mean their runtime adapters have switched to the database.
-
-The historical dry run left these findings to resolve or preserve at activation:
-
-- 13 live units retain `legacy_reconciliation` gates until current ownership,
-  GitHub facts and their other gates are checked by the cutover reconciler.
-- Seven issue observations contain truncated bodies; do not manufacture complete
-  requirements from those truncated strings.
-- 88 jobs have no retained completion timestamp. Their imported raw logs are
-  pinned rather than given an invented retention deadline. This is a retention
-  exception, not a missing-data error.
-
-The expanded database was approximately 102.9 MB including both immutable import
-evidence and normalized rows. This is not a final storage benchmark: archive retirement,
-public-view parity, measured host queries and normal merged
-batch execution remain separate release gates.
-
-The current production service environment links SQLite **3.45.1**. The new CLI
-successfully prepared a separate **3.51.3** runtime on that host and verified WAL,
-FULL, foreign keys and integrity. Compatible service launchers must select this
-qualified runtime during cutover; no running service was changed by preparation.
-
-### Identity preservation
+## Identity preservation
 
 The import retains the original opaque authorization epoch, session expiry and
 CSRF state, browser-bound OAuth flow verifier, device-code consumption, grant
@@ -333,8 +276,7 @@ other service during import or verification.
 The selected runtime composes row-based pipeline controllers and supporting-domain
 writers. The migration protocol checks public views against the same frozen source
 before selection. Explicitly retained reconciliation holds remain visible in the UI.
-See [the writer inventory](design/state-source-inventory.md) and
-[the foundation guide](store-foundation.md).
+See [the foundation guide](store-foundation.md).
 
 Code and schema changes alter the importer fingerprint. An offline rehearsal uses a
 new staging destination after such changes. An interrupted production activation
@@ -348,10 +290,10 @@ Use the local CLI from the release you are installing. This updates the selected
 host and database together; normal API reads never apply migrations.
 
 ```sh
-forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
-  --root /home/luc/ops/forge-watchdog --json
-forge migrate upgrade --ssh forge --source /home/luc/forger-remote \
-  --root /home/luc/ops/forge-watchdog --source-revision FULL_RELEASE_COMMIT \
+forge migrate upgrade --ssh forge --source /home/forge/forge \
+  --root /home/forge/.local/share/forge --json
+forge migrate upgrade --ssh forge --source /home/forge/forge \
+  --root /home/forge/.local/share/forge --source-revision FULL_RELEASE_COMMIT \
   --apply --json
 ```
 

@@ -71,13 +71,9 @@ requires the normal Build/Review/Audit pipeline and independent GitHub evidence.
 Existing hosts retain the [sign-in setup](cli-server-setup.md) and scoped
 repository workflows.
 
-## Separate staged components
+## Retired components
 
-The [security inventory](../SECURITY.md#isolation-status) classifies the
-independent observer (`observer/`) and the native-account executor proposal as
-staged, outside the live container runner. The observer and its mirror retain
-their own provisioning and baseline checks; their rollout remains deferred in
-#111 until core qualification is complete. A setup state left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
+A setup state left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
 or stops tmux sessions.
 
 ## Selected SQLite runtime

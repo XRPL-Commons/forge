@@ -8,7 +8,7 @@ reporting channel from the maintainer without including sensitive details.
 Forge is experimental operator software. Coding agents execute tools with the
 credentials and filesystem access their deployment grants. Workers run in
 disposable containers with repository-scoped credentials; see
-[implementation status](docs/implementation.md) and [isolation](docs/isolation.md)
+[implementation status](docs/implementation.md) and [isolation status](#isolation-status)
 for what those boundaries do and do not establish.
 
 The dashboard exposes private operational details. Existing installations retain
@@ -52,14 +52,8 @@ and [runtime configuration and GitHub gates](docs/factory-runtime-reference.md).
 | Disposable Docker worker, native tool sandbox, runner seccomp/AppArmor and internal egress network | Live | Used by the supported factory runner after host/provider qualification. |
 | SQLite runtime authority, managed launcher and legacy-writer fence | Live after explicit selection | Missing, incompatible or invalid selected state stops startup; it does not select JSON as a fallback. |
 | `safe-build`, memory admission, cgroup limits and build locks | Live resource controls | Bound resource usage and execution time. They do not isolate credentials or confer authorization. |
-| Dedicated native client accounts and executable profiles from `deploy/provision_isolation.py` | Staged, inactive factory alternative | Provisioning artifacts and synthetic canaries exist. The supported runner does not launch jobs through these host accounts. The `unconfined` executable profiles permit user namespaces; they are not application confinement. |
-| Independent observer isolation/deployment | Staged; rollout deferred | Not established by factory deployment. Keep #111 deferred until core qualification is complete. |
 | tmux fleet supervisor and its `legacy` onboarding phase | Retired | Supported launchers start the durable factory; old phase values become setup. There is no supported tmux startup path. |
 | JSON lifecycle/configuration stores | Pre-cutover compatibility only; retired on selected instances | The selected runtime fences old readers/writers. Frozen pre-migration data is private diagnosis material, not a recovery backend. |
-
-See [isolation status and staged provisioning](docs/isolation.md) for the separate
-native-account proposal. SQL execution adapters are part of the live controller;
-they must not be confused with that staged host-executor proposal.
 
 ## Storage, retention and recovery
 
