@@ -24,7 +24,7 @@ from .runner import RunnerError
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
                  dispatch, recovery=None, verification=None, waits=None, requirements=None, operators=None,
-                 discovery=None, deployments=None, reconciliation=None, planning=None, triage_effects=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
+                 discovery=None, deployments=None, planning=None, triage_effects=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
         if type(cycle_budget_seconds) not in (int, float) or not math.isfinite(cycle_budget_seconds) or cycle_budget_seconds <= 0:
@@ -38,7 +38,6 @@ class SqliteSupervisor:
         self.recovery, self.verification = recovery, verification
         self.requirements, self.operators, self.discovery = requirements, operators, discovery
         self.deployments = deployments
-        self.reconciliation = reconciliation
         self.planning, self.triage_effects = planning, triage_effects
         from .wait_controller import WaitController
         self.waits = waits if waits is not None else WaitController(store, clock=clock)
@@ -111,8 +110,6 @@ class SqliteSupervisor:
             stages = [
                 ('execution', lambda: self._page('execution', self.execution, limit, '')),
             ]
-            if self.reconciliation is not None:
-                stages.append(('reconciliation', lambda: self._page('reconciliation', self.reconciliation, limit, '')))
             if self.operators is not None:
                 stages.append(('operators', lambda: self._page('operators', self.operators, limit, '')))
             stages.append(('observations', lambda: self._page('observations', self.observations, limit)))

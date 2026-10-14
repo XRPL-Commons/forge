@@ -129,17 +129,12 @@ def strategist_properties():
     }
 
 
-def plan_schema(version):
+def plan_schema():
     def object_schema(properties):
         return {'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}
     strings = {'type': 'array', 'items': {'type': 'string'}}
     key = {'type': 'string', 'pattern': '^[a-z][a-z0-9_-]{0,63}$'}
     scope = {'type': 'string', 'minLength': 1}
-    if version == 1:
-        return object_schema({'children': {'type': 'array', 'items': object_schema({
-            'key': key, 'member_id': {'type': 'string'}, 'scope': scope, 'dependencies': strings})}})
-    if version != 2:
-        raise ValueError('Unsupported managed assignment manifest version')
     edges = {'type': 'array', 'items': object_schema({
         'prerequisite_member_id': {'type': 'string'}, 'member_id': {'type': 'string'}})}
     task = object_schema({'key': key, 'executor': {'type': 'string', 'enum': ['owner', 'child']},
@@ -179,9 +174,8 @@ def schema(note):
         props['outcome']['enum'].extend(['needs_decision', 'waiting_on_issues'])
         props['outcome']['description'] = ('Use waiting_on_issues for open prerequisite issues, not needs_decision '
                                           'or blocked_environment. dependency_access is for registry, repository or network access failures.')
-    if note.get('builder_stage') or note.get('delegation') or note.get('task'):
-        props['delegation_plan'] = {'anyOf': [{'type': 'null'},
-            plan_schema(note.get('input_manifest', {}).get('manifest_version', 1))]}
+    if note.get('builder_stage') or note.get('task'):
+        props['delegation_plan'] = {'anyOf': [{'type': 'null'}, plan_schema()]}
         props['output_commit'] = {'type': ['string', 'null']}
         if note.get('builder_stage') == 'planning':
             props['outcome']['enum'] = list(PLANNING_OUTCOMES)
@@ -258,8 +252,7 @@ def main():
     contract = schema(note)
     begin_agent(env)
     code = adapter['run'](note, directory, env, contract)
-    exports = (note.get('task') or note.get('delegation') or
-               note['role'] == 'build' and note.get('source_input') and note.get('builder_stage') != 'planning')
+    exports = (note.get('task') or note['role'] == 'build' and note.get('source_input') and note.get('builder_stage') != 'planning')
     if exports and Path('/work/result.json').is_file():
         # Export belongs to the completed implementation, not environment setup.
         # A bad claimed commit must charge a failed attempt rather than pause for

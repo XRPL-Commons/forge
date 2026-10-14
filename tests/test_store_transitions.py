@@ -162,7 +162,7 @@ class StoreTransitionTests(unittest.TestCase):
         tasks = [dict(key=str(number), executor='child', member_ids=[member],
                       scope='Implement the approved issue', depends_on=[], internalizes=[])
                  for number, member in enumerate(members, 1)]
-        self.plan = self.delivery.save_plan(self.command(), self.owner_job['job_id'], execution_fence='fence-parent',
+        self.plan = self.delivery.save_task_plan(self.command(), self.owner_job['job_id'], execution_fence='fence-parent',
             input_manifest=owner_manifest, plan={'version': 2, 'retained_task_ids': [], 'tasks': tasks,
                 'owner_final': {'member_ids': [], 'scope': '', 'internalizes': []}}, evidence={'verified': True})
         self.cleanup(self.owner_job, slot='parent')

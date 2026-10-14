@@ -70,19 +70,6 @@ class TaskMigrationTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT resolution FROM unit_gates WHERE id='result-b'").fetchone()[0],'superseded')
                 self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0],1)
                 self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())
-            from forge.store.delivery import Delivery
-            from forge.store.models import Command
-            command=Command('consume-v1','operator','u',1)
-            args=dict(execution_fence='fence',input_manifest=json.loads(before['child-b']),commit_oid='b'*40,
-                      evidence={'verified':True,'commit_oid':'b'*40,'base_oid':'base',
-                      'input_manifest_hash':manifest_hash(json.loads(before['child-b'])),'bundle_digest':digest})
-            receipt=Delivery(target,clock=lambda:3).accept_part(command,'child-b',**args)
-            self.assertTrue(receipt['accepted'])
-            self.assertEqual(Delivery(storage.Store(target.root),clock=lambda:4).accept_part(command,'child-b',**args),receipt)
-            with target.read_snapshot() as db:
-                self.assertEqual(db.execute("SELECT input_manifest_json FROM attempts WHERE id='child-b'").fetchone()[0],before['child-b'])
-                self.assertEqual(db.execute("SELECT count(*) FROM part_outputs WHERE attempt_id='child-b'").fetchone()[0],1)
-                self.assertEqual(db.execute("SELECT count(*) FROM unit_gates WHERE code='result_pending' AND resolved_at IS NULL").fetchone()[0],0)
 
     def test_bad_reference_rolls_back_and_restores_fk_enforcement(self):
         from contextlib import contextmanager

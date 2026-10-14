@@ -77,13 +77,9 @@ checkpoint leaves the sweep marked interrupted; its request totals may be
 incomplete and it is excluded from healthy latency samples. Issue freshness alone
 does not hide a missing, failed, stale or interrupted candidate/ownership read.
 
-Observation completion does not release execution authority. An imported member
-still reads its issue, relevant open PRs for ownership, and any selected PR while
-`legacy_reconciliation` stays open. Verified facts can complete the sweep while
-its imported requirements, candidate, hold and reconciliation gates remain
-unchanged. Migration acceptance still requires its separate fresh protection,
-ownership and candidate proofs. A grouped member's observed closure similarly
-completes observation while its explicit `membership_decision` remains pending;
+Observation completion does not release execution authority. A grouped member's
+observed closure completes observation while its explicit `membership_decision`
+remains pending;
 a verified external candidate change can be observed while `external_change`
 continues to block work. Unknown PR identity or merge state remains an error,
 not a successful negative observation. Explicit issue refresh requests finish

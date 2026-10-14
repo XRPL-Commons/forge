@@ -5,8 +5,8 @@ PLANNING_OUTCOMES = ('delegate', 'needs_decision', 'waiting_on_issues', 'blocked
 
 
 def task_assignment(job):
-    """Typed tasks and retained v1 delegated captures share output authority."""
-    return job.get('task') is not None or job.get('delegation') is not None
+    """A typed task's capture is a tracked output of the owning builder."""
+    return job.get('task') is not None
 
 
 def read_only_build(job):
@@ -14,8 +14,8 @@ def read_only_build(job):
 
 
 def assignment(note, job):
-    note.update(builder_id=job.get('builder_id') or (job.get('task') or job['delegation'])['builder_id'],
-                builder_stage=job.get('builder_stage'), delegation=job.get('delegation'), task=job.get('task'))
+    note.update(builder_id=job.get('builder_id') or job['task']['builder_id'],
+                builder_stage=job.get('builder_stage'), task=job.get('task'))
     note['instructions'] += (
         ' This delivery has one owning builder and tracked implementation tasks. Native provider subagents are disabled. '
         'If integration_conflicts is present, resolve the current merge, commit it, then merge every remaining exact commit before continuing. '
@@ -27,34 +27,25 @@ def assignment(note, job):
         'before releasing the wait. Reporting a dependency does not approve a new edge in this delivery. '
         'For managed build results always provide delegation_plan and output_commit; use null when not applicable.')
     if job.get('builder_stage') == 'planning':
-        if job['input_manifest'].get('manifest_version', 1) == 2:
-            note['instructions'] += (
-                ' You are the owning builder planning this approved delivery. Return outcome delegate and a version 2 '
-                'delegation_plan with retained_task_ids, tasks, and owner_final. Each task has key, executor (owner or child), '
-                'member_ids, scope, depends_on, and internalizes. Member scopes may overlap: one task may cover several '
-                'members and one member may need several tasks. Cover every approved member with tasks or owner_final. '
-                'Use zero tasks when owner_final covers all implementation. An owner task produces an intermediate bundle '
-                'before dependent tasks; owner_final is implementation performed during final integration. '
-                'depends_on names new task keys or retained task IDs. Retain only supplied immutable tasks with their '
-                'exact prerequisite closure. For each approved member prerequisite, all its task contributions must '
-                'precede dependent contributions. A task covering both ends must explicitly internalize that edge using '
-                '{prerequisite_member_id,member_id}; this does not waive other predecessor outputs or external prerequisites. '
-                'Do not put prerequisite work in owner_final when a task needs it: final integration consumes every task, '
-                'so that would be a cycle. Plan keys do not confer authority or reuse old results. '
-                'Return output_commit null. Do not modify or publish code. Forge records the graph, releases this process, '
-                'runs ready tasks within capacity, and resumes your logical owner for integration.')
-        else:
-            note['instructions'] += (
-                ' You are the owning builder planning this approved delivery. Read every member and decide independent '
-                'implementation scopes. Return outcome delegate and delegation_plan {children:[{key,member_id,scope,dependencies}]}. '
-                'Each ID in input_manifest.remaining_members has one child; accepted_outputs are retained and must not be repeated. Dependencies must match the approved member graph supplied in input_manifest. '
-                'Keys are stable lowercase letters, digits, underscores or hyphens. Each scope states the implementation and '
-                'acceptance work. Return output_commit null. Do not modify or publish code. Forge releases this execution, '
-                'runs runnable children within capacity, then resumes your logical builder identity with their exact outputs.')
+        note['instructions'] += (
+            ' You are the owning builder planning this approved delivery. Return outcome delegate and a version 2 '
+            'delegation_plan with retained_task_ids, tasks, and owner_final. Each task has key, executor (owner or child), '
+            'member_ids, scope, depends_on, and internalizes. Member scopes may overlap: one task may cover several '
+            'members and one member may need several tasks. Cover every approved member with tasks or owner_final. '
+            'Use zero tasks when owner_final covers all implementation. An owner task produces an intermediate bundle '
+            'before dependent tasks; owner_final is implementation performed during final integration. '
+            'depends_on names new task keys or retained task IDs. Retain only supplied immutable tasks with their '
+            'exact prerequisite closure. For each approved member prerequisite, all its task contributions must '
+            'precede dependent contributions. A task covering both ends must explicitly internalize that edge using '
+            '{prerequisite_member_id,member_id}; this does not waive other predecessor outputs or external prerequisites. '
+            'Do not put prerequisite work in owner_final when a task needs it: final integration consumes every task, '
+            'so that would be a cycle. Plan keys do not confer authority or reuse old results. '
+            'Return output_commit null. Do not modify or publish code. Forge records the graph, releases this process, '
+            'runs ready tasks within capacity, and resumes your logical owner for integration.')
     elif task_assignment(job):
         note['instructions'] += (
             ' You are a tracked implementation task of the owning builder. Implement only input_manifest.scope '
-            'for every pinned member listed in members (legacy assignments use delegation.scope). '
+            'for every pinned member listed in members. '
             'Your task may contribute part of an issue or span several issues; it does not complete their delivery. '
             'Prerequisite outputs have been verified and merged into this isolated checkout. Commit the complete result '
             'locally on the assigned branch and return pass with output_commit equal to git rev-parse HEAD. '

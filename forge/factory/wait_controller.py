@@ -26,7 +26,7 @@ class WaitController:
             gate = dict(row)
         if gate['resolved_at'] is not None:
             return {'gate_id': gate_id, 'resolved': True}
-        if gate['code'] not in {'forge_problem', 'provider_unavailable', 'retry_delay', 'environment'}:
+        if gate['code'] not in {'forge_problem', 'provider_unavailable', 'environment'}:
             raise TransitionError('this wait needs an observation or operator decision')
         if gate['code'] == 'environment':
             from ..store.worker_claims import eligible_gate_in
@@ -61,7 +61,7 @@ class WaitController:
             if db.execute("SELECT 1 FROM store_metadata WHERE key='import_only' AND value='true'").fetchone():
                 raise TransitionError('staging imports cannot process runtime waits')
             rows = db.execute("SELECT g.id FROM unit_gates g JOIN units u ON u.id=g.unit_id "
-                "WHERE g.id>? AND g.resolved_at IS NULL AND g.code IN ('forge_problem','provider_unavailable','retry_delay','environment') "
+                "WHERE g.id>? AND g.resolved_at IS NULL AND g.code IN ('forge_problem','provider_unavailable','environment') "
                 "AND u.state NOT IN ('merged','closed','dissolved') ORDER BY g.id LIMIT ?", (after, limit + 1)).fetchall()
         page, results = rows[:limit], []
         for row in page:

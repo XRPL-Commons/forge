@@ -39,10 +39,6 @@ class TaskContractTests(unittest.TestCase):
         self.assertIn('member_ids', task['required'])
         self.assertNotIn('maxItems', plan['properties']['tasks'])
         self.assertNotIn('minItems', plan['properties']['tasks'])  # owner-only is valid
-        legacy = harness.plan_schema(1)
-        self.assertEqual(legacy['required'], ['children'])
-        with self.assertRaises(ValueError):
-            harness.plan_schema(3)
 
     def test_owner_and_child_outputs_require_exact_commit_and_cannot_publish(self):
         github = object.__new__(GitHub)
@@ -151,7 +147,7 @@ class TaskContractTests(unittest.TestCase):
         source = Path(harness.__file__).resolve()
         run = subprocess.run(['python3', '-I', '-c',
             'import runpy; m=runpy.run_path(' + repr(str(source)) + '); '
-            'assert m["plan_schema"](2)["properties"]["version"]["enum"] == [2]'],
+            'assert m["plan_schema"]()["properties"]["version"]["enum"] == [2]'],
             capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr)
 

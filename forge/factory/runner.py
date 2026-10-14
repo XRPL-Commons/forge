@@ -526,7 +526,7 @@ class ContainerRunner:
             captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace'), secrets)[-65536:]
         except RunnerError:
             captured['missing'].append('runner logs')
-        if job.get('task') is not None or job.get('delegation') is not None or job.get('role') == 'build' and job.get('source_input') and job.get('builder_stage') != 'planning':
+        if job.get('task') is not None or job.get('role') == 'build' and job.get('source_input') and job.get('builder_stage') != 'planning':
             from .delegation_artifacts import MAX_BUNDLE_SIZE
             try:
                 raw = self.call(['cp', current['id'] + ':/work/output.bundle', '-'], max_output=MAX_BUNDLE_SIZE + 65536).stdout

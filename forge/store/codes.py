@@ -34,6 +34,9 @@ CLOSE_CODES: dict[str, CloseCode] = {
     'operator_closed': CloseCode(None),
     # Retired after its members moved into a combined unit.
     'combined': CloseCode(None),
+    # An imported delivery retired by migration 041; discovery admits its open
+    # issue again as a new delivery.
+    'import_superseded': CloseCode(None),
 }
 
 # --- Gates -----------------------------------------------------------------

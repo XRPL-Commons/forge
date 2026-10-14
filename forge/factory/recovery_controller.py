@@ -59,14 +59,11 @@ class RecoveryController:
         self._active()
         if not self.config['enabled']:
             return {'failed_job_id': failed_job_id, 'pending': 'runtime_disabled'}
-        # Historical imports without a complete immutable launch cannot be
-        # manufactured into new assignments from legacy JSON evidence.
+        # A job without an immutable launch cannot be turned into an assignment.
         try:
             original = self.jobs.job(failed_job_id)
         except KeyError:
-            from ..store.migration_recovery import original_job
-            try:original=original_job(self.store,failed_job_id)
-            except KeyError:return {'failed_job_id': failed_job_id, 'pending': 'legacy_reconciliation'}
+            return {'failed_job_id': failed_job_id, 'pending': 'launch_unavailable'}
         from ..store.execution_problems import ExecutionProblems
         repaired=ExecutionProblems(self.store,clock=self.clock).recheck_recovery_memory(self._command(original),failed_job_id,self.config['memory_tiers'])
         if repaired.get('resolved'):original=self.jobs.job(failed_job_id)
@@ -199,14 +196,7 @@ class RecoveryController:
             'Investigation exceeded its execution deadline' if capture.get('timed_out')
             else 'Investigation did not return usable findings')
         args = dict(execution_fence=job['execution_fence'], input_manifest=job['input_manifest'], findings=findings)
-        try:original = self.jobs.job(job['input_manifest']['failed_job_id'])
-        except KeyError:
-            from ..store.migration_recovery import original_job
-            original_job(self.store,job['input_manifest']['failed_job_id'])
-            # Imported diagnostics do not supply the original complete launch
-            # authority needed to correct charges or accept a publication.
-            answer=self.commands.finish(self._command(job),recovery_job_id,**args,incomplete=incomplete)
-            return {'job_id':recovery_job_id,**answer}
+        original = self.jobs.job(job['input_manifest']['failed_job_id'])
         # Publication proof cannot turn unfinished work into a candidate. The
         # original build's immutable result must establish content completion.
         original_report = None
