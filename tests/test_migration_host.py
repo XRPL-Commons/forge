@@ -41,6 +41,14 @@ class HostTests(unittest.TestCase):
         self.assertNotIn('private_customer_table', json.dumps(receipt))
         self.assertNotIn('no such table', json.dumps(receipt))
 
+    def test_mirror_writer_is_inventoried_without_a_separate_service_list(self):
+        from types import SimpleNamespace
+        rows = [{'unit': 'forge-mirror.service', 'active': 'active'},
+                {'unit': 'forge-supervisor.service', 'active': 'active'},
+                {'unit': 'unrelated.service', 'active': 'active'}]
+        host = Host(self.root, self.root / 'source', run=lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(rows)))
+        self.assertEqual(host.units(), ['forge-mirror.service', 'forge-supervisor.service'])
+
     def test_initial_updater_executes_pinned_checkout_with_typed_receipt_protocol(self):
         from types import SimpleNamespace
         requests=[]

@@ -1,4 +1,5 @@
-# Run from this directory after reviewing the allowlist. No host ports or sockets.
+# Trusted setup/login probes use this bridge. Ordinary jobs get isolated per-job
+# bridges and gateways from WorkerBoundary; they never join forge-workers.
 services:
   egress:
     image: ${FORGE_EGRESS_IMAGE:-python:3.12-slim}
@@ -27,4 +28,5 @@ networks:
   workers:
     name: forge-workers
     internal: true
-  uplink: {}
+  uplink:
+    name: forge-uplink

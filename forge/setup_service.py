@@ -83,9 +83,11 @@ class Service:
         # that is gone without an answer was orphaned by a restart.
         self.boot = uuid.uuid4().hex
 
-    def runner(self, config):
+    def runner(self, config, *, probe=False):
         # The runner finds <root>/runner-seccomp.json through FORGE_CREDENTIAL_ROOT.
-        return self.runner_class(config, environ=Credentials(self.root).environment())
+        from .factory.probe_runner import ProbeRunner
+        runner = ProbeRunner if probe and self.runner_class is ContainerRunner else self.runner_class
+        return runner(config, environ=Credentials(self.root).environment())
 
     def update(self, expected, **values):
         with self.setup.store.transaction() as data:
@@ -183,7 +185,7 @@ class Service:
             return
         if op['step'] == 'prepare':
             for job in data['probe_jobs']:
-                self.runner(job['runner_config']).reset(job)
+                self.runner(job['runner_config'], probe=True).reset(job)
                 job['cleanup'] = True
             if data['probe_jobs']:
                 self.update(op, probe_jobs=data['probe_jobs'])
@@ -215,7 +217,7 @@ class Service:
                         operation={**op, 'step': 'probe'})
             return
         job = data['probe_jobs'][-1]
-        runner = self.runner(job['runner_config'])
+        runner = self.runner(job['runner_config'], probe=True)
         if job['fenced']:
             runner.reset(job)
             job['cleanup'] = True
@@ -250,7 +252,7 @@ class Service:
             self.update(op, probe_jobs=data['probe_jobs'])
             current = runner.inspect(job)
         if current['status'] == 'created':
-            runner.prepare(job, 'synthetic-no-github-access')
+            runner.prepare(job)
             try:
                 runner.start(job)
             except RunnerCapacity:
@@ -327,7 +329,7 @@ class Service:
                 from .harnesses.accounts import reset_logins
                 reset_logins(self.root)
                 for job in [*op['jobs'], *data['probe_jobs']]:
-                    self.runner(job['runner_config']).reset(job)
+                    self.runner(job['runner_config'], probe=any(row['id'] == job['id'] for row in data['probe_jobs'])).reset(job)
                 self.update(op, operation={**op, 'step': 'clear_setup'})
                 return
             if op['step'] != 'clear_setup':

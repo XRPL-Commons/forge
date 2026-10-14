@@ -24,7 +24,9 @@ class FakeHost:
     def run(self, argv, check=False, **kwargs):
         self.calls.append(argv)
         result = Mock(returncode=0, stdout='')
-        if argv[:2] == ['git', '-C'] and argv[3:] == ['rev-parse', 'HEAD']:
+        if argv[:2] == ['docker', 'version']:
+            result.stdout = '29.5.3\n'
+        elif argv[:2] == ['git', '-C'] and argv[3:] == ['rev-parse', 'HEAD']:
             result.stdout = self.revision + '\n'
         elif argv[:3] == ['docker', 'image', 'inspect']:
             if argv[3] in self.images:
@@ -119,12 +121,35 @@ class ReconcileTests(unittest.TestCase):
             self.assertTrue((self.host.root / 'ui/current/docs' / guide).exists())
         self.assertTrue((self.host.root / 'ui/current/docs/assets/setup-hero.svg').exists())
         self.assertIn('"FORGE_ROOT=/app"', ui)
-        self.assertEqual(self.host.restarted(), [['forge-status.service', 'forge-ui.service', 'forge-supervisor.service']])
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-ui.service', 'forge-supervisor.service']])
         self.host.qualify.assert_called_once()
         runtime = json.loads((self.host.root / 'host-runtime.json').read_text())
         self.assertEqual(runtime['image'], 'sha256:' + '1' * 64)
         self.assertEqual(runtime['apparmor_profile'], 'forge-runner-private-proc')
         self.assertEqual(json.loads((self.host.root / 'host.json').read_text())['source'], 'a' * 40)
+
+    def test_mirror_unit_runs_the_qualified_launcher_before_supervisor(self):
+        self.host.reconcile()
+        mirror = self.host.unit('forge-mirror')
+        self.assertIn('forge.launch forge.mirror_daemon --root', mirror)
+        supervisor = self.host.unit('forge-supervisor')
+        self.assertIn('Requires=forge-mirror.service', supervisor)
+        self.assertIn('After=network-online.target forge-mirror.service', supervisor)
+        health = next(i for i, call in enumerate(self.host.calls) if 'forge.mirror_daemon' in call and '--check' in call)
+        start = next(i for i, call in enumerate(self.host.calls) if call[:3] == ['systemctl', '--user', 'restart'] and 'forge-supervisor.service' in call)
+        self.assertLess(health, start)
+
+    def test_unsupported_engine_refuses_before_build_or_host_changes(self):
+        original = self.host.run
+        def old_engine(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[:2] == ['docker', 'version']: result.stdout = '23.0.5'
+            return result
+        self.host.run = old_engine
+        with self.assertRaisesRegex(RuntimeError, 'Docker Engine 28'):
+            self.host.reconcile()
+        self.assertFalse(self.host.builds)
+        self.assertFalse((self.host.home / '.config/systemd/user').exists())
 
     def test_failed_fresh_canary_installs_no_services_or_success_marker(self):
         self.host.qualify.side_effect = RuntimeError('Browser unavailable')
@@ -185,6 +210,7 @@ class ReconcileTests(unittest.TestCase):
         compose = (host_update.SOURCE / 'deploy/runner/compose.yaml').read_text()
         self.assertIn('user: "${FORGE_EGRESS_USER:-1000:1000}"', compose)
         self.assertIn('healthcheck:', compose)
+        self.assertIn('name: forge-uplink', compose)
 
     def test_an_unhealthy_egress_proxy_fails_setup_before_services_are_installed(self):
         self.failing(['docker', 'compose'])
@@ -198,7 +224,7 @@ class ReconcileTests(unittest.TestCase):
         self.host.revision = 'b' * 40
         changed, _ = self.host.reconcile()
         self.assertFalse(changed)
-        self.assertEqual(self.host.restarted(), [['forge-status.service', 'forge-supervisor.service']])
+        self.assertEqual(self.host.restarted(), [['forge-mirror.service'], ['forge-status.service', 'forge-supervisor.service']])
         self.assertEqual(self.host.builds, 1)
 
     def test_a_new_runner_is_qualified_before_every_runtime_switches_to_it(self):
