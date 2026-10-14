@@ -1,10 +1,12 @@
 """Only fixed setup checks use the trusted network; their work remains bounded."""
 from copy import deepcopy
 import json
+import io
+import tarfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from forge.factory.probe_runner import ProbeRunner, PROVIDER
 from forge.factory.runner import ContainerRunner, RunnerError
@@ -80,6 +82,46 @@ class ProbeRunnerTests(unittest.TestCase):
             self.assertIsNone(self.runner.source_record(self.job))
             with self.assertRaisesRegex(RunnerError, 'repository bundles'):
                 self.runner.prepare(self.job, bundles=[b'git'])
+
+    def test_fixed_probes_send_empty_envelope_with_browser_login_pool_and_api_key_default(self):
+        from forge.factory.config import validate
+        config = validate({'image': 'sha256:'+'a'*64, 'provider_pool': [dict(id='codex', provider='codex',
+            model=None, provider_environment=[], provider_auth_file_env='FORGE_SETUP_CODEX_AUTH')]})
+        self.assertEqual(config['provider_environment'], ['OPENAI_API_KEY'])
+        for kind in ('termination', 'reuse'):
+            with self.subTest(kind=kind):
+                job = Service.new_probe(None, config, kind)
+                original = deepcopy(job)
+                runner = ProbeRunner(job['runner_config'], environ={'FORGE_CREDENTIAL_ROOT': self.temp.name})
+                runner.call = Mock()
+                with patch.object(runner, 'inspect', return_value={'status':'created','id':'owned-container'}), \
+                        patch.object(runner, '_prepare_credentials', side_effect=AssertionError('provider authority')):
+                    runner.prepare(job)
+                self.assertEqual(job, original)
+                args, kwargs = runner.call.call_args
+                self.assertEqual(args[0], ['cp', '-a', '-', 'owned-container:/work/'])
+                with tarfile.open(fileobj=io.BytesIO(kwargs['input'])) as archive:
+                    self.assertEqual(archive.getnames(), ['credentials.json'])
+                    self.assertEqual(json.loads(archive.extractfile('credentials.json').read()), {})
+                    member = archive.getmember('credentials.json')
+                    self.assertEqual((member.mode,member.uid,member.gid), (0o600,1000,1000))
+
+    def test_fixed_probes_keep_exact_owned_unstarted_unfenced_guard(self):
+        for kind in ('termination', 'reuse'):
+            job = Service.new_probe(None, self.config, kind)
+            runner = ProbeRunner(job['runner_config'], environ={})
+            for current, fenced in ((None,False), ({'status':'running'},False), ({'status':'created'},True)):
+                with self.subTest(kind=kind,current=current,fenced=fenced), \
+                        patch.object(runner, 'inspect', return_value=current), \
+                        patch.object(runner, '_send_credentials') as send:
+                    with self.assertRaisesRegex(RunnerError, 'unstarted owned'):
+                        runner.prepare({**job,'fenced':fenced})
+                    send.assert_not_called()
+            with patch.object(runner, 'inspect', side_effect=RunnerError('ownership unverified')), \
+                    patch.object(runner, '_send_credentials') as send:
+                with self.assertRaisesRegex(RunnerError,'ownership unverified'):
+                    runner.prepare(job)
+                send.assert_not_called()
 
     def test_cleanup_preserves_foreign_resources_then_removes_owned_inputs(self):
         spec = self.runner.prepare_source(self.job)

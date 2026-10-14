@@ -381,6 +381,10 @@ class ContainerRunner:
                 credentials['FORGE_AUTH_DIGEST'] = hashlib.sha256(raw).hexdigest()
             except (RunnerError, OSError, ValueError, KeyError):
                 raise RunnerUnavailable('Provider authentication file could not be loaded or renewed') from None
+        return self._send_credentials(job, current, credentials, bundles=bundles)
+
+    def _send_credentials(self, job, current, credentials, *, bundles=()):
+        """Transfer the job entrypoint envelope to an already-verified container."""
         path = self._secrets_path(job)
         if path:
             # Written before the worker can see them: capture scrubs these exact

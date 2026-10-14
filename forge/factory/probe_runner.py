@@ -72,7 +72,15 @@ class ProbeRunner(ContainerRunner):
         self.identity(job)
         if bundles:
             raise RunnerError('Setup probes cannot receive repository bundles')
-        return self._prepare_credentials(job)
+        if job['kind'] == 'provider':
+            return self._prepare_credentials(job)
+        current = self.inspect(job)
+        if not current or current['status'] != 'created' or job['fenced']:
+            raise RunnerError('Only an unstarted owned execution can receive an assignment')
+        # Fixed termination/reuse programs exercise container lifecycle only.
+        # job.py still consumes its credential envelope, but needs no provider
+        # authority even when the runtime defaults name an API key.
+        return self._send_credentials(job, current, {})
 
     def reset(self, job):
         name, labels = self.identity(job)
