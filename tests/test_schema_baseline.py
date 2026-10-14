@@ -45,6 +45,11 @@ KEPT = ('repositories', 'issues', 'issue_revisions', 'units', 'unit_issues', 'un
 
 class SchemaBaselineTests(unittest.TestCase):
     def setUp(self):
+        # These assertions describe the frozen baseline; later migrations have
+        # their own upgrade tests and must not alter this schema-shape oracle.
+        catalog = storage._migrations()[:1]
+        current = patch('forge.store.db._migrations', return_value=catalog)
+        current.start(); self.addCleanup(current.stop)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)

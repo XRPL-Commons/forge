@@ -575,11 +575,25 @@ class SetupCommandTests(unittest.TestCase):
                     patch.object(host_update, 'reconcile', return_value=True), \
                     patch.object(host_setup, 'Onboarding') as onboarding, \
                     patch.object(host_setup, 'check') as check, patch('sys.stdout', io.StringIO()):
-                onboarding.return_value.view.return_value = {'provider_connected': True}
+                onboarding.return_value.view.return_value = {'provider_connected': True, 'image_verified': True}
                 host_setup.update(root)
                 check.assert_called_once_with(root)
                 check.reset_mock()
                 host_update.reconcile.return_value = False
+                host_setup.update(root)
+                check.assert_not_called()
+                # A prior updater installed the image, then failed before its
+                # account check. Unchanged artifacts do not prove qualification.
+                onboarding.return_value.view.return_value['image_verified'] = False
+                check.side_effect = ValueError('account check interrupted')
+                with self.assertRaisesRegex(ValueError, 'account check interrupted'):
+                    host_setup.update(root)
+                check.assert_called_once_with(root)
+                check.reset_mock(side_effect=True)
+                host_setup.update(root)
+                check.assert_called_once_with(root)
+                check.reset_mock()
+                onboarding.return_value.view.return_value['provider_connected'] = False
                 host_setup.update(root)
                 check.assert_not_called()
 
