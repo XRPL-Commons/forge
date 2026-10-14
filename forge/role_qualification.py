@@ -19,6 +19,7 @@ import time
 from .factory.runner import ContainerRunner
 from .factory.source_preparation import SourcePreparation
 from .factory.worker_boundary import WorkerBoundary
+from .mirror.policy import MirrorError
 from .role_qualification_fixtures import Fixtures
 
 ROLES = ('build', 'review', 'audit', 'recovery', 'triage', 'strategist', 'discussion')
@@ -27,6 +28,36 @@ SECONDS = 180
 
 class QualificationError(RuntimeError):
     pass
+
+
+class QualificationSettings:
+    """Read-only policy view for the explicitly selected disposable project.
+
+    Fresh setup has App connections before a repository is enabled. The CLI
+    selection supplies this fixture's project identity; live settings still
+    supply connections and any project restrictions on every broker request.
+    """
+    def __init__(self, settings, repository):
+        self.settings = settings
+        self.repository = dict(id=repository.repository_id, name=repository.canonical_name, enabled=False)
+        self.configured = False
+        self.load()
+
+    def load(self):
+        config = deepcopy(self.settings.load())
+        selected = self.repository
+        matches = [row for row in config['repositories']
+                   if row['id'] == selected['id'] or row['name'].lower() == selected['name'].lower()]
+        if matches:
+            if (len(matches) != 1 or matches[0]['id'] != selected['id']
+                    or matches[0]['name'].lower() != selected['name'].lower()):
+                raise MirrorError('repository_unavailable')
+            self.configured = True
+        elif self.configured:
+            raise MirrorError('repository_unavailable')
+        else:
+            config['repositories'].append(dict(selected))
+        return config
 
 
 def idle(store):
@@ -243,6 +274,7 @@ def qualify(root, repository, number, *, apply=False, image=None):
         signal.alarm(1500)
         try:
             resolved=access.resolve(repository)
+            fixture_settings=QualificationSettings(settings,resolved)
             issue,requirements,_=github.issue_inputs(dict(repo=repository,repo_id=resolved.repository_id,number=number))
             env={**os.environ,**Credentials(root).environment(only=config['provider_environment']), 'FORGE_CREDENTIAL_ROOT':str(root)}
             cache=GitStore(directory/'cache',credentials=access.credentials,max_cache_bytes=1024**3)
@@ -252,9 +284,9 @@ def qualify(root, repository, number, *, apply=False, image=None):
                 report['current_role']=role
                 if idle(store)!=before:raise QualificationError('configuration_changed')
                 fixtures=Fixtures(directory/str(index),resolved,issue,requirements,base,config,SECONDS)
-                source=CanarySource(fixtures.store.root,fixtures.store,settings=settings,access=access,git_store=cache,github=github)
+                source=CanarySource(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache,github=github)
                 source.config=config
-                daemon=MirrorDaemon(fixtures.store.root,fixtures.store,settings=settings,access=access,git_store=cache)
+                daemon=MirrorDaemon(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache)
                 runner=CanaryRunner(config,environ=env,source=source)
                 job=fixtures.reserve(role)
                 try:

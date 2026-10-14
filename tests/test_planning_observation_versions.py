@@ -82,7 +82,7 @@ class PlanningObservationVersionsTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             issue = db.execute('SELECT collection_generation,observed_at FROM issues WHERE id=?', ('1:1',)).fetchone()
             self.assertEqual(tuple(issue), (2, 101))
-            self.assertEqual(db.execute("SELECT count(*) FROM decisions WHERE command='observe_issue'").fetchone()[0], 4)
+            self.assertEqual(db.execute("SELECT count(*) FROM decisions WHERE command='observe_issue'").fetchone()[0], 0)
         self.assertEqual(self.accept(row)['status'], 'accepted')
 
     def test_group_approval_keeps_exact_pins_across_background_observations(self):

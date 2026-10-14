@@ -7,7 +7,7 @@ observation into the existing repository_setup lifecycle gate.
 import uuid
 
 from ..repository_policy import protection_ready
-from ..repository_setup import MAX_AGE, RepositorySetup, SetupObservationChanged, observation_key
+from ..repository_setup import CHECK_TIMEOUT, MAX_AGE, RepositorySetup, SetupObservationChanged, observation_key
 from ..settings import ROLES, digest
 from ..store.models import Command, VersionConflict
 from ..store.repository_readiness import read_revision
@@ -49,18 +49,27 @@ class RepositoryReadiness:
                                     for role in ROLES)
         saved = self.setup.read()['repositories'].get(str(row['id']), {})
         report = saved.get('report') or {}
+        # A refresh is not new protection evidence. Its retained report keeps
+        # its original expiry and exact identity until the read completes.
+        refreshing = (saved.get('status') == 'checking'
+                      and 0 <= self.clock() - saved.get('started_at', 0) < CHECK_TIMEOUT)
         if saved.get('revision') != revision or saved.get('name') != row['name']:
             result['reason'] = 'protection_unchecked'
         elif not 0 <= self.clock() - report.get('observed_at', 0) < MAX_AGE:
             result['reason'] = 'protection_stale'
+        elif (not report.get('available') or not report.get('branch')
+              or saved.get('status') not in {'ready', 'needs_setup'} and not refreshing):
+            result['reason'] = 'protection_unavailable'
         elif branch is not None and report.get('branch') != branch:
             result['reason'] = 'protection_branch_changed'
         elif report.get('repo_id', row['id']) != row['id']:
             result['reason'] = 'protection_identity_changed'
-        elif saved.get('status') != 'ready' or not protection_ready(report):
-            result['reason'] = 'protection_unavailable' if not report.get('available') else 'protection_needs_setup'
+        elif saved.get('status') != 'ready' and not refreshing or not protection_ready(report):
+            result['reason'] = 'protection_needs_setup'
         else:
             result.update(allowed=True, reason='implementation_ready', valid_until=min(result['valid_until'], report['observed_at'] + MAX_AGE))
+            if refreshing:
+                result['valid_until'] = min(result['valid_until'], saved['started_at'] + CHECK_TIMEOUT)
         return result
 
     def allowed(self, item):

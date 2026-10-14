@@ -10,9 +10,10 @@ from unittest.mock import Mock
 from forge.factory.config import validate
 from forge.factory.dispatch_controller import DispatchController, GitHubPrepare
 from forge.factory.observation_controller import ObservationController
+from forge.factory.github import GitHubUnavailable
 from forge.factory.repository_readiness import RepositoryReadiness
 from forge.factory.store_views import PipelineViews
-from forge.repository_setup import RepositorySetup, observation_key
+from forge.repository_setup import CHECK_TIMEOUT, RepositorySetup, observation_key
 from forge.settings import Settings, digest
 from forge.store.delivery import Delivery
 from forge.store.executions import Executions, ExecutionQueries
@@ -150,6 +151,113 @@ class RepositoryReadinessTests(unittest.TestCase):
         self.assertFalse(self.dispatch.step('u1')['reserved'])
         # Auxiliary planning uses access-only admission even when implementation is blocked.
         self.assertTrue(self.settings.admission('owner/repo')['allowed'])
+
+    def test_refresh_keeps_fresh_exact_protection_without_opening_setup_gates(self):
+        github = Mock()
+        github.pages.return_value = []
+        github.protection_report.side_effect = lambda *_: deepcopy(self.report)
+        setup = RepositorySetup(self.settings, github_class=lambda *a, **k: github)
+        original_observed_at = self.report['observed_at']
+
+        def during_refresh(item):
+            saved = setup.read()['repositories']['1']
+            self.assertEqual(saved['status'], 'checking')
+            self.assertEqual(saved['report']['observed_at'], original_observed_at)
+            value = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
+            self.assertEqual(value['valid_until'], min(original_observed_at + 300, self.now + CHECK_TIMEOUT))
+            self.assertTrue(self.readiness.observe('u1')['allowed'])
+            self.assertEqual(self.gates(), [])
+            return 'main'
+
+        github.target.side_effect = during_refresh
+        for _ in range(3):
+            self.now += 10
+            self.assertTrue(setup.check(1))
+            self.assertTrue(self.readiness.observe('u1')['allowed'])
+            original_observed_at = self.now
+        with self.store.read_snapshot() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE unit_id='u1' AND kind IN ('gate_opened','gate_resolved')").fetchone()[0], 0)
+
+    def test_refresh_does_not_extend_expiry_or_override_failed_protection(self):
+        setup = RepositorySetup(self.settings)
+        for report, reason in [
+                ({**self.report, 'observed_at': self.now - 300}, 'protection_stale'),
+                ({**self.report, 'bypass': {'status': 'missing'}}, 'protection_needs_setup'),
+                ({**self.report, 'branch': None}, 'protection_unavailable'),
+                ({**self.report, 'branch': 'release'}, 'protection_branch_changed')]:
+            with self.subTest(reason=reason):
+                setup.save_observation(1, {'repositories': {'1': dict(name=self.repo['name'],
+                    revision=observation_key(self.settings.load(), self.repo), started_at=self.now,
+                    status='checking', report=report)}})
+                value = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
+                self.assertFalse(value['allowed'])
+                self.assertEqual(value['reason'], reason)
+
+    def test_interrupted_refresh_cannot_keep_admitting_from_retained_report(self):
+        RepositorySetup(self.settings).save_observation(1, {'repositories': {'1': dict(name=self.repo['name'],
+            revision=observation_key(self.settings.load(), self.repo), started_at=self.now - CHECK_TIMEOUT,
+            status='checking', report=deepcopy(self.report))}})
+        value = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
+        self.assertFalse(value['allowed'])
+        self.assertEqual(value['reason'], 'protection_unavailable')
+
+    def test_refresh_expiry_rejects_previously_evaluated_gate_release(self):
+        self.report['bypass'] = {'status': 'missing'}
+        self.save_report()
+        self.readiness.observe('u1')
+        self.report['bypass'] = {'status': 'ready'}
+        started_at = self.now
+        RepositorySetup(self.settings).save_observation(1, {'repositories': {'1': dict(name=self.repo['name'],
+            revision=observation_key(self.settings.load(), self.repo), started_at=started_at,
+            status='checking', report=deepcopy(self.report))}})
+        self.now = started_at + CHECK_TIMEOUT - 1
+        value = self.readiness.evaluate({'repo': 'owner/repo', 'target_branch': 'main'})
+        self.assertTrue(value['allowed'])
+        self.assertEqual(value['valid_until'], started_at + CHECK_TIMEOUT)
+        self.now += 2
+        with self.assertRaisesRegex(VersionConflict, 'readiness changed'):
+            self.life.observe_repository_readiness(self.command(), **value)
+        self.assertEqual([gate['code'] for gate in self.gates()], ['repository_setup'])
+
+    def test_failed_refresh_without_branch_is_unavailable_and_stays_blocked(self):
+        github = Mock()
+        github.target.side_effect = GitHubUnavailable('Target could not be read')
+        setup = RepositorySetup(self.settings, github_class=lambda *a, **k: github)
+        self.assertTrue(setup.check(1))
+        for _ in range(2):
+            self.assertFalse(self.readiness.observe('u1')['allowed'])
+            self.assertEqual(json.loads(self.gates()[0]['details_json'])['reason'], 'protection_unavailable')
+        self.assertEqual(len(self.gates()), 1)
+        gate_id = self.gates()[0]['id']
+
+        def retry_target(item):
+            saved = setup.read()['repositories']['1']
+            self.assertEqual(saved['status'], 'checking')
+            self.assertTrue(saved['last_known']['available'])
+            self.assertFalse(saved['report']['available'])
+            self.assertFalse(self.readiness.observe('u1')['allowed'])
+            self.assertEqual(self.gates()[0]['id'], gate_id)
+            raise GitHubUnavailable('Target is still unavailable')
+
+        github.target.side_effect = retry_target
+        self.assertTrue(setup.check(1))
+        self.assertFalse(self.readiness.observe('u1')['allowed'])
+        self.assertEqual(self.gates()[0]['id'], gate_id)
+
+    def test_completed_refresh_applies_real_rule_change_and_preserves_operator_pause(self):
+        github = Mock()
+        github.target.return_value = 'main'
+        github.pages.return_value = []
+        github.protection_report.return_value = {**self.report, 'bypass': {'status': 'missing'}}
+        setup = RepositorySetup(self.settings, github_class=lambda *a, **k: github)
+        self.life.pause(self.command())
+        self.assertTrue(setup.check(1))
+        self.assertFalse(self.readiness.observe('u1')['allowed'])
+        self.assertEqual({gate['code'] for gate in self.gates()}, {'operator_pause', 'repository_setup'})
+        github.protection_report.return_value = deepcopy(self.report)
+        self.assertTrue(setup.check(1))
+        self.assertTrue(self.readiness.observe('u1')['allowed'])
+        self.assertEqual([gate['code'] for gate in self.gates()], ['operator_pause'])
 
     def test_running_build_survives_report_expiry_and_repair(self):
         identifier = self.dispatch.step('u1')['job_id']
