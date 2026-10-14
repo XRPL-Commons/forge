@@ -22,3 +22,13 @@ A qualified receipt proves these execution paths work. It does not prove the sel
 There are at most seven agent invocations, with no automatic retry. Each has a 180-second assignment deadline; the whole run has a 25-minute deadline and transport cleanup margin. Agent invocations can make multiple model requests and incur provider charges. Provider authentication uses the normal private credential path, including OAuth refresh when needed. GitHub credentials remain on the host and cached installation tokens are revoked afterward.
 
 The JSON receipt reports each completed role, exact image/source/provider, verified file identity, mirror requests, fixture limits, cleanup and final automation state. Containers, networks, volumes, sessions, private job secrets and the temporary database are removed after capture. A cleanup failure is reported as unconfirmed and retains the temporary evidence path; it never produces a qualified CLI result. No real provider run is performed by tests of this command.
+
+For a sealed Codex provider failure, Forge also preserves the bounded terminal error and exact output schema privately on the host, alongside the source, image and job identity. Issued credentials are redacted before storage. The public report contains only a `diagnostic_id`; it does not expose the error text, worker output or credentials. This evidence survives disposable fixture cleanup and does not authorize retries.
+
+Export that evidence to a new private local file:
+
+```sh
+forge setup qualification-diagnostic --ssh anvil --id DIAGNOSTIC_ID --output ./qualification-diagnostic.json --json
+```
+
+The command prints file metadata only. Existing files and symbolic links are refused. Treat the exported file as private diagnostic material.
