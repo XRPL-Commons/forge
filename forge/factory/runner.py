@@ -185,6 +185,7 @@ class ContainerRunner:
                     'oom_killed': value['State'].get('OOMKilled', False),
                     'image_id': value.get('Image'),
                     'startup_protocol': value['Config']['Labels'].get('org.forge.startup-protocol'),
+                    'exit_protocol': value['Config']['Labels'].get('org.forge.exit-protocol'),
                     'started_at': engine_time(value['State'].get('StartedAt')),
                     'finished_at': engine_time(value['State'].get('FinishedAt'))}
             if resources:
@@ -469,6 +470,21 @@ class ContainerRunner:
                     captured['forge_startup'] = receipt
             except (RunnerError, ValueError, tarfile.TarError, UnicodeError):
                 captured['missing'].append('valid startup receipt')
+        if current.get('exit_protocol') == '1' and current.get('running') is False:
+            try:
+                raw = self.call(['cp', current['id'] + ':/work/home/forge-exit.json', '-'], max_output=16384).stdout
+                with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                    entries = archive.getmembers()
+                    if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 8192:
+                        raise ValueError('Invalid execution envelope')
+                    envelope = json.loads(archive.extractfile(entries[0]).read(), object_pairs_hook=unique)
+                from ..harnesses.execution import valid
+                if valid(envelope, job['id'], final=True) and envelope['exit_code'] == current['exit_code']:
+                    captured['execution_envelope'] = envelope
+                else:
+                    raise ValueError('Execution envelope does not match the stopped container')
+            except (RunnerError, ValueError, tarfile.TarError, UnicodeError):
+                captured['missing'].append('valid execution envelope')
         captured['execution'] = current
         return captured
 
