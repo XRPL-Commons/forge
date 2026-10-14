@@ -2,7 +2,6 @@ from copy import deepcopy
 from dataclasses import replace
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from forge.factory.config import validate, policy
 from forge.factory.dispatch_controller import DispatchController, GitHubPrepare, PreparedDispatch
@@ -395,45 +394,6 @@ class DispatchTests(unittest.TestCase):
                                  evidence={'process_stopped': True, 'resources_released': True})
         audit = self.driver().cycle()['items'][0]
         self.assertEqual((audit['unit_id'], audit['role']), ('v', 'audit'))
-
-    def test_schema28_reservations_retain_order_through_index_upgrade(self):
-        from forge.store import db as storage
-        from forge.store import upgrade
-        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
-        catalog = storage._migrations()
-        with patch('forge.store.db._migrations', return_value=catalog[:28]):
-            self.store = Store.create(directory.name)
-        from tests.historical_store_fixtures import reservation
-        old_id = reservation(self.store, config=self.config,
-                             policy=policy(self.config,1,repository_name='owner/repo'), base_oid=BASE)
-        with self.store.read_snapshot() as db:
-            history = [tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence')]
-            columns = [row['name'] for row in db.execute('PRAGMA table_info(jobs)')]
-            jobs = [tuple(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')]
-        with patch('forge.store.db._migrations', return_value=catalog[:29]):
-            boundary = Store(directory.name)
-            self.assertEqual(upgrade.apply(boundary)['current_schema'],29)
-            with boundary.read_snapshot() as db:
-                self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM jobs ORDER BY id')], jobs)
-                self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence')], history)
-        target = Store(directory.name)
-        self.assertEqual(upgrade.apply(target)['current_schema'], len(catalog))
-        self.assertEqual(upgrade.apply(target)['pending_migrations'], [])
-        self.store = target
-        # Previously allocated u is still occupied; the new v gets first turn.
-        page = self.driver().cycle()
-        self.assertEqual([item['unit_id'] for item in page['items']], ['v', 'u'])
-        self.assertTrue(page['items'][0]['reserved'])
-        self.assertEqual(page['items'][1]['reason'], 'cleanup_pending')
-        with self.store.read_snapshot() as db:
-            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM events ORDER BY sequence LIMIT ?', (len(history),))], history)
-            self.assertEqual(tuple(db.execute('SELECT '+','.join(columns)+' FROM jobs WHERE id=?', (old_id,)).fetchone()), jobs[0])
-            self.assertEqual(db.execute('SELECT execution_kind FROM jobs WHERE id=?',(old_id,)).fetchone()[0], 'legacy')
-            plan = db.execute("EXPLAIN QUERY PLAN SELECT e.sequence FROM events e "
-                "JOIN jobs j ON j.id=e.job_id JOIN job_launches l ON l.job_id=j.id "
-                "WHERE e.unit_id=? AND e.kind='attempt_reserved' AND j.role='build' "
-                'ORDER BY e.sequence DESC LIMIT 1', ('u',)).fetchall()
-            self.assertTrue(any('unit_reservation_events' in row['detail'] for row in plan), [tuple(row) for row in plan])
 
     def test_capacity_is_shared_with_discussions(self):
         with self.store.write() as db:

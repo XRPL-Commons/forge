@@ -11,7 +11,7 @@ from forge.store.configuration import Configuration
 class StewardMigrationTests(unittest.TestCase):
     def test_upgrade_preserves_history_and_explicit_role_allocations(self):
         with tempfile.TemporaryDirectory() as temporary:
-            with patch('forge.store.db._migrations',return_value=storage._migrations()[:42]):
+            with patch('forge.store.db._migrations',return_value=storage._migrations()[:2]):
                 old=storage.Store.create(Path(temporary)/'store'); config=Configuration(old)
                 config.replace('runtime.json',{'slots':{'recovery':2},'timeout_seconds':{'recovery':450}},expected_revision=0,credential_ref='private-ref')
                 config.replace('setup/runtime.json',{'enabled':False},expected_revision=0)

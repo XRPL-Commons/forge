@@ -408,23 +408,3 @@ class RunnerStartupCaptureTests(unittest.TestCase):
         self.assertNotIn('forge_startup',runner.capture({'id':'job','role':'build'}))
 
 
-class StartupMigrationTests(unittest.TestCase):
-    def test_schema34_preserves_existing_gates_and_registers_attention(self):
-        import sqlite3
-        from forge.store.remote_time import register
-        from forge.factory.issue_selection import IssueSelection
-        db=sqlite3.connect(':memory:'); self.addCleanup(db.close); register(db)
-        schemas=Path(__file__).parents[1]/'forge/store/schema'
-        for schema in sorted(schemas.glob('[0-9]*.sql')):
-            if int(schema.name.split('_')[0])<=33: db.executescript(schema.read_text())
-        db.execute("INSERT INTO repositories(id,full_name) VALUES(1,'owner/repo')")
-        db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES('u',1,'main','building',1,1)")
-        db.execute("INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,observed_at) VALUES('i',1,1,'open','r',1)")
-        db.execute("INSERT INTO issue_revisions(id,issue_id,title,body,content_hash,requirements_hash,requirements_json,observed_at) VALUES('r','i','Issue','','c','r','{}',1)")
-        db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) VALUES('m','u','i',1,'main','r','pending',1)")
-        db.execute("INSERT INTO unit_gates(id,unit_id,subject_key,code,created_at) VALUES('hold','u','unit','label_hold',1)")
-        before=list(db.execute('SELECT * FROM unit_gates'))
-        db.executescript((schemas/'034_forge_problem.sql').read_text())
-        self.assertEqual(list(db.execute('SELECT * FROM unit_gates')),before)
-        db.execute("INSERT INTO unit_gates(id,unit_id,subject_key,code,created_at) VALUES('forge','u','unit','forge_problem',2)")
-        self.assertEqual(IssueSelection(db).execute("SELECT reason_code FROM public_issue_index WHERE id='i'").fetchone()[0],'label_hold')

@@ -10,17 +10,17 @@ from forge.store.configuration import Configuration
 
 class RetiredRuntimeCapacityTests(unittest.TestCase):
     def setUp(self):
-        # Exercise this migration's exact target; later migrations may add roles.
-        catalog = patch('forge.store.db._migrations', return_value=storage._migrations()[:42])
-        catalog.start()
-        self.addCleanup(catalog.stop)
+        # Test the capacity migration, independently of later schema additions.
+        catalog = storage._migrations()[:2]
+        current = patch('forge.store.db._migrations', return_value=catalog)
+        current.start(); self.addCleanup(current.stop)
 
     def test_existing_setup_view_recovers_after_explicit_upgrade(self):
         from forge.onboarding import Onboarding
         from tests.sqlite_fixture import selected_store
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            with patch('forge.store.db._migrations', return_value=storage._migrations()[:41]):
+            with patch('forge.store.db._migrations', return_value=storage._migrations()[:1]):
                 old = selected_store(root)
                 config = Configuration(old)
                 for domain in ('host-runtime.json', 'setup/runtime.json'):
@@ -34,7 +34,7 @@ class RetiredRuntimeCapacityTests(unittest.TestCase):
 
     def test_upgrade_supersedes_only_affected_active_runtime_revisions(self):
         with tempfile.TemporaryDirectory() as temporary:
-            with patch('forge.store.db._migrations', return_value=storage._migrations()[:41]):
+            with patch('forge.store.db._migrations', return_value=storage._migrations()[:1]):
                 old = storage.Store.create(Path(temporary) / 'store')
                 config = Configuration(old)
                 for domain in ('runtime.json', 'setup/runtime.json', 'host-runtime.json'):
@@ -79,3 +79,21 @@ class RetiredRuntimeCapacityTests(unittest.TestCase):
                 validate({'max_running': 1})
             with self.assertRaisesRegex(ValueError, 'Unknown runtime settings'):
                 validate({'unrecognized': 1})
+
+    def test_released_v41_store_rebases_and_removes_retired_setting_in_one_upgrade(self):
+        from tests.test_schema_baseline import legacy_catalog
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch('forge.store.db._migrations', return_value=legacy_catalog()):
+                old = storage.Store.create(Path(temporary) / 'store')
+                Configuration(old).replace('host-runtime.json', {'max_running': 2, 'memory': '8g'},
+                                           expected_revision=0, credential_ref='retained-reference')
+            target = storage.Store(old.root)
+            self.assertTrue(upgrade.inspect(target)['legacy_history'])
+            result = upgrade.apply(target)
+            self.assertEqual(result['current_schema'], 2)
+            current = Configuration(target).get('host-runtime.json')
+            self.assertEqual(current['settings'], {'memory': '8g'})
+            self.assertEqual(current['credential_ref'], 'retained-reference')
+            with target.read_snapshot() as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM configuration').fetchone()[0], 2)
+                self.assertIn('max_running', db.execute('SELECT settings_json FROM configuration WHERE revision=1').fetchone()[0])

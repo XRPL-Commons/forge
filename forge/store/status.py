@@ -53,14 +53,11 @@ WORDING: dict[str, tuple[str, str | None]] = {
     'recovery_pending': ('Investigating a failed attempt', None),
     'cleanup_pending': ('Cleaning up a finished attempt', None),
     'provider_unavailable': ('Waiting for an available agent account', 'Waiting for an agent account until {until}'),
-    'capacity': ('Waiting for a free worker', None),
     'retry_delay': ('Waiting before retrying', 'Retrying after {until}'),
     'verification_human': ('Waiting for a person to verify the change', None),
     'verification_ci': ('Waiting for CI to verify the change', None),
     'approval_required': ('Waiting for approval to merge', None),
-    'changes_requested': ('Changes were requested on the pull request', None),
     'merge_checks': ('Waiting for required checks to pass', None),
-    'merge_conflict': ('The change conflicts with the base branch; rebuilding', None),
 }
 
 

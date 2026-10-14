@@ -87,39 +87,37 @@ removal, and saves cleanup through the normal setup transaction. Active probes
 and all other workers remain drain blockers. This repairs a failed setup cleanup
 without editing SQL, discarding execution history, or installing code early.
 
-The timestamp upgrade normalizes existing issue and pull-request observations to
-UTC with six fractional digits. It fixes unchanged imported issues being treated
-as newer than fresh GitHub reads. The following migration indexes request audit
-lookups so their cost does not grow with unrelated retained history.
+## Schema baseline
 
-### Task topology schema upgrade
+The schema is one file, `forge/store/schema/001_baseline.sql`. It replaced the
+41 migrations of the first releases (#289) and leaves out the tables and gate
+codes nothing reads any more: the JSON import archive, imported operator
+requests, the notification outbox, five tables that were never used, and the
+`capacity`, `changes_requested` and `merge_conflict` gate codes. New schema
+changes are new migrations, starting at `002`; the baseline never changes.
 
-Migration 033 converts existing child assignments into immutable tasks and exact
-member pins. It preserves original attempt manifests, their hashes, accepted
-output IDs and retained Git bundles. Pending v1 planning, child and integration
-results are interpreted against their original assignment contract; accepting an
-old plan creates normalized task rows. New assignments use manifest version 2.
-No captured result is rewritten to resemble a new assignment.
+A store built by the 41 old migrations is rebased once, inside the normal
+`forge migrate upgrade --apply` transaction. The rebase runs only when the
+store's applied history matches the frozen list of those 41 migrations and
+their checksums exactly. It drops the dead tables, removes the retired codes,
+rewrites the affected trigger and index, and then compares the result with a
+new store built from the baseline: tables, columns, constraints, indexes,
+triggers, views and registry contents. Only if they are equal does it replace
+the history with the single baseline row and run the integrity and foreign-key
+checks. Any difference rolls the whole transaction back and leaves the store at
+041. Rehearse it first on a copy of the database:
 
-Cleanup, result and investigation gates belong to their recorded physical jobs.
-They remain visible on every issue in that job's scope, while independent jobs
-can continue. Historical gates and charges remain retained.
+```sh
+python3 tools/rehearse_baseline.py /path/to/copy-of-forge.sqlite3
+```
 
-The supported upgrade stops writers before rebuilding the referenced tables.
-Only its dedicated migration connection temporarily disables foreign-key
-checking before the transaction. Full integrity and foreign-key checks must pass
-before commit; failure rolls back the entire change. Enforcement is restored
-before the connection closes. Runtime connections keep enforcement enabled.
-Use the normal pinned `forge migrate upgrade --apply` workflow above; no manual
-SQL or data export is required.
+The rehearsal works on its own temporary copy, prints the rows that leave with
+the dropped tables, the comparison and the integrity checks, and exits 0 only if
+the upgrade would succeed.
 
-## Units imported from the JSON runtime
-
-Migration 041 retires what is left of the JSON import. A delivery still waiting
-on its `legacy_reconciliation` gate closes as `import_superseded`; its GitHub
-issue and labels are left as they are, and discovery admits the open issue again
-as a new delivery. Imported history stays in the store as `legacy_event` rows
-and shows like any other event. Backups follow the store rules in
-[the runtime reference](factory-runtime-reference.md): copy the database
-coherently with its instance metadata and referenced credentials, never just the
-live main file.
+Imported history stays in the store as `legacy_event` rows and shows like any
+other event; the `legacy_reconciliation`, `retry_delay` and `merge_checks` gate
+codes stay because resolved imported gates still reference them. Backups follow
+the store rules in [the runtime reference](factory-runtime-reference.md): copy
+the database coherently with its instance metadata and referenced credentials,
+never just the live main file.

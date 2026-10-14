@@ -58,21 +58,6 @@ class InventoryRefreshTests(RuntimeFixture):
         with self.database.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM operator_observation_requests').fetchone()[0], 0)
 
-    def test_interrupted_imported_operator_intent_requires_explicit_queue(self):
-        from forge.factory.store_inventory import DiscoveryController
-        remote = {**self.remote, 'labels': ['ready']}
-        self.inventory.record(dict(id=10, name='example/project', enabled=True), remote)
-        with self.database.write() as db:
-            db.execute("INSERT INTO issue_action_requests(id,issue_id,action,expected_revision,status,reason,created_at) VALUES('old-pause','10:1','pause','old','rejected','Keep this for later',1)")
-            db.execute("INSERT INTO imported_operator_requests(request_id,source_manifest,source_status,interrupted_at) VALUES('old-pause','source','pending',2)")
-        self.github.call.return_value = [remote]
-        config = validate({'enabled': True, 'image': 'sha256:' + 'a' * 64})
-        result = DiscoveryController(self.database, self.settings, self.github, config=config, clock=lambda: self.now).cycle()
-        self.assertEqual(result['items'], [])
-        self.github.issue.assert_not_called()
-        with self.database.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM units').fetchone()[0], 0)
-
     def test_hold_actor_refresh_is_cached_and_hidden_when_labels_change(self):
         from forge.factory.store_views import PipelineViews
         self.remote['labels']=[{'name':'hold'}]
