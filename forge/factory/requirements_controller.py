@@ -8,6 +8,7 @@ import time
 import uuid
 
 from ..store.db import StoreError
+from ..store.effects import Effects, effect_due, retry_policy
 from ..store.models import Command, TransitionError
 from ..store.queries import _limit
 from ..store.runtime import writable
@@ -20,6 +21,10 @@ from .github import GitHubUnavailable
 from .ownership import ownership
 
 
+class EnvironmentProjectionPending(Exception):
+    """A current durable label effect owns the next bounded attempt."""
+
+
 class EnvironmentSelectionError(ValueError):
     """One member's durable environment decision has no runnable choice."""
 
@@ -29,6 +34,8 @@ class RuntimeRequirementsController:
         self.store, self.github, self.clock = store, github, clock
         self.config, self.runner = validate(config), runner
         self.commands = RuntimeRequirements(store, clock=clock)
+        self.reliability = self.config.get('reliability', {})
+        self.effects = Effects(store, clock=clock, **retry_policy(self.reliability))
 
     def _snapshot(self, unit_id, member_id=None):
         # Share the bounded row projection, without invoking its dispatcher.
@@ -85,7 +92,7 @@ class RuntimeRequirementsController:
     def _project(self, snapshot, remote):
         """Recover uncertain label delivery before evaluating explicit operator labels."""
         with self.store.read_snapshot() as db:
-            effects = db.execute('SELECT e.id,l.* FROM external_effects e JOIN environment_label_effects l ON l.effect_id=e.id '
+            effects = db.execute('SELECT e.*,l.revision,l.requirements_revision_id,l.member_id,l.target_label,l.before_json FROM external_effects e JOIN environment_label_effects l ON l.effect_id=e.id '
                 "WHERE e.unit_id=? AND l.member_id=? AND e.status IN ('pending','running','uncertain') ORDER BY e.created_at,e.id LIMIT 20",
                 (snapshot['unit']['id'],snapshot['member']['id'])).fetchall()
             latest = db.execute('SELECT MAX(revision) FROM unit_environment WHERE member_id=?', (snapshot['member']['id'],)).fetchone()[0]
@@ -103,12 +110,19 @@ class RuntimeRequirementsController:
             if labels not in (before, before | {target}):
                 self.commands.environment_receipt(effect['id'], status='superseded', observed_labels=sorted(labels))
                 continue  # A changed operator label is never overwritten by an old intent.
-            self.commands.claim_environment(effect['id'], expected_version=snapshot['unit']['version'])
-            self.github.environment_label(self._item(snapshot), remote, target)
-            remote, requirements = self.github.issue(self._item(snapshot))
-            if requirements != snapshot['issue']['requirements']:
-                raise GitHubUnavailable('Requirements changed during environment projection')
-            self.commands.environment_receipt(effect['id'], status='confirmed', observed_labels=self._labels(remote))
+            if not effect_due(effect,self.clock()) or self.effects.bounded(effect['id']):
+                raise EnvironmentProjectionPending()
+            self.commands.claim_environment(effect['id'], expected_version=snapshot['unit']['version'],reliability=self.reliability)
+            try:
+                self.github.environment_label(self._item(snapshot), remote, target)
+                remote, requirements = self.github.issue(self._item(snapshot))
+                if requirements != snapshot['issue']['requirements']:
+                    raise GitHubUnavailable('Requirements changed during environment projection')
+                self.commands.environment_receipt(effect['id'], status='confirmed', observed_labels=self._labels(remote))
+            except GitHubUnavailable:
+                self.commands.environment_unavailable(effect['id'],reliability=self.reliability)
+                self.effects.bounded(effect['id'])
+                raise
         return remote
 
     def _environment(self, snapshot, remote):
@@ -140,6 +154,21 @@ class RuntimeRequirementsController:
         return selection
 
     def _observe_member(self, snapshot):
+        try:
+            return self._observe_member_ready(snapshot)
+        except EnvironmentProjectionPending:
+            return {'pending':'environment_label'}
+        except GitHubUnavailable:
+            # A failed read is uncertainty, but never another physical send.
+            with self.store.read_snapshot() as db:
+                pending=list(db.execute('SELECT e.id FROM external_effects e JOIN environment_label_effects l ON l.effect_id=e.id '
+                    "WHERE l.member_id=? AND e.status IN ('pending','running','uncertain') ORDER BY e.created_at,e.id LIMIT 20",(snapshot['member']['id'],)))
+            for effect in pending:
+                self.commands.environment_unavailable(effect['id'],reliability=self.reliability)
+                self.effects.bounded(effect['id'])
+            raise
+
+    def _observe_member_ready(self, snapshot):
         remote,requirements=self.github.issue(self._item(snapshot))
         if remote.get('number')!=snapshot['issue']['github_number'] or 'pull_request' in remote:
             raise GitHubUnavailable('Current issue identity could not be verified')

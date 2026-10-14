@@ -3,7 +3,7 @@ import json
 import re
 
 from .executions import Executions
-from .effects import Effects
+from .effects import Effects, admit_send_in, defer_effect_in, effect_due, retry_policy
 from .runtime import writable
 from .models import TransitionError
 from .transitions import _id, _json, applicable_gates, manifest_hash
@@ -227,12 +227,14 @@ class RuntimeRequirements(Executions):
                        (status,_json({'labels':observed_labels}),self.clock(),effect_id))
             Effects(self.store, clock=self.clock)._effect_event(db,effect_id)
 
-    def claim_environment(self,effect_id,*,expected_version):
+    def claim_environment(self,effect_id,*,expected_version,reliability=None):
         with self.store.write() as db:
             writable(db)
             row=db.execute('SELECT e.*,l.revision,l.requirements_revision_id,l.member_id FROM external_effects e JOIN environment_label_effects l ON l.effect_id=e.id WHERE e.id=?',(effect_id,)).fetchone()
             if row is None or row['status'] not in {'pending','running','uncertain'}:
                 raise TransitionError('environment effect is not runnable')
+            reliability=self._effect_policy_in(db,reliability)
+            admit_send_in(row,self.clock(),reliability=reliability)
             unit=db.execute('SELECT * FROM units WHERE id=?',(row['unit_id'],)).fetchone()
             member=db.execute('SELECT * FROM unit_issues WHERE id=?',(row['member_id'],)).fetchone()
             latest=db.execute('SELECT MAX(revision) FROM unit_environment WHERE member_id=?',(member['id'],)).fetchone()[0]
@@ -240,7 +242,23 @@ class RuntimeRequirements(Executions):
                     or member['left_at'] is not None or member['requirements_revision_id']!=row['requirements_revision_id']
                     or latest!=row['revision']):
                 raise TransitionError('environment effect authority has changed')
-            db.execute("UPDATE external_effects SET status='running',attempts=attempts+1,updated_at=? WHERE id=?",(self.clock(),effect_id))
+            policy=Effects(self.store,clock=self.clock,**retry_policy(reliability))
+            db.execute("UPDATE external_effects SET status='running',attempts=attempts+1,retry_at=?,uncertain_since=COALESCE(uncertain_since,?),updated_at=? WHERE id=?",
+                (self.clock()+policy.delay(row['attempts']+1),self.clock(),self.clock(),effect_id))
+            Effects(self.store,clock=self.clock)._effect_event(db,effect_id)
+
+    @staticmethod
+    def _effect_policy_in(db,fallback):
+        row=db.execute("SELECT settings_json FROM configuration WHERE domain='runtime.json' AND subject='instance' AND active=1").fetchone()
+        return json.loads(row[0]).get('reliability',{}) if row else fallback
+
+    def environment_unavailable(self,effect_id,*,reliability=None):
+        with self.store.write() as db:
+            writable(db)
+            row=db.execute("SELECT * FROM external_effects WHERE id=? AND kind='environment_label'",(effect_id,)).fetchone()
+            if row is None or row['status'] not in {'pending','running','uncertain'} or (row['status']!='running' and not effect_due(row,self.clock())):
+                return
+            defer_effect_in(db,row,self.clock(),reliability=self._effect_policy_in(db,reliability))
             Effects(self.store,clock=self.clock)._effect_event(db,effect_id)
 
     def environment_problem(self,command,*,requirements_revision_id,reason):
