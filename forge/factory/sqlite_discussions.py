@@ -189,6 +189,7 @@ class SQLiteDiscussions:
                 self.waiting('accounts','Waiting for an available coding account',link=ACCOUNTS); return
             worker={**config,**{k:v for k,v in entry.items() if k!='id'}}
             worker=self.problems.memory('discussion',key,worker)
+            if worker is None:continue
             quick=(config.get('discussion_model') or {}).get(worker['provider'])
             if quick: worker['model']=quick
             job=dict(id=str(uuid.uuid4()),slot='issue-discussion',role='discussion',issue_key=key,repo=row['repo'],repo_id=row['repo_id'],

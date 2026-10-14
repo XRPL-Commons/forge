@@ -76,6 +76,7 @@ class RepositoryPlanner:
                 issue['candidate_author']={k:(pr.get('user') or {}).get(k) for k in ('id','type','login')}
         worker={**self.config,**{k:v for k,v in entry.items() if k!='id'}}
         worker=self.problems.memory('triage',run['id'],worker)
+        if worker is None:return {'waiting':'memory_configuration'}
         job=dict(id=str(uuid.uuid4()),slot='repository-triage',role='triage',proposal_id=run['id'],repo=repo['name'],repo_id=repo['id'],
             candidate=None,head=head,base_branch=branch,deadline=now+1800,fenced=False,cleanup=False,created_at=now,
             provider_id=entry['id'],runner_config=worker,context_hash=manifest_hash(context))
