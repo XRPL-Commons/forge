@@ -17,7 +17,6 @@ from .config import validate
 from .effect_controller import EffectController
 from .environments import choose
 from .github import GitHubUnavailable
-from .memory import confirmed
 from .ownership import ownership
 
 
@@ -201,7 +200,7 @@ class RuntimeRequirementsController:
     def classify(self, job, capture, report):
         selection, kind = None, None
         config = job['runner_config']
-        if confirmed(capture, report):
+        if (capture.get('execution') or {}).get('oom_killed') is True:
             tiers = self.config['memory_tiers']
             wanted = next((tier for tier in tiers if _memory(tier) > _memory(config['memory'])), None)
             if wanted:
