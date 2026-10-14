@@ -53,6 +53,48 @@ def _identity(job_id, kind, sequence):
         raise ValueError("sequence must be a nonnegative integer")
 
 
+def read_in(db, job_id, kind, sequence=0, *, limit=MAX_ARTIFACT_SIZE):
+    """Read and verify an artifact within an existing snapshot or transaction."""
+    _identity(job_id, kind, sequence)
+    if type(limit) is not int or not 0 <= limit <= MAX_ARTIFACT_SIZE:
+        raise ValueError("limit must be an integer within the supported chunk size")
+    metadata = db.execute(
+        "SELECT media_type,digest,size,COALESCE(raw_size,size) AS raw_size,codec,expired_at,"
+        "length(content) AS stored_length FROM job_artifacts WHERE job_id=? AND kind=? AND sequence=?",
+        (job_id, kind, sequence),
+    ).fetchone()
+    if metadata is None:
+        raise KeyError((job_id, kind, sequence))
+    if metadata["expired_at"] is not None:
+        raise ArtifactExpired(metadata["expired_at"])
+    if (not 0 <= metadata["size"] <= MAX_ARTIFACT_SIZE
+            or not 0 <= metadata["raw_size"] <= MAX_ARTIFACT_SIZE):
+        raise ArtifactCorrupt("artifact size metadata exceeds the supported size")
+    if metadata["raw_size"] > limit:
+        raise ArtifactTooLarge("artifact exceeds the requested read limit")
+    if metadata["stored_length"] != metadata["size"]:
+        raise ArtifactCorrupt("artifact stored size does not match its metadata")
+    content = db.execute(
+        "SELECT content FROM job_artifacts WHERE job_id=? AND kind=? AND sequence=?", (job_id, kind, sequence),
+    ).fetchone()[0]
+    if metadata["codec"] == "zlib":
+        inflater = zlib.decompressobj()
+        try:
+            content = inflater.decompress(content, metadata["raw_size"] + 1)
+        except zlib.error as error:
+            raise ArtifactCorrupt("artifact compression stream is corrupt") from error
+        if not inflater.eof or inflater.unused_data or inflater.unconsumed_tail:
+            raise ArtifactCorrupt("artifact compression stream is incomplete or exceeds its declared size")
+    elif metadata["codec"] != "identity":
+        raise ArtifactCorrupt("artifact codec is unsupported")
+    if (len(content) != metadata["raw_size"]
+            or hashlib.sha256(content).hexdigest() != metadata["digest"]):
+        raise ArtifactCorrupt("artifact raw size or digest does not match")
+    return Artifact(job_id, kind, sequence, metadata["media_type"], metadata["digest"],
+                    content, metadata["codec"], metadata["raw_size"])
+
+
+
 class Artifacts:
     """One artifact chunk per explicit identity; retries never append duplicates.
 
@@ -97,44 +139,8 @@ class Artifacts:
                     "digest": digest, "raw_size": len(data), "expired_at": None}
 
     def read(self, job_id, kind, sequence=0, *, limit=MAX_ARTIFACT_SIZE):
-        _identity(job_id, kind, sequence)
-        if type(limit) is not int or not 0 <= limit <= MAX_ARTIFACT_SIZE:
-            raise ValueError("limit must be an integer within the supported chunk size")
         with self.store.read_snapshot() as db:
-            metadata = db.execute(
-                "SELECT media_type,digest,size,COALESCE(raw_size,size) AS raw_size,codec,expired_at,"
-                "length(content) AS stored_length FROM job_artifacts WHERE job_id=? AND kind=? AND sequence=?",
-                (job_id, kind, sequence),
-            ).fetchone()
-            if metadata is None:
-                raise KeyError((job_id, kind, sequence))
-            if metadata["expired_at"] is not None:
-                raise ArtifactExpired(metadata["expired_at"])
-            if (not 0 <= metadata["size"] <= MAX_ARTIFACT_SIZE
-                    or not 0 <= metadata["raw_size"] <= MAX_ARTIFACT_SIZE):
-                raise ArtifactCorrupt("artifact size metadata exceeds the supported size")
-            if metadata["raw_size"] > limit:
-                raise ArtifactTooLarge("artifact exceeds the requested read limit")
-            if metadata["stored_length"] != metadata["size"]:
-                raise ArtifactCorrupt("artifact stored size does not match its metadata")
-            content = db.execute(
-                "SELECT content FROM job_artifacts WHERE job_id=? AND kind=? AND sequence=?", (job_id, kind, sequence),
-            ).fetchone()[0]
-            if metadata["codec"] == "zlib":
-                inflater = zlib.decompressobj()
-                try:
-                    content = inflater.decompress(content, metadata["raw_size"] + 1)
-                except zlib.error as error:
-                    raise ArtifactCorrupt("artifact compression stream is corrupt") from error
-                if not inflater.eof or inflater.unused_data or inflater.unconsumed_tail:
-                    raise ArtifactCorrupt("artifact compression stream is incomplete or exceeds its declared size")
-            elif metadata["codec"] != "identity":
-                raise ArtifactCorrupt("artifact codec is unsupported")
-            if (len(content) != metadata["raw_size"]
-                    or hashlib.sha256(content).hexdigest() != metadata["digest"]):
-                raise ArtifactCorrupt("artifact raw size or digest does not match")
-            return Artifact(job_id, kind, sequence, metadata["media_type"], metadata["digest"],
-                            content, metadata["codec"], metadata["raw_size"])
+            return read_in(db, job_id, kind, sequence, limit=limit)
 
     @staticmethod
     def pin_in(db, job_id, kind, sequence, *, purpose, reference_id):

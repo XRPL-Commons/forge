@@ -24,6 +24,10 @@ const counts = computed(() => needsCounts(rows.value))
 const shown = computed(() => needsFiltered(rows.value, filter.value))
 // Only the bays that hold issues get a chip (and the one already chosen).
 const options = computed(() => NEEDS_FILTERS.filter(option => option === 'all' || counts.value[option] || option === filter.value))
+const expanded = ref<string | null>(null)
+const stewardDecisions = computed(() => new Map((props.view?.issues ?? []).filter(issue => issue.steward_decision)
+  .map(issue => [issue.key, issue.steward_decision!])))
+watch(open, value => { if (!value) expanded.value = null })
 const title = computed(() => rows.value.length ? `${rows.value.length} need${rows.value.length === 1 ? 's' : ''} you` : 'Nothing needs you')
 
 function actionFor(card: CardModel, reason: Parameters<typeof needsAction>[0]) {
@@ -75,15 +79,23 @@ function choose(card: CardModel) {
         <p v-if="rows.length && filter !== 'all'" class="mt-2 text-xs text-white/85" data-needs-reason>{{ LINE_REASON_TEXT[filter] }}</p>
 
         <div v-if="shown.length" class="mt-3 grid gap-2.5 md:grid-cols-2" data-needs-list>
-          <IssueCard
-            v-for="row in shown"
-            :key="row.item.id"
-            :view="modelCardView(row.item.card, now)"
-            :action="actionFor(row.item.card, row.reason)"
-            :tag="unblocksLabel(row.unblocks)"
-            compact
-            @open="choose(row.item.card)"
-          />
+          <div v-for="row in shown" :key="row.item.id" class="min-w-0 space-y-2">
+            <IssueCard
+              :view="modelCardView(row.item.card, now)"
+              :action="actionFor(row.item.card, row.reason)"
+              :tag="unblocksLabel(row.unblocks)"
+              compact
+              @open="choose(row.item.card)"
+            />
+            <template v-if="stewardDecisions.has(row.item.id)">
+              <UButton size="xs" color="primary" variant="outline" :aria-expanded="expanded === row.item.id"
+                @click="expanded = expanded === row.item.id ? null : row.item.id">
+                {{ expanded === row.item.id ? 'Hide choices' : 'Review steward choices' }}
+              </UButton>
+              <LazyStewardDecision v-if="open && expanded === row.item.id" :issue-key="row.item.id"
+                :expected="stewardDecisions.get(row.item.id)" />
+            </template>
+          </div>
         </div>
         <div v-else class="mt-6 flex flex-col items-center gap-2 pb-4 text-center" data-needs-empty>
           <CardDeck :count="1" class="opacity-60" />

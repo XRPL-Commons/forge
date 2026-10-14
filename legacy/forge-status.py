@@ -354,7 +354,7 @@ class H(BaseHTTPRequestHandler):
         if not self._session:
             # Without configured sign-in and a session, the API offers no control.
             self.send_error(401);return
-        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
+        if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/steward', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/steward', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
         # dashboard token or set this header cross-origin without CORS approval.
@@ -374,7 +374,13 @@ class H(BaseHTTPRequestHandler):
             if not 0<length<=maximum:raise ValueError('invalid_request_size')
             value=json.loads(self.rfile.read(length))
             self._mutation_audit.describe(value)
-            self._mutation_audit.start()
+            try:
+                self._mutation_audit.start()
+            except RequestReplay:
+                # Steward selection is a single idempotent SQL command. A lost
+                # reply may safely replay that exact command, even if the HTTP
+                # audit claim was recorded before the process stopped.
+                if self.path != '/api/issues/steward':raise
             if self.path.startswith('/api/connections/'):
                 from forge.client_connections import ClientConnections, fields
                 clients = ClientConnections(WD, auth=self._auth)
@@ -433,6 +439,15 @@ class H(BaseHTTPRequestHandler):
                 elif action == 'undo': result = service.undo(value['key'], value['message_id'], actor_id=self._operator_actor())
                 else: result = service.apply(value['key'], value['message_id'], actor_id=self._operator_actor(), **({'reason':value['reason']} if 'reason' in value else {}))
                 self._send(json.dumps({'ok': True, 'request': result}));return
+            if self.path == '/api/issues/steward':
+                from forge.factory.steward_service import StewardService
+                try:
+                    if not isinstance(value,dict) or set(value)!={'key','decision_id','choice_id','digest','request_id'}:
+                        raise ValueError('Expected issue, stored choice, decision digest, and request identity')
+                    result=StewardService(WD,actor_id=self._operator_actor()).choose(**value)
+                except (ValueError,KeyError) as exc:
+                    self._send(json.dumps({'ok':False,'reason':str(exc)}),status=409);return
+                self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}));return
             if self.path == '/api/issues/verify':
                 from forge.factory.store_operator import selected_service
                 if not isinstance(value,dict) or set(value)!={'key','revision','gate_id','statement','request_id'}:
@@ -492,6 +507,15 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError('Expected repository identity and current revision')
                 RepositorySetup(settings_service()).start_check(value['repo_id'],value['revision'])
                 self._send(json.dumps({'ok':True}));return
+            if self.path == '/api/repositories/steward':
+                from forge.repository_steward_policy import StewardPolicy
+                try:
+                    if not isinstance(value,dict) or set(value)!={'repo_id','revision','policy'}:
+                        raise ValueError('Expected repository, policy revision and autonomy')
+                    result=StewardPolicy(settings_service(),actor_id=self._operator_actor()).set(**value)
+                except ValueError as exc:
+                    self._send(json.dumps({'ok':False,'reason':str(exc)}),status=409);return
+                self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}));return
             if self.path == '/api/repositories/mirror':
                 from forge.repository_setup import RepositorySetup
                 if not isinstance(value, dict) or set(value) != {'repo_id', 'revision', 'denied_repositories'}:
@@ -641,6 +665,24 @@ class H(BaseHTTPRequestHandler):
                 self._send(json.dumps({'ok': True, **result, 'controls_token': self._action_token}))
             except (ValueError, KeyError, OSError, RuntimeError):
                 self._send(json.dumps({'ok': False, 'reason': 'Conversation unavailable. Refresh the issue and try again.'}))
+        elif u.path == '/api/repositories/steward':
+            from forge.repository_steward_policy import StewardPolicy
+            try:
+                query=parse_qs(u.query)
+                if set(query)!={'repo_id'} or len(query['repo_id'])!=1:raise ValueError('Expected one repository')
+                result=StewardPolicy(settings_service()).view(int(query['repo_id'][0]))
+                self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}))
+            except (ValueError,KeyError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Steward policy is unavailable. Refresh to try again.'}),status=409)
+        elif u.path == '/api/issues/steward':
+            from forge.factory.steward_service import StewardService
+            try:
+                query=parse_qs(u.query)
+                if set(query)!={'key'} or len(query['key'])!=1:raise ValueError('Expected one issue key')
+                result=StewardService(WD).view(query['key'][0])
+                self._send(json.dumps({'ok':True,**result,'controls_token':self._action_token}))
+            except (ValueError,KeyError,OSError,RuntimeError):
+                self._send(json.dumps({'ok':False,'reason':'Steward choices are unavailable. Refresh to try again.'}),status=409)
         elif u.path == '/api/issues/delivery':
             try:
                 from forge.factory.store_operator import selected_service

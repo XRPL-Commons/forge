@@ -132,7 +132,7 @@ def transitional(code) -> bool:
 
 # --- Jobs and artifacts ----------------------------------------------------
 
-JOB_ROLES = ('build', 'integration', 'review', 'audit', 'recovery', 'merge')
+JOB_ROLES = ('build', 'integration', 'review', 'audit', 'recovery', 'steward', 'merge')
 
 # Raw logs expire after 30 days (operator decision, 2026-10-05). Results,
 # summaries and input manifests are durable facts and never expire.
@@ -149,4 +149,6 @@ ARTIFACT_KINDS = {
     'input_manifest': 'durable',
     'result': 'durable',
     'summary': 'durable',
+    'steward_dossier': 'durable',
+    'steward_decision': 'durable',
 }

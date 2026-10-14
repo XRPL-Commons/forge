@@ -127,7 +127,7 @@ class ProviderLoginTests(unittest.TestCase):
         from types import SimpleNamespace
         parts = dict(store=self.store, config=self.config, settings=object(), github=object())
         for key in ('requirements','verification','execution','observations','results','recovery','merges',
-                    'effects','dispatch','planning','triage_effects','scheduling'):
+                    'effects','dispatch','planning','triage_effects','steward_effects','scheduling'):
             parts[key] = object()
         def supervisor_cycle():
             self.assertFalse(self.available(BAD)); self.assertTrue(self.available(GOOD))

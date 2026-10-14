@@ -351,7 +351,7 @@ class TaskPipelineTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM budget_entries').fetchone()[0], 0)
         self.assertFalse(f.dispatch.step('batch')['reserved'])
 
-    def test_repeated_task_failure_pauses_its_scope_but_independent_task_can_dispatch(self):
+    def test_legacy_task_failure_pauses_its_scope_but_independent_task_can_dispatch(self):
         from forge.factory.recovery_controller import RecoveryController
         owner = self.plan(lambda members: self.value([
             self.definition('first', [members[0]['member_id']]),
@@ -361,7 +361,7 @@ class TaskPipelineTests(unittest.TestCase):
         affected, independent = [row['member_id'] for row in owner['members']]
         choices = {affected: {'tier': 'standard', 'automatic': True, 'services': []}}
         f.dispatch.prepare = lambda snapshot, role: PreparedDispatch(f.base, role + '[bot]', f.config, member_choices=choices)
-        jobs = [f.jobs.job(f.dispatch.step('batch')['job_id']) for _ in range(2)]
+        jobs = [f.jobs.job(f.dispatch.step('batch')['job_id'])]
         recovery = RecoveryController(f.store, f.runner, f.github, config=f.config,
                                       admission=lambda _: True, clock=lambda: 100)
         for index, job in enumerate(jobs):
@@ -370,22 +370,22 @@ class TaskPipelineTests(unittest.TestCase):
             identifier = recovery.schedule(job['id'])['job_id']
             result = f.capture(identifier, classifier=recovery.finish, pattern='Same concrete cause',
                                evidence=['Observed cause'], uncertainty='', alternative=None)
-            self.assertEqual(result['approach_required'], index == 1)
+            self.assertTrue(result['approach_required'])
         with f.store.read_snapshot() as db:
             gates = db.execute("SELECT member_id FROM unit_gates WHERE code='approach_required' AND resolved_at IS NULL").fetchall()
             self.assertEqual([gate[0] for gate in gates], [affected])
-            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 1)
         choices[independent] = {'tier': 'standard', 'automatic': True, 'services': []}
         next_job = f.jobs.job(f.dispatch.step('batch')['job_id'])
         self.assertEqual(next_job['task']['key'], 'independent')
         self.assertEqual({pin['member_id'] for pin in next_job['members']}, {independent})
 
-    def test_repeated_shared_task_failure_records_every_affected_member(self):
+    def test_legacy_shared_task_failure_records_every_affected_member(self):
         from forge.factory.recovery_controller import RecoveryController
         owner = self.plan(lambda members: self.value([
             self.definition(key, [row['member_id'] for row in members]) for key in ('one', 'two')]))
         f = self.f
-        jobs = [f.jobs.job(f.dispatch.step('batch')['job_id']) for _ in range(2)]
+        jobs = [f.jobs.job(f.dispatch.step('batch')['job_id'])]
         recovery = RecoveryController(f.store, f.runner, f.github, config=f.config,
                                       admission=lambda _: True, clock=lambda: 100)
         for job in jobs:
@@ -396,4 +396,4 @@ class TaskPipelineTests(unittest.TestCase):
         with f.store.read_snapshot() as db:
             gates = db.execute("SELECT member_id FROM unit_gates WHERE code='approach_required' AND resolved_at IS NULL").fetchall()
             self.assertEqual({gate[0] for gate in gates}, {pin['member_id'] for pin in owner['members']})
-            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT count(*) FROM budget_entries WHERE kind='charge'").fetchone()[0], 1)

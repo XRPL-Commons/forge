@@ -28,6 +28,7 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
         <code class="mt-2 block break-all text-xs">forge repo policy {{ row.name }} auto|human --server FORGE_URL</code>
       </section>
       <RepositoryMirrorPolicyCard v-if="live" :key="`mirror-${row.id}`" :entries="row.mirror_denied_repositories ?? []" :busy="busy" :error="mirrorError" @save="updateMirrorPolicy" />
+      <RepositoryStewardPolicy v-if="live" :key="`steward-${row.id}`" :repo-id="row.id" />
       <RepositoryRulesPanel id-prefix="repo-" :row="row" :live="live" :report="report" :display-ready="displayReady" :shown="shown" :failed="failed" :hint="hint" :prepared="prepared" :edit-url="editUrl" :download-href="downloadHref" :downloaded="downloaded" :controller-slug="view?.connections?.controller?.app_slug" @download="downloaded = true" />
       <DeploymentCard
         v-if="deployment"

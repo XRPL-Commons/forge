@@ -40,8 +40,10 @@ class Launch:
         for value in (self.runner_config, self.policy, self.context):
             if not isinstance(value, dict) or len(_json(value).encode()) > 65536:
                 raise TransitionError('launch configuration must be a bounded object')
-        if set(self.context) - {'review_policy', 'ci_evidence', 'verification_checks', 'resume_branch', 'resume_pr', 'resume_head', 'publication_author'}:
+        if set(self.context) - {'review_policy', 'ci_evidence', 'verification_checks', 'resume_branch', 'resume_pr', 'resume_head', 'publication_author', 'steward_retry'}:
             raise TransitionError('unsupported launch context field')
+        if 'steward_retry' in self.context and not isinstance(self.context['steward_retry'],dict):
+            raise TransitionError('steward retry context must be an immutable plan object')
         return asdict(self)
 
 
@@ -481,12 +483,22 @@ class ExecutionQueries:
                 job['history']['failures'].append(dict(attempt=failure['attempt_id'], role=failure['role'],
                     cause=(failure['cause'] or '')[:2000], findings=json.loads(failure['findings_json']) if failure['findings_json'] else None))
             job['history']['failures'].reverse()
+            if job.get('steward_retry') or (job['history']['retry_plan'] or {}).get('source')=='steward':
+                from .steward_execution import retry_plan_for_job_in
+                job['history']['retry_plan']=retry_plan_for_job_in(db,unit,job)
             if job['candidate_id']:
                 from .verification import worker_receipts_in
                 job['history']['verified_checks'] = worker_receipts_in(db, job['candidate_id'])
             if job['role'] == 'recovery':
                 from .recovery import failure_context
                 job['failure'] = failure_context(self.store, db, job['id'])
+            if job['role'] == 'steward':
+                from .steward import dossier_in, decision_in
+                from ..steward_contract import decision_schema
+                dossier = dossier_in(db,job['id'])
+                accepted = decision_in(db,dossier['trigger']['decision_id'])[1] if dossier['mode']=='brief' else None
+                job['steward'] = {'dossier':dossier,'accepted_decision':accepted,
+                                  'decision_schema':decision_schema(dossier,accepted=accepted)}
             prepared = db.execute('SELECT p.source_json,i.publication_authorization_json FROM mirror_job_inputs i '
                 'JOIN mirror_sources p ON p.digest=i.source_digest AND p.policy_digest=i.policy_digest WHERE i.job_id=?', (job_id,)).fetchone()
             if prepared:

@@ -1,16 +1,21 @@
-"""Bounded seven-role acceptance on an installed, idle host."""
+"""Bounded role acceptance on an installed, idle host."""
 import math
 import re
 from .contracts import SetupError, require
 from .install import Installation
 
+ROLES = ('build','review','audit','recovery','triage','strategist','discussion','steward')
+
 HOST = '''import json,pwd,re,subprocess,sys
 from pathlib import Path
 def main(payload):
     value=json.loads(sys.stdin.buffer.read(4097))
-    if (set(value)!={'version','repo','issue','apply'} or value['version']!=1 or type(value['apply']) is not bool
+    if (set(value)!={'version','repo','issue','apply','roles'} or value['version']!=1 or type(value['apply']) is not bool
         or type(value['issue']) is not int or not 1<=value['issue']<=2147483647
-        or not isinstance(value['repo'],str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',value['repo'])):
+        or not isinstance(value['repo'],str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',value['repo'])
+        or not isinstance(value['roles'],list) or not value['roles']
+        or any(role not in ('build','review','audit','recovery','triage','strategist','discussion','steward') for role in value['roles'])
+        or len(set(value['roles']))!=len(value['roles'])):
         print(json.dumps({'ok':False,'error':'invalid_request'}));return 1
     account=pwd.getpwnam('forge');source=Path('/home/forge/forge')
     if account.pw_uid<=0 or account.pw_dir!='/home/forge' or source.is_symlink() or source.stat().st_uid!=account.pw_uid:
@@ -19,6 +24,7 @@ def main(payload):
     args=['runuser','-u','forge','--','env','-i',*['%s=%s'%(k,v) for k,v in environment.items()],
         'HOME=/home/forge','/usr/bin/python3','-m','forge.launch','forge.role_qualification',
         '--root','/home/forge/.local/share/forge','--repo',value['repo'],'--issue',str(value['issue'])]
+    for role in value['roles']:args.extend(['--role',role])
     if value['apply']:args.append('--apply')
     result=subprocess.run(args,cwd=source,capture_output=True,timeout=1800 if value['apply'] else 60,env=environment)
     if result.returncode not in (0,1) or len(result.stdout)>65536:
@@ -66,7 +72,7 @@ def provider_diagnostic(value):
 
 def failure_report(value):
     """Keep bounded execution identities and outcomes, never capture contents."""
-    roles = {'build', 'review', 'audit', 'recovery', 'strategist', 'triage', 'discussion'}
+    roles = set(ROLES)
     enums = {'status': {'failed', 'qualified', 'planned'}, 'current_role': roles,
              'cleanup': {'confirmed', 'unconfirmed', 'pending'},
              'automation': {'disabled'}, 'automation_after': {'disabled', 'changed'},
@@ -95,7 +101,7 @@ def failure_report(value):
     if isinstance(rows, list):
         report['results'] = [project(row, ('role', 'status', 'job_id', 'provider', 'base_oid', 'source_digest',
                                          'fixture', 'outcome', 'mirror_requests'))
-                             for row in rows[:7] if isinstance(row, dict)]
+                             for row in rows[:len(ROLES)] if isinstance(row, dict)]
     failure = value.get('failure')
     if isinstance(failure, dict):
         diagnostic = project(failure, ('role', 'job_id'))
@@ -143,17 +149,22 @@ def failure_report(value):
 def execute(args, *, installation=None):
     require(isinstance(args.repo,str) and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',args.repo)
             and type(args.issue) is int and 1<=args.issue<=2147483647,'invalid_request')
+    roles=getattr(args,'role',None)
+    roles=list(ROLES) if roles is None else roles
+    require(isinstance(roles,list) and bool(roles) and all(role in ROLES for role in roles)
+            and len(set(roles))==len(roles),'invalid_request')
     installation=installation or Installation(args.ssh)
     installation.host.fingerprint=(installation.journal.read() or {}).get('host_key')
-    response=installation.host.rpc(HOST,dict(version=1,repo=args.repo,issue=args.issue,apply=args.apply),
+    response=installation.host.rpc(HOST,dict(version=1,repo=args.repo,issue=args.issue,apply=args.apply,roles=roles),
                                    timeout=1830 if args.apply else 90)
     report=response.get('result')
     require(isinstance(report,dict),'invalid_host_response')
     if report.get('status') != ('qualified' if args.apply else 'planned'):
         raise RoleQualificationFailed(report)
+    require(report.get('roles')==roles,'invalid_host_response')
     if args.apply:
         if report.get('cleanup') != 'confirmed' or report.get('automation_after') != 'disabled':
             raise RoleQualificationFailed(report)
     else:
-        report['next_action']='Use --apply to run seven bounded provider invocations. The factory must remain disabled and idle.'
+        report['next_action']=f'Use --apply to run {len(roles)} bounded provider invocations. The factory must remain disabled and idle.'
     return report

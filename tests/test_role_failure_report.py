@@ -6,12 +6,12 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge_client.cli import main
-from forge_client.role_qualification import execute, RoleQualificationFailed
+from forge_client.role_qualification import execute, RoleQualificationFailed, ROLES
 
 
 class RoleFailureReportTests(unittest.TestCase):
     def report(self):
-        return dict(status='failed', reason='provider_execution_not_confirmed', current_role='build',
+        return dict(status='failed', reason='provider_execution_not_confirmed', current_role='build',roles=list(ROLES),
             source_revision='a'*40, image='sha256:'+'b'*64, cleanup='confirmed', automation_after='disabled',
             results=[dict(role='review', status='qualified', job_id='12345678-1234-1234-1234-123456789abc',
                           summary='private model text', outcome='pass')],
@@ -64,7 +64,7 @@ class RoleFailureReportTests(unittest.TestCase):
         value['failure']['execution_envelope']['provider_error'].update(retry_after=float('inf'),status=True)
         report=RoleQualificationFailed(value).report
         self.assertNotIn('private',json.dumps(report))
-        self.assertEqual(len(report['results']),7)
+        self.assertEqual(len(report['results']),len(ROLES))
         self.assertEqual(report['failure']['missing'],['result'])
         self.assertEqual(report['failure']['execution_envelope']['provider_error'],{'code':'auth'})
 

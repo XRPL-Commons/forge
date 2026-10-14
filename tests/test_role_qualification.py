@@ -81,7 +81,7 @@ class QualificationPolicyTests(unittest.TestCase):
 
 
 class RoleFixturesTests(unittest.TestCase):
-    def test_seven_roles_hold_real_exact_sql_authority_and_revoke(self):
+    def test_all_roles_hold_real_exact_sql_authority_and_revoke(self):
         with tempfile.TemporaryDirectory() as temp:
             for index, role in enumerate(ROLES):
                 with self.subTest(role=role):
@@ -95,7 +95,11 @@ class RoleFixturesTests(unittest.TestCase):
                     self.assertIsNotNone(authority)
                     note=(triage_note(job) if role=='triage' else discussion_note(job) if role=='discussion'
                           else strategist_note(job) if role=='strategist' else assignment_note(job))
-                    self.assertEqual(schema(note)['properties']['role']['enum'],[role])
+                    if role=='steward':
+                        self.assertEqual(schema(note)['properties']['dossier_digest']['enum'],
+                                         [job['steward']['dossier']['digest']])
+                    else:
+                        self.assertEqual(schema(note)['properties']['role']['enum'],[role])
                     fixtures.fence(job)
                     with self.assertRaises(MirrorError):mirror.authority(job['id'])
 
@@ -151,6 +155,26 @@ class RoleFixturesTests(unittest.TestCase):
                                 receipts=source.mirror.receipts(job['id'])
                                 self.assertTrue(any(row['details'].get('request_kind')=='upload' and
                                     row['details'].get('outcome')=='served' for row in receipts))
+                                if role=='steward':
+                                    from forge.role_qualification import validate_capture
+                                    from copy import deepcopy
+                                    job['source_input']=prepared.source_input
+                                    source.config=dict(DEFAULT)
+                                    dossier=job['steward']['dossier']
+                                    blob=run_git(['-C',str(checkout),'hash-object','README.md']).decode().strip()
+                                    choice=dict(id='ask',action='question',parameters={'text':'Correct the synthetic assertion?'},
+                                        reason='QUALIFICATION_READ README.md '+blob,judgement='judgement')
+                                    value=dict(version=1,dossier_id=dossier['id'],dossier_digest=dossier['digest'],
+                                        choices=[choice],recommended_choice_id='ask',confidence=.9,brief=None)
+                                    capture=dict(result=value,execution=dict(running=False,exit_code=0),
+                                        execution_envelope=dict(version=1,attempt=job['id'],harness_status='ok',exit_code=0))
+                                    self.assertEqual(validate_capture(capture,job,frozen,source)['status'],'qualified')
+                                    invalid=deepcopy(capture)
+                                    invalid['result']['recommended_choice_id']='unknown'
+                                    with self.assertRaises(ValueError):validate_capture(invalid,job,frozen,source)
+                                    with fixtures.store.read_snapshot() as db:
+                                        self.assertEqual(db.execute('SELECT count(*) FROM steward_selections').fetchone()[0],0)
+                                        self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
                                 if role=='build':
                                     from forge.role_qualification import validate_capture
                                     from forge.publication_artifacts import PublicationClaim
@@ -277,7 +301,28 @@ class RoleFixturesTests(unittest.TestCase):
         self.assertFalse(payload['apply'])
         self.assertIn("'forge.launch','forge.role_qualification'",script)
         self.assertEqual(installation.host.fingerprint,'pinned')
-        self.assertIn('seven',result['next_action'])
+        self.assertIn('8 bounded',result['next_action'])
+
+    def test_cli_selects_only_requested_role_and_rejects_duplicates_before_contact(self):
+        installation=Mock()
+        installation.journal.read.return_value={}
+        installation.host.rpc.return_value={'result':{'status':'planned','roles':['steward']}}
+        args=SimpleNamespace(ssh='anvil',repo='acme/project',issue=10,apply=False,role=['steward'])
+        self.assertIn('1 bounded',execute(args,installation=installation)['next_action'])
+        self.assertEqual(installation.host.rpc.call_args.args[1]['roles'],['steward'])
+        args.role=['steward','steward']
+        installation.host.rpc.reset_mock()
+        with self.assertRaises(Exception):execute(args,installation=installation)
+        installation.host.rpc.assert_not_called()
+
+    def test_cli_rejects_receipt_for_different_roles(self):
+        installation=Mock()
+        installation.journal.read.return_value={}
+        installation.host.rpc.return_value={'result':{'status':'qualified','roles':['build'],
+            'cleanup':'confirmed','automation_after':'disabled'}}
+        with self.assertRaises(Exception):
+            execute(SimpleNamespace(ssh='anvil',repo='acme/project',issue=10,apply=True,role=['steward']),
+                    installation=installation)
 
     def test_cli_refuses_qualified_without_cleanup(self):
         installation=Mock()

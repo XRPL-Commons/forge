@@ -57,6 +57,7 @@ export function jobIncludesIssue(job: JobView, issueKey: string): boolean {
 interface LedgerEvent { kind: string; provider?: string; model?: string | null; [key: string]: unknown }
 
 export interface LedgerIssueView extends OperatorStatusSource {
+  steward_decision?: import('./steward').StewardDecisionMarker | null
   key: string; repo_id: number; repo: string; number: number; title: string
   attempts?: Array<Pick<JobView, 'id' | 'role' | 'outcome' | 'phase' | 'created_at' | 'started_at'>>
   state: IssueState; reason: string | null; active: string | null; failure_count: number

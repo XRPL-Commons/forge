@@ -12,9 +12,9 @@ from ..harnesses.registry import manifests
 # still runs only what fits, and a large one needs no tuning.
 DEFAULT = {
     'version': 1, 'enabled': False, 'merge_enabled': False,
-    'slots': {'build': 4, 'review': 2, 'audit': 1, 'recovery': 1},
+    'slots': {'build': 4, 'review': 2, 'audit': 1, 'recovery': 1, 'steward': 1},
     'cycle_seconds': 30,
-    'timeout_seconds': {'build': 2700, 'review': 1200, 'audit': 1200, 'recovery': 600},
+    'timeout_seconds': {'build': 2700, 'review': 1200, 'audit': 1200, 'recovery': 600, 'steward': 600},
     'grace_seconds': 10, 'availability_retry_seconds': 300,
     'reliability': {'retry_seconds': 30, 'stall_seconds': 300,
                     'effect_retry_cap_seconds': 900, 'effect_max_attempts': 8,
@@ -86,12 +86,17 @@ def _validate(value, installed):
         if type(config[key]) is not int or not low <= config[key] <= high:
             raise ValueError('Invalid ' + key)
     for key, low, high in [('slots', 0, 64), ('timeout_seconds', 30, 3000)]:
+        # Immutable pre-steward launch snapshots still need verified teardown.
+        if isinstance(config[key],dict) and set(config[key]) == set(ROLES)-{'steward'}:
+            config[key] = {**config[key], 'steward':config[key]['recovery']}
         if not isinstance(config[key], dict) or set(config[key]) != set(ROLES):
-            raise ValueError('Configure all four roles in ' + key)
+            raise ValueError('Configure all roles in ' + key)
         if any(type(v) is not int or not low <= v <= high for v in config[key].values()):
             raise ValueError('Invalid role limits in ' + key)
     if config['slots']['recovery'] < 1:
         raise ValueError('Mandatory investigations need at least one recovery slot')
+    if config['slots']['steward'] < 1:
+        raise ValueError('Steward decisions need at least one steward slot')
     reliability = config['reliability']
     if not isinstance(reliability, dict) or set(reliability) - set(DEFAULT['reliability']):
         raise ValueError('Unknown reliability settings')

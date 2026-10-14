@@ -39,6 +39,7 @@ export interface IssueEnvironment {
 export interface IssuePrerequisite { reference: string; repository: string; number: number; kind: string | null; reason: string | null; complete: boolean; url: string }
 
 export interface IssueRow extends OperatorStatusSource {
+  steward_decision?: import('./steward').StewardDecisionMarker | null
   key: string; repo: string; repo_id: number; number: number; title: string
   content_hash: string; body_truncated: boolean; state: 'open' | 'closed'
   updated_at: string | null; labels: string[]; assignees: string[]
