@@ -10,6 +10,7 @@ import selectors
 import runpy
 
 RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
+EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
 
 
 def error_message(text):
@@ -209,6 +210,9 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
             pass
     response = next((e for e in reversed(events) if e.get('type') == 'result'), {})
     if code or response.get('is_error') or not isinstance(response.get('structured_output'), dict):
+        provider = EXECUTION['provider_error'](response)
+        if provider is not None and canary is None:
+            EXECUTION['write_receipt'](note, 'provider_error', provider_error=provider)
         message = error_message(raw)
         print(json.dumps({'type': 'error', 'message': message,
                           'provider_failure': failure_diagnostic(code, response, raw, events)}), flush=True)
@@ -238,6 +242,7 @@ def run(note, directory, env, result_schema):
 def probe(note, directory):
     private = Path('/work/home/probe-private'); private.parent.mkdir(exist_ok=True); private.write_text('synthetic private canary')
     subprocess.run(['git', 'init', str(directory)], check=True, capture_output=True)
+    Path('/work/home/forge-exit.json').write_text('synthetic private envelope')
     nonce = uuid.uuid4().hex
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}

@@ -342,7 +342,11 @@ def export_child(note, directory, inputs, git, *, result_path=Path('/work/result
     return True
 
 
-if __name__ == '__main__':
+def entrypoint():
+    execution = runpy.run_path('/opt/forge/harnesses/execution.py')
+    note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
+    # Clear any prior receipt before the trusted adapter is invoked.
+    execution['RECEIPT'].unlink(missing_ok=True)
     try:
         raise SystemExit(main())
     except AssignmentChanged as error:
@@ -361,3 +365,16 @@ if __name__ == '__main__':
         note = json.loads(Path(os.environ['FORGE_ASSIGNMENT']).read_text())
         runpy.run_path('/opt/forge/build_environment.py')['blocked'](note, 'Forge could not prepare the disposable checkout before work started. Check repository access, revision availability and disk space.', 'dependency_access')
         raise SystemExit(125) from None
+
+    except Exception as error:
+        execution['write_receipt'](note, 'harness_error', harness_error=execution['exception_fault'](error))
+        raise
+    finally:
+        # A provider adapter may already have recorded an authoritative error.
+        # Ordinary unable/reject results remain work outcomes, not Forge faults.
+        if not execution['RECEIPT'].exists():
+            execution['write_receipt'](note, 'ok')
+
+
+if __name__ == '__main__':
+    entrypoint()

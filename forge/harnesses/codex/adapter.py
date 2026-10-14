@@ -7,6 +7,7 @@ import tempfile
 import runpy
 
 RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
+EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
 
 
 def prepare_tool_environment(directory, env):
@@ -55,10 +56,14 @@ def run(note, directory, env, result_schema):
     if note.get('model'):
         args[5:5] = ['--model', note['model']]
     prompt = json.dumps(note) + '\nReturn your result as the final structured response. It will be validated by the supervisor.'
-    completed = subprocess.run(args, input=prompt, text=True, env=env, check=False)
+    code, events = EXECUTION['stream'](args, prompt, directory, env)
+    if code:
+        provider = EXECUTION['codex_provider_error'](events)
+        if provider is not None:
+            EXECUTION['write_receipt'](note, 'provider_error', provider_error=provider)
     output = Path('/work/final-result.json')
     RESULTS['publish_result'](note, output)
-    return completed.returncode
+    return code
 
 
 def probe(note, directory):
@@ -66,11 +71,16 @@ def probe(note, directory):
     home = Path('/work/home/.codex'); home.mkdir(parents=True, exist_ok=True)
     child_env = prepare_tool_environment(repo, os.environ)
     private = Path('/work/home/probe-private'); private.write_text('synthetic probe')
+    Path('/work/home/forge-exit.json').write_text('synthetic private envelope')
     # An editable worktree is insufficient: Codex protects .git separately.
     # Prove a real local commit succeeds before reporting the runner ready.
     subprocess.run(['git', 'init', str(repo)], check=True, capture_output=True, timeout=10)
     command = ['codex', 'sandbox', '-P', 'forge_runner', '--include-managed-config', '-C', str(repo), '/usr/local/bin/python3', '-c',
-               'from pathlib import Path; p=Path("/work/home/probe-private"); '
+               'from pathlib import Path; p=Path("/work/home/forge-exit.json"); '
+               '\ntry: p.write_text("forged")\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(4)\n'
+               'try: p.read_bytes()\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(5)\n'
+               'try: p.rename("/work/repository/stolen-envelope")\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(6)\n'
+               'p=Path("/work/home/probe-private"); '
                '\ntry: p.read_text()\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(2)\n'
                'p=Path("/work/home/.codex/auth.json")\n'
                'try: p.read_text()\nexcept (PermissionError, FileNotFoundError): pass\nelse: raise SystemExit(3)\n'

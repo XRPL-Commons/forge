@@ -16,6 +16,7 @@ import selectors
 import runpy
 
 RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
+EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
 
 
 def error_message(text):
@@ -126,6 +127,9 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
             pass
     response = next((e for e in reversed(events) if e.get('type') == 'result'), {})
     if code or response.get('is_error') or not isinstance(response.get('structured_output'), dict):
+        if response.get('is_error') is True and response.get('subtype') == 'error_during_execution' and canary is None:
+            # Grok's Messages-compatible terminal error has no typed cause.
+            EXECUTION['write_receipt'](note, 'provider_error', provider_error={'code': 'unknown'})
         message = error_message(raw)
         print(json.dumps({'type': 'error', 'message': message}), flush=True)
         return None, message
@@ -153,6 +157,7 @@ def run(note, directory, env, result_schema):
 
 def probe(note, directory):
     private = Path('/work/home/probe-private'); private.parent.mkdir(exist_ok=True); private.write_text('synthetic private canary')
+    Path('/work/home/forge-exit.json').write_text('synthetic private envelope')
     nonce = uuid.uuid4().hex
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}

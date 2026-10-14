@@ -137,12 +137,15 @@ def main():
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=5)
+            if argv[-1] == '/opt/forge/startup.py':
+                runpy.run_path('/opt/forge/harnesses/execution.py')['finalize'](note, 124, timeout=True)
             return 124
         if channel:
             channel.read()  # A fast pre-agent exception may precede the first poll.
             code, receipt = channel.completed(child.returncode, note['id'])
             if receipt is not None:
                 Path('/work/forge-startup.json').write_text(json.dumps(receipt))
+            runpy.run_path('/opt/forge/harnesses/execution.py')['finalize'](note, code)
             return code
     finally:
         if channel:
