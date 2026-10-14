@@ -123,7 +123,7 @@ class CaptureDiagnosticsTests(unittest.TestCase):
                 settings = stack.enter_context(patch('forge.settings.Settings'))
                 settings.return_value.load.return_value = {'connections': {}, 'repositories': []}
                 daemon = stack.enter_context(patch('forge.mirror_daemon.MirrorDaemon'))
-                stack.enter_context(patch('forge.role_qualification.CanaryRunner', side_effect=create_runner))
+                stack.enter_context(patch('forge.role_qualification.ContainerRunner', side_effect=create_runner))
                 report = qualify(root/'live', 'acme/project', 10, apply=True)
             self.assertEqual(report['reason'], 'provider_execution_not_confirmed')
             self.assertEqual(report['current_role'], 'build')

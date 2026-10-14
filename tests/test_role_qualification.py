@@ -232,7 +232,7 @@ class RoleFixturesTests(unittest.TestCase):
                         ('forge.mirror.git_store.GitStore',git.cache),
                         ('forge.factory.github.GitHub.issue_inputs',(dict(number=10,title='Issue',body='Body'),'requirements',[])),
                         ('forge.credentials.Credentials.environment',{}),
-                        ('forge.role_qualification.CanaryRunner',runner)):
+                        ('forge.role_qualification.ContainerRunner',runner)):
                         stack.enter_context(patch(target,return_value=value))
                     settings=stack.enter_context(patch('forge.settings.Settings'))
                     settings.return_value.load.return_value={'connections':{},'repositories':[]}

@@ -90,6 +90,14 @@ shards, UI unit/type/build/browser checks and source audit passed in
   malformed model output because schema validation preceded execution checks.
   Diagnostic ordering and CLI failure-report retention are being corrected;
   no role is marked qualified by that failed attempt.
+- The diagnostic build on Anvil (`a5676c0`) reported build exit 125 with cleanup
+  confirmed and automation still disabled. A credential-free reproduction of
+  clone/fetch/checkout and native sandbox checks passed on a small fixture.
+  A scoped, read-only measurement of the selected repository then proved the
+  mirror rejected its 239,187,791-byte Git pack at the 64 MiB buffered-response
+  ceiling. Cache data was deleted and all temporary tokens were revoked.
+  Bounded spooling and chunked response transfer are being implemented. The role
+  canary now uses the production worker's bounded work volume.
 - The native boundary canary also passed on `e430a9c` and its rebuilt image
   `sha256:f75e743bd807d728e9e810d7fca798cd0da5728dadebe737806dce42f4adc172`.
   All nine checks passed and disposable cleanup was confirmed.

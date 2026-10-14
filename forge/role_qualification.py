@@ -18,7 +18,6 @@ import time
 
 from .factory.runner import ContainerRunner
 from .factory.source_preparation import SourcePreparation
-from .factory.worker_boundary import WorkerBoundary
 from .mirror.policy import MirrorError
 from .role_qualification_fixtures import Fixtures
 
@@ -149,11 +148,6 @@ class CanarySource(SourcePreparation):
             instruction += 'Inspect deployment evidence in this checkout and return the normal strategist contract; unknown evidence stays unobservable. '
         result['instructions'] += instruction
         return result
-
-
-class CanaryRunner(ContainerRunner):
-    def boundary(self):
-        return WorkerBoundary(self.call, image=self.config['image'], work_bytes=512*1024**2)
 
 
 def capture_evidence(capture, job):
@@ -323,7 +317,7 @@ def qualify(root, repository, number, *, apply=False, image=None):
                 source=CanarySource(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache,github=github)
                 source.config=config
                 daemon=MirrorDaemon(fixtures.store.root,fixtures.store,settings=fixture_settings,access=access,git_store=cache)
-                runner=CanaryRunner(config,environ=env,source=source)
+                runner=ContainerRunner(config,environ=env,source=source)
                 job=fixtures.reserve(role)
                 try:
                     # Prepare immutable notes and bind the broker before starting its network frontend.
