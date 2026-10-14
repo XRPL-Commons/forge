@@ -17,6 +17,12 @@
   "repo_id": 2,
   "status": "completed",
   "reason_code": "merged",
+  "operator_status": {
+   "code": "completed",
+   "label": "Completed",
+   "reason_code": "merged",
+   "reason": "Merged"
+  },
   "explanation": "Completed and merged.",
   "actions": [],
   "setup_needed": false,
@@ -24,13 +30,14 @@
   "pull_requests": [
    {
     "number": 46,
-    "title": "Normalize webhook signature verification"
+    "title": "Normalize webhook signature verification",
+    "kind": "candidate"
    }
   ],
   "dependencies": [],
   "fresh": true,
   "revision": "current",
-  "setup_url": "/settings/repository?repo_id=2",
+  "setup_url": "/settings/repositories/2?setup=1",
   "active": null,
   "body": "# Signature verification\n\nAccept the documented header casing.\n",
   "history": [

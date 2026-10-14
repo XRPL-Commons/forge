@@ -136,7 +136,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/academy/settings/rules",
-      "setup_url": "/settings/repository?repo_id=1"
+      "setup_url": "/settings/repositories/1?setup=1"
     },
     {
       "id": 2,
@@ -265,7 +265,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
-      "setup_url": "/settings/repository?repo_id=2"
+      "setup_url": "/settings/repositories/2?setup=1"
     }
   ],
   "observation": {
@@ -313,7 +313,9 @@
         "code": "result_pending",
         "role": "review",
         "job_id": "44444444-4444-4444-8444-444444444444"
-      }
+      },
+      "blocked_dependencies": [],
+      "closed_as": null
     },
     {
       "key": "1:702",
@@ -348,7 +350,9 @@
       "stage_code": "reviewing",
       "hold_kind": null,
       "attention_kind": null,
-      "transition": null
+      "transition": null,
+      "blocked_dependencies": [],
+      "closed_as": null
     },
     {
       "key": "1:703",
@@ -381,7 +385,9 @@
       "stage_code": "building",
       "hold_kind": "operator_pause",
       "attention_kind": null,
-      "transition": null
+      "transition": null,
+      "blocked_dependencies": [],
+      "closed_as": null
     }
   ],
   "jobs": [

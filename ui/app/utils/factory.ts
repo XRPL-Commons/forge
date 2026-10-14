@@ -2,13 +2,13 @@
 // renders a CardModel, every banner is produced by warnings(), so no component
 // reaches into the raw FactoryView payload. Rules follow the operator API
 // contracts §2 (GET /api/factory) and §3.1 (Activity page).
-import { operatorLabel, operatorReason, type OperatorStatusSource } from './operatorStatus'
+import type { OperatorStatusSource } from './operatorStatus'
 import type { CodingAccount } from './accounts'
-import { clampTitle, reviewerMentions, spelledAgo } from './format'
+import { clampTitle, spelledAgo } from './format'
 import type { PortraitLook } from './cube'
 import { isDropped, ledgerLook, type ClosedAs } from './workbench'
 import type { OnboardingView } from './onboarding'
-import type { IssueSummary } from './issues'
+import type { IssueRow, IssueSummary } from './issues'
 import type { DeploymentRow, FactoryDeployment } from './repositories'
 
 export type JobRole = 'build' | 'review' | 'audit' | 'recovery' | 'merge'
@@ -46,7 +46,7 @@ export interface JobView {
   outcome: string | null; cleanup: boolean; fenced: boolean
   capacity_wait_since?: number | null; created_at: number; deadline: number
   started_at: number | null; observed_status?: string | null; observed_at: number | null; last_observed?: number
-  // The branch the worker pushes to; older payloads omit it.
+  // The branch the worker pushes to.
   branch?: string | null
 }
 
@@ -62,24 +62,21 @@ export interface LedgerIssueView extends OperatorStatusSource {
   state: IssueState; reason: string | null; active: string | null; failure_count: number
   hold_kind?: string | null
   // A transitional gate (#241): the stage is settling the job that just
-  // finished, e.g. checking a review's result. Not a hold. Older payloads omit it.
-  transition?: { code: string; role: string | null; job_id: string | null } | null
+  // finished, e.g. checking a review's result. Not a hold.
+  transition: { code: string; role: string | null; job_id: string | null } | null
   merge_gate_kind?: string | null
   candidate?: { pr?: number } | null
   // The plain-language card of the last outcome (contracts §2, LedgerIssueView).
   last_summary?: IssueSummary | null
   reviewers_requested?: { logins: string[]; at: number } | null
-  prerequisite_hold?: { state: string } | true | null
   // Open issues this one depends on; the supervisor never dispatches it meanwhile.
-  blocked_dependencies?: number[]
-  dependency_reason?: string | null
+  blocked_dependencies: number[]
   // GitHub's reason the issue closed; not_planned and duplicate read as
-  // "No longer needed" (workbench.ts isDropped). Older payloads omit it.
-  closed_as?: ClosedAs | null
-  ownership_wait?: IssueSummary | null
-  // Why the issue waits for the operator (control.py attention_kind), null
-  // when it does not. Older payloads omit it.
-  attention_kind?: 'approve' | 'question' | 'approach' | 'failed' | 'env' | 'review' | 'verify' | null
+  // "No longer needed" (workbench.ts isDropped).
+  closed_as: ClosedAs | null
+  // Why the issue waits for the operator (store_views.py attention_kind),
+  // null when it does not.
+  attention_kind: 'approve' | 'question' | 'approach' | 'failed' | 'env' | 'review' | 'verify' | null
   history?: LedgerEvent[]
   // Deployment verdicts (contracts §2). Both are present and null until the
   // supervisor has evidence; `deployed` is written once, `deploy_failed` is
@@ -121,7 +118,7 @@ export interface FactoryView {
   coding_accounts?: CodingAccount[]
 }
 
-export interface CardModel extends OperatorStatusSource {
+export interface CardModel extends Partial<OperatorStatusSource> {
   key: string
   // Anchor target and FLIP key: "issue-<repo_id>-<number>", or "job-<id>" for
   // an internal row, whose issue key may already belong to a rendered issue.
@@ -138,7 +135,6 @@ export interface CardModel extends OperatorStatusSource {
   running: boolean
   stoppable: boolean
   jobId: string | null
-  footerLink: { to: string; label: string } | null
   // "deployed" / "waiting for deploy" / "deploy failed" on a completed card,
   // '' when this repository's deployments are not tracked.
   deployment: string
@@ -148,7 +144,8 @@ export interface CardModel extends OperatorStatusSource {
   look: PortraitLook
   summary: string
   pr: number | null
-  failures: number
+  // Failed attempts out of the issue's budget; null while none has failed.
+  attempts: NonNullable<IssueRow['attempts']> | null
   // Unix seconds: the last thing the ledger recorded, and when the issue was
   // merged or closed (null while it is open).
   updatedAt: number | null
@@ -159,6 +156,8 @@ export interface CardModel extends OperatorStatusSource {
 
 
 export const NEXT_ROLE: Record<string, ColumnRole> = { ready: 'build', built: 'review', reviewed: 'audit' }
+// Attempts an issue may fail before it needs the operator (store_views.py).
+export const ATTEMPT_LIMIT = 3
 export const COLUMN_ROLES: ColumnRole[] = ['build', 'review', 'audit']
 export const COLUMN_TITLES: Record<ColumnRole, string> = { build: 'Build', review: 'Review', audit: 'Security audit' }
 
@@ -198,8 +197,8 @@ export function isRunning(view: FactoryView | null | undefined, job: FactorySumm
 
 // Waiting for another issue is not queued work: no worker can take it until
 // the dependency closes, so it is never counted or shown as waiting for one.
-function waitingOnDependencies(issue: LedgerIssueView | null | undefined): boolean {
-  return !!issue?.blocked_dependencies?.length
+function waitingOnDependencies(issue: LedgerIssueView): boolean {
+  return issue.blocked_dependencies.length > 0
 }
 
 // The bay an issue stays in while its stage settles a finished job (#241).
@@ -209,7 +208,7 @@ function settlingRole(issue: Pick<LedgerIssueView, 'transition'> | null | undefi
 }
 
 export function phaseLabel(issue: LedgerIssueView | null, job: JobView | null, view: FactoryView | null | undefined, now: number): string {
-  if (issue) return operatorLabel(issue)
+  if (issue) return issue.operator_status.label
   if (job) {
     if (job.capacity_wait_since) return 'Waiting for memory'
     if (isRunning(view, job, now)) return 'Working'
@@ -244,35 +243,11 @@ export function jobSummary(job: Pick<JobView, 'role' | 'phase' | 'outcome' | 'cl
   return `${role} · ${state}`
 }
 
-function latestProvider(issue: LedgerIssueView | null): string | null {
-  let provider: string | null = null
-  for (const event of issue?.history ?? []) if (event.kind === 'availability_wait' && event.provider) provider = event.provider
-  return provider
-}
-
+// An issue card says what the server's status projection says; a job with no
+// issue row only explains a wait for memory.
 export function reasonText(issue: LedgerIssueView | null, job: JobView | null): string {
-  const canonical = operatorReason(issue)
-  if (canonical !== undefined) return canonical
-  if (job?.capacity_wait_since) return 'Waiting for memory. Forge will start this worker automatically when space is available.'
-  if (!job && issue?.ownership_wait) return issue.ownership_wait.plain
-  if (!job && waitingOnDependencies(issue)) return issue!.dependency_reason ?? ''
-  // An approval the operator already asked for: the card says who has it,
-  // which is more use than repeating that a review is needed.
-  if (issue?.state === 'approval_needed' && issue.reviewers_requested?.logins?.length) {
-    return `Review requested from ${reviewerMentions(issue.reviewers_requested.logins)}`
-  }
-  const reason = issue?.reason ?? ''
-  if (job && (reason === 'blocked_auth' || reason === 'blocked_rate_limit')) return ''
-  if (reason === 'blocked_auth') {
-    const provider = latestProvider(issue)
-    return `${(provider && PROVIDER_LABELS[provider]) || 'A coding account'} needs sign-in. Queued for another available coding account.`
-  }
-  if (reason === 'blocked_rate_limit') return 'Coding account usage limit reached. Forge will retry automatically.'
-  // What Forge last decided, in the words the issue page leads with. While a
-  // worker is running that card belongs to the previous step, so it waits.
-  const headline = (issue?.last_summary?.headline ?? '').trim()
-  if (!job && headline) return clampTitle(headline)
-  return reason
+  if (issue) return issue.operator_status.reason
+  return job?.capacity_wait_since ? 'Waiting for memory. Forge will start this worker automatically when space is available.' : ''
 }
 
 export function elapsed(seconds: number): string {
@@ -292,13 +267,6 @@ function timerEndFor(view: FactoryView | null | undefined, job: JobView | null, 
   if (!job) return null
   if (running) return now
   return job.observed_at ?? job.last_observed ?? (view?.observation as { at?: number } | undefined)?.at ?? null
-}
-
-function footerLinkFor(issue: LedgerIssueView, job: JobView | null): CardModel['footerLink'] {
-  if (issue.prerequisite_hold) return { to: `/settings/repositories/${issue.repo_id}?setup=1`, label: 'Prepare repository →' }
-  if (issue.reason === 'blocked_auth' && !job) return { to: '/settings/harnesses', label: 'Coding accounts →' }
-  if (issue.failure_count > 0) return { to: '', label: `${issue.failure_count} / 3 attempts failed` }
-  return null
 }
 
 function stoppable(job: JobView | null): boolean {
@@ -364,13 +332,12 @@ function issueCard(issue: LedgerIssueView, job: JobView | null, view: FactoryVie
     running,
     stoppable: stoppable(job),
     jobId: job?.id ?? null,
-    footerLink: footerLinkFor(issue, job),
     deployment: deploymentNote(issue, tracked),
     state: issue.state,
     look: ledgerLook(issue, job, running),
     summary: (issue.last_summary?.headline ?? '').trim(),
     pr: issue.candidate?.pr ?? null,
-    failures: issue.failure_count ?? 0,
+    attempts: issue.failure_count > 0 ? { failed: issue.failure_count, limit: ATTEMPT_LIMIT } : null,
     updatedAt: lastEventAt(issue),
     doneAt: doneAt(issue),
   }
@@ -411,13 +378,12 @@ export function toCard(job: JobView, view: FactoryView, now: number): CardModel 
     running,
     stoppable: stoppable(job),
     jobId: job.id,
-    footerLink: null,
     deployment: '',
     state: null,
     look: { stage: 'queued', mood: running ? 'busy' : 'open', accessory: null, beacon: false, zzz: false, scorches: 0, confetti: false },
     summary: '',
     pr: null,
-    failures: 0,
+    attempts: null,
     updatedAt: job.observed_at ?? job.last_observed ?? job.created_at ?? null,
     doneAt: null,
   }
@@ -436,7 +402,6 @@ export interface IssueGroups {
   // read. A deliberate hold is not, so it is kept apart and stacked.
   attention: CardModel[]
   held: CardModel[]
-  owned: CardModel[]
   // Blocked by open dependencies: it resumes by itself when they close.
   waiting: CardModel[]
   finishing: CardModel[]
@@ -450,7 +415,7 @@ export interface IssueGroups {
 export function groupIssues(view: FactoryView | null | undefined, now: number): IssueGroups {
   const groups: IssueGroups = {
     columns: { build: [], review: [], audit: [] },
-    attention: [], held: [], owned: [], waiting: [], finishing: [], investigating: [], internalJobs: [], completed: [],
+    attention: [], held: [], waiting: [], finishing: [], investigating: [], internalJobs: [], completed: [],
   }
   if (!view) return groups
   const tracked = trackedRepositories(view)
@@ -462,7 +427,6 @@ export function groupIssues(view: FactoryView | null | undefined, now: number): 
     // in the column of the stage that comes next.
     const settling = job ? null : settlingRole(issue)
     if (settling) { groups.columns[settling].push({ ...card, checking: true }); continue }
-    if (!job && issue.ownership_wait && !['merged', 'cancelled', 'failed', 'hold'].includes(issue.state)) { groups.owned.push(card); continue }
     if (!job && waitingOnDependencies(issue) && NEXT_ROLE[issue.state]) { groups.waiting.push(card); continue }
     const role = job && COLUMN_ROLES.includes(job.role as ColumnRole)
       ? job.role as ColumnRole
@@ -536,8 +500,8 @@ export function readout(view: FactoryView | null | undefined, now: number): Read
   return {
     occupied: usage.occupied, working: usage.running,
     slots: roles.reduce((total, role) => total + (Number(slots[role]) || 0), 0),
-    queued: issues.filter(issue => !jobFor(view, issue) && !settlingRole(issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue) && !issue.ownership_wait).length,
-    merging: issues.filter(issue => issue.state === 'audited' && !issue.ownership_wait).length,
+    queued: issues.filter(issue => !jobFor(view, issue) && !settlingRole(issue) && NEXT_ROLE[issue.state] && eligible(view, issue) && !waitingOnDependencies(issue)).length,
+    merging: issues.filter(issue => issue.state === 'audited').length,
     merged: mergedToday(view, now),
   }
 }

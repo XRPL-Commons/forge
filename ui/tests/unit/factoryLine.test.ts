@@ -5,7 +5,7 @@ import {
   lineSummary, lineTooltip, type LineState,
 } from '../../app/utils/factoryLine'
 import { factoryFreshness, readout } from '../../app/utils/factory'
-import { attentionKind } from '../e2e/attention-kind.mjs'
+import { attentionKind, factoryRow } from './support/rows'
 
 const now = 1_000_000
 
@@ -15,7 +15,7 @@ function issue(number: number, over: Record<string, unknown> = {}): any {
     key: `1:${number}`, repo_id: 1, repo: 'XRPL-Commons/academy', number, title: `Issue ${number}`,
     state: 'ready', reason: null, active: null, failure_count: 0, history: [], ...over,
   }
-  return 'attention_kind' in over ? row : { ...row, attention_kind: attentionKind(row) }
+  return factoryRow('attention_kind' in over ? row : { ...row, attention_kind: attentionKind(row) })
 }
 
 function job(number: number, role: string, over: Record<string, unknown> = {}): any {
@@ -41,7 +41,7 @@ function view(issues: any[], jobs: any[] = [], over: Record<string, unknown> = {
 function busy(): any {
   return view([
     issue(1, { active: 'job-1' }), issue(2, { active: 'job-2' }),
-    issue(3), issue(4), issue(5),
+    issue(3, { reason: 'Waiting for a worker' }), issue(4), issue(5),
     issue(6, { state: 'built' }),
     issue(7, { state: 'reviewed', active: 'job-7' }),
     issue(8, { state: 'audited' }),
@@ -50,7 +50,7 @@ function busy(): any {
     issue(12, { state: 'hold', reason: 'Forge environment needs attention (toolchain)' }),
     issue(13, { state: 'hold', reason: 'Repeated failure requires a supported change of approach' }),
     issue(14, { state: 'hold', reason: 'Paused by an operator' }),
-    issue(15, { state: 'ready', blocked_dependencies: [7], dependency_reason: 'Depends on #7' }),
+    issue(15, { state: 'ready', blocked_dependencies: [7], reason: 'Waiting for #7' }),
   ], [job(1, 'build'), job(2, 'build', { phase: 'launching' }), job(7, 'audit')], {
     summary: { merged_day: 4 },
   })
@@ -161,9 +161,9 @@ describe('lineAnalyse and lineHeadline', () => {
 describe('lineTooltip and lineBlocker', () => {
   it('reads like the board', () => {
     const state = lineState(busy(), now)!
-    expect(lineTooltip(stageOf(state, '1:10')!, false)).toBe('#10 · Needs attention · An attempt failed')
+    expect(lineTooltip(stageOf(state, '1:10')!, false)).toBe('#10 · Needs attention · Three attempts failed')
     expect(lineTooltip(stageOf(state, '1:3')!, true)).toBe('#3 · Queued · Waiting for a worker · XRPL-Commons/academy')
-    expect(lineTooltip(stageOf(state, '1:15')!, false)).toBe('#15 · Waiting on other issues · Blocked')
+    expect(lineTooltip(stageOf(state, '1:15')!, false)).toBe('#15 · Blocked · Waiting for #7')
   })
 
   it('ties a waiting issue to its blocker in the same repository', () => {

@@ -1,19 +1,19 @@
+import { isFresh, isRunning, readout, type FactoryView } from './factory'
+
 export type Role = 'build' | 'review' | 'audit' | 'merge' | 'recovery'
 export const ROLE_LABELS: Record<Role, [string, string]> = { build: ['builder', 'builders'], review: ['reviewer', 'reviewers'], audit: ['auditor', 'auditors'], merge: ['merge worker', 'merge workers'], recovery: ['investigation', 'investigations'] }
 // Where each header pill count leads on the Activity page: the factory line
 // for the working roles, the investigations line for recovery.
 export const ROLE_TARGET: Record<Role, string> = { build: '/#factory-line', review: '/#factory-line', audit: '/#factory-line', merge: '/#factory-line', recovery: '/#runners' }
-export function summarizeActivity(payload: any, now: number) {
-  const maxAge = Math.max(120, (Number(payload?.runtime?.cycle_seconds) || 30) * 3)
-  const fresh = !!payload?.observation?.at && now - payload.observation.at <= maxAge
+
+export interface ActivitySummary { working: Record<Role, number>; queued: number; fresh: boolean }
+
+// The header pill counts by the Activity page's own rules: a worker is
+// working when isRunning() says so, and the queue is readout()'s.
+export function summarizeActivity(view: FactoryView | null | undefined, now: number): ActivitySummary {
   const working: Record<Role, number> = { build: 0, review: 0, audit: 0, merge: 0, recovery: 0 }
-  for (const job of payload?.summary?.workers ?? payload?.jobs ?? []) {
-    const seen = job.observed_at ?? job.last_observed
-    if (job.cleanup || job.fenced || job.outcome || job.phase !== 'running' || !seen || now - seen > maxAge) continue
-    if (job.role in working) working[job.role as Role]++
+  for (const job of view?.summary?.workers ?? view?.jobs ?? []) {
+    if (job.role in working && isRunning(view, job, now)) working[job.role]++
   }
-  const repositories = Array.isArray(payload?.repositories) ? payload.repositories : []
-  const enabled = new Set(repositories.filter((r: any) => r.enabled).map((r: any) => r.name))
-  const queued = (payload?.issues ?? []).filter((i: any) => !i.active && ['ready', 'built', 'reviewed'].includes(i.state) && !i.blocked_dependencies?.length && !i.ownership_wait && (!Array.isArray(payload?.repositories) || enabled.has(i.repo))).length
-  return { working, queued, fresh }
+  return { working, queued: readout(view, now)?.queued ?? 0, fresh: isFresh(view, now) }
 }

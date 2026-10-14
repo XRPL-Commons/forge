@@ -136,7 +136,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/academy/settings/rules",
-      "setup_url": "/settings/repository?repo_id=1"
+      "setup_url": "/settings/repositories/1?setup=1"
     },
     {
       "id": 2,
@@ -265,7 +265,7 @@
         "required_approvals": 2
       },
       "rules_url": "https://github.com/XRPL-Commons/hackathon/settings/rules",
-      "setup_url": "/settings/repository?repo_id=2"
+      "setup_url": "/settings/repositories/2?setup=1"
     }
   ],
   "observation": {
@@ -313,7 +313,17 @@
           "role": "build",
           "slot": "build-1"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "working",
+        "label": "Working",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:602",
@@ -363,7 +373,17 @@
           "kind": "accepted",
           "role": "build"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "2:603",
@@ -418,7 +438,17 @@
           "kind": "accepted",
           "role": "review"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "1:604",
@@ -481,7 +511,17 @@
           "issue": "1:604",
           "kind": "investigated"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "Three attempts failed"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "failed"
     },
     {
       "key": "2:605",
@@ -540,7 +580,17 @@
           "kind": "accepted",
           "role": "audit"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "key": "2:606",
@@ -598,7 +648,17 @@
           "issue": "2:606",
           "kind": "merged"
         }
-      ]
+      ],
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "merged",
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -629,7 +689,17 @@
       "key": "1:611",
       "number": 611,
       "title": "Add pagination to the runner capacity chart",
-      "state": "ready"
+      "state": "ready",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 1,
@@ -660,7 +730,17 @@
       "key": "1:612",
       "number": 612,
       "title": "Improve the build supervisor retry backoff so recovered workers do not immediately collide with newly scheduled attempts and exhaust the shared runner capacity queue",
-      "state": "built"
+      "state": "built",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 2,
@@ -692,7 +772,16 @@
       "number": 615,
       "title": "Wire the hackathon repo into the review baseline",
       "state": "ready",
-      "prerequisite_hold": true
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": ""
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": null
     },
     {
       "repo_id": 2,
@@ -756,7 +845,17 @@
       "key": "2:616",
       "number": 616,
       "title": "Stabilize the audit findings renderer",
-      "state": "failed"
+      "state": "failed",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "Two attempts failed"
+      },
+      "blocked_dependencies": [],
+      "closed_as": null,
+      "transition": null,
+      "attention_kind": "failed"
     }
   ],
   "jobs": [

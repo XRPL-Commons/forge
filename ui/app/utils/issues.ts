@@ -4,7 +4,7 @@
 // Rules follow the operator API contracts §2 (GET /api/issues) and §3.2–3.3.
 
 import { elapsed } from './factory'
-import { operatorLabel, type OperatorStatusSource } from './operatorStatus'
+import type { OperatorStatusSource } from './operatorStatus'
 import { ago, clampTitle, reviewerMentions } from './format'
 
 // `blocked`: waiting on other issues (its prerequisites) to close. It starts
@@ -15,9 +15,9 @@ export type IssueStatus = 'backlog' | 'queued' | 'working' | 'attention' | 'wait
 export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | 'recheck' | 'start_anyway' | 'assign_reviewer' | 'stop' | 'close'
 
 // Which pull request this is to the issue: the one Forge is carrying now, an
-// earlier Forge draft it moved on from, or someone else's. Older payloads omit it.
+// earlier Forge draft it moved on from, or someone else's.
 type PullRequestKind = 'candidate' | 'forge_attempt' | 'external'
-export interface PullRequestRef { number: number; title: string; kind?: PullRequestKind }
+export interface PullRequestRef { number: number; title: string; kind: PullRequestKind }
 
 interface IssueScope { id: number; name: string; complete: boolean; fresh: boolean; at: number | null; error: string | null }
 // `at` (epoch seconds): when the decision was recorded. The server already
@@ -50,7 +50,7 @@ export interface IssueRow extends OperatorStatusSource {
   // them (it targets the job, not the issue) and is offered separately.
   actions: Exclude<IssueAction, 'stop' | 'close'>[]
   // Whether Forge can drop this issue: close its pull request and close the
-  // issue as not planned. Never one of `actions`; older payloads omit it.
+  // issue as not planned. Never one of `actions`.
   closable?: boolean
   delivery_approved?: boolean
   setup_needed: boolean; environment_blocker: string | null
@@ -59,7 +59,7 @@ export interface IssueRow extends OperatorStatusSource {
   approval?: { pr: number; reason: string } | null
   verification_request?: { what: string; why: string; created_at: number; gate_id?: string; can_confirm?: boolean; ci?: { name: string; app_id: number }[] } | null
   // Each reviewer's latest review on the candidate pull request as Forge last
-  // read it, and when Forge last read GitHub for this issue. Older payloads omit them.
+  // read it, and when Forge last read GitHub for this issue.
   approvals?: IssueApproval[]
   last_checked?: number | null
   merge_policy?: 'auto' | 'human'
@@ -69,7 +69,7 @@ export interface IssueRow extends OperatorStatusSource {
   dependencies: number[]
   prerequisites?: IssuePrerequisite[]
   fresh: boolean; revision: string; setup_url: string; active: string | null
-  // Sent on list rows and the detail alike; older payloads omit them.
+  // Sent on list rows and the detail alike; null until an attempt fails or a label holds it.
   attempts?: IssueAttempts | null
   held_by?: IssueLabelHold[] | null
 }
@@ -127,8 +127,8 @@ export function blockingIssues(row: Pick<IssueRow, 'status' | 'explanation' | 'd
 }
 
 // The main label is shared with Activity; dependency details stay in the reason.
-export function statusLabel(row: Pick<IssueRow, 'status' | 'explanation' | 'dependencies' | 'operator_status'>): string {
-  return operatorLabel(row)
+export function statusLabel(row: Pick<IssueRow, 'operator_status'>): string {
+  return row.operator_status.label
 }
 
 export const ACTION_LABELS: Record<IssueAction, string> = {
@@ -185,7 +185,6 @@ export const EVENT_LABELS: Record<string, string> = {
   discovered: 'Added to Forge',
   held: 'Put on hold',
   protection_paused: 'Repository setup paused work',
-  protection_hold_migrated: 'Recognized an earlier setup hold',
   protection_restored: 'Repository setup verified',
   human_retry: 'Another attempt approved',
   draft_resumed: 'Continuing an earlier draft',
@@ -415,11 +414,9 @@ export function checkedText(lastChecked: number | null | undefined, now: number)
   return `Checked on GitHub ${elapsed(now - lastChecked)} ago`
 }
 
-// The pull request a review is requested on: the candidate Forge carries,
-// else (an older payload without kinds) the first one listed.
+// The pull request a review is requested on: the candidate Forge carries.
 export function reviewPull(pulls: PullRequestRef[] | null | undefined): PullRequestRef | null {
-  const list = pulls ?? []
-  return list.find(pull => pull.kind === 'candidate') ?? list.find(pull => !pull.kind) ?? null
+  return (pulls ?? []).find(pull => pull.kind === 'candidate') ?? null
 }
 
 const PULL_PREFIXES: Record<PullRequestKind, string> = {
@@ -431,11 +428,11 @@ const PULL_NAMES: Record<PullRequestKind, string> = {
 }
 
 export function pullLabel(pull: PullRequestRef): string {
-  return `${(pull.kind && PULL_PREFIXES[pull.kind]) || 'PR'} #${pull.number}`
+  return `${PULL_PREFIXES[pull.kind] ?? 'PR'} #${pull.number}`
 }
 
 export function pullName(pull: PullRequestRef): string {
-  return `${(pull.kind && PULL_NAMES[pull.kind]) || 'Pull request'} #${pull.number}`
+  return `${PULL_NAMES[pull.kind] ?? 'Pull request'} #${pull.number}`
 }
 
 export function attemptsText(attempts: IssueAttempts | null | undefined): string {

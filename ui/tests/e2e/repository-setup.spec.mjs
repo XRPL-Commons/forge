@@ -77,12 +77,6 @@ export default async function (page, { base, scenario, requests }) {
   assert.equal(enables.length, 1)
   assert.deepEqual(enables[0].body, { repo_id: 2, revision: 'settings-rev-1' })
 
-  // Old links reach the new repository page and the GitHub repository anchor reaches the tab.
-  await page.goto(base + '/settings/repository?repo_id=2')
-  await page.waitForURL(base + '/settings/repositories/2')
-  await page.goto(base + '/settings/github#repos-title')
-  await page.waitForURL(base + '/settings/repositories')
-
   // Existing blockers and generated review-rule downloads remain available in the modal.
   await scenario('needs-setup')
   await page.goto(base + '/settings/repositories/2?setup=1')

@@ -1,14 +1,14 @@
 <script setup lang="ts">
 const route = useRoute()
 const tabs = [
-  { href: '/settings', label: 'General', extra: [] as string[] },
-  { href: '/settings/repositories', label: 'Repositories', extra: ['/settings/repository'] },
-  { href: '/settings/github', label: 'GitHub access', extra: [] as string[] },
-  { href: '/settings/agents', label: 'Agent connections', extra: [] as string[] },
-  { href: '/settings/harnesses', label: 'Coding accounts', extra: [] as string[] },
+  { href: '/settings', label: 'General' },
+  { href: '/settings/repositories', label: 'Repositories' },
+  { href: '/settings/github', label: 'GitHub access' },
+  { href: '/settings/agents', label: 'Agent connections' },
+  { href: '/settings/harnesses', label: 'Coding accounts' },
 ]
 function isCurrent(tab: (typeof tabs)[number]) {
-  return route.path === tab.href || (tab.href === '/settings/repositories' && route.path.startsWith(tab.href + '/')) || tab.extra.includes(route.path)
+  return route.path === tab.href || (tab.href === '/settings/repositories' && route.path.startsWith(tab.href + '/'))
 }
 </script>
 <template>

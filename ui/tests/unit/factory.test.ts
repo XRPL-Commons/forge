@@ -4,19 +4,20 @@ import {
   readout, deploymentLine, isProgressStatus, jobSummary, phaseLabel, reasonText, toCard, warnings,
 } from '../../app/utils/factory'
 import { lineAnalyse, lineState } from '../../app/utils/factoryLine'
+import { canonical, factoryRow } from './support/rows'
 
 const now = 1_000_000
 
 // Fixture built from contracts §2 (observation.at = now - 10,
 // runtime.cycle_seconds = 30, slots {build:2, review:1, audit:1, recovery:1}).
 function issue(over: Record<string, unknown> = {}): any {
-  return {
+  return factoryRow({
     key: '1:601', repo_id: 1, repo: 'XRPL-Commons/academy', number: 601,
     title: 'Publish build logs without leaking install tokens',
     state: 'ready', reason: null, requirements: null, candidate: null, active: null,
     failures: [], budget_start: now - 5000, failure_count: 0, retry_plan: null,
     evidence: {}, created_at: now - 5000, history: [], ...over,
-  }
+  })
 }
 
 function job(over: Record<string, unknown> = {}): any {
@@ -76,7 +77,8 @@ describe('phaseLabel', () => {
     const waiting = job({ capacity_wait_since: now - 30 })
     const v = view({ issues: [issue({ active: waiting.id })], jobs: [waiting] })
     expect(phaseLabel(v.issues[0], waiting, v, now)).toBe('Working')
-    expect(reasonText(v.issues[0], waiting)).toContain('Waiting for memory')
+    expect(phaseLabel(null, waiting, v, now)).toBe('Waiting for memory')
+    expect(reasonText(null, waiting)).toContain('Waiting for memory')
   })
 
   it('falls back to the issue state when there is no job', () => {
@@ -87,30 +89,15 @@ describe('phaseLabel', () => {
 })
 
 describe('reasonText', () => {
-  const blocked = issue({ state: 'ready', reason: 'blocked_auth', history: [{ sequence: 1, at: now - 60, issue: '1:601', kind: 'availability_wait', provider: 'claude' }] })
-
-  it('names the coding account when the issue is waiting without a job', () => {
-    expect(reasonText(blocked, null)).toBe('Claude Code needs sign-in. Queued for another available coding account.')
+  it('reads the server’s reason for an issue, whatever its job or legacy fields say', () => {
+    const waiting = issue({ state: 'ready', reason: 'blocked_auth', operator_status: canonical('queued', 'Waiting for an available coding account', 'provider_unavailable') })
+    expect(reasonText(waiting, null)).toBe('Waiting for an available coding account')
+    expect(reasonText(waiting, job({ capacity_wait_since: now - 30 }))).toBe('Waiting for an available coding account')
   })
 
-  it('stays empty once a job is running', () => {
-    expect(reasonText(blocked, job())).toBe('')
-    expect(reasonText(issue({ reason: 'blocked_rate_limit' }), job())).toBe('')
-  })
-
-  it('uses the plain-language headline as the card note once the worker is done', () => {
-    const summary = { headline: 'Stopped: the tests fail on the login page', plain: 'Signing in broke.', role: 'build', at: now - 60 }
-    const failed = issue({ state: 'failed', reason: 'Assertion failed in tests/login.spec.ts:42', last_summary: summary })
-    expect(reasonText(failed, null)).toBe('Stopped: the tests fail on the login page')
-    // A running worker owns the card; the last outcome's headline is stale there.
-    expect(reasonText(issue({ last_summary: summary }), job())).toBe('')
-  })
-
-  it('names who was asked to approve instead of repeating that a review is needed', () => {
-    const waiting = issue({ state: 'approval_needed', reason: 'Waiting for a human review' })
-    expect(reasonText(waiting, null)).toBe('Waiting for a human review')
-    expect(reasonText({ ...waiting, reviewers_requested: { logins: ['maintainer'], at: now - 60 } }, null))
-      .toBe('Review requested from @maintainer')
+  it('says nothing for a job with no issue unless it waits for memory', () => {
+    expect(reasonText(null, job())).toBe('')
+    expect(reasonText(null, null)).toBe('')
   })
 })
 
@@ -152,7 +139,7 @@ describe('groupIssues', () => {
     expect(card.running).toBe(true)
     expect(card.stoppable).toBe(true)
     expect(card.jobId).toBe(running.id)
-    expect(card.footerLink).toBe(null)
+    expect(card.attempts).toBe(null)
   })
 
   it('adapts an internal job with no issue row through toCard', () => {
@@ -202,15 +189,11 @@ describe('groupIssues', () => {
     expect(groups.held).toEqual([])
   })
 
-  it('emits at most one footer link per card', () => {
-    const held = groupIssues(view({ issues: [
-      issue({ key: '2:615', number: 615, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'ready', prerequisite_hold: { state: 'ready' } }),
+  it('counts failed attempts against the budget', () => {
+    const failed = groupIssues(view({ issues: [
       issue({ key: '2:616', number: 616, repo_id: 2, repo: 'XRPL-Commons/hackathon', state: 'failed', reason: 'Two attempts failed', failure_count: 2 }),
-      issue({ key: '1:617', number: 617, state: 'ready', reason: 'blocked_auth' }),
     ] }), now)
-    expect(held.columns.build[0]!.footerLink).toEqual({ to: '/settings/repositories/2?setup=1', label: 'Prepare repository →' })
-    expect(held.attention[0]!.footerLink).toEqual({ to: '', label: '2 / 3 attempts failed' })
-    expect(held.columns.build[1]!.footerLink).toEqual({ to: '/settings/harnesses', label: 'Coding accounts →' })
+    expect(failed.attention[0]!.attempts).toEqual({ failed: 2, limit: 3 })
   })
 })
 
@@ -394,7 +377,7 @@ describe('deployment verdicts', () => {
 })
 
 describe('issues waiting on dependencies', () => {
-  const blocked = issue({ key: '1:612', number: 612, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
+  const blocked = issue({ key: '1:612', number: 612, blocked_dependencies: [658], operator_status: canonical('blocked', 'Waiting for #658.', 'dependency') })
   const free = issue({ key: '1:613', number: 613 })
   const v = view({ issues: [blocked, free], jobs: [] })
 
@@ -417,36 +400,14 @@ describe('issues waiting on dependencies', () => {
 })
 
 describe('issues owned by someone else', () => {
-  const owner = { headline: 'Assigned to @lucbocahut', plain: 'Unassign it on GitHub to let Forge work on it.' }
-  const owned = issue({ ownership_wait: owner, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
-  const v = view({ issues: [owned], jobs: [] })
-
-  it('shows the owner before dependencies and excludes it from the worker queue', () => {
-    const groups = groupIssues(v, now)
-    expect(groups.owned[0]).toMatchObject({ phaseLabel: 'Blocked', reason: owner.plain })
-    expect(groups.waiting).toEqual([])
-    expect(groups.columns.build).toEqual([])
-    expect(readout(v, now)!.queued).toBe(0)
-  })
-
-  it('returns to dependency waiting when ownership clears', () => {
-    const groups = groupIssues(view({ issues: [{ ...owned, ownership_wait: null }], jobs: [] }), now)
-    expect(groups.owned).toEqual([])
-    expect(groups.waiting).toHaveLength(1)
-  })
-
   it('keeps ownership blocked while a running worker remains visible', () => {
     const live = job()
-    for (const operator_status of [undefined, {
-      code: 'blocked', label: 'Blocked', reason_code: 'ownership_conflict', reason: owner.plain,
-    }]) {
-      const groups = groupIssues(view({ issues: [{ ...owned, active: live.id, operator_status }], jobs: [live] }), now)
-      expect(groups.owned).toEqual([])
-      // A visible worker does not override the issue's current ownership gate.
-      expect(groups.columns.build[0]).toMatchObject({
-        phaseLabel: 'Blocked', running: true, jobId: live.id, stoppable: true,
-      })
-    }
+    const owned = issue({ active: live.id, operator_status: canonical('blocked', 'Someone else is working on this issue', 'ownership_conflict') })
+    const groups = groupIssues(view({ issues: [owned], jobs: [live] }), now)
+    // A visible worker does not override the issue's current ownership gate.
+    expect(groups.columns.build[0]).toMatchObject({
+      phaseLabel: 'Blocked', reason: 'Someone else is working on this issue', running: true, jobId: live.id, stoppable: true,
+    })
   })
 })
 

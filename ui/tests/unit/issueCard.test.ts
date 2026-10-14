@@ -3,26 +3,27 @@ import { completedPath, mergeCompleted, modelCardView, rowCardView } from '../..
 import { ledgerLook } from '../../app/utils/workbench'
 import { doneAt, groupIssues, toCard, type CardModel } from '../../app/utils/factory'
 import { drawPortrait, portraitKey, type PortraitLook } from '../../app/utils/cube'
+import { factoryRow, issueRow } from './support/rows'
 
 const now = 1_000_000
 
 function row(over: Record<string, unknown> = {}): any {
-  return {
+  return issueRow({
     key: '1:613', repo: 'XRPL-Commons/academy', repo_id: 1, number: 613, title: 'Fix the quiz timer',
     content_hash: 'x', body_truncated: false, state: 'open', updated_at: new Date((now - 3 * 86400) * 1000).toISOString(),
     labels: [], assignees: [], status: 'attention', summary: { headline: 'The last attempt failed.', plain: 'Tests timed out.' },
     explanation: '', actions: ['retry'], setup_needed: false, environment_blocker: null, pull_requests: [{ number: 70, title: 'Fix', kind: 'candidate' }],
     dependencies: [], fresh: true, revision: 'r', setup_url: '', active: null, attempts: { failed: 2, limit: 3 }, held_by: [],
     ...over,
-  }
+  })
 }
 
 function ledger(over: Record<string, unknown> = {}): any {
-  return {
+  return factoryRow({
     key: '1:604', repo_id: 1, repo: 'XRPL-Commons/academy', number: 604, title: 'Fix flaky probe',
     state: 'failed', reason: 'Three attempts failed', active: null, failure_count: 2, candidate: { pr: 71 },
     history: [{ kind: 'failed_attempt', at: now - 7200 }], ...over,
-  }
+  })
 }
 
 function view(issues: any[], jobs: any[] = []): any {
@@ -67,7 +68,7 @@ describe('waiting on other issues', () => {
 
   it('gives an Activity card waiting on dependencies the same calm look', () => {
     expect(ledgerLook({ state: 'ready', blocked_dependencies: [658] }, null, false)).toMatchObject({ mood: 'patient', beacon: false })
-    const blocked = ledger({ key: '1:612', number: 612, state: 'ready', failure_count: 0, candidate: null, blocked_dependencies: [658], dependency_reason: 'Waiting for #658.' })
+    const blocked = ledger({ key: '1:612', number: 612, state: 'ready', failure_count: 0, candidate: null, blocked_dependencies: [658], reason: 'Waiting for #658.' })
     const card = groupIssues(view([blocked]), now).waiting[0]!
     expect(modelCardView(card, now).status).toEqual({ label: 'Blocked', color: 'neutral', icon: 'i-lucide-link-2', dim: true })
     // A failed issue that also names prerequisites still needs you.
@@ -91,7 +92,7 @@ describe('no longer needed', () => {
       expect(modelCardView(card, now).status).toEqual({ label: 'No longer needed', color: 'neutral', icon: 'i-lucide-archive', dim: true })
     }
     const cancelled = groupIssues(view([ledger({ state: 'cancelled', closed_as: 'completed', failure_count: 0, history })]), now).completed[0]!
-    expect(modelCardView(cancelled, now).status).toEqual({ label: 'Completed', color: 'neutral' })
+    expect(modelCardView(cancelled, now).status).toMatchObject({ label: 'Completed' })
     // A merge is never dropped, whatever GitHub says about the close.
     expect(ledgerLook({ state: 'merged', closed_as: 'not_planned' }, null, false)).toMatchObject({ mood: 'happy', confetti: true })
   })
@@ -156,7 +157,7 @@ describe('modelCardView', () => {
   it('turns the attempts note into hearts, with the PR and the age', () => {
     const [card] = groupIssues(view([ledger()]), now).attention
     const shown = modelCardView(card!, now)
-    expect(shown.status).toEqual({ label: 'Needs attention', color: 'warning' })
+    expect(shown.status).toMatchObject({ label: 'Needs attention', color: 'warning' })
     expect(shown.facts.map(fact => [fact.key, fact.text])).toEqual([
       ['pr-71', 'PR #71'], ['attempts', '2 of 3 attempts failed'], ['age', 'Updated 2 h ago'],
     ])

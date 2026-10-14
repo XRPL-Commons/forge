@@ -17,6 +17,13 @@
       "repo": "XRPL-Commons/academy",
       "repo_id": 1,
       "status": "attention",
+      "stage_code": "reviewing",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "On hold"
+      },
       "explanation": "Repository setup now passes. Recheck to resume.",
       "actions": [
         "recheck"
@@ -38,7 +45,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=1",
+      "setup_url": "/settings/repositories/1?setup=1",
       "active": null,
       "summary": {
         "headline": "Paused until repository setup is checked again.",
@@ -64,6 +71,13 @@
       "repo": "XRPL-Commons/hackathon",
       "repo_id": 2,
       "status": "attention",
+      "stage_code": "queued",
+      "operator_status": {
+        "code": "attention",
+        "label": "Needs attention",
+        "reason_code": null,
+        "reason": "On hold"
+      },
       "explanation": "Paused by hold on GitHub.",
       "actions": [
         "resume"
@@ -76,7 +90,7 @@
       ],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=2",
+      "setup_url": "/settings/repositories/2?setup=1",
       "active": null,
       "held_by": [
         {
@@ -102,6 +116,13 @@
       "repo_id": 1,
       "status": "working",
       "reason_code": "build",
+      "stage_code": "building",
+      "operator_status": {
+        "code": "working",
+        "label": "Working",
+        "reason_code": "build",
+        "reason": "In progress"
+      },
       "explanation": "Building",
       "actions": [],
       "setup_needed": false,
@@ -110,7 +131,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=1",
+      "setup_url": "/settings/repositories/1?setup=1",
       "active": "attempt"
     },
     {
@@ -126,6 +147,13 @@
       "repo": "XRPL-Commons/academy",
       "repo_id": 1,
       "status": "backlog",
+      "stage_code": "queued",
+      "operator_status": {
+        "code": "backlog",
+        "label": "Backlog",
+        "reason_code": null,
+        "reason": "Not queued"
+      },
       "explanation": "Not queued for Forge.",
       "actions": [
         "queue"
@@ -136,7 +164,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=1",
+      "setup_url": "/settings/repositories/1?setup=1",
       "active": null
     },
     {
@@ -154,6 +182,13 @@
       "repo": "XRPL-Commons/academy",
       "repo_id": 1,
       "status": "queued",
+      "stage_code": "queued",
+      "operator_status": {
+        "code": "queued",
+        "label": "Queued",
+        "reason_code": null,
+        "reason": "Waiting"
+      },
       "explanation": "Queued for Forge.",
       "actions": [
         "backlog",
@@ -165,7 +200,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=1",
+      "setup_url": "/settings/repositories/1?setup=1",
       "active": null
     },
     {
@@ -182,6 +217,12 @@
       "repo_id": 2,
       "status": "completed",
       "reason_code": "closed",
+      "operator_status": {
+        "code": "completed",
+        "label": "Completed",
+        "reason_code": "github_completed",
+        "reason": "Closed on GitHub"
+      },
       "explanation": "Closed on GitHub.",
       "actions": [],
       "setup_needed": false,
@@ -196,7 +237,7 @@
       "dependencies": [],
       "fresh": true,
       "revision": "current",
-      "setup_url": "/settings/repository?repo_id=2",
+      "setup_url": "/settings/repositories/2?setup=1",
       "active": null
     }
   ],
