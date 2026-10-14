@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   ACCESS_LABELS, ACCESS_STATUS_NAMES, PROTECTION_LABELS, ROLE_LABELS_APP, ROLE_PURPOSES,
   actionMessage, checkedAtText, connectionAction, connectionCards, hintText,
-  lastRefreshText, repoDescription, repoHeading, repoStage, repositoryRows, rowState,
-  statusPillText, deploymentCard, bypassFix, bypassSourceLabel, classicBypassCommand,
+  lastRefreshText, repoDescription, repoStage, repositoryRows, rowState,
+  statusPillText, deploymentCard, bypassSourceLabel, classicBypassCommand,
   type DeploymentProfile, type DeploymentProposal, type DeploymentRow, type FactoryDeployment,
   type ProtectionReport, type ProtectionSource, type RepositoryRow, type RoleAccess, type SettingsView,
 } from '../../app/utils/repositories'
@@ -87,7 +87,7 @@ describe('repoDescription', () => {
       .toBe('Forge checks App access and GitHub review rules before enabling automation.'))
 })
 
-describe('statusPillText and repoHeading', () => {
+describe('statusPillText', () => {
   it('reads Enabled for a live, enabled repository', () => expect(statusPillText(row({ enabled: true }), true)).toBe('Enabled'))
   it('reads Ready to enable for a live repository that is off', () => expect(statusPillText(row(), true)).toBe('Ready to enable'))
   it('reads Ready to continue during initial setup', () => expect(statusPillText(row(), false)).toBe('Ready to continue'))
@@ -96,11 +96,6 @@ describe('statusPillText and repoHeading', () => {
       .toBe('Ready to enable · Refreshing…'))
   it('falls back to the protection label', () =>
     expect(statusPillText(row({ protection_status: 'needs_setup', protection_ready: false }), true)).toBe('Setup needed'))
-  it('titles the page by mode', () => {
-    expect(repoHeading(row({ enabled: true }), true)).toBe('Repository setup')
-    expect(repoHeading(row(), true)).toBe('Enable repository')
-    expect(repoHeading(row(), false)).toBe('Prepare your repository')
-  })
 })
 
 describe('hintText', () => {
@@ -405,15 +400,6 @@ describe('controller bypass guidance', () => {
   const classic: ProtectionSource = { kind: 'classic', name: 'Branch protection', url: 'https://github.com/XRPL-Commons/hackathon/settings/branches' }
   const ruleset: ProtectionSource = { kind: 'ruleset', name: 'Forge review baseline', url: 'https://github.com/XRPL-Commons/hackathon/rules/10', id: 10 }
   const report = (bypass: ProtectionReport['bypass']): ProtectionReport => ({ ...row().protection!, bypass })
-
-  it('splits missing bypass sources by kind', () => {
-    expect(bypassFix(report({ status: 'missing', detail: '', sources: [classic] }))).toEqual({ classic: [classic], rulesets: [] })
-    expect(bypassFix(report({ status: 'missing', detail: '', sources: [ruleset] }))).toEqual({ classic: [], rulesets: [ruleset] })
-    expect(bypassFix(report({ status: 'missing', detail: '', sources: [ruleset, classic] }))).toEqual({ classic: [classic], rulesets: [ruleset] })
-    expect(bypassFix(report({ status: 'ready', detail: '', sources: [] }))).toBeNull()
-    expect(bypassFix(report({ status: 'operator_review', detail: '', sources: [ruleset] }))).toBeNull()
-    expect(bypassFix(null)).toBeNull()
-  })
 
   it('names each source with its kind', () => {
     expect(bypassSourceLabel(classic, 'main')).toBe('Branch protection (classic) on main')

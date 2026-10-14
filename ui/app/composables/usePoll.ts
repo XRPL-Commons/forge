@@ -1,5 +1,5 @@
 import { ref, onScopeDispose, getCurrentScope } from 'vue'
-export interface PollOptions<T> { interval?: number; onChange?: (value: T) => void; allowed?: () => boolean }
+interface PollOptions<T> { interval?: number; onChange?: (value: T) => void; allowed?: () => boolean }
 export function usePoll<T>(load: () => Promise<T>, options: PollOptions<T> = {}) {
   const interval = options.interval ?? 5000
   const data = ref<T | null>(null) as import('vue').Ref<T | null>

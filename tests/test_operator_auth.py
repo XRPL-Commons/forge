@@ -262,7 +262,7 @@ class OperatorHTTPTests(unittest.TestCase):
 
     def test_session_csrf_replaces_global_capability(self):
         with patch.object(dashboard, 'settings_service') as service:
-            self.request('/api/settings/sync', {}, signed=True, **{'X-Forge-Action': dashboard.CONTROLS_TOKEN}).send_error.assert_called_once_with(403)
+            self.request('/api/settings/sync', {}, signed=True, **{'X-Forge-Action': 'not-the-session-csrf'}).send_error.assert_called_once_with(403)
             service.assert_not_called()
             self.request('/api/settings/sync', {}, signed=True).send_error.assert_not_called()
             service.return_value.start_refresh.assert_called_once()

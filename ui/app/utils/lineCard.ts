@@ -6,7 +6,7 @@ import {
   type AttentionReason, type LineItem,
 } from './factoryLine'
 
-export interface LineIssueCard {
+interface LineIssueCard {
   kind: 'issue'
   // The crate bay it sits in, for the bay's character.
   reason: AttentionReason | null
@@ -21,7 +21,7 @@ export interface LineIssueCard {
   unblocks: number
   hint: string
 }
-export interface LineListCard {
+interface LineListCard {
   kind: 'list'
   reason: AttentionReason | null
   heading: string
@@ -36,7 +36,7 @@ const ATTEMPT_LIMIT = 3
 const LIST_LIMIT = 6
 const VERBS: Record<string, string> = { build: 'Building', review: 'Reviewing', audit: 'Auditing' }
 
-export function lineRef(item: Pick<LineItem, 'number' | 'id'>): string {
+function lineRef(item: Pick<LineItem, 'number' | 'id'>): string {
   return item.number != null ? `#${item.number}` : item.id
 }
 
@@ -100,7 +100,7 @@ export function lineBayCard(reason: AttentionReason, items: LineItem[]): LineLis
 // above it when it fits, else below, else whichever side has more room;
 // always inside the viewport with `margin` to spare.
 export interface Rect { x: number; y: number; w: number; h: number }
-export interface Placement { left: number; top: number; side: 'above' | 'below' }
+interface Placement { left: number; top: number; side: 'above' | 'below' }
 export function placeCard(anchor: Rect, size: { w: number; h: number }, viewport: { w: number; h: number }, margin = 8, gap = 8): Placement {
   const room = { above: anchor.y - gap - margin, below: viewport.h - (anchor.y + anchor.h) - gap - margin }
   const side: Placement['side'] = size.h <= room.above ? 'above' : size.h <= room.below ? 'below' : room.above >= room.below ? 'above' : 'below'

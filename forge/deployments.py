@@ -19,7 +19,6 @@ from .factory.github import GitHubUnavailable
 from .factory.live import LiveUnavailable
 from .factory.runner import RunnerCapacity, RunnerError
 
-STATUSES = ('idle', 'running', 'proposed', 'confirmed', 'rejected', 'failed')
 STRATEGIES = ('github_deployments', 'health', 'header', 'unobservable')
 OUTCOMES = ('pass', 'reject', 'unable', 'wait', 'blocked_environment')
 PROFILE = ('strategy', 'deploy', 'domain', 'exposure', 'commit_source', 'proposal')

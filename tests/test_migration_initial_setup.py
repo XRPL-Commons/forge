@@ -98,14 +98,15 @@ class InitialSetupTests(unittest.TestCase):
 
     def test_existing_identity_session_and_credentials_survive_initial_bridge(self):
         from forge.store.migration.identity import AUTH, CREDENTIAL
-        from forge.store.identity import IdentityQueries
+        from forge.store.identity import session_in
         auth=dict(version=1,config=dict(origin='https://anvil.example',client_id='identity-client',client_secret='s'*40,operators=[7]),
                   instance_id='initial-instance',epoch='epoch',sessions={'hashed-cookie':dict(operator={'id':7,'login':'operator'},csrf='synthetic-csrf',expires=4102444800)},
                   flows={},clients={},devices={},device_window={'start':1,'count':0},connection_lookups={})
         self.write(AUTH,auth)
         self.driver().activate(source_revision='b'*40,previous_revision='a'*40,source_pack={'fixture':True},replace_initial_source=True)
         store=selected(self.root)
-        self.assertEqual(IdentityQueries(store).session('hashed-cookie',100),auth['sessions']['hashed-cookie'])
+        with store.read_snapshot() as db:
+            self.assertEqual(session_in(db,'hashed-cookie',100),auth['sessions']['hashed-cookie'])
         self.assertEqual((store.root/CREDENTIAL).read_text(),'s'*40)
         with store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT origin,instance_id FROM operator_auth_configuration').fetchone()[:],('https://anvil.example','initial-instance'))

@@ -1,7 +1,7 @@
 import type { IssueActionStatus } from './issues'
 
 export interface DecisionReceipt { request: string | null; previous: string | null; message?: string }
-export const SUBMITTED_DECISION = 'Decision submitted. Waiting for confirmation.'
+const SUBMITTED_DECISION = 'Decision submitted. Waiting for confirmation.'
 
 // A receipt must not be hidden or cleared by the preceding decision's result.
 export function receiptAction(actions: IssueActionStatus[], key: string, receipt: DecisionReceipt | null): IssueActionStatus | null {

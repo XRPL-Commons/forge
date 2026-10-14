@@ -11,7 +11,7 @@ import sanitizeHtml from 'sanitize-html'
 // The API already truncates a body to 16000 characters (`body_truncated`
 // flags it); this is the same ceiling applied again, so a body that reaches
 // this endpoint by another route cannot make the renderer do unbounded work.
-export const MAX_MARKDOWN_CHARS = 16000
+const MAX_MARKDOWN_CHARS = 16000
 
 // The tag/attribute allowlist of contracts §3.3, shared with anything else
 // that sanitizes restricted HTML server-side (server/utils/help.ts derives

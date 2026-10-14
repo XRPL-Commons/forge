@@ -3,7 +3,7 @@
 // the factory strip and Settings · Coding accounts all word an account the
 // same way from here.
 
-export type AccountStatus = 'ok' | 'sign_in_expired' | 'quota' | 'unavailable'
+type AccountStatus = 'ok' | 'sign_in_expired' | 'quota' | 'unavailable'
 
 export interface CodingAccount {
   provider: string
@@ -30,9 +30,9 @@ export interface AccountAlert {
 }
 
 // Formats a unix time as a short local clock time ("22:25").
-export type ClockFormat = (at: number) => string
+type ClockFormat = (at: number) => string
 
-export function accountName(account: Pick<CodingAccount, 'provider' | 'name'>): string {
+function accountName(account: Pick<CodingAccount, 'provider' | 'name'>): string {
   return account.name || account.provider.charAt(0).toUpperCase() + account.provider.slice(1)
 }
 

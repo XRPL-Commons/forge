@@ -10,7 +10,7 @@ The four operator Help guides (shown in the UI) are marked **Help**.
 - [Configure sign-in on an existing host](cli-server-setup.md) and [operator sign-in](operator-sign-in.md)
 - [GitHub setup and repository access](github-settings.md)
 - [Connect an external agent](agent-connections.md)
-- [Configuration reference](configuration.md) and [public template defaults](public-defaults.md)
+- [Configuration reference](configuration.md)
 - [Operator UI deployment](ui-deployment.md)
 
 ## How work moves
@@ -32,7 +32,6 @@ The four operator Help guides (shown in the UI) are marked **Help**.
 - [Measured execution resources](execution-resources.md)
 - [Coding harness adapter contract](harness-adapters.md)
 - [Claude failure diagnostics](claude-failure-diagnostics.md)
-- [OpenCode and Muse Code qualification](optional-provider-qualification.md)
 
 ## Storage
 
@@ -48,5 +47,4 @@ The four operator Help guides (shown in the UI) are marked **Help**.
 ## Operator UI
 
 - [Operator UI rules](operator-ui.md)
-- [Operator UI performance](ui-performance.md)
 - [Help illustrations](assets/README.md)

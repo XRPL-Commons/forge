@@ -4,7 +4,7 @@ import { readonly, ref, type Ref } from 'vue'
 // spinner and disabled state, `error` the dialog's alert. `run` ignores a
 // second call while the first is still in flight, so a double click sends one
 // request, and resolves true only when the task succeeded.
-export interface Submission {
+interface Submission {
   pending: Readonly<Ref<boolean>>
   error: Ref<string | null>
   run: (task: () => Promise<unknown>) => Promise<boolean>

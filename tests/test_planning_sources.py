@@ -6,7 +6,7 @@ import unittest
 
 from forge.planning_sources import PlanningSources
 from forge.factory.harness import schema as runner_schema
-from forge_client.planning import provider_triage_rows
+from forge.planning_contract import provider_triage_rows
 from forge.store.repository_planning import RepositoryPlanning
 
 

@@ -77,11 +77,6 @@ def describe(code: str, **params) -> str:
     return plain
 
 
-def registered_codes() -> set[str]:
-    """Every code that must have wording."""
-    return set(codes.UNIT_STATES) | set(codes.CLOSE_CODES) | set(codes.GATES) | set(codes.DISCOVERY_REASONS)
-
-
 def repository_setup_reason(reason):
     """Explain typed readiness evidence without exposing its internal code."""
     return {

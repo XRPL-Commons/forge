@@ -5,13 +5,13 @@
 import { ago, shortCommit } from './format'
 
 export type AppRole = 'build' | 'review' | 'audit' | 'controller'
-export const APP_ROLES: AppRole[] = ['build', 'review', 'audit', 'controller']
+const APP_ROLES: AppRole[] = ['build', 'review', 'audit', 'controller']
 
-export type AccessStatus = 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions'
-export type RepoAccessStatus = 'ready' | 'missing_access' | 'name_changed' | 'archived' | AccessStatus
-export type ProtectionStatus = 'unchecked' | 'checking' | 'unknown' | 'stale' | 'ready' | 'needs_setup' | 'access_needed'
+type AccessStatus = 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions'
+type RepoAccessStatus = 'ready' | 'missing_access' | 'name_changed' | 'archived' | AccessStatus
+type ProtectionStatus = 'unchecked' | 'checking' | 'unknown' | 'stale' | 'ready' | 'needs_setup' | 'access_needed'
 
-export interface EnvironmentRequirements { services: string[]; evidence: string[]; head: string }
+interface EnvironmentRequirements { services: string[]; evidence: string[]; head: string }
 export interface RepositoryEnvironment {
   profile: (EnvironmentRequirements & { confirmed_at: number }) | null
   proposal: (EnvironmentRequirements & { revision: string }) | null
@@ -40,10 +40,10 @@ export interface RoleAccess {
 // Deployment tracking (contracts §2, DeploymentRow). The strategist's reading
 // is a proposal until an operator confirms it; the confirmed profile lives in
 // factory.json and the observation of it on the factory view.
-export type DeploymentStrategy = 'github_deployments' | 'health' | 'header' | 'unobservable'
-export type DeploymentStatus = 'idle' | 'running' | 'proposed' | 'confirmed' | 'rejected' | 'failed'
-export interface DeploymentDeploy { workflow: string | null; environment: string | null; trigger: string | null }
-export interface DeploymentExposure { kind: 'health' | 'header' | 'none'; path: string | null; field: string | null; header: string | null }
+type DeploymentStrategy = 'github_deployments' | 'health' | 'header' | 'unobservable'
+type DeploymentStatus = 'idle' | 'running' | 'proposed' | 'confirmed' | 'rejected' | 'failed'
+interface DeploymentDeploy { workflow: string | null; environment: string | null; trigger: string | null }
+interface DeploymentExposure { kind: 'health' | 'header' | 'none'; path: string | null; field: string | null; header: string | null }
 
 export interface DeploymentProposal {
   strategy: DeploymentStrategy
@@ -84,7 +84,7 @@ export interface FactoryDeployment {
   error: string | null
 }
 
-export interface BypassAllowances { users: string[]; teams: string[]; apps: string[] }
+interface BypassAllowances { users: string[]; teams: string[]; apps: string[] }
 export interface ProtectionSource {
   kind: 'classic' | 'ruleset'; name: string; url: string; id?: number | null; source_type?: string | null
   // Classic sources missing the controller bypass carry the current bypass list, when GitHub exposed it.
@@ -118,14 +118,14 @@ export interface RepositoryRow {
   environment?: RepositoryEnvironment
 }
 
-export type SyncState =
+type SyncState =
   | { status: 'never' }
   | { status: 'running'; started_at: number }
   | { status: 'complete'; finished_at: number }
   | { status: 'interrupted'; started_at: number }
 
-export interface FactoryConnection { app_id: number; private_key_env: string; installation_id?: number; installation_ids?: number[] }
-export interface FactoryConfig {
+interface FactoryConnection { app_id: number; private_key_env: string; installation_id?: number; installation_ids?: number[] }
+interface FactoryConfig {
   version: 1; sync_interval_seconds: number; access_max_age_seconds: number
   connections: Partial<Record<AppRole, FactoryConnection>>
   repositories: { id: number; name: string; enabled: boolean; deployment?: DeploymentProfile }[]
@@ -148,7 +148,7 @@ export interface RepositoriesView {
   continue_url: string
 }
 
-export interface OnboardingRole { status?: string; registered?: boolean; app_id?: number | null; install_url?: string | null }
+interface OnboardingRole { status?: string; registered?: boolean; app_id?: number | null; install_url?: string | null }
 export interface OnboardingSummary { phase: string; roles?: Partial<Record<AppRole, OnboardingRole>> }
 
 export const ROLE_LABELS_APP: Record<AppRole, string> = {
@@ -169,7 +169,7 @@ export const ACCESS_STATUS_NAMES: Record<string, string> = {
   stale: 'Refresh needed', missing_permissions: 'Permissions missing', missing_access: 'No access',
   name_changed: 'Repository renamed', archived: 'Archived or disabled',
 }
-export const UNVERIFIED_INSTALLATION = 'Installation unverified'
+const UNVERIFIED_INSTALLATION = 'Installation unverified'
 
 // Per-role sentences in the repository setup App access panel (§3.6).
 export const ACCESS_LABELS: Record<string, string> = {
@@ -178,7 +178,7 @@ export const ACCESS_LABELS: Record<string, string> = {
   stale: 'Refresh to check access', archived: 'Repository is archived or disabled',
   name_changed: 'Repository was renamed',
 }
-export const ACCESS_FALLBACK = 'Choose the repository in GitHub’s access settings.'
+const ACCESS_FALLBACK = 'Choose the repository in GitHub’s access settings.'
 
 // Status pill on repository setup (§3.6).
 export const PROTECTION_LABELS: Record<ProtectionStatus, string> = {
@@ -190,7 +190,7 @@ export const PROTECTION_LABELS: Record<ProtectionStatus, string> = {
 const INSTALLATION_URL = /^https:\/\/github\.com\/(?:organizations\/[A-Za-z0-9_.-]+\/)?settings\/installations\/[0-9]+$/
 const INSTALL_URL = /^https:\/\/github\.com\/apps\/([A-Za-z0-9-]+)\/installations\/new$/
 
-export interface ConnectionLink { label: string; href: string; external: boolean }
+interface ConnectionLink { label: string; href: string; external: boolean }
 
 // A re-check keeps the previous verdict on screen: `checking` is not a state
 // the operator has to act on, so every status-derived sentence reads through
@@ -219,11 +219,6 @@ export function rowState(row: RepositoryRow): { icon: 'attention' | 'enabled' | 
   if (row.enabled && (!row.access_ready || !ready)) return { icon: 'attention', label: 'Needs attention' }
   if (row.enabled) return { icon: 'enabled', label: 'Enabled' }
   return { icon: 'off', label: 'Not enabled' }
-}
-
-export function repoHeading(row: RepositoryRow | null | undefined, live: boolean): string {
-  if (!live) return 'Prepare your repository'
-  return row?.enabled ? 'Repository setup' : 'Enable repository'
 }
 
 export function statusPillText(row: RepositoryRow, live: boolean): string {
@@ -277,7 +272,7 @@ export function connectionAction(
 
 // The repository setup panel offers the same three links with its own last
 // label (§3.6) and reads the install URL off the connection itself.
-export function repoAccessAction(connection: RoleAccess | undefined): ConnectionLink {
+function repoAccessAction(connection: RoleAccess | undefined): ConnectionLink {
   const manage = connection?.installation_url ?? ''
   if (INSTALLATION_URL.test(manage)) return { label: 'Manage access ↗', href: manage, external: true }
   const install = connection?.install_url ?? ''
@@ -393,31 +388,10 @@ export function branchText(report: ProtectionReport | null): string {
   return report?.branch ? 'Default branch · ' + report.branch : 'Repository review settings'
 }
 
-export function otherRulesText(report: ProtectionReport | null): string {
-  const types = [...new Set((report?.additional_rules ?? []).map(rule => rule.type.replaceAll('_', ' ')))]
-  return types.length ? 'GitHub also enforces ' + types.join(', ') + '.' : 'GitHub applies any additional repository protections at merge time.'
-}
-
 // `readable` is the "could GitHub be read at all" probe, reported through the
 // hint and the errors, never as a review requirement (§3.6).
 export function requirements(report: ProtectionReport | null): ProtectionRequirement[] {
   return (report?.requirements ?? []).filter(requirement => requirement.id !== 'readable')
-}
-
-// The controller bypass is fixed differently per kind of rule: classic branch
-// protection has its own bypass list, and a new ruleset never repairs it.
-export interface BypassFix {
-  classic: ProtectionSource[]
-  rulesets: ProtectionSource[]
-}
-export function bypassFix(report: ProtectionReport | null | undefined): BypassFix | null {
-  const bypass = report?.bypass
-  if (bypass?.status !== 'missing') return null
-  const sources = bypass.sources ?? []
-  return {
-    classic: sources.filter(source => source.kind === 'classic'),
-    rulesets: sources.filter(source => source.kind !== 'classic'),
-  }
 }
 
 export function bypassSourceLabel(source: ProtectionSource, branch: string | null | undefined): string {
@@ -459,7 +433,7 @@ export function actionMessage(error: unknown, fallback: string): string {
 // state. Every sentence it can show is produced here.
 // ---------------------------------------------------------------------------
 
-export const STRATEGY_LABELS: Record<DeploymentStrategy, string> = {
+const STRATEGY_LABELS: Record<DeploymentStrategy, string> = {
   github_deployments: 'GitHub deployments',
   health: 'Health endpoint',
   header: 'Response header',
@@ -467,7 +441,7 @@ export const STRATEGY_LABELS: Record<DeploymentStrategy, string> = {
 }
 
 // GitHub's own deployment states, said in words.
-export const DEPLOY_STATE_WORDS: Record<string, string> = {
+const DEPLOY_STATE_WORDS: Record<string, string> = {
   success: 'succeeded', failure: 'failed', error: 'errored',
   in_progress: 'in progress', queued: 'queued', pending: 'pending', inactive: 'inactive',
 }
@@ -488,7 +462,7 @@ const DEPLOYMENT_SENTENCES: Record<DeploymentStatus, string> = {
 
 // Where the deployed commit is read from — or why it cannot be, and what
 // Forge does about it.
-export function exposureText(
+function exposureText(
   exposure: DeploymentExposure | null | undefined,
   issue: number | null,
   willFile: boolean,
@@ -499,13 +473,13 @@ export function exposureText(
   return willFile ? 'Not exposed — an issue is filed when you confirm' : 'Not exposed — no commit can be read'
 }
 
-export function deployText(deploy: DeploymentDeploy | null | undefined): string {
+function deployText(deploy: DeploymentDeploy | null | undefined): string {
   if (!deploy?.workflow) return 'Deploy · no workflow found'
   return 'Deploy · ' + deploy.workflow + (deploy.environment ? ' → ' + deploy.environment : '')
 }
 
 // A confirmed profile is settled, so it is one compact line rather than a list.
-export function profileText(profile: DeploymentProfile): string {
+function profileText(profile: DeploymentProfile): string {
   return [
     STRATEGY_LABELS[profile.strategy] ?? profile.strategy,
     profile.deploy?.workflow ? 'workflow ' + profile.deploy.workflow : '',
@@ -517,7 +491,7 @@ export function profileText(profile: DeploymentProfile): string {
 // What the supervisor last saw: the commit the domain serves, and the state of
 // the newest GitHub deployment. `deploy.at` is GitHub's ISO string, not a
 // number, and `now` is 0 until the page is mounted.
-export function observationText(observed: FactoryDeployment | null | undefined, now: number): string {
+function observationText(observed: FactoryDeployment | null | undefined, now: number): string {
   const parts: string[] = []
   if (observed?.live?.commit) parts.push('live commit ' + shortCommit(observed.live.commit))
   const deploy = observed?.deploy

@@ -1,6 +1,6 @@
 import { shallowRef, type ShallowRef } from 'vue'
 
-export interface Resource<T = any> {
+interface Resource<T = any> {
   data: ShallowRef<T | null>; error: ShallowRef<string | null>; updatedAt: ShallowRef<number>
   response?: { etag: string; data: unknown }
   pending: Promise<T | null> | null; generation: number; touched: number

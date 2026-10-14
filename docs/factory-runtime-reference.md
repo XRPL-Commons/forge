@@ -41,9 +41,7 @@ Existing evidence: [launcher routing](../bin/forge),
 
 ## Configuration
 
-Use guided Settings or the supported CLI to configure the instance. The examples
-in `examples/` describe configuration values; copying them over a selected
-instance's old JSON files does not update its settings. Fresh CLI installations
+Use guided Settings or the supported CLI to configure the instance. Fresh CLI installations
 initialize selected SQLite before starting services. Pre-cutover instances use
 the [explicit migration](store-migration.md) workflow. Use
 [fresh-host setup](cli-fresh-host.md) for a new VM, or `forge server setup` to
@@ -309,17 +307,14 @@ controller's missing recommended permissions until granted.
 
 ## Qualification and activation
 
-Run the regression suite and credential-free container reset canary first:
+Run the regression suite first:
 
 ```sh
 python3 -m unittest discover -s tests -v
-PYTHONPATH=. python3 deploy/test_factory_container.py
 ```
 
-The container canary does not run a model or access GitHub. Run the real
-App/authenticated workflow on a selected pilot repository before expanding access.
-The reset canary builds a synthetic image, creates its own internal network, and
-removes only its uniquely named resources.
+Run the real App/authenticated workflow on a selected pilot repository before
+expanding access.
 
 Guided setup's Start activates the factory. For a CLI-only installation, the commands
 below do the same. The setup supervisor and the CLI share `state-supervisor.lock`, and

@@ -20,14 +20,7 @@ The settings component requires Python 3.10+, OpenSSL, and outbound HTTPS to
 `api.github.com`. It uses the Python standard library. No administrator token,
 OAuth client secret, webhook endpoint, or additional Python package is needed.
 
-```sh
-mkdir -p local
-cp examples/factory.json.example local/factory.json
-bin/forge settings validate --root ./local
-bin/forge settings show --root ./local
-```
-
-The example has no connections or enabled repositories. The default sync interval
+A new installation has no connections or enabled repositories. The default sync interval
 is five minutes; access observations expire after fifteen minutes. A settings GET
 reads local data only. Refresh requests run in a background thread. Each installation sync
 has a 90-second deadline, with up to 15 seconds for its final in-flight HTTP call;
@@ -36,9 +29,9 @@ large or inconsistent paginated responses fail rather than becoming empty lists.
 The settings UI is the operator UI's `/settings` page. `bin/forge setup` installs the
 UI and the loopback status API it reads, with `FORGE_ROOT` set to the runtime root
 that holds `factory.json` and `state/`; see [UI deployment](ui-deployment.md). Keep
-the UI on a trusted private network. Operators sign in with GitHub (see
-[operator sign-in](operator-sign-in.md)); mutating requests also require
-same-origin JSON and a per-process capability token.
+the UI on a trusted private network. Mutating requests require configured
+[operator sign-in](operator-sign-in.md), a signed-in operator, same-origin JSON and
+that session's CSRF token; without sign-in the API offers no control.
 
 ## Create and install role Apps
 
@@ -80,24 +73,15 @@ repository configuration in version control or issue comments.
 
 ## Private key references
 
-Store downloaded PEM files outside the source tree in a directory accessible only
-to the trusted service account. Restrict the directory to mode 0700 and each key to
-0600. Copy `examples/github-credentials.env.example` to a private service environment
-file and edit the paths. For example:
+Onboarding stores each App's private key in the installation's credential store
+(`<root>/credentials/`, mode 0700, each key 0600) under the reference
+`FORGE_SETUP_<ROLE>_KEY`. Configuration holds only that reference name. Forge reads
+App keys from the credential store only, never from the process environment.
+Runners do not inherit App private keys or the controller's environment. Reconnecting
+an App in Settings replaces its stored key; the next sync uses it.
 
-```sh
-export FORGE_BUILD_KEY_FILE=/srv/forge/credentials/build.pem
-```
-
-The variable contains a file path, not the key itself. Configure the four variables
-in the `forge-status` and `forge-supervisor` service environments (and for any
-manual `bin/forge settings` command) before starting them.
-Runners must not inherit App private keys or the controller's environment. Changing
-service environment variables requires restarting that service; replacing key
-contents at the same referenced path is picked up on the next sync.
-
-In Settings, enter App ID, installation ID, and the corresponding environment
-variable name for each role. Save connections, then click **Refresh access**. The
+In Settings, enter App ID, installation ID, and the corresponding credential
+reference for each role. Save connections, then click **Refresh access**. The
 sync authenticates each App, verifies its installation identity and grants, and
 creates a metadata-only installation token to list accessible repositories. Tokens
 and JWTs exist only in memory; error responses omit GitHub response bodies and
@@ -109,7 +93,7 @@ An example connection entry, using placeholder identifiers:
 "build": {
   "app_id": 123456,
   "installation_id": 234567,
-  "private_key_env": "FORGE_BUILD_KEY_FILE"
+  "private_key_env": "FORGE_SETUP_BUILD_KEY"
 }
 ```
 

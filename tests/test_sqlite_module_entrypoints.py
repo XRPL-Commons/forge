@@ -72,22 +72,3 @@ class ModuleEntrypointTests(unittest.TestCase):
                 self.assertEqual(result.returncode,1,result.stderr)
                 self.assertEqual(json.loads(result.stdout)['config'],DEFAULT)
 
-    def test_operator_module_with_fixture_prompt_configures_selected_auth(self):
-        # Patch only interactive input in the child; exercise run_module and the
-        # real selected authorization adapter without credentials or GitHub I/O.
-        script="""import getpass,runpy,sys
-getpass.getpass=lambda prompt:'fixture-only-secret-'+'x'*32
-root,mode=sys.argv[1:]
-sys.argv=[mode,*(['forge.operator_auth'] if mode=='forge.launch' else []),'--root',root,'--origin','https://forge.example','--client-id','fixture-client','--operator-id','123']
-runpy.run_module(mode,run_name='__main__',alter_sys=True)
-"""
-        for mode in ('forge.operator_auth','forge.launch'):
-            with self.subTest(mode=mode):
-                result=subprocess.run([sys.executable,'-c',script,str(self.root),mode],cwd=self.source,
-                    capture_output=True,text=True,timeout=10)
-                self.assertEqual(result.returncode,0,result.stderr)
-                self.assertIn('Operator sign-in configured',result.stdout)
-                self.assertNotIn('fixture-only-secret',result.stdout+result.stderr)
-        with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT client_id FROM operator_auth_configuration').fetchone()[0],'fixture-client')
-        self.assertFalse((self.root/'state/operator-auth/auth.json').exists())

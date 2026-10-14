@@ -28,11 +28,6 @@ export function spelled(seconds: number): string {
 export function spelledAgo(seconds: number): string {
   return seconds < 60 ? 'just now' : `${spelled(seconds < 3600 ? Math.floor(seconds / 60) * 60 : Math.floor(seconds / 3600) * 3600)} ago`
 }
-export function formatDuration(seconds: number): string {
-  if (seconds < 60) return 'less than a minute'
-  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60)
-  return h ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`
-}
 // Requested reviewers are always shown as GitHub mentions, so the same people
 // read the same way on an Activity card and on the issue itself.
 export function reviewerMentions(logins: string[] | null | undefined): string {

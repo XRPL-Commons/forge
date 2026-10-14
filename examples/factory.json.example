@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "sync_interval_seconds": 300,
-  "access_max_age_seconds": 900,
-  "connections": {},
-  "repositories": []
-}

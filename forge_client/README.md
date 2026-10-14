@@ -71,25 +71,6 @@ Forge calls, persisted server files and result objects. It also exercises plan
 editing, changed identities, expired plans, capability restrictions, revocation,
 stronger rules, collisions, uncertain writes and subprocess failures.
 
-## Print review-rule fixes
-
-```sh
-forge repo fix-rules OWNER/REPO --server https://forge.example
-forge repo fix-rules OWNER/REPO --server https://forge.example --json
-```
-
-This command reads Forge's latest repository observation and prints the same
-fixes as Review rules in the UI. It does not run them. A repository or organization
-administrator runs the printed `gh api` command locally, then chooses **Check
-again** in Forge. Ruleset fixes also require `jq`; they fetch the current ruleset
-before preserving its rules, conditions and existing bypass actors and adding the
-controller's pull-request bypass. Hidden bypass lists require manual steps.
-Administrative credentials remain with local `gh` and are never sent to Forge.
-The [GitHub ruleset API](https://docs.github.com/en/rest/repos/rules#update-a-repository-ruleset)
-and [organization ruleset API](https://docs.github.com/en/rest/orgs/rules#update-an-organization-repository-ruleset)
-describe the write permissions needed by the operator.
-
-
 ## Repository merge policy
 
 ```sh

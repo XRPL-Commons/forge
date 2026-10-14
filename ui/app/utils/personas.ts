@@ -4,9 +4,9 @@
 // forge/factory/personas.py carries the same names for the server's system
 // lines; tests/test_personas.py keeps the two in step.
 
-export type PersonaMark = 'spark' | 'bolt' | 'star' | null
+type PersonaMark = 'spark' | 'bolt' | 'star' | null
 
-export interface Persona {
+interface Persona {
   provider: string | null
   name: string
   providerLabel: string
