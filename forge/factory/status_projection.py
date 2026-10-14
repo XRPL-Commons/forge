@@ -29,6 +29,8 @@ SCHEDULE_REASONS = {
     'base_changed': 'Rebuilding on the updated base branch',
     'candidate_changed': 'Refreshing the pull request before continuing',
     'authorization': 'Checking merge approval and required checks',
+    'mergeability_unknown': 'Waiting for GitHub to establish whether the pull request can merge',
+    'merge_conflict': 'Confirming a merge conflict before rebuilding',
     'human_approval': 'Checking for human approval',
     'technical_evidence': 'Waiting for Review and Audit evidence',
     'cleanup_pending': 'Waiting for worker cleanup', 'cleanup': 'Waiting for worker cleanup',

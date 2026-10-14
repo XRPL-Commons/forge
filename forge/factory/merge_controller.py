@@ -65,8 +65,9 @@ class MergeAdmission:
     def evaluate_observation(self, effect):
         """Return authorization and display evidence without writing the store."""
         observation = None
+        mergeability = None
         def result(authorization):
-            return {'authorization': authorization, 'approval_observation': observation}
+            return {'authorization': authorization, 'approval_observation': observation, 'mergeability_observation': mergeability}
 
         item = candidate_snapshot(self.store, effect['unit_id'])
         if item is None or item['candidate_id'] != effect['candidate_id']:
@@ -101,13 +102,18 @@ class MergeAdmission:
                 return result(None)
         pr = self.github.pr(item, identity['pull_number'])
         if (pr.get('number') != identity['pull_number'] or pr.get('state') != 'open'
-                or pr.get('draft') is not False or pr.get('merged') is not False or pr.get('mergeable') is not True
+                or pr.get('draft') is not False or pr.get('merged') is not False
                 or (pr.get('head') or {}).get('sha') != identity['head_oid']
                 or (pr.get('base') or {}).get('sha') != identity['base_oid']
                 or (pr.get('base') or {}).get('ref') != item['candidate']['base_ref']
                 or (pr.get('head') or {}).get('repo', {}).get('id') != item['repo_id']
                 or (pr.get('base') or {}).get('repo', {}).get('id') != item['repo_id']
                 or self.github.target(item) != item['candidate']['base_ref']):
+            return result(None)
+        mergeability=dict(verified=True,state='open',merged=False,draft=False,mergeable=pr.get('mergeable'),
+            head_oid=identity['head_oid'],base_oid=identity['base_oid'],pull_number=identity['pull_number'],
+            repository_id=item['repo_id'],base_branch=item['candidate']['base_ref'],observed_at=self.clock())
+        if pr.get('mergeable') is not True:
             return result(None)
         audit = item['evidence'].get('audit', {})
         if (audit.get('human_required') not in {'required', 'not_required'}
@@ -184,6 +190,16 @@ class MergeController:
         if isinstance(self.admission, MergeAdmission):
             evaluated = self.admission.evaluate_observation(item)
             authorization = evaluated['authorization']
+            mergeability=evaluated.get('mergeability_observation')
+            if mergeability is not None:
+                from ..store.merge_observations import MergeObservations
+                reliability=self.admission.config().get('reliability',{})
+                reconciled=MergeObservations(self.store,clock=self.clock,
+                    uncertainty_seconds=reliability.get('effect_uncertainty_seconds',900)).observe(unit_id,item['candidate_id'],mergeability)
+                if reconciled.get('rebuilding'):
+                    return {'unit_id':unit_id,'rebuilding':True}
+                if reconciled.get('pending'):
+                    return {'unit_id':unit_id,'pending':reconciled['pending']}
             observation = evaluated['approval_observation']
             if observation is not None:
                 from ..store.presentation import record_approval_display
