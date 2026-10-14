@@ -11,14 +11,14 @@ EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'executi
 
 
 def prepare_tool_environment(directory, env):
-    askpass = Path("/work/askpass")
     client = Path('/work/home/.codex'); client.mkdir(parents=True, exist_ok=True)
-    # Repository commands receive only their job's GitHub token and public proxy
-    # settings. Provider credentials stay in the parent harness, behind the
+    # Repository commands receive public mirror/proxy settings. Provider
+    # credentials stay in the parent harness, behind the
     # image-owned deny-read policy, and never enter shell subprocess environments.
     child_env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(directory / '.forge/home'),
-                 'GH_TOKEN': env.get('GH_TOKEN', ''), 'GIT_ASKPASS': str(askpass), 'GIT_TERMINAL_PROMPT': '0',
+                 'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_GLOBAL': '/opt/forge/gitconfig', 'GIT_CONFIG_NOSYSTEM': '1',
                  'HTTP_PROXY': env.get('HTTP_PROXY', ''), 'HTTPS_PROXY': env.get('HTTPS_PROXY', '')}
+    child_env.update({key: env[key] for key in ('NO_PROXY', 'no_proxy', 'npm_config_registry', 'PIP_INDEX_URL', 'PIP_TRUSTED_HOST') if key in env})
     build = runpy.run_path('/opt/forge/build_environment.py')
     child_env.update(build['environment'](directory, [s for s in env.get('FORGE_REQUIRED_SERVICES', '').split(',') if s]))
     Path(child_env['HOME']).mkdir(mode=0o700, exist_ok=True)

@@ -7,24 +7,16 @@ import subprocess
 import tarfile
 from pathlib import Path
 import sys
-import urllib.error
-import urllib.request
 import runpy
 
 
 def check_repository_access():
-    # The assigned GitHub credential must survive provider-credential scrubbing.
-    # Use a synthetic token and a public endpoint; never send a real job token.
-    if os.environ.get('GH_TOKEN') != 'forge-synthetic-repository-token':
-        raise SystemExit('Assigned repository token was removed')
-    try:
-        with urllib.request.urlopen('https://api.github.com/meta', timeout=15):
-            pass
-    except urllib.error.HTTPError as error:
-        if error.code not in (401, 403, 429):
-            raise SystemExit('GitHub connectivity check failed') from None
-    except (OSError, urllib.error.URLError):
-        raise SystemExit('GitHub connectivity check failed') from None
+    # Publication credentials never enter the worker. Actual mirror routing and
+    # network isolation have their own container qualification.
+    if any(key in os.environ for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GIT_ASKPASS')):
+        raise SystemExit('Unexpected GitHub credential in worker environment')
+    if 'http://forge-git/github/' not in Path('/opt/forge/gitconfig').read_text():
+        raise SystemExit('Read-only mirror routing is unavailable')
 
 
 def main():

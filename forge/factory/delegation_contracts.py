@@ -16,8 +16,6 @@ def read_only_build(job):
 def assignment(note, job):
     note.update(builder_id=job.get('builder_id') or (job.get('task') or job['delegation'])['builder_id'],
                 builder_stage=job.get('builder_stage'), delegation=job.get('delegation'), task=job.get('task'))
-    if read_only_build(job):
-        note['instructions'] = note['instructions'].replace('Builders must publish the candidate using the normal submission procedure before requesting verification.', 'This assignment cannot publish a candidate.')
     note['instructions'] += (
         ' This delivery has one owning builder and tracked implementation tasks. Native provider subagents are disabled. '
         'If integration_conflicts is present, resolve the current merge, commit it, then merge every remaining exact commit before continuing. '
@@ -60,26 +58,21 @@ def assignment(note, job):
             'Your task may contribute part of an issue or span several issues; it does not complete their delivery. '
             'Prerequisite outputs have been verified and merged into this isolated checkout. Commit the complete result '
             'locally on the assigned branch and return pass with output_commit equal to git rev-parse HEAD. '
-            'Do not push, open or edit a pull request, comment on GitHub, or publish. Your GitHub token is read-only. '
+            'Do not push, open or edit a pull request, comment on GitHub, or publish. Use the read-only mirror. '
             'The image-owned harness exports the exact commit as a bundle after you finish; do not write the bundle yourself. '
             'If a check needs human access, still commit your complete implementation and return needs_human_verification '
             'with output_commit and the exact verification request. Forge carries it to the final candidate; this task cannot publish. '
             'Return delegation_plan null. Return unable with findings for code failures; environment blockers remain separate.')
     else:
-        marker = {'version': 2, 'unit': job['unit_id'], 'members': sorted(member['issue_number'] for member in job['members']),
-                  'attempt': job['id'], 'head': None}
         note['instructions'] += (
             ' You are the same owning builder resuming integration. Exact accepted task outputs have been verified and '
             'merged into this isolated checkout in dependency order. Resolve conflicts, verify every pinned requirement, '
             'perform the accepted plan owner_final work, retain every assigned output in the final ancestry, '
             'and include every expanded verification_requests check in your validation plan (the input_manifest pins their exact retained result references); those requests remain '
             'required at the final candidate even when you return pass. '
-            'Run combined checks and publish one integrated PR. Only this integration assignment has publication credentials. '
-            'Reuse the assigned candidate/resume PR when present; never create duplicates. Before editing an existing PR, '
-            'mark it draft while it still has the approved head. Finish the local commit, then write the single submission '
-            'block with this exact attempt and final commit head BEFORE pushing that commit to the assigned branch. '
-            'Push exactly that head and mark the PR ready last. Do not publish a null-head intermediate marker. Target target_branch. '
-            'Include an explicit Fixes #N closing reference for every member. Do not merge or close issues. '
-            'Use delegation_plan null and output_commit null. The submission block is <!-- forge-submission '
-            + json.dumps(marker) + ' -->.')
+            'Run combined checks and commit the final integrated result locally. '
+            'Return output_commit equal to git rev-parse HEAD, delegation_plan null, and proposed pr_title and pr_body. '
+            'Forge verifies the exact bundle and assigned input ancestry, publishes one integrated pull request '
+            'at the approved target, and adds closing references for every member. No worker publishes to GitHub. '
+            'For unsuccessful outcomes return output_commit, pr_title and pr_body null.')
     return note

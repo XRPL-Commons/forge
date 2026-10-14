@@ -7,7 +7,7 @@ RUN node /opt/forge/harnesses/install.cjs
 RUN npm install --global corepack@0.34.0 playwright-core@1.55.0 \
     && COREPACK_HOME=/opt/forge/corepack corepack prepare pnpm@10.23.0 --activate
 FROM ${PYTHON_IMAGE}
-RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certificates bubblewrap socat ripgrep build-essential chromium \
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates bubblewrap socat ripgrep build-essential chromium \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /work && chown 1000:1000 /work \
     && mkdir -p /opt/forge/claude-tools && mv /usr/bin/bwrap /opt/forge/claude-tools/bwrap
@@ -27,7 +27,10 @@ RUN node /opt/forge/harnesses/install.cjs --links-only \
 COPY --chmod=0644 forge/factory/job.py forge/factory/harness.py forge/factory/startup.py forge/factory/probe.py /opt/forge/
 COPY --chmod=0755 forge/factory/build_environment.py /opt/forge/build_environment.py
 COPY --chmod=0644 deploy/runner/browser-canary.cjs /opt/forge/browser-canary.cjs
+COPY --chmod=0644 deploy/runner/gitconfig /opt/forge/gitconfig
+COPY --chmod=0644 deploy/runner/gateway.py /opt/forge/gateway.py
+COPY --chmod=0644 forge/mirror/frontend.py /opt/forge/mirror_frontend.py
 RUN ln -s /opt/forge/build_environment.py /usr/local/bin/safe-build
-LABEL org.forge.build-environment="1" org.forge.startup-protocol="1" org.forge.exit-protocol="1"
+LABEL org.forge.build-environment="1" org.forge.startup-protocol="1" org.forge.exit-protocol="1" org.forge.worker-boundary="2"
 USER 1000:1000
 WORKDIR /work

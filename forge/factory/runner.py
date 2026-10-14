@@ -443,7 +443,7 @@ class ContainerRunner:
             captured['logs'] = scrub(self.call(['logs', '--tail', '1000', current['id']], combine=True).stdout.decode(errors='replace'), secrets)[-65536:]
         except RunnerError:
             captured['missing'].append('runner logs')
-        if job.get('task') is not None or job.get('delegation') is not None:
+        if job.get('task') is not None or job.get('delegation') is not None or job.get('role') == 'build' and job.get('source_input') and job.get('builder_stage') != 'planning':
             from .delegation_artifacts import MAX_BUNDLE_SIZE
             try:
                 raw = self.call(['cp', current['id'] + ':/work/output.bundle', '-'], max_output=MAX_BUNDLE_SIZE + 65536).stdout
@@ -454,6 +454,16 @@ class ContainerRunner:
                     captured['worktree_bundle'] = archive.extractfile(entries[0]).read()
             except (RunnerError, ValueError, tarfile.TarError):
                 captured['missing'].append('delegated output bundle')
+        if job.get('source_input') and job.get('role') == 'build' and current.get('running') is False:
+            try:
+                raw = self.call(['cp', current['id'] + ':/work/home/forge-output.json', '-'], max_output=16384).stdout
+                with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                    entries = archive.getmembers()
+                    if len(entries) != 1 or not entries[0].isfile() or entries[0].size > 4096:
+                        raise ValueError('Invalid output receipt')
+                    captured['export_receipt'] = json.loads(archive.extractfile(entries[0]).read(), object_pairs_hook=unique)
+            except (RunnerError, ValueError, tarfile.TarError, UnicodeError):
+                captured['missing'].append('valid output receipt')
         # Reserved entrypoint exit + image-owned protocol are independent of
         # worker report/log contents. The parent emits this only before an agent.
         if (current.get('startup_protocol') == '1' and current.get('exit_code') == 78

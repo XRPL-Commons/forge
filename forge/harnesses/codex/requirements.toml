@@ -25,8 +25,7 @@ deny_read = ["/work/credentials.json"]
 "/work/repository/.git" = "write"
 "/work/repository/.codex" = "read"
 "/work/repository/.agents" = "read"
-"/work/assignment.json" = "read"
-"/work/askpass" = "read"
+"/run/forge-input" = "read"
 "/work/home" = "deny"
 # Codex exec adds its generated launcher directory to the tool environment.
 # It contains executable shims, never provider authentication. Keep every other

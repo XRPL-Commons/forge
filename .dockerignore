@@ -23,3 +23,7 @@
 
 !forge/factory/build_environment.py
 !deploy/runner/browser-canary.cjs
+!deploy/runner/gitconfig
+!deploy/runner/gateway.py
+!forge/mirror/
+!forge/mirror/frontend.py

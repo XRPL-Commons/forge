@@ -228,8 +228,8 @@ class Executions(Lifecycle):
             capture_in(db, job_id, structured, now)
             _artifact(db, job_id, 'logs', logs, now)
             if bundle is not None:
-                if not db.execute('SELECT 1 FROM job_delegations WHERE job_id=?', (job_id,)).fetchone():
-                    raise TransitionError('only a tracked child can return a worktree bundle')
+                if job['role'] != 'build':
+                    raise TransitionError('only a build assignment can return a worktree bundle')
                 for sequence, offset in enumerate(range(0, len(bundle), MAX_ARTIFACT_SIZE)):
                     _artifact(db, job_id, 'worktree_bundle', bundle[offset:offset + MAX_ARTIFACT_SIZE], now,
                               sequence=sequence, media_type='application/x-git-bundle')

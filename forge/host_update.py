@@ -43,7 +43,7 @@ UI_PORT, API_PORT = 8787, 8788
 # source never rebuilds and never needs requalification.
 RUNNER_INPUTS = ('deploy/runner/Dockerfile', '.dockerignore', 'forge/harnesses', 'forge/factory/job.py',
                  'forge/factory/harness.py', 'forge/factory/startup.py', 'forge/factory/probe.py', 'forge/factory/build_environment.py',
-                 'deploy/runner/browser-canary.cjs')
+                 'deploy/runner/browser-canary.cjs', 'deploy/runner/gitconfig', 'deploy/runner/gateway.py', 'forge/mirror/frontend.py')
 UI_SKIP = {'node_modules', '.output', '.nuxt', '.data', '.npm', 'tests'}
 SERVICES = ('forge-status', 'forge-ui', 'forge-supervisor')
 RECORD = 'host.json'
