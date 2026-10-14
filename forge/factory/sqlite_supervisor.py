@@ -24,7 +24,7 @@ from .runner import RunnerError
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
                  dispatch, recovery=None, verification=None, waits=None, requirements=None, operators=None,
-                 discovery=None, deployments=None, planning=None, triage_effects=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
+                 discovery=None, deployments=None, planning=None, triage_effects=None, steward_effects=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
         if type(cycle_budget_seconds) not in (int, float) or not math.isfinite(cycle_budget_seconds) or cycle_budget_seconds <= 0:
@@ -39,6 +39,7 @@ class SqliteSupervisor:
         self.requirements, self.operators, self.discovery = requirements, operators, discovery
         self.deployments = deployments
         self.planning, self.triage_effects = planning, triage_effects
+        self.steward_effects = steward_effects
         from .wait_controller import WaitController
         self.waits = waits if waits is not None else WaitController(store, clock=clock)
 
@@ -129,6 +130,8 @@ class SqliteSupervisor:
             ])
             if self.triage_effects is not None:
                 stages.append(('triage_effects', lambda: self._page('triage_effects', self.triage_effects, limit, '')))
+            if self.steward_effects is not None:
+                stages.append(('steward_effects', lambda: self._page('steward_effects', self.steward_effects, limit, '')))
             if self.deployments is not None:
                 stages.append(('deployments', lambda: self._page('deployments', self.deployments, limit)))
             stages.extend([

@@ -11,7 +11,7 @@ def markers_in(db, unit_ids):
     # One indexed latest-decision lookup per requested unit; no artifact bodies.
     rows = db.execute("""
         SELECT d.unit_id,d.decision_id,d.output_digest AS digest,
-          CASE WHEN a.decision_id IS NOT NULL THEN 'applied'
+          CASE WHEN a.decision_id IS NOT NULL AND (g.decision_id IS NULL OR g.completed_at IS NOT NULL) THEN 'applied'
                WHEN u.state IN ('merged','closed','dissolved') THEN 'stale'
                WHEN s.decision_id IS NOT NULL THEN 'selected' ELSE 'proposed' END AS status
         FROM json_each(?) p JOIN steward_decisions d ON d.decision_id=(
@@ -20,6 +20,7 @@ def markers_in(db, unit_ids):
         JOIN units u ON u.id=d.unit_id
         LEFT JOIN steward_selections s ON s.decision_id=d.decision_id
         LEFT JOIN steward_applications a ON a.decision_id=d.decision_id
+        LEFT JOIN steward_effect_groups g ON g.decision_id=d.decision_id
     """, (json.dumps(list(unit_ids)),))
     return {row['unit_id']: {key: row[key] for key in ('decision_id','digest','status')} for row in rows}
 
@@ -38,7 +39,7 @@ def view_in(db, key):
     selected = selection_in(db, row['decision_id'])
     unit = _unit(db, unit_id)
     status = marker['status']
-    if status != 'applied' and (unit['state'] in {'merged','closed','dissolved'}
+    if not selected['application'] and (unit['state'] in {'merged','closed','dissolved'}
                                 or authority_in(db, unit) != dossier['authority']):
         status = 'stale'
     application = None
@@ -46,7 +47,11 @@ def view_in(db, key):
         request = db.execute('SELECT request_id FROM decisions WHERE id=?',
                              (selected['selection']['command_id'],)).fetchone()
         application = {'request_id': request[0], 'choice_id': selected['selection']['choice_id'],
-                       'status': 'applied' if selected['application'] else 'pending', 'message': None}
+                       'status': 'applied' if status == 'applied' else 'pending', 'message': None}
+        failed = db.execute("SELECT 1 FROM steward_issue_effects s JOIN external_effects e ON e.id=s.effect_id "
+                            "WHERE s.decision_id=? AND e.status IN ('failed','superseded')", (row['decision_id'],)).fetchone()
+        if failed:
+            application.update(status='failed', message='The selected action needs operator attention.')
     references = {issue['repository_id']} | {choice['parameters']['repository_id']
         for choice in output['choices'] if 'repository_id' in choice['parameters']}
     repositories = [dict(row) for row in db.execute(

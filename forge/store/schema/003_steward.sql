@@ -84,3 +84,27 @@ INSERT INTO configuration(domain,subject,revision,active,settings_json,credentia
 SELECT domain,subject,revision,1,settings_json,credential_ref,unixepoch('now') FROM steward_role_configs;
 DROP TABLE steward_role_configs;
 CREATE INDEX steward_decisions_unit_page ON steward_decisions(unit_id,accepted_at DESC,decision_id DESC);
+
+-- Each remote mutation retains the existing outbox retry and uncertainty state.
+CREATE TABLE steward_effect_groups (
+ decision_id TEXT PRIMARY KEY REFERENCES steward_selections(decision_id),
+ actor_id TEXT NOT NULL,
+ scope_json TEXT NOT NULL CHECK(json_valid(scope_json) AND length(CAST(scope_json AS BLOB))<=65536),
+ completed_at REAL
+) STRICT;
+CREATE TABLE steward_issue_effects (
+ effect_id TEXT PRIMARY KEY REFERENCES external_effects(id),
+ decision_id TEXT NOT NULL REFERENCES steward_effect_groups(decision_id),
+ position INTEGER NOT NULL CHECK(position>=0),
+ UNIQUE(decision_id,position)
+) STRICT;
+CREATE TRIGGER steward_effect_group_identity BEFORE UPDATE ON steward_effect_groups
+WHEN NEW.decision_id!=OLD.decision_id OR NEW.actor_id!=OLD.actor_id OR NEW.scope_json!=OLD.scope_json
+ OR OLD.completed_at IS NOT NULL AND NEW.completed_at IS NOT OLD.completed_at
+BEGIN SELECT RAISE(ABORT,'steward effect authority is immutable'); END;
+CREATE TRIGGER steward_effect_group_retained BEFORE DELETE ON steward_effect_groups
+BEGIN SELECT RAISE(ABORT,'steward effect authority is retained'); END;
+CREATE TRIGGER steward_issue_effect_identity BEFORE UPDATE ON steward_issue_effects
+BEGIN SELECT RAISE(ABORT,'steward effect identity is immutable'); END;
+CREATE TRIGGER steward_issue_effect_retained BEFORE DELETE ON steward_issue_effects
+BEGIN SELECT RAISE(ABORT,'steward effects are retained'); END;

@@ -41,7 +41,9 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
         for task in tasks:
             if outputs[task['id']]: continue
             if task['id'] in conflicted: continue
-            if db.execute('SELECT 1 FROM job_tasks WHERE plan_id=? AND task_id=?',(plan['id'],task['id'])).fetchone():
+            from .steward_execution import task_retry_in
+            retry = task_retry_in(db, unit, plan['id'], task['id'])
+            if not retry and db.execute('SELECT 1 FROM job_tasks WHERE plan_id=? AND task_id=?',(plan['id'],task['id'])).fetchone():
                 needs_plan=True; continue
             scope={pin['member_id'] for pin in task['members']}
             if allowed_members is not None and not scope<=allowed_members: continue
@@ -53,7 +55,7 @@ def assignments_in(db,unit,*,base_oid,policy_hash,limit,allowed_members=None):
             except TransitionError:
                 needs_plan=True; continue
             candidates.append({'stage':'task','plan_id':plan['id'],'task_id':task['id'],'key':task['key'],'executor':task['executor'],
-                'member_ids':sorted(scope),'worktree_key':_id(plan['id'],'worktree:'+task['id']),
+                'member_ids':sorted(scope),'worktree_key':_id(retry['decision_id'] if retry else plan['id'],'worktree:'+task['id']),
                 'input_manifest':manifest})
         if candidates: return result(candidates[:limit])
         if not needs_plan or active: return result(reason='children_running' if active else 'member_blocked')

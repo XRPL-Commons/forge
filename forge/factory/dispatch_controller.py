@@ -5,7 +5,7 @@ SQL gates are checked again in the reservation transaction. Provider account
 leases are owned by immutable launches until verified cleanup.
 """
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import time
 from urllib.parse import quote
@@ -290,13 +290,19 @@ class DispatchController:
             ownership_context = publication_context(self.store, unit_id, {})
             from ..store.delivery_inputs import previous_publication_in
             resume_candidate = previous_publication_in(db, unit_id)
-            return dict(**ownership_context, reviewers_requested=reviewer_request_in(db,unit['current_candidate_id']),unit=unit, member=member, issue=issue, candidate=dict(candidate) if candidate else None,
+            from ..store.steward_execution import retry_plan_in
+            retry_plan = retry_plan_in(db, unit, role)
+            return dict(steward_retry=retry_plan, **ownership_context, reviewers_requested=reviewer_request_in(db,unit['current_candidate_id']),unit=unit, member=member, issue=issue, candidate=dict(candidate) if candidate else None,
                         role=role, reason=reason, environment=environment, memory_bytes=memory, members=members, grouped=grouped, repo=members[0]['issue']['repository'],
                         resume_branch=previous[0] if previous else None, resume_candidate=resume_candidate)
 
-    def _provider(self, config):
+    def _provider(self, config, preferred=None):
         pool = config['provider_pool'] or [dict(id=None, **{key: config[key] for key in
                 ('provider', 'model', 'provider_environment', 'provider_auth_file_env')})]
+        if preferred is not None:
+            pool = [entry for entry in pool if entry['id'] == preferred]
+        if not pool:
+            return None, None
         with self.store.read_snapshot() as db:
             cursor = db.execute("SELECT cursor FROM runtime_controls WHERE name='provider_cursor'").fetchone()
             start = int(cursor[0]) % len(pool) if cursor and cursor[0] else 0
@@ -433,6 +439,42 @@ class DispatchController:
                                    [row['environment'] for row in scope])
             if config is None:
                 return {**result, 'reason': 'memory_unavailable'}
+        retry = snapshot.get('steward_retry')
+        from ..store.steward_execution import retry_target_matches
+        if retry and not retry_target_matches(retry, assignment):
+            retry = None
+        if retry:
+            if retry['base_oid'] != prepared.base_oid:
+                return {**result, 'reason': 'observation_changed'}
+            prepared = replace(prepared, context={**prepared.context, 'steward_retry': retry})
+            adjustment = retry['parameters'] if retry['action'] == 'retry' else {}
+            resume = adjustment.get('resume')
+            if resume and (not snapshot['candidate'] or snapshot['candidate']['head_oid'] != resume['head_oid']
+                           or role == 'build' and prepared.context.get('resume_head') != resume['head_oid']):
+                return {**result, 'reason': 'observation_changed'}
+            if 'timeout_seconds' in adjustment:
+                config['timeout_seconds'][role] = adjustment['timeout_seconds']
+            if 'provider_id' in adjustment:
+                selected = [row for row in config['provider_pool'] if row['id'] == adjustment['provider_id']]
+                if not selected:
+                    return {**result, 'reason': 'provider_unavailable'}
+            if 'environment_id' in adjustment:
+                tier = adjustment['environment_id']
+                scoped = snapshot['members'] if not assignment or assignment['stage'] != 'task' else [
+                    row for row in snapshot['members'] if row['member']['id'] in assignment['member_ids']]
+                for row in scoped:
+                    environment = row['environment']
+                    explicit = environment.get('override') or (environment.get('choice') or {}).get('automatic') is False
+                    if explicit and (environment.get('choice') or {}).get('tier') != tier:
+                        return {**result, 'reason': 'environment_conflict'}
+                if tier not in config['environment_tiers'] or tier == 'standard' and config.get('services'):
+                    return {**result, 'reason': 'environment_conflict'}
+                from .environments import worker_config
+                previous_allocation = config['memory']
+                config = worker_config(config, {'environment_choice': {'tier': tier, 'services': config.get('services', [])}})
+                from .capacity import memory_bytes
+                if memory_bytes(config['memory']) < memory_bytes(previous_allocation):
+                    return {**result, 'reason': 'memory_unavailable'}
         # Runtime files contain credential references only. Reject unknown keys
         # rather than persisting environment values supplied by a caller.
         extras = {key: config.pop(key) for key in ('environment_tier', 'services') if key in config}
@@ -445,7 +487,8 @@ class DispatchController:
         config = {**validate(config), **extras, 'memory': allocation}
         if not config['enabled']:
             return {**result, 'reason': 'runtime_disabled'}
-        entry, config = self._provider(config)
+        preferred = retry['parameters'].get('provider_id') if retry and retry['action'] == 'retry' else None
+        entry, config = self._provider(config, preferred=preferred)
         if entry is None:
             return {**result, 'reason': 'provider_unavailable'}
         runner = ContainerRunner(config, environ=self.runner.environ) if isinstance(self.runner, ContainerRunner) else self.runner

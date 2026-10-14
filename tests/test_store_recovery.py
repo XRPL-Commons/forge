@@ -109,33 +109,30 @@ class RecoveryStoreTests(unittest.TestCase):
             self.life.record_failure(self.command(), recovery['id'], execution_fence=recovery['execution_fence'],
                                      input_manifest=recovery['input_manifest'], evidence={'reason':'failed recovery'})
 
-    def test_third_failure_is_investigated_and_budget_stays_exhausted(self):
-        for index in range(3):
-            failed = self.fail()
-            recovery, outcome = self.finish(failed, self.findings(pattern='distinct-' + str(index)))
-            self.assertTrue(outcome['accepted'])
-        self.assertEqual(self.view()['charged_failures'], 3)
-        self.assertEqual(self.view()['reason_code'], 'budget_exhausted')
+    def test_legacy_findings_keep_the_charge_and_require_typed_steward_choice(self):
+        failed = self.fail()
+        recovery, outcome = self.finish(failed, self.findings(change='Fix dependency version'))
+        self.assertTrue(outcome['accepted'])
+        self.assertTrue(outcome['approach_required'])
+        self.assertEqual(self.view()['charged_failures'], 1)
+        self.assertEqual(self.view()['reason_code'], 'approach_required')
         self.assertEqual(self.recoveries.pending_failures()['items'], [])
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM recovery_findings').fetchone()[0], 3)
-
-    def test_repeated_pattern_requires_new_concrete_change_not_reworded_reason(self):
-        self.finish(self.fail(), self.findings(change='Use bounded retries'))
-        repeated = self.findings(change=' USE  BOUNDED retries ')
-        repeated['alternative']['reason'] = 'A different explanation of the same approach'
-        recovery, outcome = self.finish(self.fail(), repeated)
-        self.assertTrue(outcome['approach_required'])
-        self.assertEqual(self.view()['reason_code'], 'approach_required')
+            findings = db.execute('SELECT findings_json FROM recovery_findings').fetchone()[0]
+            self.assertIn('Fix dependency version', findings)
+            self.assertIsNone(db.execute('SELECT retry_plan_json FROM unit_context').fetchone())
         with self.assertRaises(TransitionError):
             self.fail()
 
-    def test_new_evidence_supported_change_is_saved_for_next_assignment(self):
-        self.finish(self.fail(), self.findings(change='Fix dependency version'))
-        _, outcome = self.finish(self.fail(), self.findings(change='Remove unsupported dependency'))
-        self.assertFalse(outcome['approach_required'])
-        next_job = self.fail()
-        self.assertEqual(next_job['history']['retry_plan']['change'], 'Remove unsupported dependency')
+    def test_legacy_prose_never_grants_retry_authority(self):
+        findings = self.findings(change='Fix concrete implementation defect')
+        _, outcome = self.finish(self.fail(), findings)
+        self.assertTrue(outcome['approach_required'])
+        with self.store.read_snapshot() as db:
+            gate = db.execute("SELECT details_json FROM unit_gates WHERE code='approach_required' AND resolved_at IS NULL").fetchone()[0]
+            self.assertIn('steward_decision_required', gate)
+        with self.assertRaises(TransitionError):
+            self.fail()
 
     def test_operator_retry_cannot_skip_mandatory_investigation(self):
         failed = self.fail()

@@ -146,7 +146,11 @@ class TaskCommands:
                           'AND (t.task_id=? OR t.task_id IS NULL)',(unit['id'],task_id)).fetchone():
                 raise TransitionError('task or whole owner execution still requires completion and cleanup')
             if db.execute('SELECT 1 FROM job_tasks WHERE plan_id=? AND task_id=?',(plan_id,task_id)).fetchone():
-                raise TransitionError('a failed task requires a new quiescent owner plan before retry')
+                from .steward_execution import task_retry_in
+                retry = task_retry_in(db, unit, plan_id, task_id)
+                if (not retry or launch is None or launch.context.get('steward_retry') != retry
+                        or worktree_key != _id(retry['decision_id'], 'worktree:'+task_id)):
+                    raise TransitionError('a failed task requires an exact steward retry or a new owner plan')
             if task['executor']=='owner' and db.execute("SELECT 1 FROM jobs j JOIN job_tasks x ON x.job_id=j.id JOIN delivery_tasks t ON t.id=x.task_id "
                 "WHERE j.unit_id=? AND t.executor='owner' AND (j.cleanup=0 OR j.outcome IS NULL)",(unit['id'],)).fetchone():
                 raise TransitionError('another owning builder execution is active')

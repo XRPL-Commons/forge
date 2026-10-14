@@ -124,7 +124,9 @@ class StoreCompletionTests(unittest.TestCase):
         with self.assertRaises(TransitionError):
             self.reserve()
         self.finish_recovery(job)
-        self.reserve()
+        with self.assertRaises(TransitionError):
+            self.reserve()
+        self.assertEqual(self.view()['current_blocker']['code'], 'approach_required')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM candidate_evidence WHERE verdict='fail'").fetchone()[0], 1)
 

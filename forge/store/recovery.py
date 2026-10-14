@@ -9,7 +9,6 @@ original build assignment, which corrects its original charge exactly once.
 """
 from dataclasses import asdict
 import json
-import re
 
 from .artifacts import Artifacts, ArtifactExpired
 from .executions import Executions, ExecutionQueries, Launch, insert_launch, _artifact
@@ -97,6 +96,10 @@ def recovery_gates(db, unit, failed_job_id, member_id, candidate_id=None, recove
 
 def execution_gates(db, unit, job):
     """The runner and reservation share the exact recovery gate exception."""
+    if job['role'] == 'steward':
+        from .steward import dossier_in
+        from .steward_execution import execution_gates_in
+        return execution_gates_in(db, unit, dossier_in(db, job['id']), job_id=job['id'])
     if job['role'] != 'recovery':
         from .task_inputs import task_execution_gates_in
         return task_execution_gates_in(db, unit, job)
@@ -226,37 +229,14 @@ class Recovery(Executions):
         approach = False
         implementation = not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job['id'], diagnostic=False)
         if current and not publication and implementation:
-            related = db.execute('SELECT f.findings_json FROM attempt_failures f JOIN attempts a ON a.id=f.attempt_id '
-                'WHERE f.unit_id=? AND a.budget_generation=? AND EXISTS(SELECT 1 FROM budget_entries b WHERE b.attempt_id=a.id AND b.kind=\'charge\') '
-                'AND NOT EXISTS(SELECT 1 FROM budget_entries b WHERE b.attempt_id=a.id AND b.kind=\'correction\') ORDER BY f.position',
-                (unit['id'], unit['budget_generation'])).fetchall()
-            values = [json.loads(row[0]) if row[0] else {} for row in related]
-            pattern = findings['pattern'].strip().casefold()
-            repeated = bool(pattern and sum(str(row.get('pattern', '')).strip().casefold() == pattern for row in values) >= 2)
-            uncertain = len(values) >= 2 and (not pattern or findings['incomplete'] or bool(findings['uncertainty'].strip()))
-            alternative = findings.get('alternative')
-            normalize = lambda text: ' '.join(str(text).casefold().split())
-            change = normalize(alternative['change']) if alternative else ''
-            prior = [normalize(row['alternative'].get('change')) for row in values[:-1] if row.get('alternative')]
-            cosmetic = bool(re.search(r'(?:fresh|new) session|re(?:word|phrase).*prompt|stronger model', change))
-            concrete = bool(alternative and findings['evidence'] and change not in prior and not cosmetic
-                            and not findings['incomplete'] and not findings['uncertainty'].strip())
-            if (repeated or uncertain) and not concrete:
-                task = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?', (failed['id'],)).fetchone()
-                scopes = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (failed['id'],))]
-                          if task else [failed['member_id']])
-                if not scopes:
-                    raise TransitionError('a task investigation requires its complete failed scope')
-                for scope in scopes:
-                    if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='approach_required' AND member_id IS ? AND resolved_at IS NULL", (unit['id'], scope)).fetchone():
-                        self._open_gate(db, command, 'approach_required', {'failed_job_id': failed['id'], 'reason': 'different_approach_required'}, scope)
-                approach = True
-            if not approach and alternative and not findings['incomplete']:
-                db.execute('INSERT INTO unit_context(unit_id,retry_plan_json) VALUES(?,?) ON CONFLICT(unit_id) DO UPDATE SET retry_plan_json=excluded.retry_plan_json',
-                           (unit['id'], _json(alternative)))
-            db.execute("UPDATE unit_issues SET state='pending' WHERE state='failed' AND EXISTS("
-                'SELECT 1 FROM job_members p WHERE p.job_id=? AND p.member_id=unit_issues.id '
-                'AND p.requirements_revision_id=unit_issues.requirements_revision_id)', (failed['id'],))
+            task = db.execute('SELECT 1 FROM job_tasks WHERE job_id=?', (failed['id'],)).fetchone()
+            scopes = ([row[0] for row in db.execute('SELECT member_id FROM job_members WHERE job_id=? ORDER BY member_id', (failed['id'],))]
+                      if task else [failed['member_id']])
+            for scope in scopes:
+                if not db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND code='approach_required' AND member_id IS ? AND resolved_at IS NULL", (unit['id'], scope)).fetchone():
+                    self._open_gate(db, command, 'approach_required',
+                                    {'failed_job_id': failed['id'], 'reason': 'steward_decision_required'}, scope)
+            approach = True
         return {'accepted': current, 'investigated_job_id': failed['id'], 'approach_required': approach}
 
     def finish(self, command, job_id, *, execution_fence, input_manifest, findings, incomplete=False, gates=(), timeout=False):
@@ -275,6 +255,7 @@ class Recovery(Executions):
                 charge_id=_id(command.request_id,'charge')
                 db.execute("INSERT INTO budget_entries(id,attempt_id,kind,reason_code,created_at) VALUES(?,?,'charge','execution_failure',?)",(charge_id,job['attempt_id'],self.clock()))
                 self._event(db,command,'budget_charged',{'charge_id':charge_id},job_id=job_id)
+            verification_allowed = current and not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False)
             answer = self._finish(db, command, unit, job, failed, current, findings)
             if current and timeout:
                 from .transitions import _charges
@@ -283,7 +264,7 @@ class Recovery(Executions):
                         self._open_gate(db,command,'budget_exhausted',{'limit':3})
                     self._fence(db,command)
                 answer['charged']=True
-            if current and gates and not recovery_gates(db, unit, failed['id'], job['member_id'], job['candidate_id'], job_id, diagnostic=False):
+            if verification_allowed and gates:
                 if unit['current_candidate_id'] is None:
                     raise TransitionError('verification requires an exact current candidate')
                 for gate in gates:

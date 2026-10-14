@@ -141,39 +141,20 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertIn('Read only', note['instructions'])
         self.assertEqual(self.github.tokens, [])
         self.assertEqual(self.budget(), 1)
-        self.assertIsNone(self.view()['reason_code'])
-        retried = self.dispatch.step('u')
-        self.assertTrue(retried['reserved'], retried)
-        job = self.jobs.job(retried['job_id'])
-        self.assertEqual(job['branch'], self.jobs.job(failed)['branch'])
-        self.assertIn('Correct the implementation', json.dumps(job['history']))
-
-    def test_third_failure_still_gets_one_investigation_then_budget_hold(self):
-        investigations = []
-        for number in range(3):
-            self.runner.findings['alternative']['change'] = f'Concrete repair approach {number + 1}'
-            failed = self.failed_build()
-            if number == 2:
-                self.assertEqual(self.view()['reason_code'], 'budget_exhausted')
-            recovery = self.reserve_recovery(failed)
-            investigations.append(recovery)
-            self.assertTrue(self.finish_recovery(recovery)['accepted'])
-        self.assertEqual(self.budget(), 3)
-        self.assertEqual(self.view()['reason_code'], 'budget_exhausted')
-        self.assertFalse(self.dispatch.step('u')['reserved'])
-        self.assertEqual(self.runner.launched.count('recovery'), 3)
-        self.assertEqual(self.recovery.cycle()['items'], [])
-        for job in investigations:
-            self.assertIn('outcome', self.recovery.finish(job))
-        self.assertEqual(self.budget(), 3)
-
-    def test_repeated_pattern_without_new_alternative_requires_human_approach(self):
-        for _ in range(2):
-            failed = self.failed_build()
-            recovery = self.reserve_recovery(failed)
-            self.finish_recovery(recovery)
-        self.assertEqual(self.budget(), 2)
         self.assertEqual(self.view()['reason_code'], 'approach_required')
+        self.assertFalse(self.dispatch.step('u')['reserved'])
+        with self.store.read_snapshot() as db:
+            findings = db.execute('SELECT findings_json FROM recovery_findings').fetchone()[0]
+        self.assertIn('Correct the implementation', findings)
+
+    def test_legacy_completion_is_idempotent_and_does_not_launch_recursive_recovery(self):
+        failed = self.failed_build()
+        investigation = self.reserve_recovery(failed)
+        self.assertTrue(self.finish_recovery(investigation)['accepted'])
+        self.assertIn('outcome', self.recovery.finish(investigation))
+        self.assertEqual(self.recovery.cycle()['items'], [])
+        self.assertEqual(self.budget(), 1)
+        self.assertEqual(self.runner.launched.count('recovery'), 1)
         self.assertFalse(self.dispatch.step('u')['reserved'])
 
     def test_invalid_recovery_records_incomplete_without_recursive_investigation_or_charge(self):
@@ -184,7 +165,8 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.budget(), 1)
         self.assertEqual(self.recovery.cycle()['items'], [])
         self.assertEqual(self.runner.launched.count('recovery'), 1)
-        self.assertTrue(self.dispatch.step('u')['reserved'])
+        self.assertFalse(self.dispatch.step('u')['reserved'])
+        self.assertEqual(self.view()['reason_code'],'approach_required')
 
     def test_delayed_publication_is_verified_independently_and_corrects_charge_once(self):
         failed = self.failed_build('pass')
@@ -318,7 +300,7 @@ class RecoveryControllerTests(unittest.TestCase):
         note = next(note for note in self.runner.notes if note['role'] == 'recovery')
         self.assertEqual(note['failure']['attempt'], failed)
         self.assertEqual(self.budget(), 1)
-        self.assertTrue(self.dispatch.step('u')['reserved'])
+        self.assertFalse(self.dispatch.step('u')['reserved'])
 
     def test_composed_cycles_investigate_before_reserving_next_build(self):
         from forge.factory.effect_controller import EffectController
@@ -348,8 +330,8 @@ class RecoveryControllerTests(unittest.TestCase):
         third = driver.cycle()
         self.assertEqual(self.runner.launched, ['build', 'recovery'])
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs WHERE role='build'").fetchone()[0], 2)
-        self.assertTrue(third['stages']['dispatch']['items'][0]['reserved'], third)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs WHERE role='build'").fetchone()[0], 1)
+        self.assertFalse(third['stages']['dispatch']['items'][0]['reserved'], third)
         self.assertEqual(self.budget(), 1)
 
     def test_review_execution_failure_retries_same_verified_candidate_after_investigation(self):
@@ -367,8 +349,9 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(self.view()['current_candidate_id'], selected)
         self.assertEqual(self.budget(), 1)
         next_review = self.dispatch.step('u')
-        self.assertEqual(next_review['role'], 'review')
-        self.assertEqual(self.jobs.job(next_review['job_id'])['candidate_id'], selected)
+        self.assertFalse(next_review['reserved'])
+        self.assertEqual(next_review['reason'], 'approach_required')
+        self.assertEqual(self.view()['current_candidate_id'], selected)
 
     def test_advanced_base_does_not_strand_findings_or_refund_original_failure(self):
         failed = self.failed_build('pass')
@@ -412,7 +395,6 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertTrue(self.finish_recovery(investigation)['accepted'])
         self.assertEqual(self.budget(), 1)
         self.assertEqual(self.view()['state'], 'reviewing')
-        self.assertEqual(self.view()['reason_code'], 'verification_ci')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM candidate_evidence WHERE kind='review' AND verdict='pass'").fetchone()[0], 0)
             gate = json.loads(db.execute("SELECT details_json FROM unit_gates WHERE code='verification_ci'").fetchone()[0])
