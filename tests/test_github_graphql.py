@@ -41,3 +41,16 @@ class GraphQLPublicationTests(unittest.TestCase):
             self.github.graphql('controller', self.repo, 'mutation Example {}', {})
         self.github.token.assert_not_called()
         self.client.request.assert_not_called()
+
+
+class IssueInputTests(unittest.TestCase):
+    def test_notes_and_requirements_use_same_comment_observation(self):
+        github = GitHub(Mock(), {}, client=Mock())
+        github.call = Mock(return_value={'number': 7, 'title': 'A', 'body': 'B'})
+        comments = [{'id': 1, 'body': 'human decision', 'user': {'type': 'User'}}]
+        github.pages = Mock(return_value=comments)
+        value, digest, observed = github.issue_inputs({'repo_id': 12, 'repo': 'example/project', 'number': 7})
+        github.pages.assert_called_once()
+        self.assertIs(observed, comments)
+        self.assertEqual(value['number'], 7)
+        self.assertEqual(len(digest), 64)

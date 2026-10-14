@@ -86,17 +86,38 @@ def validate(config):
         raise ValueError('repositories must be a bounded list')
     ids, names = set(), set()
     for row in config['repositories']:
-        if (not isinstance(row, dict) or set(row) - {'deployment'} != {'id', 'name', 'enabled'}
+        if (not isinstance(row, dict) or set(row) - {'deployment', 'mirror_denied_repositories'} != {'id', 'name', 'enabled'}
                 or type(row['id']) is not int or row['id'] <= 0
                 or type(row['enabled']) is not bool or not isinstance(row['name'], str)
                 or not REPO_PATTERN.fullmatch(row['name'])):
             raise ValueError('Each repository needs a GitHub numeric id, owner/name, and enabled boolean')
         if 'deployment' in row:
             deployment(row['deployment'])
+        if 'mirror_denied_repositories' in row:
+            mirror_denied_repositories(row['mirror_denied_repositories'])
         if row['id'] in ids or row['name'].lower() in names:
             raise ValueError('Duplicate repository configuration')
         ids.add(row['id']); names.add(row['name'].lower())
     return config
+
+
+def mirror_denied_repositories(value):
+    """Explicit project restrictions; both numeric IDs and names remain binding."""
+    if not isinstance(value, list) or len(value) > 2048:
+        raise ValueError('Mirror deny list must be a bounded list')
+    names, identities = set(), set()
+    for row in value:
+        if (not isinstance(row, dict) or set(row) not in ({'canonical_name'}, {'canonical_name', 'repository_id'})
+                or not isinstance(row['canonical_name'], str) or not REPO_PATTERN.fullmatch(row['canonical_name'])
+                or 'repository_id' in row and (type(row['repository_id']) is not int or row['repository_id'] <= 0)):
+            raise ValueError('Mirror deny entries require owner/name and an optional numeric repository ID')
+        name, identifier = row['canonical_name'].lower(), row.get('repository_id')
+        if name in names or identifier is not None and identifier in identities:
+            raise ValueError('Duplicate mirror deny entry')
+        names.add(name)
+        if identifier is not None:
+            identities.add(identifier)
+    return value
 
 
 def digest(value):

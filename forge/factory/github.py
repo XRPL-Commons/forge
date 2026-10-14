@@ -266,13 +266,18 @@ class GitHub:
                 if 'pull_request' not in i]
 
     def issue(self, item):
+        value, requirements, _ = self.issue_inputs(item)
+        return value, requirements
+
+    def issue_inputs(self, item):
+        """One bounded comment observation for both the digest and frozen notes."""
         value = self.call('controller', item, 'GET', f"/issues/{item['number']}")
         if value.get('number') != item['number'] or 'pull_request' in value:
             raise GitHubUnavailable('Issue identity could not be verified')
         comments = self.pages('controller', item, f"/issues/{item['number']}/comments")
         requirements = digest({'title': value['title'], 'body': value.get('body') or '',
                                'comments': [(c['id'], c['body']) for c in comments if c.get('user', {}).get('type') == 'User']})
-        return value, requirements
+        return value, requirements, comments
 
     def pulls(self, item):
         rows = self.pages('controller', item, '/pulls?state=open')
