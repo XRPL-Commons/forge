@@ -1,4 +1,4 @@
-export interface OperatorSession {
+interface OperatorSession {
   ok: boolean
   enabled: boolean
   operator: { id: number; login: string } | null

@@ -71,13 +71,9 @@ requires the normal Build/Review/Audit pipeline and independent GitHub evidence.
 Existing hosts retain the [sign-in setup](cli-server-setup.md) and scoped
 repository workflows.
 
-## Separate staged components
+## Retired components
 
-The [security inventory](../SECURITY.md#isolation-status) classifies the
-independent observer (`observer/`) and the native-account executor proposal as
-staged, outside the live container runner. The observer and its mirror retain
-their own provisioning and baseline checks; their rollout remains deferred in
-#111 until core qualification is complete. A setup state left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
+A setup state left in the retired `legacy` phase is read as `setup`, and reset no longer inventories
 or stops tmux sessions.
 
 ## Selected SQLite runtime
@@ -86,8 +82,8 @@ The one-way migration selects one private SQLite database for lifecycle,
 configuration, identity and supporting state. The database uses WAL and FULL
 durability; transactions, revisions and constraints protect local state. Managed
 launchers qualify the SQLite runtime and reject missing or incompatible selected
-state. JSON readers and writers are fenced after selection; the original capture
-is diagnostic only. See [migration and recovery](store-migration.md).
+state. JSON readers and writers are fenced after selection. See
+[schema upgrades](store-migration.md).
 
 This is not a distributed claim service. Do not operate separate controller roots
 against the same repositories. Long-lived App/provider credentials remain

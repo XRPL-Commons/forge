@@ -16,8 +16,6 @@ from .activity import cap, events
 LINES = 200
 TTL = 3.0
 READ_TIMEOUT = 10.0
-# Reasons the UI words; never engine output, which could carry anything.
-UNAVAILABLE = ('not_started', 'container_missing', 'runner_unavailable')
 
 
 def heartbeat(line):

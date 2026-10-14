@@ -103,28 +103,3 @@ Only requested services get connection variables: `MONGODB_URI`, `DATABASE_URL`,
 `REDIS_URL`; MongoDB also gets `MONGOMS_SYSTEM_BINARY=/usr/bin/mongod` and runtime
 downloads are disabled. Tests may instead start the bundled binaries themselves,
 with loopback listeners and data under `/work`.
-
-## Qualification evidence
-
-On the local Ubuntu 24.04 ARM64 test VM, the full image passed the offline canary
-inside the native Codex sandbox with UID 1000, read-only root, all capabilities
-dropped, the existing seccomp and `forge-runner-private-proc` AppArmor policies,
-and `--network none`. The Mongoose, SQL and Redis round trips, browser check and
-credential-isolation checks all passed. No model or provider calls were made.
-
-The read-only probe against `XRPL-Commons/glow` at
-`ceaba9628caf8c421958e1732713c375d317f49e` proposed `services: [mongodb]`, citing
-`package.json`, two module manifests, `docker-compose.yml`, the end-to-end Compose
-file and `tests/e2e/fixtures/global-setup.ts`. No profile was applied to a live
-factory during that initial probe.
-
-Live qualification was subsequently verified from retained execution evidence:
-[Glow PR #341](https://github.com/XRPL-Commons/glow/pull/341), merged on 2026-10-02,
-used a full/MongoDB issue override for its build, Review and Audit. Their pinned
-head `96c5a942ec0ef58a122cbd4cd7816f3f8b6998e6` passed 446 API tests across 48 files;
-its `npm test` command selects `vitest.config.api.ts` and `tests/api/**`.
-The records also cover isolated MongoDB, eight migrations and authentication/reset
-browser checks. The 2026-10-09 supported update qualified the currently installed
-full image. [Issue #97](https://github.com/XRPL-Commons/forge/issues/97) records the
-exact build/image identities and acceptance evidence. No optional repository
-default or duplicate remediation run was required.

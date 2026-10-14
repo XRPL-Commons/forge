@@ -2,17 +2,9 @@
 
 `bin/forge setup` and `bin/forge update` write every variable a standard install needs into the service units. Set one by hand only to override a default, and expect `bin/forge update` to flag drop-ins that override the managed ones (see `forge/host_update.py`).
 
-## Credential precedence
+## Credentials
 
-GitHub App keys and coding-provider credentials can come from two places:
-
-1. **The credential store** at `<root>/credentials/` (mode 700). Onboarding and Settings write to it.
-2. **The process environment**, for example from `examples/github-credentials.env.example`.
-
-**When both define the same name, the stored value wins** (`Credentials.environment()` in `forge/credentials.py`; asserted by `tests/test_credentials.py`). Reconnecting an account in Settings therefore takes effect even if an old value is still exported. Only these names are accepted in the store:
-
-- `FORGE_SETUP_*`: role App keys (`FORGE_SETUP_<ROLE>_KEY`) and terminal logins.
-- Each harness manifest's `api_key_env` / `token_env`.
+GitHub App keys and coding-provider logins live in **the credential store** at `<root>/credentials/` (mode 700). Onboarding and Settings write to it. Role App keys (`FORGE_SETUP_<ROLE>_KEY`) and terminal logins (`FORGE_SETUP_*`) are read from the store only; the process environment never supplies them (`Credentials.environment()` in `forge/credentials.py`; asserted by `tests/test_credentials.py`). A stored provider API key (each harness manifest's `api_key_env` / `token_env`) takes precedence over the same name in the process environment.
 
 Configuration refers to stored credentials by name (`private_key_env`, `provider_auth_file_env`, `seccomp_profile_env`). The values themselves never appear in `factory.json`.
 
@@ -24,8 +16,6 @@ Configuration refers to stored credentials by name (`private_key_env`, `provider
 | `FORGE_BIND_ADDRESS` | `legacy/forge-status.py` | none; must be `127.0.0.1` | Status API listen address. The API refuses to start otherwise |
 | `FORGE_PORT` | `legacy/forge-status.py` | `8787` in code; setup writes `8788` | Status API port (the UI takes 8787) |
 | `FORGE_UPSTREAM_SECRET_FILE` | `legacy/forge-status.py` | `<root>/state/ui-upstream.secret` | Secret proving requests came through the UI proxy |
-| `FORGE_NOTIFY_STATE` | `forge/notifications.py` | `state/notifications` | Notification dedupe state directory |
-| `RELAY_HOST`, `RELAY_WORKER_CONTAINER`, `RELAY_REDIS_HOST`, `RELAY_REDIS_PORT`, `NOTIFY_JID`, `NOTIFY_CHANNEL`, `NOTIFY_QUEUE` | `forge/notifications.py` | unset (channel off) | Optional `relay` notification channel |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `XAI_API_KEY` | harness adapters, via the credential store | unset | Coding-provider credentials (store wins; see above) |
 | `SAFE_BUILD_TIMEOUT_SECONDS` | `forge/factory/build_environment.py` | `1200` (max `2400`) | Bounded safe-build step timeout |
 

@@ -66,7 +66,7 @@ Inside a worker, `safe-build COMMAND` serializes builds, limits Node's heap to
 60% of the container's finite memory budget, and kills the process group after
 the deadline (20 minutes by default, at most 40). The container cgroup remains
 the hard resource limit; the host admission check reserves memory before launch.
-This is independent of the host's systemd-based `bin/safe-build` helper. Projects
+Projects
 needing another runtime or more memory stop with an environment blocker; Forge
 does not bypass isolation or treat missing infrastructure as a code defect.
 
@@ -114,10 +114,9 @@ the previous revision (printed by update and recorded in `<runtime-root>/host.js
 and running `bin/forge update --no-pull`. Earlier images and UI releases are reused
 when still present, and rebuilt otherwise.
 
-After SQLite activation, use a compatible forward update. The installation keeps
-its history and update records in SQLite; switching back to the JSON runtime or
-an older incompatible source is unsupported. The pre-migration copy is retained
-for diagnosis, not as a runtime rollback. See [the migration guide](store-migration.md).
+Use a compatible forward update. The installation keeps its history and update
+records in SQLite; switching back to the JSON runtime or an older incompatible
+source is unsupported. Schema changes use [`forge migrate upgrade`](store-migration.md).
 `bin/forge setup install` on an installed host performs the same reconciliation
 without fetching.
 

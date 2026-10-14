@@ -64,7 +64,7 @@ class Preparation:
                     steps.extend(repair['steps'])
                 elif repair['steps']:
                     blockers.append({'code': 'rules_repair_not_authorized', 'policy': self.repair,
-                                     'reason': 'Review forge repo fix-rules commands or authorize repair in a new plan.'})
+                                     'reason': 'Review the repository rule guidance in Forge, or authorize narrow repair in a new preparation plan.'})
                 blockers.extend(repair['blockers'])
                 if not repair['steps'] and not repair['blockers']:
                     if readiness['protection_status'] == 'needs_setup':

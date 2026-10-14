@@ -28,17 +28,6 @@ def launch(argv=None):
             raise SystemExit('--root needs a path')
     if not root and target == 'forge.host_setup':
         root = str(Path.home() / '.local/share/forge')
-    if target == 'forge.notifications':
-        state = os.environ.get('FORGE_NOTIFY_STATE', 'state/notifications')
-        for index, value in enumerate(options):
-            if value == '--state':
-                if index + 1 >= len(options) or options[index + 1].startswith('--'):
-                    raise SystemExit('--state needs a path')
-                state = options[index + 1]
-            elif value.startswith('--state='):
-                state = value.split('=', 1)[1]
-        state = Path(state).absolute()
-        root = str(state.parent.parent) if state.name == 'notifications' and state.parent.name == 'state' else None
     if root:
         from .store.db import qualified_sqlite
         if not qualified_sqlite():
@@ -47,12 +36,12 @@ def launch(argv=None):
             if prepared:
                 library = prepared['library_directory']
                 if os.environ.get('LD_LIBRARY_PATH') == library:
-                    raise SystemExit('The prepared SQLite runtime did not load; run forge migrate prepare again')
+                    raise SystemExit('The prepared SQLite runtime did not load; run bin/forge setup initialize again')
                 environment = {**os.environ, 'LD_LIBRARY_PATH': library}
                 command = [sys.executable, '-m', 'forge.launch', *(['--script'] if script else []), target, *arguments]
                 os.execve(sys.executable, command, environment)
             elif os.path.lexists(Path(root) / 'state/storage'):
-                raise SystemExit('SQLite runtime qualification is required; run forge migrate prepare')
+                raise SystemExit('SQLite runtime qualification is required; run bin/forge setup initialize')
         from .store.runtime import selected
         selected(root)  # Refuse missing, mismatched or inactive selected state before startup.
     sys.argv = [target, *arguments]

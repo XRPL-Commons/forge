@@ -8,7 +8,7 @@ export type NeedsFilter = 'all' | AttentionReason
 export const NEEDS_FILTERS: NeedsFilter[] = ['all', ...LINE_REASONS]
 export const NEEDS_FILTER_LABELS: Record<NeedsFilter, string> = { all: 'All', ...LINE_REASON_SHORT }
 
-export interface NeedsRow { item: LineItem; reason: AttentionReason; unblocks: number }
+interface NeedsRow { item: LineItem; reason: AttentionReason; unblocks: number }
 
 export function needsYouRows(state: LineState | null, view: Pick<FactoryView, 'issues'> | null | undefined): NeedsRow[] {
   if (!state) return []

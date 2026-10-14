@@ -11,7 +11,7 @@ from ..store.executions import provider_available
 from ..store.models import TransitionError
 from .activity import merge, public
 from .discussions import (ACTIONS, BUTTONS, ANSWER_CAP, REASON_CAP, DISCUSSION_SECONDS, FINDING_SECONDS,
-    KEY, ACCOUNTS, Discussions, agent, closed_for, ended, excerpt, offered, operator_only, partial_text, presence, proposal_in, trim)
+    KEY, ACCOUNTS, agent, closed_for, ended, excerpt, leave, offered, operator_only, partial_text, presence, proposal_in, trim)
 from .github import GitHubUnavailable
 from .runner import ContainerRunner, RunnerError, RunnerCapacity, RunnerUnavailable, scrub
 
@@ -145,7 +145,7 @@ class SQLiteDiscussions:
         if thread.get('cancel_requested'):
             reason,detail,until='cancelled',None,None
         if job: job=self.commands.job(job['id']) | {k:v for k,v in job.items() if k=='excerpt'}
-        Discussions.leave(self,thread,job,reason,detail,until)
+        leave(thread,job,reason,detail,until,now=self.clock())
         self.commands.leave(key,expected_version=version,thread=thread,job=job,capture=capture)
 
     def _pipeline_priority(self,config):

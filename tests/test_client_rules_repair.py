@@ -4,7 +4,6 @@ import unittest
 
 from forge_client.contracts import SetupError
 from forge_client import rules
-from forge_client.rule_fixes import ruleset_command
 
 
 class GitHub:
@@ -115,9 +114,3 @@ class RepairTests(unittest.TestCase):
         rules.apply(github, github.target, step, 7)
         write = next(row for row in github.calls if row[0] == 'PATCH')
         self.assertEqual(write[2], {'bypass_pull_request_allowances': {'users': ['existing-user'], 'teams': ['existing-team'], 'apps': ['existing-app', 'forge-controller']}})
-
-    def test_printed_rule_command_does_not_echo_rules(self):
-        command = ruleset_command('owner/project', {'id': 42, 'source_type': 'Repository', 'bypass_actors_visible': True}, 7)
-        self.assertIn('{bypass_actors:', command)
-        self.assertNotIn('{name,target,enforcement,conditions,rules', command)
-        self.assertIn('required_signatures', command)

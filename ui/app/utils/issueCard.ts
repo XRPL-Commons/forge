@@ -9,7 +9,7 @@ import { statusBadge, type BadgeColor } from './tones'
 import { portraitFromScene, type PortraitLook } from './cube'
 import { workbenchLook } from './workbench'
 
-export interface CardHearts { lost: number; limit: number }
+interface CardHearts { lost: number; limit: number }
 export interface CardFact {
   key: string
   text: string
@@ -128,7 +128,7 @@ export function mergeCompleted(have: CardModel[], incoming: CardModel[]): CardMo
 }
 
 // The request for one page of Recently completed.
-export const COMPLETED_PAGE = 10
+const COMPLETED_PAGE = 10
 export function completedPath(before: string | null): string {
   return `/api/factory?section=completed&limit=${COMPLETED_PAGE}${before ? `&before=${encodeURIComponent(before)}` : ''}`
 }

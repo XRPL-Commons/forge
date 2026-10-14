@@ -9,7 +9,7 @@ import { MARKDOWN_ALLOWLIST } from './markdown'
 import { helpImage } from '../../shared/help-assets'
 import { HELP_TOPICS, helpTopic, helpTopicHref } from '../../shared/help-topics'
 
-export type TocEntry = { id: string; text: string; level: 1 | 2 }
+type TocEntry = { id: string; text: string; level: 1 | 2 }
 export type HelpBlock = { html: string } | { diagram: string; title: string }
 export type HelpDoc = { html: string; toc: TocEntry[]; blocks: HelpBlock[] }
 
@@ -107,7 +107,7 @@ export function renderHelp(markdown: string): HelpDoc {
 
 // --- Document resolution (pure; the route supplies the real inputs and I/O) ---
 
-export type HelpDocCandidates = {
+type HelpDocCandidates = {
   nitroHelpDoc: string | null
   forgeRoot: string | null
   repoDefault: string

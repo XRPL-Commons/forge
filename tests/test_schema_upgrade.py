@@ -404,3 +404,89 @@ class UpgradeHostTests(SchemaUpgradeTests):
         self.assertEqual(result['status'], 'upgraded')
         self.assertTrue(self.runtime()[1]['enabled'])
         self.assertEqual(set(self.active), {'forge-status.service','forge-ui.service','forge-supervisor.service','forge-extra.timer'})
+
+
+class UpgradeTransportTests(unittest.TestCase):
+    def test_unexpected_failure_diagnostics_report_upgrade_stage_without_exception_text(self):
+        import sqlite3
+        from forge.store.migration.host import failure
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            value = failure(sqlite3.IntegrityError('secret row content'), {'root': str(root)})
+            self.assertEqual(value['stage'], 'before_journal')
+            (root/'.schema-upgrade.json').write_text(json.dumps({'stage': 'migrating'}))
+            value = failure(sqlite3.IntegrityError('secret row content'), {'root': str(root)})
+            self.assertEqual(value, dict(ok=False, error='unexpected_migration_failure',
+                                         exception_type='IntegrityError', stage='migrating'))
+            self.assertNotIn('secret', json.dumps(value))
+            self.assertEqual(failure(MigrationError('upgrade_source_changed'), {'root': str(root)})['error'],
+                             'upgrade_source_changed')
+
+    def test_host_runs_only_the_upgrade_action(self):
+        from forge.store.migration.host import run
+        for action in ('plan', 'prepare', 'capture', 'resume', 'activate'):
+            with self.subTest(action=action), self.assertRaisesRegex(MigrationError, 'unknown_migration_action'):
+                run({'action': action, 'root': '/private/runtime', 'source': '/private/source'})
+
+    def test_only_clean_forward_matching_source_is_installed(self):
+        import subprocess
+        from forge.store.migration.host import Host
+        from forge.store.migration.upgrade import package_version
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve(); source = base/'source'; source.mkdir()
+            def git(*args):
+                return subprocess.run(['git', '-C', str(source), *args], capture_output=True, text=True, check=True).stdout.strip()
+            git('init', '-q'); git('config', 'commit.gpgsign', 'false')
+            git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test')
+            (source/'forge').mkdir(); (source/'forge/__init__.py').write_text('version=1\n')
+            git('add', '.'); git('commit', '-qm', 'first'); previous = git('rev-parse', 'HEAD')
+            (source/'forge/__init__.py').write_text('version=2\n')
+            git('commit', '-qam', 'corrected'); target = git('rev-parse', 'HEAD'); version = package_version(source)
+            origin = base/'origin.git'
+            subprocess.run(['git', 'clone', '--bare', str(source), str(origin)], capture_output=True, check=True)
+            git('remote', 'add', 'origin', str(origin)); git('checkout', '-q', previous)
+            (source/'existing-diagnostic.md').write_text('keep this')
+            host = Host(base, source); host.identity = lambda: git('rev-parse', 'HEAD')
+            with self.assertRaisesRegex(MigrationError, 'repair_bundle_source_mismatch'):
+                host.prepare_source_update(previous, target, '1:wrong')
+            self.assertEqual(git('rev-parse', 'HEAD'), previous)
+            host.prepare_source_update(previous, target, version)
+            host.install_source_update(previous, target)
+            self.assertEqual(git('rev-parse', 'HEAD'), target)
+            self.assertEqual((source/'existing-diagnostic.md').read_text(), 'keep this')
+            host.install_source_update(previous, target)
+            with self.assertRaisesRegex(MigrationError, 'repair_requires_forward_revision'):
+                host.prepare_source_update(target, previous, version)
+            (source/'forge/__init__.py').write_text('dirty\n')
+            with self.assertRaisesRegex(MigrationError, 'repair_source_not_clean'):
+                host.prepare_source_update(target, target, version)
+
+
+class UpgradeHostDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+
+    def test_sqlite_failure_reports_only_structured_diagnostics(self):
+        import sqlite3
+        from forge.store.migration.host import failure
+        with sqlite3.connect(':memory:') as db:
+            with self.assertRaises(sqlite3.OperationalError) as raised:
+                db.execute('SELECT * FROM private_customer_table')
+        receipt = failure(raised.exception, dict(root=str(self.root), action='upgrade'))
+        self.assertEqual(receipt['error'], 'unexpected_migration_failure')
+        self.assertEqual(receipt['sqlite_errorcode'], sqlite3.SQLITE_ERROR)
+        self.assertEqual(receipt['sqlite_errorname'], 'SQLITE_ERROR')
+        self.assertNotIn('retryable', receipt)
+        self.assertNotIn('private_customer_table', json.dumps(receipt))
+        self.assertNotIn('no such table', json.dumps(receipt))
+
+    def test_mirror_writer_is_inventoried_without_a_separate_service_list(self):
+        from types import SimpleNamespace
+        rows = [{'unit': 'forge-mirror.service', 'active': 'active'},
+                {'unit': 'forge-supervisor.service', 'active': 'active'},
+                {'unit': 'unrelated.service', 'active': 'active'}]
+        from forge.store.migration.host import Host
+        host = Host(self.root, self.root / 'source', run=lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(rows)))
+        self.assertEqual(host.units(), ['forge-mirror.service', 'forge-supervisor.service'])

@@ -16,10 +16,10 @@ export type IssueAction = 'queue' | 'backlog' | 'pause' | 'resume' | 'retry' | '
 
 // Which pull request this is to the issue: the one Forge is carrying now, an
 // earlier Forge draft it moved on from, or someone else's. Older payloads omit it.
-export type PullRequestKind = 'candidate' | 'forge_attempt' | 'external'
+type PullRequestKind = 'candidate' | 'forge_attempt' | 'external'
 export interface PullRequestRef { number: number; title: string; kind?: PullRequestKind }
 
-export interface IssueScope { id: number; name: string; complete: boolean; fresh: boolean; at: number | null; error: string | null }
+interface IssueScope { id: number; name: string; complete: boolean; fresh: boolean; at: number | null; error: string | null }
 // `at` (epoch seconds): when the decision was recorded. The server already
 // drops receipts older than the issue's latest event.
 export interface IssueActionStatus { id: string; key: string; status: 'pending' | 'applied' | 'rejected'; message: string | null; at?: number }
@@ -75,29 +75,29 @@ export interface IssueRow extends OperatorStatusSource {
 }
 
 // `at` is unix seconds; `why` says why a review did not count (null when it did).
-export interface IssueApproval {
+interface IssueApproval {
   login: string; state: 'APPROVED' | 'CHANGES_REQUESTED' | 'DISMISSED'
   at: number | null; counted: boolean; why: string | null
 }
 
 // Who was asked for the human approval, and when. Set by the assign_reviewer
 // decision; the approval itself still has to come through GitHub.
-export interface ReviewRequest { logins: string[]; at: number }
+interface ReviewRequest { logins: string[]; at: number }
 // Where Forge found this person: the repository's collaborators, the authors of
 // recently merged work here, or the runtime's configured human reviewers.
-export type ReviewerSource = 'collaborator' | 'recent_author' | 'configured'
+type ReviewerSource = 'collaborator' | 'recent_author' | 'configured'
 export interface Reviewer { login: string; name: string; source?: ReviewerSource }
 
-export interface IssueHistoryEvent { at: number; kind: string; reason?: string | null }
+interface IssueHistoryEvent { at: number; kind: string; reason?: string | null }
 // `human_required`: the worker passed the change but says a person must still
 // look (a secret, a migration, …); `human_reason` says why.
 export interface IssueReview {
   role: 'review' | 'audit'; outcome: string | null; summary: string
   human_required?: boolean; human_reason?: string
 }
-export interface IssueAttempts { failed: number; limit: number }
+interface IssueAttempts { failed: number; limit: number }
 // A GitHub label that paused the issue, who applied it and when (ISO time).
-export interface IssueLabelHold { label: string; login: string | null; at: string }
+interface IssueLabelHold { label: string; login: string | null; at: string }
 export interface IssueDetail extends IssueRow {
   delivery_id?: string | null
   body: string; history: IssueHistoryEvent[]; reviews: IssueReview[]
@@ -115,10 +115,6 @@ export interface IssueDetailResponse {
   deployments?: import('./factory').FactoryView['deployments']
   ok: true; controls_token: string; issue: IssueDetail; repositories: IssueScope[]; actions: IssueActionStatus[]
 }
-
-// The order the server sorts the list in (forge/factory/issues.py view()):
-// what needs the operator first, finished work last.
-export const STATUS_ORDER: IssueStatus[] = ['attention', 'working', 'waiting', 'blocked', 'queued', 'backlog', 'completed', 'dropped']
 
 // The open prerequisites a blocked issue waits on. The server names them in
 // the explanation ("Waiting for #90, #101."); the dependencies the body lists
@@ -243,7 +239,7 @@ export function defaultReason(action: IssueAction): string {
 // What the issue page leads with: the headline, then the description, then the
 // action bar. Everything the worker wrote stays available under "Details", so
 // the reader never has to open it to learn where the issue stands or why.
-export interface SummaryBlock { headline: string; plain: string; details: string }
+interface SummaryBlock { headline: string; plain: string; details: string }
 
 export function summaryBlock(
   issue: Pick<IssueDetail, 'summary' | 'explanation' | 'environment_blocker'> | null | undefined,
@@ -283,18 +279,12 @@ export function attentionNote(issue: Pick<IssueDetail, 'summary' | 'explanation'
   return summaryBlock(issue) ? `A person needs to ${what}. See the note above.` : `A person needs to ${what}. Discuss the blocker to work out what.`
 }
 
-// Cards and list rows carry the headline when Forge has one; the older
-// explanation line is the fallback, never both.
-export function rowNote(row: Pick<IssueRow, 'summary' | 'explanation'>, max = 96): string {
-  return clampTitle(((row.summary?.headline ?? '').trim() || (row.explanation ?? '').trim()), max)
-}
-
 // A review summary is worker prose: the detail page shows its lead sentence
 // clamped to two lines, and reveals the rest on demand. The row model is pure
 // so the copy the operator reads is decided here, not in the template.
-export type ReviewOutcome = 'passed' | 'rejected' | 'unable' | 'unknown'
+type ReviewOutcome = 'passed' | 'rejected' | 'unable' | 'unknown'
 
-export interface ReviewRow {
+interface ReviewRow {
   role: IssueReview['role']
   label: string
   // The verdict this reviewer returned, never the issue's own status: a passed
@@ -328,7 +318,7 @@ function leadSentence(text: string): string {
   return end === -1 ? text : text.slice(0, end + 1)
 }
 
-export function reviewRow(review: IssueReview): ReviewRow {
+function reviewRow(review: IssueReview): ReviewRow {
   const outcome = REVIEW_OUTCOMES[(review.outcome ?? '').toLowerCase()] ?? 'unknown'
   // The summary of such a pass is often just "PASS."; the reason is the news.
   const needsPerson = outcome === 'passed' && !!review.human_required
@@ -355,7 +345,7 @@ export function reviewRows(reviews: IssueReview[] | null | undefined): ReviewRow
 // reads or sends is decided here: the select's options, what it starts with,
 // the decision text that becomes `reason`, and the line the page shows once
 // GitHub has been asked.
-export interface ReviewerOption { value: string; label: string; description?: string }
+interface ReviewerOption { value: string; label: string; description?: string }
 
 const REVIEWER_SOURCES: Record<ReviewerSource, string> = {
   collaborator: 'collaborator',
@@ -400,7 +390,7 @@ export function reviewRequestText(request: ReviewRequest | null | undefined, now
 // One line per review Forge found, in words and an icon, never colour alone:
 // "@lucbocahut approved · 16:03 · counted". `time` formats `at`; pass nothing
 // before mount, when the operator's time zone is not known yet.
-export interface ApprovalLine { login: string; text: string; counted: boolean; icon: string }
+interface ApprovalLine { login: string; text: string; counted: boolean; icon: string }
 export function approvalLines(approvals: IssueApproval[] | null | undefined, time?: (at: number) => string): ApprovalLine[] {
   return (approvals ?? []).map((review) => {
     const who = '@' + review.login
@@ -477,7 +467,7 @@ export function issuePath(key: string, job?: string | null, tab?: 'details' | 'd
 
 // The list's filters live in the URL (`?show=&repo=&q=&page=`), so a filtered
 // view reloads and shares as itself. Defaults are left out.
-export interface FilterState { show: string; repo: string; q: string; page: number }
+interface FilterState { show: string; repo: string; q: string; page: number }
 
 export function filtersFromQuery(query: Record<string, unknown>): Partial<FilterState> {
   const one = (value: unknown) => { const found = Array.isArray(value) ? value[0] : value; return typeof found === 'string' && found ? found : undefined }
@@ -502,7 +492,7 @@ export function filterQuery({ show, repo, q, page }: FilterState): Record<string
   return out
 }
 
-export interface ListFilters { state: string; repoId: number | null; q: string; page: number }
+interface ListFilters { state: string; repoId: number | null; q: string; page: number }
 
 export function listParams({ state, repoId, q, page }: ListFilters): string {
   const params = new URLSearchParams()
@@ -533,7 +523,7 @@ export function lastAction(actions: IssueActionStatus[] | undefined, key: string
 // pausing are never the point of opening a queued issue, so they are not named.
 const PRIMARY_DECISIONS: IssueAction[] = ['assign_reviewer', 'retry', 'recheck', 'resume', 'queue']
 
-export interface RowAction { label: string; decision: boolean }
+interface RowAction { label: string; decision: boolean }
 
 export function rowPrimary(
   row: Pick<IssueRow, 'status' | 'actions' | 'approval' | 'reason_code'>, pending: IssueActionStatus | null | undefined,
@@ -553,7 +543,7 @@ export function rowAction(row: Pick<IssueRow, 'status' | 'actions' | 'approval' 
 
 // The story an issue card tells: Forge's headline (or the older explanation
 // line), then the plain-language sentences behind it when they add anything.
-export interface RowStory { headline: string; plain: string }
+interface RowStory { headline: string; plain: string }
 
 export function rowStory(row: Pick<IssueRow, 'summary' | 'explanation'>): RowStory {
   const explanation = (row.explanation ?? '').trim()
@@ -573,7 +563,7 @@ export function activityAge(updatedAt: string | null | undefined, now: number): 
 
 // The compact facts under an issue card's story, in reading order, and only
 // the ones the list row actually carries.
-export interface RowFact { key: string; text: string }
+interface RowFact { key: string; text: string }
 
 export function rowFacts(
   row: Pick<IssueRow, 'pull_requests' | 'attempts' | 'dependencies' | 'held_by' | 'updated_at'>, now: number,
@@ -598,7 +588,7 @@ export function freshnessText(list: Pick<IssueListResponse, 'repositories' | 'co
   return 'Showing received issues. The GitHub inventory is still incomplete or needs refreshing.'
 }
 
-export interface EmptyState { title: string; text: string; link?: { to: string; label: string } }
+interface EmptyState { title: string; text: string; link?: { to: string; label: string } }
 
 export function emptyState(list: Pick<IssueListResponse, 'issues' | 'repositories' | 'complete'>): EmptyState | null {
   if ((list.issues ?? []).length) return null

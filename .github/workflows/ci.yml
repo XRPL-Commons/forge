@@ -72,9 +72,6 @@ jobs:
         with: { node-version: 24 }
       - name: Backend regression tests
         run: python3 tools/run_test_shard.py --shard ${{ matrix.shard }} --count 3
-      - name: Observer regression tests
-        if: matrix.shard == 0
-        run: python3 -m unittest discover -s observer/tests -v
 
   python:
     # Preserve the required check name and require every backend group to pass.

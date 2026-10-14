@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from forge.credentials import Credentials
-from tests.test_dashboard import dashboard
+from tests.test_dashboard import dashboard, signed_in, OPERATOR_CSRF
 
 
 def secrets(store):
@@ -101,16 +101,25 @@ class CredentialStoreTests(unittest.TestCase):
         with patch.dict('os.environ', {'FORGE_SETUP_BUILDER_KEY': 'environment-synthetic'}):
             self.assertEqual(self.store.environment()['FORGE_SETUP_BUILDER_KEY'], 'stored-synthetic')
 
+    def test_role_keys_never_fall_back_to_the_process_environment(self):
+        with patch.dict('os.environ', {'FORGE_SETUP_REVIEWER_KEY': 'environment-synthetic', 'PATH': '/usr/bin'}):
+            env = self.store.environment()
+            self.assertNotIn('FORGE_SETUP_REVIEWER_KEY', env)
+            self.assertEqual(env['PATH'], '/usr/bin')
+            self.store.put('FORGE_SETUP_BUILDER_KEY', 'stored-synthetic')
+            self.assertNotIn('FORGE_SETUP_REVIEWER_KEY', self.store.environment())
+
 
 class BrowserSecretTests(unittest.TestCase):
     def test_onboarding_api_no_longer_accepts_provider_keys(self):
+        session = signed_in(self)
         with tempfile.TemporaryDirectory() as directory, patch.object(dashboard, 'WD', directory), \
                 patch('forge.onboarding.Onboarding') as setup:
             handler = object.__new__(dashboard.H)
             handler.server = Mock(server_address=('127.0.0.1', 8787))
             payload = json.dumps({'action': 'provider', 'api_key': 'synthetic'}).encode()
-            handler.headers = {'Host': '127.0.0.1:8787', 'Origin': 'http://127.0.0.1:8787', 'X-Forge-Action': dashboard.CONTROLS_TOKEN,
-                               'Content-Type': 'application/json', 'Content-Length': str(len(payload))}
+            handler.headers = {'Host': '127.0.0.1:8787', 'Origin': 'http://127.0.0.1:8787', 'X-Forge-Action': OPERATOR_CSRF,
+                               'Content-Type': 'application/json', 'Content-Length': str(len(payload)), **session}
             handler.path = '/api/onboarding'; handler.rfile = io.BytesIO(payload)
             handler._send = Mock(); handler.send_error = Mock()
             handler.do_POST()

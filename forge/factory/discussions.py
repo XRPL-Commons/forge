@@ -169,7 +169,7 @@ def last_question(thread):
 
 def ended(capture, job, now):
     """Why a worker exited without an answer: (reason, detail, until)."""
-    from .supervisor import classify_error
+    from .errors import classify_error
     for line in (capture.get("logs") or "").splitlines():
         try: event = json.loads(line)
         except ValueError: continue
@@ -189,6 +189,51 @@ def ended(capture, job, now):
     after = f" after {minutes(now - started)} min" if started else ""
     code = execution.get("exit_code")
     return "error", f"its worker stopped{after} without an answer" + (f" (exit code {code})" if code not in (None, 0) else ""), None
+
+
+def leave(thread, job, reason, detail=None, until=None, *, now):
+    """The worker left without answering: say why, in the thread, exactly once.
+
+    Every unanswered question ends in an answer or one of these. A worker
+    that could not sign in or ran out of quota is replaced once by another
+    ready provider; the same provider is avoided until it frees up.
+    """
+    who = agent(job) if job else None
+    name = who["name"] if who else "No one"
+    link = None
+    if job:
+        job["ended"] = reason
+        thread["job"] = job
+    if reason == "timeout":
+        text = (f"{name} ran out of time after {minutes(DISCUSSION_SECONDS)} min" if who and job.get("joined_at")
+                else f"No one became available within {minutes(FINDING_SECONDS)} min" + (f": {detail}" if detail else ""))
+    elif reason == "restart":
+        text = f"{name} left: Forge restarted before the answer was ready"
+    elif reason == "cancelled":
+        text = f"{detail or 'You stopped'} {name if who and job.get('joined_at') else 'the request'}"
+    elif reason in ("auth", "quota"):
+        text, link = unavailable(who["provider"] if who else None, "blocked_" + reason)
+    else:
+        text = f"{name} left: {detail}" if detail else f"{name} left before answering"
+    asked = last_question(thread)
+    retry = bool(reason in ("auth", "quota") and asked and thread.get("auto_retry") != asked["id"])
+    entry = {"id": "left-" + (job["id"] if job else str(uuid.uuid4())), "role": "system", "event": "left",
+             "reason": reason, "text": scrub(text)[:300], "until": until if reason == "quota" else None, "link": link,
+             "agent": who, "reply_to": asked["id"] if asked else None, "retrying": retry, "at": now}
+    if asked and not any(m["id"] == entry["id"] for m in thread["messages"]):
+        entry["sequence"] = len(thread["messages"]) + 1
+        thread["messages"].append(entry)
+    if retry:
+        avoid = thread.setdefault("avoid", {})
+        # Discussion-local, never the factory ledger: why and until when.
+        avoid[who["provider"]] = {"until": until or now + 300, "reason": "blocked_" + reason}
+        thread.update(auto_retry=asked["id"], status="queued", requested_at=now, cancel_requested=False, partial="",
+                      reason=entry["text"], presence={"phase": "finding", "waiting_since": now, "code": "switching",
+                      "reason": "Finding someone else to answer", "instead_of": who})
+        return
+    thread.update(status="cancelled" if reason == "cancelled" else "unavailable", reason=entry["text"], partial="",
+                  presence={"phase": "left", "reason": reason, "text": entry["text"], "until": entry["until"],
+                            "link": link, "agent": who, "at": now})
 
 
 def excerpt(logs):
@@ -292,7 +337,7 @@ class Discussions:
                 thread["cancel_requested"] = True
                 thread.update(status="cancelling", reason="Stopping the discussion worker")
             else:
-                self.leave(thread, None, "cancelled")
+                leave(thread, None, "cancelled", now=self.clock())
 
     def close_for(self, key, message_id, actor_id):
         """The operator asked in so many words: apply the persona's Close through the operator's own path."""
@@ -327,11 +372,11 @@ class Discussions:
                 job = thread.get("job")
                 if job and not job["cleanup"]:
                     if not job.get("ended") and not job.get("completed"):
-                        self.leave(thread, job, "cancelled", "Forge setup or reset stopped")
+                        leave(thread, job, "cancelled", "Forge setup or reset stopped", now=self.clock())
                     job.update(fenced=True, cancelled=True)
                     thread.update(cancel_requested=True, status="cancelling")
                 elif thread.get("status") == "queued":
-                    self.leave(thread, None, "cancelled", "Forge setup or reset stopped")
+                    leave(thread, None, "cancelled", "Forge setup or reset stopped", now=self.clock())
 
     def save(self, key, **fields):
         with self.store.transaction() as data:
@@ -343,52 +388,7 @@ class Discussions:
 
     def left(self, key, job, reason, detail=None, until=None):
         with self.store.transaction() as data:
-            self.leave(data[key], job, reason, detail, until)
-
-    def leave(self, thread, job, reason, detail=None, until=None):
-        """The worker left without answering: say why, in the thread, exactly once.
-
-        Every unanswered question ends in an answer or one of these. A worker
-        that could not sign in or ran out of quota is replaced once by another
-        ready provider; the same provider is avoided until it frees up.
-        """
-        now = self.clock()
-        who = agent(job) if job else None
-        name = who["name"] if who else "No one"
-        link = None
-        if job:
-            job["ended"] = reason
-            thread["job"] = job
-        if reason == "timeout":
-            text = (f"{name} ran out of time after {minutes(DISCUSSION_SECONDS)} min" if who and job.get("joined_at")
-                    else f"No one became available within {minutes(FINDING_SECONDS)} min" + (f": {detail}" if detail else ""))
-        elif reason == "restart":
-            text = f"{name} left: Forge restarted before the answer was ready"
-        elif reason == "cancelled":
-            text = f"{detail or 'You stopped'} {name if who and job.get('joined_at') else 'the request'}"
-        elif reason in ("auth", "quota"):
-            text, link = unavailable(who["provider"] if who else None, "blocked_" + reason)
-        else:
-            text = f"{name} left: {detail}" if detail else f"{name} left before answering"
-        asked = last_question(thread)
-        retry = bool(reason in ("auth", "quota") and asked and thread.get("auto_retry") != asked["id"])
-        entry = {"id": "left-" + (job["id"] if job else str(uuid.uuid4())), "role": "system", "event": "left",
-                 "reason": reason, "text": scrub(text)[:300], "until": until if reason == "quota" else None, "link": link,
-                 "agent": who, "reply_to": asked["id"] if asked else None, "retrying": retry, "at": now}
-        if asked and not any(m["id"] == entry["id"] for m in thread["messages"]):
-            entry["sequence"] = len(thread["messages"]) + 1
-            thread["messages"].append(entry)
-        if retry:
-            avoid = thread.setdefault("avoid", {})
-            # Discussion-local, never the factory ledger: why and until when.
-            avoid[who["provider"]] = {"until": until or now + 300, "reason": "blocked_" + reason}
-            thread.update(auto_retry=asked["id"], status="queued", requested_at=now, cancel_requested=False, partial="",
-                          reason=entry["text"], presence={"phase": "finding", "waiting_since": now, "code": "switching",
-                          "reason": "Finding someone else to answer", "instead_of": who})
-            return
-        thread.update(status="cancelled" if reason == "cancelled" else "unavailable", reason=entry["text"], partial="",
-                      presence={"phase": "left", "reason": reason, "text": entry["text"], "until": entry["until"],
-                                "link": link, "agent": who, "at": now})
+            leave(data[key], job, reason, detail, until, now=self.clock())
 
     def waiting(self, code, reason, *, until=None, link=None, skip=None):
         """Every queued conversation's honest reason for still looking."""

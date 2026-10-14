@@ -1,19 +1,19 @@
 import type { JobView } from './factory'
 import type { CanonicalIssueStatus } from './operatorStatus'
 
-export interface TaskOutput {
+interface TaskOutput {
   output_id: string; task_id: string; attempt_id: string
   commit_oid: string; input_manifest_hash: string
 }
-export interface MemberContributions {
+interface MemberContributions {
   plan_id: string | null; member_id: string; candidate_id: string | null
   task_ids: string[]; outputs: TaskOutput[]; ready: boolean; owner_final_pending: boolean
 }
-export interface DeliveryGate {
+interface DeliveryGate {
   id: string | null; code: string; reason: string; member_id: string | null
   candidate_id: string | null; job_id: string | null; subject_key: string
 }
-export interface DeliveryTask {
+interface DeliveryTask {
   id: string; key: string; executor: 'owner' | 'child'; scope: string
   members: Array<{ member_id: string; requirements_revision_id: string }>
   dependencies: string[]; output: TaskOutput | null

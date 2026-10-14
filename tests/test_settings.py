@@ -190,12 +190,6 @@ class SettingsTests(unittest.TestCase):
         with patch('forge.settings.Settings', return_value=self.settings), redirect_stdout(io.StringIO()):
             self.assertEqual(main(['sync','--root',str(self.root)]),1)
 
-    def test_examples_validate_and_start_disabled(self):
-        example = Path(__file__).parents[1]/'examples/factory.json.example'
-        config = validate(json.loads(example.read_text()))
-        self.assertEqual(config['repositories'], [])
-        self.assertEqual(config['connections'], {})
-
     def test_deployment_profile_is_optional_and_shape_checked(self):
         profile = {'strategy': 'header', 'deploy': {'workflow': 'deploy.yaml', 'environment': 'production', 'trigger': 'push:main'},
                    'domain': 'academy.example.org', 'exposure': {'kind': 'header', 'path': None, 'field': None, 'header': 'X-Build-Commit'},
@@ -316,6 +310,38 @@ class AppClientTests(unittest.TestCase):
             client.jwt(self.connection)
         self.assertNotIn('/private',str(caught.exception)); self.assertNotIn('private detail',str(caught.exception))
         self.assertNotIn('GH_TOKEN',json.dumps(run.call_args.kwargs,default=str))
+
+
+class DiscussionModelTests(unittest.TestCase):
+    def test_discussion_model_defaults_to_the_provider_default(self):
+        from forge.factory.config import DEFAULT as RUNTIME, validate as runtime
+        self.assertIsNone(RUNTIME['discussion_model'])
+        self.assertIsNone(runtime({})['discussion_model'])
+
+    def test_discussion_model_maps_installed_providers_to_models(self):
+        from forge.factory.config import validate as runtime
+        self.assertEqual(runtime({'discussion_model': {'claude': 'claude-haiku-4-5'}})['discussion_model'],
+                         {'claude': 'claude-haiku-4-5'})
+        for bad in ('claude-haiku-4-5', {'nobody': 'fast'}, {'claude': ''}, {'claude': None},
+                    {'claude': 'two words'}, ['claude'], {'claude': 'x' * 200}):
+            with self.assertRaisesRegex(ValueError, 'discussion_model'):
+                runtime({'discussion_model': bad})
+
+
+class ReliabilityPolicyTests(unittest.TestCase):
+    def test_partial_override_preserves_other_bounds(self):
+        from forge.factory.config import DEFAULT as RUNTIME, validate as runtime
+        config = runtime({'reliability': {'stall_seconds': 600}})
+        self.assertEqual(config['reliability'], {**RUNTIME['reliability'], 'stall_seconds': 600})
+
+    def test_retry_policies_reject_unbounded_or_inconsistent_values(self):
+        from forge.factory.config import validate as runtime
+        for value in ({'claim_retest_seconds': []}, {'claim_retest_seconds': [300, 300]},
+                      {'claim_retest_seconds': [300, 30]}, {'claim_retest_seconds': [True]},
+                      {'effect_max_attempts': 0}, {'effect_uncertainty_seconds': 0},
+                      {'retry_seconds': 100, 'effect_retry_cap_seconds': 99}, {'unknown': 1}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                runtime({'reliability': value})
 
 
 if __name__ == '__main__': unittest.main()

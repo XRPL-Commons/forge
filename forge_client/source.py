@@ -12,12 +12,10 @@ REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 PACK_LIMIT = 32 * 1024 * 1024
 
 
-def export(revision, *, previous=None, replace_initial_source=False, run=run_bounded):
+def export(revision, *, previous=None, run=run_bounded):
     require(isinstance(revision, str) and re.fullmatch('[a-f0-9]{40}', revision), 'invalid_revision', 'Select a full Forge commit SHA.')
     require(previous is None or isinstance(previous, str) and re.fullmatch('[a-f0-9]{40}', previous),
             'invalid_revision', 'Use a full previous Forge commit SHA.')
-    require(type(replace_initial_source) is bool and (not replace_initial_source or previous is not None),
-            'invalid_source_replacement', 'Initial source replacement requires the exact installed revision.')
     executable = shutil.which('git')
     require(executable, 'git_missing', 'Install Git locally before setting up Forge.')
     try:
@@ -33,14 +31,14 @@ def export(revision, *, previous=None, replace_initial_source=False, run=run_bou
             run(git + ['fetch', '--quiet', *depth, 'origin', revision], timeout=180)
             head = run(git + ['rev-parse', 'FETCH_HEAD']).decode().strip()
             require(head == revision, 'source_changed', 'Fetched source differs from the requested commit.')
-            if previous is not None and not replace_initial_source:
+            if previous is not None:
                 try:
                     run(git + ['merge-base', '--is-ancestor', previous, revision])
                 except SetupError as error:
                     if error.code == 'github_request_failed':
-                        raise SetupError('source_not_forward', 'The installed revision is not a verified ancestor of this release. A never-started setup may use explicit --replace-initial-source; running factories require a forward release.') from None
+                        raise SetupError('source_not_forward', 'The installed revision is not a verified ancestor of this release. Running factories require a forward release.') from None
                     raise
-            scope = [revision] if replace_initial_source else ['--no-walk', revision] if previous is None else [revision, '^' + previous]
+            scope = ['--no-walk', revision] if previous is None else [revision, '^' + previous]
             objects = run(git + ['rev-list', '--objects', *scope])
             identifiers = [line.split(b' ', 1)[0] for line in objects.splitlines()]
             require(identifiers and all(re.fullmatch(b'[a-f0-9]{40}', item) for item in identifiers), 'invalid_source', 'Git returned an invalid source inventory.')

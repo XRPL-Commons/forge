@@ -11,7 +11,7 @@ from .github import GitHub
 
 def repository_commands():
     commands = {}
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'policy'):
         properties = {'repository': {'type': 'string', 'description': 'GitHub OWNER/REPO'},
                       'server': {'type': 'string', 'format': 'uri', 'description': 'Previously connected HTTPS origin'}}
         required = ['repository', 'server']
@@ -47,44 +47,18 @@ def repository_commands():
 
 
 def migration_commands():
-    result = {}
-    for action in ('plan', 'prepare', 'capture', 'resume', 'import', 'verify', 'activate', 'upgrade'):
-        remote = action in ('plan', 'prepare', 'capture', 'resume', 'activate', 'upgrade')
-        names = ('ssh', 'source', 'root') if remote else ('snapshot', 'destination')
-        properties = {name: {'type': 'string'} for name in names}
-        required = list(names)
-        if remote:
-            from .migration import SERVICE_USER_PATTERN
-            properties['service_user'] = {'type': 'string', 'pattern': '^'+SERVICE_USER_PATTERN+'$',
-                'description': 'Existing Unix account owning Forge; default is the SSH account'}
-        if action == 'capture':
-            properties.update(snapshot={'type': 'string'}, apply={'type': 'boolean', 'const': True})
-            required += ['snapshot', 'apply']
-        if action in ('prepare','activate'):
-            properties['apply'] = {'type':'boolean','const':True}
-            required.append('apply')
-        if action == 'activate':
-            properties['source_revision']={'type':'string','pattern':'^[0-9a-f]{40}$',
-                'description':'Required to upgrade a never-started legacy setup; pin the same release as this CLI. plan must report initial_setup=true.'}
-            properties['replace_initial_source']={'type':'boolean','const':True,
-                'description':'Explicitly replace divergent source only for a never-started setup (initial_setup=true), preserving settings and identity. Requires apply and source_revision; ordinary updates remain forward-only.'}
-        if action == 'upgrade':
-            properties.update(apply={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
-        if action == 'resume':
-            properties.update(accept_tool_update={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
-        if not remote:
-            properties['batch'] = {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'default': 100}
-        result[action] = {
-            'usage': 'forge migrate ' + action + ' --json',
-            'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties, 'required': required},
-            'maintenance': action in ('capture', 'resume', 'activate', 'upgrade'),
-            'installs_private_runtime': action == 'prepare',
-            'activation_supported': action in ('activate','resume'),
-            'initial_source_upgrade': action == 'activate',
-            'target': 'selected SSH host' if remote else 'private local staging',
-        }
-    result['activate']['input_schema']['dependentRequired']={'replace_initial_source':['source_revision']}
-    return result
+    from .migration import SERVICE_USER_PATTERN
+    properties = {name: {'type': 'string'} for name in ('ssh', 'source', 'root')}
+    properties['service_user'] = {'type': 'string', 'pattern': '^'+SERVICE_USER_PATTERN+'$',
+        'description': 'Existing Unix account owning Forge; default is the SSH account'}
+    properties.update(apply={'type':'boolean'},source_revision={'type':'string','pattern':'^[0-9a-f]{40}$'})
+    return {'upgrade': {
+        'usage': 'forge migrate upgrade --json',
+        'input_schema': {'type': 'object', 'additionalProperties': False, 'properties': properties,
+                         'required': ['ssh', 'source', 'root']},
+        'maintenance': True,
+        'target': 'selected SSH host',
+    }}
 
 
 def verb(commands, name, **options):
@@ -109,9 +83,8 @@ def parser():
     version = sub.add_parser('version', help='Show this client revision and compare an installed server')
     version.add_argument('--ssh', help='Saved SSH destination; read the actual installed server revision')
     version.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
-    update = sub.add_parser('self-update', help='Install a pinned client revision atomically')
+    update = sub.add_parser('self-update', help='Reinstall a pinned client revision using uv')
     update.add_argument('--revision', help='Full commit SHA; defaults to main resolved once')
-    update.add_argument('--adopt', action='store_true', help='Replace a foreign ~/.local/bin/forge after verifying the replacement; preserve a backup')
     update.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     account = sub.add_parser('account', help='Connect or renew a coding account, including on active factories').add_subparsers(dest='account_command', required=True)
     login = account.add_parser('login', help='Sign in to a provider on the selected server')
@@ -183,8 +156,8 @@ def parser():
     requirements = sub.add_parser('requirements', help='Show what a repository needs before Forge can work on it')
     requirements.add_argument('server'); requirements.add_argument('repository')
     repo = sub.add_parser('repo', help='Inspect, prepare and enable a repository').add_subparsers(dest='repo_command', required=True)
-    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'fix-rules', 'policy'):
-        command = verb(repo, action, help={'inspect':'Read repository readiness and effective policy', 'plan':'Preview repository preparation without writes', 'setup':'Prepare repository access and verify rules', 'verify':'Refresh access and verify effective branch protection', 'enable':'Enable automation after verification', 'disable':'Disable repository automation', 'activity':'Read repository activity', 'issues':'List repository issues', 'issue':'Read one issue', 'delivery':'Read issue delivery and task history', 'fix-rules':'Print narrow local branch-rule repair commands', 'policy':'Read or set the repository merge policy'}[action])
+    for action in ('inspect', 'plan', 'setup', 'verify', 'enable', 'disable', 'activity', 'issues', 'issue', 'delivery', 'policy'):
+        command = verb(repo, action, help={'inspect':'Read repository readiness and effective policy', 'plan':'Preview repository preparation without writes', 'setup':'Prepare repository access and verify rules', 'verify':'Refresh access and verify effective branch protection', 'enable':'Enable automation after verification', 'disable':'Disable repository automation', 'activity':'Read repository activity', 'issues':'List repository issues', 'issue':'Read one issue', 'delivery':'Read issue delivery and task history', 'policy':'Read or set the repository merge policy'}[action])
         command.add_argument('repository', help='GitHub OWNER/REPO')
         command.add_argument('--server', required=True, help='Previously connected HTTPS Forge origin')
         command.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
@@ -228,16 +201,13 @@ def parser():
     mode.add_argument('--apply', action='store_true', help='Configure the selected host')
     mode.add_argument('--resume', action='store_true', help='Finish an interrupted setup without another secret')
     setup.add_argument('--secret-stdin', action='store_true', help='Read the identity-app secret from stdin; never a command argument')
-    migration = sub.add_parser('migrate', help='Plan, verify and activate SQLite with a resumable one-way migration')
-    migration.add_argument('migration_command', choices=('plan','prepare','capture','resume','import','verify','activate','upgrade'))
-    for name in ('ssh','source','root','snapshot','destination'):
+    migration = sub.add_parser('migrate', help='Apply a schema upgrade to an installation that already uses SQLite')
+    migration.add_argument('migration_command', choices=('upgrade',))
+    for name in ('ssh','source','root'):
         migration.add_argument('--'+name)
-    migration.add_argument('--apply', action='store_true', help='Authorize runtime preparation, capture, or one-way SQLite activation')
-    migration.add_argument('--accept-tool-update', action='store_true', help='resume: authorize a pinned source-only repair and reimport the same frozen snapshot before selection')
+    migration.add_argument('--apply', action='store_true', help='Authorize the maintenance window and schema upgrade')
     migration.add_argument('--service-user', help='Run remote maintenance as this existing Unix service account; default is the SSH account')
-    migration.add_argument('--source-revision', help='Full commit SHA for an upgrade, initial-setup activation source bridge, or explicitly authorized resume repair')
-    migration.add_argument('--replace-initial-source', action='store_true', help='activate --apply --source-revision: explicitly replace divergent source of a never-started setup, preserving settings and identity')
-    migration.add_argument('--batch', type=int, default=100)
+    migration.add_argument('--source-revision', help='Full commit SHA of the release to upgrade to')
     migration.add_argument('--json', action='store_true', default=argparse.SUPPRESS)
     sub.add_parser('commands', help='List every command as JSON for agents')
     sub.add_parser('skill', help='Print the bundled Forge repository agent skill')
@@ -253,7 +223,7 @@ def execute(args):
         return report(args.ssh)
     if args.command == 'self-update':
         from .version import update
-        return update(revision=args.revision, adopt=args.adopt)
+        return update(revision=args.revision)
     if args.command == 'account':
         from .factory_setup import execute as account_login
         args.setup_command = 'account'
@@ -294,10 +264,10 @@ def execute(args):
         return setup(args)
     if args.command == 'commands':
         from .delivery import commands as delivery_commands
-        from .planning import commands as planning_commands
+        from forge.planning_contract import commands as planning_commands
         from .install import schemas
         from .installation import schemas as installation_schemas
-        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate plan', 'migrate prepare', 'migrate capture', 'migrate resume', 'migrate import', 'migrate verify', 'migrate activate --apply', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
+        return {'commands': ['install', 'install --preflight', 'install --apply', 'install --resume', 'install --status', 'version', 'self-update', 'account login', 'setup qualify-boundary', 'setup new', 'setup plan', 'setup apply', 'setup status', 'setup resume', 'setup host-key', 'setup network', 'setup identity', 'setup sign-in', 'setup continue', 'setup inspect', 'setup apps', 'setup account', 'setup repository', 'setup check', 'setup start', 'setup pilot', 'connect', 'connect --resume', 'migrate upgrade', 'auth status', 'disconnect', 'requirements', 'repo', 'triage', 'planning', 'delivery', 'skill', 'server setup', 'server setup --apply', 'server setup --resume'],
                 'installation_commands': installation_schemas(),
                 'schema_version': 1, 'repository_commands': repository_commands(), 'factory_setup_commands': schemas(), 'delivery_commands':delivery_commands(),
                 'planning_commands': planning_commands(),
@@ -356,9 +326,6 @@ def execute(args):
             if args.repo_command == 'policy':
                 from .merge_policy import execute as merge_policy
                 return merge_policy(client,target,args.mode,revision=args.revision,request_id=args.request_id)
-            if args.repo_command == 'fix-rules':
-                from .rule_fixes import fixes
-                return fixes(client.read(target, 'repository'))
             if args.repo_command == 'delivery':
                 return client.read(target, 'delivery', args.number, after=args.after, task_after=args.task_after)
             if args.repo_command in ('inspect', 'activity', 'issues', 'issue'):
@@ -380,14 +347,6 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         result = execute(args)
-        if args.command == 'repo' and args.repo_command == 'fix-rules' and not args.json:
-            print(result['instruction'])
-            for fix in result['fixes']:
-                print('\n' + fix['title'])
-                print(fix['command'] or '\n'.join(str(i + 1) + '. ' + step for i, step in enumerate(fix['steps'])))
-            if not result['fixes']:
-                print('No failing review rules in the latest Forge observation.')
-            return 0
         if args.command == 'install' and not args.json and result.get('status') == 'preflight':
             for row in result['items']:
                 print(row['status'].replace('_', ' ').ljust(23) + row['id'] + ': ' + row['detail'])

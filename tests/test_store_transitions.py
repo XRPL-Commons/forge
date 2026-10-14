@@ -143,7 +143,8 @@ class StoreTransitionTests(unittest.TestCase):
 
     def plan_independent_members(self, count):
         self.delivery = Delivery(self.store, clock=lambda: 100.0)
-        self.delivery_queries = DeliveryQueries(self.store)
+        from tests.test_delivery_execution import ManifestQueries
+        self.delivery_queries = ManifestQueries(self.store)
         admissions = [self.admission] + [self.admit(number) for number in range(2, count + 1)]
         pins = [dict(issue_id=f'issue-{number}', issue_version=1, requirements_revision_id=admitted['revision_id'],
                      unit_id=f'unit-{number}', unit_version=1, member_id=admitted['member_id'])

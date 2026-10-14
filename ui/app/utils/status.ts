@@ -13,10 +13,10 @@ import type { OnboardingView } from './onboarding'
 // `SettingsView` types) that another page will import in full; statusRows()
 // only ever reads `roles[*].status`, so it declares its own minimal local
 // shape rather than claim those names for itself.
-export interface RoleAccessSummary { status: 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions' | string }
+interface RoleAccessSummary { status: 'ok' | 'unknown' | 'not_configured' | 'stale' | 'missing_permissions' | string }
 export interface SettingsSummary { roles?: Record<string, RoleAccessSummary> }
 
-export interface StatusSources {
+interface StatusSources {
   factory: FactoryView | null
   settings: SettingsSummary | null
   onboarding: OnboardingView | null
@@ -118,7 +118,7 @@ export function statusRows(sources: StatusSources, now: number): StatusRow[] {
 // One sentence for the whole page. Healthy rows say the same thing five
 // times, so the page leads with this and folds the rows away unless one
 // needs the operator.
-export interface StatusSummary { tone: 'ok' | 'warn' | 'muted'; headline: string; attention: StatusRow[] }
+interface StatusSummary { tone: 'ok' | 'warn' | 'muted'; headline: string; attention: StatusRow[] }
 
 export function statusSummary(rows: StatusRow[]): StatusSummary {
   const attention = rows.filter(row => row.tone === 'warn')

@@ -18,7 +18,6 @@ from forge.repository_setup import RepositorySetup, observation_key
 from forge.repository_environments import RepositoryEnvironments
 from forge.factory.config import load, save, validate
 from forge.store.configuration import Configuration
-from forge.store.supporting_queries import SupportingQueries
 
 
 class RuntimeFixture(unittest.TestCase):
@@ -197,50 +196,6 @@ class DeploymentAuxiliaryTests(unittest.TestCase):
         with self.assertRaises(TransitionError):
             with self.database.write() as db:
                 save_in(db, 'deployment', '7', {**job, 'capture': {'logs': 'replaced'}}, self.now)
-
-
-class NotificationTests(RuntimeFixture):
-    def test_lost_delivery_response_retains_uncertain_attempt_and_retries_same_event(self):
-        from forge.notifications import enqueue, drain
-        path = self.root / 'state/notifications'
-        identifier = enqueue(path, 'Merge completed', now=self.now, event_key='merge:receipt')
-        with self.assertRaises(KeyboardInterrupt):
-            drain(path, Mock(side_effect=KeyboardInterrupt), now=self.now)
-        with self.database.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM notification_deliveries WHERE status='uncertain'").fetchone()[0], 1)
-        sender = Mock(return_value='accepted_by_relay')
-        drain(path, sender, now=self.now+1)
-        self.assertEqual({call.args[1]['id'] for call in sender.call_args_list}, {identifier})
-        self.assertEqual(sender.call_count, 3)
-        with self.database.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM notification_deliveries WHERE status='uncertain'").fetchone()[0], 1)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM notification_outbox WHERE status='delivered'").fetchone()[0], 3)
-
-    def test_retry_restart_and_reenqueue_preserve_successful_channel_receipts(self):
-        from forge.notifications import enqueue, drain
-        path = self.root / 'state/notifications'
-        identifier = enqueue(path, 'First message', now=self.now, event_key='unit:merged')
-        calls = []
-        def sender(channel, event):
-            with self.database.write() as db:
-                db.execute("INSERT OR REPLACE INTO store_metadata VALUES('notification-network','outside-transaction')")
-            calls.append((channel, event['id']))
-            return 'failed' if channel == 'ntfy' else 'accepted_by_relay'
-        self.assertEqual(drain(path, sender, now=self.now), 1)
-        self.assertEqual(enqueue(path, 'Replacement must not overwrite', now=self.now+1, event_key='unit:merged'), identifier)
-        event = SupportingQueries(self.database).notification(identifier)
-        self.assertEqual(event['message'], 'First message')
-        self.assertEqual(event['channels']['ntfy']['status'], 'retry')
-        self.assertEqual(drain(path, sender, now=self.now+29), 0)
-        sent = Mock(return_value='accepted_by_relay')
-        self.assertEqual(drain(path, sent, now=self.now+30), 1)
-        self.assertEqual(sent.call_count, 1)
-        self.assertEqual(sent.call_args.args[0], 'ntfy')
-        self.assertEqual(drain(path, sent, now=self.now+100), 0)
-        with self.database.read_snapshot() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM notification_outbox').fetchone()[0], 3)
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM notification_deliveries').fetchone()[0], 4)
-        self.assertFalse((path / 'outbox').exists())
 
 
 class InventoryRuntimeTests(RuntimeFixture):

@@ -1,11 +1,11 @@
-"""Revision reporting and atomic managed-client updates."""
+"""Revision reporting and pinned uv-managed client updates."""
 import importlib.metadata
 import json
 from pathlib import Path
 import re
 import sys
-import tempfile
-import urllib.request
+import shutil
+import os
 
 from .contracts import require
 from .github import run_bounded
@@ -60,20 +60,22 @@ def main(payload):
                        if client and server and client != server else None}
 
 
-def update(*, revision=None, adopt=False):
+def update(*, revision=None):
     from .install import revision as resolve_revision
+    uv = shutil.which('uv')
+    require(uv is not None, 'uv_required', 'Install uv, then rerun forge self-update.')
     commit = resolve_revision(revision)
-    url = 'https://raw.githubusercontent.com/XRPL-Commons/forge/' + commit + '/install-cli.sh'
-    with urllib.request.urlopen(url, timeout=30) as response:
-        require(response.geturl() == url, 'installer_source_changed', 'The pinned installer source redirected.')
-        data = response.read(262145)
-    require(0 < len(data) <= 262144 and data.startswith(b'#!/bin/sh\n'), 'invalid_installer')
-    with tempfile.TemporaryDirectory(prefix='forge-client-update-') as directory:
-        path = Path(directory) / 'install-cli.sh'
-        path.write_bytes(data)
-        args = ['sh', str(path), '--revision', commit]
-        if adopt:
-            args.append('--adopt')
-        run_bounded(args, environ={key: value for key, value in __import__('os').environ.items()
-                                  if key not in ('GH_TOKEN', 'GITHUB_TOKEN')}, timeout=900)
-    return {'status': 'updated', 'revision': commit, 'command': str(Path.home() / '.local/bin/forge')}
+    environment = {key: value for key, value in os.environ.items() if key not in ('GH_TOKEN', 'GITHUB_TOKEN')}
+    directory = run_bounded([uv, 'tool', 'dir', '--bin'], environ=environment).decode().strip()
+    require(bool(directory) and Path(directory).is_absolute(), 'invalid_uv_directory')
+    run_bounded([uv, 'tool', 'install', '--reinstall',
+                 'git+https://github.com/XRPL-Commons/forge.git@' + commit],
+                environ=environment, timeout=900)
+    command = str(Path(directory) / 'forge')
+    observed = json.loads(run_bounded([command, '--json', 'version'], environ=environment))
+    require(isinstance(observed, dict) and observed.get('client_revision') == commit,
+            'client_update_unverified', 'The installed CLI revision did not match; inspect the uv installation.')
+    surface = json.loads(run_bounded([command, '--json', 'commands'], environ=environment))
+    require(isinstance(surface, dict) and 'setup new' in surface.get('commands', []),
+            'client_update_unverified', 'The installed CLI command surface did not pass its check.')
+    return {'status': 'updated', 'revision': commit, 'command': command}

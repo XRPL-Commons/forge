@@ -32,7 +32,7 @@ export function nearBottom(box: { scrollTop: number; clientHeight: number; scrol
 }
 
 // The server's discussion status, as the chat shows it.
-export type ReplyState = 'idle' | 'replying' | 'stopping' | 'stopped' | 'failed'
+type ReplyState = 'idle' | 'replying' | 'stopping' | 'stopped' | 'failed'
 export function replyState(status: string | null | undefined): ReplyState {
   switch (status) {
     case 'queued':
@@ -67,12 +67,12 @@ export function unansweredQuestion(messages: readonly { role: ChatRole; text: st
 // --- Presence: someone available joins, works, answers or leaves -----------
 
 export type ChatRole = 'user' | 'assistant' | 'system'
-export interface AgentInfo { provider: string | null; model?: string | null; name?: string; label?: string }
-export interface ActivityLine { at: number; text: string }
+interface AgentInfo { provider: string | null; model?: string | null; name?: string; label?: string }
+interface ActivityLine { at: number; text: string }
 export interface Link { to: string; label: string }
-export type PresencePhase = 'finding' | 'joined' | 'answered' | 'left' | 'idle'
-export type LeftReason = 'timeout' | 'restart' | 'cancelled' | 'error' | 'auth' | 'quota'
-export type AnswerMode = 'evidence' | 'code'
+type PresencePhase = 'finding' | 'joined' | 'answered' | 'left' | 'idle'
+type LeftReason = 'timeout' | 'restart' | 'cancelled' | 'error' | 'auth' | 'quota'
+type AnswerMode = 'evidence' | 'code'
 export interface Presence {
   phase: PresencePhase
   // finding
@@ -92,7 +92,7 @@ export interface Presence {
   text?: string
   at?: number
 }
-export interface ProposalActionState {
+interface ProposalActionState {
   request_id: string | null
   status: 'preparing' | 'pending' | 'applied' | 'rejected'
   message: string | null
@@ -221,7 +221,7 @@ export function threadEntries(messages: readonly ThreadMessage[], pending: boole
 
 // Only canonical action outcomes establish a close or reopen. A receipt links
 // a request; it does not prove GitHub applied it.
-export type ProposalState = 'none' | 'offer' | 'submitted' | 'pending' | 'applied' | 'closed' | 'failed' | 'undo_pending' | 'undo_failed' | 'reopened'
+type ProposalState = 'none' | 'offer' | 'submitted' | 'pending' | 'applied' | 'closed' | 'failed' | 'undo_pending' | 'undo_failed' | 'reopened'
 type ProposalMessage = Pick<ThreadMessage, 'requested' | 'receipt' | 'undone' | 'action_state'> & { proposal?: { action: string } | null }
 export function proposalState(message: ProposalMessage): ProposalState {
   if (!message.proposal) return 'none'

@@ -117,8 +117,8 @@ npm run test:e2e
 ### Running inside the runner image
 
 ```bash
-cd ~/forger-remote/ui && npm run build
-docker run --rm --network none --security-opt seccomp=unconfined --tmpfs /private/tmp -v ~/forger-remote:/src:ro -w /src/ui \
+cd /path/to/forge/ui && npm run build
+docker run --rm --network none --security-opt seccomp=unconfined --tmpfs /private/tmp -v /path/to/forge:/src:ro -w /src/ui \
   -e HOME=/tmp -e FORGE_BROWSER_PATH=/usr/bin/chromium -e FORGE_PLAYWRIGHT_MODULE=/usr/local/lib/node_modules/playwright-core \
   forge-runner:local node tests/e2e/run.mjs
 ```
@@ -176,8 +176,7 @@ Path segments after `/api/` join with `-`: `/api/factory/output` →
 appends `.<param>`: `/api/issues?issue=` → `issues.issue.json`,
 `/api/repositories?repo_id=` → `repositories.repo_id.json`. A POST body
 override appends `.post`: `/api/runtime` → `runtime.post.json`,
-`/api/repositories/enable` → `repositories-enable.post.json`. See
-`tests/e2e/fixtures/README.md` for what each fixture/scenario covers.
+`/api/repositories/enable` → `repositories-enable.post.json`.
 
 ## Runtime config
 

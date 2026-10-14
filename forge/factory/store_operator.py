@@ -22,6 +22,25 @@ from .store_views import action_revision, available_actions
 
 DELIVERY_ACTIONS = {'drop','dissolve','close_member','resume_delivery'}
 ACTIONS = DELIVERY_ACTIONS | {'queue','backlog','pause','resume','retry','recheck','start_anyway','environment','close','assign_reviewer'}
+# Decisions the operator UI applies at once and answers with the refreshed issue.
+IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_anyway'}
+LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
+
+
+def reviewer_logins(reason):
+    """The decision for assign_reviewer is the chosen logins, nothing else."""
+    logins = []
+    for value in re.split(r'[\s,;]+', (reason or '').strip()):
+        name = value.lstrip('@')
+        if not name:
+            continue
+        if not LOGIN.fullmatch(name):
+            raise ValueError('Choose GitHub logins for the reviewers.')
+        if name.lower() not in [l.lower() for l in logins]:
+            logins.append(name)
+    if not 1 <= len(logins) <= 10:
+        raise ValueError('Choose between one and ten reviewers.')
+    return logins
 
 
 def labels(issue):
@@ -191,7 +210,6 @@ class OperatorActions(Lifecycle):
                 payload['environment']=environment
             reviewers=[]
             if action=='assign_reviewer':
-                from .issue_actions import reviewer_logins
                 reviewers=reviewer_logins(reason)
                 if not 1<=len(reviewers)<=10 or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})',v) for v in reviewers):
                     raise ValueError('Choose one to ten GitHub reviewer logins')

@@ -4,11 +4,18 @@ from pathlib import Path
 import re
 import time
 
-from ...state import _atomic_json as atomic_json
 from ..db import Store, _private
+from ..files import atomic_json
 from .. import upgrade as schema
-from .snapshot import MigrationError, operation_lock, read_regular
-from .cutover import package_version
+from .snapshot import MigrationError, digest, operation_lock, read_regular
+from .source import source_files
+
+
+def package_version(source):
+    """Digest of the installation-owned files a release ships under forge/."""
+    directory = Path(source) / 'forge'
+    paths = source_files(directory)
+    return '1:' + digest(b''.join(path.relative_to(directory).as_posix().encode() + read_regular(path) for path in paths))
 
 
 class Upgrade:

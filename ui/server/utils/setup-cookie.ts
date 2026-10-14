@@ -5,7 +5,7 @@ import type { H3Event } from 'h3'
 // /reset and /settings/harnesses and reads it back on POST /api/onboarding
 // {action:'github'} and on the GitHub callback. Nitro serves those pages, so
 // Nitro has to mint the cookie; the proxy forwards it upstream unchanged.
-export const SETUP_COOKIE = 'forge_setup'
+const SETUP_COOKIE = 'forge_setup'
 // Python accepts an existing value matching this, else mints a new one.
 // base64url of 32 bytes is exactly 43 characters, inside the range.
 const VALID = /^[A-Za-z0-9_-]{32,128}$/

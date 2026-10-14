@@ -15,14 +15,13 @@ from .github import run_bounded
 from .workflow import Journal
 from .ssh_host import discover, environment, pinned_options
 from .source import export as export_source
-from .metrics import client_installation
 
 SOURCE = '/home/forge/forge'
 ROOT = '/home/forge/.local/share/forge'
 REPOSITORY = 'https://github.com/XRPL-Commons/forge.git'
 STEPS = ['packages', 'account', 'source', 'isolation', 'host']
 ERRORS = {
-    'server_maintenance_required': 'The installed server predates this setup command. Inspect maintenance before continuing setup.',
+    'server_maintenance_required': 'The installed server predates this setup command. Update it on the host with bin/forge update, then continue setup.',
     'factory_setup_failed': 'Factory setup could not complete. Inspect setup status and the server checks before resuming.',
     'storage_required': 'Initialize the selected SQLite runtime before continuing setup.',
     'setup_changed': 'Setup identity or configuration changed. Inspect it before continuing.',
@@ -171,9 +170,6 @@ class InstallerHost:
             code = result.get('error')
             code = code if isinstance(code, str) and code in ERRORS else 'host_command_failed'
             reason = ERRORS[code]
-            if code == 'server_maintenance_required':
-                reason += ' Run: ' + shlex.join(['forge', 'migrate', 'plan', '--ssh', self.ssh,
-                    '--service-user', 'forge', '--source', SOURCE, '--root', ROOT, '--json'])
             raise SetupError(code, reason)
         return result
 
@@ -229,8 +225,7 @@ class Installation:
                         'invalid_host_key', 'Use a verified ED25519 SHA256 fingerprint.')
                 state = {'version': 1, 'ssh': self.ssh, 'started_at': self.clock(), 'host_key': fingerprint,
                          'intent': {'id': uuid.uuid4().hex, 'name': name, 'revision': revision(commit)},
-                         'milestones': {}, 'last_status': None,
-                         'cli_installation': client_installation(self.journal.root)}
+                         'milestones': {}, 'last_status': None}
                 if previous:
                     # Refuse to detach the current local run from an existing host.
                     # A new run is allowed only after read-only confirmation that

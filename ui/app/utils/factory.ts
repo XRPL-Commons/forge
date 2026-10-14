@@ -54,7 +54,7 @@ export function jobIncludesIssue(job: JobView, issueKey: string): boolean {
   return job.members ? job.members.some(member => member.issue_key === issueKey) : job.issue_key === issueKey
 }
 
-export interface LedgerEvent { kind: string; provider?: string; model?: string | null; [key: string]: unknown }
+interface LedgerEvent { kind: string; provider?: string; model?: string | null; [key: string]: unknown }
 
 export interface LedgerIssueView extends OperatorStatusSource {
   key: string; repo_id: number; repo: string; number: number; title: string
@@ -90,11 +90,11 @@ export interface LedgerIssueView extends OperatorStatusSource {
   completed_at?: number | null
 }
 
-export interface ObservationError { attempt?: string; issue?: string; phase: string; reason: string }
-export interface OperatorStatus { title: string; detail: string; action_url: string | null; action_label: string | null; empty?: true }
-export interface OperatorRequest { id: string; action: string; target: string; reason: string; status: 'pending' | 'applied' | 'rejected'; error?: string }
+interface ObservationError { attempt?: string; issue?: string; phase: string; reason: string }
+interface OperatorStatus { title: string; detail: string; action_url: string | null; action_label: string | null; empty?: true }
+interface OperatorRequest { id: string; action: string; target: string; reason: string; status: 'pending' | 'applied' | 'rejected'; error?: string }
 
-export interface FactorySummary {
+interface FactorySummary {
   completed_count: number; runner_count: number; runners_running: boolean
   workers: Pick<JobView, 'id' | 'slot' | 'role' | 'phase' | 'cleanup' | 'fenced' | 'outcome' | 'observed_at' | 'observed_status' | 'last_observed'>[]
   merged_day: number; merged_week: number; merged_total: number
@@ -198,12 +198,12 @@ export function isRunning(view: FactoryView | null | undefined, job: FactorySumm
 
 // Waiting for another issue is not queued work: no worker can take it until
 // the dependency closes, so it is never counted or shown as waiting for one.
-export function waitingOnDependencies(issue: LedgerIssueView | null | undefined): boolean {
+function waitingOnDependencies(issue: LedgerIssueView | null | undefined): boolean {
   return !!issue?.blocked_dependencies?.length
 }
 
 // The bay an issue stays in while its stage settles a finished job (#241).
-export function settlingRole(issue: Pick<LedgerIssueView, 'transition'> | null | undefined): ColumnRole | null {
+function settlingRole(issue: Pick<LedgerIssueView, 'transition'> | null | undefined): ColumnRole | null {
   const role = issue?.transition?.role
   return role && (COLUMN_ROLES as string[]).includes(role) ? role as ColumnRole : null
 }
@@ -311,14 +311,14 @@ function stoppable(job: JobView | null): boolean {
 // production mean anything, so an untracked repository says nothing at all.
 // ---------------------------------------------------------------------------
 
-export function trackedRepositories(view: Pick<FactoryView, 'repositories'> | null | undefined): Set<number> {
+function trackedRepositories(view: Pick<FactoryView, 'repositories'> | null | undefined): Set<number> {
   const tracked = new Set<number>()
   for (const repository of view?.repositories ?? []) if (repository.deployment?.profile) tracked.add(repository.id)
   return tracked
 }
 
 // The word a completed card carries in its footer.
-export function deploymentNote(issue: LedgerIssueView, tracked: Set<number>): string {
+function deploymentNote(issue: LedgerIssueView, tracked: Set<number>): string {
   if (issue.deployed) return 'deployed'
   if (issue.deploy_failed) return 'deploy failed'
   return issue.state === 'merged' && tracked.has(issue.repo_id) ? 'waiting for deploy' : ''
@@ -525,7 +525,7 @@ export function mergedToday(view: FactoryView | null | undefined, now: number): 
 // of the slots there are, what is queued, what waits to merge and what merged
 // today. "Needs you" is not counted here: it is the strip's crate, so the two
 // always agree (factoryLine.ts lineAnalyse().attention).
-export interface Readout { occupied: number; working: number; slots: number; queued: number; merging: number; merged: number }
+interface Readout { occupied: number; working: number; slots: number; queued: number; merging: number; merged: number }
 
 export function readout(view: FactoryView | null | undefined, now: number): Readout | null {
   if (!view) return null
@@ -542,7 +542,7 @@ export function readout(view: FactoryView | null | undefined, now: number): Read
   }
 }
 
-export type WarningKind = 'github' | 'capacity' | 'runner' | 'reconciliation' | 'other'
+type WarningKind = 'github' | 'capacity' | 'runner' | 'reconciliation' | 'other'
 export interface Warning { kind: WarningKind; text: string; to: string; label: string }
 
 const PLANNING_WARNING_TEXT = new Map([

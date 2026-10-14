@@ -7,35 +7,21 @@ verified merge. Each stage also has a noninteractive command.
 
 `installed` means the host passed qualification. `factory_active` means you
 explicitly started processing. Only `first_merge_complete` confirms the final
-milestone. See the [acceptance specification](superpowers/specs/2026-10-02-fresh-factory-cli.md).
+milestone.
 
 ## Install the client
 
 The client needs Python 3.10+, Git, OpenSSH and authenticated GitHub CLI (`gh`)
 on macOS or Linux. GitHub administration uses that local account. Python must
-include `venv` support. From a clean clone of this version:
+include `venv` support. Install the client with [uv](https://docs.astral.sh/uv/):
 
 ```sh
-git clone https://github.com/XRPL-Commons/forge.git
-cd forge
-sh install-cli.sh --local
+uv tool install 'git+https://github.com/XRPL-Commons/forge.git'
 forge setup new
 ```
 
-The repository is currently private, so cloning requires your local GitHub
-access. An anonymous curl installer requires a separately published installer
-and client distribution; changing the server repository's visibility is not
-part of setup. Do not put a GitHub token into a curl command or shell history.
-
-The script installs only the local client into an isolated Python environment
-under `~/.local/share/forge-cli`. It links `~/.local/bin/forge`, reports how to use
-it if that directory is absent from PATH, and records installation timing in
-private local state. It does not change your shell profile or use sudo. An
-existing command managed by another installer is preserved. Installation uses
-a resolved source commit and checks the new executable before switching the link.
-
-The existing `uv tool install .` method also works from a clone. Its installation
-time is not automatically recorded by Forge's installer.
+The repository is currently private, so installing from it requires your local
+GitHub access. Do not put a GitHub token into a curl command or shell history.
 
 ## Guided installation
 
@@ -67,8 +53,7 @@ The plan shows the host, source commit, and effects:
   GitHub administrator token to obtain the private source.
 - Install the matching runner AppArmor policy.
 - Qualify the private SQLite runtime and initialize a selected empty store before
-  starting services. Existing legacy data requires the separate
-  [migration workflow](store-migration.md).
+  starting services.
 - Invoke `bin/forge setup install`, which builds the UI and worker
   image, runs runner qualification, and starts loopback services.
 
@@ -261,10 +246,8 @@ a confirmed normal merge effect, and an independent local GitHub read matching
 the exact candidate head and merge commit. An issue closed elsewhere or an
 adopted existing pull request does not satisfy this milestone.
 
-The receipt includes `time_to_first_merge_seconds`, measured from the local CLI
-installer's recorded start to GitHub's merge timestamp. If the client was
-installed by another method, that field is `null` and `timing_source` explains why;
-`setup_to_first_merge_seconds` remains available. No remote telemetry is sent.
+The receipt includes `setup_to_first_merge_seconds`, measured from the recorded
+setup start to GitHub's merge timestamp. No remote telemetry is sent.
 
 ## Noninteractive operations
 

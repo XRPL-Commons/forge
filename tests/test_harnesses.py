@@ -19,7 +19,7 @@ from forge.host_setup import login, pending_login, main as setup_main
 from forge.factory.control import controller_lock, ControllerBusy
 from forge.onboarding import Onboarding
 from forge.settings import write_json
-from forge.state import StateError
+from forge.store.files import StateError
 from tests.test_factory_cycle import CycleTest
 from tests.test_onboarding import SetupTests
 

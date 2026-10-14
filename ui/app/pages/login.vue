@@ -13,7 +13,6 @@ async function retry() {
   try { await refresh(); unavailable.value = false } catch { unavailable.value = true } finally { retrying.value = false }
 }
 const notice = computed(() => signInNotice({ error: route.query.error, returnTo: route.query.return_to, unavailable: unavailable.value }))
-const mood = computed(() => notice.value?.mood ?? 'waving')
 const TONE = {
   coral: 'border-coral/45 bg-coral/10 [&_strong]:text-coral',
   amber: 'border-amber-200/45 bg-amber-200/10 [&_strong]:text-amber-200',
@@ -31,10 +30,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow))
 <template>
   <main class="sign-in flex min-h-screen flex-col items-center justify-center overflow-x-hidden bg-bg px-4 py-8 text-white sm:px-6">
     <div class="w-full max-w-[620px]">
-      <div class="overflow-hidden rounded-2xl border border-line bg-[#16191f]">
-        <SignInScene :mood="mood" />
-      </div>
-      <section aria-labelledby="sign-in-title" class="relative mx-auto -mt-2.5 w-full max-w-md space-y-5 rounded-xl border border-line bg-panel p-6 shadow-[0_18px_40px_-20px_rgba(0,0,0,.8)] sm:-mt-3 sm:p-8">
+      <section aria-labelledby="sign-in-title" class="relative mx-auto w-full max-w-md space-y-5 rounded-xl border border-line bg-panel p-6 shadow-[0_18px_40px_-20px_rgba(0,0,0,.8)] sm:p-8">
         <div class="flex items-center gap-2.5 text-lg font-bold tracking-tight text-white">
           <span aria-hidden="true" class="grid size-7 -rotate-6 place-items-center rounded-md border border-mint-200 text-mint-200">F</span>
           Forge

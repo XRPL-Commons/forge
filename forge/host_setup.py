@@ -22,7 +22,7 @@ from .setup_service import Service
 from .factory.control import controller_lock, ControllerBusy
 from .harnesses.registry import manifests, manifest
 from .harnesses.accounts import owner as login_owner
-from .state import StateError
+from .store.files import StateError
 
 SOURCE = Path(__file__).resolve().parent.parent
 
@@ -97,8 +97,6 @@ def install(root, bind=None, assume_yes=False):
 
 
 def update(root, bind=None, assume_yes=False):
-    from .store.migration.cutover import maintenance_writable
-    maintenance_writable(root)
     from .configuration_authority import ConfigurationAuthority
     installed = ConfigurationAuthority(root).snapshot('host-runtime.json') is not None
     if not installed:
@@ -396,8 +394,6 @@ def main():
         if args.action == 'initialize':
             initialize(root)
         if args.action == 'update':
-            from .store.migration.cutover import maintenance_writable
-            maintenance_writable(root)
             if not args.no_pull and host_update.pull():
                 # Run the reconciliation that shipped with the new source, not this one.
                 argv = [sys.executable, '-m', 'forge.launch', 'forge.host_setup', 'update', '--no-pull', '--root', str(root)]

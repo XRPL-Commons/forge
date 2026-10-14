@@ -72,3 +72,12 @@ may promote another App's draft. Unsupported Git tree modes under a GraphQL
 strategy remain explicit claims. The new steward, one-App identity migration,
 provider credential isolation and final fresh-install smoke merge belong to
 later runs in [the implementation plan](run-plan.md).
+
+## Concurrent main changes
+
+Cleanup PRs #274, #276 and #277 merged while this branch was being validated.
+Their changes are retained: removed legacy import tooling stays removed, `uv`
+installs the CLI, and API mutations require a signed-in operator. The supported
+`forge migrate upgrade` path remains. Run 2's mirror service, narrow rule repair
+and qualification commands are integrated with that updated base. CI must pass
+on this combined revision before Anvil is changed.

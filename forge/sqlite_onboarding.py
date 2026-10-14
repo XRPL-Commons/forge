@@ -7,7 +7,7 @@ import uuid
 
 from .onboarding import Onboarding
 from .credentials import Credentials
-from .state import StateError
+from .store.files import StateError
 from .sqlite_identity import identity_effect_lock, audit_in
 from .store.runtime import selected, writable
 from .store.auxiliary import save_in, job_in

@@ -8,9 +8,9 @@ import type { IssueReview, IssueRow } from './issues'
 export type StageId = 'queued' | 'build' | 'review' | 'audit' | 'approval' | 'merged'
 // done: passed; active: a worker is on it; waiting: Forge will carry on by
 // itself; failed / blocked: it stopped here and needs the operator.
-export type StepState = 'done' | 'active' | 'waiting' | 'failed' | 'blocked' | 'upcoming'
+type StepState = 'done' | 'active' | 'waiting' | 'failed' | 'blocked' | 'upcoming'
 
-export interface PipelineStep { id: StageId; label: string; short: string; state: StepState }
+interface PipelineStep { id: StageId; label: string; short: string; state: StepState }
 export interface PipelineView {
   steps: PipelineStep[]
   // null when the issue left the pipeline without merging (closed on GitHub).

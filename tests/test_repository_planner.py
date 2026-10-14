@@ -8,7 +8,7 @@ from forge.store.repository_planning import RepositoryPlanning
 from forge.store.transitions import Lifecycle, manifest_hash
 from forge.factory.repository_planner import RepositoryPlanner
 from forge.factory.harness import schema, PreparationError
-from forge_client.planning import provider_triage_rows
+from forge.planning_contract import provider_triage_rows
 from forge.factory.contracts import triage_note
 
 

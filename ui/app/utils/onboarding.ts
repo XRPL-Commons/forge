@@ -9,16 +9,16 @@
 // utils/repositories.ts exports this same union as `AppRole`, and two
 // exports of one name shadow each other in Nuxt's auto-import registry.
 type AppRole = 'build' | 'review' | 'audit' | 'controller'
-export type SetupPhase = 'setup' | 'active' | 'resetting'
-export type CheckStatus = 'checking' | 'passed' | 'failed'
-export type CheckKey = 'github' | 'provider' | 'runner'
+type SetupPhase = 'setup' | 'active' | 'resetting'
+type CheckStatus = 'checking' | 'passed' | 'failed'
+type CheckKey = 'github' | 'provider' | 'runner'
 
-export type HarnessStatus = 'connected' | 'passed' | 'failed' | 'unknown'
+type HarnessStatus = 'connected' | 'passed' | 'failed' | 'unknown'
   | 'sign in again' | 'usage limit; retry pending' | 'unavailable; retry pending' | 'verification required'
 // auth: how the account is held. A browser login rotates and runs one job at a
 // time; an API key or long-lived token is shared, so its jobs run in parallel.
-export type HarnessAuth = 'login' | 'api_key' | 'token'
-export interface HarnessModel { id: string; model: string | null; status: HarnessStatus; auth?: HarnessAuth }
+type HarnessAuth = 'login' | 'api_key' | 'token'
+interface HarnessModel { id: string; model: string | null; status: HarnessStatus; auth?: HarnessAuth }
 export interface Harness {
   id: string; name: string; version: string; connected: boolean
   models: HarnessModel[]; login_command: string; check_command: string
@@ -31,7 +31,7 @@ export interface SetupActivity {
   label: string; provider?: string; model_id?: string | null
 }
 
-export interface SetupOperation {
+interface SetupOperation {
   id: string; action: 'check' | 'harness_check' | 'start' | 'reset'
   generation: string; revision: string | null; step: string; at: number
   // Terminal-only: a scoped `setup check <harness>` carries the pool entries it
@@ -56,7 +56,7 @@ interface RepositoryRow {
   [key: string]: unknown
 }
 
-export interface RoleState { status: string; registered: boolean; app_id?: number | null; install_url?: string | null }
+interface RoleState { status: string; registered: boolean; app_id?: number | null; install_url?: string | null }
 
 export interface OnboardingView {
   ok: true; controls_token: string
@@ -103,7 +103,7 @@ export const PROTECTION_HELP_LINK = {
   to: '/setup-help#github-repository-protection',
 }
 
-export function allRolesOk(view: OnboardingView): boolean {
+function allRolesOk(view: OnboardingView): boolean {
   return ROLES.every(role => view.roles?.[role]?.status === 'ok')
 }
 
@@ -140,7 +140,7 @@ export function harnessLine(harness: Harness): string {
   return lines.join('\n') || 'Needs verification'
 }
 
-export function harnessBusy(harness: Harness, activity: SetupActivity | null | undefined): boolean {
+function harnessBusy(harness: Harness, activity: SetupActivity | null | undefined): boolean {
   return activity?.target === 'provider' && activity.provider === harness.id
 }
 
@@ -171,7 +171,7 @@ export function waitingService(view: OnboardingView, now: number): boolean {
   return now - (operation.at || now) > 15
 }
 
-export interface Step3Action {
+interface Step3Action {
   label: string
   action: 'check' | 'start' | 'link'
   to?: string
@@ -255,13 +255,13 @@ export function step3(view: OnboardingView, now: number): Step3View {
   return result
 }
 
-export const CHECK_LABELS: Record<CheckKey, string> = {
+const CHECK_LABELS: Record<CheckKey, string> = {
   github: 'Repository permissions and protection',
   provider: 'Coding account connections and isolation',
   runner: 'Worker stop, cleanup and reuse',
 }
 
-export interface CheckRow { id: CheckKey; label: string; value: string; busy: boolean }
+interface CheckRow { id: CheckKey; label: string; value: string; busy: boolean }
 
 export function technicalChecks(view: OnboardingView): CheckRow[] {
   return (Object.keys(CHECK_LABELS) as CheckKey[]).map((id) => {
@@ -279,7 +279,7 @@ export function checksPassed(view: OnboardingView): boolean {
   return !view.operation && view.checks?.provider === 'passed' && view.checks?.runner === 'passed'
 }
 
-export interface RepositoryProblem {
+interface RepositoryProblem {
   title: string
   branch: string
   to: string

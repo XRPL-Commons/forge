@@ -19,8 +19,6 @@ ENVIRONMENT_BLOCKERS = ('toolchain', 'sandbox', 'dependency_access', 'resources'
 # Plain-language limits, shared with harness.schema(). result() truncates, never rejects.
 HEADLINE_LIMIT, PLAIN_LIMIT, PLAIN_SENTENCES = 90, 360, 3
 OPERATOR_SUMMARY_LIMIT = 300
-# Pipeline roles hand the operator 1-2 sentences; discussions answer in chat instead.
-OPERATOR_ROLES = ('build', 'review', 'audit', 'recovery')
 # GH013 identifies a repository-rule rejection, not which rule failed.
 GITHUB_RULE = re.compile(r'\bGH013\b|repository rule violations?', re.I)
 WORKFLOW_PERMISSION = re.compile(
@@ -205,13 +203,11 @@ def issue_dependencies(body, item=None, *, content_hash=None):
 
 
 # Statements that something must finish before this issue starts. Written for
-# how people phrase it ("Do not start until #90 is closed", "#101 must be
-# merged first"), never for mentions or downstream links ("blocks #5", "see #3").
+# how people phrase it ("Do not start until #90 is closed", "depends on #101"),
+# never for mentions or downstream links ("blocks #5", "see #3").
 START = (r'\b(?:blocked (?:by|on)\b|depends on\b|dependency:|dependencies:|prerequisites?:'
          r'|(?:do not|don\'t|cannot|can\'t) (?:start|begin) (?:until|before)\b|wait(?:s|ing)? (?:for|on|until)\b'
          r'|(?:start|begin)s? (?:only )?after\b)')
-FIRST = (r'(?<![\w/])#([1-9]\d*)\s+(?:must|needs to|has to|should)\s+(?:be\s+)?'
-         r'(?:merged|closed|done|finished|completed|landed|shipped|land|ship|merge)\b[^.;]*?\bfirst\b')
 
 
 def references_issue(body, repo, number):

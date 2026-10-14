@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Loopback JSON API behind the operator UI (ui/), for the durable factory.
 
-Only the UI may call it (UPSTREAM_SECRET). Writes also require a same-origin
-JSON request and a per-process capability token. The server queues intent;
-only the locked supervisor acts on it.
+Only the UI may call it (UPSTREAM_SECRET). Writes also require configured
+operator sign-in, a signed-in operator, a same-origin JSON request and that
+session's CSRF token; without sign-in there is no control. The server queues
+intent; only the locked supervisor acts on it.
 """
 import hashlib
 import json, re, subprocess, os, secrets, hmac, threading, ipaddress
@@ -19,7 +20,6 @@ WD = os.environ.get("FORGE_ROOT", f"{HOME}/ops/forge-watchdog")
 from forge.view_cache import ViewCache
 from forge.mutation_audit import RequestReplay
 VIEWS = ViewCache()
-CONTROLS_TOKEN = secrets.token_urlsafe(32)
 # Proof that a request came through the operator UI, not from another local
 # process: a 0600 file only this account (and the UI container, read-only) can
 # read. Loaded by __main__; None only when imported by tests.
@@ -172,7 +172,7 @@ class H(BaseHTTPRequestHandler):
     def _trusted_host(self):
         # Reject DNS rebinding even when Origin and Host agree with each other.
         # Only the address actually bound by this tailnet server can read its
-        # capability token or submit an operator action.
+        # controls token or submit an operator action.
         address,port=self.server.server_address[:2]
         expected=f'[{address}]:{port}' if ':' in address else f'{address}:{port}'
         return self.headers.get('Host','')==expected
@@ -183,7 +183,8 @@ class H(BaseHTTPRequestHandler):
         self._auth_config = self._auth.config()
         self._session_token = read_cookie(self.headers.get('Cookie', ''), SESSION_COOKIE)
         self._session = self._auth.session(self._session_token) if self._auth_config else None
-        self._action_token = self._session['csrf'] if self._session else CONTROLS_TOKEN
+        # Control belongs to a signed-in operator only; there is no anonymous token.
+        self._action_token = self._session['csrf'] if self._session else None
         if getattr(self, '_mutation_audit', None):
             from forge.operator_auth import digest
             self._mutation_audit.bind(session=self._session, session_id=digest(self._session_token) if self._session else None)
@@ -350,8 +351,11 @@ class H(BaseHTTPRequestHandler):
             self.send_error(403);return
         if self._client_post():
             return
-        if not self._operator_guard() or not self._signed_in():
+        if not self._operator_guard():
             return
+        if not self._session:
+            # Without configured sign-in and a session, the API offers no control.
+            self.send_error(401);return
         if self.path not in {'/api/connections/preview', '/api/connections/decide', '/api/connections/revoke', '/api/auth/logout', '/api/settings/sync', '/api/factory/action', '/api/runtime', '/api/onboarding', '/api/repositories/check', '/api/repositories/mirror', '/api/repositories/enable', '/api/repositories/disable', '/api/repositories/deployment', '/api/repositories/environment', '/api/issues/action', '/api/issues/delivery', '/api/issues/verify', '/api/issues/environment', '/api/issues/refresh', '/api/issues/discussion', '/api/repositories/planning'}:
             self.send_error(404);return
         # An attacker may cause a browser to send a form, but cannot read the
@@ -373,10 +377,8 @@ class H(BaseHTTPRequestHandler):
             value=json.loads(self.rfile.read(length))
             if self._mutation_audit is not None:
                 self._mutation_audit.describe(value)
-                if not self._session:
-                    self._mutation_audit.details['actor'] = 'local:control-capability'
                 self._mutation_audit.start()
-            elif self._session:
+            else:
                 self._auth.audit(self._session, self.path)
             if self.path.startswith('/api/connections/'):
                 from forge.client_connections import ClientConnections, fields
@@ -408,7 +410,7 @@ class H(BaseHTTPRequestHandler):
                         'check':{'revision'},'start':{'revision'},'reset':{'generation'}}
                 if action not in fields or set(value)!=fields[action]:raise ValueError('Invalid setup action')
                 result={}
-                if action=='github':result=setup.begin(**value,origin=self._auth_config['origin'] if self._auth_config else 'http://'+self._public_host(),browser=self._browser())
+                if action=='github':result=setup.begin(**value,origin=self._auth_config['origin'],browser=self._browser())
                 elif action=='refresh':result=setup.refresh()
                 elif action=='repository':setup.select(value['repo_id'])
                 else:result={'request':setup.queue(action,**value)}
@@ -452,7 +454,8 @@ class H(BaseHTTPRequestHandler):
                 result=delivery_request(service,value)
                 self._send(json.dumps({'ok':True,**result}));return
             if self.path == '/api/issues/action':
-                from forge.factory.issue_actions import decide, IMMEDIATE
+                from forge.factory.issue_actions import decide
+                from forge.factory.store_operator import IMMEDIATE
                 from forge.factory.issues import IssueInventory
                 if not isinstance(value,dict) or set(value) not in ({'key','action','revision','reason'}, {'key','action','revision','reason','request_id'}):
                     raise ValueError('Expected issue, action, current revision, and decision')

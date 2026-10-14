@@ -7,8 +7,13 @@ import uuid
 from .executions import provider_available
 from .models import IdempotencyConflict, TransitionError, VersionConflict
 from .runtime import writable
-from .supporting_queries import message
 from .transitions import _json
+
+
+def message(row):
+    return {**json.loads(row['metadata_json']), 'id':row['id'], 'sequence':row['sequence'],
+            'role':'user' if row['role']=='operator' else row['role'],
+            'text':row['content'], 'at':row['created_at']}
 
 
 class DiscussionStore:

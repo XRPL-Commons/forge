@@ -36,9 +36,6 @@ stage, then `forge setup continue --ssh HOST` for role Apps, coding account and
 repository setup. These commands resume the saved installation. GitHub,
 Tailscale and provider browser approvals remain explicit operator handoffs.
 
-For an existing custom reverse proxy, use the
-[host configuration instructions](operator-sign-in.md#manual-host-configuration).
-
 ## Inspect the plan
 
 Use explicit paths on the selected SSH host:
@@ -46,10 +43,10 @@ Use explicit paths on the selected SSH host:
 ```sh
 forge --json server setup \
   --ssh forge \
-  --source /home/luc/forger-remote \
-  --root /home/luc/ops/forge-watchdog \
-  --origin https://forge.tail7560bd.ts.net \
-  --operator lucbocahut
+  --source /home/forge/forge \
+  --root /home/forge/.local/share/forge \
+  --origin https://forge.example.ts.net \
+  --operator YOUR_GITHUB_LOGIN
 ```
 
 Without a client ID, an unconfigured server returns `identity_app_required`, a

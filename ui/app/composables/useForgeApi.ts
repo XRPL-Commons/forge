@@ -7,7 +7,7 @@ function checkOk(status: number, payload: any, fallback: string) {
   if (payload && payload.ok === false) throw new ForgeApiError(status, payload.reason ?? fallback)
 }
 
-export interface GetOptions { timeout?: number; signal?: AbortSignal }
+interface GetOptions { timeout?: number; signal?: AbortSignal }
 
 export function useForgeApi() {
   const samples = useState<HttpTimingSample[]>('forge-http-timings', () => [])

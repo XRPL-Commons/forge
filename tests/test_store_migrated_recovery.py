@@ -9,13 +9,10 @@ from forge.store.recovery import RecoveryQueries
 from forge.store.transitions import Lifecycle
 from tests import test_store_reconciliation as reconciliation_fixtures
 from tests.test_store_recovery_controller import Runner
-from tests import test_store_import as fixtures
+from tests.legacy_rows import LegacyLedger
 
 
-class MigratedRecoveryTests(unittest.TestCase):
-    setUp=fixtures.ImportTests.setUp
-    write=fixtures.ImportTests.write
-    snapshot=fixtures.ImportTests.snapshot
+class MigratedRecoveryTests(LegacyLedger, unittest.TestCase):
     setup_store=reconciliation_fixtures.ReconciliationTests.setup_store
     view=reconciliation_fixtures.ReconciliationTests.view
     unit=reconciliation_fixtures.ReconciliationTests.unit

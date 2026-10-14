@@ -11,7 +11,7 @@ from forge.factory.ledger import Ledger
 class FactoryViewTests(unittest.TestCase):
     def test_ledger_reads_keep_validation_and_decision_fences_without_rewrites(self):
         from forge.factory.ledger import DecisionChanged
-        from forge.state import StateError
+        from forge.store.files import StateError
         with tempfile.TemporaryDirectory() as directory:
             ledger = Ledger(directory)
             self.assertEqual(ledger.read()['version'], 1)

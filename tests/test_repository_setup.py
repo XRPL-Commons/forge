@@ -6,7 +6,7 @@ from forge.repository_setup import RepositorySetup, ruleset, RULESET_NAME, obser
 from forge.factory.config import validate as runtime_config
 from forge.deployments import Deployments
 from forge.factory.github import GitHubUnavailable
-from forge.state import StateError
+from forge.store.files import StateError
 from forge.settings import digest, write_json
 from tests import test_settings as settings_tests
 from tests import test_settings_http as http_tests
@@ -528,7 +528,7 @@ class RepositoryHTTPTests(unittest.TestCase):
                 cls.return_value.deployment.assert_called_once_with(**value)
                 body=json.loads(h._send.call_args.args[0])
                 self.assertTrue(body['ok']);self.assertEqual(body['revision'],'new')
-                self.assertEqual(body['controls_token'],dashboard.CONTROLS_TOKEN)
+                self.assertEqual(body['controls_token'],http_tests.OPERATOR_CSRF)
             for value in ({'repo_id':10,'revision':'r','action':'confirm'},
                           {'repo_id':10,'revision':'r','action':'reject'},
                           {'repo_id':10,'revision':'r','action':'reread','domain':'academy.example.org'},
@@ -551,7 +551,7 @@ class RepositoryHTTPTests(unittest.TestCase):
             self.assertTrue(result['ok'])
             self.assertEqual(result['revision'], 'new')
             self.assertFalse(result['repositories'][0]['enabled'])
-            self.assertEqual(result['controls_token'], dashboard.CONTROLS_TOKEN)
+            self.assertEqual(result['controls_token'], http_tests.OPERATOR_CSRF)
             cls.return_value.enable.assert_not_called()
             for change in ({'repo_id': None}, {'repo_id': True}, {'repo_id': 0}, {'repo_id': -1},
                            {'repo_id': '10'}, {'revision': None}, {'revision': ''}, {'config': {}}, {'enabled': True}):

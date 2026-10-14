@@ -41,11 +41,8 @@ Existing evidence: [launcher routing](../bin/forge),
 
 ## Configuration
 
-Use guided Settings or the supported CLI to configure the instance. The examples
-in `examples/` describe configuration values; copying them over a selected
-instance's old JSON files does not update its settings. Fresh CLI installations
-initialize selected SQLite before starting services. Pre-cutover instances use
-the [explicit migration](store-migration.md) workflow. Use
+Use guided Settings or the supported CLI to configure the instance. Fresh CLI installations
+initialize selected SQLite before starting services. Use
 [fresh-host setup](cli-fresh-host.md) for a new VM, or `forge server setup` to
 configure identity and HTTPS on an existing host.
 
@@ -61,7 +58,7 @@ configure identity and HTTPS on an existing host.
 The database uses WAL with FULL durability. The launcher validates the selected
 instance, schema and qualified SQLite runtime; failure does not restore JSON
 access. SQLite qualification applies to the library linked to the service
-interpreter. Repair it through `forge migrate prepare`; do not bypass the launcher
+interpreter. Repair it through `bin/forge setup initialize`; do not bypass the launcher
 or delete `state/storage` to regain access. Never commit runtime state, App keys
 or provider authentication.
 
@@ -309,22 +306,14 @@ controller's missing recommended permissions until granted.
 
 ## Qualification and activation
 
-Run the regression suite and credential-free container reset canary first:
+Run the regression suite first:
 
 ```sh
 python3 -m unittest discover -s tests -v
-PYTHONPATH=. python3 deploy/test_factory_container.py
-python3 deploy/test_factory_sandbox.py --image forge-runner:local \
-  --seccomp /etc/forge/runner/seccomp.json
 ```
 
-The native canary temporarily loads one uniquely named AppArmor test profile,
-checks repository writes and denial of a synthetic provider file/outside writes,
-and removes its container/profile afterward. Review that script before granting
-its narrow root operation. It does not run a model or access GitHub. Run the real
-App/authenticated workflow on a selected pilot repository before expanding access.
-The reset canary builds a synthetic image, creates its own internal network, and
-removes only its uniquely named resources.
+Run the real App/authenticated workflow on a selected pilot repository before
+expanding access.
 
 Guided setup's Start activates the factory. For a CLI-only installation, the commands
 below do the same. The setup supervisor and the CLI share `state-supervisor.lock`, and

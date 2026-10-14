@@ -5,10 +5,8 @@ configured, missing/corrupt state fails closed, including after process restart.
 """
 from __future__ import annotations
 
-import argparse
 import base64
 import fcntl
-import getpass
 import hashlib
 import hmac
 import json
@@ -20,7 +18,8 @@ import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
-from forge.state import AtomicStore, StateError
+from forge.state import AtomicStore
+from forge.store.files import StateError
 
 SESSION_COOKIE = '__Host-forge_session'
 FLOW_COOKIE = '__Host-forge_oauth'
@@ -273,24 +272,3 @@ class OperatorAuth:
             stream.write(json.dumps(event, sort_keys=True) + '\n')
             stream.flush()
             os.fsync(stream.fileno())
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Configure operator sign-in on this Forge host; also revokes all sessions.')
-    parser.add_argument('--root', required=True)
-    parser.add_argument('--origin', required=True, help='Canonical HTTPS address, without trailing slash')
-    parser.add_argument('--client-id', required=True, help='Dedicated, identity-only GitHub OAuth App')
-    parser.add_argument('--operator-id', action='append', required=True, type=int)
-    args = parser.parse_args()
-    secret = getpass.getpass('GitHub OAuth client secret (identity app only): ')
-    try:
-        OperatorAuth(args.root).configure(args.origin, args.client_id, secret, args.operator_id)
-    except (ValueError, OSError, StateError):
-        parser.exit(1, 'Unable to configure operator sign-in; check HTTPS origin, IDs, secret and private state.\n')
-    print('Operator sign-in configured. All previous sessions revoked.')
-
-
-if __name__ == '__main__':
-    # Keep CLI execution on the canonical module used by runtime adapters.
-    from forge.operator_auth import main as canonical_main
-    canonical_main()

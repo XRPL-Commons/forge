@@ -8,7 +8,7 @@ from .settings import Settings, write_json
 from .factory.config import load
 from .factory.control import controller_lock
 from .factory.runner import RunnerCapacity, RunnerError
-from .state import StateError
+from .store.files import StateError
 from .sqlite_identity import identity_effect_lock, audit_in
 from .sqlite_onboarding import control_in
 from .store.runtime import writable
