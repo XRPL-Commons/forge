@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import difflib
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -95,9 +96,11 @@ class VerifiedOutput:
                      if change.new_mode not in (None,'100644') or change.old_mode not in (None,'100644')]
         if unsupported:raise PublicationClaim('file_mode_unsupported', paths=unsupported)
         import base64
-        return dict(additions=[dict(path=c.path,contents=base64.b64encode(c.content).decode())
+        value=dict(additions=[dict(path=c.path,contents=base64.b64encode(c.content).decode())
                                for c in changes if c.new_mode is not None],
                     deletions=[dict(path=c.path) for c in changes if c.new_mode is None])
+        if len(json.dumps(value).encode())>3*1024*1024:raise PublicationClaim('graphql_payload_limit',limit=3*1024*1024)
+        return value
 
 
 def _pack_bounds(pack, limits):
@@ -208,8 +211,10 @@ def inspect_output(content, head, source, base_objects, *, limits=Limits()):
             return git('cat-file',kind,oid)
         def commit(oid):
             raw=read(oid,'commit',65536).split(b'\n\n',1)[0].splitlines()
-            trees=[line[5:].decode('ascii') for line in raw if line.startswith(b'tree ')]
-            parents=[line[7:].decode('ascii') for line in raw if line.startswith(b'parent ')]
+            try:
+                trees=[line[5:].decode('ascii') for line in raw if line.startswith(b'tree ')]
+                parents=[line[7:].decode('ascii') for line in raw if line.startswith(b'parent ')]
+            except UnicodeError:raise PublicationClaim('git_commit_invalid') from None
             if len(trees)!=1 or any(not re.fullmatch('[0-9a-f]{40}',oid) for oid in [*trees,*parents]):raise PublicationClaim('git_commit_invalid')
             return trees[0],parents
         base_tree,_=commit(source['base_oid']);target_tree,_=commit(head)
@@ -233,7 +238,7 @@ def inspect_output(content, head, source, base_objects, *, limits=Limits()):
                 while offset<len(raw):
                     split=raw.find(b' ',offset);end=raw.find(b'\0',split+1)
                     if split<0 or end<0 or end+21>len(raw):raise PublicationClaim('git_tree_invalid')
-                    mode=raw[offset:split].decode('ascii');name_bytes=raw[split+1:end]
+                    mode=raw[offset:split].decode('ascii',errors='replace');name_bytes=raw[split+1:end]
                     try:name=name_bytes.decode('utf-8')
                     except UnicodeError:raise PublicationClaim('path_encoding_unsupported') from None
                     if (name in ('','.','..') or '/' in name or '\\' in name or name.casefold()=='.git'

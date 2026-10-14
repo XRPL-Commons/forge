@@ -18,8 +18,11 @@ class PublicationLedgerTests(unittest.TestCase):
     def setUp(self):
         self.fixture=fixtures.ResultControllerTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
         f=self.fixture;self.store=f.store;self.now=100
-        self.job=f.reserve();self.launch=f.queries.job(self.job)
-        self.source=create(repository_id=1,canonical_repository='owner/repo',base_oid=BASE,input_oids=[],
+        prior=getattr(self,'prior_head',None)
+        authorization=dict(kind='forge_owned',branch='forge/issue-1',expected_head_oid=prior,pull_number=7,
+            author={'id':99,'login':'builder[bot]','type':'Bot'},replace_ref=getattr(self,'replace_ref',False)) if prior else None
+        self.job=f.reserve(context={'resume_head':prior,'resume_pr':7} if prior else None);self.launch=f.queries.job(self.job)
+        self.source=create(repository_id=1,canonical_repository='owner/repo',base_oid=BASE,input_oids=[prior] if prior else [],
             manifest=f.manifest,dependency_policy_digest='1'*64,notes={})
         self.output=VerifiedOutput(self.source,hashlib.sha256(b'fixture').hexdigest(),7,HEAD,'c'*40,'d'*40,(),{})
         self.report=f.report(self.job,pr_title='Change',pr_body='Details',output_commit=HEAD)
@@ -30,11 +33,13 @@ class PublicationLedgerTests(unittest.TestCase):
         original=ExecutionQueries.job
         def projection(query,job_id):
             job=original(query,job_id)
-            if job_id==self.job:job['source_input']=self.source
+            if job_id==self.job:
+                job['source_input']=self.source
+                if authorization:job['publication_authorization']=authorization
             return job
         self.patch=patch.object(ExecutionQueries,'job',projection);self.patch.start();self.addCleanup(self.patch.stop)
         self.target=dict(repository_id=1,repository='owner/repo',branch=self.launch['branch'],base_branch='main',
-            expected_head_oid=None,pull_number=None,app_id=42,strategy='rest',signing_qualified=True,authorization=None)
+            expected_head_oid=prior,pull_number=7 if prior else None,app_id=42,strategy='rest',signing_qualified=True,authorization=authorization)
         self.commands=Publications(self.store,clock=lambda:self.now,reliability={'effect_max_attempts':2,'effect_uncertainty_seconds':60})
 
     def queue(self,**changes):
@@ -85,3 +90,27 @@ class PublicationLedgerTests(unittest.TestCase):
             with self.assertRaises(TransitionError):self.commands.confirm(identifier,{**receipt,field:value})
         self.commands.confirm(identifier,receipt);self.commands.confirm(identifier,receipt)
         self.assertEqual(self.commands.get(identifier)['receipt'],receipt)
+
+
+class PublicationMigrationTests(unittest.TestCase):
+    def test_populated_schema38_upgrade_preserves_capture_and_execution_authority(self):
+        import tempfile
+        from pathlib import Path
+        from forge.store import db as storage, upgrade
+        from tests.historical_store_fixtures import reservation
+        with tempfile.TemporaryDirectory() as temporary:
+            migrations=storage._migrations()
+            with patch('forge.store.db._migrations',return_value=migrations[:38]):
+                store=storage.Store.create(Path(temporary)/'store')
+                job=reservation(store,config={},policy={},base_oid=BASE)
+                with store.write() as db:
+                    _artifact(db,job,'worker_capture',b'{"result":null}',100)
+                    authority=tuple(db.execute('SELECT slot,execution_fence FROM job_leases').fetchone())
+                    artifact=tuple(db.execute("SELECT digest,content,size FROM job_artifacts WHERE kind='worker_capture'").fetchone())
+            store=storage.Store(store.root);upgrade.apply(store);upgrade.apply(store)
+            with store.read_snapshot() as db:
+                self.assertEqual(tuple(db.execute('SELECT slot,execution_fence FROM job_leases').fetchone()),authority)
+                self.assertEqual(tuple(db.execute("SELECT digest,content,size FROM job_artifacts WHERE kind='worker_capture'").fetchone()),artifact)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM publication_intents').fetchone()[0],0)
+                self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+                self.assertIsNone(db.execute('PRAGMA foreign_key_check').fetchone())

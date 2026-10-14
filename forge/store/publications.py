@@ -163,7 +163,7 @@ class Publications(Lifecycle):
                 (self.clock()+delay,self.clock(),self.clock(),identifier,key))
             db.execute("UPDATE publication_intents SET status='working',version=version+1,updated_at=? WHERE id=?",(self.clock(),identifier))
 
-    def record_step(self,identifier,key,receipt):
+    def record_step(self,identifier,key,receipt,*,resume=True):
         if not isinstance(receipt,dict) or len(_json(receipt).encode())>65536:raise TransitionError('Publication step needs bounded read-back')
         with self.store.write() as db:
             writable(db)
@@ -173,7 +173,15 @@ class Publications(Lifecycle):
                 if row['receipt_json']!=_json(receipt):raise IdempotencyConflict('Publication receipt changed')
                 return
             db.execute("UPDATE publication_steps SET status='confirmed',receipt_json=?,retry_at=NULL,updated_at=? WHERE intent_id=? AND key=?",(_json(receipt),self.clock(),identifier,key))
-            db.execute("UPDATE publication_intents SET status='pending',version=version+1,updated_at=? WHERE id=? AND status NOT IN('superseded','confirmed')",(self.clock(),identifier))
+            if resume:db.execute("UPDATE publication_intents SET status='pending',version=version+1,updated_at=? WHERE id=? AND status NOT IN('superseded','confirmed')",(self.clock(),identifier))
+
+    def refused_step(self,identifier,key):
+        """A definite rate-limit refusal can retry after its durable backoff."""
+        with self.store.write() as db:
+            writable(db)
+            db.execute("UPDATE publication_steps SET status='refused',updated_at=? WHERE intent_id=? AND key=? AND status='sending'",
+                       (self.clock(),identifier,key))
+        return self.uncertain(identifier,key)
 
     def uncertain(self,identifier,key):
         with self.store.write() as db:
