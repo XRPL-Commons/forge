@@ -58,6 +58,9 @@ def trim(text, limit):
 
 
 def note(job):
+    if job.get('steward_mode')=='conversation':
+        from ..steward_subjects import assignment_note
+        return assignment_note(job)
     return {"id": job["id"], "role": "discussion", "repo": job["repo"], "repo_id": job["repo_id"],
             "publisher": "forge-discussion", "candidate": job.get("candidate"), "deadline": job["deadline"],
             "context": job["context"], "messages": job["messages"],
@@ -336,9 +339,9 @@ class Discussions:
         self.commands.receipt(key,intent['request_id'],receipt,actor=intent['actor_id'])
         return receipt
 
-    def apply(self,key,message_id,*,actor_id=None,reason=None):
+    def apply(self,key,message_id,*,actor_id=None,reason=None,choice_id=None):
         self.issue(key)
-        intent=self.commands.request_action(key,message_id,actor=actor_id or self.actor_id,reason=reason)
+        intent=self.commands.request_action(key,message_id,actor=actor_id or self.actor_id,reason=reason,choice_id=choice_id)
         return self._submit(key,intent)
 
     def reconcile_actions(self):
@@ -426,6 +429,8 @@ class Discussions:
             wait=self.problems.recheck('discussion',key,config)
             if wait and not wait.get('resolved'):continue
             if wait:thread=self.commands.thread(key)
+            if self.commands.invocation_count(key)>=3:
+                self.left(key,None,'error','This turn reached its three-invocation limit. Send a new message to continue.');continue
             if self.clock()-thread['requested_at']>FINDING_SECONDS:
                 self.left(key,None,'timeout'); continue
             try: row=self.issue(key)
@@ -449,6 +454,12 @@ class Discussions:
                 issue_number=row['number'],candidate=context['candidate'],deadline=now+DISCUSSION_SECONDS,fenced=False,cleanup=False,
                 provider_id=entry['id'],runner_config=worker,context=context,boot=self.boot,created_at=now,
                 messages=[{k:m[k] for k in ('role','text')} for m in thread['messages'] if m['role'] in {'user','assistant'}][-12:])
+            from ..steward_subjects import conversation_dossier
+            from ..steward_contract import decision_schema
+            subject=self.commands.steward_subject(key,expected_version=thread['version'])
+            job['steward_mode']='conversation'
+            dossier=conversation_dossier(job,subject)
+            job['context']={**context,'steward_dossier':dossier,'steward_schema':decision_schema(dossier)}
             self.commands.reserve(key,job,expected_version=thread['version'],origin=origin)
             self.drive(job,github)
             return
@@ -494,18 +505,32 @@ class Discussions:
             invalid=(not isinstance(result,dict) or result.get('attempt')!=job['id'] or result.get('role')!='discussion'
                 or result.get('outcome') not in {'pass','reject','unable','wait','blocked_environment'}
                 or not isinstance(result.get('summary'),str) or not result['summary'].strip())
+            steward=job.get('steward_mode')=='conversation'
+            if steward:
+                try:
+                    from ..steward_contract import decision
+                    decision(result,job['context']['steward_dossier'])
+                    invalid=not isinstance((result.get('metadata') or {}).get('reply'),str) or not result['metadata']['reply'].strip()
+                except (ValueError,KeyError,TypeError):invalid=True
             fault=self.problems.record('discussion',key,job,capture,invalid=invalid)
             if fault:
                 job=self.commands.job(job['id']);runner.reset(job);self.commands.cleanup(job['id'])
                 return
-            if (not isinstance(result,dict) or result.get('attempt')!=job['id'] or result.get('role')!='discussion' or result.get('outcome')!='pass'):
+            if invalid or not steward and (not isinstance(result,dict) or result.get('attempt')!=job['id'] or result.get('role')!='discussion' or result.get('outcome')!='pass'):
                 job['excerpt']=excerpt(capture.get('logs'))
                 reason,detail,until=ended(capture,job,self.clock())
                 if reason=='error' and orphaned: reason,detail='restart',None
                 self.left(key,job,reason,detail,until,capture=capture); return
-            answer=result.get('summary')
+            answer=result['metadata']['reply'] if steward else result.get('summary')
             if not isinstance(answer,str) or not answer.strip(): raise RunnerError('its answer was empty')
-            proposal,unavailable,close_now=proposal_in(result,job)
+            if steward:
+                choice=next(c for c in result['choices'] if c['id']==result['recommended_choice_id'])
+                why=' '.join(choice['parameters']['logins']) if choice['action']=='assign_reviewer' else choice['reason']
+                proposal=None if choice['action']=='answer' else {'action':choice['action'],'reason':why}
+                unavailable=False
+                close_now=choice['action']=='close' and asked_to_close(job['messages'][-1]['text'])
+            else:
+                proposal,unavailable,close_now=proposal_in(result,job)
             # Only the operator who wrote the latest message, in those words, lets the persona close.
             asker=self.commands.asker(key) if close_now else None
             close_now=bool(asker and asker[1]==job['messages'][-1]['text'])

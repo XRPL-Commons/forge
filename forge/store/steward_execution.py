@@ -357,11 +357,15 @@ class StewardMoves(Executions):
             owned |= dossier['mode'] == 'stall' and gate['id'] == trigger['gate_id']
             if owned:
                 self._resolve(db, command, gate['id'], {'steward_decision_id': decision_id, 'choice_id': choice['id']})
+        if choice['action']=='retry' and unit['state']=='publishing':
+            if db.execute("SELECT 1 FROM publication_intents WHERE unit_id=? AND status NOT IN ('confirmed','superseded')",(unit['id'],)).fetchone():
+                raise TransitionError('Publication must be settled before retrying implementation')
+            db.execute("UPDATE units SET state='building' WHERE id=?",(unit['id'],))
         if choice['action'] in {'retry', 'rebuild'}:
             unit = _unit(db, unit['id'])
             failure = db.execute('SELECT f.retry_stage FROM attempt_failures f JOIN jobs j ON j.attempt_id=f.attempt_id '
                                  'WHERE j.id=?', (failed_id,)).fetchone() if failed_id else None
-            role = failure[0] if failure else {'queued': 'build', 'building': 'build', 'integrating': 'build',
+            role = failure[0] if failure else {'queued': 'build', 'building': 'build', 'integrating': 'build', 'publishing': 'build',
                                                'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
             if choice['action'] == 'rebuild':
                 role = 'build'

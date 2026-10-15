@@ -140,7 +140,7 @@ def build_dossier_in(db, unit, *, mode, trigger, now, observations=None, config=
              'forge_problem_signatures': [r[0] for r in db.execute('SELECT DISTINCT r.signature FROM forge_problem_report_jobs r JOIN jobs j ON j.id=r.job_id WHERE j.unit_id=? ORDER BY r.signature', (unit['id'],))],
              'charged_failures': _charges(db, unit), 'remaining_failure_budget': max(0, 3-_charges(db, unit)),
              'remaining_steward_cycles': max(0, 3-count)}
-    value = {'version': 1, 'mode': mode, 'trigger': trigger, 'trigger_key': trigger_key,
+    value = {'version': 1, 'subject': {'kind':'unit','unit_id':unit['id']}, 'mode': mode, 'trigger': trigger, 'trigger_key': trigger_key,
              'repository': {'id': unit['repository_id'], 'name': repository[0], 'base_branch': unit['base_branch']},
              'scope': {'unit_id': unit['id'], 'member_ids': [m['member_id'] for m in authority['members']]},
              'authority': authority, 'facts': facts, 'allowed_moves': sorted(ACTIONS),

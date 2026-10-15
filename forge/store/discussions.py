@@ -171,18 +171,30 @@ class DiscussionStore:
         return dict(request_id=entry['id'],actor_id=actor,revision=entry['revision'],
                     action=proposal['action'],reason=reason.strip())
 
-    def request_action(self,key,message_id,*,actor,reason=None):
+    def request_action(self,key,message_id,*,actor,reason=None,choice_id=None):
         with self.store.write() as db:
             writable(db)
             thread=self._thread(db,key)
             row=db.execute("SELECT * FROM messages WHERE discussion_id=? AND id=? AND role='assistant'",(thread['id'],message_id)).fetchone()
             if row is None:raise TransitionError('There is no proposal to apply')
-            entry=message(row);intent=self._intent(entry,actor,reason=reason)
+            entry=message(row)
+            if entry.get('steward_decision'):
+                from .steward_subjects import read_in
+                saved=read_in(db,'conversation_turn',message_id)
+                if saved is None:raise TransitionError('Conversation decision evidence is unavailable')
+                output=saved['decision'];choice_id=choice_id or output['recommended_choice_id']
+                choice=next((c for c in output['choices'] if c['id']==choice_id),None)
+                if choice is None or choice['action']=='answer':raise TransitionError('Choose an offered operator action')
+                why=' '.join(choice['parameters']['logins']) if choice['action']=='assign_reviewer' else choice['reason']
+                entry={**entry,'proposal':{'action':choice['action'],'reason':why},'selected_choice_id':choice_id}
+            intent=self._intent(entry,actor,reason=reason)
             metadata=json.loads(row['metadata_json'])
             previous=metadata.get('action_intent')
-            if previous and previous!=intent:raise IdempotencyConflict('This proposal already has a different operator decision')
+            if previous and (previous!=intent or metadata.get('selected_choice_id')!=entry.get('selected_choice_id')):raise IdempotencyConflict('This proposal already has a different operator decision')
             if not previous:
                 metadata['action_intent']=intent
+                if entry.get('selected_choice_id'):
+                    metadata['selected_choice_id']=entry['selected_choice_id'];metadata['proposal']=entry['proposal']
                 db.execute('UPDATE messages SET metadata_json=? WHERE id=?',(_json(metadata),message_id))
                 self._touch(db,thread['id']);self._event(db,thread,'proposal_requested',actor,request_id=message_id)
             return intent
@@ -209,6 +221,26 @@ class DiscussionStore:
             if len(rows)>100: raise TransitionError('discussion capacity exceeded')
             return [self._job(db,row[0]) for row in rows]
 
+    def steward_subject(self,key,*,expected_version):
+        with self.store.read_snapshot() as db:
+            thread=self._thread(db,key)
+            if thread['version']!=expected_version:raise VersionConflict('Conversation changed before capture')
+            operator=db.execute("SELECT id,author_id FROM messages WHERE discussion_id=? AND role='operator' ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
+            if not operator:raise TransitionError('Conversation requires an authenticated operator message')
+            return dict(kind='conversation_turn',thread_id=thread['id'],version=thread['version'],
+                        message_id=operator['id'],actor_id=operator['author_id'])
+
+    @staticmethod
+    def invocation_count_in(db,thread):
+        latest=db.execute("SELECT id FROM messages WHERE discussion_id=? AND role='operator' ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
+        if latest is None:return 0
+        return db.execute("SELECT COUNT(*) FROM discussion_runtime r JOIN discussion_executions e ON e.id=r.execution_id "
+            "WHERE e.discussion_id=? AND json_extract(r.manifest_json,'$.context.steward_dossier.subject.message_id')=?",
+            (thread['id'],latest[0])).fetchone()[0]
+
+    def invocation_count(self,key):
+        with self.store.read_snapshot() as db:return self.invocation_count_in(db,self._thread(db,key))
+
     def reserve(self,key,job,*,expected_version,origin):
         if len(_json(job).encode())>262144:
             raise TransitionError('discussion assignment is too large')
@@ -219,6 +251,8 @@ class DiscussionStore:
                 raise VersionConflict('conversation changed before launch')
             if thread['status']!='queued' or db.execute('SELECT 1 FROM discussion_leases LIMIT 1').fetchone():
                 raise TransitionError('discussion is not available for reservation')
+            if job.get('steward_mode')=='conversation' and self.invocation_count_in(db,thread)>=3:
+                raise TransitionError('This turn reached its three-invocation limit; send a new message')
             config=job['runner_config']
             if not provider_available(db,config['provider'],job.get('provider_id'),config,self.clock()):
                 raise TransitionError('coding account is still leased or unavailable')
@@ -314,6 +348,17 @@ class DiscussionStore:
                         or (entry.get('proposal') or {}).get('action')!='close'):
                     raise TransitionError('The close command no longer matches the authenticated operator message')
                 entry={**entry,'action_intent':self._intent(entry,operator['author_id'])}
+            if job.get('steward_mode')=='conversation':
+                from ..steward_contract import decision, digest
+                from .steward_subjects import save_in
+                dossier=job['context']['steward_dossier'];output=decision(capture.get('result'),dossier)
+                subject=dossier['subject']
+                operator=db.execute("SELECT id,author_id FROM messages WHERE discussion_id=? AND role='operator' ORDER BY sequence DESC LIMIT 1",(thread['id'],)).fetchone()
+                if subject['thread_id']!=thread['id'] or not operator or (operator['id'],operator['author_id'])!=(subject['message_id'],subject['actor_id']):
+                    raise TransitionError('Conversation decision belongs to another operator turn')
+                save_in(db,kind='conversation_turn',subject_id=entry['id'],version=subject['version'],execution_id=job_id,
+                        dossier=dossier,decision=output,now=self.clock())
+                entry={**entry,'steward_decision':{**output,'decision_id':entry['id'],'digest':digest(output)}}
             self._capture(db,job_id,capture)
             self._append(db,thread,entry,'agent:discussion')
             db.execute('UPDATE discussion_runtime SET completed=1 WHERE execution_id=?',(job_id,))

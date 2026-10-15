@@ -3,7 +3,7 @@ import type { PlanningRow, RepositoryNote } from '~/composables/useRepositoryPla
 useHead({ title: 'Repository planning' })
 const route = useRoute(), id = computed(() => Number(route.params.id))
 if (!Number.isSafeInteger(id.value) || id.value <= 0) await navigateTo('/settings/repositories', { replace: true })
-const { resource, view, proposal, busy, error, open, members, history, act, decide } = useRepositoryPlanning(id)
+const { resource, view, proposal, busy, error, open, members, history, act, decide, choose } = useRepositoryPlanning(id)
 const rules = ref(''), nightly = ref(true), editingRules = ref(false)
 const editing = ref<PlanningRow | null>(null), editAction = ref('keep'), reason = ref(''), labels = ref(''), removedLabels = ref(''), prerequisites = ref(''), question = ref(''), target = ref('new')
 const evidenceUrl = ref(''), evidenceIdentity = ref(''), evidenceDescription = ref(''), ruleQuote = ref(''), internalOrder = ref('')
@@ -108,6 +108,9 @@ async function saveNote(deleted = false) {
           <div class="flex flex-wrap justify-between gap-2"><h3 class="font-semibold capitalize">{{ row.action }} · {{ row.member_count }} {{ row.member_count === 1 ? 'issue' : 'issues' }}</h3><span class="text-sm text-muted" data-testid="planning-approval-status">{{ approvalLabels[row.status] }}</span></div>
           <ul><li v-for="member in row.members" :key="member.issue_id"><NuxtLink :to="`/issues/${member.issue_id}`" class="text-primary">#{{ member.github_number }} {{ member.title }}</NuxtLink><span class="ml-2 text-sm text-muted" data-testid="planning-issue-state">Last observed {{ member.github_state }} · <time :datetime="new Date(member.observed_at * 1000).toISOString()">{{ new Date(member.observed_at * 1000).toLocaleString() }}</time></span><span v-if="member.pull_number" class="ml-2 text-sm">Existing PR #{{ member.pull_number }} · {{ member.head_oid?.slice(0, 8) }}</span></li></ul>
           <UButton v-if="row.members_next" size="xs" variant="ghost" @click="members(row)">Show more members</UButton>
+          <RankedChoices v-if="row.steward_decision" :decision="row.steward_decision" :selected-choice="row.selected_choice_id"
+            :disabled="busy || row.status !== 'proposed'" @select="choose(row, $event)" />
+          <p v-if="row.steward_decision && row.status === 'proposed'" class="text-sm text-muted">Choosing an option updates this row. Accept it below to approve the change.</p>
           <p>{{ row.reason }}</p><blockquote v-if="row.rule_quote" class="border-l-2 border-primary pl-3 text-sm">Rule: “{{ row.rule_quote }}”</blockquote>
           <p v-if="row.parameters.question">{{ row.parameters.question }}</p>
           <p v-if="row.parameters.add?.length">Add labels: {{ row.parameters.add.join(', ') }}</p><p v-if="row.parameters.remove?.length">Remove labels: {{ row.parameters.remove.join(', ') }}</p>

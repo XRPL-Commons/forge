@@ -16,7 +16,15 @@ interface ChatEntry { id: string; role: ChatRole; parts: { type: 'text'; text: s
 // hand the choice back to the panel (`act`), which runs the very same
 // confirm dialog as its own buttons.
 const props = withDefaults(defineProps<{ issueKey: string; active?: boolean; actions?: IssueAction[]; primary?: IssueAction | null; disabled?: boolean }>(), { active: false, actions: () => [], primary: null, disabled: false })
-const emit = defineEmits<{ act: [action: IssueAction, reason: string, messageId?: string]; attention: [value: { replying: boolean; unread: boolean }] }>()
+const emit = defineEmits<{ act: [action: IssueAction, reason: string, messageId?: string, choiceId?: string]; attention: [value: { replying: boolean; unread: boolean }] }>()
+function chooseMessage(messageId: string, selection: import('~/utils/steward').StewardSelection) {
+  const message = byId.value.get(messageId)
+  const choice = message?.steward_decision?.choices.find(value => value.id === selection.choice_id)
+  if (!choice || choice.action === 'answer' || !(choice.action in ACTION_LABELS)) return
+  const reason = 'logins' in choice.parameters ? (choice.parameters as { logins: string[] }).logins.join(', ') : choice.reason
+  emit('act', choice.action as IssueAction, reason, messageId, choice.id)
+}
+
 const api = useForgeApi()
 const poll = useResource<Conversation>(() => `/api/issues/discussion?issue=${encodeURIComponent(props.issueKey)}`, path => api.get<Conversation>(path), { interval: 2500 })
 const question = ref('')
@@ -337,6 +345,9 @@ async function loadOlder() {
                   @click="toggle(message.id)"
                 >{{ folded(message.id) ? 'Show more' : 'Show less' }}</UButton>
                 <!-- Request progress comes from canonical action receipts, not worker prose. -->
+                <RankedChoices v-if="byId.get(message.id)!.steward_decision" :decision="byId.get(message.id)!.steward_decision!"
+                  :selected-choice="byId.get(message.id)!.selected_choice_id" :disabled="disabled || busy || !!byId.get(message.id)!.selected_choice_id || !!byId.get(message.id)!.requested"
+                  @select="chooseMessage(message.id, $event)" />
                 <div v-if="byId.get(message.id)!.proposal" class="mt-2 flex w-fit max-w-full flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-line px-3 py-2" data-proposal :data-state="proposalState(byId.get(message.id)!)" aria-label="Suggested decision" role="group">
                   <p v-if="proposalState(byId.get(message.id)!) === 'closed'" role="status" class="text-sm text-mint-200">Closed as no longer needed.</p>
                   <p v-else-if="proposalState(byId.get(message.id)!) === 'reopened'" role="status" class="text-sm text-muted">Reopened. Forge checks the issue on GitHub again.</p>
@@ -347,7 +358,7 @@ async function loadOlder() {
                   <p v-else-if="proposalState(byId.get(message.id)!) === 'applied'" role="status" class="text-sm text-mint-200">Decision applied.</p>
                   <p v-else-if="proposalState(byId.get(message.id)!) === 'submitted'" role="status" class="text-sm text-muted">Decision submitted. Its outcome has not been confirmed here.</p>
                   <UButton
-                    v-else
+                    v-else-if="!byId.get(message.id)!.steward_decision"
                     class="shrink-0"
                     size="sm"
                     :color="byId.get(message.id)!.proposal!.action === 'close' ? 'error' : byId.get(message.id)!.proposal!.action === primary ? 'primary' : 'neutral'"

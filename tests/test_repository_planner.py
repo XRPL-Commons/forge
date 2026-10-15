@@ -269,7 +269,7 @@ class RepositoryPlannerTests(unittest.TestCase):
 
     def test_launch_refreshes_entire_open_backlog_with_native_observation_and_inventory(self):
         from forge.factory.observation_controller import ObservationController
-        config={'enabled':True,'ready_label':'ready','hold_labels':['hold'],'availability_retry_seconds':30,
+        config={'enabled':True,'environment_tiers':{},'ready_label':'ready','hold_labels':['hold'],'availability_retry_seconds':30,
                 'provider_pool':[{'id':'account','provider':'codex','model':None,'provider_environment':[],'provider_auth_file_env':None}],
                 'provider_ready':['account']}
         self.settings.admission.return_value={'allowed':True}

@@ -41,6 +41,7 @@ class PlanningService:
         fields={'triage':{'request_id'},'rules':{'request_id','expected_revision','rules','proposals_enabled'},
             'note':{'request_id','note_id','expected_revision','kind','content','sources','deleted'},
             'edit':{'request_id','proposal_id','row_id','expected_version','value'},
+            'choose':{'request_id','proposal_id','row_id','expected_version','choice_id','digest'},
             'accept':{'request_id','proposal_id','expected_version','accept_rows','reject_rows'}}
         if action not in fields or set(value)!={'action'}|fields[action]:raise TransitionError('Unexpected fields for planning operation')
         args={k:v for k,v in value.items() if k!='action'}
@@ -50,6 +51,7 @@ class PlanningService:
         if action=='rules':return self.plans.configure(repository_id,**args)
         if action=='note':return self.plans.note(repository_id,**args)
         if action=='edit':return self.plans.edit_row(**args)
+        if action=='choose':return self.plans.choose_row(**args)
         with self.store.read_snapshot() as db:
             replay=db.execute('SELECT 1 FROM repository_planning_requests WHERE request_id=?',(value['request_id'],)).fetchone()
         if replay:
@@ -71,6 +73,19 @@ class PlanningService:
                     'JOIN triage_proposal_inputs p ON p.proposal_id=t.proposal_id AND p.issue_id=m.issue_id '
                     'JOIN issues i ON i.id=p.issue_id JOIN issue_revisions r ON r.id=p.requirements_revision_id '
                     'WHERE t.proposal_id=? AND t.id=?',(value['proposal_id'],row_id)))
+            prerequisite_targets=[]
+            for row_id in value['accept_rows']:
+                selected=db.execute("SELECT parameters_json FROM triage_proposal_rows WHERE proposal_id=? AND id=? AND action='order' AND steward_choice_id IS NOT NULL",(value['proposal_id'],row_id)).fetchone()
+                if selected:
+                    for reference in json.loads(selected[0])['prerequisites']:
+                        name,number=reference.rsplit('#',1)
+                        target=db.execute('SELECT id,full_name FROM repositories WHERE lower(full_name)=?',(name.lower(),)).fetchone()
+                        if target is None:raise VersionConflict('The selected prerequisite repository is no longer known')
+                        prerequisite_targets.append({'repo_id':target[0],'repo':target[1],'number':int(number)})
+        for target in prerequisite_targets:
+            remote,_=github.issue(target)
+            if remote.get('number')!=target['number'] or remote.get('state') not in {'open','closed'} or 'pull_request' in remote:
+                raise VersionConflict('The selected prerequisite could not be freshly verified')
         for issue in issue_rows:
             remote,requirements=github.issue({'repo_id':repo['id'],'repo':repo['name'],'number':issue['github_number']})
             labels=sorted(v['name'] if isinstance(v,dict) else v for v in remote.get('labels',[]))

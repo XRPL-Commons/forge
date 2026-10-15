@@ -230,25 +230,40 @@ class RepositoryPlanning(Lifecycle):
         if action=='question':text(params['question'],4000)
         return dict(action=action,members=sorted(members),reason=reason,rule_quote=quote,parameters=params)
 
-    def publish(self,proposal_id,*,expected_version,rows,rationale,request_id,actor_id,execution_id=None):
+    def publish(self,proposal_id,*,expected_version,rows,rationale,request_id,actor_id,execution_id=None,steward_decisions=None):
         rationale=text(rationale,8192)
         payload=dict(proposal_id=proposal_id,expected_version=expected_version,rows=rows,rationale=rationale)
         if execution_id is not None:payload['execution_id']=execution_id
+        if steward_decisions is not None:payload['steward_decisions']=steward_decisions
         def change(db):
             proposal=self._proposal(db,proposal_id,expected_version)
             if proposal['status']!='draft':raise TransitionError('Only a draft can publish its initial proposal')
             rules=db.execute('SELECT rules FROM repository_rule_history WHERE repository_id=? AND revision=?',
                 (proposal['repository_id'],proposal['rules_revision'])).fetchone()[0]
             inputs={row[0] for row in db.execute('SELECT issue_id FROM triage_proposal_inputs WHERE proposal_id=?',(proposal_id,))}
+            if steward_decisions is not None:
+                from .auxiliary import job_in, _artifact
+                from ..steward_subjects import triage_output
+                job=job_in(db,execution_id)
+                captured_context=json.loads(_artifact(db,execution_id,'planning_context'))
+                expected_rows,expected_decisions,_=triage_output((job.get('capture') or {}).get('result'),captured_context['steward_dossiers'])
+                if not job['cleanup'] or job['proposal_id']!=proposal_id or expected_rows!=rows or expected_decisions!=steward_decisions:
+                    raise TransitionError('Proposal decisions require exact cleaned captured execution')
             covered=set()
             for position,value in enumerate(rows):
                 row=self._row(value,rules)
                 if not set(row['members'])<=inputs or covered.intersection(row['members']):raise TransitionError('Each observed issue must have exactly one disposition')
                 covered.update(row['members'])
-                identifier=_id(proposal_id,'row:'+str(position))
+                identifier=steward_decisions[position][0]['subject']['row_id'] if steward_decisions is not None else _id(proposal_id,'row:'+str(position))
                 db.execute('INSERT INTO triage_proposal_rows(id,proposal_id,position,action,reason,rule_quote,parameters_json) VALUES(?,?,?,?,?,?,?)',
                     (identifier,proposal_id,position,row['action'],row['reason'],row['rule_quote'],_json(row['parameters'])))
                 self._history(db,identifier,1,row,actor_id)
+                if steward_decisions is not None:
+                    from .steward_subjects import save_in
+                    dossier,output=steward_decisions[position]
+                    db.execute('UPDATE triage_proposal_rows SET steward_choice_id=? WHERE id=?',(output['recommended_choice_id'],identifier))
+                    save_in(db,kind='proposal_row',subject_id=identifier,version=expected_version,execution_id=execution_id,
+                            dossier=dossier,decision=output,now=self.clock())
                 db.executemany('INSERT INTO triage_row_members VALUES(?,?)',[(identifier,key) for key in row['members']])
             if covered!=inputs:raise TransitionError('Every open issue in the captured backlog needs a disposition')
             db.execute("UPDATE triage_proposals SET status='proposed',rationale=?,version=version+1 WHERE id=?",(rationale,proposal_id))
@@ -258,6 +273,13 @@ class RepositoryPlanning(Lifecycle):
             return result
         return self._apply_repository(request_id,actor_id,'triage_publish',payload,change)
 
+    def publish_decisions(self,proposal_id,*,execution_id,request_id,actor_id):
+        from ..steward_subjects import triage_output
+        job=self.job(execution_id,context=True)
+        rows,retained,metadata=triage_output((job.get('capture') or {}).get('result'),job['context']['steward_dossiers'])
+        return self.publish(proposal_id,expected_version=1,rows=rows,rationale=metadata['reply'] or 'Steward proposal',
+            request_id=request_id,actor_id=actor_id,execution_id=execution_id,steward_decisions=retained)
+
     def _captured_notes_in(self,db,proposal,execution_id,actor_id):
         from .auxiliary import job_in, _artifact
         job=job_in(db,execution_id)
@@ -266,7 +288,8 @@ class RepositoryPlanning(Lifecycle):
             raise TransitionError('Planner notes require the cleaned, captured repository worker')
         context=json.loads(_artifact(db,execution_id,'planning_context'))
         result=(job.get('capture') or {}).get('result') or {}
-        notes=result.get('notes',[]);handoff=result.get('handoff')
+        metadata=result.get('metadata',result)
+        notes=metadata.get('notes',[]);handoff=metadata.get('handoff')
         if not isinstance(notes,list) or len(notes)>5 or len(_json([notes,handoff]).encode())>32768:
             raise TransitionError('Planner context output exceeds its five-note / 32 KiB bound')
         updates=[]
@@ -313,22 +336,40 @@ class RepositoryPlanning(Lifecycle):
             (row_id,revision,row['action'],row['reason'],row['rule_quote'],_json(row['parameters']),actor,self.clock()))
         db.executemany('INSERT INTO triage_row_member_history VALUES(?,?,?)',[(row_id,revision,key) for key in row['members']])
 
+    def _edit_row_in(self,db,proposal_id,row_id,expected_version,value,actor_id):
+        proposal=self._proposal(db,proposal_id,expected_version)
+        old=db.execute('SELECT * FROM triage_proposal_rows WHERE id=? AND proposal_id=?',(row_id,proposal_id)).fetchone()
+        if not old or old['status']!='proposed' or proposal['status']!='proposed':raise TransitionError('Only an undecided proposal row can be edited')
+        rules=db.execute('SELECT rules FROM repository_rule_history WHERE repository_id=? AND revision=?',
+            (proposal['repository_id'],proposal['rules_revision'])).fetchone()[0]
+        row=self._row(value,rules)
+        members=sorted(r[0] for r in db.execute('SELECT issue_id FROM triage_row_members WHERE row_id=?',(row_id,)))
+        if members!=row['members']:raise TransitionError('Changing group membership requires a new complete proposal')
+        db.execute('UPDATE triage_proposal_rows SET revision=revision+1,steward_choice_id=NULL,action=?,reason=?,rule_quote=?,parameters_json=? WHERE id=?',
+            (row['action'],row['reason'],row['rule_quote'],_json(row['parameters']),row_id))
+        self._history(db,row_id,old['revision']+1,row,actor_id)
+        db.execute('UPDATE triage_proposals SET version=version+1 WHERE id=?',(proposal_id,))
+        return {'proposal_id':proposal_id,'row_id':row_id,'version':expected_version+1}
+
     def edit_row(self,proposal_id,row_id,*,expected_version,value,request_id,actor_id):
+        return self._apply_repository(request_id,actor_id,'triage_edit',
+            dict(proposal_id=proposal_id,row_id=row_id,expected_version=expected_version,value=value),
+            lambda db:self._edit_row_in(db,proposal_id,row_id,expected_version,value,actor_id))
+
+    def choose_row(self,proposal_id,row_id,*,expected_version,choice_id,digest,request_id,actor_id):
         def change(db):
-            proposal=self._proposal(db,proposal_id,expected_version)
-            old=db.execute('SELECT * FROM triage_proposal_rows WHERE id=? AND proposal_id=?',(row_id,proposal_id)).fetchone()
-            if not old or old['status']!='proposed' or proposal['status']!='proposed':raise TransitionError('Only an undecided proposal row can be edited')
-            rules=db.execute('SELECT rules FROM repository_rule_history WHERE repository_id=? AND revision=?',
-                (proposal['repository_id'],proposal['rules_revision'])).fetchone()[0]
-            row=self._row(value,rules)
-            members=sorted(r[0] for r in db.execute('SELECT issue_id FROM triage_row_members WHERE row_id=?',(row_id,)))
-            if members!=row['members']:raise TransitionError('Changing group membership requires a new complete proposal')
-            db.execute('UPDATE triage_proposal_rows SET revision=revision+1,action=?,reason=?,rule_quote=?,parameters_json=? WHERE id=?',
-                (row['action'],row['reason'],row['rule_quote'],_json(row['parameters']),row_id))
-            self._history(db,row_id,old['revision']+1,row,actor_id)
-            db.execute('UPDATE triage_proposals SET version=version+1 WHERE id=?',(proposal_id,))
-            return {'proposal_id':proposal_id,'row_id':row_id,'version':expected_version+1}
-        return self._apply_repository(request_id,actor_id,'triage_edit',dict(proposal_id=proposal_id,row_id=row_id,expected_version=expected_version,value=value),change)
+            from .steward_subjects import read_in
+            from ..steward_subjects import row_choice
+            saved=read_in(db,'proposal_row',row_id)
+            if not saved or saved['digest']!=digest or saved['dossier']['subject']['proposal_id']!=proposal_id:
+                raise VersionConflict('The captured proposal decision changed')
+            choice=next((c for c in saved['decision']['choices'] if c['id']==choice_id),None)
+            if choice is None:raise TransitionError('Choose a captured proposal alternative')
+            result=self._edit_row_in(db,proposal_id,row_id,expected_version,row_choice(choice,saved['dossier']),actor_id)
+            db.execute('UPDATE triage_proposal_rows SET steward_choice_id=? WHERE id=?',(choice_id,row_id))
+            return {**result,'choice_id':choice_id,'digest':digest}
+        return self._apply_repository(request_id,actor_id,'triage_choose',
+            dict(proposal_id=proposal_id,row_id=row_id,expected_version=expected_version,choice_id=choice_id,digest=digest),change)
 
     def accept(self,proposal_id,*,expected_version,accept_rows,reject_rows,request_id,actor_id,
                compose_in=None,order_in=None,existing_prs=(),issue_evidence=(),config):
@@ -394,6 +435,7 @@ class RepositoryPlanning(Lifecycle):
                         prerequisites=row['parameters']['prerequisites'],actor_id=actor_id,request_id=row_request)
                 elif row['action'] in {'close','park','relabel'}:
                     effects.append(self._effect_in(db,proposal,row,row_request,actor_id,config))
+                self._brief_environment_in(db,proposal,row,row_request,actor_id,config)
                 db.execute("UPDATE triage_proposal_rows SET status='accepted',decision_id=? WHERE id=?",(_id(request_id,'decision'),row['id']))
             for row_id in reject_rows:
                 db.execute("UPDATE triage_proposal_rows SET status='rejected',decision_id=? WHERE id=?",(_id(request_id,'decision'),row_id))
@@ -403,6 +445,23 @@ class RepositoryPlanning(Lifecycle):
                 (state,self.clock(),actor_id,proposal_id))
             return {'proposal_id':proposal_id,'version':expected_version+1,'status':state,'effects':effects,'units':units}
         return self._apply_repository(request_id,actor_id,'triage_accept',payload,change)
+
+    def _brief_environment_in(self,db,proposal,row,request,actor,config):
+        if row['action'] not in {'keep','group','order'} or not row['steward_choice_id']:return
+        from .steward_subjects import read_in
+        from .runtime_requirements import steward_environment_in
+        saved=read_in(db,'proposal_row',row['id'])
+        brief=saved['decision']['brief'] if saved else None
+        if not brief or brief['choice_id']!=row['steward_choice_id'] or not brief.get('environment'):return
+        groups={}
+        for member in row['members']:
+            current=db.execute('SELECT m.id,m.unit_id FROM unit_issues m WHERE m.issue_id=? AND m.left_at IS NULL',(member['issue_id'],)).fetchone()
+            if current is None:raise TransitionError('Environment brief requires an admitted delivery member')
+            groups.setdefault(current['unit_id'],[]).append(current['id'])
+        for unit_id,members in groups.items():
+            unit=_unit(db,unit_id)
+            command=Command(_id(request,'brief-environment:'+unit_id),actor,unit_id,unit['version'])
+            steward_environment_in(self,db,command,unit,brief['environment'],config,member_ids=members)
 
     def _effect_in(self,db,proposal,row,request,actor,config):
         member=row['members'][0]
@@ -482,6 +541,10 @@ class RepositoryPlanning(Lifecycle):
             result['rows']=[]
             for raw in rows[:limit]:
                 row=dict(raw);row['parameters']=json.loads(row.pop('parameters_json'))
+                from .steward_subjects import read_in
+                saved=read_in(db,'proposal_row',row['id'])
+                row['selected_choice_id']=row.pop('steward_choice_id')
+                row['steward_decision']=({**saved['decision'],'decision_id':row['id'],'digest':saved['digest']} if saved else None)
                 member_page=self.members(row['id'],limit=5)
                 row['members']=member_page['items'];row['members_next']=member_page['next'];row['member_count']=member_page['total']
                 row['effects']=[dict(v) for v in db.execute('SELECT e.id,e.status,e.attempts,e.retry_at,e.receipt_json FROM external_effects e '
@@ -571,6 +634,10 @@ class RepositoryPlanning(Lifecycle):
                 job['context']=json.loads(payload)
             return job
 
+    def invocation_count(self,proposal_id):
+        with self.store.read_snapshot() as db:
+            return db.execute("SELECT COUNT(*) FROM auxiliary_executions WHERE domain='triage' AND owner_id=?",(proposal_id,)).fetchone()[0]
+
     def reserve(self,proposal_id,job,context):
         from .auxiliary import save_in
         import hashlib
@@ -582,6 +649,8 @@ class RepositoryPlanning(Lifecycle):
         with self.store.write() as db:
             writable(db)
             proposal=self._proposal(db,proposal_id,1)
+            if job.get('steward_mode')=='triage' and db.execute("SELECT COUNT(*) FROM auxiliary_executions WHERE domain='triage' AND owner_id=?",(proposal_id,)).fetchone()[0]>=3:
+                raise TransitionError('This proposal reached its three-invocation limit; request a new proposal')
             run=db.execute('SELECT * FROM repository_triage_runs WHERE id=?',(proposal_id,)).fetchone()
             if not run or run['status']!='queued' or proposal['status']!='draft':raise VersionConflict('Triage launch was already claimed')
             if job.get('proposal_id')!=proposal_id or job.get('repo_id')!=proposal['repository_id'] or job.get('role')!='triage' or job.get('slot')!='repository-triage':raise TransitionError('Planning worker must match the exact repository request')

@@ -1,6 +1,7 @@
 import type { Ref } from 'vue'
+import type { RankedDecision, StewardSelection } from '~/utils/steward'
 interface PlanningMember { issue_id: string; github_number: number; github_state: 'open' | 'closed'; observed_at: number; title: string; candidate_id: string | null; pull_number: number | null; head_oid: string | null; candidate_author: { id: number; type: string; login: string } | null }
-export interface PlanningRow { id: string; revision: number; action: string; reason: string; rule_quote: string | null; parameters: Record<string, any>; status: 'proposed' | 'accepted' | 'rejected'; members: PlanningMember[]; members_next: string | null; member_count: number; effects: { id: string; status: 'pending' | 'running' | 'uncertain' | 'confirmed' | 'failed' | 'superseded' }[] }
+export interface PlanningRow { steward_decision?: RankedDecision | null; selected_choice_id?: string | null; id: string; revision: number; action: string; reason: string; rule_quote: string | null; parameters: Record<string, any>; status: 'proposed' | 'accepted' | 'rejected'; members: PlanningMember[]; members_next: string | null; member_count: number; effects: { id: string; status: 'pending' | 'running' | 'uncertain' | 'confirmed' | 'failed' | 'superseded' }[] }
 export interface Proposal { id: string; version: number; status: string; rationale: string; rows: PlanningRow[]; next: number | null; total: number; run: { status: string; error: string | null } | null }
 export interface RepositoryNote { note_id: string; revision: number; kind: string; content: string; actor_id: string; sources: { url: string; kind: string; identity: string; description: string }[]; needs_refresh: boolean }
 interface PlanningView { repository: { id: number; name: string }; planning: { revision: number; rules: string; proposals_enabled: boolean; runs: { id: string; status: string; error: string | null }[]; notes: RepositoryNote[] }; proposals: { items: { id: string; status: string; created_at: number }[]; next: string | null } }
@@ -41,6 +42,11 @@ export function useRepositoryPlanning(repositoryId: Ref<number>) {
     if (!proposal.value) return
     await act({ action: 'accept', proposal_id: proposal.value.id, expected_version: proposal.value.version, accept_rows: accepted, reject_rows: rejected })
   }
+  async function choose(row: PlanningRow, selection: StewardSelection) {
+    if (!proposal.value || selection.decision_id !== row.id) return
+    await act({ action: 'choose', proposal_id: proposal.value.id, row_id: row.id, expected_version: proposal.value.version,
+      choice_id: selection.choice_id, digest: selection.digest })
+  }
   onMounted(resource.start)
-  return { resource, view: resource.data, proposal, selected, busy, error, open, members, history, act, decide }
+  return { resource, view: resource.data, proposal, selected, busy, error, open, members, history, act, decide, choose }
 }

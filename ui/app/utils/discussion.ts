@@ -100,6 +100,8 @@ interface ProposalActionState {
   undo: { request_id: string; status: 'pending' | 'applied' | 'rejected'; message: string | null } | null
 }
 export interface ThreadMessage {
+  steward_decision?: import('./steward').RankedDecision | null
+  selected_choice_id?: string | null
   id: string
   sequence: number
   role: ChatRole
