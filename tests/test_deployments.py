@@ -15,8 +15,9 @@ from unittest.mock import Mock, patch
 
 from forge.deployments import Deployments
 from forge.factory.github import GitHub, GitHubUnavailable
-from forge.factory.runner import ContainerRunner, RunnerCapacity
+from forge.factory.runner import ContainerRunner, RunnerCapacity, RunnerUnavailable
 from forge.store.db import Store
+from forge.store.provider_selection import select_provider
 
 
 def selected_store(root):
@@ -102,7 +103,9 @@ class DeploymentTests(unittest.TestCase):
                 test.engine[job['id']] = {'id': job['id'], 'status': 'created', 'running': False,
                                           'exit_code': 0, 'oom_killed': False}
                 return job['id']
-            def prepare(self, job): test.prepared.append((job['id'], job['role']))
+            def prepare(self, job):
+                test.prepared.append((job['id'], job['role']))
+                if getattr(test, 'prepare_error', None): raise test.prepare_error
             def start(self, job):
                 if test.capacity:
                     raise test.capacity
@@ -146,6 +149,106 @@ class DeploymentTests(unittest.TestCase):
         self.results[job] = result(job, **overrides)
         self.engine[job].update(status='exited', running=False, exit_code=0)
         return job
+
+    def available_account(self, config):
+        with self.database.read_snapshot() as db:
+            return select_provider(db, config, self.now)[0]
+
+    def browser_pool(self):
+        return {**self.config, 'provider_environment': ['OPENAI_API_KEY'], 'provider_auth_file_env': None,
+            'provider_ready': ['codex-browser'], 'provider_pool': [
+                {'id': 'unverified', 'provider': 'codex', 'model': 'ignored',
+                 'provider_environment': ['OPENAI_API_KEY'], 'provider_auth_file_env': None},
+                {'id': 'codex-browser', 'provider': 'codex', 'model': 'selected-model',
+                 'provider_environment': [], 'provider_auth_file_env': 'FORGE_SETUP_CODEX_AUTH'}]}
+
+    def test_deployment_pins_verified_browser_pool_account_instead_of_default_api_key(self):
+        config = self.browser_pool()
+        self.deployments().tick(config)
+        job = self.entry()['job']
+        self.assertEqual(job['provider_id'], 'codex-browser')
+        self.assertEqual(job['runner_config']['provider_environment'], [])
+        self.assertEqual(job['runner_config']['provider_auth_file_env'], 'FORGE_SETUP_CODEX_AUTH')
+        self.assertEqual(job['runner_config']['model'], 'selected-model')
+        self.assertEqual(config['provider_environment'], ['OPENAI_API_KEY'])
+
+    def test_unverified_or_leased_pool_account_never_creates_deployment_work(self):
+        config = self.browser_pool()
+        self.deployments().tick({**config, 'provider_ready': []})
+        self.assertFalse(self.github.reads)
+        held = self.pipeline_job('FORGE_SETUP_CODEX_AUTH')
+        self.deployments().tick(config)
+        self.assertFalse(self.github.reads)
+        self.assertFalse(self.engine)
+        self.release(held)
+        self.deployments().tick(config)
+        self.assertEqual(self.entry()['job']['provider_id'], 'codex-browser')
+
+    def test_pool_account_is_rechecked_when_reserving_after_github_read(self):
+        config = self.browser_pool()
+        original = self.github.workflows_digest
+        def concurrent_lease(item):
+            result = original(item)
+            self.pipeline_job('FORGE_SETUP_CODEX_AUTH')
+            return result
+        self.github.workflows_digest = concurrent_lease
+        self.deployments().tick(config)
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_leases').fetchone()[0], 0)
+        self.assertFalse(self.engine)
+        self.assertFalse(self.deployments().read()['repositories'])
+        self.github.workflows_digest = original
+        with self.database.read_snapshot() as db:
+            held = db.execute('SELECT job_id FROM job_leases').fetchone()[0]
+        self.release(held)
+        self.deployments().tick(config)
+        self.assertEqual(self.entry()['status'], 'running')
+
+    def test_unavailable_preparation_cannot_hold_its_reservation_past_deadline(self):
+        self.prepare_error = RunnerUnavailable('private credential detail')
+        deployments = self.deployments()
+        deployments.tick(self.config)
+        job = self.entry()['job']; identifier = job['id']
+        self.assertEqual(self.engine[identifier]['status'], 'created')
+        self.assertNotIn('private credential', self.entry()['error'])
+        deployments.tick(self.browser_pool())
+        self.assertEqual(self.entry()['job']['runner_config'], job['runner_config'])
+        prepared = len(self.prepared)
+        self.now = job['deadline'] + 1
+        # The expired assignment must never receive credentials or start again.
+        self.prepare_error = AssertionError('expired prepare')
+        deployments.tick({**self.config, 'enabled': False})
+        self.assertEqual(len(self.prepared), prepared)
+        self.assertIsNone(self.entry()['job'])
+        self.assertIn('deadline', self.entry()['summary'])
+        self.assertEqual(self.resets, [identifier])
+        self.assertEqual(self.execution(identifier)['cleanup'], 1)
+        with self.database.read_snapshot() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM auxiliary_leases').fetchone()[0], 0)
+            frozen = json.loads(db.execute('SELECT manifest_json FROM auxiliary_runtime WHERE execution_id=?', (identifier,)).fetchone()[0])
+        self.assertEqual(frozen['runner_config'], job['runner_config'])
+
+    def test_expired_unavailable_assignment_retries_cleanup_without_preparing(self):
+        self.prepare_error = RunnerUnavailable('unavailable')
+        deployments = self.deployments()
+        deployments.tick(self.config)
+        job = self.entry()['job']
+        self.now = job['deadline'] + 1
+        with patch.object(self.runner_class, 'reset', side_effect=OSError('engine unavailable')):
+            with self.assertRaises(OSError): deployments.tick({**self.config, 'enabled': False})
+        self.assertTrue(self.entry()['job']['fenced'])
+        self.assertTrue(self.entry()['job']['capture']['timed_out'])
+        self.prepare_error = AssertionError('fenced assignment prepared again')
+        deployments.tick({**self.config, 'enabled': False})
+        self.assertIsNone(self.entry()['job'])
+        self.assertEqual(self.resets, [job['id']])
+
+    def test_already_exited_result_can_be_collected_after_deadline(self):
+        self.deployments().tick(self.config)
+        self.finish()
+        self.now = self.entry()['job']['deadline'] + 1
+        self.deployments().tick({**self.config, 'enabled': False})
+        self.assertEqual(self.entry()['status'], 'proposed')
 
     def test_the_selected_store_serves_the_deployment_profiles(self):
         # Store-independent callers construct Deployments(root, ...) and get the
@@ -481,12 +584,12 @@ class DeploymentTests(unittest.TestCase):
             db.execute("INSERT INTO discussion_executions(id,discussion_id,phase,created_at) VALUES('execution','discussion','running',100)")
             db.execute("INSERT INTO discussion_leases VALUES('discussion','execution','fence',100)")
         config = {**self.config, 'provider_auth_file_env': 'FORGE_HARNESS_AUTH_TWO'}
-        self.assertTrue(self.deployments().leased(config))
+        self.assertIsNone(self.available_account(config))
         with self.database.write() as db:
             db.execute("INSERT INTO discussion_runtime(execution_id,manifest_json) VALUES('execution',?)",
                        (json.dumps({'runner_config': {'provider_auth_file_env': 'FORGE_HARNESS_AUTH_ONE'}}),))
-        self.assertFalse(self.deployments().leased(config))
-        self.assertTrue(self.deployments().leased({**config, 'provider_auth_file_env': 'FORGE_HARNESS_AUTH_ONE'}))
+        self.assertIsNotNone(self.available_account(config))
+        self.assertIsNone(self.available_account({**config, 'provider_auth_file_env': 'FORGE_HARNESS_AUTH_ONE'}))
 
     def test_an_api_key_configuration_needs_no_lease(self):
         self.config['provider_auth_file_env'] = None
@@ -499,10 +602,10 @@ class DeploymentTests(unittest.TestCase):
         # deployments store sees it as held until the execution is cleaned.
         self.config['provider_auth_file_env'] = 'FORGE_HARNESS_AUTH_ONE'
         self.deployments().tick(self.config)
-        self.assertTrue(self.deployments().leased(self.config))
+        self.assertIsNone(self.available_account(self.config))
         self.finish()
         self.deployments().tick(self.config)
-        self.assertFalse(self.deployments().leased(self.config))
+        self.assertIsNotNone(self.available_account(self.config))
 
     def memory_retry(self, state):
         with self.database.write() as db:
