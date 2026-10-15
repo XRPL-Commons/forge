@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import { PassThrough } from 'node:stream'
 import type { IncomingMessage } from 'node:http'
-import { allowedHosts, guardAction, guardHost, proxyPaths, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody } from '../../server/utils/proxy'
+import { allowedHosts, guardAction, guardHost, proxyPaths, tailscaleIdentity, TAILSCALE_UPSTREAM_HEADER, upstreamHeaders, readUpstreamSecret, responseHeaders, readCapped, readRequestBody } from '../../server/utils/proxy'
 
 const base = { method: 'POST', contentLength: 100, headers: {
   host: '100.111.151.38:8787', origin: 'http://100.111.151.38:8787', 'sec-fetch-site': 'same-origin',
@@ -285,5 +285,38 @@ describe('bounded request bodies', () => {
     controller.abort()
     await expect(waiting).rejects.toMatchObject({ status: 408 })
     expect(slow.listenerCount('data')).toBe(0)
+  })
+})
+
+describe('Tailscale Serve operator identity', () => {
+  const env = { NITRO_FORGE_TAILSCALE_IDENTITY: 'serve', NITRO_FORGE_PUBLIC_ORIGIN: 'https://forge.example.ts.net' }
+  const serve = { host: 'forge.example.ts.net', 'tailscale-user-login': 'Alice@Example.com' }
+  it('trusts the login only on the loopback hop from Serve under the public name', () => {
+    expect(tailscaleIdentity(serve, '127.0.0.1', env)).toBe('alice@example.com')
+    expect(tailscaleIdentity(serve, '::ffff:127.0.0.1', env)).toBe('alice@example.com')
+    expect(tailscaleIdentity(serve, '::1', env)).toBe('alice@example.com')
+  })
+  it('refuses a header sent straight to the tailnet address or under another name', () => {
+    expect(tailscaleIdentity(serve, '100.101.102.103', env)).toBeUndefined()
+    expect(tailscaleIdentity({ ...serve, host: '100.111.151.38:8787' }, '127.0.0.1', env)).toBeUndefined()
+  })
+  it('is off unless identity mode and an HTTPS origin are configured', () => {
+    expect(tailscaleIdentity(serve, '127.0.0.1', {})).toBeUndefined()
+    expect(tailscaleIdentity(serve, '127.0.0.1', { ...env, NITRO_FORGE_TAILSCALE_IDENTITY: '1' })).toBeUndefined()
+    expect(tailscaleIdentity(serve, '127.0.0.1', { ...env, NITRO_FORGE_PUBLIC_ORIGIN: 'http://forge.example.ts.net' })).toBeUndefined()
+  })
+  it('refuses tagged devices, repeated and malformed logins', () => {
+    for (const login of ['tagged-devices', 'tagged-devices@example.ts.net', 'alice@example.com,mallory@example.com', 'alice', '', 'a b@example.com'])
+      expect(tailscaleIdentity({ ...serve, 'tailscale-user-login': login }, '127.0.0.1', env)).toBeUndefined()
+  })
+  it('forwards only the derived identity, never a client-supplied identity header', () => {
+    const spoofed = { host: 'x', 'tailscale-user-login': 'mallory@example.com', [TAILSCALE_UPSTREAM_HEADER]: 'mallory@example.com' }
+    const plain = upstreamHeaders(spoofed, 'GET', '127.0.0.1:8788', 's'.repeat(43))
+    expect(plain[TAILSCALE_UPSTREAM_HEADER]).toBeUndefined()
+    expect(plain['tailscale-user-login']).toBeUndefined()
+    expect(upstreamHeaders(spoofed, 'GET', '127.0.0.1:8788', 's'.repeat(43), false, 'alice@example.com')[TAILSCALE_UPSTREAM_HEADER]).toBe('alice@example.com')
+  })
+  it('never attaches operator identity to agent bearer routes', () => {
+    expect(upstreamHeaders({ host: 'x', authorization: 'Bearer t' }, 'POST', '127.0.0.1:8788', 's', true, 'alice@example.com')[TAILSCALE_UPSTREAM_HEADER]).toBeUndefined()
   })
 })

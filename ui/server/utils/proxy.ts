@@ -78,12 +78,40 @@ export function guardAction({ method, headers, contentLength, publicOrigin }: Gu
   return { ok: true }
 }
 
+// Tailscale Serve adds `Tailscale-User-Login` for a tailnet person (never for a
+// tagged device). It is an identity only when this process received it from
+// Serve itself: Serve connects over loopback to the configured HTTPS name.
+// Any other path, such as a direct request to the tailnet address, may carry a
+// forged header, so nothing is forwarded. The status API trusts only
+// `TAILSCALE_UPSTREAM_HEADER`, and `upstreamHeaders` never copies a client's.
+export const TAILSCALE_UPSTREAM_HEADER = 'x-forge-tailscale-user-login'
+const TAILSCALE_LOGIN = /^[a-z0-9][a-z0-9._%+-]{0,63}@[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/
+
+function loopback(address: string | undefined): boolean {
+  const plain = (address ?? '').startsWith('::ffff:') ? (address ?? '').slice(7) : (address ?? '')
+  return plain === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(plain)
+}
+
+export function tailscaleIdentity(headers: Headers, remoteAddress: string | undefined, env: Record<string, string | undefined>): string | undefined {
+  if (env.NITRO_FORGE_TAILSCALE_IDENTITY !== 'serve') return undefined
+  let origin: URL
+  try { origin = new URL(env.NITRO_FORGE_PUBLIC_ORIGIN ?? '') } catch { return undefined }
+  if (origin.protocol !== 'https:' || origin.pathname !== '/' || !loopback(remoteAddress)) return undefined
+  if ((headers.host ?? '').trim().toLowerCase() !== origin.host.toLowerCase()) return undefined
+  // A repeated header arrives comma-joined; that is never one person.
+  const value = (headers['tailscale-user-login'] ?? '').trim().toLowerCase()
+  if (!value || value.includes(',') || value.startsWith('tagged-devices') || value.length > 320 || !TAILSCALE_LOGIN.test(value)) return undefined
+  return value
+}
+
 // `x-forwarded-host` is the name the browser used, already checked by
 // guardHost. The status service builds GitHub App manifest URLs from it, so
 // App callbacks return through this front door rather than to the loopback
 // upstream address.
-export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string, secret = '', client = false): Headers {
+export function upstreamHeaders(headers: Headers, method: string, upstreamHost: string, secret = '', client = false, tailscaleLogin?: string): Headers {
   const out: Headers = { host: upstreamHost }
+  // Operator identity from Serve, never on agent (bearer) routes.
+  if (tailscaleLogin && !client) out[TAILSCALE_UPSTREAM_HEADER] = tailscaleLogin
   // The status API refuses requests without it: another local process cannot
   // read this 0600 file, so it cannot act as the operator or forge the host.
   if (secret) out['x-forge-upstream'] = secret
