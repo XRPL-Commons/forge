@@ -8,6 +8,7 @@ from .contracts import SetupError, require
 from .github import run_bounded
 from .rules import branch_rules, optional
 from .version import client_revision
+from .tailnet import executable as tailscale_executable, environment as tailscale_environment
 
 
 def finding(identifier, status, detail, *, command=None, repository=None, waivable=False):
@@ -70,13 +71,19 @@ def observe(intent, installation, github, *, run=run_bounded):
     installed = client_revision()
     items.append(finding('local.revision', 'pass' if installed == intent['revision'] else 'needs_you',
                          'Client must match the pinned installation revision.', command=['forge', 'self-update', '--revision', intent['revision']]))
+    tailnet_command = None
+    tailnet_detail = 'Join this computer to the intended private tailnet.'
     try:
-        raw = run(['tailscale', 'status', '--json'], timeout=15)
+        tailscale = tailscale_executable()
+        tailnet_command = [tailscale, 'up']
+        raw = run([tailscale, 'status', '--json'], timeout=15, environ=tailscale_environment())
         tailnet = json.loads(raw)
         joined = tailnet.get('BackendState') == 'Running'
-    except (SetupError, ValueError, OSError):
+    except (SetupError, ValueError, OSError) as error:
         tailnet, joined = {}, False
-    items.append(finding('local.tailnet', 'pass' if joined else 'needs_you', 'Join this computer to the intended private tailnet.', command=['tailscale', 'up']))
+        if isinstance(error, SetupError) and error.code == 'tailnet_cli_missing':
+            tailnet_detail = str(error)
+    items.append(finding('local.tailnet', 'pass' if joined else 'needs_you', tailnet_detail, command=tailnet_command))
     collisions = [row for row in (tailnet.get('Peer') or {}).values() if row.get('HostName') == intent['hostname']]
     owner = intent['owner']
     authority = owner['type'] == 'User' and owner['id'] == actor['id']

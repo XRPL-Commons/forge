@@ -46,7 +46,8 @@ class InstallationIdentityTests(unittest.TestCase):
                 configure(self.root, **{**self.kw, 'tailnet_operator': {'operator_id': operator_id, 'login': name}}, apply=True)
         self.bootstrap.execute.assert_not_called()
 
-    def test_local_identity_comes_from_self_user_not_github_login(self):
+    @patch('forge_client.install_identity.tailscale_executable', return_value='/fixture/tailscale')
+    def test_local_identity_comes_from_self_user_not_github_login(self, executable):
         github = Mock(); github.identity.return_value = {'id': 123, 'login': 'github-name'}
         data = {'BackendState': 'Running', 'Self': {'UserID': 7},
                 'User': {'7': {'LoginName': 'Alice@example.com'}, '8': {'LoginName': 'other@example.com'}}}
