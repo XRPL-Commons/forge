@@ -15,13 +15,21 @@ COMPARISONS = {}
 
 
 def own_build_pr(pr, repo_id, number, publisher):
+    # During the move to one App, PRs opened by the retired build bot stay Forge's.
+    publishers = {publisher} if isinstance(publisher, str) else set(publisher)
     return (isinstance(pr, dict)
             and str((pr.get('head') or {}).get('ref') or '').startswith(f'forge/issue-{number}-')
-            and (pr.get('user') or {}).get('login') == publisher
+            and (pr.get('user') or {}).get('login') in publishers
             and (pr.get('user') or {}).get('type') == 'Bot'
             and pr.get('state') == 'open' and not pr.get('merged')
             and ((pr.get('head') or {}).get('repo') or {}).get('id') == repo_id
             and ((pr.get('base') or {}).get('repo') or {}).get('id') == repo_id)
+
+
+def bot_logins(github, role):
+    """Current then retired bot logins for a role; adapters without history give one."""
+    lookup = getattr(github, 'publishers', None)
+    return list(lookup(role)) if lookup else [github.publisher(role)]
 
 
 def classic_allowances(value):
@@ -35,6 +43,13 @@ def classic_allowances(value):
             return None
         names[kind] = [r[key] for r in rows]
     return names
+
+
+def verdict_comment(job, report, marker):
+    role = job['role']
+    head = job['candidate']['head']
+    title = f"forge/{role}: {'passed' if report['outcome'] == 'pass' else 'changes needed'} at {head[:12]}"
+    return f"**{title}**\n\n{report['summary'][:60000]}\n\n{marker}"
 
 
 class GitHubUnavailable(RuntimeError):
@@ -67,6 +82,19 @@ class GitHub:
             return {'app_id': connection['app_id'], 'private_key_env': connection['private_key_env'],
                     'installation_id': matches[0]['installation_id']}
         return connection
+
+    def app_ids(self, role):
+        """The role's App now, then the Apps it used before the single Forge App."""
+        from ..settings import retired_for
+        current = self.connection(role)['app_id']
+        return [current] + [row['app_id'] for row in retired_for(self.settings.load(), role) if row['app_id'] != current]
+
+    def publishers(self, role):
+        """Bot logins whose earlier work is still Forge's: current first, then retired."""
+        from ..settings import retired_for
+        current = self.publisher(role)
+        retired = [row['slug'] + '[bot]' for row in retired_for(self.settings.load(), role) if row.get('slug')]
+        return [current] + [login for login in retired if login != current]
 
     def token(self, role, repo_id, *, worker=False, extra=None, read_only=False):
         connection = self.connection(role, repo_id)
@@ -301,7 +329,7 @@ class GitHub:
             match = re.match(r'forge/issue-(\d+)-', str((pr.get('head') or {}).get('ref') or ''))
             pr['forge_owned'] = False
             if match:
-                publisher = publisher or self.publisher('build')
+                publisher = publisher or self.publishers('build')
                 pr['forge_owned'] = own_build_pr(pr, item['repo_id'], int(match[1]), publisher)
         from .ownership import linked_pulls
         return linked_pulls(self,item,rows)
@@ -439,7 +467,10 @@ class GitHub:
         name = 'forge/merge-policy' if role == 'controller' else 'forge/' + role
         runs = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
         app_id = self.connection(role)['app_id']
-        own = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') == app_id
+        # Read-back also recognizes a run a retired role App published before the
+        # move to one App; new publications always come from the current App.
+        readable = self.app_ids(role) if observe_only else [app_id]
+        own = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') in readable
                and r.get('external_id') == external_id]
         if len(own) > 1:
             raise GitHubUnavailable('Duplicate check publication needs reconciliation')
@@ -475,23 +506,35 @@ class GitHub:
         return verified[0]['id']
 
     def verdict(self, job, report, *, observe_only=False):
+        """Post an executor's verdict exactly as returned: a check run plus a comment.
+
+        GitHub never counts an App's approval, so the verdict is not a PR review.
+        Review and audit stay separate executors; one App only publishes them.
+        A review a role App posted before the move to one App still settles
+        its effect, so pending publications survive the migration."""
         candidate_value = job['candidate']
         marker = '<!-- forge-verdict ' + job['id'] + ' -->'
+        logins = set(self.publishers(job['role'])) | {job['publisher']}
         reviews = self.pages(job['role'], job, f"/pulls/{candidate_value['pr']}/reviews")
-        owned = [r for r in reviews if marker in (r.get('body') or '') and r.get('user', {}).get('login') == job['publisher']
-                 and r.get('commit_id') == candidate_value['head']]
-        if not owned and observe_only:
-            return None
-        if not owned:
-            self.call(job['role'], job, 'POST', f"/pulls/{candidate_value['pr']}/reviews",
-                      {'commit_id': candidate_value['head'], 'event': 'APPROVE' if report['outcome'] == 'pass' else 'REQUEST_CHANGES',
-                       'body': report['summary'] + '\n\n' + marker})
-            owned = [r for r in self.pages(job['role'], job, f"/pulls/{candidate_value['pr']}/reviews")
-                     if marker in (r.get('body') or '') and r.get('user', {}).get('login') == job['publisher']
-                     and r.get('commit_id') == candidate_value['head']]
-        expected = 'APPROVED' if report['outcome'] == 'pass' else 'CHANGES_REQUESTED'
-        if len(owned) != 1 or owned[0]['state'] != expected:
-            raise GitHubUnavailable('Role review publication is unconfirmed or dismissed')
+        legacy = [r for r in reviews if marker in (r.get('body') or '') and r.get('user', {}).get('login') in logins
+                  and r.get('commit_id') == candidate_value['head']]
+        if legacy:
+            expected = 'APPROVED' if report['outcome'] == 'pass' else 'CHANGES_REQUESTED'
+            if len(legacy) != 1 or legacy[0]['state'] != expected:
+                raise GitHubUnavailable('Role review publication is unconfirmed or dismissed')
+        else:
+            path = f"/issues/{candidate_value['pr']}/comments"
+            def owned():
+                return [c for c in self.pages(job['role'], job, path) if marker in (c.get('body') or '')
+                        and (c.get('user') or {}).get('login') in logins]
+            found = owned()
+            if not found and observe_only:
+                return None
+            if not found:
+                self.call(job['role'], job, 'POST', path, {'body': verdict_comment(job, report, marker)})
+                found = owned()
+            if len(found) != 1:
+                raise GitHubUnavailable('Verdict comment publication is unconfirmed')
         return self.check(job, job['role'], candidate_value, job['id'],
                           'success' if report['outcome'] == 'pass' else 'failure', report['summary'], observe_only=observe_only)
 
@@ -686,8 +729,10 @@ class GitHub:
             accepted = item['evidence'].get(role)
             if not accepted:
                 return False
-            own = [r for r in runs if r.get('name') == 'forge/' + role
-                   and r.get('app', {}).get('id') == self.connection(role)['app_id']]
+            # Accepted evidence a retired role App published stays valid after
+            # the move to one App; the accepted check ID still has to be current.
+            apps = self.app_ids(role)
+            own = [r for r in runs if r.get('name') == 'forge/' + role and r.get('app', {}).get('id') in apps]
             if not own:
                 return False
             current = max(own, key=lambda r: r['id'])

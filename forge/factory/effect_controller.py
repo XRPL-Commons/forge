@@ -267,6 +267,9 @@ class EffectController:
         path = f"/commits/{effect['candidate']['head']}/check-runs?filter=all"
         roles = {'forge/review': 'review', 'forge/audit': 'audit', 'forge/merge-policy': 'controller'}
         identities = {role: self.github.connection(role)['app_id'] for role in roles.values()}
+        # Runs a retired role App published before the move to one App are
+        # history: settled when complete, and never patched with another App.
+        history = {role: set(self.github.app_ids(role)) - {identities[role]} for role in roles.values()}
         runs = self.github.pages('controller', effect, path, 'check_runs')
         if len(runs) > 100:
             raise GitHubUnavailable('Check settlement exceeded its observation limit')
@@ -275,12 +278,17 @@ class EffectController:
         expected = set()
         for run in runs:
             role = roles.get(run.get('name'))
-            if not role or (run.get('app') or {}).get('id') != identities[role]:
+            app_id = (run.get('app') or {}).get('id')
+            if not role or app_id not in {identities[role], *history[role]}:
                 continue
-            if run.get('external_id') not in external_ids and (run.get('id'), identities[role]) not in check_ids:
+            if run.get('external_id') not in external_ids and (run.get('id'), app_id) not in check_ids:
                 continue
             if run.get('head_sha') != effect['candidate']['head']:
                 raise GitHubUnavailable('Check settlement observed another head')
+            if app_id != identities[role]:
+                if run.get('status') == 'completed':
+                    expected.add(run['id'])
+                continue
             expected.add(run['id'])
             if run.get('status') != 'completed':
                 if observe_only:
@@ -291,7 +299,8 @@ class EffectController:
         after = self.github.pages('controller', effect, path, 'check_runs')
         verified = {run['id'] for run in after if run.get('id') in expected
                     and run.get('head_sha') == effect['candidate']['head'] and run.get('status') == 'completed'
-                    and (run.get('app') or {}).get('id') == identities.get(roles.get(run.get('name')))}
+                    and (run.get('app') or {}).get('id') in {identities.get(roles.get(run.get('name'))),
+                                                             *history.get(roles.get(run.get('name')), ())}}
         if verified != expected:
             raise GitHubUnavailable('Check settlement has not been independently verified')
         self.commands.record(effect['id'], 'confirmed', receipt={'check_ids': sorted(verified)})

@@ -62,6 +62,9 @@ class Remote:
         self.probe(path)
         return deepcopy(self.reviews if path.endswith('/reviews') else self.runs)
 
+    def app_ids(self, role):
+        return [self.connection(role)['app_id']]
+
     def connection(self, role):
         return {'app_id': {'review': 101, 'audit': 102}[role]}
 

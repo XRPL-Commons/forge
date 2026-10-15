@@ -19,7 +19,7 @@ from ..store.queries import _limit
 from ..store.transitions import Lifecycle, applicable_gates, manifest_hash
 from .config import policy, validate
 from .contracts import SHA, issue_dependencies
-from .github import GitHubUnavailable
+from .github import GitHubUnavailable, bot_logins
 from .ownership import ownership
 from .runner import ContainerRunner, RunnerError
 
@@ -219,7 +219,7 @@ class GitHubPrepare:
                     or current.get('base', {}).get('ref') != unit['base_branch']
                     or current.get('base', {}).get('repo', {}).get('id') != unit['repository_id']
                     or current.get('state') != 'open' or current.get('merged')
-                    or 'author' not in previous and current.get('user', {}).get('login') != self.github.publisher('build')
+                    or 'author' not in previous and current.get('user', {}).get('login') not in bot_logins(self.github, 'build')
                     or current.get('user', {}).get('type') != 'Bot'
                     or 'author' in previous and {key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')} != previous['author']):
                 return None

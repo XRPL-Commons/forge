@@ -1,0 +1,121 @@
+"""One Forge App publishes every verdict; retired role Apps stay readable history."""
+import copy
+import unittest
+from unittest.mock import Mock
+
+from forge.factory.config import validate
+from forge.factory.github import GitHub, GitHubUnavailable, own_build_pr
+from forge.settings import ROLES
+from tests.test_settings import configured
+
+HEAD = 'a' * 40
+
+
+def single_app_config():
+    config = configured()
+    controller = config['connections']['controller']
+    config['retired_apps'] = [
+        {'app_id': config['connections'][role]['app_id'], 'slug': 'forge-' + role, 'roles': [role], 'retired_at': 1}
+        for role in ('build', 'review', 'audit')]
+    config['connections'] = {role: copy.deepcopy(controller) for role in ROLES}
+    return config
+
+
+class SingleAppPublicationTests(unittest.TestCase):
+    def setUp(self):
+        settings = Mock()
+        settings.load.return_value = single_app_config()
+        settings.view.return_value = {'roles': {role: {'app_slug': 'forge'} for role in ROLES}}
+        client = Mock()
+        client.jwt.return_value = 'jwt'
+        client.request.return_value = {'token': 'token'}
+        self.github = GitHub(settings, validate({}), client=client)
+        self.app_id = settings.load.return_value['connections']['controller']['app_id']
+        self.comments, self.reviews, self.runs, self.posts = [], [], [], []
+
+        def pages(role, item, path, key=None):
+            if path.endswith('/comments'):
+                return copy.deepcopy(self.comments)
+            if path.endswith('/reviews'):
+                return copy.deepcopy(self.reviews)
+            return copy.deepcopy(self.runs)
+
+        def call(role, item, method, path, payload=None):
+            self.posts.append((role, method, path, payload))
+            if path.endswith('/comments'):
+                self.comments.append({'id': len(self.comments) + 1, 'body': payload['body'], 'user': {'login': 'forge[bot]'}})
+            elif path == '/check-runs':
+                self.runs.append({'id': 500 + len(self.runs), 'app': {'id': self.app_id}, 'head_sha': payload['head_sha'],
+                                  'name': payload['name'], 'external_id': payload['external_id'],
+                                  'status': payload['status'], 'conclusion': payload.get('conclusion'),
+                                  'output': payload['output']})
+        self.github.pages = Mock(side_effect=pages)
+        self.github.call = Mock(side_effect=call)
+
+    def job(self, role):
+        return {'id': role + '-job', 'role': role, 'publisher': 'forge[bot]', 'repo': 'example/project', 'repo_id': 1,
+                'candidate': {'pr': 7, 'head': HEAD}}
+
+    def test_review_and_audit_verdicts_are_separate_checks_and_comments_from_one_app(self):
+        review = self.github.verdict(self.job('review'), {'outcome': 'pass', 'summary': 'Looks right'})
+        audit = self.github.verdict(self.job('audit'), {'outcome': 'fail', 'summary': 'Missing a test'})
+        self.assertNotEqual(review, audit)
+        # Never a PR review: GitHub does not count an App's approval.
+        self.assertFalse(any(path.endswith('/reviews') for _, method, path, _ in self.posts if method == 'POST'))
+        self.assertEqual({(r['name'], r['conclusion'], r['app']['id']) for r in self.runs},
+                         {('forge/review', 'success', self.app_id), ('forge/audit', 'failure', self.app_id)})
+        bodies = [c['body'] for c in self.comments]
+        self.assertTrue(any('forge/review: passed' in body and 'Looks right' in body for body in bodies))
+        self.assertTrue(any('forge/audit: changes needed' in body and 'Missing a test' in body for body in bodies))
+        # Replaying a verdict publishes nothing new.
+        count = len(self.posts)
+        self.assertEqual(self.github.verdict(self.job('review'), {'outcome': 'pass', 'summary': 'Looks right'}), review)
+        self.assertEqual(len(self.posts), count)
+
+    def test_observe_only_never_publishes(self):
+        self.assertIsNone(self.github.verdict(self.job('review'), {'outcome': 'pass', 'summary': 'x'}, observe_only=True))
+        self.assertEqual(self.posts, [])
+
+    def test_a_pending_verdict_the_retired_review_app_already_posted_settles(self):
+        marker = '<!-- forge-verdict review-job -->'
+        self.reviews = [{'id': 1, 'body': 'ok\n\n' + marker, 'user': {'login': 'forge-review[bot]'},
+                         'commit_id': HEAD, 'state': 'APPROVED'}]
+        self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'review-job', 'head_sha': HEAD,
+                      'status': 'completed', 'conclusion': 'success', 'output': {'summary': 'ok'}}]
+        job = self.job('review')
+        self.assertEqual(self.github.verdict(job, {'outcome': 'pass', 'summary': 'ok'}, observe_only=True), 40)
+        self.assertEqual(self.posts, [])
+
+    def test_gates_accept_evidence_a_retired_app_published(self):
+        item = {'candidate': {'head': HEAD}, 'evidence': {'review': {'check_id': 40}, 'audit': {'check_id': 41}}}
+        self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'status': 'completed', 'conclusion': 'success'},
+                     {'id': 41, 'name': 'forge/audit', 'app': {'id': self.app_id}, 'status': 'completed', 'conclusion': 'success'}]
+        self.assertTrue(self.github.gates(item))
+        # An unrelated App's run never counts, even with the accepted name.
+        self.runs[0]['app']['id'] = 999
+        self.assertFalse(self.github.gates(item))
+
+    def test_retired_build_bot_prs_remain_forge_owned(self):
+        pr = {'head': {'ref': 'forge/issue-3-x', 'repo': {'id': 1}}, 'base': {'repo': {'id': 1}},
+              'user': {'login': 'forge-build[bot]', 'type': 'Bot'}, 'state': 'open', 'merged': False}
+        self.assertEqual(self.github.publishers('build'), ['forge[bot]', 'forge-build[bot]'])
+        self.assertTrue(own_build_pr(pr, 1, 3, self.github.publishers('build')))
+        self.assertFalse(own_build_pr({**pr, 'user': {'login': 'someone[bot]', 'type': 'Bot'}}, 1, 3,
+                                      self.github.publishers('build')))
+
+    def test_new_checks_always_come_from_the_current_app(self):
+        self.runs = [{'id': 40, 'name': 'forge/review', 'app': {'id': 2}, 'external_id': 'effect', 'head_sha': HEAD,
+                      'status': 'in_progress', 'output': {'summary': 'x'}}]
+        check = self.github.check({}, 'review', {'head': HEAD}, 'effect', 'cancelled', 'Stopped')
+        self.assertNotEqual(check, 40)
+        self.assertEqual(self.posts[-1][1:3], ('POST', '/check-runs'))
+
+    def test_comment_read_back_must_be_unique(self):
+        marker = '<!-- forge-verdict review-job -->'
+        self.comments = [{'id': n, 'body': marker, 'user': {'login': 'forge[bot]'}} for n in (1, 2)]
+        with self.assertRaises(GitHubUnavailable):
+            self.github.verdict(self.job('review'), {'outcome': 'pass', 'summary': 'x'})
+
+
+if __name__ == '__main__':
+    unittest.main()
