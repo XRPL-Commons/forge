@@ -57,6 +57,18 @@ class OperatorOutboxTests(unittest.TestCase):
         self.assertEqual(self.github.calls,[])
 
 
+    def test_legacy_comment_receipt_does_not_adopt_an_older_matching_reason(self):
+        from datetime import datetime, timezone
+        request=self.request('close');row=self.actions._request(request)
+        payload={'body':'Closed from Forge as not planned: '+row['reason']}
+        self.actions._intent(row,'close-comment',payload)
+        comment={'id':42,'body':payload['body'],'user':{'login':self.github.publisher('controller'),'type':'Bot'}}
+        stamp=lambda value:datetime.fromtimestamp(value,timezone.utc).isoformat()
+        self.github.comments=[{**comment,'created_at':stamp(self.now-60)}]
+        self.assertFalse(self.actions._comment_receipt(row,payload))
+        self.github.comments=[{**comment,'created_at':stamp(self.now+1)}]
+        self.assertTrue(self.actions._comment_receipt(row,payload))
+
     def test_retired_readback_failure_does_not_reject_again(self):
         from forge.store.models import TransitionError
         request=self.lose_comment()

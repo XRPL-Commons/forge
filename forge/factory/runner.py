@@ -507,8 +507,8 @@ class ContainerRunner:
         captured = {'result': None, 'logs': '', 'missing': []}
         # A complete repository proposal is normalized into many rows; ordinary
         # worker reports retain their small result boundary.
-        from ..harnesses.results import result_limit as limit_for_role
-        result_limit = limit_for_role(job.get('role'))
+        from ..harnesses.results import result_limit as limit_for_assignment
+        result_limit = limit_for_assignment(job)
         archive_limit = result_limit + 65536
         secrets = self._scrub_values(job)
         try:

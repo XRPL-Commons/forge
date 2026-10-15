@@ -17,12 +17,13 @@ class ResultBoundaryTests(unittest.TestCase):
     def test_every_adapter_hands_off_role_limit_and_rejects_one_extra_byte(self):
         for name in ('claude', 'grok', 'codex'):
             module = adapter(name)
-            for role, limit in (('build', 65536), ('triage', 4*1048576)):
+            for role, mode, limit in (('build', None, 65536), ('triage', None, 4*1048576),
+                                      ('steward','triage',4*1048576), ('steward','conversation',65536)):
                 for excess in (0, 1):
-                    with self.subTest(provider=name, role=role, excess=excess), tempfile.TemporaryDirectory() as temporary:
+                    with self.subTest(provider=name, role=role, mode=mode, excess=excess), tempfile.TemporaryDirectory() as temporary:
                         root = Path(temporary)
                         result = {'summary': 'x'*(limit-len(json.dumps({'summary': ''}).encode())+excess)}
-                        note = {'role': role, 'id': 'job'}
+                        note = {'role': role, 'mode': mode, 'id': 'job'}
                         completed = subprocess.CompletedProcess([], 0)
                         namespace = module['run'].__globals__
                         if name == 'codex':

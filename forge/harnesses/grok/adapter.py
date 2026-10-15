@@ -114,7 +114,7 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
         args += ['-m', note['model']]
     try:
         code, raw = collect(args, directory, env,
-                            max_bytes=max(2*1024*1024, 2*RESULTS['result_limit'](note.get('role'))+65536))
+                            max_bytes=max(2*1024*1024, 2*RESULTS['result_limit'](note)+65536))
     finally:
         Path(source.name).unlink(missing_ok=True)
     events = []

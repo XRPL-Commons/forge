@@ -334,10 +334,21 @@ class OperatorActions(Lifecycle):
 
     def _comment_receipt(self,row,payload):
         comments=self.github.pages('controller',row['item'],f"/issues/{row['item']['number']}/comments")
-        match=next((comment for comment in comments if comment.get('body')==payload['body']
-                    and (comment.get('user') or {}).get('type')=='Bot'
-                    and (comment.get('user') or {}).get('login')==self.github.publisher('controller')),None)
-        if match is None:return False
+        matches=[comment for comment in comments if comment.get('body')==payload['body']
+                 and (comment.get('user') or {}).get('type')=='Bot'
+                 and (comment.get('user') or {}).get('login')==self.github.publisher('controller')]
+        if '<!-- forge-operator:'+row['id']+':close-comment -->' not in payload['body']:
+            # Legacy comments have no unique marker. An older matching reason
+            # cannot confirm this request's uncertain write.
+            from ..store.remote_time import instant, RemoteTimestampError
+            with self.store.read_snapshot() as db:
+                effect=db.execute("SELECT created_at FROM external_effects WHERE operator_request_id=? AND operator_step='close-comment'",(row['id'],)).fetchone()
+            if effect is None:return False
+            try:
+                matches=[comment for comment in matches if instant(comment.get('created_at')).timestamp()>=int(effect['created_at'])]
+            except RemoteTimestampError:
+                return False
+        if len(matches)!=1:return False
         self._receipt(row,'close-comment',{'posted':True})
         return True
 
