@@ -19,18 +19,9 @@ RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.p
 EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
 
 
-def error_message(text):
-    text = text.lower()
-    if any(s in text for s in ('rate_limit', 'rate limit', 'usage limit', 'insufficient_quota', 'quota', 'credit', '429')):
-        return 'Provider usage limit reached'
-    if any(s in text for s in ('not signed in', 'sign in', 'authentication_error', 'invalid api key', 'invalid_api_key',
-                               'unauthorized', 'login required', 'token expired', '401')):
-        return 'Provider authentication_error; reconnect the account'
-    return 'Grok Build did not return a usable result'
-
-
-FAILURE_REASONS = {'Provider authentication_error; reconnect the account': 'provider_login_expired',
-                   'Provider usage limit reached': 'provider_usage_limit'}
+FAILURE_REASONS = {'auth': 'provider_login_expired', 'rate_limit': 'provider_usage_limit'}
+FAILURE_MESSAGES = {'auth': 'Provider authentication_error; reconnect the account',
+                    'rate_limit': 'Provider usage limit reached'}
 
 
 def probe_failure_reason(answer, failure, proof, nonce):
@@ -130,9 +121,10 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
         if response.get('is_error') is True and response.get('subtype') == 'error_during_execution' and canary is None:
             # Grok's Messages-compatible terminal error has no typed cause.
             EXECUTION['write_receipt'](note, 'provider_error', provider_error={'code': 'unknown'})
-        message = error_message(raw)
+        failure = (EXECUTION['provider_error'](response) or {}).get('code', 'unknown')
+        message = FAILURE_MESSAGES.get(failure, 'Grok Build did not return a usable result')
         print(json.dumps({'type': 'error', 'message': message}), flush=True)
-        return None, message
+        return None, failure
     if canary and not canary_completed(events, *canary):
         raise RuntimeError('Native sandbox canary execution was not verified')
     return response['structured_output'], None
