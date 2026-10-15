@@ -30,8 +30,13 @@ class ResetImportTests(unittest.TestCase):
             source = Path(__file__).resolve().parents[1]
             def service(argv, capture=False):
                 command = [sys.executable if arg == '/usr/bin/python3' else arg for arg in argv]
+                # CI qualifies SQLite through its library path; preserve that
+                # runtime while still excluding PYTHONPATH and the login cwd.
+                environment = {'HOME': directory, 'PATH': '/usr/bin:/bin'}
+                if 'LD_LIBRARY_PATH' in os.environ:
+                    environment['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH']
                 result = subprocess.run([*command, '--help'], cwd=foreign,
-                    env={'HOME': directory, 'PATH': '/usr/bin:/bin'}, text=True, capture_output=True, timeout=30)
+                    env=environment, text=True, capture_output=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('--generation', result.stdout)
                 return '{"imported": true}'

@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -189,8 +190,13 @@ class HostTests(unittest.TestCase):
             source = Path(__file__).resolve().parents[1]
             def service(argv, capture=False):
                 command = [sys.executable if arg == '/usr/bin/python3' else arg for arg in argv]
+                # Keep CI's qualified SQLite library, without relying on a
+                # PYTHONPATH that could hide a wrong service working directory.
+                environment = {'HOME': directory, 'PATH': '/usr/bin:/bin'}
+                if 'LD_LIBRARY_PATH' in os.environ:
+                    environment['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH']
                 result = subprocess.run([*command, '--help'], cwd=foreign,
-                    env={'HOME': directory, 'PATH': '/usr/bin:/bin'}, text=True, capture_output=True, timeout=30)
+                    env=environment, text=True, capture_output=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('--setup-id', result.stdout)
                 return '{"imported": true}'
