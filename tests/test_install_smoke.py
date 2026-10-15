@@ -494,15 +494,15 @@ class TriageSmokeTests(unittest.TestCase):
         self.plans = RepositoryPlanning(self.store, clock=lambda: 150)
         self.github.issue.return_value = (self.issue, self.requirements)
 
-    def proposed(self, action='keep', parameters=None, environment=False):
+    def proposed(self, action='keep', parameters=None, environment=False, suffix=''):
         from forge.steward_subjects import triage_dossiers, triage_schema
         from forge.store.transitions import manifest_hash
         from tests.steward_subject_fixture import output, row_choice
         if environment:
             self.runtime['environment_tiers'] = {'standard': {'image': 'sha256:' + '1'*64}}
-        queued = self.plans.queue(1, request_id='smoke-triage', actor_id='operator:installation', base_branch='main')
+        queued = self.plans.queue(1, request_id='smoke-triage'+suffix, actor_id='operator:installation', base_branch='main')
         context = self.plans.context(queued['proposal_id'], head='a'*40)
-        job = {'id': 'triage-job', 'proposal_id': queued['proposal_id'], 'slot': 'repository-triage',
+        job = {'id': 'triage-job'+suffix, 'proposal_id': queued['proposal_id'], 'slot': 'repository-triage',
                'role': 'triage', 'repo_id': 1, 'repo': 'owner/repo', 'head': 'a'*40, 'deadline': 500,
                'created_at': 150, 'fenced': False, 'cleanup': False, 'base_branch': 'main',
                'runner_config': self.runtime, 'steward_mode': 'triage'}
@@ -516,7 +516,7 @@ class TriageSmokeTests(unittest.TestCase):
                                  'environment': {'environment_id': 'standard', 'services': []}}
         result = {'version': 1, 'decisions': [decision], 'metadata': {'reply': 'Review smoke', 'notes': [], 'handoff': None}}
         self.plans.progress(job['id'], capture={'result': result}, fenced=True, cleanup=True)
-        self.plans.publish_decisions(queued['proposal_id'], execution_id=job['id'], request_id='publish-smoke', actor_id='supervisor:triage')
+        self.plans.publish_decisions(queued['proposal_id'], execution_id=job['id'], request_id='publish-smoke'+suffix, actor_id='supervisor:triage')
         self.plans.settle_run(queued['proposal_id'])
         return self.plans.proposal(queued['proposal_id'])
 
@@ -538,6 +538,50 @@ class TriageSmokeTests(unittest.TestCase):
         self.assertIsNone(self.service.accept_keep(self.binding, self.github, self.runtime))
         self.assertEqual(self.plans.proposal(proposal['id'])['version'], accepted['version'])
         self.github.issue.assert_called_once()
+
+    def test_new_completed_suggestion_does_not_revoke_accepted_smoke(self):
+        accepted = self.proposed()
+        self.service.accept_keep(self.binding, self.github, self.runtime)
+        before = self.ready()
+        self.plans.clock = lambda: 170
+        newer = self.proposed(suffix='-after-build')
+        self.assertEqual(self.ready(), before)
+        self.assertEqual(before['id'], accepted['id'])
+        self.assertIsNone(self.service.accept_keep(self.binding, self.github, self.runtime))
+        self.assertEqual(self.plans.proposal(newer['id'])['status'], 'proposed')
+        self.assertTrue(execution_allowed(self.store, {'repo': 'owner/repo', 'unit_id': 'smoke-unit'}))
+
+    def test_accepted_smoke_does_not_follow_changed_delivery_membership(self):
+        self.proposed()
+        self.service.accept_keep(self.binding, self.github, self.runtime)
+        self.assertIsNotNone(self.ready())
+        with self.store.write() as db:
+            db.execute("UPDATE unit_issues SET left_at=180,exit_reason='combined' WHERE unit_id='smoke-unit'")
+        self.assertIsNone(self.ready())
+
+    def test_accepted_evidence_survives_normal_merge_membership_completion(self):
+        self.proposed()
+        self.service.accept_keep(self.binding, self.github, self.runtime)
+        before = self.ready()
+        with self.store.write() as db:
+            db.execute("UPDATE unit_issues SET state='done',left_at=180,exit_reason='merged',completion_issue_version=1 WHERE unit_id='smoke-unit'")
+            db.execute("UPDATE units SET state='reviewing' WHERE id='smoke-unit'")
+            db.execute("UPDATE units SET state='merged',merge_sha=? WHERE id='smoke-unit'", ('b'*40,))
+        self.assertEqual(self.ready(), before)
+
+    def test_prior_accepted_smoke_cannot_authorize_changed_requirements(self):
+        from forge.store.models import Command
+        from forge.store.transitions import Lifecycle
+        self.proposed()
+        self.service.accept_keep(self.binding, self.github, self.runtime)
+        self.assertIsNotNone(self.ready())
+        with self.store.read_snapshot() as db:
+            version = db.execute("SELECT version FROM units WHERE id='smoke-unit'").fetchone()[0]
+        Lifecycle(self.store, clock=lambda: 180).observe_issue(
+            Command('changed-smoke', 'supervisor:observation', 'smoke-unit', version), '1:10',
+            state='open', title='Smoke', body=self.issue['body'], requirements={'acceptance': ['Different work']},
+            remote_updated_at='2026-10-16T10:00:00Z', generation=2)
+        self.assertIsNone(self.ready())
 
     def test_question_is_not_auto_approved_or_runnable(self):
         self.proposed('question', {'question': 'Clarify the scope?'})

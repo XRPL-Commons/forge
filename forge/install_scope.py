@@ -57,17 +57,26 @@ def triage_run_in(db, binding):
 
 def accepted_triage_in(db, binding):
     """An accepted runnable disposition, before external effects finish."""
-    run = triage_run_in(db, binding)
-    if run is None:
-        return None
-    row = db.execute("SELECT r.id,r.action,i.unit_id FROM triage_proposal_rows r JOIN triage_proposals p ON p.id=r.proposal_id "
+    # A newer suggestion does not revoke accepted work. Select accepted evidence
+    # directly, retaining its requirements and exact delivery membership pins.
+    row = db.execute("SELECT run.id,run.execution_id,r.id AS row_id,r.action,i.unit_id "
+        "FROM repository_triage_runs run JOIN auxiliary_executions e ON e.id=run.execution_id "
+        "JOIN triage_proposals p ON p.id=run.id JOIN triage_proposal_rows r ON p.id=r.proposal_id "
         "JOIN triage_row_members m ON m.row_id=r.id JOIN triage_proposal_inputs i ON i.proposal_id=p.id AND i.issue_id=m.issue_id "
-        "JOIN issues t ON t.id=i.issue_id WHERE p.id=? AND p.status='accepted' AND r.status='accepted' "
+        "JOIN issues t ON t.id=i.issue_id JOIN unit_issues member ON member.id=i.member_id "
+        "AND member.issue_id=t.id AND member.unit_id=i.unit_id JOIN units delivery ON delivery.id=member.unit_id "
+        "WHERE run.repository_id=? AND run.status='complete' AND e.cleanup=1 AND e.created_at>=? "
+        "AND p.status='accepted' AND r.status='accepted' "
         "AND r.action IN ('keep','order','relabel') AND t.repository_id=? AND t.github_number=? "
         "AND t.current_revision_id=i.requirements_revision_id "
-        "AND NOT EXISTS(SELECT 1 FROM triage_proposal_rows other WHERE other.proposal_id=p.id AND other.id!=r.id)",
-        (run['id'], binding['repository']['id'], binding['number'])).fetchone()
-    return {**run, 'row_id': row['id'], 'action': row['action'], 'unit_id': row['unit_id']} if row else None
+        "AND (member.left_at IS NULL OR (member.exit_reason='merged' AND delivery.state='merged')) "
+        "AND NOT EXISTS(SELECT 1 FROM triage_proposal_inputs other WHERE other.proposal_id=p.id AND other.issue_id!=i.issue_id) "
+        "AND NOT EXISTS(SELECT 1 FROM triage_proposal_rows other WHERE other.proposal_id=p.id AND other.id!=r.id) "
+        "AND NOT EXISTS(SELECT 1 FROM unit_issues other WHERE other.unit_id=i.unit_id "
+        "AND (other.left_at IS NULL OR other.exit_reason='merged') AND other.id!=member.id) "
+        "ORDER BY run.requested_at DESC,run.rowid DESC LIMIT 1",
+        (binding['repository']['id'], binding['started_at'], binding['repository']['id'], binding['number'])).fetchone()
+    return dict(row) if row else None
 
 
 def triage_in(db, binding):
