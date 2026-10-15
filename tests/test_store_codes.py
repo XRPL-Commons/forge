@@ -48,6 +48,16 @@ class StoreCodesTests(unittest.TestCase):
         self.assertEqual(codes.ARTIFACT_KINDS['result'], 'durable')
         self.assertEqual(codes.ARTIFACT_KINDS['launch_input'], 'durable')
 
+    def test_generated_gate_registry_outputs_are_current(self):
+        from forge.store.gate_registry import START, END, sql, typescript
+        root=Path(__file__).resolve().parents[1]
+        migration=(root/'forge/store/schema/004_consolidation.sql').read_text()
+        generated=START+migration.split(START,1)[1].split(END,1)[0]+END
+        self.assertEqual(generated,sql())
+        self.assertEqual((root/'ui/app/utils/gates.ts').read_text(),typescript())
+        self.assertEqual(set(self.db.execute('SELECT code,job_scope,owner,public_status FROM gate_codes')),
+                         {(code,int('job' in fact.scopes),fact.owner,fact.public_status) for code,fact in codes.GATES.items()})
+
     def test_every_allowed_and_disallowed_phase_edge_is_enforced_by_sql(self):
         allowed = set(self.db.execute('SELECT from_state,to_state FROM unit_transitions'))
         for before in codes.UNIT_STATES:
@@ -82,8 +92,9 @@ class StoreCodesTests(unittest.TestCase):
 
     def test_every_gate_is_classified_and_sql_status_agrees_with_python(self):
         from forge.factory.status_projection import public_status
-        self.assertEqual(set(codes.GATE_PRESENTATION), set(codes.GATES))
-        self.assertEqual(set(codes.GATE_PRESENTATION.values()), {codes.TRANSITIONAL, codes.BLOCKING})
+        self.assertEqual({gate.kind for gate in codes.GATES.values()},
+                         {'transitional','supervisor-remedy','operator-choice','external'})
+        self.assertTrue(all(gate.owner==codes.GATE_CLASSES[gate.kind].owner for gate in codes.GATES.values()))
         self.assertFalse(codes.transitional('invented'))
         self.assertFalse(codes.transitional(None))
         self.unit(); self.issue_and_member(); self.candidate()
@@ -107,7 +118,7 @@ class StoreCodesTests(unittest.TestCase):
     def test_registry_cannot_be_extended_or_rewritten_by_runtime_sql(self):
         for statement in ("INSERT INTO unit_states VALUES('invented',0)",
                           "UPDATE gate_codes SET release='observation' WHERE code='operator_pause'",
-                          "DELETE FROM unit_transitions WHERE from_state='queued'",
+                          "DELETE FROM unit_transitions WHERE from_state='building'",
                           "INSERT INTO event_kinds VALUES('invented')"):
             with self.subTest(statement=statement), self.assertRaises(sqlite3.IntegrityError):
                 self.db.execute(statement)

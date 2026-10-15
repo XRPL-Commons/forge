@@ -30,7 +30,7 @@ class Remote(helpers.GitHub):
             if before!=self.issue_value['state']:
                 self.events.append(dict(id=len(self.events)+1,event='closed' if payload['state']=='closed' else 'reopened',
                                         actor=dict(id=123,login=self.publisher('controller'),type='Bot')))
-        elif method=='POST' and path.endswith('/comments'):self.comments.append(dict(payload))
+        elif method=='POST' and path.endswith('/comments'):self.comments.append({**payload,'user':{'type':'Bot','login':self.publisher('controller')}})
         else:raise AssertionError((method,path,payload))
         if self.after_write:self.after_write()
         return deepcopy(self.issue_value)
@@ -177,7 +177,7 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(self.view()['close_code'],'github_not_planned')
         with self.store.read_snapshot() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM budget_entries').fetchone()[0],0)
         # The operator's reason is the closing comment on GitHub, as the dialog promises.
-        self.assertEqual(self.github.comments,[{'body':'Closed from Forge as not planned: Operator reason'}])
+        self.assertEqual(self.github.comments[0]['body'],'Closed from Forge as not planned: Operator reason\n\n<!-- forge-operator:'+request+':close-comment -->')
     def test_close_comment_is_posted_once_across_a_lost_response(self):
         request=self.request('close')
         self.github.after_write=lambda:(_ for _ in ()).throw(GitHubUnavailable('lost response'))
@@ -461,15 +461,19 @@ class OperatorEffectObservationReplayTests(unittest.TestCase):
                 self.github.issue_value.update(state_reason='reopened',updated_at='2026-10-10T00:00:02Z')
             raise GitHubUnavailable('lost PATCH reply')
 
-    def test_observer_settles_our_close_before_reconstructed_service_acknowledges_it(self):
+    def test_observer_retains_operator_outbox_ownership_until_close_is_confirmed(self):
         request=self.close();self.github.after_write=self.lose_response
         self.assertEqual(self.actions.step(request)['pending'],'github_observation')
-        self.github.after_write=None;self.observe_closed();before=self.snapshot()
+        self.github.after_write=None
+        from forge.factory.observation_controller import ObservationController
+        observed=ObservationController(self.store,self.github,admission=lambda _:True,clock=lambda:100).observe_member('u',self.member,'1:1')
+        self.assertEqual(observed['pending'],'operator_issue')
+        self.assertNotEqual(self.snapshot()[0]['state'],'closed')
         self.github.calls.clear()
         restarted=self.service()
         self.assertTrue(restarted.step(request)['applied'])
         self.assertEqual(self.github.calls,[])
-        self.assertEqual(self.snapshot(),before)
+        self.assertEqual(self.snapshot()[0]['state'],'closed')
         with self.store.read_snapshot() as db:
             from forge.factory.store_operator import action_state_in
             state=action_state_in(db,request)

@@ -16,9 +16,9 @@ from dataclasses import dataclass
 
 # A state names the phase, including time waiting for a worker. It never asserts
 # that a worker is running; current jobs say that.
-UNIT_STATES = ('queued', 'building', 'integrating', 'reviewing', 'auditing',
-               'merging', 'merged', 'closed', 'dissolved')
-TERMINAL_STATES = frozenset({'merged', 'closed', 'dissolved'})
+UNIT_STATES = ('building', 'publishing', 'reviewing', 'auditing',
+               'merging', 'merged', 'closed')
+TERMINAL_STATES = frozenset({'merged', 'closed'})
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ CLOSE_CODES: dict[str, CloseCode] = {
     'operator_closed': CloseCode(None),
     # Retired after its members moved into a combined unit.
     'combined': CloseCode(None),
+    'dissolved': CloseCode(None),
     # An imported delivery retired by migration 041; discovery admits its open
     # issue again as a new delivery.
     'import_superseded': CloseCode(None),
@@ -43,14 +44,17 @@ CLOSE_CODES: dict[str, CloseCode] = {
 
 # --- Gates -----------------------------------------------------------------
 
-# Presentation precedence, from the design's "one state, one current blocker".
-GATE_KINDS = {
-    'intent': 2,      # explicit intent and ownership protections
-    'decision': 3,    # an operator decision is required before new code work
-    'readiness': 4,   # admission, capabilities or evidence unavailable
-    'dependency': 5,  # unmet external prerequisites
-    'automatic': 6,   # automatic recovery or scheduling waits
-    'candidate': 7,   # candidate gates for the current phase
+@dataclass(frozen=True)
+class GateClass:
+    owner: str
+    exit: str
+
+
+GATE_CLASSES = {
+    'transitional': GateClass('core', 'operation_confirmed'),
+    'supervisor-remedy': GateClass('supervisor', 'remedy_verified'),
+    'operator-choice': GateClass('operator', 'authorized_choice'),
+    'external': GateClass('external', 'prerequisite_observed'),
 }
 
 
@@ -58,76 +62,54 @@ GATE_KINDS = {
 class Gate:
     kind: str
     release: str
-    scopes: frozenset[str]  # 'unit', 'member' and/or an exact 'candidate'
-
-    @property
-    def priority(self):
-        return GATE_KINDS[self.kind]
+    scopes: frozenset[str]
+    priority: int
+    public_status: str
 
     @property
     def candidate(self):
-        """Candidate gates bind to one exact candidate and lapse with it."""
-        return self.kind == 'candidate'
+        return self.scopes == frozenset({'candidate'})
+
+    @property
+    def owner(self):
+        return GATE_CLASSES[self.kind].owner
 
 
-UNIT = frozenset({'unit'})
-EITHER = frozenset({'unit', 'member'})
-CANDIDATE = frozenset({'candidate'})
-ANY_SCOPE = EITHER | CANDIDATE
-
+# Codes preserve exact release provenance and historical references. Their
+# class owns progress; the explicit release authority cannot clear other holds.
 GATES: dict[str, Gate] = {
-    'operator_pause': Gate('intent', 'operator', EITHER),
-    'operator_backlog': Gate('intent', 'operator', EITHER),
-    # Operator decision (2026-10-05): removing the hold label resumes the work.
-    'label_hold': Gate('intent', 'observation', EITHER),
-    'membership_decision': Gate('intent', 'operator', EITHER),
-    'operator_sync': Gate('intent', 'observation', EITHER),
-    'triage_sync': Gate('intent', 'observation', frozenset({'member'})),
-    'external_change': Gate('intent', 'observation', EITHER),
-    'ownership_conflict': Gate('intent', 'observation', EITHER),
-    'budget_exhausted': Gate('decision', 'operator', UNIT),
-    'approach_required': Gate('decision', 'operator', EITHER),
-    'decision_required': Gate('decision', 'operator', EITHER),
-    # Operator decision (2026-10-05): work resumes when repository setup is ready.
-    'forge_problem': Gate('readiness', 'observation', ANY_SCOPE | frozenset({'job'})),
-    'repository_setup': Gate('readiness', 'observation', UNIT),
-    'environment': Gate('readiness', 'recheck', EITHER),
-    'observation_unavailable': Gate('readiness', 'observation', ANY_SCOPE),
-    'legacy_reconciliation': Gate('readiness', 'operator', EITHER),
-    'dependency': Gate('dependency', 'observation', EITHER),
-    'recovery_pending': Gate('automatic', 'transition', ANY_SCOPE | frozenset({'job'})),
-    'cleanup_pending': Gate('automatic', 'transition', ANY_SCOPE | frozenset({'job'})),
-    'result_pending': Gate('automatic', 'transition', ANY_SCOPE | frozenset({'job'})),
-    'provider_unavailable': Gate('automatic', 'time', UNIT),
-    'retry_delay': Gate('automatic', 'time', EITHER),
-    'verification_human': Gate('candidate', 'evidence', CANDIDATE),
-    'verification_ci': Gate('candidate', 'evidence', CANDIDATE),
-    'approval_required': Gate('candidate', 'evidence', CANDIDATE),
-    'merge_checks': Gate('candidate', 'observation', CANDIDATE),
-}
-
-# How an open gate reads to the operator (#241). A transitional gate is the
-# current stage settling (capturing a result, cleaning up, routing a failure):
-# it shows as work in progress at that stage. A blocking gate needs something
-# outside the pipeline and is a hold. Every code is listed; unknown is blocking.
-TRANSITIONAL, BLOCKING = 'transitional', 'blocking'
-GATE_PRESENTATION: dict[str, str] = {
-    'operator_pause': BLOCKING, 'operator_backlog': BLOCKING, 'label_hold': BLOCKING,
-    'membership_decision': BLOCKING, 'operator_sync': BLOCKING, 'triage_sync': BLOCKING,
-    'external_change': BLOCKING, 'ownership_conflict': BLOCKING, 'budget_exhausted': BLOCKING,
-    'approach_required': BLOCKING, 'decision_required': BLOCKING, 'repository_setup': BLOCKING,
-    'forge_problem': BLOCKING, 'environment': BLOCKING, 'observation_unavailable': BLOCKING, 'legacy_reconciliation': BLOCKING,
-    'dependency': BLOCKING,
-    'recovery_pending': TRANSITIONAL, 'cleanup_pending': TRANSITIONAL, 'result_pending': TRANSITIONAL,
-    'provider_unavailable': BLOCKING, 'retry_delay': BLOCKING,
-    'verification_human': BLOCKING, 'verification_ci': BLOCKING, 'approval_required': BLOCKING,
-    'merge_checks': BLOCKING,
+    'operator_pause': Gate('operator-choice', 'operator', frozenset(('member', 'unit')), 2, 'backlog'),
+    'operator_backlog': Gate('operator-choice', 'operator', frozenset(('member', 'unit')), 2, 'backlog'),
+    'label_hold': Gate('external', 'observation', frozenset(('member', 'unit')), 2, 'blocked'),
+    'membership_decision': Gate('operator-choice', 'operator', frozenset(('member', 'unit')), 2, 'attention'),
+    'operator_sync': Gate('transitional', 'observation', frozenset(('member', 'unit')), 2, 'working'),
+    'triage_sync': Gate('transitional', 'observation', frozenset(('member',)), 2, 'working'),
+    'external_change': Gate('supervisor-remedy', 'observation', frozenset(('member', 'unit')), 2, 'attention'),
+    'ownership_conflict': Gate('external', 'observation', frozenset(('member', 'unit')), 2, 'blocked'),
+    'budget_exhausted': Gate('operator-choice', 'operator', frozenset(('unit',)), 3, 'attention'),
+    'approach_required': Gate('supervisor-remedy', 'operator', frozenset(('member', 'unit')), 3, 'attention'),
+    'decision_required': Gate('operator-choice', 'operator', frozenset(('job', 'member', 'unit')), 3, 'attention'),
+    'forge_problem': Gate('supervisor-remedy', 'observation', frozenset(('candidate', 'job', 'member', 'unit')), 4, 'attention'),
+    'repository_setup': Gate('external', 'observation', frozenset(('unit',)), 4, 'attention'),
+    'environment': Gate('external', 'recheck', frozenset(('job', 'member', 'unit')), 4, 'attention'),
+    'observation_unavailable': Gate('supervisor-remedy', 'observation', frozenset(('candidate', 'member', 'unit')), 4, 'attention'),
+    'legacy_reconciliation': Gate('operator-choice', 'operator', frozenset(('member', 'unit')), 4, 'attention'),
+    'dependency': Gate('external', 'observation', frozenset(('job', 'member', 'unit')), 5, 'blocked'),
+    'recovery_pending': Gate('transitional', 'transition', frozenset(('candidate', 'job', 'member', 'unit')), 6, 'working'),
+    'cleanup_pending': Gate('transitional', 'transition', frozenset(('candidate', 'job', 'member', 'unit')), 6, 'working'),
+    'result_pending': Gate('transitional', 'transition', frozenset(('candidate', 'job', 'member', 'unit')), 6, 'working'),
+    'provider_unavailable': Gate('external', 'time', frozenset(('unit',)), 6, 'waiting'),
+    'retry_delay': Gate('supervisor-remedy', 'time', frozenset(('member', 'unit')), 6, 'waiting'),
+    'verification_human': Gate('external', 'evidence', frozenset(('candidate',)), 7, 'attention'),
+    'verification_ci': Gate('external', 'evidence', frozenset(('candidate',)), 7, 'waiting'),
+    'approval_required': Gate('external', 'evidence', frozenset(('candidate',)), 7, 'attention'),
+    'merge_checks': Gate('external', 'observation', frozenset(('candidate',)), 7, 'waiting'),
 }
 
 
 def transitional(code) -> bool:
-    """Whether this gate is the current stage settling rather than a hold."""
-    return GATE_PRESENTATION.get(code) == TRANSITIONAL
+    gate = GATES.get(code)
+    return gate is not None and gate.kind == 'transitional'
 
 
 # --- Jobs and artifacts ----------------------------------------------------

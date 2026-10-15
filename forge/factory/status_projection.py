@@ -5,7 +5,7 @@ blocker separately from the broad state; it never changes scheduling authority.
 """
 import json
 
-from ..store.codes import transitional
+from ..store.codes import GATES
 from ..store.status import describe, describe_gate, github_rule
 
 LABELS = {
@@ -13,9 +13,6 @@ LABELS = {
     'attention': 'Needs attention', 'waiting': 'Waiting', 'blocked': 'Blocked',
     'completed': 'Completed', 'dropped': 'No longer needed',
 }
-ATTENTION = {'forge_problem', 'budget_exhausted', 'approach_required', 'decision_required', 'repository_setup', 'environment',
-             'legacy_reconciliation', 'membership_decision', 'external_change', 'verification_human',
-             'approval_required', 'observation_unavailable'}
 
 
 SCHEDULE_REASONS = {
@@ -50,15 +47,8 @@ def public_status(issue, active=False):
         return 'attention'
     if state in {'done', 'dropped', 'untracked'}:
         return {'done': 'completed', 'dropped': 'dropped', 'untracked': 'backlog'}[state]
-    if reason in {'operator_pause', 'operator_backlog'}:
-        return 'backlog'
-    if reason in {'dependency', 'label_hold', 'ownership_conflict'}:
-        return 'blocked'
-    if reason in ATTENTION:
-        return 'attention'
-    # Capturing a result or cleaning up is the stage still at work, not a wait.
-    if transitional(reason):
-        return 'working'
+    if reason in GATES:
+        return GATES[reason].public_status
     return 'waiting' if reason else 'working' if active else 'queued' if issue['lifecycle'].get('next_action') else 'waiting'
 
 

@@ -145,6 +145,10 @@ def plan_schema():
 
 
 def schema(note):
+    if (note.get('context') or {}).get('steward_schema'):
+        return note['context']['steward_schema']
+    if note['role']=='build' and note.get('result_schema'):
+        return note['result_schema']
     if note['role'] == 'steward':
         return note['steward']['decision_schema']
     props = {'version': {'type': 'integer', 'enum': [1]},
@@ -270,7 +274,7 @@ def export_child(note, directory, inputs, git, *, result_path=Path('/work/result
         report = json.loads(result_path.read_text())
     except (ValueError, OSError):
         return False  # Controller classifies the retained malformed result.
-    if not isinstance(report, dict) or report.get('outcome') not in {'pass', 'needs_human_verification'}:
+    if not isinstance(report, dict) or report.get('outcome') not in {'pass', 'needs_human_verification', 'done'}:
         return True
     try:
         head = git('-C', str(directory), 'rev-parse', 'HEAD').stdout.strip()
