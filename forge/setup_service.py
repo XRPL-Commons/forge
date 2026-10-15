@@ -50,10 +50,28 @@ def harness_error(logs):
     return None
 
 
+CANARY_STEPS = frozenset(('repository_access', 'isolation', 'build_environment', 'dependency_install',
+                          'git_writes', 'proof'))
+
+
+def canary_step(logs):
+    """Fixed name of the failed sandbox canary step from bounded runner output."""
+    for line in reversed(logs.splitlines()[-200:]):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'claude.canary':
+            return event.get('step') if event.get('step') in CANARY_STEPS else None
+    return None
+
+
 def probe_failure_message(capture, provider, *, timed_out=False):
     reason = (capture.get('result') or {}).get('reason')
     if reason in PROBE_FAILURE_MESSAGES:
-        return PROBE_FAILURE_MESSAGES[reason].format(provider=provider)
+        message = PROBE_FAILURE_MESSAGES[reason].format(provider=provider)
+        step = canary_step(capture.get('logs') or '') if reason == 'native_sandbox_failed' else None
+        return message + (' (failed canary step: ' + step + ')' if step else '')
     if timed_out:
         return 'The ' + provider + ' check did not finish before its deadline. Check the provider status and the egress proxy, then retry'
     message = 'Provider or native sandbox check failed. Check the server connection and runner installation, then retry'

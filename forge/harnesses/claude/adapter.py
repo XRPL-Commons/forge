@@ -169,6 +169,40 @@ def canary_completed(events, command, nonce):
                for part in e.get('message', {}).get('content', []))
 
 
+CANARY_STEPS = frozenset(('repository_access', 'isolation', 'build_environment', 'dependency_install',
+                          'git_writes', 'proof'))
+CANARY_OUTPUT_BYTES = 1024
+
+
+def canary_report(events, command):
+    """Bounded, printable view of the canary's own Bash result for the probe capture.
+
+    The canary runs without provider credentials; the host also scrubs every
+    delivered secret from captured runner output.
+    """
+    uses = {part.get('id') for e in events if e.get('type') == 'assistant'
+            for part in e.get('message', {}).get('content', [])
+            if isinstance(part, dict) and part.get('type') == 'tool_use' and part.get('name') == 'Bash'
+            and part.get('input', {}).get('command') == command}
+    result = next((part for e in reversed(events) if e.get('type') == 'user'
+                   for part in e.get('message', {}).get('content', [])
+                   if isinstance(part, dict) and part.get('type') == 'tool_result' and part.get('tool_use_id') in uses), None)
+    report = {'type': 'claude.canary', 'tool_called': bool(uses), 'tool_result': result is not None,
+              'is_error': bool(result.get('is_error')) if result else None, 'step': None, 'output': ''}
+    if result is None:
+        return report
+    content = result.get('content', '')
+    if isinstance(content, list):
+        content = '\n'.join(str(part.get('text', '')) for part in content if isinstance(part, dict))
+    text = ''.join(c if c == '\n' or ' ' <= c <= '~' else ' ' for c in str(content))
+    failed = [line for line in text.splitlines() if line.startswith('forge-canary-failed:')]
+    if failed:
+        step = failed[-1].split(':', 2)[1]
+        report['step'] = step if step in CANARY_STEPS else None
+    report['output'] = text.encode()[-CANARY_OUTPUT_BYTES:].decode(errors='ignore')
+    return report
+
+
 def harness_environment(env):
     # Parent credentials never reach Bash/hook/MCP subprocesses. This switch
     # also requires a separate PID namespace for Bash on Linux.
@@ -218,6 +252,7 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
                           'provider_failure': failure_diagnostic(code, response, raw, events)}), flush=True)
         return None, message
     if canary and not canary_completed(events, *canary):
+        print(json.dumps(canary_report(events, canary[0])), flush=True)
         raise RuntimeError('Native sandbox canary execution was not verified')
     return response['structured_output'], None
 
@@ -239,10 +274,28 @@ def run(note, directory, env, result_schema):
     return 0
 
 
+ENVELOPE = 'synthetic private envelope'
+
+
+def envelope_intact(envelope, directory):
+    """The sandbox may mask the private home with a writable tmpfs, so only the
+    real file decides: still present, unchanged and not copied into the repository."""
+    try:
+        if envelope.is_symlink() or envelope.read_text() != ENVELOPE:
+            return False
+    except OSError:
+        return False
+    stolen = directory / 'stolen-envelope'
+    try:
+        return stolen.is_symlink() or not stolen.exists() or stolen.read_text() != ENVELOPE
+    except OSError:
+        return False
+
+
 def probe(note, directory):
     private = Path('/work/home/probe-private'); private.parent.mkdir(exist_ok=True); private.write_text('synthetic private canary')
     subprocess.run(['git', 'init', str(directory)], check=True, capture_output=True)
-    Path('/work/home/forge-exit.json').write_text('synthetic private envelope')
+    envelope = Path('/work/home/forge-exit.json'); envelope.write_text(ENVELOPE)
     nonce = uuid.uuid4().hex
     schema = {'type': 'object', 'properties': {'ready': {'type': 'boolean', 'enum': [True]}},
               'required': ['ready'], 'additionalProperties': False}
@@ -256,6 +309,10 @@ def probe(note, directory):
         answer, failure = None, 'canary' if 'canary' in str(error) else str(error)
     proof = directory / 'claude-probe-proof'
     reason = probe_failure_reason(answer, failure, proof.read_text() if proof.is_file() else None, nonce)
+    if not reason and not envelope_intact(envelope, directory):
+        print(json.dumps({'type': 'claude.canary', 'step': 'isolation',
+                          'output': 'Private execution envelope changed outside the sandbox'}), flush=True)
+        reason = 'native_sandbox_failed'
     if reason:
         # Fixed labels only: the setup service turns them into operator guidance.
         Path('/work/result.json').write_text(json.dumps({'ready': False, 'attempt': note['id'], 'reason': reason}))
