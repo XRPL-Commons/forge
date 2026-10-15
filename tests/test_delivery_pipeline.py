@@ -69,6 +69,7 @@ class DeliveryPipelineTests(unittest.TestCase):
         self.github.publication.return_value = None
         self.github.pulls.return_value = []
         self.github.publisher.side_effect = lambda role: role + '[bot]'
+        self.github.publishers.side_effect = lambda role: [role + '[bot]']
         self.verdicts = Mock(); self.verdicts.ensure.return_value = {'check_id': 7}
         self.results = ResultController(self.store, self.github, policy=lambda job: policy(self.config, job['repo_id'], repository_name=job['repo']), verdicts=self.verdicts, clock=lambda: self.now)
         self.dispatch = self.dispatcher()
@@ -93,6 +94,14 @@ class DeliveryPipelineTests(unittest.TestCase):
         report = dict(version=1, attempt=identifier, role=job['role'], outcome=outcome, summary='Complete', **fields)
         if job.get('builder_stage') or job.get('task'):
             report.setdefault('delegation_plan', None); report.setdefault('output_commit', None)
+        if job.get('build_result_version') == 2:
+            report.update(version=2,outcome={'pass':'done','delegate':'done',
+                'needs_human_verification':'done','unable':'cannot_complete',
+                'done':'done','cannot_complete':'cannot_complete'}[outcome],
+                headline='Completed build',plain='Build result for this assignment.',
+                operator_summary='Build result for this assignment.',claims=report.get('claims',[]))
+            for key in ('verification','delegation_plan','output_commit','pr_title','pr_body'):
+                report.setdefault(key,None)
         capture = {'result': report, 'logs': '', 'execution': {'exit_code': 0}}
         if bundle is not None: capture['worktree_bundle'] = bundle
         self.executions.collect(self.command(job['unit_id']), identifier, execution_fence=job['execution_fence'], capture=capture)

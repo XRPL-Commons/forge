@@ -43,7 +43,9 @@ def publication_authorization(job,github):
             or (pr.get('base') or {}).get('sha')!=manifest['base_oid'] or pinned_author is not None and pinned_author!=author):
         raise PublicationClaim('publication_target_changed')
     transfer=target.get('kind')=='existing' and target.get('ownership_transfer') is True and target.get('author')==author
-    forge_owned=author['type']=='Bot' and author['login'] in (github.publisher('build'),github.publisher('controller'))
+    from .github import bot_logins
+    # A PR the retired build or controller App opened stays Forge's after the move to one App.
+    forge_owned=author['type']=='Bot' and author['login'] in {*bot_logins(github,'build'),*bot_logins(github,'controller')}
     if not (transfer or forge_owned):raise PublicationClaim('publication_target_not_owned')
     # The legacy Build App may own this draft while the Controller publishes.
     # Do not assume the Controller can mark another App's draft ready. Retain

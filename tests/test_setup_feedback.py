@@ -17,7 +17,10 @@ class FeedbackTests(unittest.TestCase):
         self.assertIsNone(Onboarding.activity(data))
 
     def test_report_lists_only_actual_gaps_and_preserves_the_gate(self):
-        github=GitHub(Mock(), {})
+        settings=Mock()
+        settings.load.return_value={'connections':{role:{'app_id':app_id} for app_id,role in
+            enumerate(('build','review','audit','controller'),1)}}
+        github=GitHub(settings, {})
         github.connection=lambda role:{'app_id':{'review':2,'audit':3,'controller':4}[role]}
         protection={'required_pull_request_reviews':{'required_approving_review_count':2,'dismiss_stale_reviews':True,
             'bypass_pull_request_allowances':{'apps':[{'id':4}]}},'allow_force_pushes':{'enabled':False}}

@@ -31,7 +31,7 @@ export const STEWARD_LABELS: Record<StewardAction, string> = {
   escalate_forge: 'Report to Forge', question: 'Ask for clarification',
 }
 
-export function rankedChoices(decision: StewardDecisionContent): StewardChoice[] {
+export function rankedChoices<T extends RankedChoice>(decision: { choices: T[]; recommended_choice_id: string }): T[] {
   const recommended = decision.choices.find(choice => choice.id === decision.recommended_choice_id)
   return recommended ? [recommended, ...decision.choices.filter(choice => choice !== recommended)] : decision.choices
 }
@@ -70,3 +70,27 @@ export interface StewardDecision extends StewardDecisionContent, StewardDecision
   application: null | { request_id: string; choice_id: string; status: 'pending' | 'applied' | 'failed'; message: string | null }
 }
 export interface StewardDecisionResponse { ok: true; controls_token?: string; decision: StewardDecision | null; repositories: StewardRepository[]; scope?: StewardScope | null; report_draft?: import('./issues').IssueRow['forge_problem_report'] }
+
+// The same card renders decisions whose authority belongs to a proposal row or turn.
+export interface RankedChoice { id: string; action: string; parameters: object; reason: string; judgement: 'obvious' | 'judgement' }
+export interface RankedDecision extends Omit<StewardDecisionContent, 'choices'> {
+  choices: RankedChoice[]; decision_id: string; digest: string
+}
+export function choiceLabel(action: string): string {
+  const labels: Record<string, string> = { ...STEWARD_LABELS, close: 'Close this issue', relabel: 'Change labels', park: 'Hold this issue',
+    group: 'Combine into one delivery', order: 'Set prerequisites', keep: 'Keep this work', answer: 'Answer only',
+    resume: 'Resume work', pause: 'Pause work', assign_reviewer: 'Assign reviewers', recheck: 'Recheck', cancel: 'Cancel work' }
+  return labels[action] ?? action.replaceAll('_', ' ')
+}
+export function rankedDetails(choice: RankedChoice, repositories: StewardRepository[] = []): { label: string; value: string }[] {
+  if ('members' in choice.parameters) {
+    const p = choice.parameters as { members: string[]; rule_quote: string | null; details: Record<string, unknown> }
+    return [ ...(p.rule_quote ? [{ label: 'Standing rule', value: p.rule_quote }] : []),
+      ...Object.entries(p.details).map(([label, value]) => ({ label: label.replaceAll('_', ' '), value: typeof value === 'string' ? value : JSON.stringify(value) })) ]
+  }
+  if ('logins' in choice.parameters) return [{ label: 'Reviewers', value: (choice.parameters as { logins: string[] }).logins.join(', ') }]
+  return choice.action in STEWARD_LABELS ? choiceDetails(choice as StewardChoice, repositories) : []
+}
+export function splitChildren(choice: RankedChoice): StewardParameters['split']['children'] {
+  return choice.action === 'split' && 'children' in choice.parameters ? (choice.parameters as StewardParameters['split']).children : []
+}

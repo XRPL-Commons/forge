@@ -19,7 +19,7 @@ from ..store.queries import _limit
 from ..store.transitions import Lifecycle, applicable_gates, manifest_hash
 from .config import policy, validate
 from .contracts import SHA, issue_dependencies
-from .github import GitHubUnavailable
+from .github import GitHubUnavailable, bot_logins
 from .ownership import ownership
 from .runner import ContainerRunner, RunnerError
 
@@ -77,6 +77,8 @@ class GitHubPrepare:
         self.requirements, self.readiness = requirements, readiness
 
     def __call__(self, snapshot, role):
+        if snapshot.get('review_only'):
+            return self.review_pull(snapshot, role)
         if snapshot.get('grouped'):
             return self.group(snapshot, role)
         unit, member, issue = snapshot['unit'], snapshot['member'], snapshot['issue']
@@ -155,6 +157,32 @@ class GitHubPrepare:
                                    publication_author={key: current['user'].get(key) for key in ('id','login','type')})
         return PreparedDispatch(base, publisher, config, branch, context, refreshed['unit_version'] if refreshed else None)
 
+    def review_pull(self, snapshot, role):
+        from ..store.review_pulls import exact_source_matches
+        from .config import merge_check_scope
+        if role not in ('review', 'audit'):
+            return None
+        unit, candidate, source = snapshot['unit'], snapshot['candidate'], snapshot['review_source']
+        if merge_check_scope(self.config, unit['repository_id']) != 'all':
+            return None
+        item = {'repo_id': unit['repository_id'], 'repo': snapshot['repo']}
+        remote = self.github.pr(item, candidate['pull_number'])
+        if not exact_source_matches(remote, source):
+            return None
+        if set(source['labels']).intersection(self.config['hold_labels']):
+            return None
+        target = source['base']['ref']
+        base = (self.github.call('controller', item, 'GET', '/branches/' + quote(target, safe='')).get('commit') or {}).get('sha')
+        if base != candidate['base_oid']:
+            return None  # Admission observes the replacement; no builder owns human branches.
+        config = memory_config(deepcopy(self.config), role, snapshot.get('memory_bytes', {}).get(role, 0), [])
+        if config is None:
+            return None
+        context = {'review_policy': policy(config, item['repo_id'], repository_name=item['repo']),
+                   'verification_checks': config['repository_verification'].get(item['repo'], []),
+                   'ci_evidence': self.github.ci_evidence({**item, 'candidate': {'head': candidate['head_oid'], 'base': base}})}
+        return PreparedDispatch(base, self.github.publisher(role), config, candidate['branch'], context)
+
     def group(self, snapshot, role):
         unit, candidate = snapshot['unit'], snapshot['candidate']
         # Repository identity is shared; no issue is selected as group authority.
@@ -219,7 +247,7 @@ class GitHubPrepare:
                     or current.get('base', {}).get('ref') != unit['base_branch']
                     or current.get('base', {}).get('repo', {}).get('id') != unit['repository_id']
                     or current.get('state') != 'open' or current.get('merged')
-                    or 'author' not in previous and current.get('user', {}).get('login') != self.github.publisher('build')
+                    or 'author' not in previous and current.get('user', {}).get('login') not in bot_logins(self.github, 'build')
                     or current.get('user', {}).get('type') != 'Bot'
                     or 'author' in previous and {key: current.get('user', {}).get(key) for key in ('id', 'login', 'type')} != previous['author']):
                 return None
@@ -246,6 +274,9 @@ class DispatchController:
             if row is None:
                 raise KeyError(unit_id)
             unit = dict(row)
+            from ..store.review_pulls import review_only_in, snapshot_in
+            if review_only_in(db, unit_id):
+                return snapshot_in(db, unit)
             rows = db.execute('SELECT * FROM unit_issues WHERE unit_id=? AND left_at IS NULL ORDER BY id', (unit_id,)).fetchall()
             members = []
             for member_row in rows:
@@ -268,7 +299,7 @@ class DispatchController:
             grouped = db.execute('SELECT 1 FROM unit_publication_targets WHERE unit_id=?', (unit_id,)).fetchone() is not None
             member, issue = (None, None) if grouped else (members[0]['member'], members[0]['issue'])
             candidate = db.execute('SELECT * FROM candidates WHERE id=?', (unit['current_candidate_id'],)).fetchone()
-            role = {'queued': 'build', 'building': 'build', 'integrating': 'build', 'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
+            role = {'building': 'build', 'reviewing': 'review', 'auditing': 'audit'}.get(unit['state'])
             gates = applicable_gates(db, unit, member['id'] if member and role == 'build' else None, unit['current_candidate_id'])
             if grouped and role == 'build':
                 # Exact job waits belong to the task selector; a failed sibling
@@ -346,9 +377,10 @@ class DispatchController:
         result = {'unit_id': unit_id, 'reserved': False}
         if not self.config['enabled']:
             return {**result, 'reason': 'runtime_disabled'}
-        if self.readiness:
-            self.readiness.observe(unit_id)
         snapshot = self.snapshot(unit_id)
+        if self.readiness and not snapshot.get('review_only'):
+            self.readiness.observe(unit_id)
+            snapshot = self.snapshot(unit_id)
         if snapshot['reason']:
             return {**result, 'reason': snapshot['reason']}
         if role is not None and role != snapshot['role']:
@@ -358,7 +390,7 @@ class DispatchController:
             return {**result, 'reason': 'repository_setup'}
         # Cached human/hold facts fail closed even with a custom prepare adapter.
         issue = snapshot['issue']
-        if not snapshot['grouped']:
+        if not snapshot['grouped'] and not snapshot.get('review_only'):
             labels = {row['name'] if isinstance(row, dict) else row for row in issue['labels']}
             if labels.intersection(self.config['hold_labels']):
                 return {**result, 'reason': 'label_hold'}
@@ -499,6 +531,8 @@ class DispatchController:
         if self.admission(snapshot) is not True:
             return {**result, 'reason': 'repository_setup'}
         unit, member, candidate = snapshot['unit'], snapshot['member'], snapshot['candidate']
+        if role == 'build':
+            prepared = replace(prepared, context={**prepared.context, 'build_result_version': 2})
         if snapshot['grouped'] and role == 'build':
             return self._reserve_group(snapshot, prepared, assignment, config, entry, slot, result)
         launch_policy = policy(config, unit['repository_id'], repository_name=snapshot['repo'])
@@ -576,14 +610,14 @@ class DispatchController:
                 "WHERE e.unit_id=u.id AND e.kind='attempt_reserved' AND j.role=CASE u.state "
                 "WHEN 'reviewing' THEN 'review' WHEN 'auditing' THEN 'audit' ELSE 'build' END "
                 "ORDER BY e.sequence DESC LIMIT 1),0) AS allocation_sequence FROM units u "
-                "WHERE u.id>? AND u.state IN ('queued','building','integrating','reviewing','auditing') "
+                "WHERE u.id>? AND u.state IN ('building','reviewing','auditing') "
                 'ORDER BY u.id LIMIT ?', (after, limit + 1)).fetchall()
         # An eligible memory escalation drains capacity; smaller work must not
         # refill it while the next bounded allocation is waiting to fit.
         if self.config['memory_tiers']:
             with self.store.read_snapshot() as db:
                 retries = db.execute("SELECT u.id FROM units u JOIN unit_issues m ON m.unit_id=u.id AND m.left_at IS NULL JOIN issue_environment_observations e ON e.issue_id=m.issue_id "
-                    "WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('queued','building','integrating','reviewing','auditing') "
+                    "WHERE e.memory_retry_json IS NOT NULL AND u.state IN ('building','reviewing','auditing') "
                     "ORDER BY json_extract(e.memory_retry_json,'$.at'),u.id LIMIT 100").fetchall()
             for retry in retries:
                 snapshot = self.snapshot(retry['id'])
@@ -596,7 +630,7 @@ class DispatchController:
                     if result.get('reserved') or result.get('reason') in {'capacity_unavailable','role_capacity'}:
                         return {'items': [result], 'next_cursor': after or None}
         page = rows[:limit]
-        priority = {'auditing': 0, 'reviewing': 1, 'building': 2, 'integrating': 2, 'queued': 2}
+        priority = {'auditing': 0, 'reviewing': 1, 'building': 2}
         items = []
         for row in sorted(page, key=lambda row: (priority[row['state']], row['allocation_sequence'], row['id'])):
             try:

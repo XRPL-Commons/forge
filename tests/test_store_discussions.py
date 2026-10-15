@@ -50,6 +50,11 @@ class DiscussionTests(unittest.TestCase):
     def finish(self,job,**fields):
         self.runner.inspect.return_value={'status':'exited','running':False}
         result=dict(attempt=job['id'],role='discussion',outcome='pass',summary='Fix the producer type first.',proposal={'action':'retry','reason':'Fix the producer type first.'}) | fields
+        if job.get('steward_mode')=='conversation':
+            from tests.steward_subject_fixture import output,choice
+            proposal=result.get('proposal')
+            result=output(job['context']['steward_dossier'],[choice(proposal['action'] if proposal else 'answer',reason=proposal['reason'] if proposal else 'Answer only.')],reply=result['summary'])
+            if fields.get('attempt'):result['dossier_id']=fields['attempt']
         self.runner.capture.return_value={'result':result,'logs':'diagnostic log','execution':{'exit_code':0}}
         self.service.drive(job,self.github)
 
@@ -74,7 +79,7 @@ class DiscussionTests(unittest.TestCase):
     def test_discussion_uses_no_worker_token_and_immutable_lease(self):
         job=self.start()
         self.github.token.assert_not_called()
-        self.assertEqual(note(job)['role'],'discussion')
+        self.assertEqual(note(job)['role'],'steward')
         self.assertEqual(self.service.view('1:2')['status'],'running')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute('SELECT execution_id FROM discussion_leases').fetchone()[0],job['id'])
@@ -124,11 +129,10 @@ class DiscussionTests(unittest.TestCase):
             with self.assertRaises(IdempotencyConflict):self.service.apply('1:2',job['id'])
             self.assertEqual(request.call_count,1)
 
-    def test_unavailable_proposal_keeps_the_answer_without_its_button(self):
+    def test_unoffered_typed_action_is_rejected_without_answer_or_mutation(self):
         job=self.start(); self.finish(job,proposal={'action':'merge','reason':'skip checks'})
-        reply=self.service.view('1:2')['messages'][-1]
-        self.assertEqual((reply['role'],reply['text'],reply['proposal'],reply['unavailable']),('assistant','Fix the producer type first.',None,True))
-        self.assertEqual(self.service.view('1:2')['status'],'idle')
+        self.service.drive(job,self.github)
+        self.assertFalse(any(m['role']=='assistant' for m in self.service.view('1:2')['messages']))
         self.assertFalse(self.service.active_jobs())
 
     def closing(self,text,close_now=True,closable=True):
@@ -201,7 +205,7 @@ class DiscussionTests(unittest.TestCase):
         with self.assertRaises(IdempotencyConflict):self.service.apply('1:2',job['id'],reason='Different reason')
 
     def test_persona_suggestion_alone_is_only_a_proposal(self):
-        for text,close_now in (('Why did this fail?',True),('Close this issue',False),("Please don't close this issue",True),('Should we close this issue?',True),('Close the browser',True),('Explain closing this issue',True),('I dont want to edit workflow, close this issue',True)):
+        for text,close_now in (('Why did this fail?',True),("Please don't close this issue",True),('Should we close this issue?',True),('Close the browser',True),('Explain closing this issue',True),('I dont want to edit workflow, close this issue',True)):
             with self.subTest(text=text):
                 self.setUp()
                 _,request,reply=self.closing(text,close_now)
@@ -214,7 +218,7 @@ class DiscussionTests(unittest.TestCase):
         job,request,reply=self.closing('Close this issue',closable=False)
         self.assertNotIn('close',job['context']['actions'])
         request.assert_not_called()
-        self.assertEqual((reply['proposal'],reply['unavailable']),(None,True))
+        self.assertFalse(any(m['role']=='assistant' for m in self.service.view('1:2')['messages']))
 
     def test_failed_close_keeps_the_card_with_why(self):
         self.row.update(closable=True)

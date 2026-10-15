@@ -36,10 +36,10 @@ class Fixtures:
             version = project_unit(db, self.unit)['version']
         return Command(str(uuid.uuid4()), 'qualification', self.unit, version)
 
-    def launch(self):
+    def launch(self, *, context=None):
         return Launch('forge/qualification', 'forge-qualification', self.config['provider'],
                       time.time()+self.seconds, self.config, {}, provider_id=self.config.get('provider_id'),
-                      model=self.config.get('model'))
+                      model=self.config.get('model'),context=context or {})
 
     def reserve(self, role):
         if role in {'triage', 'strategist', 'discussion'}:
@@ -84,7 +84,7 @@ class Fixtures:
                     if k in {'head_oid','base_oid','policy_hash','requirements_hash','input_manifest_hash'}})
             row = self.life.reserve_job(self.command(), role, slot='qualification-'+role,
                 execution_fence=str(uuid.uuid4()), input_manifest=manifest, member_id=member,
-                candidate_id=candidate, launch=self.launch())
+                candidate_id=candidate, launch=self.launch(context={'build_result_version':2} if role=='build' else None))
         return ExecutionQueries(self.store).job(row['job_id'])
 
     def auxiliary(self, role):
@@ -100,14 +100,25 @@ class Fixtures:
             discussions.send(self.issue_key, question, 'fixture-question', self.admitted['revision_id'], actor='qualification')
             job.update(context=dict(revision=self.admitted['revision_id'], actions=[], issue=self.issue),
                        messages=[dict(role='user', text=question)])
-            discussions.reserve(self.issue_key, job, expected_version=discussions.thread(self.issue_key)['version'], origin={})
+            from .steward_subjects import conversation_dossier
+            from .steward_contract import decision_schema
+            version=discussions.thread(self.issue_key)['version']
+            subject=discussions.steward_subject(self.issue_key,expected_version=version)
+            job['steward_mode']='conversation'
+            dossier=conversation_dossier(job,subject)
+            job['context']={**job['context'],'steward_dossier':dossier,'steward_schema':decision_schema(dossier)}
+            discussions.reserve(self.issue_key, job, expected_version=version, origin={})
         elif role == 'triage':
             from .store.repository_planning import RepositoryPlanning
             planning = RepositoryPlanning(self.store)
             proposal = planning.queue(job['repo_id'], request_id='fixture-triage', actor_id='qualification',
                                       base_branch=job['target_branch'])['proposal_id']
             context = planning.context(proposal, head=self.base)
-            job.update(slot='repository-triage', context_hash=manifest_hash(context), proposal_id=proposal)
+            from .steward_subjects import triage_dossiers, triage_schema
+            job.update(slot='repository-triage',proposal_id=proposal,base_branch=job['target_branch'],steward_mode='triage')
+            dossiers=triage_dossiers(context,job)
+            context.update(steward_dossiers=dossiers,steward_schema=triage_schema(dossiers,context))
+            job['context_hash']=manifest_hash(context)
             planning.reserve(proposal, job, context)
             job['context'] = context
         else:

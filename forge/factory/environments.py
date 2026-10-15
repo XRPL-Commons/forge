@@ -119,11 +119,6 @@ def choose(config, item, issue, evidence=None):
     previous = item.get('environment_choice') or {}
     explicit = bool(labels and not (previous.get('automatic') and labels == {item.get('environment_label')}))
     manual = item.get('environment_override')
-    title, body = issue.get('title', ''), issue.get('body') or ''
-    text = title + '\n' + body
-    mentioned = inspect_files({'issue-test-setup.txt': text})['services']
-    docs = re.search(r'\b(?:copy|docs?|documentation)[ -]only\b|^(?:docs?|documentation|copy)\s*:', title, re.I)
-    testing = re.search(r'\b(?:api|backend|server|database|integration|e2e|end.to.end|tests?|testing|migration)\b', text, re.I)
     automatic = not (manual or explicit)
     if manual:
         selected = manual['services']
@@ -136,20 +131,19 @@ def choose(config, item, issue, evidence=None):
     elif item.get('environment_retry'):
         selected = item['environment_retry']['services']
         tier, reason = 'full', 'Worker reported missing databases; retrying this issue with them available'
-    elif docs:
-        tier, selected, reason = 'standard', [], 'This issue is scoped to documentation or copy'
-    elif mentioned:
-        tier, selected, reason = 'full', mentioned, 'The issue names these database dependencies'
-    elif testing and known:
-        tier, selected, reason = 'full', known, 'The issue concerns backend or test work; the repository scan found these databases'
+    elif previous.get('source')=='steward':
+        tier, selected, reason = previous['tier'], services(previous['services']), 'Environment selected by the accepted steward brief'
+        if tier not in config['environment_tiers']:
+            raise ValueError('The selected steward environment is no longer configured')
     elif defaults:
         tier, selected, reason = 'full', defaults, 'Using the optional repository default for this issue'
     else:
-        tier, selected, reason = 'standard', [], 'No database requirement identified for this issue; the worker can request one if needed'
+        tier, selected, reason = 'standard', [], 'Using the standard environment until a typed choice or claim selects another'
     if tier == 'full' and 'full' not in config['environment_tiers']:
         raise ValueError('Database workers are unavailable on this host; enable the full environment.')
     return {'tier': tier, 'services': sorted(selected), 'reason': reason, 'automatic': automatic,
-            'evidence_head': evidence.get('head'), 'evidence': evidence.get('evidence', []) if selected else []}
+            'evidence_head': evidence.get('head'), 'evidence': evidence.get('evidence', []) if selected else [],
+            **({'source':'steward'} if previous.get('source')=='steward' and not manual and not explicit else {})}
 
 
 def worker_config(config, item):

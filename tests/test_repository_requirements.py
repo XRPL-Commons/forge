@@ -110,8 +110,8 @@ class RepositoryRequirementsTests(unittest.TestCase):
             self.assertEqual({r[0] for r in db.execute('SELECT member_id FROM unit_environment')},set(self.members.values()))
 
     def test_explicit_clauses_parse_uniform_local_and_cross_repository_refs(self):
-        body='Depends on #2, Other/Repo#3 and https://github.com/Else/Repo/pull/4.\n#5 must be merged first.\nBlocks #8\nSee owner/repo#9\n```\nDepends on #99\n```'
-        self.assertEqual(references(body,'Owner/Repo'),['else/repo#4','other/repo#3','owner/repo#2','owner/repo#5'])
+        body='Depends on: #2, Other/Repo#3, https://github.com/Else/Repo/pull/4\n#5 must be merged first.\nBlocks #8\nSee owner/repo#9\n```\nDepends on #99\n```'
+        self.assertEqual(references(body,'Owner/Repo'),['else/repo#4','other/repo#3','owner/repo#2'])
 
 
 if __name__=='__main__':unittest.main()

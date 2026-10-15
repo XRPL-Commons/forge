@@ -1,5 +1,6 @@
 import type { JobView } from './factory'
 import type { CanonicalIssueStatus } from './operatorStatus'
+import type { GateCode } from './gates'
 
 interface TaskOutput {
   output_id: string; task_id: string; attempt_id: string
@@ -10,7 +11,7 @@ interface MemberContributions {
   task_ids: string[]; outputs: TaskOutput[]; ready: boolean; owner_final_pending: boolean
 }
 interface DeliveryGate {
-  id: string | null; code: string; reason: string; member_id: string | null
+  id: string | null; code: GateCode; reason: string; member_id: string | null
   candidate_id: string | null; job_id: string | null; subject_key: string
 }
 interface DeliveryTask {

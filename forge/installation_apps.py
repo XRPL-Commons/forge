@@ -13,7 +13,7 @@ import secrets
 import time
 from urllib.parse import parse_qs, urlsplit
 
-from .onboarding import Onboarding, ROLES
+from .onboarding import APP, Onboarding, ROLES
 from .operator_auth import OperatorAuth
 from .store.runtime import required
 
@@ -34,7 +34,7 @@ class RoleAppHandoff:
     def begin(self, *, setup_id, actor_id, owner, role, generation):
         config = self.operator(actor_id)
         if (not isinstance(setup_id, str) or not re.fullmatch(r'[a-f0-9]{32}', setup_id)
-                or role not in ROLES or not isinstance(owner, dict)
+                or role not in (APP, *ROLES) or not isinstance(owner, dict)
                 or set(owner) != {'id', 'login', 'type'} or type(owner['id']) is not int or owner['id'] <= 0
                 or owner['type'] not in ('User', 'Organization')
                 or not re.fullmatch(r'[A-Za-z0-9-]{1,39}', owner.get('login', ''))):

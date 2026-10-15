@@ -214,7 +214,7 @@ class ExecutionTests(unittest.TestCase):
         with self.store.read_snapshot() as db:
             for table in ('jobs', 'attempts', 'job_leases', 'job_launches'):
                 self.assertEqual(db.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0)
-        self.assertEqual(self.view()['state'], 'queued')
+        self.assertEqual(self.view()['state'], 'building')
 
     def test_capture_releases_capacity_before_result_validation_without_losing_authority(self):
         job = self.reserve()

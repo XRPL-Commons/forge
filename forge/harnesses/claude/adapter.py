@@ -199,7 +199,7 @@ def invoke(note, directory, env, result_schema, prompt, *, canary=None):
     prompt = ('The assigned repository is ' + str(directory) + '. Run repository commands with '
               'an explicit cd to that directory. The launch directory is trusted runner code.\n' + prompt)
     code, raw = collect(args, prompt, launch, env,
-                        max_bytes=max(2*1024*1024, 2*RESULTS['result_limit'](note.get('role'))+65536))
+                        max_bytes=max(2*1024*1024, 2*RESULTS['result_limit'](note)+65536))
     events = []
     for line in raw.splitlines():
         try:

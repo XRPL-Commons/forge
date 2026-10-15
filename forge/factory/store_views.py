@@ -22,8 +22,8 @@ from ..store.job_scope import JOB_MEMBER_SCOPE, ISSUE_JOB_SCOPE, issue_jobs_in
 from .issue_selection import IssueSelection
 
 
-LEGACY_STAGE = {'queued': 'ready', 'building': 'ready', 'integrating': 'ready', 'reviewing': 'built',
-                'auditing': 'reviewed', 'merging': 'audited', 'merged': 'merged', 'closed': 'cancelled', 'dissolved': 'cancelled'}
+LEGACY_STAGE = {'building': 'ready', 'publishing': 'ready', 'reviewing': 'built',
+                'auditing': 'reviewed', 'merging': 'audited', 'merged': 'merged', 'closed': 'cancelled'}
 
 
 def _legacy_stage(lifecycle):
@@ -87,10 +87,10 @@ COMPLETION_SQL="COALESCE((SELECT e.at FROM events e WHERE e.unit_id=u.id AND e.k
 # canonical index's input to those issue IDs, including former memberships;
 # its existing latest-membership and lifecycle predicates still decide matches.
 COMPLETED_MEMBERS_SQL = ("WITH terminal_members AS MATERIALIZED (SELECT DISTINCT m.issue_id FROM units terminal "
-    "JOIN unit_issues m ON m.unit_id=terminal.id WHERE terminal.state IN ('merged','closed','dissolved')) ")
+    "JOIN unit_issues m ON m.unit_id=terminal.id WHERE terminal.state IN ('merged','closed')) ")
 COMPLETED_SOURCE_SQL = 'terminal_members t CROSS JOIN public_issue_index x ON x.id=t.issue_id'
 CURRENT_MEMBERS_SQL = ("WITH current_members AS MATERIALIZED (SELECT DISTINCT m.issue_id FROM units live "
-    "JOIN unit_issues m ON m.unit_id=live.id WHERE live.state NOT IN ('merged','closed','dissolved') AND m.left_at IS NULL) ")
+    "JOIN unit_issues m ON m.unit_id=live.id WHERE live.state NOT IN ('merged','closed') AND m.left_at IS NULL) ")
 # Candidate bounds only: the canonical index still decides currentness,
 # applicable blockers, status and final inclusion below.
 CURRENT_SOURCE_SQL = 'current_members a CROSS JOIN public_issue_index x ON x.id=a.issue_id'
@@ -178,6 +178,13 @@ class PipelineViews:
             for gate in db.execute("SELECT details_json FROM unit_gates WHERE unit_id=? AND member_id=? AND code='dependency' AND resolved_at IS NULL",
                                    (unit_id,issue['lifecycle']['member_id'])):
                 reasons.update((row['reference'],row['reason']) for row in json.loads(gate[0]).get('blocked',[]))
+        if unit_id:
+            from ..store.claim_overrides import dependencies_in
+            for gate in dependencies_in(db,unit_id,issue['lifecycle']['member_id']):
+                details=json.loads(gate['details_json'])
+                refs.update(details.get('references',[]))
+                for fact in details.get('dependency_observations',[]):
+                    facts.setdefault(fact['reference'],fact)
         result=[]
         for ref in sorted(refs):
             repository,number=ref.rsplit('#',1)
@@ -207,7 +214,9 @@ class PipelineViews:
         context=db.execute('SELECT * FROM unit_context WHERE unit_id=?',(unit_id,)).fetchone() if unit_id else None
         gates={}
         if unit_id:
-            for gate in db.execute('SELECT * FROM unit_gates WHERE unit_id=? AND resolved_at IS NULL AND (candidate_id IS NULL OR candidate_id=?) AND (member_id IS NULL OR member_id=?) ORDER BY created_at,id LIMIT 100',(unit_id,life['candidate_id'],life['member_id'])):
+            from ..store.transitions import applicable_gates
+            for gate in applicable_gates(db,unit,life['member_id'],life['candidate_id']):
+                if gate['id'] is None:continue
                 from ..store.worker_waits import details_in
                 value=details_in(db,gate);gates[gate['code']]=(dict(gate),value.get('value',value))
         decision=gates.get('decision_required',(None,None))[1]
@@ -243,6 +252,10 @@ class PipelineViews:
             environment_block=json.loads(environment['environment_hold_json'])
         fresh = not issue.get('body_truncated') and issue['observed_at'] is not None and 0 <= self.clock()-issue['observed_at'] < 300
         actions = available_actions(issue, unit, cleanup=cleanup, pending=pending) if fresh else []
+        if fresh and unit and not pending and not cleanup and issue['github_state']=='open':
+            from ..store.claim_overrides import dependencies_in
+            if dependencies_in(db,unit_id,life['member_id']):
+                actions.append('start_anyway')
         wording = life['display_status']
         from .contracts import clamp,operator_text,plain_text,HEADLINE_LIMIT
         # The bubble speaks to the operator; the worker's technical report stays
@@ -322,7 +335,7 @@ class PipelineViews:
         active = next((job for job in jobs if not job['cleanup'] and not job['fenced'] and job['outcome'] is None), None)
         operator = operator_status(issue, bool(active))
         context = (reads.unit_contexts.get(unit_id) if reads is not None else db.execute('SELECT summary_json,last_observed_at FROM unit_context WHERE unit_id=?', (unit_id,)).fetchone()) if unit else None
-        historical = bool(unit and unit['state'] in {'merged', 'closed', 'dissolved'})
+        historical = bool(unit and unit['state'] in {'merged', 'closed'})
         checked = context['last_observed_at'] if context and historical else issue['observed_at'] if unit else None
         prerequisites = self._prerequisites(db, issue, unit_id, reads=reads)
         blocked = [row['number'] for row in prerequisites if not row['complete'] and
@@ -601,7 +614,7 @@ class PipelineViews:
                         'deployed':None, 'deploy_failed':None, 'completed_at':None})
             cursor=f"{rows[size-1]['completed_at']!r}:{rows[size-1]['id']}" if len(rows)>size else None
             job_clauses=['(j.cleanup=0 OR j.outcome IS NULL)'];job_params=[]
-            runner_filter="(j.role='recovery' OR j.fenced=1 OR j.outcome IS NOT NULL OR NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.unit_id=j.unit_id AND m.left_at IS NULL AND u.state NOT IN ('merged','closed','dissolved')))"
+            runner_filter="(j.role='recovery' OR j.fenced=1 OR j.outcome IS NOT NULL OR NOT EXISTS(SELECT 1 FROM unit_issues m JOIN units u ON u.id=m.unit_id WHERE m.unit_id=j.unit_id AND m.left_at IS NULL AND u.state NOT IN ('merged','closed')))"
             if section=='runners':job_clauses.append(runner_filter)
             if issue is not None:
                 job_clauses.append(ISSUE_JOB_SCOPE);job_params.append(issue)

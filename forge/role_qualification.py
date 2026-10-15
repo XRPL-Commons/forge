@@ -126,7 +126,8 @@ class CanarySource(SourcePreparation):
         result['qualification'] = dict(fixture=True, publishes=False,
             candidate='base equals head; synthetic PR identity' if job['role'] in {'review','audit'} else None,
             failure='synthetic incorrect assertion' if job['role'] in {'recovery','steward'} else None)
-        evidence_field = 'the recommended choice reason' if job['role']=='steward' else 'summary'
+        evidence_field = ('the recommended choice reason' if job['role']=='steward' else
+                          'metadata.reply' if job['role'] in {'triage','discussion'} else 'summary')
         instruction = (
             '\nHOST QUALIFICATION TASK (replaces implementation scope; supplied issue remains context only): '
             'This is a disposable installation canary, not work on the actual GitHub issue. '
@@ -136,7 +137,8 @@ class CanarySource(SourcePreparation):
             'Do not install dependencies or run the full project suite. Do not access GitHub directly. ')
         if job['role']=='build':
             instruction += ('Create only forge-qualification.txt containing that observed path and blob OID, '
-                'validate its content with a short local check, and commit that file locally. Return pass and the exact '
+                'validate its content with a short local check, and commit that file locally. Return build result v2 with '
+                'outcome done, claims [], verification null, delegation_plan null and the exact '
                 'output_commit with a qualification-only PR title/body. Nothing will be published. ')
         elif job['role'] in {'review','audit'}:
             instruction += 'The fixture candidate has no diff (base=head); verify this and report pass with the exact candidate key. '
@@ -148,9 +150,12 @@ class CanarySource(SourcePreparation):
                 'Explain the incorrect assertion and the observed file fact in the choice reason. '
                 'No choice will be selected or applied; no question will be posted. ')
         elif job['role']=='triage':
-            instruction += 'This fixture index contains only the selected issue. Propose keep for it, with notes [] and handoff null. '
+            instruction += ('This fixture index contains only the selected issue. Return the pinned Steward triage envelope '
+                'with exactly one decision containing exactly one keep choice for that issue, brief null, '
+                'and metadata with reply describing the file, notes [] and handoff null. No row will be approved. ')
         elif job['role']=='discussion':
-            instruction += 'Answer the fixture question about the file; proposal null and close_now false. '
+            instruction += ('Return the pinned Steward conversation decision with exactly one answer choice and brief null. '
+                'Answer the fixture question in metadata.reply, with notes [] and handoff null. No action will be applied. ')
         else:
             instruction += 'Inspect deployment evidence in this checkout and return the normal strategist contract; unknown evidence stays unobservable. '
         result['instructions'] += instruction
@@ -209,9 +214,29 @@ def validate_capture(capture, job, notes, source):
                 or value['choices'][0]['judgement']!='judgement' or value['brief'] is not None):
             raise QualificationError('steward_fixture_scope_changed')
         read_evidence=value['choices'][0]['reason']
+    elif job['role']=='triage':
+        from .steward_subjects import triage_output
+        rows,retained,metadata=triage_output(value,job['context']['steward_dossiers'])
+        if (len(rows)!=1 or rows[0]['action']!='keep'
+                or rows[0]['members']!=[job['context']['issues'][0]['issue_id']]
+                or len(retained[0][1]['choices'])!=1 or retained[0][1]['brief'] is not None
+                or metadata['notes']!=[] or metadata['handoff'] is not None):
+            raise QualificationError('triage_fixture_scope_changed')
+        read_evidence=metadata['reply']
+    elif job['role']=='discussion':
+        from .steward_contract import decision
+        decision(value,job['context']['steward_dossier'])
+        if (len(value['choices'])!=1 or value['choices'][0]['action']!='answer'
+                or value['brief'] is not None or value['metadata']['notes']!=[] or value['metadata']['handoff'] is not None):
+            raise QualificationError('discussion_fixture_scope_changed')
+        read_evidence=value['metadata']['reply']
     else:
-        if value['outcome']!='pass':raise QualificationError('role_did_not_pass')
+        if value['outcome']!=('done' if job['role']=='build' else 'pass'):
+            raise QualificationError('role_did_not_pass')
+        if job['role']=='build' and value['verification'] is not None:
+            raise QualificationError('build_fixture_scope_changed')
         read_evidence=value['summary']
+    if not isinstance(read_evidence,str):raise QualificationError('repository_read_evidence_missing')
     match = re.search(r'QUALIFICATION_READ ([^\s]+) ([0-9a-f]{40}(?:[0-9a-f]{24})?)(?:\s|$)',read_evidence)
     if not match:raise QualificationError('repository_read_evidence_missing')
     path, oid = match.groups()
@@ -225,14 +250,6 @@ def validate_capture(capture, job, notes, source):
         receipts=[json.loads(row[0]) for row in db.execute('SELECT details_json FROM mirror_receipts WHERE job_id=?',(job['id'],))]
     if not any(row.get('request_kind')=='upload' and row.get('outcome')=='served' for row in receipts):
         raise QualificationError('mirror_fetch_not_confirmed')
-    if job['role']=='triage':
-        issues=notes['context']['issues']
-        rows=value['rows']
-        if (len(rows)!=1 or rows[0]['action']!='keep' or rows[0]['members']!=[issues[0]['issue_id']]
-                or value['notes']!=[] or value['handoff'] is not None):
-            raise QualificationError('triage_fixture_scope_changed')
-    if job['role']=='discussion' and (value['proposal'] is not None or value['close_now']):
-        raise QualificationError('discussion_fixture_scope_changed')
     if job['role']=='build':
         bundle = capture.get('worktree_bundle')
         receipt = capture.get('export_receipt') or {}

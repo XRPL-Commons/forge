@@ -56,7 +56,11 @@ def requirements(value):
                                   'stale', 'missing_permissions', 'name_changed', 'archived'))
         if role['app_id'] is not None:
             app_ids.append(role['app_id'])
-    require(len(app_ids) == len(set(app_ids)))
+    controller=value['roles']['controller']
+    for role in value['roles'].values():
+        if role['app_id'] is not None and app_ids.count(role['app_id'])>1:
+            require(role['app_id']==controller['app_id'] and role['installation_ids']==controller['installation_ids'],
+                    'invalid_contract', 'Shared role identities must use the exact Forge App installation.')
     fields(value['readiness'], ('discovered', 'enabled', 'access_ready', 'protection_ready', 'protection_status'))
     require(all(type(value['readiness'][k]) is bool for k in
                 ('discovered', 'enabled', 'access_ready', 'protection_ready')))
@@ -68,7 +72,11 @@ def requirements(value):
             ('enabled', 'access_ready', 'protection_ready')))
     # The client understands one additive policy. It will not accept a server's
     # arbitrary ruleset body, permissions, endpoints or shell instructions.
-    fields(value['baseline'], ('branch', 'required_approvals', 'dismiss_stale_reviews'))
+    baseline_fields={'branch','required_approvals','dismiss_stale_reviews'}
+    require(isinstance(value['baseline'],dict) and set(value['baseline']) in
+            (baseline_fields,baseline_fields|{'merge_check_scope'}))
+    if 'merge_check_scope' in value['baseline']:
+        require(value['baseline']['merge_check_scope'] in ('all','forge'))
     require(type(value['baseline']['required_approvals']) is int
             and value['baseline']['required_approvals'] == 2
             and value['baseline']['dismiss_stale_reviews'] is True)
@@ -93,10 +101,23 @@ def validate_branch(branch):
             and '..' not in branch and '@{' not in branch)
 
 
-def baseline(branch, controller_app_id):
+def baseline(branch, controller_app_id, merge_check_scope=None):
+    """Forge's additive ruleset: one App bypass actor, and with scope 'all' the
+    forge/merge-policy check required from that App on every pull request.
+
+    It never replaces or relaxes another ruleset or classic protection."""
     validate_branch(branch)
     require(positive(controller_app_id), 'controller_identity_required',
             'Verify the controller App before preparing repository rules.')
+    require(merge_check_scope in (None, 'all', 'forge'), 'invalid_merge_check_scope')
+    rules = [{'type': 'pull_request', 'parameters': {
+        'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
+        'require_code_owner_review': False, 'require_last_push_approval': False,
+        'required_review_thread_resolution': False}}]
+    if merge_check_scope == 'all':
+        rules.append({'type': 'required_status_checks', 'parameters': {
+            'strict_required_status_checks_policy': False,
+            'required_status_checks': [{'context': 'forge/merge-policy', 'integration_id': controller_app_id}]}})
     return {'name': 'Forge review baseline', 'target': 'branch', 'enforcement': 'active',
             # RepositoryRole 5 is GitHub's administrator role. Keep operators
             # able to bypass this additive baseline independently of the App.
@@ -105,7 +126,4 @@ def baseline(branch, controller_app_id):
                 {'actor_id': controller_app_id, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
             ],
             'conditions': {'ref_name': {'include': ['refs/heads/' + branch], 'exclude': []}},
-            'rules': [{'type': 'pull_request', 'parameters': {
-                'required_approving_review_count': 2, 'dismiss_stale_reviews_on_push': True,
-                'require_code_owner_review': False, 'require_last_push_approval': False,
-                'required_review_thread_resolution': False}}]}
+            'rules': rules}

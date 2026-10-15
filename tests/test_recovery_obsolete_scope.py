@@ -88,7 +88,7 @@ class ObsoleteMemberRecoveryTests(unittest.TestCase):
         self.investigate(failed)
         self.life.dissolve(self.command(),evidence={'approved':True})
         with self.store.read_snapshot() as db:
-            self.assertEqual(db.execute("SELECT state FROM units WHERE id='batch'").fetchone()[0],'dissolved')
+            self.assertEqual(tuple(db.execute("SELECT state,close_code FROM units WHERE id='batch'").fetchone()),('closed','dissolved'))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM budget_entries WHERE kind='charge'").fetchone()[0],1)
 
     def test_closed_member_still_respects_hold_and_human_ownership(self):

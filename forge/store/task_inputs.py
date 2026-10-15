@@ -190,6 +190,9 @@ def task_execution_gates_in(db,unit,job):
     task=db.execute('SELECT task_id,plan_id FROM job_tasks WHERE job_id=?',(job['id'],)).fetchone()
     owner=db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(job['id'],)).fetchone()
     if not task and not owner:
+        from .review_pulls import review_only_in
+        if review_only_in(db, unit['id']):
+            return applicable_gates(db, unit, candidate_id=job['candidate_id'], job_id=job['id'])
         found={}
         for member in pins:
             for gate in applicable_gates(db,unit,member,job['candidate_id'],job_id=job['id']):
@@ -217,7 +220,10 @@ def scoped_task_gates_in(db,unit,member_ids,*,job_id=None,candidate_id=None):
     from .transitions import _collect_gates
     gates=[]
     for gate in _collect_gates(db,unit):
-        if gate.get('job_id') is not None:
+        if 'claim_member_ids' in gate:
+            if not set(gate['claim_member_ids']).intersection(member_ids):
+                continue
+        elif gate.get('job_id') is not None:
             if gate['job_id']==job_id:
                 gates.append(gate)
             continue

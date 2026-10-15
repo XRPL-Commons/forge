@@ -6,7 +6,7 @@ const repoId = computed(() => props.repoId)
 const route = useRoute()
 const wizard = ref(route.query.setup === '1')
 watch(() => route.query.setup, value => { if (value === '1') wizard.value = true })
-const { poll, view, live, row, report, shown, displayReady, ready, prepared, failed, hint, editUrl, downloadHref, downloaded, busy, checking, error, deployment, deployError, environmentError, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy } = useRepository(repoId, computed(() => !wizard.value))
+const { poll, view, live, row, report, shown, displayReady, ready, prepared, failed, hint, editUrl, downloadHref, downloaded, busy, checking, error, deployment, deployError, environmentError, environmentAction, rejecting, check, decide, rejectDeployment, updateEnvironment, mirrorError, updateMirrorPolicy, updateReviewScope } = useRepository(repoId, computed(() => !wizard.value))
 async function closed() { wizard.value = false; await navigateTo(`/settings/repositories/${props.repoId}`, { replace: true }); await poll.refresh() }
 </script>
 <template>
@@ -26,6 +26,16 @@ async function closed() { wizard.value = false; await navigateTo(`/settings/repo
         <p class="mt-1">{{ row.merge_policy === 'auto' ? 'Automatic after CI, Review and Audit pass.' : 'One counted human approval is required before merge.' }}</p>
         <p class="mt-1 text-muted">Audit or verification can still require a person. Change this policy through the Forge CLI.</p>
         <code class="mt-2 block break-all text-xs">forge repo policy {{ row.name }} auto|human --server FORGE_URL</code>
+      </section>
+      <section v-if="live && row.merge_check_revision" class="mt-5 rounded-xl border border-line bg-panel p-4 text-sm" aria-labelledby="review-scope-heading">
+        <h2 id="review-scope-heading" class="font-semibold text-white">Forge Review and Audit</h2>
+        <p class="mt-1 text-muted">Both independent checks apply to all pull requests by default. Human pull requests stay under their author's control, and GitHub's existing merge rules still apply.</p>
+        <label for="review-scope" class="mt-3 block">Review scope</label>
+        <select id="review-scope" class="mt-2 rounded border border-line bg-panel p-2" :value="row.merge_check_scope ?? 'all'" :disabled="busy" @change="updateReviewScope(($event.target as HTMLSelectElement).value as 'all' | 'forge')">
+          <option value="all">All pull requests</option>
+          <option value="forge">Forge-created pull requests only</option>
+        </select>
+        <p class="mt-2 text-xs text-muted">Changing scope does not change GitHub rules. If GitHub requires Forge checks for every pull request, update that rule through repository setup before selecting Forge-only.</p>
       </section>
       <RepositoryMirrorPolicyCard v-if="live" :key="`mirror-${row.id}`" :entries="row.mirror_denied_repositories ?? []" :busy="busy" :error="mirrorError" @save="updateMirrorPolicy" />
       <RepositoryStewardPolicy v-if="live" :key="`steward-${row.id}`" :repo-id="row.id" />

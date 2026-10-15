@@ -98,8 +98,21 @@ class RoleFixturesTests(unittest.TestCase):
                     if role=='steward':
                         self.assertEqual(schema(note)['properties']['dossier_digest']['enum'],
                                          [job['steward']['dossier']['digest']])
+                    elif role=='triage':
+                        self.assertEqual(job['steward_mode'],'triage')
+                        self.assertEqual(note['role'],'steward')
+                        self.assertEqual(schema(note)['properties']['decisions']['items']['properties']['dossier_digest']['enum'],
+                                         [d['digest'] for d in job['context']['steward_dossiers']])
+                    elif role=='discussion':
+                        self.assertEqual(job['steward_mode'],'conversation')
+                        self.assertEqual(note['role'],'steward')
+                        self.assertEqual(schema(note)['properties']['dossier_digest']['enum'],
+                                         [job['context']['steward_dossier']['digest']])
                     else:
                         self.assertEqual(schema(note)['properties']['role']['enum'],[role])
+                        if role=='build':
+                            self.assertEqual(job['build_result_version'],2)
+                            self.assertEqual(schema(note)['properties']['version']['enum'],[2])
                     fixtures.fence(job)
                     with self.assertRaises(MirrorError):mirror.authority(job['id'])
 
@@ -175,6 +188,36 @@ class RoleFixturesTests(unittest.TestCase):
                                     with fixtures.store.read_snapshot() as db:
                                         self.assertEqual(db.execute('SELECT count(*) FROM steward_selections').fetchone()[0],0)
                                         self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+                                if role in {'triage','discussion'}:
+                                    from forge.role_qualification import validate_capture
+                                    from tests.steward_subject_fixture import output,choice,row_choice
+                                    from copy import deepcopy
+                                    job['source_input']=prepared.source_input
+                                    source.config=dict(DEFAULT)
+                                    blob=run_git(['-C',str(checkout),'hash-object','README.md']).decode().strip()
+                                    reply='QUALIFICATION_READ README.md '+blob
+                                    if role=='triage':
+                                        dossier=job['context']['steward_dossiers'][0]
+                                        selected=output(dossier,[row_choice('keep',dossier['authority']['anchor_issue_id'])])
+                                        value=dict(version=1,decisions=[selected],metadata=dict(reply=reply,notes=[],handoff=None))
+                                    else:
+                                        dossier=job['context']['steward_dossier']
+                                        value=output(dossier,[choice('answer')],reply=reply)
+                                    capture=dict(result=value,execution=dict(running=False,exit_code=0),
+                                        execution_envelope=dict(version=1,attempt=job['id'],harness_status='ok',exit_code=0))
+                                    self.assertEqual(validate_capture(capture,job,frozen,source)['status'],'qualified')
+                                    invalid=deepcopy(capture)
+                                    invalid_decision=invalid['result']['decisions'][0] if role=='triage' else invalid['result']
+                                    invalid_decision['dossier_digest']='0'*64
+                                    with self.assertRaises(QualificationError):validate_capture(invalid,job,frozen,source)
+                                    invalid=deepcopy(capture)
+                                    invalid_decision=invalid['result']['decisions'][0] if role=='triage' else invalid['result']
+                                    invalid_decision['recommended_choice_id']='unknown'
+                                    with self.assertRaises(ValueError):validate_capture(invalid,job,frozen,source)
+                                    with fixtures.store.read_snapshot() as db:
+                                        self.assertEqual(db.execute('SELECT count(*) FROM steward_subject_decisions').fetchone()[0],0)
+                                        self.assertEqual(db.execute('SELECT count(*) FROM external_effects').fetchone()[0],0)
+                                        self.assertEqual(db.execute("SELECT count(*) FROM triage_proposal_rows WHERE status='accepted'").fetchone()[0],0)
                                 if role=='build':
                                     from forge.role_qualification import validate_capture
                                     from forge.publication_artifacts import PublicationClaim
@@ -190,10 +233,10 @@ class RoleFixturesTests(unittest.TestCase):
                                     bundle=bundle_path.read_bytes()
                                     job['source_input']=prepared.source_input
                                     source.config=dict(DEFAULT)
-                                    value=dict(version=1,attempt=job['id'],role='build',outcome='pass',blocker=None,
+                                    value=dict(version=2,attempt=job['id'],role='build',outcome='done',
                                         summary='QUALIFICATION_READ README.md '+blob,headline='Read source',plain='Read source',
-                                        operator_summary='Read source',issues=[],evidence=None,decision=None,verification=None,
-                                        required_services=[],output_commit=head,pr_title='Qualification',pr_body='Local fixture')
+                                        operator_summary='Read source',claims=[],verification=None,delegation_plan=None,
+                                        output_commit=head,pr_title='Qualification',pr_body='Local fixture')
                                     receipt=dict(local_head_oid=head,source_digest=digest(prepared.source_input),
                                         job_id=job['id'],bundle_size=len(bundle),bundle_digest=hashlib.sha256(bundle).hexdigest())
                                     capture=dict(result=value,execution=dict(running=False,exit_code=0),

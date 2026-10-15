@@ -65,9 +65,9 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
             (member['issue_id'], requirements_revision_id)))
         requirements = json.loads(member['requirements_json'])
         for gate in db.execute("SELECT id,details_json,resolved_at FROM unit_gates WHERE unit_id=? "
-                "AND member_id=? AND code='dependency'", (unit_id, member_id)):
+                "AND code='dependency' AND (member_id=? OR EXISTS(SELECT 1 FROM job_members p WHERE p.job_id=unit_gates.job_id AND p.member_id=?))", (unit_id, member_id,member_id)):
             details = json.loads(gate['details_json'])
-            if details.get('requirements') != requirements:
+            if details.get('requirements') != requirements and details.get('requirements_by_member',{}).get(member_id)!=requirements_revision_id:
                 continue
             if gate['resolved_at'] is not None:
                 event = db.execute("SELECT payload_json FROM events WHERE unit_id=? AND kind='gate_resolved' "
@@ -76,9 +76,10 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
                 evidence = json.loads(event[0]).get('evidence', {}) if event else {}
                 # A verified completion stays a dependency if it reopens. An
                 # explicit operator dismissal stops the worker-declared wait.
-                if evidence.get('verified') is not True or evidence.get('requirements_revision_id') != requirements_revision_id:
+                if evidence.get('verified') is not True or evidence.get('requirements_revision_id') != requirements_revision_id and evidence.get('verified_requirements',{}).get(member_id)!=requirements_revision_id:
                     continue
             refs.update(member['full_name'].lower()+'#'+str(n) for n in details.get('issues', []))
+            refs.update(details.get('references', []))
         members = [dict(row) for row in db.execute(
             "SELECT m.id,i.github_number,lower(r.full_name)||'#'||i.github_number AS reference "
             'FROM unit_issues m JOIN issues i ON i.id=m.issue_id JOIN repositories r ON r.id=i.repository_id '
@@ -124,3 +125,29 @@ def collect(store, github, *, unit_id, member_id, requirements_revision_id, body
             if fact.get('kind') != 'internal':
                 external_blocked.append({'reference': ref, 'reason': reason})
     return {'facts': facts, 'blocked': blocked, 'external_blocked': external_blocked}
+
+
+def ground_claims(store, github, claims):
+    """Resolve typed identities using host GitHub observations, never worker quotes."""
+    from .github import GitHubUnavailable
+    facts=[]
+    for claim in claims:
+        if claim['type']!='wait_on_issue':
+            continue
+        with store.read_snapshot() as db:
+            repository=db.execute('SELECT full_name FROM repositories WHERE id=?',(claim['repository_id'],)).fetchone()
+        if repository is None:
+            raise ValueError('Dependency repository is not configured')
+        ref=repository[0].lower()+'#'+str(claim['issue_number'])
+        with store.read_snapshot() as db:
+            row=db.execute('SELECT * FROM prerequisite_identities WHERE reference=?',(ref,)).fetchone()
+            binding=dict(row) if row else None
+        fact=github.prerequisite(ref,binding)
+        if (fact.get('error') or fact.get('reference')!=ref
+                or fact.get('repository_id')!=claim['repository_id'] or fact.get('number')!=claim['issue_number']
+                or binding and any(fact.get(key)!=binding[key] for key in _IDENTITY)):
+            raise GitHubUnavailable('Typed dependency identity could not be verified')
+        if fact.get('kind')!='issue' or fact.get('state')!='open' or type(fact.get('github_id')) is not int or fact['github_id']<=0:
+            raise ValueError('Dependency claim must identify an existing open issue')
+        facts.append(fact)
+    return facts

@@ -85,6 +85,9 @@ class Effects(Lifecycle):
             raise TransitionError('merge authorization must be a fresh observation')
 
     def _merge_ready(self, db, unit, candidate, authorization):
+        from .review_pulls import review_only_in
+        if review_only_in(db,unit['id']):
+            raise TransitionError('Review-only pull requests never authorize Forge to merge')
         self._authorization(candidate, authorization, self.clock())
         if unit['state'] != 'merging' or applicable_gates(db, unit, candidate_id=candidate['id']):
             raise TransitionError('unit is not admitted for merging')
@@ -95,6 +98,11 @@ class Effects(Lifecycle):
                                 'ORDER BY observed_at DESC,rowid DESC LIMIT 1', (candidate['id'], role)).fetchone()
             if latest is None or latest[0] != 'pass':
                 raise TransitionError('merge requires current passing review and audit evidence')
+        if db.execute("SELECT 1 FROM units u JOIN candidates c ON c.id=u.current_candidate_id "
+                "JOIN review_candidate_sources s ON s.candidate_id=c.id WHERE u.repository_id=? "
+                "AND c.head_oid=? AND u.state NOT IN ('merged','closed') LIMIT 1",
+                (unit['repository_id'],candidate['head_oid'])).fetchone():
+            self._review_peers_ready(db,unit,candidate,authorization)
 
     @staticmethod
     def _verdict_ready(db, unit, candidate, job_id):
@@ -151,6 +159,60 @@ class Effects(Lifecycle):
                 raise TransitionError('successful checks require verdict or merge authorization')
             return self._insert(db, command, unit, candidate, 'github_check', payload)
         return self._apply(command, 'queue_check', payload, change)
+
+    def _review_policy_ready(self,db,unit,candidate,authorization):
+        from .review_pulls import review_only_in
+        source=db.execute('SELECT source_hash FROM review_candidate_sources WHERE candidate_id=? AND unit_id=?',
+                          (candidate['id'],unit['id'])).fetchone()
+        if not review_only_in(db,unit['id']) or source is None:
+            raise TransitionError('Review policy requires an exact review-only source')
+        if (not isinstance(authorization,dict) or authorization.get('verified') is not True
+                or authorization.get('review_only') is not True or authorization.get('checks_passed') is not True
+                or authorization.get('source_hash')!=source['source_hash']
+                or any(authorization.get(key)!=candidate[key] for key in ('head_oid','base_oid','policy_hash','requirements_hash'))
+                or authorization.get('candidate_id')!=candidate['id']):
+            raise TransitionError('Review policy authorization does not match the current candidate')
+        observed=authorization.get('observed_at')
+        if type(observed) not in (int,float) or not self.clock()-60<=observed<=self.clock():
+            raise TransitionError('Review policy requires a fresh source observation')
+        if unit['state']!='merging' or applicable_gates(db,unit,candidate_id=candidate['id']):
+            raise TransitionError('Review policy has unresolved obligations')
+        if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0',(unit['id'],)).fetchone():
+            raise TransitionError('Review policy requires verified worker cleanup')
+        for role in ('review','audit'):
+            evidence=db.execute('SELECT verdict FROM candidate_evidence WHERE candidate_id=? AND kind=? '
+                'ORDER BY observed_at DESC,rowid DESC LIMIT 1',(candidate['id'],role)).fetchone()
+            if evidence is None or evidence['verdict']!='pass':
+                raise TransitionError('Review policy requires independent Review and Audit passes')
+        self._review_peers_ready(db,unit,candidate,authorization)
+
+    def _review_peers_ready(self,db,unit,candidate,authorization):
+        rows=db.execute("SELECT u.*,c.id AS candidate_id,s.source_hash FROM units u JOIN candidates c ON c.id=u.current_candidate_id "
+            "LEFT JOIN review_candidate_sources s ON s.candidate_id=c.id WHERE u.repository_id=? AND c.head_oid=? "
+            "AND u.state NOT IN ('merged','closed') ORDER BY u.id LIMIT 21",(unit['repository_id'],candidate['head_oid'])).fetchall()
+        pins=[{key:row[key] for key in ('id','candidate_id','source_hash','fencing_generation','membership_generation')} for row in rows]
+        if len(rows)>20 or pins!=authorization.get('peer_pins'):
+            raise TransitionError('Review policy peer candidates changed')
+        for peer in rows:
+            if peer['state']!='merging' or applicable_gates(db,dict(peer),candidate_id=peer['candidate_id']):
+                raise TransitionError('A pull request sharing this commit still has obligations')
+            if db.execute('SELECT 1 FROM jobs WHERE unit_id=? AND cleanup=0',(peer['id'],)).fetchone():
+                raise TransitionError('A pull request sharing this commit needs cleanup')
+            for role in ('review','audit'):
+                evidence=db.execute('SELECT verdict FROM candidate_evidence WHERE candidate_id=? AND kind=? '
+                    'ORDER BY observed_at DESC,rowid DESC LIMIT 1',(peer['candidate_id'],role)).fetchone()
+                if evidence is None or evidence['verdict']!='pass':
+                    raise TransitionError('All pull requests sharing this commit need independent Review and Audit')
+
+    def queue_review_policy(self,command,candidate_id,*,authorization):
+        payload=dict(candidate_id=candidate_id,role='controller',conclusion='success',
+            summary='Independent Forge Review and Audit passed for this exact pull request source. Repository merge rules still apply.',
+            review_only=True)
+        def change(db,unit):
+            candidate=self._candidate(db,unit,candidate_id)
+            self._review_policy_ready(db,unit,candidate,authorization)
+            return self._insert(db,command,unit,candidate,'github_check',payload)
+        return self._apply(command,'queue_review_policy',payload,change)
 
     def queue_merge(self, command, candidate_id, *, policy_hash, authorization):
         payload = dict(candidate_id=candidate_id, policy_hash=policy_hash, authorization=authorization)
@@ -217,6 +279,8 @@ class Effects(Lifecycle):
                 raise VersionConflict('unit changed during effect revalidation')
             if row['kind'] == 'github_merge':
                 self._merge_ready(db, unit, candidate, authorization)
+            elif row['kind']=='github_check' and json.loads(row['payload_json']).get('review_only') is True:
+                self._review_policy_ready(db,unit,candidate,authorization)
             elif row['kind'] == 'github_verdict':
                 self._verdict_ready(db, unit, candidate, row['job_id'])
             # The preliminary merge check is not another merge PUT attempt.
@@ -257,7 +321,23 @@ class Effects(Lifecycle):
                         uncertain, self.clock(), effect_id))
             if row['kind'] == 'github_merge' and status == 'superseded':
                 db.execute("UPDATE merge_requests SET status='superseded' WHERE effect_id=?", (effect_id,))
+            if status=='confirmed' and row['kind']=='github_check':
+                self._confirm_review_wait_in(db,row,receipt)
             self._effect_event(db, effect_id)
+
+    def _confirm_review_wait_in(self,db,effect,receipt):
+        if type((receipt or {}).get('check_id')) is not int or receipt['check_id']<1:
+            return
+        unit=_unit(db,effect['unit_id'])
+        gates=db.execute("SELECT id FROM unit_gates WHERE unit_id=? AND candidate_id=? "
+            "AND code='observation_unavailable' AND resolved_at IS NULL "
+            "AND json_extract(details_json,'$.source')='review_pull_policy' "
+            "AND json_extract(details_json,'$.effect_id')=?",(unit['id'],unit['current_candidate_id'],effect['id'])).fetchall()
+        if not gates:return
+        command=Command(effect['id']+':confirmed','supervisor:effects',unit['id'],unit['version'])
+        proof=dict(verified=True,effect_id=effect['id'],check_id=receipt['check_id'],candidate_id=unit['current_candidate_id'],observed_at=self.clock())
+        for gate in gates:self._resolve(db,command,gate['id'],proof)
+        self._save(db,command,'confirm_review_policy_wait',proof,{'resolved':True})
 
     def refuse_merge(self, effect_id, *, http_status, evidence):
         """Record a definitive refusal of this PUT; transport/5xx remain uncertain."""
@@ -421,6 +501,8 @@ class EffectQueries:
             value['receipt'] = json.loads(value.pop('receipt_json') or 'null')
             candidate = dict(db.execute('SELECT * FROM candidates WHERE id=?', (value['candidate_id'],)).fetchone())
             value['identity'] = candidate
+            from .review_pulls import source_in
+            value['review_source']=source_in(db,candidate['id'])
             merge = db.execute('SELECT status,send_count,last_sent_at FROM merge_requests WHERE effect_id=?', (effect_id,)).fetchone()
             value['merge_status'] = merge['status'] if merge else None
             value['merge_send_count'] = merge['send_count'] if merge else 0

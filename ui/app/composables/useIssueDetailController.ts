@@ -173,6 +173,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   const closeOpen = computed(() => decision.value === 'close')
   const assigning = ref(false)
   const decisionMessage = ref<string | null>(null)
+  const decisionChoice = ref<string | null>(null)
   const assignRequest = useSubmission()
   const preselected = computed(() => preselectedReviewers(detail.value))
   const candidatePull = computed(() => reviewPull(detail.value?.pull_requests))
@@ -270,7 +271,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
     const done = await assignRequest.run(async () => {
       const previous = previousDecision()
       const reply = decisionMessage.value
-        ? await api.act<{ request?: string }>('/api/issues/discussion', { action: 'apply', key: issue.key, message_id: decisionMessage.value, reason })
+        ? await api.act<{ request?: string }>('/api/issues/discussion', { action: 'apply', key: issue.key, message_id: decisionMessage.value, reason, ...(decisionChoice.value ? { choice_id: decisionChoice.value } : {}) })
         : await api.act<{ request?: string }>('/api/issues/action', {
           key: issue.key, action: 'assign_reviewer', revision: issue.revision, reason,
         })
@@ -406,7 +407,8 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
   }
 
   const decisionReason = ref('')
-  function ask(action: IssueAction, reason = '', messageId?: string) {
+  function ask(action: IssueAction, reason = '', messageId?: string, choiceId?: string) {
+    decisionChoice.value = choiceId ?? null
     if (action === 'assign_reviewer') {
       askReviewer()
       decisionMessage.value = messageId ?? null
@@ -472,7 +474,7 @@ export function useIssueDetailController(props: { issueKey: string; fill?: 'cont
         workerReceipt.value = { id: issue.active!, before }
       } else {
         const reply = decisionMessage.value
-          ? await api.act<IssueDetailResponse & { request?: string }>('/api/issues/discussion', { action: 'apply', key: issue.key, message_id: decisionMessage.value, reason })
+          ? await api.act<IssueDetailResponse & { request?: string }>('/api/issues/discussion', { action: 'apply', key: issue.key, message_id: decisionMessage.value, reason, ...(decisionChoice.value ? { choice_id: decisionChoice.value } : {}) })
           : await api.act<IssueDetailResponse & { request?: string }>('/api/issues/action', { key: issue.key, action, revision: issue.revision, reason })
         recordDecision(reply, previous)
         if (reply.issue) {

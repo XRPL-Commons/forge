@@ -6,7 +6,7 @@ import math
 
 from .store.models import TransitionError
 
-MODES = frozenset({'recovery', 'stall', 'brief'})
+MODES = frozenset({'recovery', 'stall', 'brief', 'triage', 'conversation'})
 ACTIONS = frozenset({'retry', 'wait_on', 'rebuild', 'split', 'drop', 'fold', 'escalate_forge', 'question'})
 REVERSIBLE = frozenset({'retry', 'wait_on', 'rebuild'})
 MAX_CYCLES = 3
@@ -87,7 +87,7 @@ def parameters(action, value):
 def decision(value, dossier, *, accepted=None):
     """One output in all modes. Brief may enrich only the accepted output's brief."""
     fields(value, ('version', 'dossier_id', 'dossier_digest', 'choices',
-                   'recommended_choice_id', 'confidence', 'brief'))
+                   'recommended_choice_id', 'confidence', 'brief'), ('metadata',))
     require(type(value['version']) is int and value['version'] == 1, 'Unsupported steward decision')
     require(value['dossier_id'] == dossier['id'] and value['dossier_digest'] == dossier['digest'],
             'Steward decision belongs to another dossier')
@@ -100,8 +100,13 @@ def decision(value, dossier, *, accepted=None):
         text(choice['id'], 128); text(choice['reason'])
         require(choice['id'] not in identities, 'Duplicate steward choice')
         identities.add(choice['id'])
-        require(choice['action'] in ACTIONS and choice['action'] in dossier['allowed_moves'], 'Steward move is not offered')
+        require(choice['action'] in dossier['allowed_moves'], 'Steward move is not offered')
         require(choice['judgement'] in {'obvious', 'judgement'}, 'Invalid steward judgement')
+        if dossier['mode'] in {'triage','conversation'}:
+            from .steward_subjects import validate_choice
+            validate_choice(choice,dossier)
+            continue
+        require(choice['action'] in ACTIONS,'Unsupported unit move')
         parameters(choice['action'], choice['parameters'])
         if dossier['mode'] != 'brief':
             action, params = choice['action'], choice['parameters']
@@ -134,13 +139,21 @@ def decision(value, dossier, *, accepted=None):
             'Invalid steward confidence')
     brief = value['brief']
     if brief is not None:
-        fields(brief, ('choice_id', 'instructions', 'evidence_refs')); text(brief['instructions'], 8192)
+        fields(brief, ('choice_id', 'instructions', 'evidence_refs'), ('environment',)); text(brief['instructions'], 8192)
         require(brief['choice_id'] in identities, 'Brief must identify one offered choice')
         require(isinstance(brief['evidence_refs'], list) and len(brief['evidence_refs']) <= 20, 'Too many brief references')
         allowed = {encoded(ref) for ref in dossier['facts']['artifact_refs']}
         for ref in brief['evidence_refs']:
             reference(ref)
             require(encoded(ref) in allowed, 'Brief evidence was not in the dossier')
+    if brief is not None and brief.get('environment') is not None:
+        environment=brief['environment'];fields(environment,('environment_id','services'))
+        require(environment['environment_id'] in dossier['facts']['capabilities']['environment_ids'],'Brief environment is not configured')
+        require(isinstance(environment['services'],list) and len(environment['services'])<=20
+                and all(isinstance(v,str) and v for v in environment['services']), 'Brief services must be typed identities')
+    if 'metadata' in value:
+        from .steward_subjects import validate_metadata
+        validate_metadata(value['metadata'])
     if dossier['mode'] == 'brief':
         require(accepted is not None and brief is not None, 'Brief requires an accepted decision')
         require(brief['choice_id'] == dossier['trigger']['choice_id'], 'Brief belongs to another selected choice')
@@ -164,6 +177,20 @@ def decision_schema(dossier, accepted=None):
     def string(limit=2000):return {'type':'string','minLength':1,'maxLength':limit}
     def enum(values):return {'type':'string','enum':list(values)}
     def array(items,low=0,high=20):return {'type':'array','items':items,'minItems':low,'maxItems':high}
+
+    if dossier['mode'] in {'triage','conversation'}:
+        from .steward_subjects import choice_schemas, metadata_schema
+        choices=array({'anyOf':[obj({'id':string(128),'action':action,'parameters':params,
+            'reason':string(),'judgement':enum(['obvious','judgement'])}) for action,params in choice_schemas(dossier)]},1,4)
+        brief=obj({'choice_id':string(128),'instructions':string(8192),'evidence_refs':array({'type':'null'},0,0),
+                   'environment':{'anyOf':[{'type':'null'},obj({'environment_id':enum(dossier['facts']['capabilities']['environment_ids']),
+                       'services':array(string(100))})]}})
+        if not dossier['facts']['capabilities']['environment_ids']:brief['properties']['environment']={'type':'null'}
+        properties={'version':{'type':'integer','enum':[1]},'dossier_id':enum([dossier['id']]),
+                    'dossier_digest':enum([dossier['digest']]),'choices':choices,'recommended_choice_id':string(128),
+                    'confidence':{'type':'number','minimum':0,'maximum':1},'brief':{'anyOf':[{'type':'null'},brief]}}
+        if dossier['mode']=='conversation':properties['metadata']=metadata_schema()
+        return obj(properties)
 
     capabilities=dossier['facts']['capabilities']
     adjustments={}

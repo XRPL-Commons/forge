@@ -377,6 +377,7 @@ class EffectTests(unittest.TestCase):
         runs = [dict(id=1, name='forge/review', app={'id': 10}, external_id=job['id'], head_sha='head', status='in_progress'),
                 dict(id=2, name='forge/review', app={'id': 10}, external_id='replacement-job', head_sha='head', status='in_progress')]
         self.remote.connection = Mock(return_value={'app_id': 10})
+        self.remote.app_ids = Mock(return_value=[10])
         self.remote.pages = Mock(side_effect=lambda *args: [dict(run) for run in runs])
         patches = []
         def patch_check(role, item, method, path, payload):
@@ -397,12 +398,32 @@ class EffectTests(unittest.TestCase):
         job, _ = self.captured()
         run = dict(id=1, name='forge/review', app={'id': 10}, external_id=job['id'], head_sha='head', status='in_progress')
         self.remote.connection = Mock(return_value={'app_id': 10})
+        self.remote.app_ids = Mock(return_value=[10])
         self.remote.pages = Mock(return_value=[run])
         self.remote.call = Mock(return_value={'id': 1, 'status': 'completed'})
         effect_id = self.effects.queue_settlement(self.command(), self.candidate_id, summary='Stopped')['effect_id']
         with self.assertRaises(GitHubUnavailable):
             self.driver.step(effect_id)
         self.assertEqual(self.queries.get(effect_id)['status'], 'uncertain')
+
+    def test_settlement_after_one_app_move_keeps_retired_runs_as_history(self):
+        job, _ = self.captured()
+        # The review App retired (id 7) while its run was live; the Forge App (10) owns new runs.
+        runs = [dict(id=1, name='forge/review', app={'id': 7}, external_id=job['id'], head_sha='head', status='completed'),
+                dict(id=2, name='forge/review', app={'id': 7}, external_id=job['id'], head_sha='head', status='in_progress'),
+                dict(id=3, name='forge/review', app={'id': 10}, external_id=job['id'], head_sha='head', status='in_progress')]
+        self.remote.connection = Mock(return_value={'app_id': 10})
+        self.remote.app_ids = Mock(return_value=[10, 7])
+        self.remote.pages = Mock(side_effect=lambda *args: [dict(run) for run in runs])
+        patches = []
+        def patch_check(role, item, method, path, payload):
+            patches.append(path)
+            runs[2].update(status='completed', conclusion='cancelled')
+        self.remote.call = patch_check
+        effect_id = self.effects.queue_settlement(self.command(), self.candidate_id, summary='Stopped')['effect_id']
+        self.assertEqual(self.driver.step(effect_id)['receipt'], {'check_ids': [1, 3]})
+        # Only the current App's run is patched; the retired App's run is never touched.
+        self.assertEqual(patches, ['/check-runs/3'])
 
     def test_effect_events_correlate_intent_delivery_and_verified_result(self):
         job, report = self.captured()

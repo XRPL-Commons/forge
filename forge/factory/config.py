@@ -27,6 +27,9 @@ DEFAULT = {
     'memory': '4g', 'memory_tiers': [], 'host_reserve': '2g', 'cpus': 2, 'pids_limit': 1024,
     'environment_tiers': {}, 'repository_environments': {},
     'repository_verification': {}, 'repository_merge_policies': {},
+    # Which pull requests the forge/merge-policy check covers: 'all' (default)
+    # or 'forge' (only Forge-created PRs). Keyed by immutable repository ID.
+    'repository_merge_check_scopes': {},
     'harness_argv': ['/usr/local/bin/python3', '-I', '/opt/forge/harness.py'], 'provider_environment': ['OPENAI_API_KEY'],
     'human_reviewers': [], 'human_required': False,
     'provider_auth_file_env': None, 'cycle_budget_seconds': 60,
@@ -40,6 +43,7 @@ DEFAULT = {
 }
 
 MODEL = r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}'
+MERGE_CHECK_SCOPES = ('all', 'forge')
 
 
 def validate(value):
@@ -168,6 +172,11 @@ def _validate(value, installed):
             or any(not isinstance(key,str) or not re.fullmatch(r'[1-9][0-9]*',key)
                    or int(key)>=2**53 or not isinstance(mode,str) or mode not in {'auto','human'} for key,mode in policies.items())):
         raise ValueError('Repository merge policies map immutable GitHub IDs to auto or human')
+    scopes = config['repository_merge_check_scopes']
+    if (not isinstance(scopes,dict) or len(scopes)>10000
+            or any(not isinstance(key,str) or not re.fullmatch(r'[1-9][0-9]*',key)
+                   or int(key)>=2**53 or not isinstance(scope,str) or scope not in MERGE_CHECK_SCOPES for key,scope in scopes.items())):
+        raise ValueError('Repository merge-check scopes map immutable GitHub IDs to all or forge')
     from .verification import validate_profiles as validate_verification
     validate_verification(config['repository_verification'])
     return config
@@ -208,6 +217,16 @@ def merge_mode(config, repository_id):
     if type(repository_id) is not int or not 0<repository_id<2**53:
         raise ValueError('Merge policy requires an immutable GitHub repository ID')
     return config.get('repository_merge_policies',{}).get(str(repository_id),'human')
+
+
+def merge_check_scope(config, repository_id):
+    """'all': forge/merge-policy is on every PR; 'forge': only on Forge-created PRs.
+
+    Deliberately outside the candidate policy hash: changing who the check
+    covers never invalidates a Forge candidate's merge authorization."""
+    if type(repository_id) is not int or not 0<repository_id<2**53:
+        raise ValueError('Merge-check scope requires an immutable GitHub repository ID')
+    return config.get('repository_merge_check_scopes',{}).get(str(repository_id),'all')
 
 
 def policy(config, repository_id=None, *, repository_name=None):

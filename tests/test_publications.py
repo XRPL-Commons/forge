@@ -7,7 +7,7 @@ from unittest.mock import patch
 from forge.factory.source_inputs import create, digest
 from forge.publication_artifacts import VerifiedOutput
 from forge.store.executions import ExecutionQueries
-from forge.store.models import IdempotencyConflict, TransitionError
+from forge.store.models import Candidate, IdempotencyConflict, TransitionError
 from forge.store.publications import Publications
 from forge.store.executions import _artifact
 from tests import test_store_result_controller as fixtures
@@ -49,6 +49,12 @@ class PublicationLedgerTests(unittest.TestCase):
 
     def test_queue_exact_capture_replay_and_immutable_identity(self):
         identifier=self.queue();self.assertEqual(self.queue(),identifier)
+        self.assertEqual(self.fixture.view()['state'], 'publishing')
+        from forge.factory.dispatch_controller import DispatchController
+        controller=DispatchController.__new__(DispatchController);controller.store=self.store
+        snapshot=controller.snapshot('u')
+        self.assertIsNone(snapshot['role'])
+        with self.assertRaises(TransitionError):self.fixture.reserve()
         with self.store.write() as db:
             with self.assertRaises(sqlite3.IntegrityError):db.execute("UPDATE publication_intents SET output_digest=? WHERE id=?",('0'*64,identifier))
         with self.assertRaises(TransitionError):self.queue(report={**self.report,'pr_body':'Different'})
@@ -64,8 +70,10 @@ class PublicationLedgerTests(unittest.TestCase):
         self.now+=31
         with self.assertRaises(TransitionError):self.commands.claim_step(identifier,'commit')
         self.commands.uncertain(identifier,'commit');self.assertEqual(self.commands.get(identifier)['status'],'uncertain')
+        self.assertEqual(self.fixture.view()['state'], 'publishing')
         self.now+=31;self.commands.uncertain(identifier,'commit')
         self.assertEqual(self.commands.get(identifier)['status'],'blocked')
+        self.assertEqual(self.fixture.view()['state'], 'publishing')
 
     def test_content_addressed_retry_has_backoff_and_attempt_bound(self):
         identifier=self.queue();self.commands.prepare_step(identifier,'blob',{'sha':HEAD})
@@ -81,6 +89,7 @@ class PublicationLedgerTests(unittest.TestCase):
         with self.assertRaises(IdempotencyConflict):self.commands.record_step(identifier,'ref',{'sha':BASE})
 
     def test_confirmation_requires_tree_signature_pr_ref_and_freshness(self):
+        bind_source(self)
         identifier=self.queue();value=self.commands.get(identifier)
         receipt=dict(intent_id=identifier,job_id=self.job,output_digest=self.output.digest(),repository_id=1,
             branch=self.target['branch'],base_oid=BASE,tree_oid=self.output.tree_oid,head_oid=HEAD,app_id=42,
@@ -90,6 +99,22 @@ class PublicationLedgerTests(unittest.TestCase):
             with self.assertRaises(TransitionError):self.commands.confirm(identifier,{**receipt,field:value})
         self.commands.confirm(identifier,receipt);self.commands.confirm(identifier,receipt)
         self.assertEqual(self.commands.get(identifier)['receipt'],receipt)
+        self.assertEqual(self.fixture.view()['state'], 'publishing')
+        from forge.store.transitions import manifest_hash
+        with self.store.read_snapshot() as db:
+            requirements_hash=db.execute('SELECT requirements_hash FROM issue_revisions WHERE id=?',
+                (self.fixture.manifest['requirements_revision_id'],)).fetchone()[0]
+        candidate=Candidate(7,self.target['branch'],HEAD,BASE,self.fixture.manifest['policy_hash'],
+            requirements_hash,manifest_hash(self.fixture.manifest))
+        evidence=dict(verified=True,pull_number=7,head_oid=HEAD,base_oid=BASE)
+        with self.assertRaisesRegex(TransitionError, 'confirmed receipt'):
+            self.fixture.life.finish_job(self.fixture.command(),self.job,execution_fence=self.launch['execution_fence'],
+                input_manifest=self.fixture.manifest,candidate=candidate,evidence=evidence)
+        self.assertEqual(self.fixture.view()['state'], 'publishing')
+        evidence['publication_receipt_id']=identifier
+        self.fixture.life.finish_job(self.fixture.command(),self.job,execution_fence=self.launch['execution_fence'],
+            input_manifest=self.fixture.manifest,candidate=candidate,evidence=evidence)
+        self.assertEqual(self.fixture.view()['state'], 'reviewing')
 
 
 def bind_source(fixture):

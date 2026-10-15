@@ -1,5 +1,75 @@
 """Shared ownership facts for scheduling and issue presentation."""
-from .contracts import claims_issue
+
+
+
+COLLABORATOR_ASSOCIATIONS=frozenset({'OWNER','MEMBER','COLLABORATOR'})
+
+
+def collaborator(pr):
+    from .github import GitHubUnavailable
+    user=pr.get('user') or {}
+    if user.get('type')=='Bot':
+        return False
+    if user.get('type')!='User' or pr.get('author_association') not in {
+            'OWNER','MEMBER','COLLABORATOR','CONTRIBUTOR','FIRST_TIMER','FIRST_TIME_CONTRIBUTOR','MANNEQUIN','NONE'}:
+        raise GitHubUnavailable('Pull request collaborator identity has not been observed')
+    return (pr.get('author_association') in COLLABORATOR_ASSOCIATIONS
+            and user.get('type')=='User' and isinstance(user.get('login'),str))
+
+
+def linked_issue(pr, repository_id, number):
+    """A supplied list is a complete typed observation, never a prose fallback."""
+    from .github import GitHubUnavailable
+    references=pr.get('closing_issues')
+    if not isinstance(references,list):
+        raise GitHubUnavailable('Collaborator pull request links have not been observed')
+    return any(row['repository_id']==repository_id and row['number']==number for row in references)
+
+
+def linked_pulls(github, item, pulls):
+    """Enrich REST pull identities with complete GitHub closingIssuesReferences."""
+    from .github import GitHubUnavailable
+    query = '''query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+      repository(owner:$owner,name:$name) { databaseId
+        pullRequest(number:$number) { databaseId number authorAssociation
+          closingIssuesReferences(first:100,after:$cursor) {
+            nodes { number repository { databaseId } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }'''
+    owner,name=item['repo'].split('/')
+    result=[]
+    for original in pulls:
+        pr=dict(original)
+        if not collaborator(pr):
+            pr['closing_issues']=[];result.append(pr);continue
+        references=[];cursor=None;seen=set()
+        for _ in range(5):
+            data=github.graphql('controller',item,query,dict(owner=owner,name=name,number=pr['number'],cursor=cursor))
+            repository=data.get('repository') or {};remote=repository.get('pullRequest') or {}
+            links=remote.get('closingIssuesReferences') or {};page=links.get('pageInfo') or {};nodes=links.get('nodes')
+            if (repository.get('databaseId')!=item['repo_id'] or remote.get('databaseId')!=pr.get('id')
+                    or remote.get('number')!=pr['number'] or remote.get('authorAssociation')!=pr['author_association']
+                    or not isinstance(nodes,list) or type(page.get('hasNextPage')) is not bool):
+                raise GitHubUnavailable('Collaborator pull request link identity is unconfirmed')
+            for node in nodes:
+                repo_id=(node.get('repository') or {}).get('databaseId') if isinstance(node,dict) else None
+                number=node.get('number') if isinstance(node,dict) else None
+                if type(repo_id) is not int or repo_id<=0 or type(number) is not int or number<=0:
+                    raise GitHubUnavailable('Linked issue identity is unconfirmed')
+                references.append({'repository_id':repo_id,'number':number})
+            if not page['hasNextPage']:
+                break
+            cursor=page.get('endCursor')
+            if not isinstance(cursor,str) or not cursor or cursor in seen:
+                raise GitHubUnavailable('Pull request link pagination is unconfirmed')
+            seen.add(cursor)
+        else:
+            raise GitHubUnavailable('Pull request links exceed the complete observation bound')
+        pr['closing_issues']=references;result.append(pr)
+    return result
 
 
 def forge_branch(pr, number):
@@ -15,7 +85,7 @@ def ownership(issue, item, repo, prs=()):
         if (pr.get('state', 'open') != 'open' or pr.get('merged')
                 or publication_transfer_matches(pr, item) or approved_source_matches(pr, item) or owned_publication_matches(pr, item)
                 or pr['number'] == owned_pr or (pr.get('forge_owned') and forge_branch(pr, number))
-                or not claims_issue(pr.get('body'), repo, number)):
+                or not collaborator(pr) or not linked_issue(pr, item['repo_id'], number)):
             continue
         author = pr.get('author') or (pr.get('user') or {}).get('login')
         who = '@' + author if author else 'Someone'

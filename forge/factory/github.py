@@ -14,14 +14,37 @@ from ..request_metrics import RequestBudgetExhausted, deadline as request_deadli
 COMPARISONS = {}
 
 
-def own_build_pr(pr, repo_id, number, publisher):
+def _owned_publication_pr(pr, repo_id, publisher):
+    # Author identity comes from GitHub, and publishers from verified App access
+    # or retained App history. A branch prefix alone never establishes ownership.
+    publishers = {publisher} if isinstance(publisher, str) else set(publisher)
     return (isinstance(pr, dict)
-            and str((pr.get('head') or {}).get('ref') or '').startswith(f'forge/issue-{number}-')
-            and (pr.get('user') or {}).get('login') == publisher
+            and (pr.get('user') or {}).get('login') in publishers
             and (pr.get('user') or {}).get('type') == 'Bot'
             and pr.get('state') == 'open' and not pr.get('merged')
             and ((pr.get('head') or {}).get('repo') or {}).get('id') == repo_id
             and ((pr.get('base') or {}).get('repo') or {}).get('id') == repo_id)
+
+
+def own_build_pr(pr, repo_id, number, publisher):
+    # Issue-specific callers must never adopt a grouped delivery as one issue.
+    return (_owned_publication_pr(pr, repo_id, publisher)
+            and str((pr.get('head') or {}).get('ref') or '').startswith(f'forge/issue-{number}-'))
+
+
+# Group dispatch uses the delivery UUID and the first eight UUID request digits.
+UNIT_BRANCH = re.compile(r'forge/unit-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{8}')
+
+
+def own_grouped_pr(pr, repo_id, publisher):
+    return (_owned_publication_pr(pr, repo_id, publisher)
+            and bool(UNIT_BRANCH.fullmatch(str((pr.get('head') or {}).get('ref') or ''))))
+
+
+def bot_logins(github, role):
+    """Current then retired bot logins for a role; adapters without history give one."""
+    lookup = getattr(github, 'publishers', None)
+    return list(lookup(role)) if lookup else [github.publisher(role)]
 
 
 def classic_allowances(value):
@@ -35,6 +58,13 @@ def classic_allowances(value):
             return None
         names[kind] = [r[key] for r in rows]
     return names
+
+
+def verdict_comment(job, report, marker):
+    role = job['role']
+    head = job['candidate']['head']
+    title = f"forge/{role}: {'passed' if report['outcome'] == 'pass' else 'changes needed'} at {head[:12]}"
+    return f"**{title}**\n\n{report['summary'][:60000]}\n\n{marker}"
 
 
 class GitHubUnavailable(RuntimeError):
@@ -67,6 +97,19 @@ class GitHub:
             return {'app_id': connection['app_id'], 'private_key_env': connection['private_key_env'],
                     'installation_id': matches[0]['installation_id']}
         return connection
+
+    def app_ids(self, role):
+        """The role's App now, then the Apps it used before the single Forge App."""
+        from ..settings import retired_for
+        current = self.connection(role)['app_id']
+        return [current] + [row['app_id'] for row in retired_for(self.settings.load(), role) if row['app_id'] != current]
+
+    def publishers(self, role):
+        """Bot logins whose earlier work is still Forge's: current first, then retired."""
+        from ..settings import retired_for
+        current = self.publisher(role)
+        retired = [row['slug'] + '[bot]' for row in retired_for(self.settings.load(), role) if row.get('slug')]
+        return [current] + [login for login in retired if login != current]
 
     def token(self, role, repo_id, *, worker=False, extra=None, read_only=False):
         connection = self.connection(role, repo_id)
@@ -300,10 +343,13 @@ class GitHub:
         for pr in rows:
             match = re.match(r'forge/issue-(\d+)-', str((pr.get('head') or {}).get('ref') or ''))
             pr['forge_owned'] = False
-            if match:
-                publisher = publisher or self.publisher('build')
-                pr['forge_owned'] = own_build_pr(pr, item['repo_id'], int(match[1]), publisher)
-        return rows
+            branch = str((pr.get('head') or {}).get('ref') or '')
+            if match or UNIT_BRANCH.fullmatch(branch):
+                publisher = publisher or set(self.publishers('build') + self.publishers('controller'))
+                pr['forge_owned'] = (own_build_pr(pr, item['repo_id'], int(match[1]), publisher) if match
+                                     else own_grouped_pr(pr, item['repo_id'], publisher))
+        from .ownership import linked_pulls
+        return linked_pulls(self,item,rows)
 
     def collaborators(self, item):
         """People who can approve here: push access, offered as reviewer choices."""
@@ -438,10 +484,25 @@ class GitHub:
         name = 'forge/merge-policy' if role == 'controller' else 'forge/' + role
         runs = self.pages(role, item, f"/commits/{candidate_value['head']}/check-runs?filter=all", 'check_runs')
         app_id = self.connection(role)['app_id']
-        own = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') == app_id
-               and r.get('external_id') == external_id]
-        if len(own) > 1:
+        # A lost reply before migration may already have an exact receipt from
+        # the retired App. Read it before writing under the new App identity.
+        readable = self.app_ids(role)
+        observed = [r for r in runs if r.get('name') == name and r.get('app', {}).get('id') in readable
+                    and r.get('external_id') == external_id]
+        for identity in readable:
+            if sum(r['app']['id'] == identity for r in observed) > 1:
+                raise GitHubUnavailable('Duplicate check publication needs reconciliation')
+        expected_status = 'completed' if conclusion else 'in_progress'
+        receipts = [r for r in observed if (r['app']['id'] == app_id or conclusion is not None)
+                    and r.get('head_sha') == candidate_value['head'] and r.get('status') == expected_status and r.get('conclusion') == conclusion
+                    and (r.get('output') or {}).get('summary') == summary[:60000]]
+        if len(receipts) > 1:
             raise GitHubUnavailable('Duplicate check publication needs reconciliation')
+        if receipts:
+            return receipts[0]['id']
+        # An obsolete retired run is immutable history. Only the current App's
+        # run can be updated, and only an exact receipt can finish read-back.
+        own = [r for r in observed if r['app']['id'] == app_id]
         # GitHub retains a completed check's conclusion when asked to mark it
         # in_progress again. Keep that verdict until a new revision/verdict is
         # available; trying to reopen it makes verification fail and blocks the
@@ -474,23 +535,35 @@ class GitHub:
         return verified[0]['id']
 
     def verdict(self, job, report, *, observe_only=False):
+        """Post an executor's verdict exactly as returned: a check run plus a comment.
+
+        GitHub never counts an App's approval, so the verdict is not a PR review.
+        Review and audit stay separate executors; one App only publishes them.
+        A review a role App posted before the move to one App still settles
+        its effect, so pending publications survive the migration."""
         candidate_value = job['candidate']
         marker = '<!-- forge-verdict ' + job['id'] + ' -->'
+        logins = set(self.publishers(job['role'])) | {job['publisher']}
         reviews = self.pages(job['role'], job, f"/pulls/{candidate_value['pr']}/reviews")
-        owned = [r for r in reviews if marker in (r.get('body') or '') and r.get('user', {}).get('login') == job['publisher']
-                 and r.get('commit_id') == candidate_value['head']]
-        if not owned and observe_only:
-            return None
-        if not owned:
-            self.call(job['role'], job, 'POST', f"/pulls/{candidate_value['pr']}/reviews",
-                      {'commit_id': candidate_value['head'], 'event': 'APPROVE' if report['outcome'] == 'pass' else 'REQUEST_CHANGES',
-                       'body': report['summary'] + '\n\n' + marker})
-            owned = [r for r in self.pages(job['role'], job, f"/pulls/{candidate_value['pr']}/reviews")
-                     if marker in (r.get('body') or '') and r.get('user', {}).get('login') == job['publisher']
-                     and r.get('commit_id') == candidate_value['head']]
-        expected = 'APPROVED' if report['outcome'] == 'pass' else 'CHANGES_REQUESTED'
-        if len(owned) != 1 or owned[0]['state'] != expected:
-            raise GitHubUnavailable('Role review publication is unconfirmed or dismissed')
+        legacy = [r for r in reviews if marker in (r.get('body') or '') and r.get('user', {}).get('login') in logins
+                  and r.get('commit_id') == candidate_value['head']]
+        if legacy:
+            expected = 'APPROVED' if report['outcome'] == 'pass' else 'CHANGES_REQUESTED'
+            if len(legacy) != 1 or legacy[0]['state'] != expected:
+                raise GitHubUnavailable('Role review publication is unconfirmed or dismissed')
+        else:
+            path = f"/issues/{candidate_value['pr']}/comments"
+            def owned():
+                return [c for c in self.pages(job['role'], job, path) if marker in (c.get('body') or '')
+                        and (c.get('user') or {}).get('login') in logins]
+            found = owned()
+            if not found and observe_only:
+                return None
+            if not found:
+                self.call(job['role'], job, 'POST', path, {'body': verdict_comment(job, report, marker)})
+                found = owned()
+            if len(found) != 1:
+                raise GitHubUnavailable('Verdict comment publication is unconfirmed')
         return self.check(job, job['role'], candidate_value, job['id'],
                           'success' if report['outcome'] == 'pass' else 'failure', report['summary'], observe_only=observe_only)
 
@@ -567,7 +640,7 @@ class GitHub:
                   'additional_rules': [], 'code_owner_reviews': False,
                   'bypass': {'status': 'operator_review', 'detail':
                       'GitHub may hide bypass permissions. Review who can bypass these rules on GitHub.'}}
-        reviews = []
+        reviews = [];required_checks=[]
         try:
             protection = self.call('controller', item, 'GET', '/branches/' + quote(branch, safe='') + '/protection')
             if not isinstance(protection, dict):
@@ -580,6 +653,11 @@ class GitHub:
             report['sources'].append(source)
             if review:
                 reviews.append((review, source))
+            checks=protection.get('required_status_checks')
+            if checks is not None:
+                if not isinstance(checks,dict) or not isinstance(checks.get('checks',[]),list):
+                    raise GitHubUnavailable('Malformed required status checks')
+                required_checks.extend((check,source,'app_id') for check in checks.get('checks',[]))
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable as error:
@@ -606,6 +684,10 @@ class GitHub:
                                      parameters.get('require_code_owner_review', False)}, source))
                 else:
                     report['additional_rules'].append({'type': rule['type'], 'source': source})
+                    if rule['type']=='required_status_checks':
+                        checks=(rule.get('parameters') or {}).get('required_status_checks')
+                        if not isinstance(checks,list):raise GitHubUnavailable('Malformed required status checks')
+                        required_checks.extend((check,source,'integration_id') for check in checks)
         except GitHubBudgetExhausted:
             raise
         except GitHubUnavailable:
@@ -634,6 +716,18 @@ class GitHub:
              'detail': 'Approvals are dismissed when new commits are pushed.' if stale else
                        'Dismiss stale pull request approvals when new commits are pushed.',
              'sources': [s for _, s in stale]}]
+        from ..app_access import shared_app
+        from .config import merge_check_scope
+        connection=shared_app(self.settings.load()['connections'])
+        if connection:
+            report['merge_check_scope']=merge_check_scope(self.runtime,item['repo_id'])
+        if connection and merge_check_scope(self.runtime,item['repo_id'])=='all':
+            app_id=connection['app_id']
+            sources=[source for check,source,key in required_checks if isinstance(check,dict)
+                     and check.get('context')=='forge/merge-policy' and type(check.get(key)) is int and check[key]==app_id]
+            report['requirements'].append({'id':'merge_policy','label':'Forge merge policy from the Forge App',
+                'passed':bool(sources),'detail':f'Require forge/merge-policy from Forge App {app_id} on the target branch.',
+                'sources':sources})
         report['bypass'] = self.controller_bypass(item, reviews)
         return report
 
@@ -685,15 +779,36 @@ class GitHub:
             accepted = item['evidence'].get(role)
             if not accepted:
                 return False
-            own = [r for r in runs if r.get('name') == 'forge/' + role
-                   and r.get('app', {}).get('id') == self.connection(role)['app_id']]
+            # Accepted evidence a retired role App published stays valid after
+            # the move to one App; the accepted check ID still has to be current.
+            apps = self.app_ids(role)
+            own = [r for r in runs if r.get('name') == 'forge/' + role and r.get('app', {}).get('id') in apps]
             if not own:
                 return False
-            current = max(own, key=lambda r: r['id'])
-            if (current['id'] != accepted['check_id'] or current.get('conclusion') != 'success'
+            # Review-only PRs may share a commit. Each keeps its own exact
+            # accepted verdict; the review-policy adapter verifies every peer
+            # before publishing success for that shared commit.
+            current = (next((run for run in own if run['id'] == accepted['check_id']), None)
+                       if item.get('review_source') or item.get('review_peer_scope') else max(own, key=lambda r: r['id']))
+            if current is None:
+                return False
+            if (current.get('head_sha', candidate_value['head']) != candidate_value['head']
+                    or current['id'] != accepted['check_id'] or current.get('conclusion') != 'success'
                     or current.get('status') != 'completed'):
                 return False
         return True
+
+    def review_policy_current(self,item,external_ids):
+        """Observe the aggregate head check; never replace/cancel a sibling run."""
+        if not isinstance(external_ids,list) or not 1<=len(external_ids)<=20:
+            raise ValueError('Review policy observation requires bounded exact effect identities')
+        head=item['candidate']['head'];app_id=self.connection('controller')['app_id']
+        runs=self.pages('controller',item,f"/commits/{head}/check-runs?filter=all",'check_runs')
+        owned=[run for run in runs if run.get('name')=='forge/merge-policy' and (run.get('app') or {}).get('id')==app_id]
+        if not owned:return False
+        latest=max(owned,key=lambda run:run['id'])
+        return (latest.get('external_id') in external_ids and latest.get('head_sha')==head
+                and latest.get('status')=='completed' and latest.get('conclusion')=='success')
 
     MERGE_REFUSALS = {
         405: 'branch rules still block it; check required approvals, checks, and the controller bypass in Repository setup',

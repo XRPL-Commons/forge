@@ -56,11 +56,18 @@ class Runner(PipelineRunner):
 
     def capture(self, job):
         if job['role'] != 'recovery':
-            return {'result': dict(version=1, attempt=job['id'], role=job['role'], outcome=self.build_outcome if job['role'] == 'build' else 'unable',
-                                   summary='Build failed: assertion mismatch',
-                                   **({'verification': deepcopy(self.build_verification)}
-                                      if job['role'] == 'build' and self.build_outcome == 'needs_human_verification' else {})),
-                    'logs': 'Failing test diagnostic', 'execution': {'exit_code': 1}}
+            report = dict(version=1, attempt=job['id'], role=job['role'],
+                outcome=self.build_outcome if job['role'] == 'build' else 'unable',
+                summary='Build failed: assertion mismatch',
+                **({'verification': deepcopy(self.build_verification)}
+                   if job['role'] == 'build' and self.build_outcome == 'needs_human_verification' else {}))
+            if job.get('build_result_version') == 2:
+                report.update(version=2,outcome={'pass':'done','needs_human_verification':'done',
+                    'unable':'cannot_complete'}[self.build_outcome],headline='Build result',
+                    plain='Build result for this assignment.',operator_summary='Build result for this assignment.',claims=[])
+                for key in ('verification','delegation_plan','output_commit','pr_title','pr_body'):
+                    report.setdefault(key,None)
+            return {'result': report, 'logs': 'Failing test diagnostic', 'execution': {'exit_code': 1}}
         report = None
         if self.recovery_valid:
             report = dict(version=1, attempt=job['id'], role='recovery', outcome=self.recovery_outcome,

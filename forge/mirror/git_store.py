@@ -212,9 +212,14 @@ class GitStore:
             else:
                 yield env
 
-    def ensure(self, repository, *, alive=lambda: True, pinned_oids=()):
+    def ensure(self, repository, *, alive=lambda: True, pinned_oids=(), pull_head=None):
         canonical_name(repository.canonical_name)
         if any(not OID.fullmatch(oid) for oid in pinned_oids):
+            raise MirrorError('revision_unavailable')
+        if pull_head is not None and (not isinstance(pull_head,dict) or set(pull_head)!={'number','oid'}
+                or type(pull_head['number']) is not int or pull_head['number']<1
+                or not isinstance(pull_head['oid'],str) or not OID.fullmatch(pull_head['oid'])
+                or pull_head['oid'] not in pinned_oids):
             raise MirrorError('revision_unavailable')
         with self.locked(repository.repository_id, alive=alive) as path:
             existed = path.exists()
@@ -237,14 +242,26 @@ class GitStore:
                     run_git(['--git-dir', str(path), 'cat-file', '-e', oid + '^{commit}'], alive=alive)
                 except MirrorError:
                     missing.append(oid)
-            if fetch or missing:
+            if fetch or missing or pull_head:
                 with self._authenticated(repository) as env:
                     url = 'https://github.com/' + canonical_name(repository.canonical_name) + '.git'
                     refs = ['+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
                     if fetch:
                         run_git(['--git-dir', str(path), 'fetch', '--atomic', '--no-recurse-submodules', '--no-write-fetch-head',
                                  url, *refs], env=env, alive=alive, disk=path)
+                    if pull_head:
+                        # GitHub exposes fork heads under the authorized base
+                        # repository. Never resolve or authenticate to the fork.
+                        number=pull_head['number']
+                        local_ref='refs/forge/pull-heads/'+str(number)
+                        run_git(['--git-dir',str(path),'fetch','--no-recurse-submodules','--no-write-fetch-head',
+                                 url,'+refs/pull/'+str(number)+'/head:'+local_ref],env=env,alive=alive,disk=path)
+                        observed=run_git(['--git-dir',str(path),'rev-parse','--verify',local_ref+'^{commit}'],
+                                         alive=alive).decode().strip()
+                        if observed!=pull_head['oid']:
+                            raise MirrorError('assignment_changed')
                     for oid in missing:
+                        if pull_head and oid==pull_head['oid']:continue
                         run_git(['--git-dir', str(path), 'fetch', '--no-recurse-submodules', '--no-write-fetch-head', url, oid],
                                 env=env, alive=alive, disk=path)
                     refreshed.touch(mode=0o600)
@@ -258,7 +275,7 @@ class GitStore:
                 run_git(['--git-dir', str(path), 'update-ref', 'refs/forge/pins/' + oid, oid], alive=alive)
             if _disk_size(self.root) > self.max_cache_bytes:
                 raise MirrorError('mirror_capacity')
-            return {'cache': existed, 'host_fetch': fetch or bool(missing)}
+            return {'cache': existed, 'host_fetch': fetch or bool(missing) or bool(pull_head)}
 
     def http(self, repository, kind, *, body=b'', protocol='', alive=lambda: True):
         if kind not in ('advertisement', 'upload') or len(body) > MAX_REQUEST or protocol not in ('', 'version=1', 'version=2'):

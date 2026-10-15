@@ -21,7 +21,7 @@ describe('issuePipeline', () => {
   it('places an issue on the lifecycle stage, with the server’s reason as the note', () => {
     expect(at({ stage_code: 'queued' })).toEqual(['queued', 'waiting', 'Scheduled to start'])
     expect(at({ status: 'working', stage_code: 'building', operator_status: canonical('working', 'Building') })).toEqual(['build', 'active', 'Building'])
-    expect(at({ status: 'working', stage_code: 'integrating', operator_status: canonical('working', 'Integrating') })[0]).toBe('build')
+    expect(at({ status: 'working', stage_code: 'publishing', operator_status: canonical('working', 'Integrating') })[0]).toBe('build')
     expect(at({ status: 'working', stage_code: 'auditing', operator_status: canonical('working', 'Auditing') })[0]).toBe('audit')
     expect(at({ stage_code: 'merging', operator_status: canonical('waiting', 'Checking merge approval', 'authorization') })).toEqual(['approval', 'waiting', 'Checking merge approval'])
     expect(states({ status: 'working', stage_code: 'reviewing', operator_status: canonical('working', 'Reviewing') }))

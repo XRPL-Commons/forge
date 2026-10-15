@@ -93,3 +93,33 @@ its local CLI credential store. This change adds no endpoint accepting that
 identity or its token. Worker role Apps and coding provider logins are unchanged.
 
 Protocol reference: [GitHub OAuth web application flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#web-application-flow).
+
+## Migrating an existing installation to the Forge App
+
+After upgrading the installed release, use the CLI from your computer:
+
+```sh
+forge server identity plan --ssh HOST --source /absolute/forge/source --root /absolute/forge/runtime --service-user forge --json
+```
+
+The plan reports the installed App, permission and repository coverage blockers,
+and a configuration revision. Accept any required permission changes on GitHub
+before applying the App step with the returned revision:
+
+```sh
+forge server identity apps --ssh HOST --source /absolute/forge/source --root /absolute/forge/runtime --service-user forge --revision REVISION --json
+```
+
+This preserves retired App identities and runs a fresh repository protection
+check. If the factory is paused or another refresh is running, the response shows
+`protection_check: pending`; repeat the step once that condition clears. A
+completed check can still report repository rules that need setup. Configure the
+Forge App's sign-in callback, then run the `sign-in` step
+with the same host options. It prompts privately for that App's client secret;
+automation can use `--secret-stdin`. Secrets never belong in command arguments.
+The `tailscale` step selects trusted Tailscale identity; `--mode github` selects
+GitHub sign-in. Existing linked operators and trusted Serve ingress are required
+for Tailscale access. Signing out revokes approved agent connections and removes
+the automatic Tailscale link; an explicit GitHub sign-in restores it. The plan is read-only; each named mutation can be resumed
+by repeating it. These commands do not edit GitHub permissions or uninstall old
+Apps. Keep the old Apps until pending publications have been reconciled.

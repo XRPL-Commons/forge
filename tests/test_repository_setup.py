@@ -72,10 +72,40 @@ class RepositorySetupTests(unittest.TestCase):
             {'actor_id': controller, 'actor_type': 'Integration', 'bypass_mode': 'pull_request'},
         ])
         self.assertEqual(payload['rules'][0]['type'], 'pull_request')
+        # Scope 'all' is the default: the Forge App's merge-policy check is required on every PR.
+        self.assertEqual(payload['rules'][1]['parameters']['required_status_checks'],
+                         [{'context': 'forge/merge-policy', 'integration_id': controller}])
         self.assertEqual(filename, 'forge-review-rules-10.json')
         self.assertEqual(row['protection']['bypass']['status'], 'operator_review')
         self.assertEqual(self.settings.load()['repositories'][0]['enabled'], True)
         self.github.return_value.call.assert_not_called()
+
+    def test_review_scope_defaults_all_and_requires_current_runtime_revision(self):
+        from forge.factory.config import load, save
+        row = self.service.view(10)['repositories'][0]
+        self.assertEqual(row['merge_check_scope'], 'all')
+        with self.assertRaises(ValueError):
+            self.service.review_scope(10, None, 'forge')
+        changed = self.service.review_scope(10, row['merge_check_revision'], 'forge')['repositories'][0]
+        self.assertEqual(changed['merge_check_scope'], 'forge')
+        with self.assertRaises(ValueError):
+            self.service.review_scope(10, row['merge_check_revision'], 'all')
+        runtime = load(self.root)
+        runtime['availability_retry_seconds'] += 1
+        save(self.root, runtime)
+        with self.assertRaises(ValueError):
+            self.service.review_scope(10, changed['merge_check_revision'], 'all')
+        self.assertEqual(load(self.root)['repository_merge_check_scopes'], {'10': 'forge'})
+
+    def test_shared_app_protection_evidence_is_bound_to_review_scope(self):
+        from forge.repository_setup import scope_matches
+        config = self.settings.load()
+        config['connections'] = {role: dict(config['connections']['controller']) for role in config['connections']}
+        self.assertTrue(scope_matches({'merge_check_scope': 'all'}, config, runtime_config({}), 10))
+        self.assertFalse(scope_matches({}, config, runtime_config({}), 10))
+        self.assertFalse(scope_matches({'merge_check_scope': 'forge'}, config, runtime_config({}), 10))
+        self.assertTrue(scope_matches({'merge_check_scope': 'forge'}, config,
+            runtime_config({'repository_merge_check_scopes': {'10': 'forge'}}), 10))
 
     def test_refresh_retains_evidence_without_authorizing_from_previous_result(self):
         self.service.check(10)
@@ -503,7 +533,7 @@ class RepositoryHTTPTests(unittest.TestCase):
     def test_repository_reads_require_trusted_host_and_check_requires_csrf(self):
         for path in ['/api/repositories','/api/repositories/ruleset?repo_id=10&revision=x','/settings/repository']:
             h=self.handler(path,Host='attacker.example');h.do_GET();h.send_error.assert_called_once_with(403)
-        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/disable','/api/repositories/deployment','/api/repositories/environment','/api/issues/environment']:
+        for path in ['/api/repositories/check','/api/repositories/enable','/api/repositories/disable','/api/repositories/deployment','/api/repositories/environment','/api/repositories/review-scope','/api/issues/environment']:
             h=self.handler(path,{'repo_id':10,'revision':'r'},Origin='http://attacker.example')
             h.do_POST();h.send_error.assert_called_once_with(403)
 

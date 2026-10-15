@@ -42,7 +42,7 @@ class IssueQueryTests(unittest.TestCase):
         self.assertEqual(issue['reason_code'], unit['reason_code'])
         self.assertEqual(issue['reason_code'], 'operator_pause')
         self.lifecycle.resume(self.command())
-        self.assertEqual(queries.issue('issue-1')['lifecycle']['state'], 'queued')
+        self.assertEqual(queries.issue('issue-1')['lifecycle']['state'], 'in_unit')
 
     def test_reopened_issue_does_not_inherit_old_merge_then_uses_new_membership(self):
         queries = Queries(self.store)
@@ -61,7 +61,7 @@ class IssueQueryTests(unittest.TestCase):
         self.lifecycle.admit_known_issue(request_id='new-delivery', actor_id='operator', unit_id='new-unit',
             issue_id='issue-1', expected_issue_version=detail['version'])
         self.assertEqual(queries.issue('issue-1')['lifecycle']['unit_id'], 'new-unit')
-        self.assertEqual(queries.issue('issue-1')['lifecycle']['state'], 'queued')
+        self.assertEqual(queries.issue('issue-1')['lifecycle']['state'], 'in_unit')
 
     def test_completed_elsewhere_dropped_and_unknown_closure_have_distinct_projection(self):
         queries = Queries(self.store)

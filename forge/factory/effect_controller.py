@@ -75,6 +75,9 @@ class EffectController:
 
     @staticmethod
     def _matches(effect, pr):
+        if effect.get('review_source'):
+            from ..store.review_pulls import exact_source_matches
+            return exact_source_matches(pr,effect['review_source'])
         candidate = effect['identity']
         return (isinstance(pr, dict) and pr.get('number') == candidate['pull_number']
                 and (pr.get('head') or {}).get('sha') == candidate['head_oid']
@@ -163,6 +166,10 @@ class EffectController:
                     base_oid=effect['identity']['base_oid'],repository_id=effect['repo_id'],base_branch=effect['target_branch'],observed_at=self.clock()))
                 effect=self.queries.get(effect_id)
             authorization = None
+            if effect['kind']=='github_check' and effect['payload'].get('review_only') is True:
+                from .merge_controller import MergeAdmission
+                authorization=self.admission.evaluate_review_policy(effect) if isinstance(self.admission,MergeAdmission) else None
+                if authorization is None:return self._withdraw(effect,'review_policy_changed')
             if effect['kind'] == 'github_merge':
                 authorization = self.admission(effect) if self.admission else None
                 if pr.get('mergeable') is not True:
@@ -267,6 +274,9 @@ class EffectController:
         path = f"/commits/{effect['candidate']['head']}/check-runs?filter=all"
         roles = {'forge/review': 'review', 'forge/audit': 'audit', 'forge/merge-policy': 'controller'}
         identities = {role: self.github.connection(role)['app_id'] for role in roles.values()}
+        # Runs a retired role App published before the move to one App are
+        # history: settled when complete, and never patched with another App.
+        history = {role: set(self.github.app_ids(role)) - {identities[role]} for role in roles.values()}
         runs = self.github.pages('controller', effect, path, 'check_runs')
         if len(runs) > 100:
             raise GitHubUnavailable('Check settlement exceeded its observation limit')
@@ -275,12 +285,17 @@ class EffectController:
         expected = set()
         for run in runs:
             role = roles.get(run.get('name'))
-            if not role or (run.get('app') or {}).get('id') != identities[role]:
+            app_id = (run.get('app') or {}).get('id')
+            if not role or app_id not in {identities[role], *history[role]}:
                 continue
-            if run.get('external_id') not in external_ids and (run.get('id'), identities[role]) not in check_ids:
+            if run.get('external_id') not in external_ids and (run.get('id'), app_id) not in check_ids:
                 continue
             if run.get('head_sha') != effect['candidate']['head']:
                 raise GitHubUnavailable('Check settlement observed another head')
+            if app_id != identities[role]:
+                if run.get('status') == 'completed':
+                    expected.add(run['id'])
+                continue
             expected.add(run['id'])
             if run.get('status') != 'completed':
                 if observe_only:
@@ -291,7 +306,8 @@ class EffectController:
         after = self.github.pages('controller', effect, path, 'check_runs')
         verified = {run['id'] for run in after if run.get('id') in expected
                     and run.get('head_sha') == effect['candidate']['head'] and run.get('status') == 'completed'
-                    and (run.get('app') or {}).get('id') == identities.get(roles.get(run.get('name')))}
+                    and (run.get('app') or {}).get('id') in {identities.get(roles.get(run.get('name'))),
+                                                             *history.get(roles.get(run.get('name')), ())}}
         if verified != expected:
             raise GitHubUnavailable('Check settlement has not been independently verified')
         self.commands.record(effect['id'], 'confirmed', receipt={'check_ids': sorted(verified)})

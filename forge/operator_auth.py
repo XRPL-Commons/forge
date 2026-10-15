@@ -17,6 +17,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 
+from . import tailnet_identity
 from .sqlite_identity import active_in, audit_in, identity_effect_lock
 from .store.db import _private, _new_file, _fsync_directory
 from .store.files import StateError
@@ -43,7 +44,7 @@ def failure_reason(error):
         'Missing or invalid sign-in cookie': 'missing_flow_cookie',
         'Sign-in expired or belongs to another browser': 'expired_or_mismatched_flow',
         'GitHub identity verification failed': 'github_exchange_failed',
-        'Use a dedicated GitHub OAuth App with no requested scopes': 'github_token_rejected',
+        'GitHub sign-in must not grant scopes': 'github_token_rejected',
         'This GitHub account is not an authorized Forge operator': 'operator_not_authorized',
         'Operator authorization changed; sign in again': 'configuration_changed',
     }.get(str(error), 'internal_error')
@@ -120,10 +121,11 @@ def github_identity(config, code, verifier):
         'code': code, 'code_verifier': verifier,
         'redirect_uri': config['origin'] + '/auth/github/callback'})
     token = result.get('access_token')
-    # A dedicated identity-only OAuth App must never grant administrative scopes.
+    # Identity only: the Forge App's user token (or a legacy identity-only OAuth
+    # App's) must carry no scopes. It is used once here and never stored.
     if (not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{10,256}', token)
             or result.get('scope') != '' or result.get('token_type') != 'bearer'):
-        raise AuthError('Use a dedicated GitHub OAuth App with no requested scopes')
+        raise AuthError('GitHub sign-in must not grant scopes')
     identity = request('https://api.github.com/user', token=token)
     return {'id': identity.get('id'), 'login': identity.get('login')}
 
@@ -168,20 +170,7 @@ class OperatorAuth:
                 active_in(db)
                 if if_unconfigured and db.execute('SELECT 1 FROM operator_auth_configuration').fetchone():
                     raise AuthError('Operator sign-in was configured concurrently')
-            raw = config['client_secret'].encode()
-            hashed = hashlib.sha256(raw).hexdigest()
-            directory = self.sqlite_store.root / 'credentials'
-            directory.mkdir(mode=0o700, exist_ok=True)
-            _private(directory, directory=True)
-            reference = 'credentials/operator-identity-' + hashed + '.secret'
-            path = self.sqlite_store.root / reference
-            if path.exists():
-                _private(path)
-                if path.read_bytes() != raw:
-                    raise StateError('Identity credential digest collision')
-            else:
-                _new_file(path, raw)
-                _fsync_directory(directory)
+            reference, hashed = self._store_secret(config['client_secret'])
             with self.sqlite_store.write() as db:
                 active_in(db)
                 old = db.execute('SELECT * FROM operator_auth_configuration').fetchone()
@@ -205,6 +194,188 @@ class OperatorAuth:
                 db.execute("UPDATE client_pairings SET status='denied' WHERE status IN ('pending','approved')")
                 audit_in(db, self.clock, 'operator_auth_configured', details={'authorization_epoch': epoch})
 
+    def _store_secret(self, secret):
+        raw = secret.encode()
+        hashed = hashlib.sha256(raw).hexdigest()
+        directory = self.sqlite_store.root / 'credentials'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        _private(directory, directory=True)
+        reference = 'credentials/operator-identity-' + hashed + '.secret'
+        path = self.sqlite_store.root / reference
+        if path.exists():
+            _private(path)
+            if path.read_bytes() != raw:
+                raise StateError('Identity credential digest collision')
+        else:
+            _new_file(path, raw)
+            _fsync_directory(directory)
+        return reference, hashed
+
+    def rotate_client(self, client_id, client_secret):
+        """Move "Login with GitHub" onto the Forge App without touching who may sign in.
+
+        Unlike configure(), operators, epochs, sessions and agent grants are
+        preserved: the same GitHub accounts sign in, only the client changes.
+        In-flight sign-ins started with the old client are consumed. Replaying
+        a finished rotation is a no-op, so the migration can resume."""
+        with identity_effect_lock(self.sqlite_store):
+            current = self.config()
+            if not current:
+                raise AuthError('Operator sign-in is not configured')
+            configuration(current['origin'], client_id, client_secret, current['operators'])
+            if current['client_id'] == client_id and hmac.compare_digest(current['client_secret'], client_secret):
+                return {'status': 'unchanged'}
+            reference, hashed = self._store_secret(client_secret)
+            with self.sqlite_store.write() as db:
+                active_in(db)
+                before = db.execute('SELECT client_id FROM operator_auth_configuration WHERE singleton=1').fetchone()
+                if before is None:
+                    raise AuthError('Operator sign-in is not configured')
+                db.execute('UPDATE operator_auth_configuration SET client_id=?,credential_ref=?,credential_digest=? WHERE singleton=1',
+                           (client_id, reference, hashed))
+                db.execute('UPDATE operator_flows SET consumed_at=? WHERE consumed_at IS NULL', (self.clock(),))
+                audit_in(db, self.clock, 'operator_auth_client_rotated',
+                         details={'client_changed': before['client_id'] != client_id})
+        return {'status': 'rotated'}
+
+    # Tailscale Serve identity -------------------------------------------------
+
+    def _identity_in(self, db):
+        row = db.execute("SELECT settings_json FROM configuration WHERE domain=? AND subject='instance' AND active=1",
+                         (tailnet_identity.DOMAIN,)).fetchone()
+        return tailnet_identity.validate(json.loads(row[0])) if row else json.loads(json.dumps(tailnet_identity.DEFAULT))
+
+    def identity_settings(self):
+        with self.sqlite_store.read_snapshot() as db:
+            value = self._identity_in(db)
+        return {'mode': value['mode'], 'tailnet_operators': [
+            {'login': row['login'], 'github_id': row['github_id'], 'linked_at': row['linked_at']}
+            for row in value['tailnet_operators']]}
+
+    def _save_identity_in(self, db, value):
+        from .store.configuration import Configuration
+        row = db.execute("SELECT revision FROM configuration WHERE domain=? AND subject='instance' AND active=1",
+                         (tailnet_identity.DOMAIN,)).fetchone()
+        Configuration(self.sqlite_store, clock=self.clock).replace_in(
+            db, tailnet_identity.DOMAIN, tailnet_identity.validate(value), expected_revision=row[0] if row else 0)
+
+    def set_identity_mode(self, mode):
+        """'tailscale' trusts Serve identity first; GitHub sign-in stays the fallback."""
+        if mode not in tailnet_identity.MODES:
+            raise AuthError('Choose github or tailscale operator identity')
+        with identity_effect_lock(self.sqlite_store), self.sqlite_store.write() as db:
+            if not self._config_in(db):
+                raise AuthError('Operator sign-in is not configured')
+            value = self._identity_in(db)
+            if value['mode'] == mode:
+                return {'mode': mode, 'changed': False}
+            value['mode'] = mode
+            if mode == 'tailscale':
+                # A deliberate re-enable starts fresh sessions, including within
+                # the window whose rows were revoked when leaving this mode.
+                for link in value['tailnet_operators']:
+                    link['nonce'] = secrets.token_urlsafe(32)
+            self._save_identity_in(db, value)
+            if mode == 'github':
+                # Leaving Tailscale identity ends every session it created.
+                db.execute("UPDATE operator_sessions SET revoked_at=? WHERE id LIKE 'tailnet:%' AND revoked_at IS NULL", (self.clock(),))
+            audit_in(db, self.clock, 'operator_identity_mode', details={'mode': mode})
+        return {'mode': mode, 'changed': True}
+
+    def _link_in(self, db, value, tailnet_login, operator):
+        rows = [row for row in value['tailnet_operators'] if row['login'] == tailnet_login]
+        if rows:
+            if rows[0]['github_id'] != operator['id']:
+                raise AuthError('This Tailscale login is linked to another operator')
+            return False
+        value['tailnet_operators'].append({'login': tailnet_login, 'github_id': operator['id'],
+                                           'nonce': secrets.token_urlsafe(32), 'linked_at': self.clock()})
+        self._save_identity_in(db, value)
+        audit_in(db, self.clock, 'tailnet_identity_linked', operator=operator)
+        return True
+
+    def link_tailnet(self, tailnet_login, github_id):
+        normalized = tailnet_identity.login(tailnet_login)
+        if normalized is None:
+            raise AuthError('Use a Tailscale user login, not a tagged device')
+        with identity_effect_lock(self.sqlite_store), self.sqlite_store.write() as db:
+            config = self._config_in(db)
+            if not config or github_id not in config['operators']:
+                raise AuthError('This GitHub account is not an authorized Forge operator')
+            return self._link_in(db, self._identity_in(db), normalized, {'id': github_id})
+
+    def unlink_tailnet(self, tailnet_login):
+        """Revoke a tailnet login now: its sessions end; the GitHub operator remains."""
+        normalized = tailnet_identity.login(tailnet_login)
+        with identity_effect_lock(self.sqlite_store), self.sqlite_store.write() as db:
+            self._config_in(db)
+            value = self._identity_in(db)
+            rows = [row for row in value['tailnet_operators'] if row['login'] == normalized]
+            if not rows:
+                return {'unlinked': False}
+            value['tailnet_operators'] = [row for row in value['tailnet_operators'] if row['login'] != normalized]
+            self._save_identity_in(db, value)
+            db.execute('UPDATE operator_sessions SET revoked_at=? WHERE id LIKE ? AND revoked_at IS NULL',
+                       (self.clock(), self._tailnet_prefix(rows[0]) + '%'))
+            audit_in(db, self.clock, 'tailnet_identity_unlinked', operator={'id': rows[0]['github_id']})
+        return {'unlinked': True}
+
+    @staticmethod
+    def _tailnet_prefix(row):
+        return 'tailnet:' + hashlib.sha256(row['nonce'].encode()).hexdigest()[:32] + ':'
+
+    def _tailnet_in(self, db, normalized):
+        config = self._config_in(db)
+        value = self._identity_in(db)
+        if not config or value['mode'] != 'tailscale':
+            return None
+        rows = [row for row in value['tailnet_operators'] if row['login'] == normalized]
+        if not rows or rows[0]['github_id'] not in config['operators']:
+            return None
+        row = rows[0]
+        context = db.execute('SELECT * FROM operator_auth_configuration WHERE singleton=1').fetchone()
+        window = int(self.clock() // SESSION_SECONDS)
+        key = hashlib.sha256(config['client_secret'].encode() + b'|' + context['source_epoch'].encode()).digest()
+        message = f"{row['nonce']}|{row['github_id']}|{context['authorization_epoch']}|{window}".encode()
+        token = base64.urlsafe_b64encode(hmac.new(key, message, hashlib.sha256).digest()).decode().rstrip('=')
+        existing = db.execute('SELECT revoked_at FROM operator_sessions WHERE token_hash=?', (digest(token),)).fetchone()
+        return dict(row=row, token=token, window=window, epoch=context['authorization_epoch'], existing=existing)
+
+    def tailnet_session(self, tailnet_login):
+        """(token, session) for a trusted Serve login, or None to fall back to GitHub.
+
+        The token never leaves the server: it is derived per eight-hour window
+        from the link's nonce, the operator's epoch and the sign-in credential,
+        and a cookie can never present it (session() refuses tailnet rows).
+        Reads stay read-only; only the first request of a window writes."""
+        normalized = tailnet_identity.login(tailnet_login)
+        if normalized is None:
+            return None
+        with self.sqlite_store.read_snapshot() as db:
+            found = self._tailnet_in(db, normalized)
+            if found is None or found['existing'] is not None and found['existing']['revoked_at'] is not None:
+                return None
+            if found['existing'] is not None:
+                session = session_in(db, digest(found['token']), self.clock())
+                return (found['token'], session) if session else None
+        with self.sqlite_store.write() as db:
+            found = self._tailnet_in(db, normalized)
+            if found is None:
+                return None
+            token, row = found['token'], found['row']
+            if found['existing'] is None:
+                if db.execute('SELECT count(*) FROM operator_sessions WHERE revoked_at IS NULL AND expires_at>?',
+                              (self.clock(),)).fetchone()[0] >= 1000:
+                    raise AuthError('Too many active sessions')
+                operator = db.execute('SELECT * FROM operator_identities WHERE github_id=?', (row['github_id'],)).fetchone()
+                db.execute('INSERT INTO operator_sessions(id,operator_id,token_hash,authorization_epoch,created_at,expires_at,csrf,operator_login) '
+                           'VALUES(?,?,?,?,?,?,?,?)', (self._tailnet_prefix(row) + digest(token), operator['id'], digest(token),
+                               found['epoch'], self.clock(), (found['window'] + 1) * SESSION_SECONDS,
+                               secrets.token_urlsafe(32), operator['login'] or normalized))
+                audit_in(db, self.clock, 'operator_signed_in', operator={'id': row['github_id']}, details={'via': 'tailscale'})
+            session = session_in(db, digest(token), self.clock())
+        return (token, session) if session else None
+
     def begin(self, return_to='/'):
         if not sign_in_destination(return_to):
             raise AuthError('Invalid sign-in destination')
@@ -226,7 +397,7 @@ class OperatorAuth:
             code_challenge=challenge, code_challenge_method='S256', allow_signup='false', prompt='select_account'))
         return url, cookie(FLOW_COOKIE, browser, FLOW_SECONDS)
 
-    def callback(self, state, code, browser, previous='', *, with_target=False):
+    def callback(self, state, code, browser, previous='', *, with_target=False, tailnet_login=None):
         for value, pattern, message in ((state, r'[A-Za-z0-9_-]{43}', 'Invalid sign-in state'),
             (code, r'[A-Za-z0-9_-]{1,256}', 'Invalid sign-in code'),
             (browser, r'[A-Za-z0-9_-]{43}', 'Missing or invalid sign-in cookie')):
@@ -258,6 +429,15 @@ class OperatorAuth:
                 raise AuthError('Too many active sessions')
             db.execute('UPDATE operator_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL', (self.clock(), digest(previous)))
             db.execute('UPDATE operator_identities SET login=? WHERE github_id=?', (identity['login'], identity['id']))
+            linked = tailnet_identity.login(tailnet_login) if tailnet_login else None
+            identity_value = self._identity_in(db)
+            if linked and identity_value['mode'] == 'tailscale':
+                # Signing in with GitHub through Serve proves both identities at
+                # once: record the link (the first operator at bootstrap).
+                try:
+                    self._link_in(db, identity_value, linked, identity)
+                except AuthError:
+                    pass  # Linked to another operator: never re-point it implicitly.
             db.execute('INSERT INTO operator_sessions(id,operator_id,token_hash,authorization_epoch,created_at,expires_at,csrf,operator_login) '
                        'VALUES(?,?,?,?,?,?,?,?)', (digest(token), str(identity['id']), digest(token), current['authorization_epoch'],
                            self.clock(), self.clock() + SESSION_SECONDS, secrets.token_urlsafe(32), identity['login']))
@@ -266,10 +446,12 @@ class OperatorAuth:
         return (result, flow['return_path']) if with_target else result
 
     def session(self, token):
+        """A cookie session. Tailscale sessions exist only with the trusted header."""
         with self.sqlite_store.read_snapshot() as db:
             if not self._config_in(db) or not token:
                 return None
-            return session_in(db, digest(token), self.clock())
+            session = session_in(db, digest(token), self.clock())
+            return None if session is None or session['via'] != 'github' else session
 
     def logout(self, token):
         with identity_effect_lock(self.sqlite_store), self.sqlite_store.write() as db:
@@ -277,6 +459,18 @@ class OperatorAuth:
                 raise AuthError('Operator sign-in is not configured')
             row = db.execute('SELECT s.*,i.github_id FROM operator_sessions s JOIN operator_identities i ON i.id=s.operator_id '
                              'WHERE token_hash=? AND revoked_at IS NULL', (digest(token),)).fetchone()
+            if row and row['id'].startswith('tailnet:'):
+                # Forget the proved link until explicit GitHub sign-in proves it
+                # again. Revoking only this window would silently sign back in
+                # on the next window while the browser still sends Serve identity.
+                value = self._identity_in(db)
+                links = [link for link in value['tailnet_operators']
+                         if row['id'].startswith(self._tailnet_prefix(link))]
+                for link in links:
+                    db.execute('UPDATE operator_sessions SET revoked_at=? WHERE id LIKE ? AND revoked_at IS NULL',
+                               (self.clock(), self._tailnet_prefix(link) + '%'))
+                value['tailnet_operators'] = [link for link in value['tailnet_operators'] if link not in links]
+                self._save_identity_in(db, value)
             if row:
                 db.execute('UPDATE operator_sessions SET revoked_at=? WHERE id=?', (self.clock(), row['id']))
                 db.execute("UPDATE client_connections SET revoked_at=?,revocation_reason='operator_signed_out' "

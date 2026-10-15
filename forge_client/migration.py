@@ -92,7 +92,15 @@ def call(args,action,**fields):
     from forge.store.migration.snapshot import digest
     code=bundle()
     request=dict(action=action,root=args.root,source=args.source,bundle=base64.b64encode(code).decode(),bundle_digest=digest(code),**fields)
-    result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP]),input=json.dumps(request).encode(),capture_output=True,timeout=1500)
+    try:
+        result=subprocess.run(transport(args, ['python3', '-c', BOOTSTRAP]),input=json.dumps(request).encode(),capture_output=True,timeout=1500)
+    except subprocess.TimeoutExpired:
+        raise SetupError('migration_transport_timeout',
+                         'The SSH maintenance call timed out. The host operation may still be running or may have completed. '
+                         'Resume maintenance with: ' + resume) from None
+    require(result.returncode!=255,'migration_transport_failed',
+            'The SSH maintenance session failed. Check host connectivity and SSH access. '
+            'The host operation may still be running or may have completed. Resume maintenance with: ' + resume)
     require(result.returncode==0 and len(result.stdout)<=65536,'migration_host_failed',
             ('The host operation failed. ' if user is None else 'Maintenance could not run as service user '+user+'. Verify that account and root or noninteractive sudo access. ')
             + 'Resume maintenance with: ' + resume)

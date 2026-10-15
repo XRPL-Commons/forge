@@ -57,15 +57,19 @@ class Publications(Lifecycle):
         if db.execute('SELECT 1 FROM job_tasks WHERE job_id=?',(job['id'],)).fetchone():raise TransitionError('Child tasks cannot publish')
         builder=db.execute('SELECT stage FROM builder_assignments WHERE job_id=?',(job['id'],)).fetchone()
         if builder and builder[0]!='integration':raise TransitionError('Only final integration can publish')
-        for gate in applicable_gates(db,unit,job['member_id'],job['candidate_id'],job_id=job['id']):
-            if gate['code']!='result_pending' or json.loads(gate['details_json']).get('job_id')!=job['id']:
-                raise TransitionError('An independent gate blocks publication')
+        # Integration is a builder assignment stage, not a unit phase. Its
+        # publication must still respect every member's independent holds.
+        members=db.execute('SELECT member_id FROM job_members WHERE job_id=?',(job['id'],)).fetchall()
+        for member in members:
+            for gate in applicable_gates(db,unit,member['member_id'],job['candidate_id'],job_id=job['id']):
+                if gate['code']!='result_pending' or json.loads(gate['details_json']).get('job_id')!=job['id']:
+                    raise TransitionError('An independent gate blocks publication')
         return job,unit
 
     def queue(self,command,job_id,*,execution_fence,input_manifest,output,target,report):
         if not isinstance(output,VerifiedOutput):raise TransitionError('Publisher requires verified local output')
         target=target_identity(target);identity=output.identity()
-        if (not isinstance(report,dict) or report.get('outcome') not in ('pass','needs_human_verification')
+        if (not isinstance(report,dict) or report.get('outcome') not in ('pass','done','needs_human_verification')
                 or report.get('attempt')!=job_id or report.get('role')!='build'
                 or any(not isinstance(report.get(key),str) or not report[key].strip() for key in ('pr_title','pr_body'))
                 or len(report['pr_title'])>256 or len(_json(report).encode())>65536):
@@ -118,6 +122,8 @@ class Publications(Lifecycle):
             identifier=_id(command.request_id,'publication')
             db.execute("INSERT INTO publication_intents(id,job_id,unit_id,execution_fence,input_manifest_json,output_digest,output_json,target_json,report_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?)",
                 (identifier,job_id,unit['id'],execution_fence,_json(input_manifest),output.digest(),_json(identity),_json(target),_json(report),self.clock(),self.clock()))
+            db.execute("UPDATE units SET state='publishing' WHERE id=?",(unit['id'],))
+            self._event(db,command,'phase_changed',{'before':unit['state'],'after':'publishing'},job_id=job_id)
             return {'intent_id':identifier}
         return self._apply(command,'queue_publication',payload,change)
 

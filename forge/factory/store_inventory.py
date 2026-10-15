@@ -228,6 +228,9 @@ class StoreInventory:
                         else:
                             cursor, complete = None, True
                             pulls = self.github.pulls(item)
+                            from .merge_checks import ReviewPullsController
+                            ReviewPullsController(self.store, self.github, config=self.config,
+                                settings=self.settings, clock=self.clock).reconcile(item, pulls)
                         if details.get('collaborators_at') is None or not 0 <= self.clock() - details['collaborators_at'] < 3600:
                             people = self.github.collaborators(item)
                             authors = self.github.recent_authors(item)

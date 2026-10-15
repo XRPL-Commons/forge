@@ -30,11 +30,11 @@ def selected_store(root):
     return store
 
 
-def unit(db, repo_id, number, *, name='example/site', state='queued', at=90):
+def unit(db, repo_id, number, *, name='example/site', state='building', at=90):
     """One issue in one unit, with the minimum rows the schema demands."""
     unit_id, issue, revision = 'unit-%d-%d' % (repo_id, number), '%d:%d' % (repo_id, number), 'revision-%d-%d' % (repo_id, number)
     db.execute('INSERT OR IGNORE INTO repositories(id,full_name) VALUES(?,?)', (repo_id, name))
-    db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,'main','queued',?,?)",
+    db.execute("INSERT INTO units(id,repository_id,base_branch,state,created_at,updated_at) VALUES(?,?,'main','building',?,?)",
                (unit_id, repo_id, at, at))
     db.execute("INSERT INTO issues(id,repository_id,github_number,github_state,current_revision_id,observed_at) VALUES(?,?,?,'open',?,?)",
                (issue, repo_id, number, revision, at))
@@ -42,7 +42,7 @@ def unit(db, repo_id, number, *, name='example/site', state='queued', at=90):
                "VALUES(?,?,'Issue','Body','body','requirements','{}',?)", (revision, issue, at))
     db.execute("INSERT INTO unit_issues(id,unit_id,issue_id,repository_id,base_branch,requirements_revision_id,state,joined_at) "
                "VALUES(?,?,?,?,'main',?,'pending',?)", ('member-' + unit_id, unit_id, issue, repo_id, revision, at))
-    if state != 'queued':
+    if state != 'building':
         db.execute('UPDATE units SET state=? WHERE id=?', (state, unit_id))
     return unit_id
 
@@ -509,7 +509,7 @@ class DeploymentTests(unittest.TestCase):
             unit_id = unit(db, 7, 5)
             db.execute("INSERT INTO unit_environment_observations(unit_id,memory_retry_json) VALUES(?,?)",
                        (unit_id, json.dumps({'tier': '8g', 'at': 900})))
-            if state != 'queued':
+            if state != 'building':
                 db.execute("UPDATE unit_issues SET state='done',completion_issue_version=1,left_at=100,exit_reason='merged' WHERE unit_id=?", (unit_id,))
                 db.execute("INSERT INTO candidates VALUES(?,?,10,'branch','head','base','policy','requirements',1,'inputs',100)",
                            ('candidate-' + unit_id, unit_id))
@@ -518,7 +518,7 @@ class DeploymentTests(unittest.TestCase):
                 db.execute("UPDATE units SET state='merged',merge_sha='merge' WHERE id=?", (unit_id,))
 
     def test_a_pipeline_retry_waiting_for_memory_keeps_the_capacity(self):
-        self.memory_retry('queued')
+        self.memory_retry('building')
         self.deployments().tick({**self.config, 'memory_tiers': ['4g', '8g']})
         self.assertFalse(self.engine)
         self.assertFalse(self.github.reads)
@@ -527,7 +527,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.entry()['status'], 'running')
 
     def test_inadmissible_or_paused_unit_does_not_drain_strategist_capacity(self):
-        self.memory_retry('queued')
+        self.memory_retry('building')
         config = {**self.config, 'memory_tiers': ['4g', '8g']}
         self.settings.rows[0]['dispatch_allowed'] = False
         self.assertFalse(self.deployments().memory_draining(config))

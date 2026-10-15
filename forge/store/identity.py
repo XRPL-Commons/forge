@@ -8,7 +8,8 @@ def session_in(db, hashed, now):
                      'WHERE s.token_hash=? AND s.expires_at>? AND s.revoked_at IS NULL AND i.enabled=1 '
                      'AND s.authorization_epoch=i.authorization_epoch AND s.authorization_epoch=c.authorization_epoch',
                      (hashed,now)).fetchone()
-    return None if row is None else dict(operator={'id':row['github_id'],'login':row['operator_login']},csrf=row['csrf'],expires=row['expires_at'])
+    return None if row is None else dict(operator={'id':row['github_id'],'login':row['operator_login']},csrf=row['csrf'],expires=row['expires_at'],
+                                         id=row['id'],via='tailscale' if row['id'].startswith('tailnet:') else 'github')
 
 
 def valid_connection_in(db, row, generation, now):

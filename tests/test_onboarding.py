@@ -167,6 +167,47 @@ class SetupTests(unittest.TestCase):
                 self.assertNotIn('pem', json.dumps(value))
         self.api.request.assert_not_called()
 
+    def test_one_forge_app_manifest_covers_every_role(self):
+        from forge.app_access import APP_PERMISSIONS
+        from forge.onboarding import APP
+        origin = 'https://forge.example.ts.net'
+        value = self.setup.begin(APP, 'example', 'organization', origin, self.browser)
+        manifest = value['manifest']
+        self.assertEqual(manifest['default_permissions'], APP_PERMISSIONS)
+        self.assertEqual(manifest['callback_urls'], [origin + '/auth/github/callback'])
+        self.assertNotIn(' app ', manifest['name'])
+        state = parse_qs(urlparse(value['action']).query)['state'][0]
+        request = self.api.request.side_effect
+        def single(method, path, token, payload=None):
+            if path.startswith('/app-manifests/'):
+                return {'id': 1, 'slug': 'forge-test', 'client_id': 'Iv23liForgeClient',
+                        'client_secret': 'c' * 40,
+                        'pem': '-----BEGIN PRIVATE KEY-----\nsynthetic test data\n-----END PRIVATE KEY-----'}
+            if path == '/app':
+                return {'id': 1, 'slug': 'forge-test', 'owner': {'login': 'example'}, 'permissions': APP_PERMISSIONS}
+            return request(method, path, token, payload)
+        self.api.request.side_effect = single
+        self.setup.callback(state, 'code', self.browser)
+        registered = self.setup.read()['apps'][APP]
+        self.assertEqual(registered['client_id'], 'Iv23liForgeClient')
+        self.assertNotIn('c' * 40, json.dumps(self.setup.read()))
+        self.assertEqual(Credentials(self.root).environment()['FORGE_SETUP_APP_SIGN_IN_SECRET'], 'c' * 40)
+        # Per-role registration cannot be mixed in afterwards.
+        self.assertEqual(self.setup.begin('review', 'example', 'organization', origin, self.browser),
+                         {'install_url': registered['install_url']})
+        self.setup.refresh()
+        connections = self.setup.settings().load()['connections']
+        self.assertEqual(set(connections), set(ROLES))
+        self.assertEqual({c['installation_id'] for c in connections.values()}, {101})
+        self.assertEqual({c['app_id'] for c in connections.values()}, {1})
+        self.assertTrue(all(row['registered'] and row['app_id'] == 1 for row in self.setup.view()['roles'].values()))
+
+    def test_single_app_is_refused_after_per_role_registration(self):
+        from forge.onboarding import APP
+        self.setup.callback(self.begin(), 'code', self.browser)
+        with self.assertRaisesRegex(ValueError, 'reset setup'):
+            self.setup.begin(APP, 'example', 'organization', 'https://forge.example', self.browser)
+
     def test_callback_requires_cookie_nonce_and_is_single_use(self):
         nonce = self.begin()
         for state,browser in [('wrong',self.browser),(nonce,'another-browser')]:

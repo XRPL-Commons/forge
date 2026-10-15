@@ -55,6 +55,9 @@ class RepositoryPlanner:
         return self.plans.queue(repo_id,request_id=request_id,actor_id=actor_id,base_branch=branch)
 
     def _start(self,run):
+        if self.plans.invocation_count(run['id'])>=3:
+            self.plans.settle_run(run['id'],error='steward_cycle_limit: request a new proposal')
+            return {'phase':'failed','error':'steward_cycle_limit'}
         repo=self._repo(run['repository_id'])
         if not self.settings.admission(repo['name'])['allowed']:return {'waiting':'repository'}
         pool=self.config.get('provider_pool') or [dict(id=None,**{k:self.config.get(k) for k in ('provider','model','provider_environment','provider_auth_file_env')})]
@@ -80,6 +83,11 @@ class RepositoryPlanner:
         job=dict(id=str(uuid.uuid4()),slot='repository-triage',role='triage',proposal_id=run['id'],repo=repo['name'],repo_id=repo['id'],
             candidate=None,head=head,base_branch=branch,deadline=now+1800,fenced=False,cleanup=False,created_at=now,
             provider_id=entry['id'],runner_config=worker,context_hash=manifest_hash(context))
+        from ..steward_subjects import triage_dossiers, triage_schema
+        context['steward_dossiers']=triage_dossiers(context,job)
+        context['steward_schema']=triage_schema(context['steward_dossiers'],context)
+        job['steward_mode']='triage'
+        job['context_hash']=manifest_hash(context)
         self.plans.reserve(run['id'],job,context)
         return self.drive(job)
 
@@ -122,10 +130,17 @@ class RepositoryPlanner:
             return {'phase':'collecting','error':'triage_worker_unavailable'}
 
     def _finish(self,job):
+        job=self.plans.job(job['id'],context=True)
         capture=job.get('capture') or {};result=capture.get('result')
+        steward=bool(job.get('steward_mode')=='triage')
         valid=(isinstance(result,dict) and result.get('attempt')==job['id'] and result.get('role')=='triage'
             and result.get('outcome') in ('pass','reject','unable','wait','blocked_environment')
             and isinstance(result.get('rows'),list))
+        if steward:
+            try:
+                from ..steward_subjects import triage_output
+                triage_output(result,job['context']['steward_dossiers']);valid=True
+            except (TransitionError,ValueError,TypeError,KeyError):valid=False
         waiting=self.problems.recheck('triage',job['proposal_id'],self.config)
         if waiting:return {'phase':'queued' if waiting.get('resolved') else 'waiting',**waiting}
         fault=self.problems.record('triage',job['proposal_id'],job,capture,invalid=not valid)
@@ -133,11 +148,14 @@ class RepositoryPlanner:
         error=None
         if result is None:error='triage_result_missing'
         elif not valid:error='triage_result_invalid'
-        elif result['outcome']!='pass':error='triage_worker_unsuccessful'
+        elif not steward and result['outcome']!='pass':error='triage_worker_unsuccessful'
         else:
             try:
-                self.plans.publish(job['proposal_id'],expected_version=1,rows=result['rows'],rationale=result.get('summary',''),
-                    request_id=job['id']+':publish',actor_id='supervisor:triage',execution_id=job['id'])
+                if steward:
+                    self.plans.publish_decisions(job['proposal_id'],execution_id=job['id'],request_id=job['id']+':publish',actor_id='supervisor:triage')
+                else:
+                    self.plans.publish(job['proposal_id'],expected_version=1,rows=result['rows'],rationale=result.get('summary',''),
+                        request_id=job['id']+':publish',actor_id='supervisor:triage',execution_id=job['id'])
             except (TransitionError,ValueError,TypeError,KeyError):error='triage_proposal_invalid'
         self.plans.settle_run(job['proposal_id'],error=error)
         return {'phase':'failed' if error else 'complete','error':error}
@@ -147,7 +165,7 @@ class RepositoryPlanner:
         if owned:return {'items':[self.drive(job) for job in owned],'next_cursor':None}
         # Cleaned captures survive interruption between cleanup and publication.
         pending=self.plans.runs(active=True)
-        results=[self._finish(self.plans.job(row['execution_id'])) for row in pending]
+        results=[self._finish(self.plans.job(row['execution_id'],context=True)) for row in pending]
         if not launch or not self.config.get('enabled') or self.settings.paused():return {'items':results,'next_cursor':None}
         queued=self.plans.runs()
         if not queued:

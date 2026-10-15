@@ -107,6 +107,10 @@ class SourcePreparation:
     def _notes(self, job, notes, publication_authorization):
         result = deepcopy(notes)
         result['publication_authorization'] = deepcopy(publication_authorization)
+        if job.get('review_only'):
+            result['review_source']=deepcopy(job['review_source'])
+            if publication_authorization:
+                raise MirrorError('assignment_changed')
         if job.get('role') == 'steward':
             from ..store.artifacts import read_in, ArtifactExpired
             dossier = job['steward']['dossier']
@@ -244,7 +248,9 @@ class SourcePreparation:
         if not bundle_heads.issubset(set(inputs)):
             raise MirrorError('assignment_changed')
         remote_pins = [oid for oid in [base, *inputs] if oid and oid not in bundle_heads]
-        self._fetch(authority, repository, remote_pins)
+        pull_head=({'number':trusted_job['review_source']['pull_number'],
+                    'oid':trusted_job['review_source']['head']['sha']} if trusted_job.get('review_only') else None)
+        self._fetch(authority, repository, remote_pins, pull_head=pull_head)
         if base is None:
             base = run_git(['--git-dir', str(self.git_store.path(repository.repository_id)),
                             'rev-parse', 'HEAD^{commit}']).decode().strip()
@@ -292,12 +298,14 @@ class SourcePreparation:
             execution_fence=authority['execution_fence'], network_generation=str(uuid.uuid4()), deadline=authority['deadline'])
         return self._materialize(self.mirror.prepared(job['id']))
 
-    def _fetch(self, authority, repository, pins):
+    def _fetch(self, authority, repository, pins, *, pull_head=None):
         details = dict(repository=canonical_name(repository.canonical_name), repository_id=repository.repository_id,
-            request_kind='prepare', outcome='started', requested_oids=sorted(set(pins)), started_at=self.clock())
+            request_kind='prepare_pull_head' if pull_head else 'prepare', outcome='started',
+            requested_oids=sorted(set(pins)), started_at=self.clock())
         self.mirror.preparation_receipt(authority, details)
         try:
-            cache = self.git_store.ensure(repository, pinned_oids=pins, alive=lambda: self._still_owned(authority))
+            cache = self.git_store.ensure(repository, pinned_oids=pins, alive=lambda: self._still_owned(authority),
+                                         **({'pull_head':pull_head} if pull_head else {}))
             self.mirror.preparation_receipt(authority, {**details, **cache, 'outcome': 'prepared', 'finished_at': self.clock()})
         except (MirrorError, AccessError) as error:
             reason = error.reason if isinstance(error, MirrorError) else 'installation_access_missing'

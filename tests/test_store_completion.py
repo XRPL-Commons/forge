@@ -94,7 +94,7 @@ class StoreCompletionTests(unittest.TestCase):
             issue_version = db.execute("SELECT version FROM issues WHERE id = 'issue-1'").fetchone()[0]
         result = self.lifecycle.admit_known_issue(request_id='readmit', actor_id='operator', unit_id='unit-new', issue_id='issue-1', expected_issue_version=issue_version)
         self.assertEqual(result['version'], 1)
-        self.assertEqual(self.view('unit-new')['state'], 'queued')
+        self.assertEqual(self.view('unit-new')['state'], 'building')
         with self.assertRaisesRegex(TransitionError, 'current owning unit'):
             self.observe(generation=3)
 
@@ -248,11 +248,13 @@ class StoreCompletionTests(unittest.TestCase):
         command = self.command()
         result = self.lifecycle.dissolve(command, evidence={'approved': True})
         self.assertEqual(result, self.lifecycle.dissolve(command, evidence={'approved': True}))
-        self.assertEqual(self.view()['state'], 'dissolved')
+        self.assertEqual(self.view()['state'], 'closed')
+        self.assertEqual(self.view()['close_code'], 'dissolved')
+        self.assertTrue(all(member['exit_reason'] == 'dissolved' for member in self.view()['members']))
         self.assertEqual(len(self.view()['members']), 2)
         self.assertEqual(len(result['released']), 2)
         for child in result['released']:
-            self.assertEqual(self.view(child['unit_id'])['state'], 'queued')
+            self.assertEqual(self.view(child['unit_id'])['state'], 'building')
             self.assertEqual(self.view(child['unit_id'])['members'][0]['issue_id'], child['issue_id'])
 
 

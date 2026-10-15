@@ -13,7 +13,7 @@ function setup() {
       id: 'row', action: 'group', status: 'proposed', reason: 'Related scope', rule_quote: 'Keep related work together', member_count: 1, members_next: null, effects: [],
       members: [{ issue_id: '1:1', github_number: 1, github_state: 'open', observed_at: 100, title: 'Work', pull_number: 7, head_oid: 'a'.repeat(40) }],
       parameters: { existing_prs: [], dependencies: [], publication_target: { kind: 'existing', pull_number: 7, author: { id: 8, login: 'maintainer', type: 'User' }, ownership_transfer: true } },
-    }] }), busy: ref(false), error: ref(''), open: vi.fn(), members: vi.fn(), history: vi.fn(), act: vi.fn(), decide: vi.fn(),
+    }] }), busy: ref(false), error: ref(''), open: vi.fn(), members: vi.fn(), history: vi.fn(), act: vi.fn(), decide: vi.fn(), choose: vi.fn(),
   }
 }
 describe('repository planning approval', () => {
@@ -87,6 +87,23 @@ describe('repository planning approval', () => {
       value: expect.objectContaining({ action: 'park', members: ['1:1'], parameters: { add: ['content'] } }),
     }))
     expect(state.current.decide).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('selects a stored ranked alternative before the separate approval', async () => {
+    setup()
+    const row = state.current.proposal.value.rows[0]
+    row.steward_decision = { version: 1, decision_id: row.id, digest: 'a'.repeat(64), confidence: .8,
+      recommended_choice_id: 'keep', brief: null, choices: [
+        { id: 'keep', action: 'keep', reason: 'Keep useful work.', judgement: 'obvious', parameters: { members: ['1:1'], rule_quote: null, details: {} } },
+        { id: 'park', action: 'park', reason: 'Wait for operator context.', judgement: 'judgement', parameters: { members: ['1:1'], rule_quote: null, details: { add: ['hold'] } } },
+      ] }
+    row.selected_choice_id = 'keep'
+    const wrapper = await mountSuspended(PlanningPage)
+    await wrapper.get('[data-choice-id="park"] button').trigger('click')
+    expect(state.current.choose).toHaveBeenCalledWith(row, { decision_id: row.id, choice_id: 'park', digest: 'a'.repeat(64) })
+    expect(state.current.decide).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Accept it below to approve the change.')
     wrapper.unmount()
   })
 

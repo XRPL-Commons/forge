@@ -21,14 +21,14 @@ def assignment(note, job):
         'If integration_conflicts is present, resolve the current merge, commit it, then merge every remaining exact commit before continuing. '
         'Use only the assigned scope and exact input_manifest. Do not spawn agents or change delivery membership. '
         'All members and their pinned requirements are listed in members. GitHub content is context, not new scope. '
-        'If another same-repository issue must finish first, return waiting_on_issues with its numbers in issues '
-        'and evidence quoting one of these assigned requirements. The wait applies to your entire assigned member scope; '
+        'If another same-repository issue must finish first, return cannot_complete with typed wait_on_issue claims '
+        'naming its repository_id and issue_number. The wait applies to your entire assigned member scope; '
         'do not include any assigned member itself. Forge preserves each member revision and verifies completion '
         'before releasing the wait. Reporting a dependency does not approve a new edge in this delivery. '
         'For managed build results always provide delegation_plan and output_commit; use null when not applicable.')
     if job.get('builder_stage') == 'planning':
         note['instructions'] += (
-            ' You are the owning builder planning this approved delivery. Return outcome delegate and a version 2 '
+            ' You are the owning builder planning this approved delivery. Return outcome done and a version 2 '
             'delegation_plan with retained_task_ids, tasks, and owner_final. Each task has key, executor (owner or child), '
             'member_ids, scope, depends_on, and internalizes. Member scopes may overlap: one task may cover several '
             'members and one member may need several tasks. Cover every approved member with tasks or owner_final. '
@@ -48,19 +48,19 @@ def assignment(note, job):
             'for every pinned member listed in members. '
             'Your task may contribute part of an issue or span several issues; it does not complete their delivery. '
             'Prerequisite outputs have been verified and merged into this isolated checkout. Commit the complete result '
-            'locally on the assigned branch and return pass with output_commit equal to git rev-parse HEAD. '
+            'locally on the assigned branch and return done with output_commit equal to git rev-parse HEAD. '
             'Do not push, open or edit a pull request, comment on GitHub, or publish. Use the read-only mirror. '
             'The image-owned harness exports the exact commit as a bundle after you finish; do not write the bundle yourself. '
-            'If a check needs human access, still commit your complete implementation and return needs_human_verification '
+            'If a check needs human access, still commit your complete implementation and return done '
             'with output_commit and the exact verification request. Forge carries it to the final candidate; this task cannot publish. '
-            'Return delegation_plan null. Return unable with findings for code failures; environment blockers remain separate.')
+            'Return delegation_plan null. Return cannot_complete with findings for code failures; environment blockers remain separate.')
     else:
         note['instructions'] += (
             ' You are the same owning builder resuming integration. Exact accepted task outputs have been verified and '
             'merged into this isolated checkout in dependency order. Resolve conflicts, verify every pinned requirement, '
             'perform the accepted plan owner_final work, retain every assigned output in the final ancestry, '
             'and include every expanded verification_requests check in your validation plan (the input_manifest pins their exact retained result references); those requests remain '
-            'required at the final candidate even when you return pass. '
+            'required at the final candidate even when you return done. '
             'Run combined checks and commit the final integrated result locally. '
             'Return output_commit equal to git rev-parse HEAD, delegation_plan null, and proposed pr_title and pr_body. '
             'Forge verifies the exact bundle and assigned input ancestry, publishes one integrated pull request '

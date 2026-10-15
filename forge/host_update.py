@@ -238,6 +238,8 @@ def desired_units(root, bind):
             from urllib.parse import urlsplit
             ui[-3:-3] = ['--env', 'NITRO_FORGE_PUBLIC_ORIGIN=' + origin,
                          '--env', 'NITRO_ALLOWED_HOSTS=' + urlsplit(origin).netloc]
+            if bind == '127.0.0.1' and urlsplit(origin).hostname.endswith('.ts.net'):
+                ui[-3:-3] = ['--env', 'NITRO_FORGE_TAILSCALE_IDENTITY=serve']
     return {
         'forge-mirror': unit('Forge job-bound read-only Git mirrors', '/usr/bin/python3 -m forge.launch forge.mirror_daemon --root ' + unit_quote(root), python),
         'forge-status': unit('Forge status API (loopback)', '/usr/bin/python3 -m forge.launch --script ' + unit_quote(SOURCE / 'legacy/forge-status.py'),

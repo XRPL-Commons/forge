@@ -91,7 +91,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         return self.jobs.job(job_id)
 
     def dependency(self,state='open',number=2):
-        self.github.remote['body']='Depends on #'+str(number)
+        self.github.remote['body']='Depends on: #'+str(number)
         self.github.dependencies[number]=dict(number=number,state=state,state_reason='completed' if state=='closed' else None,updated_at='2026-10-08T01:00:00Z')
 
     def test_choice_is_durable_and_dispatch_refreshes_version(self):
@@ -127,7 +127,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.dependency('closed')
         self.github.dependencies[2]['pull_request']={ 'url':'test' }
         self.assertFalse(self.controller.observe('u')['dependencies_clear'])
-        self.github.remote['body']='Depends on #1'
+        self.github.remote['body']='Depends on: #1'
         self.assertFalse(self.controller.observe('u')['dependencies_clear'])
 
     def test_verified_worker_dependency_is_rechecked_after_reopening(self):
@@ -254,7 +254,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.commands.admit_issue(request_id='prerequisite',actor_id='operator',unit_id='v',issue_id='other',
             repository_id=1,repository_name='owner/repo',issue_number=2,title='Other',body='',requirements='x',observed_at=90)
         with self.store.write() as db:
-            db.execute("INSERT INTO issue_dependencies VALUES('edge','i',?,'other','requirements','Depends on #2',90)",(self.revision,))
+            db.execute("INSERT INTO issue_dependencies VALUES('edge','i',?,'other','requirements','Depends on: #2',90)",(self.revision,))
         self.assertEqual(self.snapshot()['reason'],'dependency')
         self.commands.pause(self.command())
         self.controller.observe('u')
@@ -264,7 +264,7 @@ class RuntimeRequirementsTests(unittest.TestCase):
         self.assertEqual(self.counts(),(0,0))
 
     def test_unavailable_environment_has_durable_gate_and_recovers(self):
-        self.github.remote['body']='Test postgres migrations'
+        self.github.remote['labels']=['env:full']
         self.controller.config['environment_tiers']={}
         with self.assertRaises(ValueError):
             self.controller.observe('u')

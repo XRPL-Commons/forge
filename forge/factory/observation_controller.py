@@ -212,8 +212,14 @@ class ObservationController:
             from ..store.steward_effects import closure_obligation_in
             with self.store.read_snapshot() as db:
                 closure=closure_obligation_in(db,unit_id,member_id)
+                operator=db.execute("SELECT e.id FROM external_effects e JOIN issue_action_requests q "
+                    "ON q.id=e.operator_request_id WHERE e.unit_id=? AND q.issue_id=? "
+                    "AND e.operator_step='close-issue' AND e.status IN ('pending','running','uncertain') "
+                    "ORDER BY e.created_at,e.id LIMIT 1",(unit_id,issue['id'])).fetchone()
             if closure:
                 return {'unit_id':unit_id,'observed':True,'pending':'steward_issue','effect_id':closure}
+            if operator:
+                return {'unit_id':unit_id,'observed':True,'pending':'operator_issue','effect_id':operator['id']}
             if unit['delivery_approved']:
                 with self.store.read_snapshot() as db:
                     existing=db.execute("SELECT 1 FROM unit_gates WHERE unit_id=? AND member_id=? AND code='membership_decision' AND resolved_at IS NULL",(unit_id,member_id)).fetchone()

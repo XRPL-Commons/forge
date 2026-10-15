@@ -4,6 +4,7 @@ from threading import Barrier
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 
 from forge.store.db import Store
@@ -88,6 +89,32 @@ class StoreTransitionTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM candidate_evidence').fetchone()[0], 3)
             self.assertEqual(db.execute('SELECT count(*) FROM job_leases').fetchone()[0], 0)
 
+    def test_captured_claims_follow_exact_requirements_into_new_jobs(self):
+        from forge.store.transitions import applicable_gates
+        from forge.store.task_inputs import scoped_task_gates_in
+        job=self.reserve()
+        claim=dict(id='claim',unit_id=self.unit_id,member_id=None,candidate_id=None,job_id='prior-job',
+            job_member_ids=[self.member],subject_key='job:prior-job',code='decision_required',created_at=100.,
+            details_json=json.dumps({'source':'build_claim','job_id':'prior-job',
+                'requirements_by_member':{self.member:self.admission['revision_id']},'claims':[]}))
+        process={**claim,'id':'process','code':'result_pending','details_json':json.dumps({'job_id':'prior-job'})}
+        for gate in (claim,{**claim,'code':'environment','details_json':json.dumps({'source':'worker_claim',
+                'job_id':'prior-job','requirements_by_member':{self.member:self.admission['revision_id']}})}):
+            with self.subTest(code=gate['code']), patch('forge.store.transitions._gates',return_value=[gate,process]):
+                with self.store.read_snapshot() as db:
+                    unit=self.view()
+                    self.assertEqual([g['id'] for g in applicable_gates(db,unit,self.member,job_id=job['job_id'])],['claim'])
+                    self.assertEqual([g['id'] for g in applicable_gates(db,unit,job_id=job['job_id'])],['claim'])
+                    self.assertEqual([g['id'] for g in scoped_task_gates_in(db,unit,[self.member],job_id=job['job_id'])],['claim'])
+                    self.assertEqual(scoped_task_gates_in(db,unit,['unrelated-member']),[])
+                    self.assertEqual(applicable_gates(db,unit,'unrelated-member'),[])
+        stale={**claim,'details_json':json.dumps({'source':'build_claim',
+            'requirements_by_member':{self.member:'old-revision'},'claims':[]})}
+        with patch('forge.store.transitions._gates',return_value=[stale]):
+            with self.store.read_snapshot() as db:
+                self.assertEqual(applicable_gates(db,self.view(),self.member,job_id=job['job_id']),[])
+                self.assertEqual(scoped_task_gates_in(db,self.view(),[self.member]),[])
+
     def test_idempotency_replays_original_result_and_rejects_changed_actor_payload_or_version(self):
         command = self.command()
         first = self.lifecycle.open_gate(command, 'environment', details={'capability': 'database'})
@@ -137,7 +164,7 @@ class StoreTransitionTests(unittest.TestCase):
             self.lifecycle.reserve_job(self.command(unit_id='unit-2'), 'build', slot='slot-1', execution_fence='other',
                                        input_manifest={**self.manifest, 'requirements_revision_id': other['revision_id']}, member_id=other['member_id'])
         self.assertEqual(self.view('unit-2')['version'], version)
-        self.assertEqual(self.view('unit-2')['state'], 'queued')
+        self.assertEqual(self.view('unit-2')['state'], 'building')
         with self.store.read_snapshot() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM attempts WHERE unit_id = 'unit-2'").fetchone()[0], 0)
 

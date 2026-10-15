@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .app_access import AppClient, ROLE_PERMISSIONS, missing_permissions
+from .app_access import AppClient, APP_PERMISSIONS, ROLE_PERMISSIONS, missing_app_permissions, missing_permissions
 from .credentials import Credentials
 from .settings import Settings, digest
 from .sqlite_identity import identity_effect_lock, audit_in
@@ -22,6 +22,8 @@ from .factory.config import validate as runtime_config
 from .harnesses.registry import manifests, manifest
 
 ROLES = tuple(ROLE_PERMISSIONS)
+# The single Forge App: one manifest, one installation, every role's credential.
+APP = 'app'
 
 
 def status_label(cooldown):
@@ -192,12 +194,15 @@ class Onboarding:
         settings = self.settings().view()
         revision = self.revision(data)
         ready = data.get('readiness') or {}
+        def registration(role):
+            return data['apps'].get(APP) or data['apps'].get(role, {})
         return {'phase': data['phase'], 'generation': data['generation'], 'revision': revision,
                 'account_type': data.get('account_type'), 'reset_receipt': data.get('reset_receipt'),
+                'single_app': APP in data['apps'],
                 'roles': {role: {'status': settings['roles'][role]['status'],
-                                 'registered': role in data['apps'],
-                                 'app_id': data['apps'].get(role, {}).get('connection', {}).get('app_id'),
-                                 'install_url': data['apps'].get(role, {}).get('install_url')} for role in ROLES},
+                                 'registered': bool(registration(role)),
+                                 'app_id': registration(role).get('connection', {}).get('app_id'),
+                                 'install_url': registration(role).get('install_url')} for role in ROLES},
                 'repositories': [r for r in settings['repositories'] if r['access_ready']],
                 'selected': data.get('selected'), 'owner': data.get('owner', ''),
                 'provider_connected': bool(data.get('provider_revision')), 'checks': data['checks'],
@@ -268,7 +273,8 @@ class Onboarding:
             raise ValueError('Finish the current operation, or reset the existing factory before setting up again')
 
     def begin(self, role, owner, account_type, origin, browser):
-        if role not in ROLES or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', owner):
+        """Register the one Forge App (role ``app``), or a legacy per-role App."""
+        if role not in (APP, *ROLES) or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', owner):
             raise ValueError('Choose a role and a GitHub account name')
         if account_type not in ('organization', 'personal') or not browser:
             raise ValueError('Choose a GitHub account type')
@@ -278,6 +284,10 @@ class Onboarding:
                 raise ValueError('Use the same GitHub owner for all roles; reset to change owners')
             if role in data['apps']:
                 return {'install_url': data['apps'][role]['install_url']}
+            if APP in data['apps']:
+                return {'install_url': data['apps'][APP]['install_url']}
+            if role == APP and data['apps']:
+                raise ValueError('This setup already registered per-role Apps; reset setup to use the one Forge App')
             state = secrets.token_urlsafe(32)
             data.update(owner=owner, account_type=account_type, error=None)
             data['challenge'] = {'state': hashlib.sha256(state.encode()).hexdigest(),
@@ -285,13 +295,17 @@ class Onboarding:
                                  'generation': data['generation'], 'expires': self.clock() + 3600}
             action = ('https://github.com/organizations/' + owner + '/settings/apps/new'
                       if account_type == 'organization' else 'https://github.com/settings/apps/new')
-            manifest = {'name': 'Forge ' + role + ' ' + secrets.token_hex(4), 'url': origin,
-                        'description': 'Forge software factory — ' + role,
+            single = role == APP
+            manifest = {'name': ('Forge ' if single else 'Forge ' + role + ' ') + secrets.token_hex(4), 'url': origin,
+                        'description': 'Forge software factory' if single else 'Forge software factory — ' + role,
+                        # The same App signs operators in when Tailscale identity is unavailable.
+                        **({'callback_urls': [origin + '/auth/github/callback'], 'request_oauth_on_install': False}
+                           if single else {}),
                         # GitHub requires a webhook URL even when delivery is disabled.
                         'public': False, 'hook_attributes': {'url': origin + '/github/events', 'active': False},
                         'redirect_url': origin + '/onboarding/github/callback',
                         'setup_url': origin + '/onboarding',
-                        'default_permissions': ROLE_PERMISSIONS[role], 'default_events': []}
+                        'default_permissions': APP_PERMISSIONS if single else ROLE_PERMISSIONS[role], 'default_events': []}
             return {'action': action + '?state=' + state, 'manifest': manifest}
 
     def callback(self, state, code, browser, *, owner_id=None):
@@ -325,12 +339,20 @@ class Onboarding:
             if (verified.get('id') != app['id'] or verified.get('slug') != app['slug']
                     or verified.get('owner', {}).get('login', '').lower() != intent['owner'].lower()
                     or owner_id is not None and verified.get('owner', {}).get('id') != owner_id
-                    or missing_permissions(role, verified.get('permissions', {}))):
+                    or (missing_app_permissions(verified.get('permissions', {})) if role == APP
+                        else missing_permissions(role, verified.get('permissions', {})))):
                 raise ValueError('App owner or role permissions differ from setup; reconnect using the chosen owner')
             if any(a['connection']['app_id'] == app['id'] for a in data['apps'].values()):
-                raise ValueError('Each role must have its own App')
+                raise ValueError('This App is already registered; register the one Forge App only once')
             url = 'https://github.com/apps/' + app['slug'] + '/installations/new'
             data['apps'][role] = {'connection': connection, 'install_url': url}
+            client_id, client_secret = app.get('client_id'), app.get('client_secret')
+            if (role == APP and isinstance(client_id, str) and re.fullmatch(r'[A-Za-z0-9_.-]{5,100}', client_id)
+                    and isinstance(client_secret, str) and re.fullmatch(r'[A-Za-z0-9_-]{20,200}', client_secret)):
+                # "Login with GitHub" through the same App: the operator sign-in
+                # fallback. Only a reference is kept in setup state.
+                self.credentials.put('FORGE_SETUP_APP_SIGN_IN_SECRET', client_secret)
+                data['apps'][role].update(client_id=client_id, sign_in_secret_env='FORGE_SETUP_APP_SIGN_IN_SECRET')
             data.update(checks={}, error=None)
             return url
 
@@ -339,7 +361,7 @@ class Onboarding:
             self.initialize(data); self.editable(data)
             api, settings = self.api(), self.settings()
             config = settings.load()
-            for role, app in data['apps'].items():
+            for name, app in data['apps'].items():
                 connection = app['connection']
                 installations = api.request('GET', '/app/installations?per_page=100', api.jwt(connection))
                 if not isinstance(installations, list) or len(installations) >= 100:
@@ -347,10 +369,12 @@ class Onboarding:
                 matches = [i for i in installations if i.get('app_id') == connection['app_id']
                            and i.get('account', {}).get('login', '').lower() == data['owner'].lower()
                            and not i.get('suspended_at')]
-                if len(matches) == 1:
-                    config['connections'][role] = {**connection, 'installation_id': matches[0]['id']}
-                else:
-                    config['connections'].pop(role, None)
+                # The one Forge App's installation is every role's connection.
+                for role in (ROLES if name == APP else (name,)):
+                    if len(matches) == 1:
+                        config['connections'][role] = {**connection, 'installation_id': matches[0]['id']}
+                    else:
+                        config['connections'].pop(role, None)
             settings.save(config, digest(settings.load()))
             data['error'] = None
         settings.refresh()
@@ -362,7 +386,7 @@ class Onboarding:
             settings = self.settings()
             repo = next((r for r in settings.view()['repositories'] if r['id'] == repo_id and r['access_ready']), None)
             if not repo:
-                raise ValueError('Refresh GitHub access and choose a repository available to all four Apps')
+                raise ValueError('Refresh GitHub access and choose a repository the Forge App can reach')
             config = settings.load()
             config['repositories'] = [{'id': repo['id'], 'name': repo['name'], 'enabled': True}]
             settings.save(config, digest(settings.load()))

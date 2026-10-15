@@ -7,7 +7,7 @@ observation into the existing repository_setup lifecycle gate.
 import uuid
 
 from ..repository_policy import protection_ready
-from ..repository_setup import CHECK_TIMEOUT, MAX_AGE, RepositorySetup, SetupObservationChanged, observation_key
+from ..repository_setup import CHECK_TIMEOUT, MAX_AGE, RepositorySetup, SetupObservationChanged, observation_key, scope_matches
 from ..settings import ROLES, digest
 from ..store.models import Command, VersionConflict
 from ..store.repository_readiness import read_revision
@@ -49,11 +49,14 @@ class RepositoryReadiness:
                                     for role in ROLES)
         saved = self.setup.read()['repositories'].get(str(row['id']), {})
         report = saved.get('report') or {}
+        from .config import load
+        scope_current = scope_matches(report, config,
+            load(self.settings.authority.root, scope=self.settings.scope), row['id'])
         # A refresh is not new protection evidence. Its retained report keeps
         # its original expiry and exact identity until the read completes.
         refreshing = (saved.get('status') == 'checking'
                       and 0 <= self.clock() - saved.get('started_at', 0) < CHECK_TIMEOUT)
-        if saved.get('revision') != revision or saved.get('name') != row['name']:
+        if saved.get('revision') != revision or saved.get('name') != row['name'] or not scope_current:
             result['reason'] = 'protection_unchecked'
         elif not 0 <= self.clock() - report.get('observed_at', 0) < MAX_AGE:
             result['reason'] = 'protection_stale'

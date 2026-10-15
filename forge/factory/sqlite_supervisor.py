@@ -24,7 +24,7 @@ from .runner import RunnerError
 class SqliteSupervisor:
     def __init__(self, store, *, execution, observations, results, merges, effects,
                  dispatch, recovery=None, verification=None, waits=None, requirements=None, operators=None,
-                 discovery=None, deployments=None, planning=None, triage_effects=None, steward_effects=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
+                 discovery=None, deployments=None, planning=None, triage_effects=None, steward_effects=None, review_pulls=None, scheduling=None, clock=time.time, retention_interval=3600, cycle_budget_seconds=60, monotonic=time.monotonic):
         if type(retention_interval) not in (int, float) or not math.isfinite(retention_interval) or retention_interval <= 0:
             raise ValueError('retention interval must be finite and positive')
         if type(cycle_budget_seconds) not in (int, float) or not math.isfinite(cycle_budget_seconds) or cycle_budget_seconds <= 0:
@@ -40,6 +40,7 @@ class SqliteSupervisor:
         self.deployments = deployments
         self.planning, self.triage_effects = planning, triage_effects
         self.steward_effects = steward_effects
+        self.review_pulls = review_pulls
         from .wait_controller import WaitController
         self.waits = waits if waits is not None else WaitController(store, clock=clock)
 
@@ -116,6 +117,8 @@ class SqliteSupervisor:
             stages.append(('observations', lambda: self._page('observations', self.observations, limit)))
             if self.discovery is not None:
                 stages.append(('discovery', lambda: self._page('discovery', self.discovery, limit)))
+            if self.review_pulls is not None:
+                stages.append(('review_pulls', lambda: self._page('review_pulls', self.review_pulls, limit)))
             if self.requirements is not None:
                 stages.append(('requirements', lambda: self._page('requirements', self.requirements, limit)))
             stages.append(('waits', lambda: self._page('waits', self.waits, limit, '')))

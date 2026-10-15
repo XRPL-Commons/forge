@@ -21,9 +21,11 @@ def result_in(db, job_id):
 
 def requested_in(evidence):
     report = evidence.get('report')
-    if not isinstance(report, dict) or report.get('outcome') != 'needs_human_verification':
+    if not isinstance(report, dict) or report.get('outcome') not in {'needs_human_verification','done'}:
         return None
     value = report.get('verification')
+    if report['outcome']=='done' and value is None:
+        return None
     if (not isinstance(value, dict) or set(value) not in ({'what', 'why'}, {'what', 'why', 'checks'})
             or not all(isinstance(value[key], str) and value[key].strip() for key in ('what', 'why'))
             or not isinstance(value.get('checks', []), list)

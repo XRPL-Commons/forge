@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import shlex
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -65,6 +66,34 @@ class MigrationAccountTransportTests(unittest.TestCase):
                 with self.assertRaises(SetupError) as caught: execute(args)
                 self.assertEqual(caught.exception.code, 'invalid_service_user')
             run.assert_not_called()
+
+    def test_transport_failures_preserve_resume_without_disclosing_captured_output(self):
+        args = self.args(); args.source_revision = 'a' * 40
+        private = b'private captured host output'
+        cases = [
+            (SimpleNamespace(returncode=255, stdout=private, stderr=private), None,
+             'migration_transport_failed'),
+            (None, subprocess.TimeoutExpired(['ssh', 'private command'], 1500,
+                                              output=private, stderr=private),
+             'migration_transport_timeout'),
+        ]
+        for reply, error, code in cases:
+            with self.subTest(code=code), \
+                    patch.object(migration, 'bundle', return_value=b'code'), \
+                    patch.object(migration.subprocess, 'run', return_value=reply, side_effect=error) as run:
+                with self.assertRaises(SetupError) as caught:
+                    migration.call(args, 'upgrade', apply=True)
+                self.assertEqual(caught.exception.code, code)
+                reason = str(caught.exception)
+                self.assertIn('may have completed', reason)
+                self.assertNotIn('private', reason)
+                self.assertNotIn('sudo', reason)
+                command = reason.split('Resume maintenance with: ', 1)[1]
+                resumed = parser().parse_args(shlex.split(command)[1:])
+                self.assertEqual((resumed.ssh, resumed.service_user, resumed.source, resumed.root,
+                                  resumed.source_revision, resumed.apply),
+                                 (args.ssh, args.service_user, args.source, args.root, args.source_revision, True))
+                run.assert_called_once()
 
     def test_contract_offers_the_account_for_upgrade(self):
         self.assertIn('service_user', migration_commands()['upgrade']['input_schema']['properties'])

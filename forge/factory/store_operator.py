@@ -27,6 +27,10 @@ IMMEDIATE = {'queue', 'backlog', 'pause', 'resume', 'retry', 'recheck', 'start_a
 LOGIN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})')
 
 
+class OperatorEffectPending(Exception):
+    """A durable outbox wait retains the operator's original intent."""
+
+
 def reviewer_logins(reason):
     """The decision for assign_reviewer is the chosen logins, nothing else."""
     logins = []
@@ -51,6 +55,11 @@ def undo_id(request_id):
     return str(uuid.uuid5(uuid.NAMESPACE_URL,'forge:undo-close:'+request_id))
 
 
+def baseline(value):
+    """Compare retained authority across the unit-phase migration without rewriting it."""
+    return {**value,'state':{'queued':'building','integrating':'building','dissolved':'closed'}.get(value['state'],value['state'])}
+
+
 def action_state_in(db,request_id):
     """Project recorded request/effect outcomes; a request ID is never success."""
     row=db.execute('SELECT q.*,a.result_json FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id WHERE q.id=?',(request_id,)).fetchone()
@@ -58,7 +67,7 @@ def action_state_in(db,request_id):
     undo=db.execute("SELECT id,status,message FROM issue_action_requests WHERE id=? AND action='reopen'",(undo_id(request_id),)).fetchone()
     reversible=False
     if row['action']=='close' and row['status']=='applied' and undo is None:
-        effect=db.execute("SELECT receipt_json FROM operator_action_effects WHERE request_id=? AND step='close-issue' AND status='confirmed'",(request_id,)).fetchone()
+        effect=db.execute("SELECT receipt_json FROM external_effects WHERE operator_request_id=? AND operator_step='close-issue' AND status='confirmed'",(request_id,)).fetchone()
         issue=db.execute('SELECT github_state,state_reason,version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()
         result=json.loads(row['result_json']) if row['result_json'] else {}
         reversible=bool(effect and json.loads(effect[0]).get('closure_event') and issue['github_state']=='closed'
@@ -201,8 +210,10 @@ class OperatorActions(Lifecycle):
                 if grouped:raise TransitionError('Closing a grouped issue requires an explicit member removal decision')
                 allowed.append('close')
             if action=='environment' and unit and not cleanup:allowed.append('environment')
-            if action=='start_anyway' and unit and not cleanup and any(g['code']=='dependency' and g['member_id'] in {None,scoped_member} and json.loads(g['details_json']).get('requirements') for g in _gates(db,unit_id)):
-                allowed.append('start_anyway')
+            if action=='start_anyway' and unit and not cleanup:
+                from ..store.claim_overrides import dependencies_in
+                if dependencies_in(db,unit_id,issue['lifecycle']['member_id']):
+                    allowed.append('start_anyway')
             if action not in allowed:raise TransitionError('Action is not available for the current issue')
             if action=='environment':
                 from .environments import override
@@ -274,7 +285,7 @@ class OperatorActions(Lifecycle):
             issue=Queries._issue(db,row['issue_id'])
             row['item']=dict(repo_id=issue['repository_id'],repo=issue['repository'],number=issue['github_number'],key=issue['id'])
             row['unit']=_unit(db,row['unit_id'])
-            row['current']=self._baseline(db,row['unit_id'])==row['plan']['baseline']
+            row['current']=baseline(self._baseline(db,row['unit_id']))==baseline(row['plan']['baseline'])
             candidate=db.execute('SELECT * FROM candidates WHERE id=?',(row['unit']['current_candidate_id'],)).fetchone()
             row['candidate']=dict(candidate) if candidate else None
             return row
@@ -283,17 +294,120 @@ class OperatorActions(Lifecycle):
         with self.store.write() as db:
             writable(db)
             # Recheck local authority immediately before each remote effect.
-            if self._baseline(db,row['unit_id'])!=row['plan']['baseline']:
+            if baseline(self._baseline(db,row['unit_id']))!=baseline(row['plan']['baseline']):
                 raise TransitionError('Delivery changed while applying the decision')
             if row['action']=='reopen' and db.execute('SELECT version FROM issues WHERE id=?',(row['issue_id'],)).fetchone()[0]!=row['plan']['issue_version']:
                 raise TransitionError('Issue changed after Undo was requested')
-            previous=db.execute('SELECT payload_json FROM operator_action_effects WHERE request_id=? AND step=?',(row['id'],step)).fetchone()
+            previous=db.execute('SELECT payload_json FROM external_effects WHERE operator_request_id=? AND operator_step=?',(row['id'],step)).fetchone()
             if previous and previous[0]!=_json(payload):raise IdempotencyConflict('Effect identity has another payload')
-            db.execute("INSERT OR IGNORE INTO operator_action_effects VALUES(?,?,'pending',?,NULL,?,?)",(row['id'],step,_json(payload),self.clock(),self.clock()))
+            identity='operator:'+row['id']+':'+step
+            db.execute("INSERT OR IGNORE INTO external_effects(id,request_id,unit_id,kind,status,payload_json,created_at,updated_at,operator_request_id,operator_step) "
+                "VALUES(?,?,?,'operator_action','pending',?,?,?,?,?)",
+                (identity,identity,row['unit_id'],_json(payload),self.clock(),self.clock(),row['id'],step))
 
     def _receipt(self,row,step,receipt):
         with self.store.write() as db:
-            db.execute("UPDATE operator_action_effects SET status='confirmed',receipt_json=?,updated_at=? WHERE request_id=? AND step=?",(_json(receipt),self.clock(),row['id'],step))
+            db.execute("UPDATE external_effects SET status='confirmed',receipt_json=?,updated_at=? WHERE operator_request_id=? AND operator_step=?",(_json(receipt),self.clock(),row['id'],step))
+
+    def _claim_comment(self,row):
+        """Commit uncertainty before POST; a lost response never permits another POST."""
+        with self.store.write() as db:
+            writable(db)
+            if baseline(self._baseline(db,row['unit_id']))!=baseline(row['plan']['baseline']):
+                raise TransitionError('Delivery changed while applying the decision')
+            claimed=db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+1,"
+                "uncertain_since=?,updated_at=? WHERE operator_request_id=? AND operator_step='close-comment' "
+                "AND status='pending' AND attempts=0",(self.clock(),self.clock(),row['id']))
+            if claimed.rowcount!=1:
+                raise GitHubUnavailable('The earlier closing comment requires remote confirmation')
+            effect=db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step='close-comment'",(row['id'],)).fetchone()
+            from ..store.effects import defer_effect_in
+            defer_effect_in(db,effect,self.clock(),reliability=self._config().get('reliability'))
+
+    def _send(self,row,step,method,path,payload=None):
+        """State-setting effects may retry only after their caller's fresh readback."""
+        from ..store.effects import admit_send_in, defer_effect_in, effect_due
+        waiting=False
+        with self.store.write() as db:
+            writable(db)
+            if baseline(self._baseline(db,row['unit_id']))!=baseline(row['plan']['baseline']):
+                raise TransitionError('Delivery changed while applying the decision')
+            effect=db.execute('SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step=?',
+                              (row['id'],step)).fetchone()
+            if effect is None or effect['status'] not in {'pending','uncertain'}:
+                raise TransitionError('The recorded operator effect cannot be sent again')
+            try:
+                admit_send_in(effect,self.clock(),reliability=self._config().get('reliability'))
+            except TransitionError:
+                # The shared retry policy controls timing and uncertainty;
+                # these are owned waits, not rejection of operator authority.
+                self._bound_effect_in(db,row,effect)
+                if effect_due(effect,self.clock()):
+                    refreshed=db.execute('SELECT * FROM external_effects WHERE id=?',(effect['id'],)).fetchone()
+                    defer_effect_in(db,refreshed,self.clock(),reliability=self._config().get('reliability'))
+                waiting=True
+            else:
+                db.execute("UPDATE external_effects SET status='uncertain',attempts=attempts+1,"
+                    "uncertain_since=COALESCE(uncertain_since,?),updated_at=? WHERE id=?",
+                    (self.clock(),self.clock(),effect['id']))
+                refreshed=db.execute('SELECT * FROM external_effects WHERE id=?',(effect['id'],)).fetchone()
+                defer_effect_in(db,refreshed,self.clock(),reliability=self._config().get('reliability'))
+        if waiting:raise OperatorEffectPending()
+        return self.github.call('controller',row['item'],method,path,payload)
+
+    def _bound_effect_in(self,db,row,effect):
+        from ..store.effects import retry_policy
+        policy=retry_policy(self._config().get('reliability'))
+        bounded=(effect['escalation_at'] is not None or effect['attempts']>=policy['max_attempts']
+            or effect['uncertain_since'] is not None and self.clock()-effect['uncertain_since']>=policy['uncertainty_seconds'])
+        if bounded:
+            db.execute('UPDATE external_effects SET escalation_at=COALESCE(escalation_at,?) WHERE id=?',(self.clock(),effect['id']))
+            db.execute("UPDATE issue_action_requests SET message=? WHERE id=? AND status='pending'",
+                ('Forge is reconciling this decision on GitHub. The retry limit was reached; further writes are stopped until the remote result is confirmed.',row['id']))
+        return bounded
+
+    def _defer_effects(self,row):
+        from ..store.effects import defer_effect_in, effect_due
+        with self.store.write() as db:
+            writable(db)
+            for effect in db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND status IN ('pending','running','uncertain')",(row['id'],)).fetchall():
+                # A send already saved its deadline before the network call.
+                # Do not extend it on each supervisor sweep or controller restart.
+                self._bound_effect_in(db,row,effect)
+                if effect_due(effect,self.clock()):
+                    refreshed=db.execute('SELECT * FROM external_effects WHERE id=?',(effect['id'],)).fetchone()
+                    defer_effect_in(db,refreshed,self.clock(),reliability=self._config().get('reliability'))
+
+    def _effect_wait(self,row,*,only_future=False):
+        with self.store.read_snapshot() as db:
+            effects=db.execute("SELECT retry_at,escalation_at FROM external_effects WHERE operator_request_id=? "
+                "AND status IN ('pending','running','uncertain')",(row['id'],)).fetchall()
+        if not effects or only_future and not any(e['retry_at'] is not None and e['retry_at']>self.clock() for e in effects):
+            return None
+        deadlines=[e['retry_at'] for e in effects if e['retry_at'] is not None]
+        return {'request_id':row['id'],'status':row['status'],'pending':'effect_reconciliation',
+            'owner':'supervisor:operator','reason':'effect_uncertain' if any(e['escalation_at'] is not None for e in effects) else 'effect_retry',
+            'retry_at':max(deadlines) if deadlines else None}
+
+    def _comment_receipt(self,row,payload):
+        comments=self.github.pages('controller',row['item'],f"/issues/{row['item']['number']}/comments")
+        matches=[comment for comment in comments if comment.get('body')==payload['body']
+                 and (comment.get('user') or {}).get('type')=='Bot'
+                 and (comment.get('user') or {}).get('login')==self.github.publisher('controller')]
+        if '<!-- forge-operator:'+row['id']+':close-comment -->' not in payload['body']:
+            # Legacy comments have no unique marker. An older matching reason
+            # cannot confirm this request's uncertain write.
+            from ..store.remote_time import instant, RemoteTimestampError
+            with self.store.read_snapshot() as db:
+                effect=db.execute("SELECT created_at FROM external_effects WHERE operator_request_id=? AND operator_step='close-comment'",(row['id'],)).fetchone()
+            if effect is None:return False
+            try:
+                matches=[comment for comment in matches if instant(comment.get('created_at')).timestamp()>=int(effect['created_at'])]
+            except RemoteTimestampError:
+                return False
+        if len(matches)!=1:return False
+        self._receipt(row,'close-comment',{'posted':True})
+        return True
 
     def _remote(self,row):
         item,plan=row['item'],row['plan']
@@ -318,13 +432,13 @@ class OperatorActions(Lifecycle):
         issue=self._remote(row)
         for label in row['plan']['add']:
             step='add:'+label;self._intent(row,step,{'label':label})
-            if label not in labels(issue):self.github.call('controller',row['item'],'POST',f"/issues/{row['item']['number']}/labels",{'labels':[label]})
+            if label not in labels(issue):self._send(row,step,'POST',f"/issues/{row['item']['number']}/labels",{'labels':[label]})
             issue=self._remote(row)
             if label not in labels(issue):raise GitHubUnavailable('Operator label addition is unconfirmed')
             self._receipt(row,step,{'present':True})
         for label in row['plan']['remove']:
             step='remove:'+label;self._intent(row,step,{'label':label})
-            if label in labels(issue):self.github.call('controller',row['item'],'DELETE',f"/issues/{row['item']['number']}/labels/"+quote(label,safe=''))
+            if label in labels(issue):self._send(row,step,'DELETE',f"/issues/{row['item']['number']}/labels/"+quote(label,safe=''))
             issue=self._remote(row)
             if label in labels(issue):raise GitHubUnavailable('Operator label removal is unconfirmed')
             self._receipt(row,step,{'present':False})
@@ -338,7 +452,7 @@ class OperatorActions(Lifecycle):
                     or (pr.get('base') or {}).get('sha')!=candidate['base_oid']):
                 raise TransitionError('Candidate changed or merged; close decision needs reconciliation')
             self._intent(row,'close-pr',{'number':candidate['pull_number'],'head':candidate['head_oid']})
-            if pr.get('state')=='open':self.github.call('controller',row['item'],'PATCH',f"/pulls/{candidate['pull_number']}",{'state':'closed'})
+            if pr.get('state')=='open':self._send(row,'close-pr','PATCH',f"/pulls/{candidate['pull_number']}",{'state':'closed'})
             pr=self.github.pr(row['item'],candidate['pull_number'])
             if (pr.get('state')!='closed' or pr.get('merged') is not False
                     or (pr.get('head') or {}).get('sha')!=candidate['head_oid'] or (pr.get('base') or {}).get('sha')!=candidate['base_oid']):
@@ -349,14 +463,14 @@ class OperatorActions(Lifecycle):
             # Member closure is a composition decision, not a reversible singleton close.
             if issue.get('state')=='closed':return issue
             self._intent(row,'close-issue',{'number':row['item']['number'],'state_reason':'not_planned'})
-            self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
+            self._send(row,'close-issue','PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
             issue=self._remote(row)
             if issue.get('state')!='closed' or issue.get('state_reason')!='not_planned':raise GitHubUnavailable('Issue closure is unconfirmed')
             self._receipt(row,'close-issue',{'closed':True,'state_reason':'not_planned'})
             return issue
         if row['action']=='close' and issue.get('state')=='open':self._comment(row)
         with self.store.read_snapshot() as db:
-            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(row['id'],)).fetchone()
+            effect=db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step='close-issue'",(row['id'],)).fetchone()
         transitions=self._issue_transitions(row)
         if effect:
             intent=json.loads(effect['payload_json'])
@@ -377,7 +491,7 @@ class OperatorActions(Lifecycle):
         following=self._following(transitions,intent['previous_event'])
         if not following and issue.get('state')=='open':
             self._intent(row,'close-issue',intent)
-            self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
+            self._send(row,'close-issue','PATCH',f"/issues/{row['item']['number']}",{'state':'closed','state_reason':'not_planned'})
         issue=self._remote(row)
         transitions=self._issue_transitions(row)
         following=self._following(transitions,intent['previous_event'])
@@ -390,16 +504,18 @@ class OperatorActions(Lifecycle):
 
     def _comment(self,row):
         """The operator's reason as the closing comment, posted once across restarts."""
-        body='Closed from Forge as not planned: '+row['reason']
         with self.store.read_snapshot() as db:
-            done=db.execute("SELECT status FROM operator_action_effects WHERE request_id=? AND step='close-comment'",(row['id'],)).fetchone()
-        if done and done[0]=='confirmed':return
+            done=db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step='close-comment'",(row['id'],)).fetchone()
+        if done and done['status']=='confirmed':return
+        payload=json.loads(done['payload_json']) if done else {
+            'body':'Closed from Forge as not planned: '+row['reason']+'\n\n<!-- forge-operator:'+row['id']+':close-comment -->'}
         path=f"/issues/{row['item']['number']}/comments"
-        # An unconfirmed earlier write may have landed: never post it twice.
-        if not (done and any(c.get('body')==body for c in self.github.pages('controller',row['item'],path))):
-            self._intent(row,'close-comment',{'body':body})
-            self.github.call('controller',row['item'],'POST',path,{'body':body})
-        self._receipt(row,'close-comment',{'posted':True})
+        if done and self._comment_receipt(row,payload):return
+        self._intent(row,'close-comment',payload)
+        self._claim_comment(row)
+        self.github.call('controller',row['item'],'POST',path,payload)
+        if not self._comment_receipt(row,payload):
+            raise GitHubUnavailable('The closing comment requires remote confirmation')
 
     def _issue_transitions(self,row):
         events=self.github.pages('controller',row['item'],f"/issues/{row['item']['number']}/events")
@@ -443,7 +559,7 @@ class OperatorActions(Lifecycle):
             if db.execute("SELECT 1 FROM issue_action_requests WHERE issue_id=? AND status='pending'",(key,)).fetchone():
                 raise TransitionError('Another decision is being applied to this issue')
             issue=Queries._issue(db,key);unit=_unit(db,original['unit_id'])
-            effect=db.execute("SELECT receipt_json FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(request_id,)).fetchone()
+            effect=db.execute("SELECT receipt_json FROM external_effects WHERE operator_request_id=? AND operator_step='close-issue'",(request_id,)).fetchone()
             plan={'baseline':self._baseline(db,unit['id']),'original_request':request_id,
                   'closure_event':json.loads(effect[0])['closure_event'],'issue_version':issue['version']}
             revision=action_revision(db,key)
@@ -458,7 +574,7 @@ class OperatorActions(Lifecycle):
     def _completed_close(self,row):
         """Read back an already-issued close before deciding whether a NEW write is allowed."""
         with self.store.read_snapshot() as db:
-            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='close-issue'",(row['id'],)).fetchone()
+            effect=db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step='close-issue'",(row['id'],)).fetchone()
         if effect is None:return None
         intent=json.loads(effect['payload_json'])
         if 'previous_event' not in intent:
@@ -497,7 +613,7 @@ class OperatorActions(Lifecycle):
 
     def _reopen_step(self,row):
         with self.store.read_snapshot() as db:
-            effect=db.execute("SELECT * FROM operator_action_effects WHERE request_id=? AND step='reopen-issue'",(row['id'],)).fetchone()
+            effect=db.execute("SELECT * FROM external_effects WHERE operator_request_id=? AND operator_step='reopen-issue'",(row['id'],)).fetchone()
         closure=row['plan']['closure_event']
         events=self._issue_transitions(row)
         original=next((event for event in events if event['id']==closure['id']),None)
@@ -511,7 +627,7 @@ class OperatorActions(Lifecycle):
         if not following and remote.get('state')=='closed':
             if remote.get('state_reason')!='not_planned':raise TransitionError('The original closure reason changed on GitHub')
             self._intent(row,'reopen-issue',{'closure_event':closure,'number':row['item']['number']})
-            self.github.call('controller',row['item'],'PATCH',f"/issues/{row['item']['number']}",{'state':'open'})
+            self._send(row,'reopen-issue','PATCH',f"/issues/{row['item']['number']}",{'state':'open'})
         events=self._issue_transitions(row);following=self._following(events,closure['id'])
         remote,_=self.github.issue(row['item'])
         if not following:raise GitHubUnavailable('Reopening event is unconfirmed')
@@ -542,7 +658,7 @@ class OperatorActions(Lifecycle):
         self._intent(row,'reviewers',{'pull_number':candidate['pull_number'],'reviewers':names})
         current=self.github.call('controller',row['item'],'GET',path)
         seen={u['login'] for u in current.get('users',[])}
-        if not set(names)<=seen:self.github.call('controller',row['item'],'POST',path,{'reviewers':names})
+        if not set(names)<=seen:self._send(row,'reviewers','POST',path,{'reviewers':names})
         current=self.github.call('controller',row['item'],'GET',path)
         if not set(names)<={u['login'] for u in current.get('users',[])}:raise GitHubUnavailable('Reviewer request is unconfirmed')
         pr=self.github.pr(row['item'],candidate['pull_number'])
@@ -589,7 +705,7 @@ class OperatorActions(Lifecycle):
     def _complete(self,row,issue):
         command=Command(row['id']+':complete:'+str(row['unit']['version']),row['actor_id'],row['unit_id'],row['unit']['version'])
         def change(db,unit):
-            if self._baseline(db,unit['id'])!=row['plan']['baseline']:raise TransitionError('Delivery changed while applying the decision')
+            if baseline(self._baseline(db,unit['id']))!=baseline(row['plan']['baseline']):raise TransitionError('Delivery changed while applying the decision')
             action=row['action'];gates=_gates(db,unit['id'])
             if action in {'resume','queue','retry','close'}|DELIVERY_ACTIONS:self._scope_quiet(db,unit,row['plan'].get('scope_member_id'))
             if action=='retry' or action in DELIVERY_ACTIONS:
@@ -624,6 +740,12 @@ class OperatorActions(Lifecycle):
                 if action=='resume_delivery' and gate['member_id'] is not None:continue
                 if scope is not None and gate['member_id']!=scope:continue
                 if scope is None and gate['member_id'] is not None and action not in {'retry','close'}|DELIVERY_ACTIONS:continue
+                if action=='retry' and gate['code']=='decision_required':
+                    from ..store.claim_overrides import typed_claim, acknowledge_in
+                    if typed_claim(gate,json.loads(gate['details_json'])):
+                        acknowledge_in(self,db,command,unit,gate,selected['id'],revision,
+                            {'operator':row['actor_id'],'request_id':row['id'],'reason':row['reason']})
+                        continue
                 if gate['code'] in resolve:
                     if gate['code']=='operator_sync' and gate['id']!=row['gate_id']:raise TransitionError('Operator intent changed')
                     self._resolve(db,command,gate['id'],{'operator':row['actor_id'],'request_id':row['id'],'verified':True,'observed_at':self.clock()})
@@ -670,12 +792,58 @@ class OperatorActions(Lifecycle):
             db.execute("UPDATE issue_action_requests SET status='rejected',message=? WHERE id=?",(message,row['id']))
             db.execute('UPDATE operator_action_authority SET result_json=?,updated_at=? WHERE request_id=?',(_json({'rejected':True,'reason':message}),self.clock(),row['id']))
             db.execute('INSERT INTO operator_observation_requests VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET actor_id=excluded.actor_id,requested_at=excluded.requested_at',(row['issue_id'],row['actor_id'],self.clock()))
+            # Definitely unsent effects no longer have authority. Sent effects
+            # retain their uncertainty and remain in the readback cycle below.
+            db.execute("UPDATE external_effects SET status='superseded',updated_at=? "
+                "WHERE operator_request_id=? AND status='pending' AND attempts=0",(self.clock(),row['id']))
         return {'request_id':row['id'],'rejected':True}
+
+    def _reconcile_retired(self,row):
+        """Read back historical writes even after their request lost authority."""
+        from ..store.effects import defer_effect_in
+        with self.store.read_snapshot() as db:
+            effects=[dict(effect) for effect in db.execute("SELECT * FROM external_effects WHERE operator_request_id=? "
+                "AND status IN ('pending','running','uncertain') AND (retry_at IS NULL OR retry_at<=?)",
+                (row['id'],self.clock()))]
+        for effect in effects:
+            step=effect['operator_step'];payload=json.loads(effect['payload_json']);receipt=None
+            if step=='close-comment':
+                if self._comment_receipt(row,payload):continue
+            elif step.startswith(('add:','remove:')):
+                issue,_=self.github.issue(row['item'])
+                present=payload['label'] in labels(issue)
+                if present==step.startswith('add:'):receipt={'present':present}
+            elif step in {'close-issue','reopen-issue'}:
+                previous=payload.get('previous_event') if step=='close-issue' else payload['closure_event']['id']
+                if step=='reopen-issue' or 'previous_event' in payload:
+                    following=self._following(self._issue_transitions(row),previous)
+                    kind='closed' if step=='close-issue' else 'reopened'
+                    if following and self._own_transition(following[0],kind):
+                        receipt=({'closed':True,'state_reason':'not_planned','closure_event':following[0]}
+                                 if kind=='closed' else {'reopened':True,'closure_event':payload['closure_event'],'reopen_event':following[0]})
+            elif step=='close-pr':
+                pr=self.github.pr(row['item'],payload['number'])
+                if pr.get('state')=='closed' and pr.get('merged') is False and (pr.get('head') or {}).get('sha')==payload['head']:
+                    receipt={'closed':True,'merged':False}
+            elif step=='reviewers':
+                current=self.github.call('controller',row['item'],'GET',f"/pulls/{payload['pull_number']}/requested_reviewers")
+                if set(payload['reviewers'])<={user['login'] for user in current.get('users',[])}:
+                    receipt={'logins':payload['reviewers'],'candidate_id':row['plan']['baseline']['current_candidate_id']}
+            if receipt is not None:self._receipt(row,step,receipt)
+            else:
+                with self.store.write() as db:
+                    defer_effect_in(db,effect,self.clock(),reliability=self._config().get('reliability'))
+        with self.store.read_snapshot() as db:
+            pending=db.execute("SELECT 1 FROM external_effects WHERE operator_request_id=? "
+                               "AND status IN ('pending','running','uncertain')",(row['id'],)).fetchone()
+        return {'request_id':row['id'],'status':row['status'],**({'pending':'effect_reconciliation'} if pending else {})}
 
     def step(self,identifier):
         row=self._request(identifier)
-        if row['status']!='pending':return {'request_id':identifier,'status':row['status']}
         try:
+            if row['status']!='pending':return self._reconcile_retired(row)
+            waiting=self._effect_wait(row,only_future=True)
+            if waiting:return waiting
             if row['action']=='reopen':return self._reopen_step(row)
             if row['action']=='close':
                 completed=self._completed_close(row)
@@ -705,17 +873,27 @@ class OperatorActions(Lifecycle):
                 try:self.requirements.observe(row['unit_id'])
                 except (GitHubUnavailable,TransitionError):pass  # The independent requirements stage retries; intent is applied.
             return result
+        except OperatorEffectPending:
+            return self._effect_wait(row)
         except GitHubUnavailable:
+            self._defer_effects(row)
             return {'request_id':identifier,'pending':'github_observation'}
         except VersionConflict:
             return {'request_id':identifier,'pending':'concurrent_observation'}
         except TransitionError as error:
+            if row['status']!='pending':
+                self._defer_effects(row)
+                return {'request_id':identifier,'status':row['status'],'pending':'effect_reconciliation','reason':str(error)}
             return self._reject(row,str(error))
 
     def cycle(self,*,after='',limit=50):
         if not 1<=limit<=100:raise ValueError('Invalid action page size')
         with self.store.read_snapshot() as db:
-            ids=[r[0] for r in db.execute("SELECT q.id FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id WHERE q.status='pending' AND q.id>? ORDER BY q.id LIMIT ?",(after,limit+1))]
+            ids=[r[0] for r in db.execute("SELECT q.id FROM issue_action_requests q JOIN operator_action_authority a ON a.request_id=q.id "
+                "WHERE ((q.status='pending' AND NOT EXISTS(SELECT 1 FROM external_effects e WHERE e.operator_request_id=q.id "
+                "AND e.status IN ('pending','running','uncertain') AND e.retry_at>?)) OR (q.status!='pending' AND EXISTS(SELECT 1 FROM external_effects e WHERE e.operator_request_id=q.id "
+                "AND e.status IN ('pending','running','uncertain') AND (e.retry_at IS NULL OR e.retry_at<=?)))) "
+                "AND q.id>? ORDER BY q.id LIMIT ?",(self.clock(),self.clock(),after,limit+1))]
         items=[]
         for identifier in ids[:limit]:
             try:items.append(self.step(identifier))
