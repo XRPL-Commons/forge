@@ -37,16 +37,19 @@ class DeviceLoginTests(unittest.TestCase):
                 options = dict(argv[i+1].split('=', 1) for i, value in enumerate(argv) if value == '--log-opt')
                 self.record = {'Id': 'docker-id', 'Config': {'Labels': labels},
                     'HostConfig': {'LogConfig': {'Type': argv[argv.index('--log-driver')+1], 'Config': options}},
-                    'State': {'Status': 'created', 'Running': False, 'ExitCode': 0}}
+                    'State': {'Status': 'created', 'Running': False, 'ExitCode': 0,
+                              'StartedAt': '0001-01-01T00:00:00Z', 'Error': ''}}
             elif action == 'start':
                 logging = self.record['HostConfig']['LogConfig']
                 options = logging['Config']
                 # Docker's local driver defaults compression to true and rejects
                 # that combination with a single retained log file at task start.
-                if logging['Type'] == 'local' and options.get('max-file') == '1' and options.get('compress', 'true') != 'false':
+                if (getattr(self, 'start_error', '') or logging['Type'] == 'local'
+                        and options.get('max-file') == '1' and options.get('compress', 'true') != 'false'):
+                    self.record['State'].update(ExitCode=128, Error=getattr(self, 'start_error', '') or 'invalid logging configuration')
                     code = 1
                 else:
-                    self.record['State'].update(Status='running', Running=True)
+                    self.record['State'].update(Status='running', Running=True, StartedAt='2026-10-17T12:00:00Z')
             elif action == 'logs': out = self.output
             elif action == 'rm': self.record = None
             elif action == 'container': out = '' if self.record is None else 'docker-id'
@@ -63,6 +66,49 @@ class DeviceLoginTests(unittest.TestCase):
         path.write_text(json.dumps(auth if auth is not None else login())); path.chmod(0o600)
         self.record['State'].update(Status='exited', Running=False, ExitCode=0)
         return path
+
+    def test_failed_start_is_observed_and_explicit_retry_does_not_wait_for_expiry(self):
+        self.start_error = 'private runtime failure detail'
+        with self.assertRaises(SetupError) as caught: self.call(apply=True)
+        self.assertEqual(caught.exception.code, 'account_runtime_failed')
+        saved = self.setup.read()['device_logins']['codex']
+        old_home = self.client.home(saved)
+        before = len(self.calls)
+        observed = self.call()
+        self.assertEqual(observed['status'], 'account_login_failed')
+        self.assertNotIn(self.start_error, json.dumps(observed))
+        self.assertFalse(any(call[1] in ('rm', 'create', 'start') for call in self.calls[before:]))
+        self.start_error = ''
+        retried = self.call(apply=True, retry=True)
+        self.assertEqual(retried['status'], 'account_login_pending')
+        self.assertNotEqual(retried['session_id'], saved['id'])
+        self.assertFalse(old_home.exists())
+        self.assertLess(self.now, saved['expires_at'])
+
+    def test_created_without_error_and_lost_start_reply_are_not_retryable(self):
+        original = self.client.run
+        def lost_create(argv, **kw):
+            result = original(argv, **kw)
+            if argv[1] == 'create': raise TimeoutError()
+            return result
+        self.client.run = lost_create
+        with self.assertRaises(TimeoutError): self.call(apply=True)
+        self.client.run = original
+        before = len(self.calls)
+        with self.assertRaises(SetupError) as caught: self.call(apply=True, retry=True)
+        self.assertEqual(caught.exception.code, 'account_login_running')
+        self.assertFalse(any(call[1] in ('rm', 'create', 'start') for call in self.calls[before:]))
+        def lost_start(argv, **kw):
+            result = original(argv, **kw)
+            if argv[1] == 'start': raise TimeoutError()
+            return result
+        self.client.run = lost_start
+        with self.assertRaises(TimeoutError): self.call(apply=True)
+        self.client.run = original
+        before = len(self.calls)
+        with self.assertRaises(SetupError) as caught: self.call(apply=True, retry=True)
+        self.assertEqual(caught.exception.code, 'account_login_running')
+        self.assertFalse(any(call[1] in ('rm', 'create', 'start') for call in self.calls[before:]))
 
     def test_single_file_logs_start_with_compression_disabled(self):
         self.assertEqual(self.call(apply=True)['status'], 'account_login_pending')
