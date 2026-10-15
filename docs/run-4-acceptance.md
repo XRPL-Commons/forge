@@ -28,7 +28,9 @@ Audit for human-authored PRs as well as Forge-created PRs.
 The local bulk backend run exercised 2,248 tests and found three stale fixtures:
 a missing supervisor component, an incomplete mocked settings document, and
 protection evidence missing the new scope. All 47 tests in the corrected modules
-passed. The final combined revision must also pass full CI.
+passed. The combined revision passed all backend shards, UI and source audit in
+[CI](https://github.com/XRPL-Commons/forge/actions/runs/38713523760), then merged
+as `e12960c` in [PR #297](https://github.com/XRPL-Commons/forge/pull/297).
 
 All 591 UI unit tests, typecheck, production build and browser tests passed.
 Focused tests cover schema upgrade, history retention, uncertain writes,
@@ -43,10 +45,18 @@ the current peers sharing that commit.
 
 ## Deployment and live acceptance
 
-Read-only CLI preflight on both existing installations reported schema 3,
-pending migration 4 and no blockers, at source `c0f2a01`. Deployment uses
-`forge migrate upgrade` with the exact merged release and a resumable apply.
-This preflight is not a deployment or live acceptance result.
+Both existing installations completed the supported CLI upgrade from
+`c0f2a01`, schema 3, to `e12960c`, schema 4. The CLI reported `upgraded`, stage
+`complete`, and no pending migrations. Anvil's automation remains disabled.
+
+Anvil's real-provider canary qualified Build, Review, Audit and Recovery on
+image `sha256:da56f94867613b5a7b7eb20a59834c5e74790439707dbcae5e9398ef5e00e594`.
+Triage then failed before provider execution because its new shared assignment
+omitted the publisher required by the worker harness. Conversation assignments
+had the same omission. Real assignment fixtures reproduce both failures through
+the harness entry point. The shared assignment builder is corrected; the
+remaining live roles must pass after deployment. Disposable cleanup was
+confirmed and automation stayed disabled throughout the failed canary.
 
 Identity migration is a separate supported CLI operation. New App permissions,
 callback configuration, installation changes and repository rules require their
