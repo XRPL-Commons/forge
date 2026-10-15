@@ -1,4 +1,5 @@
 """Codex adapter: native sandbox, structured result and connection probe."""
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,23 @@ import runpy
 
 RESULTS = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'results.py'))
 EXECUTION = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'execution.py'))
+
+
+def wire_schema(schema):
+    """Project the provider schema; the original contract still gates handoff."""
+    result = deepcopy(schema)
+    def visit(node):
+        if not isinstance(node, dict):
+            return
+        node.pop('minLength', None)
+        for child in node.get('properties', {}).values():
+            visit(child)
+        for key in ('items', 'additionalProperties'):
+            visit(node.get(key))
+        for child in node.get('anyOf', []):
+            visit(child)
+    visit(result)
+    return result
 
 
 def prepare_tool_environment(directory, env):
@@ -30,7 +48,7 @@ def prepare_tool_environment(directory, env):
 
 def run(note, directory, env, result_schema):
     path = Path('/work/result-schema.json')
-    path.write_text(json.dumps(result_schema))
+    path.write_text(json.dumps(wire_schema(result_schema)))
     client = Path('/work/home/.codex')
     child_env = prepare_tool_environment(directory, env)
     build = runpy.run_path('/opt/forge/build_environment.py')
@@ -65,7 +83,7 @@ def run(note, directory, env, result_schema):
                 provider['diagnostic']['session'] = session
             EXECUTION['write_receipt'](note, 'provider_error', provider_error=provider)
     output = Path('/work/final-result.json')
-    RESULTS['publish_result'](note, output)
+    RESULTS['publish_result'](note, output, result_schema)
     return code
 
 
