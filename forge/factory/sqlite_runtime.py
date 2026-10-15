@@ -44,7 +44,10 @@ def components(root, *, config=None, runner=None, github=None, settings=None, cl
     readiness = RepositoryReadiness(store, settings, clock=clock)
 
     def execution_admission(item):
-        return admission(item) if item.get('review_only') or item['role'] in {'recovery','steward'} else readiness.allowed(item)
+        if item.get('review_only'):
+            from .config import merge_check_scope
+            return merge_check_scope(current_config(), item['repo_id']) == 'all' and admission(item)
+        return admission(item) if item['role'] in {'recovery','steward'} else readiness.allowed(item)
 
     def current_config():
         current = load(root)

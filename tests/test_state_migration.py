@@ -18,7 +18,9 @@ class StateMigrationTests(unittest.TestCase):
         # Build the historical fixture without the schema-4-only read projection.
         # The actual upgrade and all preservation assertions run without mocks.
         with patch('forge.store.db._migrations',return_value=storage._migrations()[:3]), \
-                patch('forge.store.scheduling.execution_condition_in',return_value=None):
+                patch('forge.store.scheduling.execution_condition_in',return_value=None), \
+                patch('forge.store.review_pulls.review_only_in',return_value=None), \
+                patch('forge.store.review_pulls.source_in',return_value=None):
             fixture=publication_fixture.PublicationLedgerTests()
             fixture.setUp()
         self.addCleanup(fixture.doCleanups)
