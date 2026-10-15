@@ -259,8 +259,14 @@ def qualify(image, *, docker=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--image',required=True)
+    parser.add_argument('--provider-proxy', action='store_true')
     args=parser.parse_args()
-    try:result=qualify(args.image)
+    try:
+        if args.provider_proxy:
+            from .provider_qualification import qualify as provider_qualify
+            result=provider_qualify(args.image)
+        else:
+            result=qualify(args.image)
     except (BoundaryError,OSError,ValueError,subprocess.SubprocessError) as error:
         print(json.dumps(dict(status='failed',reason=str(error))));return 1
     print(json.dumps(result,sort_keys=True));return 0

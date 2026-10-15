@@ -117,12 +117,39 @@ class ContainerRunner:
             self.source_preparation = SourcePreparation(root, store, github=GitHub(settings, self.config), settings=settings)
         return self.source_preparation
 
-    def boundary(self):
+    def provider_context(self):
+        from ..store.runtime import selected
+        root = self.environ.get('FORGE_CREDENTIAL_ROOT')
+        if not root:
+            raise RunnerUnavailable('Provider proxy requires installation-owned credentials')
+        if self.source_preparation is not None:
+            return self.source_preparation.root, root, self.source_preparation.store
+        store = selected(root)
+        if store is None:
+            raise RunnerUnavailable('Provider proxy requires live execution ownership')
+        return root, root, store
+
+    def provider_grant(self, job):
+        from ..provider_runtime import prepare
+        from ..provider_proxy import ProxyError
+        try:
+            root, credentials, store = self.provider_context()
+            return prepare(root, credentials, store, job['id'], self.config)
+        except ProxyError as error:
+            raise RunnerUnavailable('Provider proxy: ' + error.reason) from None
+
+    def boundary(self, job=None):
         from .worker_boundary import WorkerBoundary
         from ..registry_cache import socket_directory
         root = self.environ.get('FORGE_CREDENTIAL_ROOT')
+        from ..provider_runtime import enabled, directory
+        provider_directory = None
+        if job is not None and enabled(self.config):
+            self.provider_grant(job)
+            provider_directory = directory(self.provider_context()[0], job['id'])
         return WorkerBoundary(self.call, image=self.config['image'],
-            registry_directory=socket_directory(root) if root else None)
+            registry_directory=socket_directory(root) if root else None,
+            provider_directory=provider_directory)
 
     def source_record(self, job):
         if self.source_preparation is None and not self.environ.get('FORGE_CREDENTIAL_ROOT'):
@@ -156,14 +183,15 @@ class ContainerRunner:
                 note = discussion_note(job)
             else:
                 note = strategist_note(job) if role == 'strategist' else assignment_note(job)
+            from ..provider_runtime import enabled, model
             note.update(harness_argv=self.config['harness_argv'], grace_seconds=self.config['grace_seconds'],
                         proxy='http://forge-egress:3128', provider=self.config.get('provider', 'codex'),
-                        model=self.config.get('model'), boundary_environment=self.boundary().environment())
+                        model=model(self.config) if enabled(self.config) else self.config.get('model'), boundary_environment=self.boundary().environment())
             previous = source.mirror.prepared(job['id'])
             authorization = previous['publication_authorization'] if previous else publication_authorization(job, source.github)
             prepared = source.prepare(job, note, publication_authorization=authorization, bundle_inputs=bundles)
             self.source_record(job)
-            boundary = self.boundary().prepare(job, input_directory=prepared.input_directory,
+            boundary = self.boundary(job).prepare(job, input_directory=prepared.input_directory,
                                                broker_socket_directory=prepared.socket_directory)
             return boundary
         except MirrorError as error:
@@ -361,6 +389,16 @@ class ContainerRunner:
         current = self.inspect(job)
         if not current or current['status'] != 'created' or job['fenced']:
             raise RunnerError('Only an unstarted owned execution can receive an assignment')
+        from ..provider_runtime import enabled, ready, BASE_URL
+        from ..provider_proxy import claude_environment, ProxyError
+        if enabled(self.config):
+            record = self.provider_grant(job)
+            try:
+                ready(self.provider_context()[0], job['id'])
+            except ProxyError as error:
+                raise RunnerUnavailable('Provider proxy: ' + error.reason) from None
+            return self._send_credentials(job, current,
+                claude_environment({}, BASE_URL, record['capability'], auth_mode='api_key'), bundles=bundles)
         credentials = {name: self.environ[name] for name in self.config['provider_environment'] if self.environ.get(name)}
         if len(credentials) != len(self.config['provider_environment']):
             raise RunnerUnavailable('Provider credentials unavailable')
@@ -395,7 +433,7 @@ class ContainerRunner:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'w') as stream:
-                json.dump({'values': secret_values(credentials.get('FORGE_HARNESS_AUTH'))}, stream)
+                json.dump({'values': secret_values(credentials)}, stream)
         content = io.BytesIO()
         with tarfile.open(fileobj=content, mode='w') as archive:
             for name, value in [('credentials.json', credentials)]:
@@ -483,6 +521,14 @@ class ContainerRunner:
                 record = self.source_record(job)
                 if record and not self.source().mirror.live_authority({**record, 'job_id': job['id']}):
                     raise RunnerError('Immutable assignment authority was revoked')
+                from ..provider_runtime import enabled, ready
+                from ..provider_proxy import ProxyError
+                if enabled(self.config) and job.get('kind') not in ('termination', 'reuse'):
+                    self.provider_grant(job)
+                    try:
+                        ready(self.provider_context()[0], job['id'])
+                    except ProxyError as error:
+                        raise RunnerUnavailable('Provider proxy: ' + error.reason) from None
                 self.call(['start', current['id']])
         except OSError:
             raise RunnerCapacity({'allowed': False, 'reason': 'telemetry_unavailable', 'at': time.time()}) from None
@@ -587,6 +633,9 @@ class ContainerRunner:
     def reset(self, job):
         if not job['fenced']:
             raise RunnerError('Persist fencing before external reset')
+        from ..provider_runtime import enabled, revoke
+        if enabled(self.config):
+            revoke(self.provider_context()[0], job['id'])
         record = self.source_record(job)
         if record:
             self.source().mirror.revoke(record['session_id'])

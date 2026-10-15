@@ -59,7 +59,8 @@ if provider == 'claude':
             with closing(UnixConnection('localhost')) as conn:
                 conn.request('POST',self.path,body,dict(self.headers))
                 response=conn.getresponse();self.send_response(response.status)
-                for k,v in response.getheaders(): self.send_header(k,v)
+                for k,v in response.getheaders():
+                    if k.lower() != 'transfer-encoding': self.send_header(k,v)
                 self.end_headers()
                 while chunk:=response.read1(65536): self.wfile.write(chunk);self.wfile.flush()
     frontend=ThreadingHTTPServer(('127.0.0.1',0),Frontend)

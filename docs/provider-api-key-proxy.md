@@ -1,9 +1,13 @@
 # Provider API-key broker qualification
 
-This module is an integration candidate, not an active runtime path. It supports
-Claude API-key assignments only. Browser sign-in and Grok are unchanged.
-Do not close #265 until the lifecycle wiring and deployed isolation checks below
-are complete.
+The runner routes installation-owned Claude API-key accounts through a host
+broker. Pipeline jobs, discussions and setup probes share this path. Browser
+sign-in and Grok are unchanged. No browser account is converted to API billing.
+
+The production wiring is implemented; native Linux qualification of the complete
+boundary and Bash credential isolation remains pending. Do not close #265 until
+that qualification passes for the deployed image. Browser credential isolation
+and Grok support remain separate work.
 
 ## Proven behavior
 
@@ -49,34 +53,63 @@ status check, and each chunk is checked again before forwarding. Requests also e
 at the earlier of their execution deadline or 600 seconds. The live callback must
 itself be bounded; database failure withdraws authority.
 
-## Shared wiring proposal
+## Runtime lifecycle
 
-These edits are intentionally left to the integrator because another lane owns
-the gateway and service lifecycle:
+The existing `forge-mirror` service owns inference sockets too. Each private
+persisted grant captures the current SQL execution fence, immutable manifest,
+account generation, concrete model, deadline and random capability. It uses the
+same authority database as its worker, including disposable role qualifications.
+Account replacement, fencing, capture or cleanup withdraws existing streams.
+Service restart recreates the socket with the original capability, so live
+workers retain their bounded grant. Cleanup removes the grant before teardown.
 
-1. Activate this path only for an explicitly selected Claude API-key account.
-   Never select it for `provider_auth_file_env` or `CLAUDE_CODE_OAUTH_TOKEN`.
-   Keep the existing browser path and its billing semantics unchanged.
-2. The host creates the assignment and socket before worker startup. Bind the
-   account generation and concrete model to the execution's captured assignment.
-   Generate the capability on the host; store no provider key in the assignment.
-3. Replace API-key credential handoff with `claude_environment(...,
-   auth_mode='api_key')`. The envelope contains only base URL and job capability;
-   no provider API key, auth file, refresh material or auth write-back digest.
-4. Add a streaming gateway route (suggested local origin
-   `http://forge-provider:8082`) to the mounted per-execution Unix socket. Preserve
-   response bytes incrementally. For this mode, refuse all direct provider
-   CONNECT routes. Do not leave the old Anthropic egress route available.
-5. Scrub the job capability from repository tool subprocesses as well as logs.
-   The capability is a bounded inference grant and must not become a general
-   repository credential. Existing sandbox policies and private-proc isolation
-   remain enabled.
-6. Reconstruct or withdraw sockets after host restart using current execution
-   authority. Fence before cleanup/reset, shut down the server, and remove its
-   socket. Disable credential write-back for proxy-managed executions.
-7. Add integration tests for account-generation changes, fencing, cleanup,
-   restart, no key in the worker envelope and direct-egress refusal. Qualify the
-   pinned CLI in the complete production topology before enabling the mode.
+The worker envelope contains `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (the
+job capability). It contains no account key or refresh material. A readiness
+request checks the live broker again before credentials are handed off and before
+the worker starts. The gateway mounts only that job's socket, exposes
+`http://forge-provider:8082`, and refuses every provider CONNECT route in this
+mode. Registry downloads remain available. Setup probes use this same isolated
+boundary with a retained-volume keeper and no Git frontend.
+
+The managed Claude sandbox denies the capability to shell tools and lifecycle
+scripts. Capture retains the exact capability in private host scrub state before
+handoff. The native Bash test below must establish that the pinned image enforces
+this policy; configuration alone is not proof.
+
+### Models
+
+A fake-upstream trace of Claude 2.1.273 observed these API-key selections:
+
+| Configured model | Captured concrete model |
+| --- | --- |
+| Default (`null`) | `claude-opus-5` |
+| `sonnet` | `claude-sonnet-5` |
+| `opus` | `claude-opus-5` |
+| `haiku` | `claude-haiku-4-5-20251001` |
+
+Explicit `claude-*` IDs pass through. Other aliases require qualification rather
+than silently selecting a different model. The adapter receives the captured
+concrete ID. Updating the pinned binary requires repeating
+`tests/qualification/claude_models.py`; a version mismatch refuses proxy jobs.
+
+### Native qualification through the CLI
+
+After installing the matching source and worker image on a disposable Linux
+host, run:
+
+```sh
+forge setup qualify-boundary --ssh anvil --provider-proxy
+forge setup qualify-boundary --ssh anvil --provider-proxy --apply
+```
+
+This uses the installed service account and exact image. A host fake upstream
+supplies a real Claude Bash tool call and structured output. It checks shell
+credential absence, host-only key injection, direct-provider denial, another
+job's capability, revocation, and verified resource cleanup. It uses synthetic
+credentials and makes no provider API requests. It requires the normal Forge
+private-proc AppArmor policy; it never disables the sandbox to obtain a pass.
+The returned receipt identifies the image and source revision. A failed or
+unperformed native run is not qualification.
 
 ## Reproduce the local qualification
 

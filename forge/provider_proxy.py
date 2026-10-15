@@ -170,6 +170,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def do_GET(self):
+        expected = ('Bearer ' + self.server.broker.assignment.capability).encode()
+        supplied = self.headers.get('Authorization', '').encode()
+        if self.path != '/health' or not hmac.compare_digest(expected, supplied) or not self.server.broker.alive():
+            self.reply(403, 'execution_unavailable')
+        else:
+            self.send_response(204)
+            self.send_header('Content-Length', '0')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+        self.close_connection = True
+
     def do_POST(self):
         sent = False
         try:
@@ -192,11 +204,13 @@ class Handler(BaseHTTPRequestHandler):
                 for key, value in headers.items():
                     self.send_header(key, value)
                 self.send_header('Connection', 'close')
+                self.send_header('Transfer-Encoding', 'chunked')
                 self.end_headers()
                 sent = True
                 for chunk in chunks:
-                    self.wfile.write(chunk)
+                    self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
                     self.wfile.flush()
+                self.wfile.write(b'0\r\n\r\n'); self.wfile.flush()
         except ProxyError as error:
             if not sent:
                 self.reply(error.status, error.reason)

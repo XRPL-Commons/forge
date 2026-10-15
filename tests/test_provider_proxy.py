@@ -162,6 +162,28 @@ class ProxyTests(unittest.TestCase):
                     self.assertEqual(Path(path).stat().st_mode & 0o777,0o600)
                 finally: server.shutdown();thread.join()
 
+    def test_http_revocation_is_a_truncated_stream_not_successful_eof(self):
+        original = self.connection.response.read1
+        calls = 0
+        def read(size):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.authorized.return_value = False
+            return original(size)
+        self.connection.response.read1 = read
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory)/'job.sock')
+            with SessionServer(path, self.broker) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+                try:
+                    with closing(UnixConnection(path)) as client:
+                        client.request('POST','/v1/messages',self.body,self.headers)
+                        response = client.getresponse()
+                        self.assertEqual(response.status, 200)
+                        with self.assertRaises(http.client.IncompleteRead): response.read()
+                finally: server.shutdown(); thread.join()
+
     def test_http_oversized_body_rejected_before_read(self):
         with tempfile.TemporaryDirectory() as directory:
             path=str(Path(directory)/'job.sock')

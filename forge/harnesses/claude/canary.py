@@ -66,7 +66,7 @@ def check_dependency_install(directory):
         'scripts': {'postinstall': 'node lifecycle.cjs'},
     }))
     (directory / 'lifecycle.cjs').write_text(
-        "for (const k of ['ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','FORGE_PROBE_SECRET']) "
+        "for (const k of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','FORGE_PROBE_SECRET']) "
         "if (process.env[k]) throw Error('Provider environment exposed'); "
         "require('fs').writeFileSync('lifecycle-proof', 'ok');\n")
     env = {**os.environ, 'CI': 'true', 'COREPACK_ENABLE_NETWORK': '0'}
@@ -97,7 +97,7 @@ def check_git_writes(directory):
 
 
 def check_isolation():
-    for key in ('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'FORGE_PROBE_SECRET'):
+    for key in ('ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'FORGE_PROBE_SECRET'):
         if os.environ.get(key):
             raise SystemExit('Provider environment was not isolated')
     # Claude's sandbox masks the denied home with a disposable, writable tmpfs:

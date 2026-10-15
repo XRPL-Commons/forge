@@ -26,7 +26,7 @@ HOST = '''import json,pwd,re,subprocess,sys
 from pathlib import Path
 def main(payload):
     value=json.loads(sys.stdin.buffer.read(4097))
-    if (set(value)!={'version','image','apply'} or value['version']!=1 or type(value['apply']) is not bool
+    if (set(value)!={'version','image','apply','provider_proxy'} or value['version']!=1 or type(value['apply']) is not bool or type(value['provider_proxy']) is not bool
             or value['image'] is not None and not re.fullmatch(r'sha256:[0-9a-f]{64}',value['image'])):
         print(json.dumps({'ok':False,'error':'invalid_request'}));return 1
     account=pwd.getpwnam('forge');source=Path('/home/forge/forge')
@@ -45,6 +45,7 @@ def main(payload):
     if not value['apply']:
         print(json.dumps({'ok':True,'result':dict(status='planned',**identity)}));return 0
     args=prefix+['/usr/bin/python3','-m','forge.worker_qualification','--image',image]
+    if value['provider_proxy']:args+=['--provider-proxy']
     result=subprocess.run(args,cwd=source,capture_output=True,timeout=360,env=environment)
     if result.returncode not in (0,1) or len(result.stdout)>65536:
         print(json.dumps({'ok':False,'error':'factory_setup_failed'}));return 1
@@ -69,7 +70,7 @@ def execute(args, *, installation=None):
     else:
         installation=installation or Installation(args.ssh)
         installation.host.fingerprint=(installation.journal.read() or {}).get('host_key')
-        reply=installation.host.rpc(HOST,dict(version=1,image=args.image,apply=args.apply),timeout=390 if args.apply else 60)
+        reply=installation.host.rpc(HOST,dict(version=1,image=args.image,apply=args.apply,provider_proxy=getattr(args,'provider_proxy',False)),timeout=390 if args.apply else 60)
         report=reply.get('result')
         require(isinstance(report,dict), 'invalid_host_response')
         require(isinstance(report.get('image'),str) and re.fullmatch(r'sha256:[0-9a-f]{64}',report['image'])
@@ -79,6 +80,6 @@ def execute(args, *, installation=None):
                 'boundary_qualification_failed', report.get('reason','The native worker boundary did not qualify.'))
     else:
         require(report.get('status')=='planned','invalid_host_response')
-        report.update(checks=CHECKS,ssh=args.ssh,
+        report.update(checks=(['pinned Claude tool loop', 'shell credential isolation', 'host-only key injection', 'direct provider denial', 'job capability and revocation', 'cleanup'] if getattr(args,'provider_proxy',False) else CHECKS),ssh=args.ssh,
                       next_action='Use --apply to run disposable canaries on the selected host; the installed module and image must already match this release.')
     return report

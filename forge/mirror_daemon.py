@@ -23,13 +23,15 @@ from .store.runtime import selected
 
 
 class MirrorDaemon:
-    def __init__(self, root, store, *, settings=None, access=None, git_store=None, clock=time.time, peer_uid=None):
+    def __init__(self, root, store, *, settings=None, access=None, git_store=None, clock=time.time, peer_uid=None, credential_root=None):
         self.root, self.clock = Path(root), clock
         self.settings = settings or Settings(root)
         self.access = access or MirrorAccess(self.settings)
         self.mirror = MirrorStore(store, clock=clock)
         self.git_store = git_store or GitStore(self.root / 'state/factory/mirror/cache', credentials=self.credentials)
         self.peer_uid = os.geteuid() if peer_uid is None else peer_uid
+        from .provider_runtime import Service as ProviderService
+        self.providers = ProviderService(root, credential_root or root, store, clock=clock)
         self.servers = {}
         self.observations = {}
         self.observation_lock = threading.RLock()
@@ -82,6 +84,7 @@ class MirrorDaemon:
         return True
 
     def step(self):
+        self.providers.step()
         active = {session['id']: session for session in self.mirror.active_sessions()}
         for identifier, (server, thread) in list(self.servers.items()):
             session = active.get(identifier)
@@ -129,6 +132,7 @@ class MirrorDaemon:
             return current
 
     def close(self):
+        self.providers.close()
         # A process restart recreates still-owned endpoints from the same
         # durable session; shutdown itself grants no new execution authority.
         for server, thread in self.servers.values():
@@ -174,6 +178,17 @@ def health(root, store, *, timeout=3, clock=time.time):
                     count += 1
         except (FileNotFoundError, OSError, MirrorError):
             healthy = False
+        if healthy:
+            from .provider_runtime import Service as ProviderService, read_record, ready
+            from .provider_proxy import ProxyError
+            providers = ProviderService(root, root, store, clock=clock)
+            try:
+                for path in (root / 'state/provider-grants').glob('*.json'):
+                    record = read_record(path)
+                    if providers.authorized(record):
+                        ready(root, record['job_id'], timeout=0)
+            except (OSError, ValueError, ProxyError):
+                healthy = False
         if healthy:
             return {'ok': True, 'active_sessions': count}
         if time.monotonic() >= until:

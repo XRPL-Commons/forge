@@ -29,11 +29,13 @@ class BoundarySpec:
 
 
 class WorkerBoundary:
-    def __init__(self, call, *, image, uplink='forge-uplink', work_bytes=8*1024**3, registry_directory=None):
+    def __init__(self, call, *, image, uplink='forge-uplink', work_bytes=8*1024**3,
+                 registry_directory=None, provider_directory=None):
         if not isinstance(image,str) or not re.fullmatch(r'(?:sha256:|[^\s]+@sha256:)[0-9a-f]{64}',image) or type(work_bytes) is not int or not 16*1024**2 <= work_bytes <= 64*1024**3:
             raise ValueError('worker volume requires a bounded byte quota')
         self.call, self.image, self.uplink, self.work_bytes = call, image, uplink, work_bytes
         self.registry_directory = registry_directory
+        self.provider_directory = provider_directory
 
     @staticmethod
     def identity(job):
@@ -151,21 +153,35 @@ class WorkerBoundary:
         self.qualify()
         name, labels = self.identity(job)
         input_directory = self.directory(input_directory)
-        broker_socket_directory = self.directory(broker_socket_directory)
+        if broker_socket_directory is None:
+            if self.provider_directory is None:
+                raise ValueError('a mirror or fixed provider probe is required')
+        else:
+            broker_socket_directory = self.directory(broker_socket_directory)
         network, volume, frontend, gateway = (name+suffix for suffix in ('-net','-work','-git','-gateway'))
         self.network(network, labels)
         self.volume(volume, labels)
-        self.endpoint(frontend, labels, network, ['/opt/forge/mirror_frontend.py','--socket','/broker/session.sock'],
-            ['type=bind,source='+broker_socket_directory+',target=/broker,readonly',
-             'type=volume,source='+volume+',target=/retained-work,readonly,volume-nocopy'], ['forge-git'],
-            user=f'{os.geteuid()}:{os.getegid()}')
+        retained = 'type=volume,source='+volume+',target=/retained-work,readonly,volume-nocopy'
+        if broker_socket_directory is None:
+            self.endpoint(frontend, labels, network, ['-c','import threading; threading.Event().wait()'],
+                [retained], [], user=f'{os.geteuid()}:{os.getegid()}')
+        else:
+            self.endpoint(frontend, labels, network, ['/opt/forge/mirror_frontend.py','--socket','/broker/session.sock'],
+                ['type=bind,source='+broker_socket_directory+',target=/broker,readonly', retained], ['forge-git'],
+                user=f'{os.geteuid()}:{os.getegid()}')
         gateway_command, gateway_mounts = ['/opt/forge/gateway.py'], []
+        gateway_aliases = ['forge-egress','forge-registry']
         if self.registry_directory is not None:
             directory = self.directory(self.registry_directory)
             gateway_command += ['--registry-socket', '/registry/registry.sock']
             gateway_mounts = ['type=bind,source='+directory+',target=/registry,readonly']
+        if self.provider_directory is not None:
+            directory = self.directory(self.provider_directory)
+            gateway_command += ['--provider-socket', '/provider/session.sock']
+            gateway_mounts += ['type=bind,source='+directory+',target=/provider,readonly']
+            gateway_aliases += ['forge-provider']
         self.endpoint(gateway, labels, network, gateway_command, gateway_mounts,
-            ['forge-egress','forge-registry'], uplink=True, user=f'{os.geteuid()}:{os.getegid()}')
+            gateway_aliases, uplink=True, user=f'{os.geteuid()}:{os.getegid()}')
         environment = self.environment()
         return BoundarySpec(network,volume,frontend,gateway,('--network',network,'--dns','127.0.0.1',
             '--mount','type=volume,source='+volume+',target=/work,volume-nocopy',
@@ -175,7 +191,7 @@ class WorkerBoundary:
     def environment():
         return {'HTTP_PROXY':'http://forge-egress:3128','HTTPS_PROXY':'http://forge-egress:3128',
             'http_proxy':'http://forge-egress:3128','https_proxy':'http://forge-egress:3128',
-            'NO_PROXY':'forge-git,forge-registry','no_proxy':'forge-git,forge-registry',
+            'NO_PROXY':'forge-git,forge-registry,forge-provider','no_proxy':'forge-git,forge-registry,forge-provider',
             'npm_config_registry':'http://forge-registry:8081/registry.npmjs.org/',
             'PIP_INDEX_URL':'http://forge-registry:8081/pypi.org/simple/', 'PIP_TRUSTED_HOST':'forge-registry'}
 
