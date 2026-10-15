@@ -2,7 +2,7 @@
   "contract_version": 1,
   "id": "codex",
   "name": "Codex",
-  "version": "0.153.4",
+  "version": "0.163.0",
   "package": "@openai/codex",
   "binary": "bin/codex.js",
   "command": "codex",
